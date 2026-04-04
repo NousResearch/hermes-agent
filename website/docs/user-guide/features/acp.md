@@ -88,14 +88,13 @@ Example settings snippet:
 
 ```json
 {
-  "acp": {
-    "agents": [
-      {
-        "name": "hermes-agent",
-        "registry_dir": "/path/to/hermes-agent/acp_registry"
-      }
-    ]
-  }
+  "agent_servers": {
+    "hermes-agent": {
+      "type": "custom",
+      "command": "hermes",
+      "args": ["acp"],
+    },
+  },
 }
 ```
 

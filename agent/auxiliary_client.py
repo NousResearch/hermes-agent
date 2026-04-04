@@ -697,6 +697,25 @@ def _read_main_model() -> str:
     return ""
 
 
+def _read_main_provider() -> str:
+    """Read the user's configured main provider from config.yaml.
+
+    Returns the lowercase provider id (e.g. "alibaba", "openrouter") or ""
+    if not configured.
+    """
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        model_cfg = cfg.get("model", {})
+        if isinstance(model_cfg, dict):
+            provider = model_cfg.get("provider", "")
+            if isinstance(provider, str) and provider.strip():
+                return provider.strip().lower()
+    except Exception:
+        pass
+    return ""
+
+
 def _resolve_custom_runtime() -> Tuple[Optional[str], Optional[str]]:
     """Resolve the active custom/main endpoint the same way the main CLI does.
 
@@ -855,10 +874,35 @@ _AUTO_PROVIDER_LABELS = {
 }
 
 
+_AGGREGATOR_PROVIDERS = frozenset({"openrouter", "nous"})
+
+
 def _resolve_auto() -> Tuple[Optional[OpenAI], Optional[str]]:
-    """Full auto-detection chain: OpenRouter → Nous → custom → Codex → API-key → None."""
+    """Full auto-detection chain.
+
+    Priority:
+      1. If the user's main provider is NOT an aggregator (OpenRouter / Nous),
+         use their main provider + main model directly.  This ensures users on
+         Alibaba, DeepSeek, ZAI, etc. get auxiliary tasks handled by the same
+         provider they already have credentials for — no OpenRouter key needed.
+      2. OpenRouter → Nous → custom → Codex → API-key providers (original chain).
+    """
     global auxiliary_is_nous
     auxiliary_is_nous = False  # Reset — _try_nous() will set True if it wins
+
+    # ── Step 1: non-aggregator main provider → use main model directly ──
+    main_provider = _read_main_provider()
+    main_model = _read_main_model()
+    if (main_provider and main_model
+            and main_provider not in _AGGREGATOR_PROVIDERS
+            and main_provider not in ("auto", "custom", "")):
+        client, resolved = resolve_provider_client(main_provider, main_model)
+        if client is not None:
+            logger.info("Auxiliary auto-detect: using main provider %s (%s)",
+                        main_provider, resolved or main_model)
+            return client, resolved or main_model
+
+    # ── Step 2: aggregator / fallback chain ──────────────────────────────
     tried = []
     for try_fn in (_try_openrouter, _try_nous, _try_custom_endpoint,
                    _try_codex, _resolve_api_key_provider):

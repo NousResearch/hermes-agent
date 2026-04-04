@@ -51,6 +51,14 @@ _CLONE_CONFIG_FILES = [
     "SOUL.md",
 ]
 
+# Subdirectory files copied during --clone (path relative to profile root).
+# Memory files are part of the agent's curated identity — just as important
+# as SOUL.md for continuity when cloning a profile.
+_CLONE_SUBDIR_FILES = [
+    "memories/MEMORY.md",
+    "memories/USER.md",
+]
+
 # Runtime files stripped after --clone-all (shouldn't carry over)
 _CLONE_ALL_STRIP = [
     "gateway.pid",
@@ -427,6 +435,14 @@ def create_profile(
                 src = source_dir / filename
                 if src.exists():
                     shutil.copy2(src, profile_dir / filename)
+
+            # Clone memory and other subdirectory files
+            for relpath in _CLONE_SUBDIR_FILES:
+                src = source_dir / relpath
+                if src.exists():
+                    dst = profile_dir / relpath
+                    dst.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(src, dst)
 
     return profile_dir
 

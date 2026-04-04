@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import re
+import time
 from typing import Dict, Optional, Any
 
 try:
@@ -78,6 +79,11 @@ class SlackAdapter(BasePlatformAdapter):
         self._team_clients: Dict[str, AsyncWebClient] = {}   # team_id → WebClient
         self._team_bot_user_ids: Dict[str, str] = {}          # team_id → bot_user_id
         self._channel_team: Dict[str, str] = {}                # channel_id → team_id
+        # Dedup cache: event_ts → timestamp.  Prevents duplicate bot
+        # responses when Socket Mode reconnects redeliver events.
+        self._seen_messages: Dict[str, float] = {}
+        self._SEEN_TTL = 300   # 5 minutes
+        self._SEEN_MAX = 2000  # prune threshold
 
     async def connect(self) -> bool:
         """Connect to Slack via Socket Mode."""
@@ -323,7 +329,18 @@ class SlackAdapter(BasePlatformAdapter):
 
         Prefers metadata thread_id (the thread parent's ts, set by the
         gateway) over reply_to (which may be a child message's ts).
+
+        When ``reply_in_thread`` is ``false`` in the platform extra config,
+        top-level channel messages receive direct channel replies instead of
+        thread replies.  Messages that originate inside an existing thread are
+        always replied to in-thread to preserve conversation context.
         """
+        # When reply_in_thread is disabled (default: True for backward compat),
+        # only thread messages that are already part of an existing thread.
+        if not self.config.extra.get("reply_in_thread", True):
+            existing_thread = (metadata or {}).get("thread_id") or (metadata or {}).get("thread_ts")
+            return existing_thread or None
+
         if metadata:
             if metadata.get("thread_id"):
                 return metadata["thread_id"]
@@ -699,6 +716,20 @@ class SlackAdapter(BasePlatformAdapter):
 
     async def _handle_slack_message(self, event: dict) -> None:
         """Handle an incoming Slack message event."""
+        # Dedup: Slack Socket Mode can redeliver events after reconnects (#4777)
+        event_ts = event.get("ts", "")
+        if event_ts:
+            now = time.time()
+            if event_ts in self._seen_messages:
+                return
+            self._seen_messages[event_ts] = now
+            if len(self._seen_messages) > self._SEEN_MAX:
+                cutoff = now - self._SEEN_TTL
+                self._seen_messages = {
+                    k: v for k, v in self._seen_messages.items()
+                    if v > cutoff
+                }
+
         # Ignore bot messages (including our own)
         if event.get("bot_id") or event.get("subtype") == "bot_message":
             return

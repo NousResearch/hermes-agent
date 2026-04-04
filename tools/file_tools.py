@@ -345,8 +345,6 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
         # ── Perform the read ──────────────────────────────────────────
         file_ops = _get_file_ops(task_id)
         result = file_ops.read_file(path, offset, limit)
-        if result.content:
-            result.content = redact_sensitive_text(result.content)
         result_dict = result.to_dict()
 
         # ── Character-count guard ─────────────────────────────────────
@@ -355,6 +353,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
         # amount of content, reject it and tell the model to narrow down.
         # Note: we check the formatted content (with line-number prefixes),
         # not the raw file size, because that's what actually enters context.
+        # Check BEFORE redaction to avoid expensive regex on huge content.
         content_len = len(result.content or "")
         file_size = result_dict.get("file_size", 0)
         max_chars = _get_max_read_chars()
@@ -371,6 +370,11 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
                 "total_lines": total_lines,
                 "file_size": file_size,
             }, ensure_ascii=False)
+
+        # ── Redact secrets (after guard check to skip oversized content) ──
+        if result.content:
+            result.content = redact_sensitive_text(result.content)
+            result_dict["content"] = result.content
 
         # Large-file hint: if the file is big and the caller didn't ask
         # for a narrow window, nudge toward targeted reads.

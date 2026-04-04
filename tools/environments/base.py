@@ -91,6 +91,19 @@ class BaseEnvironment(ABC):
             kw["stdin"] = subprocess.DEVNULL
         return kw
 
+    def execute_oneshot(self, command: str, cwd: str = "", *,
+                        timeout: int | None = None,
+                        stdin_data: str | None = None) -> dict:
+        """Execute a command bypassing any persistent shell.
+
+        Safe for concurrent use alongside a long-running execute() call.
+        Backends that maintain a persistent shell (SSH, Local) override this
+        to route through their oneshot path, avoiding the shell lock.
+        Non-persistent backends delegate to execute().
+        """
+        return self.execute(command, cwd=cwd, timeout=timeout,
+                            stdin_data=stdin_data)
+
     def _timeout_result(self, timeout: int | None) -> dict:
         """Standard return dict when a command times out."""
         return {

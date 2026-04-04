@@ -1,29 +1,21 @@
-"""Credential file passthrough registry for remote terminal backends.
+"""File passthrough registry for remote terminal backends.
 
-Skills that declare ``required_credential_files`` in their frontmatter need
-those files available inside sandboxed execution environments (Modal, Docker).
-By default remote backends create bare containers with no host files.
+Remote backends (Docker, Modal, SSH) create sandboxes with no host files.
+This module ensures that credential files, skill directories, and host-side
+cache directories (documents, images, audio, screenshots) are mounted or
+synced into those sandboxes so the agent can access them.
 
-This module provides a session-scoped registry so skill-declared credential
-files (and user-configured overrides) are mounted into remote sandboxes.
+**Credentials and skills** — session-scoped registry fed by skill declarations
+(``required_credential_files``) and user config (``terminal.credential_files``).
 
-Two sources feed the registry:
+**Cache directories** — gateway-cached uploads, browser screenshots, TTS
+audio, and processed images.  Mounted read-only so the remote terminal can
+reference files the host side created (e.g. ``unzip`` an uploaded archive).
 
-1. **Skill declarations** — when a skill is loaded via ``skill_view``, its
-   ``required_credential_files`` entries are registered here if the files
-   exist on the host.
-2. **User config** — ``terminal.credential_files`` in config.yaml lets users
-   explicitly list additional files to mount.
-
-Remote backends (``tools/environments/modal.py``, ``docker.py``) call
-:func:`get_credential_file_mounts` at sandbox creation time.
-
-Each registered entry is a dict::
-
-    {
-        "host_path": "/home/user/.hermes/google_token.json",
-        "container_path": "/root/.hermes/google_token.json",
-    }
+Remote backends call :func:`get_credential_file_mounts`,
+:func:`get_skills_directory_mount` / :func:`iter_skills_files`, and
+:func:`get_cache_directory_mounts` / :func:`iter_cache_files` at sandbox
+creation time and before each command (for resync on Modal).
 """
 
 from __future__ import annotations
@@ -201,8 +193,8 @@ def get_credential_file_mounts() -> List[Dict[str, str]]:
 
 def get_skills_directory_mount(
     container_base: str = "/root/.hermes",
-) -> Dict[str, str] | None:
-    """Return mount info for a symlink-safe copy of the skills directory.
+) -> list[Dict[str, str]]:
+    """Return mount info for all skill directories (local + external).
 
     Skills may include ``scripts/``, ``templates/``, and ``references/``
     subdirectories that the agent needs to execute inside remote sandboxes.
@@ -214,18 +206,34 @@ def get_skills_directory_mount(
     symlinks are present (the common case), the original directory is returned
     directly with zero overhead.
 
-    Returns a dict with ``host_path`` and ``container_path`` keys, or None.
+    Returns a list of dicts with ``host_path`` and ``container_path`` keys.
+    The local skills dir mounts at ``<container_base>/skills``, external dirs
+    at ``<container_base>/external_skills/<index>``.
     """
+    mounts = []
     hermes_home = _resolve_hermes_home()
     skills_dir = hermes_home / "skills"
-    if not skills_dir.is_dir():
-        return None
+    if skills_dir.is_dir():
+        host_path = _safe_skills_path(skills_dir)
+        mounts.append({
+            "host_path": host_path,
+            "container_path": f"{container_base.rstrip('/')}/skills",
+        })
 
-    host_path = _safe_skills_path(skills_dir)
-    return {
-        "host_path": host_path,
-        "container_path": f"{container_base.rstrip('/')}/skills",
-    }
+    # Mount external skill dirs
+    try:
+        from agent.skill_utils import get_external_skills_dirs
+        for idx, ext_dir in enumerate(get_external_skills_dirs()):
+            if ext_dir.is_dir():
+                host_path = _safe_skills_path(ext_dir)
+                mounts.append({
+                    "host_path": host_path,
+                    "container_path": f"{container_base.rstrip('/')}/external_skills/{idx}",
+                })
+    except ImportError:
+        pass
+
+    return mounts
 
 
 _safe_skills_tempdir: Path | None = None
@@ -279,24 +287,109 @@ def iter_skills_files(
 ) -> List[Dict[str, str]]:
     """Yield individual (host_path, container_path) entries for skills files.
 
-    Skips symlinks entirely.  Preferred for backends that upload files
-    individually (Daytona, Modal) rather than mounting a directory.
+    Includes both the local skills dir and any external dirs configured via
+    skills.external_dirs.  Skips symlinks entirely.  Preferred for backends
+    that upload files individually (Daytona, Modal) rather than mounting a
+    directory.
     """
+    result: List[Dict[str, str]] = []
+
     hermes_home = _resolve_hermes_home()
     skills_dir = hermes_home / "skills"
-    if not skills_dir.is_dir():
-        return []
+    if skills_dir.is_dir():
+        container_root = f"{container_base.rstrip('/')}/skills"
+        for item in skills_dir.rglob("*"):
+            if item.is_symlink() or not item.is_file():
+                continue
+            rel = item.relative_to(skills_dir)
+            result.append({
+                "host_path": str(item),
+                "container_path": f"{container_root}/{rel}",
+            })
 
-    container_root = f"{container_base.rstrip('/')}/skills"
+    # Include external skill dirs
+    try:
+        from agent.skill_utils import get_external_skills_dirs
+        for idx, ext_dir in enumerate(get_external_skills_dirs()):
+            if not ext_dir.is_dir():
+                continue
+            container_root = f"{container_base.rstrip('/')}/external_skills/{idx}"
+            for item in ext_dir.rglob("*"):
+                if item.is_symlink() or not item.is_file():
+                    continue
+                rel = item.relative_to(ext_dir)
+                result.append({
+                    "host_path": str(item),
+                    "container_path": f"{container_root}/{rel}",
+                })
+    except ImportError:
+        pass
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Cache directory mounts (documents, images, audio, screenshots)
+# ---------------------------------------------------------------------------
+
+# The four cache subdirectories that should be mirrored into remote backends.
+# Each tuple is (new_subpath, old_name) matching hermes_constants.get_hermes_dir().
+_CACHE_DIRS: list[tuple[str, str]] = [
+    ("cache/documents", "document_cache"),
+    ("cache/images", "image_cache"),
+    ("cache/audio", "audio_cache"),
+    ("cache/screenshots", "browser_screenshots"),
+]
+
+
+def get_cache_directory_mounts(
+    container_base: str = "/root/.hermes",
+) -> List[Dict[str, str]]:
+    """Return mount entries for each cache directory that exists on disk.
+
+    Used by Docker to create bind mounts.  Each entry has ``host_path`` and
+    ``container_path`` keys.  The host path is resolved via
+    ``get_hermes_dir()`` for backward compatibility with old directory layouts.
+    """
+    from hermes_constants import get_hermes_dir
+
+    mounts: List[Dict[str, str]] = []
+    for new_subpath, old_name in _CACHE_DIRS:
+        host_dir = get_hermes_dir(new_subpath, old_name)
+        if host_dir.is_dir():
+            # Always map to the *new* container layout regardless of host layout.
+            container_path = f"{container_base.rstrip('/')}/{new_subpath}"
+            mounts.append({
+                "host_path": str(host_dir),
+                "container_path": container_path,
+            })
+    return mounts
+
+
+def iter_cache_files(
+    container_base: str = "/root/.hermes",
+) -> List[Dict[str, str]]:
+    """Return individual (host_path, container_path) entries for cache files.
+
+    Used by Modal to upload files individually and resync before each command.
+    Skips symlinks.  The container paths use the new ``cache/<subdir>`` layout.
+    """
+    from hermes_constants import get_hermes_dir
+
     result: List[Dict[str, str]] = []
-    for item in skills_dir.rglob("*"):
-        if item.is_symlink() or not item.is_file():
+    for new_subpath, old_name in _CACHE_DIRS:
+        host_dir = get_hermes_dir(new_subpath, old_name)
+        if not host_dir.is_dir():
             continue
-        rel = item.relative_to(skills_dir)
-        result.append({
-            "host_path": str(item),
-            "container_path": f"{container_root}/{rel}",
-        })
+        container_root = f"{container_base.rstrip('/')}/{new_subpath}"
+        for item in host_dir.rglob("*"):
+            if item.is_symlink() or not item.is_file():
+                continue
+            rel = item.relative_to(host_dir)
+            result.append({
+                "host_path": str(item),
+                "container_path": f"{container_root}/{rel}",
+            })
     return result
 
 

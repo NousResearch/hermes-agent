@@ -150,6 +150,7 @@ PLATFORMS = {
     "wecom": {"label": "💬 WeCom", "default_toolset": "hermes-wecom"},
     "api_server": {"label": "🌐 API Server", "default_toolset": "hermes-api-server"},
     "mattermost": {"label": "💬 Mattermost", "default_toolset": "hermes-mattermost"},
+    "webhook": {"label": "🔗 Webhook", "default_toolset": "hermes-webhook"},
 }
 
 
@@ -560,7 +561,7 @@ def _get_platform_tools(
     # MCP servers are expected to be available on all platforms by default.
     # If the platform explicitly lists one or more MCP server names, treat that
     # as an allowlist. Otherwise include every globally enabled MCP server.
-    mcp_servers = config.get("mcp_servers", {})
+    mcp_servers = config.get("mcp_servers") or {}
     enabled_mcp_servers = {
         name
         for name, server_cfg in mcp_servers.items()

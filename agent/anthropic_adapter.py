@@ -10,6 +10,7 @@ Auth supports:
   - Claude Code credentials (~/.claude.json or ~/.claude/.credentials.json) → Bearer auth
 """
 
+import copy
 import json
 import logging
 import os
@@ -949,6 +950,69 @@ def _convert_content_part_to_anthropic(part: Any) -> Optional[Dict[str, Any]]:
     return block
 
 
+def _to_plain_data(value: Any, *, _depth: int = 0, _path: Optional[set] = None) -> Any:
+    """Recursively convert SDK objects to plain Python data structures.
+
+    Guards against circular references (``_path`` tracks ``id()`` of objects
+    on the *current* recursion path) and runaway depth (capped at 20 levels).
+    Uses path-based tracking so shared (but non-cyclic) objects referenced by
+    multiple siblings are converted correctly rather than being stringified.
+    """
+    _MAX_DEPTH = 20
+    if _depth > _MAX_DEPTH:
+        return str(value)
+
+    if _path is None:
+        _path = set()
+
+    obj_id = id(value)
+    if obj_id in _path:
+        return str(value)
+
+    if hasattr(value, "model_dump"):
+        _path.add(obj_id)
+        result = _to_plain_data(value.model_dump(), _depth=_depth + 1, _path=_path)
+        _path.discard(obj_id)
+        return result
+    if isinstance(value, dict):
+        _path.add(obj_id)
+        result = {k: _to_plain_data(v, _depth=_depth + 1, _path=_path) for k, v in value.items()}
+        _path.discard(obj_id)
+        return result
+    if isinstance(value, (list, tuple)):
+        _path.add(obj_id)
+        result = [_to_plain_data(v, _depth=_depth + 1, _path=_path) for v in value]
+        _path.discard(obj_id)
+        return result
+    if hasattr(value, "__dict__"):
+        _path.add(obj_id)
+        result = {
+            k: _to_plain_data(v, _depth=_depth + 1, _path=_path)
+            for k, v in vars(value).items()
+            if not k.startswith("_")
+        }
+        _path.discard(obj_id)
+        return result
+    return value
+
+
+def _extract_preserved_thinking_blocks(message: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Return Anthropic thinking blocks previously preserved on the message."""
+    raw_details = message.get("reasoning_details")
+    if not isinstance(raw_details, list):
+        return []
+
+    preserved: List[Dict[str, Any]] = []
+    for detail in raw_details:
+        if not isinstance(detail, dict):
+            continue
+        block_type = str(detail.get("type", "") or "").strip().lower()
+        if block_type not in {"thinking", "redacted_thinking"}:
+            continue
+        preserved.append(copy.deepcopy(detail))
+    return preserved
+
+
 def _convert_content_to_anthropic(content: Any) -> Any:
     """Convert OpenAI-style multimodal content arrays to Anthropic blocks."""
     if not isinstance(content, list):
@@ -995,7 +1059,7 @@ def convert_messages_to_anthropic(
             continue
 
         if role == "assistant":
-            blocks = []
+            blocks = _extract_preserved_thinking_blocks(m)
             if content:
                 if isinstance(content, list):
                     converted_content = _convert_content_to_anthropic(content)
@@ -1279,6 +1343,7 @@ def normalize_anthropic_response(
     """
     text_parts = []
     reasoning_parts = []
+    reasoning_details = []
     tool_calls = []
 
     for block in response.content:
@@ -1286,6 +1351,9 @@ def normalize_anthropic_response(
             text_parts.append(block.text)
         elif block.type == "thinking":
             reasoning_parts.append(block.thinking)
+            block_dict = _to_plain_data(block)
+            if isinstance(block_dict, dict):
+                reasoning_details.append(block_dict)
         elif block.type == "tool_use":
             name = block.name
             if strip_tool_prefix and name.startswith(_MCP_TOOL_PREFIX):
@@ -1316,7 +1384,7 @@ def normalize_anthropic_response(
             tool_calls=tool_calls or None,
             reasoning="\n\n".join(reasoning_parts) if reasoning_parts else None,
             reasoning_content=None,
-            reasoning_details=None,
+            reasoning_details=reasoning_details or None,
         ),
         finish_reason,
     )

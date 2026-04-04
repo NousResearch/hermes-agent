@@ -42,6 +42,7 @@ _EXTRA_ENV_KEYS = frozenset({
     "WHATSAPP_MODE", "WHATSAPP_ENABLED",
     "MATTERMOST_HOME_CHANNEL", "MATTERMOST_REPLY_MODE",
     "MATRIX_PASSWORD", "MATRIX_ENCRYPTION", "MATRIX_HOME_ROOM",
+    "MATRIX_REQUIRE_MENTION", "MATRIX_FREE_RESPONSE_ROOMS", "MATRIX_AUTO_THREAD",
 })
 import yaml
 
@@ -222,6 +223,12 @@ DEFAULT_CONFIG = {
         "env_passthrough": [],
         "docker_image": "nikolaik/python-nodejs:python3.11-nodejs20",
         "docker_forward_env": [],
+        # Explicit environment variables to set inside Docker containers.
+        # Unlike docker_forward_env (which reads values from the host process),
+        # docker_env lets you specify exact key-value pairs — useful when Hermes
+        # runs as a systemd service without access to the user's shell environment.
+        # Example: {"SSH_AUTH_SOCK": "/run/user/1000/ssh-agent.sock"}
+        "docker_env": {},
         "singularity_image": "docker://nikolaik/python-nodejs:python3.11-nodejs20",
         "modal_image": "nikolaik/python-nodejs:python3.11-nodejs20",
         "daytona_image": "nikolaik/python-nodejs:python3.11-nodejs20",
@@ -428,6 +435,11 @@ DEFAULT_CONFIG = {
         "user_profile_enabled": True,
         "memory_char_limit": 2200,   # ~800 tokens at 2.75 chars/token
         "user_char_limit": 1375,     # ~500 tokens at 2.75 chars/token
+        # External memory provider plugin (empty = built-in only).
+        # Set to a provider name to activate: "openviking", "mem0",
+        # "hindsight", "holographic", "retaindb", "byterover".
+        # Only ONE external provider is allowed at a time.
+        "provider": "",
     },
 
     # Subagent delegation — override the provider:model used by delegate_task
@@ -996,6 +1008,30 @@ OPTIONAL_ENV_VARS = {
         "url": None,
         "password": False,
         "category": "messaging",
+    },
+    "MATRIX_REQUIRE_MENTION": {
+        "description": "Require @mention in Matrix rooms (default: true). Set to false to respond to all messages.",
+        "prompt": "Require @mention in rooms (true/false)",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+        "advanced": True,
+    },
+    "MATRIX_FREE_RESPONSE_ROOMS": {
+        "description": "Comma-separated Matrix room IDs where bot responds without @mention",
+        "prompt": "Free-response room IDs (comma-separated)",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+        "advanced": True,
+    },
+    "MATRIX_AUTO_THREAD": {
+        "description": "Auto-create threads for messages in Matrix rooms (default: true)",
+        "prompt": "Auto-create threads in rooms (true/false)",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+        "advanced": True,
     },
     "GATEWAY_ALLOW_ALL_USERS": {
         "description": "Allow all users to interact with messaging bots (true/false). Default: false.",

@@ -32,6 +32,8 @@ def test_stash_local_changes_if_needed_returns_specific_stash_commit(monkeypatch
         calls.append((cmd, kwargs))
         if cmd[-2:] == ["status", "--porcelain"]:
             return SimpleNamespace(stdout=" M hermes_cli/main.py\n?? notes.txt\n", returncode=0)
+        if cmd[-2:] == ["ls-files", "--unmerged"]:
+            return SimpleNamespace(stdout="", returncode=0)
         if cmd[1:4] == ["stash", "push", "--include-untracked"]:
             return SimpleNamespace(stdout="Saved working directory\n", returncode=0)
         if cmd[-3:] == ["rev-parse", "--verify", "refs/stash"]:
@@ -43,8 +45,9 @@ def test_stash_local_changes_if_needed_returns_specific_stash_commit(monkeypatch
     stash_ref = hermes_main._stash_local_changes_if_needed(["git"], tmp_path)
 
     assert stash_ref == "abc123"
-    assert calls[1][0][1:4] == ["stash", "push", "--include-untracked"]
-    assert calls[2][0][-3:] == ["rev-parse", "--verify", "refs/stash"]
+    assert calls[1][0][-2:] == ["ls-files", "--unmerged"]
+    assert calls[2][0][1:4] == ["stash", "push", "--include-untracked"]
+    assert calls[3][0][-3:] == ["rev-parse", "--verify", "refs/stash"]
 
 
 def test_resolve_stash_selector_returns_matching_entry(monkeypatch, tmp_path):
@@ -296,6 +299,8 @@ def test_stash_local_changes_if_needed_raises_when_stash_ref_missing(monkeypatch
     def fake_run(cmd, **kwargs):
         if cmd[-2:] == ["status", "--porcelain"]:
             return SimpleNamespace(stdout=" M hermes_cli/main.py\n", returncode=0)
+        if cmd[-2:] == ["ls-files", "--unmerged"]:
+            return SimpleNamespace(stdout="", returncode=0)
         if cmd[1:4] == ["stash", "push", "--include-untracked"]:
             return SimpleNamespace(stdout="Saved working directory\n", returncode=0)
         if cmd[-3:] == ["rev-parse", "--verify", "refs/stash"]:

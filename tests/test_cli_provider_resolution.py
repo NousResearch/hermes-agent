@@ -4,8 +4,39 @@ import types
 from contextlib import nullcontext
 from types import SimpleNamespace
 
+import pytest
+
 from hermes_cli.auth import AuthError
 from hermes_cli import main as hermes_main
+
+
+# ---------------------------------------------------------------------------
+# Module isolation: _import_cli() wipes tools.* / cli / run_agent from
+# sys.modules so it can re-import cli fresh.  Without cleanup the wiped
+# modules leak into subsequent tests on the same xdist worker, breaking
+# mock patches that target "tools.file_tools._get_file_ops" etc.
+# ---------------------------------------------------------------------------
+
+def _reset_modules(prefixes: tuple[str, ...]):
+    for name in list(sys.modules):
+        if any(name == p or name.startswith(p + ".") for p in prefixes):
+            sys.modules.pop(name, None)
+
+
+@pytest.fixture(autouse=True)
+def _restore_cli_and_tool_modules():
+    """Save and restore tools/cli/run_agent modules around every test."""
+    prefixes = ("tools", "cli", "run_agent")
+    original_modules = {
+        name: module
+        for name, module in sys.modules.items()
+        if any(name == p or name.startswith(p + ".") for p in prefixes)
+    }
+    try:
+        yield
+    finally:
+        _reset_modules(prefixes)
+        sys.modules.update(original_modules)
 
 
 def _install_prompt_toolkit_stubs():

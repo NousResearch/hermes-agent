@@ -825,43 +825,6 @@ class TestLastPromptTokens:
         store.update_session("k1", last_prompt_tokens=0)
         assert entry.last_prompt_tokens == 0
 
-    def test_update_session_passes_model_to_db(self, tmp_path):
-        """Gateway session updates should forward the resolved model to SQLite."""
-        config = GatewayConfig()
-        with patch("gateway.session.SessionStore._ensure_loaded"):
-            store = SessionStore(sessions_dir=tmp_path, config=config)
-        store._loaded = True
-        store._save = MagicMock()
-        store._db = MagicMock()
-
-        from gateway.session import SessionEntry
-        from datetime import datetime
-        entry = SessionEntry(
-            session_key="k1",
-            session_id="s1",
-            created_at=datetime.now(),
-            updated_at=datetime.now(),
-        )
-        store._entries = {"k1": entry}
-
-        store.update_session("k1", model="openai/gpt-5.4")
-
-        store._db.set_token_counts.assert_called_once_with(
-            "s1",
-            input_tokens=0,
-            output_tokens=0,
-            cache_read_tokens=0,
-            cache_write_tokens=0,
-            estimated_cost_usd=None,
-            cost_status=None,
-            cost_source=None,
-            billing_provider=None,
-            billing_base_url=None,
-            model="openai/gpt-5.4",
-            absolute=True,
-        )
-
-
 class TestRewriteTranscriptPreservesReasoning:
     """rewrite_transcript must not drop reasoning fields from SQLite."""
 

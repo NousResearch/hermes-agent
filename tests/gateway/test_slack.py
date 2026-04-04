@@ -408,19 +408,22 @@ class TestIncomingDocumentHandling:
         assert "[Content of" not in (msg_event.text or "")
 
     @pytest.mark.asyncio
-    async def test_unsupported_file_type_skipped(self, adapter):
-        """A .zip file should be silently skipped."""
-        event = self._make_event(files=[{
-            "mimetype": "application/zip",
-            "name": "archive.zip",
-            "url_private_download": "https://files.slack.com/archive.zip",
-            "size": 1024,
-        }])
-        await adapter._handle_slack_message(event)
+    async def test_zip_file_cached(self, adapter):
+        """A .zip file should be cached as a supported document."""
+        with patch.object(adapter, "_download_slack_file_bytes", new_callable=AsyncMock) as dl:
+            dl.return_value = b"PK\x03\x04zip"
+            event = self._make_event(files=[{
+                "mimetype": "application/zip",
+                "name": "archive.zip",
+                "url_private_download": "https://files.slack.com/archive.zip",
+                "size": 1024,
+            }])
+            await adapter._handle_slack_message(event)
 
         msg_event = adapter.handle_message.call_args[0][0]
-        assert msg_event.message_type == MessageType.TEXT
-        assert len(msg_event.media_urls) == 0
+        assert msg_event.message_type == MessageType.DOCUMENT
+        assert len(msg_event.media_urls) == 1
+        assert msg_event.media_types == ["application/zip"]
 
     @pytest.mark.asyncio
     async def test_oversized_document_skipped(self, adapter):

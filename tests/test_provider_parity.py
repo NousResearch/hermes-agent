@@ -73,6 +73,7 @@ class TestBuildApiKwargsOpenRouter:
 
     def test_includes_reasoning_in_extra_body(self, monkeypatch):
         agent = _make_agent(monkeypatch, "openrouter")
+        agent.model = "anthropic/claude-sonnet-4-20250514"
         messages = [{"role": "user", "content": "hi"}]
         kwargs = agent._build_api_kwargs(messages)
         extra = kwargs.get("extra_body", {})
@@ -798,6 +799,7 @@ class TestReasoningEffortDefaults:
 
     def test_openrouter_default_medium(self, monkeypatch):
         agent = _make_agent(monkeypatch, "openrouter")
+        agent.model = "anthropic/claude-sonnet-4-20250514"
         kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
         reasoning = kwargs["extra_body"]["reasoning"]
         assert reasoning["effort"] == "medium"
@@ -825,6 +827,7 @@ class TestReasoningEffortDefaults:
 
     def test_openrouter_reasoning_config_override(self, monkeypatch):
         agent = _make_agent(monkeypatch, "openrouter")
+        agent.model = "anthropic/claude-sonnet-4-20250514"
         agent.reasoning_config = {"enabled": True, "effort": "medium"}
         kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
         assert kwargs["extra_body"]["reasoning"]["effort"] == "medium"

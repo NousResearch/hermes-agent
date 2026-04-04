@@ -255,17 +255,13 @@ def _make_run_env(env: dict) -> dict:
 
     # Inject credential proxy env vars if proxy is running
     try:
-        from cred_proxy.daemon import (
-            is_running as _cred_proxy_running,
-            _read_port as _cred_proxy_read_port,
-        )
+        from cred_proxy.daemon import is_running as _cred_proxy_running, get_socket_path
         if _cred_proxy_running():
-            _tcp_port = _cred_proxy_read_port()
-            if _tcp_port is not None:
-                run_env["http_proxy"] = f"http://127.0.0.1:{_tcp_port}"
-                # Phase 1: HTTPS is tunnelled via blind CONNECT relay — not intercepted.
-                # Credential substitution inside HTTPS traffic requires Phase 2 (MITM CA).
-                run_env["https_proxy"] = f"http://127.0.0.1:{_tcp_port}"
+            _sock = get_socket_path()
+            run_env["http_proxy"] = f"http+unix://{_sock}"
+            # Phase 1: HTTPS is tunnelled via blind CONNECT relay — not intercepted.
+            # Credential substitution inside HTTPS traffic requires Phase 2 (MITM CA).
+            run_env["https_proxy"] = f"http+unix://{_sock}"
     except ImportError:
         pass
 

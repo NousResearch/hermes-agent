@@ -13,7 +13,59 @@ Use dispatch(args) for that path where args.cred_proxy_command is set.
 
 import argparse
 import getpass
+import http.client
+import json
+import socket
 import sys
+
+
+# ---------------------------------------------------------------------------
+# Daemon HTTP client — talks to the management API over Unix socket
+# ---------------------------------------------------------------------------
+
+class _UnixHTTPConnection(http.client.HTTPConnection):
+    """HTTPConnection subclass that connects via a Unix domain socket."""
+
+    def __init__(self, socket_path: str) -> None:
+        # host is required by HTTPConnection but irrelevant for Unix sockets
+        super().__init__("localhost")
+        self._socket_path = socket_path
+
+    def connect(self) -> None:
+        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.sock.settimeout(5)
+        self.sock.connect(self._socket_path)
+
+
+def _mgmt_request(method: str, path: str, body: dict | None = None) -> dict:
+    """Send a request to the daemon's management API and return parsed JSON."""
+    from cred_proxy.daemon import get_socket_path, is_running
+
+    if not is_running():
+        print("Error: credential proxy is not running. Start it with: hermes cred-proxy start")
+        sys.exit(1)
+
+    conn = _UnixHTTPConnection(get_socket_path())
+    headers = {}
+    data = None
+    if body is not None:
+        data = json.dumps(body).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+        headers["Content-Length"] = str(len(data))
+
+    try:
+        conn.request(method, path, body=data, headers=headers)
+        resp = conn.getresponse()
+        result = json.loads(resp.read())
+        if resp.status >= 400:
+            print(f"Error: {result.get('error', f'HTTP {resp.status}')}")
+            sys.exit(1)
+        return result
+    except (ConnectionRefusedError, FileNotFoundError, OSError) as exc:
+        print(f"Error: cannot connect to credential proxy: {exc}")
+        sys.exit(1)
+    finally:
+        conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -37,7 +89,7 @@ def cmd_status(args=None) -> None:
         print(f"running (PID {info['pid']})")
     else:
         print("stopped")
-    print(f"address: {info['address']}")
+    print(f"socket: {info['socket_path']}")
 
 
 def cmd_add(args) -> None:
@@ -50,16 +102,14 @@ def cmd_add(args) -> None:
     if not value:
         print("Error: empty value not allowed.")
         sys.exit(1)
-    from cred_proxy.store import CredStore
-    store = CredStore()
-    store.set(name, value)
-    print(f"Stored credential {name!r}.")
+    result = _mgmt_request("POST", "/_cred/add", {"name": name, "value": value})
+    if result.get("stored"):
+        print(f"Stored credential {name!r}.")
 
 
 def cmd_list(args=None) -> None:
-    from cred_proxy.store import CredStore
-    store = CredStore()
-    names = store.list()
+    result = _mgmt_request("GET", "/_cred/list")
+    names = result.get("names", [])
     if not names:
         print("(no credentials stored)")
     else:

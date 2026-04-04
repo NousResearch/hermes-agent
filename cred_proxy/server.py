@@ -300,6 +300,67 @@ async def _handle_http(
             pass
 
 
+async def _handle_management(
+    writer: asyncio.StreamWriter,
+    method: str,
+    path: str,
+    body: bytes,
+    store: CredStore,
+) -> None:
+    """Handle management API requests on the ``/_cred/`` path prefix.
+
+    Endpoints:
+      POST /_cred/add    {"name": "...", "value": "..."}  → store a credential
+      GET  /_cred/list                                    → list credential names
+      POST /_cred/delete  {"name": "..."}                 → delete a credential
+    """
+    import json
+
+    def _respond(status: str, body_dict: dict) -> bytes:
+        payload = json.dumps(body_dict).encode("utf-8")
+        return (
+            f"HTTP/1.1 {status}\r\n"
+            f"Content-Type: application/json\r\n"
+            f"Content-Length: {len(payload)}\r\n"
+            f"\r\n"
+        ).encode("latin-1") + payload
+
+    if path == "/_cred/add" and method == "POST":
+        try:
+            data = json.loads(body)
+            name, value = data["name"], data["value"]
+        except (json.JSONDecodeError, KeyError):
+            writer.write(_respond("400 Bad Request", {"error": "need name and value"}))
+            await writer.drain()
+            return
+        store.set(name, value)
+        writer.write(_respond("200 OK", {"stored": True, "name": name}))
+        await writer.drain()
+
+    elif path == "/_cred/list" and method == "GET":
+        writer.write(_respond("200 OK", {"names": store.list()}))
+        await writer.drain()
+
+    elif path == "/_cred/delete" and method == "POST":
+        try:
+            data = json.loads(body)
+            name = data["name"]
+        except (json.JSONDecodeError, KeyError):
+            writer.write(_respond("400 Bad Request", {"error": "need name"}))
+            await writer.drain()
+            return
+        try:
+            store.delete(name)
+            writer.write(_respond("200 OK", {"deleted": True, "name": name}))
+        except KeyError:
+            writer.write(_respond("404 Not Found", {"error": f"{name!r} not found"}))
+        await writer.drain()
+
+    else:
+        writer.write(_respond("404 Not Found", {"error": "unknown management endpoint"}))
+        await writer.drain()
+
+
 async def _handle_client(
     reader: asyncio.StreamReader,
     writer: asyncio.StreamWriter,
@@ -320,7 +381,11 @@ async def _handle_client(
             await writer.drain()
             return
 
-        if method.upper() == "CONNECT":
+        # Management API — relative paths starting with /_cred/
+        # (proxy requests always have absolute URLs like http://host/...)
+        if url.startswith("/_cred/"):
+            await _handle_management(writer, method, url, body, store)
+        elif method.upper() == "CONNECT":
             host, _, port_str = url.rpartition(":")
             try:
                 port = int(port_str)
@@ -346,30 +411,37 @@ async def _handle_client(
 # ---------------------------------------------------------------------------
 
 async def run_proxy(
-    port: int = 0,
-    unix_socket=None,    # API-compatible; Phase 1 uses TCP only
+    unix_socket: str | None = None,
     on_started=None,
     store: CredStore | None = None,
 ) -> None:
-    """Start the asyncio HTTP proxy on ``127.0.0.1:<port>`` and block until shutdown.
+    """Start the asyncio HTTP proxy on a Unix domain socket and block until shutdown.
 
-    Pass ``port=0`` (the default) to let the OS pick a free port — the actual
-    port is passed to ``on_started(port)`` once the server is bound.
-
-    ``unix_socket`` is accepted for API compatibility but ignored — Phase 1
-    binds a TCP port only.
+    Pass a *unix_socket* path (e.g. ``~/.hermes/state/cred-proxy.sock``).
+    The callback ``on_started(socket_path)`` fires once the server is bound.
     """
     if store is None:
         store = CredStore()
 
-    server = await asyncio.start_server(
+    if unix_socket is None:
+        raise ValueError("unix_socket path is required")
+
+    import os
+    # Remove stale socket file if present (e.g. after unclean shutdown)
+    try:
+        os.unlink(unix_socket)
+    except FileNotFoundError:
+        pass
+
+    server = await asyncio.start_unix_server(
         lambda r, w: _handle_client(r, w, store),
-        host="127.0.0.1",
-        port=port,
+        path=unix_socket,
     )
 
+    # Restrict socket permissions — only the owning user can connect
+    os.chmod(unix_socket, 0o600)
+
     async with server:
-        actual_port = server.sockets[0].getsockname()[1]
         if on_started is not None:
-            on_started(actual_port)
+            on_started(unix_socket)
         await server.serve_forever()

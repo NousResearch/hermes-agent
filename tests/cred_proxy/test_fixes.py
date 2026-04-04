@@ -8,18 +8,18 @@ import pytest
 
 
 # ---------------------------------------------------------------------------
-# Fix 6: is_running() returns False and cleans up stale PID file
+# Fix: is_running() returns False and cleans up stale PID file
 # ---------------------------------------------------------------------------
 
-def test_is_running_cleans_up_stale_pid_and_port_files(tmp_path, monkeypatch):
-    """is_running() returns False and removes stale PID + port files."""
+def test_is_running_cleans_up_stale_pid_and_socket(tmp_path, monkeypatch):
+    """is_running() returns False and removes stale PID + socket files."""
     import cred_proxy.daemon as daemon_module
 
     pid_file = tmp_path / "cred-proxy.pid"
-    port_file = tmp_path / "cred-proxy.port"
+    sock_file = tmp_path / "cred-proxy.sock"
 
     monkeypatch.setattr(daemon_module, "_PID_FILE", pid_file)
-    monkeypatch.setattr(daemon_module, "_PORT_FILE", port_file)
+    monkeypatch.setattr(daemon_module, "_SOCKET_PATH", sock_file)
 
     # Find a PID that definitely does not exist on this system
     dead_pid = 999999
@@ -30,11 +30,11 @@ def test_is_running_cleans_up_stale_pid_and_port_files(tmp_path, monkeypatch):
         pass
 
     pid_file.write_text(str(dead_pid))
-    port_file.write_text("12345")
+    sock_file.write_text("")  # fake socket file
 
     assert daemon_module.is_running() is False
     assert not pid_file.exists(), "Stale PID file was not removed"
-    assert not port_file.exists(), "Stale port file was not removed"
+    assert not sock_file.exists(), "Stale socket file was not removed"
 
 
 # ---------------------------------------------------------------------------
@@ -42,66 +42,65 @@ def test_is_running_cleans_up_stale_pid_and_port_files(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_stop_preserves_files_on_permission_error(tmp_path, monkeypatch):
-    """stop() leaves PID/port files intact when os.kill raises PermissionError."""
+    """stop() leaves PID/socket files intact when os.kill raises PermissionError."""
     import cred_proxy.daemon as daemon_module
 
     pid_file = tmp_path / "cred-proxy.pid"
-    port_file = tmp_path / "cred-proxy.port"
+    sock_file = tmp_path / "cred-proxy.sock"
 
     monkeypatch.setattr(daemon_module, "_PID_FILE", pid_file)
-    monkeypatch.setattr(daemon_module, "_PORT_FILE", port_file)
+    monkeypatch.setattr(daemon_module, "_SOCKET_PATH", sock_file)
     monkeypatch.setattr(daemon_module, "_STATE_DIR", tmp_path)
 
     pid_file.write_text("12345")
-    port_file.write_text("8080")
+    sock_file.write_text("")
 
     with patch("os.kill", side_effect=PermissionError("Operation not permitted")):
         daemon_module.stop()
 
     assert pid_file.exists(), "PID file should be preserved on PermissionError"
-    assert port_file.exists(), "Port file should be preserved on PermissionError"
 
 
 def test_stop_cleans_files_on_success(tmp_path, monkeypatch):
-    """stop() removes PID/port files after a successful SIGTERM."""
+    """stop() removes PID/socket files after a successful SIGTERM."""
     import cred_proxy.daemon as daemon_module
 
     pid_file = tmp_path / "cred-proxy.pid"
-    port_file = tmp_path / "cred-proxy.port"
+    sock_file = tmp_path / "cred-proxy.sock"
 
     monkeypatch.setattr(daemon_module, "_PID_FILE", pid_file)
-    monkeypatch.setattr(daemon_module, "_PORT_FILE", port_file)
+    monkeypatch.setattr(daemon_module, "_SOCKET_PATH", sock_file)
     monkeypatch.setattr(daemon_module, "_STATE_DIR", tmp_path)
 
     pid_file.write_text("12345")
-    port_file.write_text("8080")
+    sock_file.write_text("")
 
     with patch("os.kill"):
         daemon_module.stop()
 
     assert not pid_file.exists(), "PID file should be removed after successful stop"
-    assert not port_file.exists(), "Port file should be removed after successful stop"
 
 
 # ---------------------------------------------------------------------------
-# Fix: run_proxy port=0 passes actual port to on_started callback
+# Fix: run_proxy binds socket and calls on_started
 # ---------------------------------------------------------------------------
 
-def test_run_proxy_port_zero_reports_actual_port():
-    """run_proxy(port=0) passes a real port number to the on_started callback."""
+def test_run_proxy_unix_socket_calls_on_started(tmp_path):
+    """run_proxy(unix_socket=...) calls on_started with the socket path."""
     from cred_proxy.server import run_proxy
     from cred_proxy.store import CredStore
 
-    reported_port = None
+    sock_path = str(tmp_path / "test.sock")
+    reported_path = None
 
-    def on_started(port: int) -> None:
-        nonlocal reported_port
-        reported_port = port
+    def on_started(path: str) -> None:
+        nonlocal reported_path
+        reported_path = path
 
     async def _run():
         store = CredStore()
         server_task = asyncio.create_task(
-            run_proxy(port=0, on_started=on_started, store=store)
+            run_proxy(unix_socket=sock_path, on_started=on_started, store=store)
         )
         # Give the server a moment to bind
         await asyncio.sleep(0.1)
@@ -113,6 +112,5 @@ def test_run_proxy_port_zero_reports_actual_port():
 
     asyncio.run(_run())
 
-    assert reported_port is not None, "on_started was never called"
-    assert isinstance(reported_port, int)
-    assert reported_port > 0, f"Expected a real port, got {reported_port}"
+    assert reported_path == sock_path
+    assert os.path.exists(sock_path)

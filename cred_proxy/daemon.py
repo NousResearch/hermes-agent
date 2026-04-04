@@ -2,7 +2,7 @@
 
 start()     — spawn the proxy as a detached background process, wait for ready
 stop()      — SIGTERM the daemon, clean up state files
-status()    — return {running, pid, address, port}
+status()    — return {running, pid, socket_path}
 is_running()— quick bool check used by other components
 """
 
@@ -16,7 +16,7 @@ from hermes_constants import get_hermes_home
 
 _STATE_DIR = get_hermes_home() / "state"
 _PID_FILE = _STATE_DIR / "cred-proxy.pid"
-_PORT_FILE = _STATE_DIR / "cred-proxy.port"
+_SOCKET_PATH = _STATE_DIR / "cred-proxy.sock"
 _LOG_FILE = _STATE_DIR / "cred-proxy.log"
 
 
@@ -44,26 +44,12 @@ def _remove_pid() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Port file helpers
+# Socket path helper
 # ---------------------------------------------------------------------------
 
-def _write_port(port: int) -> None:
-    _STATE_DIR.mkdir(parents=True, exist_ok=True)
-    _PORT_FILE.write_text(str(port))
-
-
-def _read_port() -> int | None:
-    try:
-        return int(_PORT_FILE.read_text().strip())
-    except (FileNotFoundError, ValueError, OSError):
-        return None
-
-
-def _remove_port() -> None:
-    try:
-        _PORT_FILE.unlink()
-    except FileNotFoundError:
-        pass
+def get_socket_path() -> str:
+    """Return the Unix socket path for the credential proxy."""
+    return str(_SOCKET_PATH)
 
 
 # ---------------------------------------------------------------------------
@@ -72,7 +58,10 @@ def _remove_port() -> None:
 
 def _cleanup_state_files() -> None:
     _remove_pid()
-    _remove_port()
+    try:
+        _SOCKET_PATH.unlink()
+    except FileNotFoundError:
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -82,14 +71,13 @@ def _cleanup_state_files() -> None:
 def is_running() -> bool:
     """Return True if the credential proxy daemon is running.
 
-    Checks that both PID file and port file exist and that the process is
-    alive.  Removes stale files if the process is dead.
+    Checks that PID file exists, the process is alive, and the socket file
+    exists.  Removes stale files if the process is dead.
     """
     pid = _read_pid()
     if pid is None:
         return False
-    port = _read_port()
-    if port is None:
+    if not _SOCKET_PATH.exists():
         return False
     try:
         os.kill(pid, 0)
@@ -103,19 +91,17 @@ def is_running() -> bool:
 
 
 def status() -> dict:
-    """Return {running: bool, pid: int|None, address: str, port: int|None}."""
+    """Return {running: bool, pid: int|None, socket_path: str}."""
     running = is_running()
-    port = _read_port() if running else None
     return {
         "running": running,
         "pid": _read_pid() if running else None,
-        "address": f"127.0.0.1:{port}" if port else "127.0.0.1:?",
-        "port": port,
+        "socket_path": str(_SOCKET_PATH),
     }
 
 
 def stop() -> None:
-    """Send SIGTERM to the daemon and remove the PID and port files."""
+    """Send SIGTERM to the daemon and remove state files."""
     pid = _read_pid()
     if pid is None:
         print("Credential proxy is not running.")
@@ -136,7 +122,7 @@ def start() -> None:
 
     Spawns ``python -m cred_proxy`` with start_new_session=True so it
     survives the calling process exiting.  Waits up to 3 s for the daemon
-    to write its PID and port files before returning.
+    to write its PID file and create the socket before returning.
     """
     if is_running():
         print("Credential proxy is already running.")
@@ -158,7 +144,7 @@ def start() -> None:
         print(f"Failed to start credential proxy: {exc}")
         return
 
-    # Wait up to 3 s for the daemon to write its PID and port files
+    # Wait up to 3 s for the daemon to write its PID file and bind the socket
     for _ in range(30):
         time.sleep(0.1)
         if is_running():
@@ -177,11 +163,13 @@ def start() -> None:
 def _run_server() -> None:
     """Configure logging and run the asyncio HTTP proxy (blocks forever).
 
-    Passes port=0 so the OS picks a free port atomically.  The on_started
-    callback writes PID and port files once the server is bound, so callers
-    polling is_running() only see the daemon as ready once it is live.
+    Binds a Unix domain socket at ``_SOCKET_PATH``.  The on_started callback
+    writes the PID file once the server is bound, so callers polling
+    is_running() only see the daemon as ready once it is live.
     """
     from .server import run_proxy
+
+    _STATE_DIR.mkdir(parents=True, exist_ok=True)
 
     logging.basicConfig(
         filename=str(_LOG_FILE),
@@ -198,12 +186,11 @@ def _run_server() -> None:
     except (OSError, ValueError):
         pass  # Windows or restricted environment
 
-    def _on_started(port: int) -> None:
+    def _on_started(socket_path: str) -> None:
         """Called once the proxy server is bound and listening."""
         _write_pid()
-        _write_port(port)
 
     try:
-        asyncio.run(run_proxy(port=0, on_started=_on_started))
+        asyncio.run(run_proxy(unix_socket=str(_SOCKET_PATH), on_started=_on_started))
     finally:
         _cleanup_state_files()

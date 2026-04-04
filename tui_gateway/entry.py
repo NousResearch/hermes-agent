@@ -1,12 +1,18 @@
 import json
+import signal
 import sys
 
 from tui_gateway.server import handle_request, resolve_skin
 
+signal.signal(signal.SIGPIPE, signal.SIG_DFL)
+
 
 def _write(obj: dict):
-    sys.stdout.write(json.dumps(obj) + "\n")
-    sys.stdout.flush()
+    try:
+        sys.stdout.write(json.dumps(obj) + "\n")
+        sys.stdout.flush()
+    except BrokenPipeError:
+        sys.exit(0)
 
 
 def main():

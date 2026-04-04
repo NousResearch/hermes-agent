@@ -56,6 +56,8 @@ _HERMES_CORE_TOOLS = [
     "clarify",
     # Code execution + delegation
     "execute_code", "delegate_task",
+    # A2A remote agent discovery, calling, and local scan
+    "a2a_discover", "a2a_call", "a2a_local_scan",
     # Cronjob management
     "cronjob",
     # Cross-platform messaging (gated on gateway running via check_fn)
@@ -131,6 +133,12 @@ TOOLSETS = {
     "messaging": {
         "description": "Cross-platform messaging: send messages to Telegram, Discord, Slack, SMS, etc.",
         "tools": ["send_message"],
+        "includes": []
+    },
+
+    "a2a": {
+        "description": "Agent-to-Agent (A2A) protocol tools: discover remote agents, call them with tasks, and scan localhost for running agents",
+        "tools": ["a2a_discover", "a2a_call", "a2a_local_scan"],
         "includes": []
     },
     

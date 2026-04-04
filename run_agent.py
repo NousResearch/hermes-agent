@@ -4143,6 +4143,8 @@ class AIAgent:
                         # box is already closed (tool boundary flush).
                         if self.stream_delta_callback:
                             try:
+                                self.stream_delta_callback(delta.content, suppressed=True)
+                            except TypeError:
                                 self.stream_delta_callback(delta.content)
                             except Exception:
                                 pass

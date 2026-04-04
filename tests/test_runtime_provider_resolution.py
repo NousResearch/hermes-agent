@@ -859,7 +859,9 @@ def test_opencode_zen_claude_defaults_to_messages(monkeypatch):
 
     assert resolved["provider"] == "opencode-zen"
     assert resolved["api_mode"] == "anthropic_messages"
-    assert resolved["base_url"] == "https://opencode.ai/zen/v1"
+    # Trailing /v1 stripped for anthropic_messages mode — the Anthropic SDK
+    # appends its own /v1/messages to the base_url.
+    assert resolved["base_url"] == "https://opencode.ai/zen"
 
 
 def test_opencode_go_minimax_defaults_to_messages(monkeypatch):
@@ -872,7 +874,8 @@ def test_opencode_go_minimax_defaults_to_messages(monkeypatch):
 
     assert resolved["provider"] == "opencode-go"
     assert resolved["api_mode"] == "anthropic_messages"
-    assert resolved["base_url"] == "https://opencode.ai/zen/go/v1"
+    # Trailing /v1 stripped — Anthropic SDK appends /v1/messages itself.
+    assert resolved["base_url"] == "https://opencode.ai/zen/go"
 
 
 def test_opencode_go_glm_defaults_to_chat_completions(monkeypatch):

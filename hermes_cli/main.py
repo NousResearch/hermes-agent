@@ -4033,7 +4033,7 @@ For more help on a command:
     chat_parser.add_argument(
         "-s", "--skills",
         action="append",
-        default=None,
+        default=argparse.SUPPRESS,
         help="Preload one or more skills for the session (repeat flag or comma-separate)"
     )
     chat_parser.add_argument(
@@ -4055,6 +4055,7 @@ For more help on a command:
     chat_parser.add_argument(
         "--resume", "-r",
         metavar="SESSION_ID",
+        default=argparse.SUPPRESS,
         help="Resume a previous session by ID (shown on exit)"
     )
     chat_parser.add_argument(
@@ -4062,14 +4063,14 @@ For more help on a command:
         dest="continue_last",
         nargs="?",
         const=True,
-        default=None,
+        default=argparse.SUPPRESS,
         metavar="SESSION_NAME",
         help="Resume a session by name, or the most recent if no name given"
     )
     chat_parser.add_argument(
         "--worktree", "-w",
         action="store_true",
-        default=False,
+        default=argparse.SUPPRESS,
         help="Run in an isolated git worktree (for parallel agents on the same repo)"
     )
     chat_parser.add_argument(
@@ -4088,13 +4089,13 @@ For more help on a command:
     chat_parser.add_argument(
         "--yolo",
         action="store_true",
-        default=False,
+        default=argparse.SUPPRESS,
         help="Bypass all dangerous command approval prompts (use at your own risk)"
     )
     chat_parser.add_argument(
         "--pass-session-id",
         action="store_true",
-        default=False,
+        default=argparse.SUPPRESS,
         help="Include the session ID in the agent's system prompt"
     )
     chat_parser.add_argument(

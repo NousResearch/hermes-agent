@@ -307,12 +307,6 @@ def load_cli_config() -> Dict[str, Any]:
             "provider": "",    # Subagent provider override (empty = inherit parent provider)
             "base_url": "",    # Direct OpenAI-compatible endpoint for subagents
             "api_key": "",     # API key for delegation.base_url (falls back to OPENAI_API_KEY)
-            # Semantic aliases for multi-agent workflows:
-            # supervisor_model: the orchestrating agent's model (maps to model.default)
-            # execution_model:  default model for all subagents (maps to delegation.model)
-            # Both accept provider/model strings: "anthropic/claude-opus-4-6"
-            "supervisor_model": "",
-            "execution_model": "",
         },
     }
     
@@ -393,19 +387,6 @@ def load_cli_config() -> Dict[str, Any]:
     # Expand ${ENV_VAR} references in config values before bridging to env vars.
     from hermes_cli.config import _expand_env_vars
     defaults = _expand_env_vars(defaults)
-
-    # Resolve semantic model aliases:
-    #   delegation.supervisor_model → model.default  (main agent model)
-    #   delegation.execution_model  → delegation.model (default subagent model)
-    # These are convenience keys for multi-agent setups; explicit model.default
-    # or delegation.model always takes precedence if both are set.
-    _delegation_cfg = defaults.get("delegation", {})
-    _supervisor = str(_delegation_cfg.get("supervisor_model") or "").strip()
-    _execution = str(_delegation_cfg.get("execution_model") or "").strip()
-    if _supervisor and not defaults["model"].get("default"):
-        defaults["model"]["default"] = _supervisor
-    if _execution and not _delegation_cfg.get("model"):
-        defaults["delegation"]["model"] = _execution
 
     # Apply terminal config to environment variables (so terminal_tool picks them up)
     terminal_config = defaults.get("terminal", {})
@@ -1631,10 +1612,6 @@ class HermesCLI:
         # busy_input_mode: "interrupt" (Enter interrupts current run) or "queue" (Enter queues for next turn)
         _bim = CLI_CONFIG["display"].get("busy_input_mode", "interrupt")
         self.busy_input_mode = "queue" if str(_bim).strip().lower() == "queue" else "interrupt"
-        # Subagent control panel state
-        self._subagent_panel: dict = {}          # task_index -> SubagentRecord
-        self._subagent_panel_open: bool = False
-        self._subagent_panel_cursor: int = 0
         # Dispatch mode for each queue:
         #   "one_by_one"  — each queued message triggers its own agent turn (default)
         #   "all_at_once" — after a turn, all queued messages are joined and sent as one turn
@@ -2908,19 +2885,6 @@ class HermesCLI:
             # Route agent status output through prompt_toolkit so ANSI escape
             # sequences aren't garbled by patch_stdout's StdoutProxy (#2262).
             self.agent._print_fn = _cprint
-            # Attach subagent panel registry so delegate_tool can update it
-            if hasattr(self, '_subagent_panel'):
-                def _invalidate_panel():
-                    try:
-                        from prompt_toolkit.application import get_app as _gapp
-                        _gapp().invalidate()
-                    except Exception:
-                        pass
-                self.agent._cli_subagent_registry = (
-                    self._subagent_panel,
-                    threading.Lock(),
-                    _invalidate_panel,
-                )
             self._active_agent_route_signature = (
                 effective_model,
                 runtime.get("provider"),
@@ -3862,18 +3826,12 @@ class HermesCLI:
         print()
     
     def _list_recent_sessions(self, limit: int = 10) -> list[dict[str, Any]]:
-        """Return recent sessions for in-chat browsing/resume affordances.
-
-        With display.resume_include_gateway: true, gateway sessions
-        (Telegram, Discord, etc.) are included alongside CLI sessions.
-        Tool-spawned sessions are always excluded.
-        """
+        """Return recent CLI sessions for in-chat browsing/resume affordances."""
         if not self._session_db:
             return []
-        include_gateway = CLI_CONFIG.get("display", {}).get("resume_include_gateway", False)
         try:
             sessions = self._session_db.list_sessions_rich(
-                source=None if include_gateway else "cli",
+                source="cli",
                 exclude_sources=["tool"],
                 limit=limit,
             )
@@ -8329,38 +8287,6 @@ class HermesCLI:
         # or answer prompt when clarify freetext mode is active.
         cli_ref = self
 
-        @kb.add('c-x')
-        def handle_ctrl_x(event):
-            """Ctrl+X: toggle subagent control panel."""
-            cli_ref._subagent_panel_open = not cli_ref._subagent_panel_open
-            cli_ref._subagent_panel_cursor = 0
-            event.app.invalidate()
-
-        @kb.add('up', filter=Condition(lambda: cli_ref._subagent_panel_open and bool(cli_ref._subagent_panel)), eager=True)
-        def panel_up(event):
-            cli_ref._subagent_panel_cursor = max(0, cli_ref._subagent_panel_cursor - 1)
-            event.app.invalidate()
-
-        @kb.add('down', filter=Condition(lambda: cli_ref._subagent_panel_open and bool(cli_ref._subagent_panel)), eager=True)
-        def panel_down(event):
-            n = len(cli_ref._subagent_panel)
-            cli_ref._subagent_panel_cursor = min(n - 1, cli_ref._subagent_panel_cursor + 1)
-            event.app.invalidate()
-
-        @kb.add('k', filter=Condition(lambda: cli_ref._subagent_panel_open and bool(cli_ref._subagent_panel)))
-        def panel_kill(event):
-            """K: interrupt the selected subagent."""
-            records = sorted(cli_ref._subagent_panel.values(), key=lambda r: r.index)
-            if records:
-                target = records[cli_ref._subagent_panel_cursor % len(records)]
-                if target.child_ref:
-                    try:
-                        target.child_ref.interrupt()
-                    except Exception:
-                        pass
-                    target.status = "interrupted"
-            event.app.invalidate()
-
         def get_prompt():
             return cli_ref._get_tui_prompt_fragments()
 
@@ -8848,50 +8774,25 @@ class HermesCLI:
         # the corresponding interactive prompt is active.
         completions_menu = CompletionsMenu(max_height=12, scroll_offset=1)
 
-        _layout_children = self._build_tui_layout_children(
-            sudo_widget=sudo_widget,
-            secret_widget=secret_widget,
-            approval_widget=approval_widget,
-            clarify_widget=clarify_widget,
-            spinner_widget=spinner_widget,
-            spacer=spacer,
-            status_bar=status_bar,
-            input_rule_top=input_rule_top,
-            image_bar=image_bar,
-            input_area=input_area,
-            input_rule_bot=input_rule_bot,
-            voice_status_bar=voice_status_bar,
-            completions_menu=completions_menu,
+        layout = Layout(
+            HSplit(
+                self._build_tui_layout_children(
+                    sudo_widget=sudo_widget,
+                    secret_widget=secret_widget,
+                    approval_widget=approval_widget,
+                    clarify_widget=clarify_widget,
+                    spinner_widget=spinner_widget,
+                    spacer=spacer,
+                    status_bar=status_bar,
+                    input_rule_top=input_rule_top,
+                    image_bar=image_bar,
+                    input_area=input_area,
+                    input_rule_bot=input_rule_bot,
+                    voice_status_bar=voice_status_bar,
+                    completions_menu=completions_menu,
+                )
+            )
         )
-        # Inject the subagent panel widget just before the status bar.
-        # Done here (not via _get_extra_tui_widgets) so the extension hook
-        # stays clean for subclass use.
-        try:
-            from hermes_cli.subagent_panel import render_panel as _render_panel
-            from prompt_toolkit.application import get_app as _get_app
-            _cli_ref = self
-            _panel_filter = Condition(
-                lambda: _cli_ref._subagent_panel_open and bool(_cli_ref._subagent_panel)
-            )
-            _panel_widget = ConditionalContainer(
-                content=Window(
-                    content=FormattedTextControl(
-                        lambda: _render_panel(
-                            sorted(_cli_ref._subagent_panel.values(), key=lambda r: r.index),
-                            _cli_ref._subagent_panel_cursor,
-                            _get_app().output.get_size().columns,
-                        )
-                    ),
-                    dont_extend_height=True,
-                ),
-                filter=_panel_filter,
-            )
-            status_idx = _layout_children.index(status_bar)
-            _layout_children.insert(status_idx, _panel_widget)
-        except Exception:
-            pass
-
-        layout = Layout(HSplit(_layout_children))
         
         # Style for the application
         self._tui_style_base = {
@@ -8942,14 +8843,6 @@ class HermesCLI:
             'voice-processing': '#FFA500 italic',
             'voice-status': 'bg:#1a1a2e #87CEEB',
             'voice-status-recording': 'bg:#1a1a2e #FF4444 bold',
-            # Subagent control panel
-            'subagent-border':   '#CD7F32',
-            'subagent-running':  'ansiyellow',
-            'subagent-done':     'ansigreen',
-            'subagent-error':    'ansired',
-            'subagent-warn':     'ansiyellow',
-            'subagent-sub':      '#888888',
-            'subagent-selected': 'reverse',
         }
         style = PTStyle.from_dict(self._build_tui_style_dict())
         
@@ -9122,9 +9015,6 @@ class HermesCLI:
                             ChatConsole().print(
                                 f"[bold {_accent_hex()}]\u25cf[/] [bold]{_escape(f'[Pasted text: {total_lines} lines]')}[/]"
                             )
-                        _hint = " Ctrl+P to peek"
-                        _dashes = max(0, 40 - 1 - len(_hint))
-                        ChatConsole().print(f"[{_accent_hex()}]╰{'─' * _dashes}{_hint}[/]")
                         user_input = expanded
                     else:
                         _user_bar = f"[{_accent_hex()}]{'─' * 40}[/]"
@@ -9162,45 +9052,41 @@ class HermesCLI:
                         self._spinner_text = ""
                         self._tool_start_time = 0.0
 
-                        # Post-turn queue dispatch.
-                        # Steering always takes priority — follow-up only runs when steering is empty.
-                        def _dispatch_queue(_queue, _cancelled, _mode, _icon, _tag_key):
-                            """Drain one turn's worth from a queue. Returns True if anything dispatched."""
-                            _active = [it for it in _queue if it["id"] not in _cancelled]
-                            if not _active:
+                        # all_at_once dispatch: drain queues and combine into one message
+                        for _qname, _queue, _tag_key, _mode, _icon in [
+                            ("steering",  self._steering_queue,  "_steering_tag",  self.steering_dispatch,  "🎯"),
+                            ("followup",  self._followup_queue,  "_followup_tag",  self.followup_dispatch,  "📬"),
+                        ]:
+                            if _mode == "all_at_once" and _queue:
+                                # Filter out cancelled items, then drain the whole queue
+                                _items = [
+                                    it for it in _queue
+                                    if it["id"] not in (
+                                        self._cancelled_steerings if _qname == "steering"
+                                        else self._cancelled_followups
+                                    )
+                                ]
                                 _queue.clear()
-                                _cancelled.clear()
-                                return False
-                            if _mode == "all_at_once":
-                                _queue.clear()
-                                _cancelled.clear()
-                                _texts = [it["text"] for it in _active]
-                                _imgs = [img for it in _active
-                                         if isinstance(it["payload"], tuple)
-                                         for img in it["payload"][1]]
-                                _combined = ("\n---\n".join(_texts), _imgs) if _imgs else "\n---\n".join(_texts)
-                                _cprint(f"  {_DIM}{_icon} Dispatching {len(_active)} queued"
-                                        f" message{'s' if len(_active) != 1 else ''} as one turn{_RST}")
-                                self._pending_input.put(_combined)
-                            else:
-                                # one_by_one: pop first, leave the rest for subsequent turns
-                                first = _active[0]
-                                _queue.clear()
-                                _cancelled.discard(first["id"])
-                                for remaining in _active[1:]:
-                                    _queue.append(remaining)
-                                self._pending_input.put({_tag_key: first["id"], "payload": first["payload"]})
-                                if len(_active) > 1:
-                                    _cprint(f"  {_DIM}{_icon} Dispatched 1, {len(_active)-1} still queued{_RST}")
-                            return True
-
-                        _steered = _dispatch_queue(
-                            self._steering_queue, self._cancelled_steerings,
-                            self.steering_dispatch, "🎯", "_steering_tag")
-                        if not _steered:
-                            _dispatch_queue(
-                                self._followup_queue, self._cancelled_followups,
-                                self.followup_dispatch, "📬", "_followup_tag")
+                                if _qname == "steering":
+                                    self._cancelled_steerings.clear()
+                                else:
+                                    self._cancelled_followups.clear()
+                                if _items:
+                                    # Join text with separator; images from last item only
+                                    _texts = [it["text"] for it in _items]
+                                    _combined_text = "\n---\n".join(_texts)
+                                    # Carry images from all items
+                                    _all_images = []
+                                    for it in _items:
+                                        p = it["payload"]
+                                        if isinstance(p, tuple):
+                                            _all_images.extend(p[1])
+                                    _combined = (_combined_text, _all_images) if _all_images else _combined_text
+                                    _cprint(
+                                        f"  {_DIM}{_icon} Dispatching {len(_items)} queued message"
+                                        f"{'s' if len(_items) != 1 else ''} as one turn{_RST}"
+                                    )
+                                    self._pending_input.put(_combined)
 
                         app.invalidate()  # Refresh status line
 

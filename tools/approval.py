@@ -263,6 +263,50 @@ def pending_approval_count(session_key: str) -> int:
         return len(_gateway_queues.get(session_key, []))
 
 
+def _build_approval_metadata(
+    *,
+    session_key: str,
+    source: str,
+    pattern_keys: list[str] | None = None,
+    has_tirith: bool = False,
+    allow_permanent: bool = True,
+) -> dict:
+    """Build structured provenance metadata for an approval request."""
+    scope_options = ["once", "session"]
+    if allow_permanent:
+        scope_options.append("always")
+    return {
+        "session_key": session_key,
+        "source": source,
+        "pattern_keys": list(pattern_keys or []),
+        "checks": [
+            *(["security_scan"] if has_tirith else []),
+            *(["dangerous_command"] if pattern_keys else []),
+        ],
+        "allow_permanent": allow_permanent,
+        "scope_options": scope_options,
+    }
+
+
+def format_approval_provenance(metadata: Optional[dict]) -> str:
+    """Render compact human-readable provenance for approval UX."""
+    if not isinstance(metadata, dict):
+        return ""
+    parts = []
+    source = metadata.get("source")
+    if source:
+        parts.append(f"Source: {source}")
+    checks = metadata.get("checks") or []
+    if checks:
+        parts.append("Checks: " + ", ".join(str(item).replace("_", " ") for item in checks))
+    scopes = metadata.get("scope_options") or []
+    if scopes:
+        parts.append("Scopes: " + ", ".join(str(item) for item in scopes))
+    if metadata.get("allow_permanent") is False:
+        parts.append("Permanent allowlist disabled for this request")
+    return " | ".join(parts)
+
+
 def submit_pending(session_key: str, approval: dict):
     """Store a pending approval request for a session."""
     with _lock:
@@ -743,9 +787,17 @@ def check_all_command_guards(command: str, env_type: str,
     all_keys = [key for key, _, _ in warnings]
     has_tirith = any(is_t for _, _, is_t in warnings)
 
+    approval_metadata = _build_approval_metadata(
+        session_key=session_key,
+        source="gateway" if is_gateway else "exec_ask",
+        pattern_keys=all_keys,
+        has_tirith=has_tirith,
+        allow_permanent=not has_tirith,
+    )
+
     # Gateway/async approval — block the agent thread until the user
     # responds with /approve or /deny, mirroring the CLI's synchronous
-    # input() flow.  The agent never sees "approval_required"; it either
+    # input() flow. The agent never sees "approval_required"; it either
     # gets the command output (approved) or a definitive "BLOCKED" message.
     if is_gateway or is_ask:
         notify_cb = None
@@ -761,6 +813,7 @@ def check_all_command_guards(command: str, env_type: str,
                 "pattern_key": primary_key,
                 "pattern_keys": all_keys,
                 "description": combined_desc,
+                "metadata": approval_metadata,
             }
             entry = _ApprovalEntry(approval_data)
             with _lock:
@@ -828,6 +881,7 @@ def check_all_command_guards(command: str, env_type: str,
             "pattern_key": primary_key,
             "pattern_keys": all_keys,
             "description": combined_desc,
+            "metadata": approval_metadata,
         })
         return {
             "approved": False,

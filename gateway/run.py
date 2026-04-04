@@ -5996,8 +5996,16 @@ class GatewayRunner:
 
                 # Fallback: plain text approval prompt
                 cmd_preview = cmd[:200] + "..." if len(cmd) > 200 else cmd
+                provenance_line = ""
+                try:
+                    from tools.approval import format_approval_provenance
+                    provenance_line = format_approval_provenance(approval_data.get("metadata"))
+                except Exception:
+                    provenance_line = ""
+                provenance_block = f"{provenance_line}\n" if provenance_line else ""
                 msg = (
                     f"⚠️ **Dangerous command requires approval:**\n"
+                    f"{provenance_block}"
                     f"```\n{cmd_preview}\n```\n"
                     f"Reason: {desc}\n\n"
                     f"Reply `/approve` to execute, `/approve session` to approve this pattern "

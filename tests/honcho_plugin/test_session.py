@@ -7,6 +7,7 @@ from plugins.memory.honcho.session import (
     HonchoSession,
     HonchoSessionManager,
 )
+from plugins.memory.honcho import HonchoMemoryProvider
 
 
 # ---------------------------------------------------------------------------
@@ -187,3 +188,96 @@ class TestManagerCacheOps:
         assert keys == {"k1", "k2"}
         s1_info = next(s for s in sessions if s["key"] == "k1")
         assert s1_info["message_count"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Message chunking
+# ---------------------------------------------------------------------------
+
+
+class TestChunkMessage:
+    def test_short_message_single_chunk(self):
+        result = HonchoMemoryProvider._chunk_message("hello world", 100)
+        assert result == ["hello world"]
+
+    def test_exact_limit_single_chunk(self):
+        msg = "x" * 100
+        result = HonchoMemoryProvider._chunk_message(msg, 100)
+        assert result == [msg]
+
+    def test_splits_at_paragraph_boundary(self):
+        msg = "first paragraph.\n\nsecond paragraph."
+        # limit=30: total is 35, forces split; second chunk with prefix is 29, fits
+        result = HonchoMemoryProvider._chunk_message(msg, 30)
+        assert len(result) == 2
+        assert result[0] == "first paragraph."
+        assert result[1] == "[continued] second paragraph."
+
+    def test_splits_at_sentence_boundary(self):
+        msg = "First sentence. Second sentence. Third sentence is here."
+        result = HonchoMemoryProvider._chunk_message(msg, 35)
+        assert len(result) >= 2
+        # First chunk should end at a sentence boundary (rstripped)
+        assert result[0].rstrip().endswith(".")
+
+    def test_splits_at_word_boundary(self):
+        msg = "word " * 20  # 100 chars
+        result = HonchoMemoryProvider._chunk_message(msg, 30)
+        assert len(result) >= 2
+        # No words should be split mid-word
+        for chunk in result:
+            clean = chunk.replace("[continued] ", "")
+            assert not clean.startswith(" ")
+
+    def test_continuation_prefix(self):
+        msg = "a" * 200
+        result = HonchoMemoryProvider._chunk_message(msg, 50)
+        assert len(result) >= 2
+        assert not result[0].startswith("[continued]")
+        for chunk in result[1:]:
+            assert chunk.startswith("[continued] ")
+
+    def test_empty_message(self):
+        result = HonchoMemoryProvider._chunk_message("", 100)
+        assert result == [""]
+
+    def test_large_message_many_chunks(self):
+        msg = "word " * 10000  # 50k chars
+        result = HonchoMemoryProvider._chunk_message(msg, 25000)
+        assert len(result) >= 2
+        for chunk in result:
+            assert len(chunk) <= 25000
+
+
+# ---------------------------------------------------------------------------
+# Dialectic input guard
+# ---------------------------------------------------------------------------
+
+
+class TestDialecticInputGuard:
+    def test_long_query_truncated(self):
+        """Queries exceeding dialectic_max_input_chars are truncated."""
+        from plugins.memory.honcho.client import HonchoClientConfig
+
+        cfg = HonchoClientConfig(dialectic_max_input_chars=100)
+        mgr = HonchoSessionManager(config=cfg)
+        mgr._dialectic_max_input_chars = 100
+
+        # Create a cached session so dialectic_query doesn't bail early
+        session = HonchoSession(
+            key="test", user_peer_id="u", assistant_peer_id="a",
+            honcho_session_id="s",
+        )
+        mgr._cache["test"] = session
+
+        # Mock the peer to capture the query
+        mock_peer = MagicMock()
+        mock_peer.chat.return_value = "answer"
+        mgr._get_or_create_peer = MagicMock(return_value=mock_peer)
+
+        long_query = "word " * 100  # 500 chars, exceeds 100 limit
+        mgr.dialectic_query("test", long_query)
+
+        # The query passed to chat() should be truncated
+        actual_query = mock_peer.chat.call_args[0][0]
+        assert len(actual_query) <= 100

@@ -111,7 +111,18 @@ class HonchoSessionManager:
             config.dialectic_max_chars if config else 600
         )
         self._observation_mode: str = (
-            config.observation_mode if config else "unified"
+            config.observation_mode if config else "directional"
+        )
+        # Per-peer observation booleans (granular, from config)
+        self._user_observe_me: bool = config.user_observe_me if config else True
+        self._user_observe_others: bool = config.user_observe_others if config else True
+        self._ai_observe_me: bool = config.ai_observe_me if config else True
+        self._ai_observe_others: bool = config.ai_observe_others if config else True
+        self._message_max_chars: int = (
+            config.message_max_chars if config else 25000
+        )
+        self._dialectic_max_input_chars: int = (
+            config.dialectic_max_input_chars if config else 10000
         )
 
         # Async write queue — started lazily on first enqueue
@@ -162,20 +173,41 @@ class HonchoSessionManager:
 
         session = self.honcho.session(session_id)
 
-        # Configure peer observation settings based on observation_mode.
-        # Unified: user peer observes self, AI peer passive — all agents share
-        #          one observation pool via user self-observations.
-        # Directional: AI peer observes user — each agent keeps its own view.
+        # Configure per-peer observation from granular booleans.
+        # These map 1:1 to Honcho's SessionPeerConfig toggles.
         try:
             from honcho.session import SessionPeerConfig
-            if self._observation_mode == "directional":
-                user_config = SessionPeerConfig(observe_me=True, observe_others=False)
-                ai_config = SessionPeerConfig(observe_me=False, observe_others=True)
-            else:  # unified (default)
-                user_config = SessionPeerConfig(observe_me=True, observe_others=False)
-                ai_config = SessionPeerConfig(observe_me=False, observe_others=False)
+            user_config = SessionPeerConfig(
+                observe_me=self._user_observe_me,
+                observe_others=self._user_observe_others,
+            )
+            ai_config = SessionPeerConfig(
+                observe_me=self._ai_observe_me,
+                observe_others=self._ai_observe_others,
+            )
 
             session.add_peers([(user_peer, user_config), (assistant_peer, ai_config)])
+
+            # Sync back: server-side config (set via Honcho UI) wins over
+            # local defaults. Read the effective config after add_peers.
+            try:
+                server_user = session.get_peer_configuration(user_peer)
+                server_ai = session.get_peer_configuration(assistant_peer)
+                if server_user.observe_me is not None:
+                    self._user_observe_me = server_user.observe_me
+                if server_user.observe_others is not None:
+                    self._user_observe_others = server_user.observe_others
+                if server_ai.observe_me is not None:
+                    self._ai_observe_me = server_ai.observe_me
+                if server_ai.observe_others is not None:
+                    self._ai_observe_others = server_ai.observe_others
+                logger.debug(
+                    "Honcho observation synced from server: user(me=%s,others=%s) ai(me=%s,others=%s)",
+                    self._user_observe_me, self._user_observe_others,
+                    self._ai_observe_me, self._ai_observe_others,
+                )
+            except Exception as e:
+                logger.debug("Honcho get_peer_configuration failed (using local config): %s", e)
         except Exception as e:
             logger.warning(
                 "Honcho session '%s' add_peers failed (non-fatal): %s",
@@ -501,11 +533,15 @@ class HonchoSessionManager:
         if not session:
             return ""
 
+        # Guard: truncate query to Honcho's dialectic input limit
+        if len(query) > self._dialectic_max_input_chars:
+            query = query[:self._dialectic_max_input_chars].rsplit(" ", 1)[0]
+
         level = reasoning_level or self._dynamic_reasoning_level(query)
 
         try:
-            if self._observation_mode == "directional":
-                # AI peer queries about the user (cross-observation)
+            if self._ai_observe_others:
+                # AI peer can observe user — use cross-observation routing
                 if peer == "ai":
                     ai_peer_obj = self._get_or_create_peer(session.assistant_peer_id)
                     result = ai_peer_obj.chat(query, reasoning_level=level) or ""
@@ -517,7 +553,7 @@ class HonchoSessionManager:
                         reasoning_level=level,
                     ) or ""
             else:
-                # Unified: user peer queries self, or AI peer queries self
+                # AI can't observe others — each peer queries self
                 peer_id = session.assistant_peer_id if peer == "ai" else session.user_peer_id
                 target_peer = self._get_or_create_peer(peer_id)
                 result = target_peer.chat(query, reasoning_level=level) or ""
@@ -919,12 +955,12 @@ class HonchoSessionManager:
             return False
 
         try:
-            if self._observation_mode == "directional":
+            if self._ai_observe_others:
                 # AI peer creates conclusion about user (cross-observation)
                 assistant_peer = self._get_or_create_peer(session.assistant_peer_id)
                 conclusions_scope = assistant_peer.conclusions_of(session.user_peer_id)
             else:
-                # Unified: user peer creates self-conclusion
+                # AI can't observe others — user peer creates self-conclusion
                 user_peer = self._get_or_create_peer(session.user_peer_id)
                 conclusions_scope = user_peer.conclusions_of(session.user_peer_id)
 

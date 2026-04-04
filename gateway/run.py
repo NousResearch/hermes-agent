@@ -1990,6 +1990,9 @@ class GatewayRunner:
         if canonical == "resume":
             return await self._handle_resume_command(event)
 
+        if canonical == "branch":
+            return await self._handle_branch_command(event)
+
         if canonical == "rollback":
             return await self._handle_rollback_command(event)
 
@@ -4586,6 +4589,96 @@ class GatewayRunner:
         msg_part = f" ({msg_count} message{'s' if msg_count != 1 else ''})" if msg_count else ""
 
         return f"↻ Resumed session **{title}**{msg_part}. Conversation restored."
+
+    async def _handle_branch_command(self, event: MessageEvent) -> str:
+        """Handle /branch [name] — fork the current session into a new independent copy.
+
+        Copies conversation history to a new session so the user can explore
+        a different approach without losing the original.
+        Inspired by Claude Code's /branch command.
+        """
+        import uuid as _uuid
+
+        if not self._session_db:
+            return "Session database not available."
+
+        source = event.source
+        session_key = self._session_key_for_source(source)
+
+        # Load the current session and its transcript
+        current_entry = self.session_store.get_or_create_session(source)
+        history = self.session_store.load_transcript(current_entry.session_id)
+        if not history:
+            return "No conversation to branch — send a message first."
+
+        branch_name = event.get_command_args().strip()
+
+        # Generate the new session ID
+        from datetime import datetime as _dt
+        now = _dt.now()
+        timestamp_str = now.strftime("%Y%m%d_%H%M%S")
+        short_uuid = _uuid.uuid4().hex[:6]
+        new_session_id = f"{timestamp_str}_{short_uuid}"
+
+        # Determine branch title
+        if branch_name:
+            branch_title = branch_name
+        else:
+            current_title = self._session_db.get_session_title(current_entry.session_id)
+            base = current_title or "branch"
+            branch_title = self._session_db.get_next_title_in_lineage(base)
+
+        parent_session_id = current_entry.session_id
+
+        # Create the new session with parent link
+        try:
+            self._session_db.create_session(
+                session_id=new_session_id,
+                source=source.platform.value if source.platform else "gateway",
+                model=(self.config.get("model", {}) or {}).get("default") if isinstance(self.config, dict) else None,
+                parent_session_id=parent_session_id,
+            )
+        except Exception as e:
+            logger.error("Failed to create branch session: %s", e)
+            return f"Failed to create branch: {e}"
+
+        # Copy conversation history to the new session
+        for msg in history:
+            try:
+                self._session_db.append_message(
+                    session_id=new_session_id,
+                    role=msg.get("role", "user"),
+                    content=msg.get("content"),
+                    tool_name=msg.get("tool_name") or msg.get("name"),
+                    tool_calls=msg.get("tool_calls"),
+                    tool_call_id=msg.get("tool_call_id"),
+                    reasoning=msg.get("reasoning"),
+                )
+            except Exception:
+                pass  # Best-effort copy
+
+        # Set title
+        try:
+            self._session_db.set_session_title(new_session_id, branch_title)
+        except Exception:
+            pass
+
+        # Switch the session store entry to the new session
+        new_entry = self.session_store.switch_session(session_key, new_session_id)
+        if not new_entry:
+            return "Branch created but failed to switch to it."
+
+        # Evict any cached agent for this session
+        self._evict_cached_agent(session_key)
+
+        msg_count = len([m for m in history if m.get("role") == "user"])
+        return (
+            f"⑂ Branched to **{branch_title}**"
+            f" ({msg_count} message{'s' if msg_count != 1 else ''} copied)\n"
+            f"Original: `{parent_session_id}`\n"
+            f"Branch: `{new_session_id}`\n"
+            f"Use `/resume` to switch back to the original."
+        )
 
     async def _handle_usage_command(self, event: MessageEvent) -> str:
         """Handle /usage command -- show token usage for the session's last agent run."""

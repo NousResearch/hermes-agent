@@ -6,10 +6,12 @@ from unittest.mock import patch as mock_patch
 
 import tools.approval as approval_module
 from tools.approval import (
+    _build_approval_metadata,
     _get_approval_mode,
     approve_session,
     clear_session,
     detect_dangerous_command,
+    format_approval_provenance,
     has_pending,
     is_approved,
     load_permanent,
@@ -124,6 +126,24 @@ class TestSubmitAndPopPending:
         approval = pop_pending(key)
         assert approval["command"] == "rm -rf /"
         assert has_pending(key) is False
+
+    def test_build_and_format_approval_metadata(self):
+        meta = _build_approval_metadata(
+            session_key="sess-1",
+            source="gateway",
+            pattern_keys=["recursive delete", "tirith:cmd-injection"],
+            has_tirith=True,
+            allow_permanent=False,
+        )
+        rendered = format_approval_provenance(meta)
+
+        assert meta["source"] == "gateway"
+        assert meta["allow_permanent"] is False
+        assert "security_scan" in meta["checks"]
+        assert "dangerous_command" in meta["checks"]
+        assert "Source: gateway" in rendered
+        assert "Scopes: once, session" in rendered
+        assert "Permanent allowlist disabled" in rendered
 
     def test_pop_empty_returns_none(self):
         key = "test_session_empty"

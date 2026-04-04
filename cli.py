@@ -2929,26 +2929,14 @@ class HermesCLI:
         Skipped when stdout is not a TTY, TERM=dumb, or NO_COLOR is set.
         """
         import sys, os
-        # Respect display.terminal_title = false config opt-out
+
+        if os.environ.get("TERM", "") == "dumb" or os.environ.get("NO_COLOR"):
+            return
         try:
             if not CLI_CONFIG.get("display", {}).get("terminal_title", True):
                 return
         except Exception:
             pass
-        # Use the real stdout (sys.__stdout__) to bypass prompt_toolkit's
-        # patch_stdout StdoutProxy — OSC escape sequences sent through the
-        # proxy are buffered / eaten and never reach the terminal emulator.
-        # Fall back to fd 1 if __stdout__ is unavailable.
-        real_out = getattr(sys, "__stdout__", None) or sys.stdout
-        try:
-            if not real_out.isatty():
-                return
-        except Exception:
-            return
-        if os.environ.get("TERM", "") == "dumb":
-            return
-        if os.environ.get("NO_COLOR"):
-            return
 
         try:
             from hermes_cli.skin_engine import get_active_skin
@@ -2958,25 +2946,31 @@ class HermesCLI:
             symbol = "⚕"
 
         tab_title = f"{symbol} ⏳" if thinking else symbol
-
-        # OSC 0 sets both icon (tab) and window title.
-        # Use ST terminator (\x1b\\) rather than BEL (\x07) — ST is more
-        # reliably processed by iTerm2 for tab title updates mid-session.
+        # OSC 0 + ST terminator — confirmed working in iTerm2 debug test
         seq_b = f"\x1b]0;{tab_title}\x1b\\".encode("utf-8")
 
-        # Write via sys.__stdout__ (pre-patch real stdout) then fall back to
-        # ctermid. Both reach the PTY; __stdout__ is simpler and avoids
-        # prompt_toolkit's internal buffers entirely.
-        try:
-            real_out.write(seq_b.decode("utf-8"))
-            real_out.flush()
-        except Exception:
+        _cprint(f"  {_DIM}[title dbg] writing: {seq_b!r}{_RST}")
+
+        # Try every available path — no isatty guard, catch exceptions silently
+        for _attempt in ("ctermid", "__stdout__", "stdout_fd", "stdout_write"):
             try:
-                _tty_fd = os.open(os.ctermid(), os.O_WRONLY | os.O_NOCTTY)
-                os.write(_tty_fd, seq_b)
-                os.close(_tty_fd)
-            except Exception:
-                pass
+                if _attempt == "ctermid":
+                    _fd = os.open(os.ctermid(), os.O_WRONLY | os.O_NOCTTY)
+                    os.write(_fd, seq_b)
+                    os.close(_fd)
+                elif _attempt == "__stdout__":
+                    _s = getattr(sys, "__stdout__", None)
+                    if _s:
+                        os.write(_s.fileno(), seq_b)
+                elif _attempt == "stdout_fd":
+                    os.write(1, seq_b)
+                elif _attempt == "stdout_write":
+                    sys.stdout.write(seq_b.decode("utf-8"))
+                    sys.stdout.flush()
+                _cprint(f"  {_DIM}[title dbg] {_attempt}: OK{_RST}")
+                break
+            except Exception as _e:
+                _cprint(f"  {_DIM}[title dbg] {_attempt}: {_e}{_RST}")
 
         self._terminal_title_session = session_title
 

@@ -326,10 +326,10 @@ def show_status(args):
         print("  Manager:      systemd (user)")
         
     elif sys.platform == 'darwin':
-        from hermes_cli.gateway import get_launchd_label
+        from hermes_cli.gateway import get_launchd_label, get_launchctl_path
         try:
             result = subprocess.run(
-                ["launchctl", "list", get_launchd_label()],
+                [get_launchctl_path(), "list", get_launchd_label()],
                 capture_output=True,
                 text=True,
                 timeout=5

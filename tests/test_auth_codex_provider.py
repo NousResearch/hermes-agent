@@ -10,8 +10,10 @@ import yaml
 
 from hermes_cli.auth import (
     AuthError,
+    CODEX_OAUTH_CLIENT_ID,
     DEFAULT_CODEX_BASE_URL,
     PROVIDER_REGISTRY,
+    _codex_device_code_login,
     _read_codex_tokens,
     _save_codex_tokens,
     _import_codex_cli_tokens,
@@ -190,3 +192,64 @@ def test_resolve_returns_hermes_auth_store_source(tmp_path, monkeypatch):
     assert creds["source"] == "hermes-auth-store"
     assert creds["provider"] == "openai-codex"
     assert creds["base_url"] == DEFAULT_CODEX_BASE_URL
+
+
+def test_codex_device_code_login_uses_expected_client_id(monkeypatch):
+    requests = []
+
+    class _FakeResponse:
+        def __init__(self, status_code, payload):
+            self.status_code = status_code
+            self._payload = payload
+
+        def json(self):
+            return self._payload
+
+    class _FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def post(self, url, json=None, data=None, headers=None):
+            requests.append({"url": url, "json": json, "data": data, "headers": headers})
+            if url.endswith("/api/accounts/deviceauth/usercode"):
+                return _FakeResponse(
+                    200,
+                    {
+                        "user_code": "ABCD-EFGH",
+                        "device_auth_id": "device-auth-id",
+                        "interval": "0",
+                    },
+                )
+            if url.endswith("/api/accounts/deviceauth/token"):
+                return _FakeResponse(
+                    200,
+                    {
+                        "authorization_code": "auth-code",
+                        "code_verifier": "code-verifier",
+                    },
+                )
+            if url == "https://auth.openai.com/oauth/token":
+                return _FakeResponse(
+                    200,
+                    {
+                        "access_token": "access-token",
+                        "refresh_token": "refresh-token",
+                    },
+                )
+            raise AssertionError(f"Unexpected URL {url}")
+
+    monkeypatch.setattr("hermes_cli.auth.httpx.Client", _FakeClient)
+    monkeypatch.setattr("hermes_cli.auth.time.sleep", lambda _: None)
+
+    creds = _codex_device_code_login()
+
+    assert creds["tokens"]["access_token"] == "access-token"
+    assert requests[0]["json"] == {"client_id": CODEX_OAUTH_CLIENT_ID}
+    assert requests[2]["data"]["client_id"] == CODEX_OAUTH_CLIENT_ID
+    assert CODEX_OAUTH_CLIENT_ID == "app_EMoamEEZ73f0CkXaXp7hrann"

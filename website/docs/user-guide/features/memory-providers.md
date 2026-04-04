@@ -44,26 +44,38 @@ AI-native cross-session user modeling with dialectic Q&A, semantic search, and p
 
 | | |
 |---|---|
-| **Best for** | Teams using Honcho's user modeling platform |
-| **Requires** | `pip install honcho-ai` + API key |
-| **Data storage** | Honcho Cloud |
-| **Cost** | Honcho pricing |
+| **Best for** | Multi-agent systems with cross-session context, user-agent alignment |
+| **Requires** | `pip install honcho-ai` + [API key](https://app.honcho.dev) or self-hosted instance |
+| **Data storage** | Honcho Cloud or self-hosted |
+| **Cost** | Honcho pricing (cloud) / free (self-hosted) |
 
 **Tools:** `honcho_profile` (peer card), `honcho_search` (semantic search), `honcho_context` (LLM-synthesized), `honcho_conclude` (store facts)
 
-**Setup:**
+**Setup Wizard:**
 ```bash
-hermes memory setup    # select "honcho"
-# Or manually:
-hermes config set memory.provider honcho
-echo "HONCHO_API_KEY=your-key" >> ~/.hermes/.env
+hermes honcho setup        # (legacy command) 
+# or
+hermes memory setup        # select "honcho"
 ```
 
-**Config:** `$HERMES_HOME/honcho.json` — existing Honcho users' configuration and data are fully preserved.
+**Config:** `$HERMES_HOME/honcho.json` — see the [config reference](https://github.com/hermes-ai/hermes-agent/blob/main/plugins/memory/honcho/README.md) and the [Honcho integration guide](https://docs.honcho.dev/v3/guides/integrations/hermes).
 
 :::tip Migrating from `hermes honcho`
-If you previously used `hermes honcho setup`, your config and all server-side data are intact. Just set `memory.provider: honcho` to reactivate via the new system.
+If you previously used `hermes honcho setup`, your config and all server-side data are intact. Just re-enable through the setup wizard again or manually set `memory.provider: honcho` to reactivate via the new system.
 :::
+
+**Multi-agent / Profiles:**
+
+Each Hermes profile gets its own Honcho peer identity while sharing the same workspace (user context, sessions, project history). When creating a profile with `--clone`, Honcho config is auto-cloned:
+
+```bash
+hermes profile create coder --clone   # creates honcho peer "coder", inherits config
+hermes honcho sync                    # backfill host blocks for all existing profiles
+```
+
+See [Honcho integration guide](https://docs.honcho.dev/v3/guides/integrations/hermes) for the full config reference.
+
+
 
 ---
 

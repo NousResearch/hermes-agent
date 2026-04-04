@@ -3173,14 +3173,34 @@ class HermesCLI:
 
         tab_title = f"{symbol} ⏳" if thinking else symbol
 
-        # OSC 1: tab/icon name (iTerm2 uses this as the tab label, no process name appended)
+        # OSC 1: tab/icon name (iTerm2 uses this as the explicit tab label)
         # OSC 2: window title (title bar)
         seq = f"\x1b]1;{tab_title}\x07\x1b]2;{tab_title}\x07"
+        seq_b = seq.encode("utf-8")
+
+        # Write directly to the controlling terminal device via os.ctermid().
+        # This bypasses ALL Python I/O layers, prompt_toolkit's output buffers,
+        # patch_stdout's StdoutProxy, and any stdout redirections — the bytes
+        # go straight to the TTY the user is looking at.
+        written = False
         try:
-            os.write(real_out.fileno(), seq.encode())
+            _tty_fd = os.open(os.ctermid(), os.O_WRONLY | os.O_NOCTTY)
+            os.write(_tty_fd, seq_b)
+            os.close(_tty_fd)
+            written = True
         except Exception:
-            real_out.write(seq)
-            real_out.flush()
+            pass
+
+        if not written:
+            # Fallback: try real stdout fd directly
+            try:
+                os.write(real_out.fileno(), seq_b)
+            except Exception:
+                try:
+                    real_out.write(seq)
+                    real_out.flush()
+                except Exception:
+                    pass
         self._terminal_title_session = session_title
 
     def _update_terminal_title(self, thinking: bool = False) -> None:

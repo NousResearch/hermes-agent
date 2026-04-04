@@ -251,6 +251,11 @@ export function App({ gw }: { gw: GatewayClient }) {
       })
   }
 
+  const paste = () =>
+    rpc('clipboard.paste', { session_id: sid }).then((r: any) =>
+      sys(r.attached ? `📎 image #${r.count} attached` : r.message || 'no image in clipboard')
+    )
+
   const interpolate = (text: string, then: (result: string) => void) => {
     setStatus('interpolating…')
     const matches = [...text.matchAll(new RegExp(INTERPOLATION_RE.source, 'g'))]
@@ -385,6 +390,10 @@ export function App({ gw }: { gw: GatewayClient }) {
 
     if (key.ctrl && ch === 'l') {
       setMessages([])
+    }
+
+    if (key.ctrl && ch === 'v') {
+      return paste()
     }
 
     if (key.escape) {
@@ -1091,7 +1100,7 @@ export function App({ gw }: { gw: GatewayClient }) {
           return true
 
         case 'paste':
-          sys("clipboard paste: use your terminal's paste shortcut (images not yet supported in TUI)")
+          paste()
 
           return true
 
@@ -1211,27 +1220,25 @@ export function App({ gw }: { gw: GatewayClient }) {
           return true
 
         case 'update':
-          sys('update not available in TUI mode — run: pip install -U hermes-agent')
+        case 'hermes': {
+          const argv = name === 'update' ? ['update'] : arg.split(/\s+/).filter(Boolean)
 
-          return true
-
-        case 'hermes':
-          if (!arg) {
-            sys(
-              'usage: /hermes <args…>  non-interactive `hermes` CLI (e.g. sessions list, chat -q "hi"). Interactive setup/browse/edit must run in a separate terminal.'
-            )
+          if (!argv.length) {
+            sys('usage: /hermes <args…>  (e.g. sessions list, chat -q "hi")')
 
             return true
           }
 
-          rpc('cli.exec', { argv: arg.split(/\s+/).filter(Boolean) })
+          if (name === 'update') {
+            setBusy(true)
+            setStatus('updating…')
+          }
+
+          rpc('cli.exec', { argv, timeout: name === 'update' ? 600 : 240 })
             .then((r: any) => {
               if (r.blocked) {
-                sys(r.hint ?? 'blocked')
-
-                return
+                return sys(r.hint ?? 'blocked')
               }
-
               sys(r.output ?? '(no output)')
 
               if (r.code !== 0) {
@@ -1239,8 +1246,15 @@ export function App({ gw }: { gw: GatewayClient }) {
               }
             })
             .catch((e: Error) => sys(`error: ${e.message}`))
+            .finally(() => {
+              if (name === 'update') {
+                setStatus('ready')
+                setBusy(false)
+              }
+            })
 
           return true
+        }
 
         case 'model':
           if (!arg) {

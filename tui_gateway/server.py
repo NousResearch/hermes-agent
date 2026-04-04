@@ -579,6 +579,78 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 5015, str(e))
 
 
+@method("commands.catalog")
+def _(rid, params: dict) -> dict:
+    """Registry-backed slash metadata (same surface as SlashCommandCompleter)."""
+    try:
+        from hermes_cli.commands import COMMAND_REGISTRY, COMMANDS, SUBCOMMANDS
+
+        pairs = sorted(COMMANDS.items(), key=lambda kv: kv[0])
+        sub = {k: v[:] for k, v in SUBCOMMANDS.items()}
+        canon: dict[str, str] = {}
+        for cmd in COMMAND_REGISTRY:
+            if cmd.gateway_only:
+                continue
+            c = f"/{cmd.name}"
+            canon[c.lower()] = c
+            for a in cmd.aliases:
+                canon[f"/{a}".lower()] = c
+        skills = []
+        try:
+            from agent.skill_commands import scan_skill_commands
+            for k, info in scan_skill_commands().items():
+                d = str(info.get("description", "Skill"))
+                skills.append([k, f"⚡ {d[:120]}{'…' if len(d) > 120 else ''}"])
+        except Exception:
+            pass
+        return _ok(rid, {"pairs": pairs + skills, "sub": sub, "canon": canon})
+    except Exception as e:
+        return _err(rid, 5020, str(e))
+
+
+def _cli_exec_blocked(argv: list[str]) -> str | None:
+    """Return user hint if this argv must not run headless in the gateway process."""
+    if not argv:
+        return "bare `hermes` is interactive — use `/hermes chat -q …` or run `hermes` in another terminal"
+    a0 = argv[0].lower()
+    if a0 == "setup":
+        return "`hermes setup` needs a full terminal — run it outside the Ink UI"
+    if a0 == "gateway":
+        return "`hermes gateway` is long-running — run it in another terminal"
+    if a0 == "sessions" and len(argv) > 1 and argv[1].lower() == "browse":
+        return "`hermes sessions browse` is interactive — use /resume here, or run browse in another terminal"
+    if a0 == "config" and len(argv) > 1 and argv[1].lower() == "edit":
+        return "`hermes config edit` needs $EDITOR in a real terminal"
+    return None
+
+
+@method("cli.exec")
+def _(rid, params: dict) -> dict:
+    """Run `python -m hermes_cli.main` with argv; capture stdout/stderr (non-interactive only)."""
+    argv = params.get("argv", [])
+    if not isinstance(argv, list) or not all(isinstance(x, str) for x in argv):
+        return _err(rid, 4003, "argv must be list[str]")
+    hint = _cli_exec_blocked(argv)
+    if hint:
+        return _ok(rid, {"blocked": True, "hint": hint, "code": -1, "output": ""})
+    try:
+        r = subprocess.run(
+            [sys.executable, "-m", "hermes_cli.main", *argv],
+            capture_output=True,
+            text=True,
+            timeout=min(int(params.get("timeout", 240)), 600),
+            cwd=os.getcwd(),
+            env=os.environ.copy(),
+        )
+        parts = [r.stdout or "", r.stderr or ""]
+        out = "\n".join(p for p in parts if p).strip() or "(no output)"
+        return _ok(rid, {"blocked": False, "code": r.returncode, "output": out[:48_000]})
+    except subprocess.TimeoutExpired:
+        return _err(rid, 5016, "cli.exec: timeout")
+    except Exception as e:
+        return _err(rid, 5017, str(e))
+
+
 @method("command.resolve")
 def _(rid, params: dict) -> dict:
     try:

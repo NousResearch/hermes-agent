@@ -5,20 +5,31 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AltScreen } from './altScreen.js'
 import { Banner, SessionPanel } from './components/branding.js'
 import { CommandPalette } from './components/commandPalette.js'
+import { MaskedPrompt } from './components/maskedPrompt.js'
 import { MessageLine } from './components/messageLine.js'
 import { ApprovalPrompt, ClarifyPrompt } from './components/prompts.js'
 import { QueuedMessages } from './components/queuedMessages.js'
-import { MaskedPrompt } from './components/maskedPrompt.js'
 import { SessionPicker } from './components/sessionPicker.js'
 import { Thinking } from './components/thinking.js'
-import { COMMANDS, HOTKEYS, INTERPOLATION_RE, MAX_CTX, PLACEHOLDERS, TOOL_VERBS, ZERO } from './constants.js'
+import { HOTKEYS, INTERPOLATION_RE, MAX_CTX, PLACEHOLDERS, TOOL_VERBS, ZERO } from './constants.js'
 import { type GatewayClient, type GatewayEvent } from './gatewayClient.js'
 import * as inputHistory from './lib/history.js'
-import { writeOsc52Clipboard } from './lib/osc52.js'
 import { upsert } from './lib/messages.js'
+import { writeOsc52Clipboard } from './lib/osc52.js'
+import { paletteForLine, tabAdvance } from './lib/slash.js'
 import { estimateRows, flat, fmtK, hasInterpolation, pick, userDisplay } from './lib/text.js'
 import { DEFAULT_THEME, fromSkin, type Theme } from './theme.js'
-import type { ActiveTool, ApprovalReq, ClarifyReq, Msg, SecretReq, SessionInfo, SudoReq, Usage } from './types.js'
+import type {
+  ActiveTool,
+  ApprovalReq,
+  ClarifyReq,
+  Msg,
+  SecretReq,
+  SessionInfo,
+  SlashCatalog,
+  SudoReq,
+  Usage
+} from './types.js'
 
 const PLACEHOLDER = pick(PLACEHOLDERS)
 
@@ -53,6 +64,7 @@ export function App({ gw }: { gw: GatewayClient }) {
   const [historyIdx, setHistoryIdx] = useState<number | null>(null)
   const [scrollOffset, setScrollOffset] = useState(0)
   const [queuedDisplay, setQueuedDisplay] = useState<string[]>([])
+  const [catalog, setCatalog] = useState<SlashCatalog | null>(null)
 
   const buf = useRef('')
   const stickyRef = useRef(true)
@@ -92,6 +104,7 @@ export function App({ gw }: { gw: GatewayClient }) {
 
   const pushHistory = (text: string) => {
     const trimmed = text.trim()
+
     if (trimmed && historyRef.current.at(-1) !== trimmed) {
       historyRef.current.push(trimmed)
       inputHistory.append(trimmed)
@@ -143,12 +156,18 @@ export function App({ gw }: { gw: GatewayClient }) {
 
   const newSession = (msg?: string) =>
     rpc('session.create').then((r: any) => {
-      if (!r) return
+      if (!r) {
+        return
+      }
+
       setSid(r.session_id)
       setMessages([])
       setUsage(ZERO)
       setStatus('ready')
-      if (msg) sys(msg)
+
+      if (msg) {
+        sys(msg)
+      }
     })
 
   const idle = () => {
@@ -276,6 +295,16 @@ export function App({ gw }: { gw: GatewayClient }) {
       return
     }
 
+    if (!inputBuf.length && key.tab && input.startsWith('/')) {
+      const next = tabAdvance(input, catalog)
+
+      if (next) {
+        setInput(next)
+      }
+
+      return
+    }
+
     if (key.pageUp) {
       scrollUp(5)
 
@@ -373,6 +402,20 @@ export function App({ gw }: { gw: GatewayClient }) {
             setTheme(fromSkin(p.skin.colors ?? {}, p.skin.branding ?? {}))
           }
 
+          rpc('commands.catalog', {})
+            .then((r: any) => {
+              if (!r?.pairs) {
+                return
+              }
+
+              setCatalog({
+                canon: (r.canon ?? {}) as Record<string, string>,
+                pairs: r.pairs as [string, string][],
+                sub: (r.sub ?? {}) as Record<string, string[]>
+              })
+            })
+            .catch(() => {})
+
           setStatus('forging session…')
           newSession()
 
@@ -384,7 +427,10 @@ export function App({ gw }: { gw: GatewayClient }) {
           break
 
         case 'thinking.delta':
-          if (p?.text) setThinkingText(prev => prev + p.text)
+          if (p?.text) {
+            setThinkingText(prev => prev + p.text)
+          }
+
           break
 
         case 'message.start':
@@ -449,24 +495,29 @@ export function App({ gw }: { gw: GatewayClient }) {
         case 'approval.request':
           setApproval({ command: p.command, description: p.description })
           setStatus('approval needed')
+
           break
 
         case 'sudo.request':
           setSudo({ requestId: p.request_id })
           setStatus('sudo password needed')
+
           break
 
         case 'secret.request':
           setSecret({ requestId: p.request_id, prompt: p.prompt, envVar: p.env_var })
           setStatus('secret input needed')
+
           break
 
         case 'background.complete':
           sys(`[bg ${p.task_id}] ${p.text}`)
+
           break
 
         case 'btw.complete':
           sys(`[btw] ${p.text}`)
+
           break
 
         case 'message.delta':
@@ -547,22 +598,31 @@ export function App({ gw }: { gw: GatewayClient }) {
       const arg = rest.join(' ')
 
       switch (name) {
-        case 'help':
+        case 'help': {
+          const rows = catalog?.pairs ?? []
+          const cap = 52
+          const lines = rows.slice(0, cap).map(([c, d]) => `    ${c.padEnd(16)} ${d}`)
+
           sys(
             [
               '  Commands:',
-              ...COMMANDS.map(([c, d]) => `    ${c.padEnd(12)} ${d}`),
+              ...lines,
+              rows.length > cap ? `    … ${rows.length - cap} more` : '',
               '',
               '  Hotkeys:',
-              ...HOTKEYS.map(([k, d]) => `    ${k.padEnd(12)} ${d}`)
-            ].join('\n')
+              ...HOTKEYS.map(([k, d]) => `    ${k.padEnd(14)} ${d}`)
+            ]
+              .filter(Boolean)
+              .join('\n')
           )
 
           return true
+        }
 
         case 'clear':
           setStatus('forging session…')
           newSession()
+
           return true
 
         case 'quit': // falls through
@@ -575,6 +635,7 @@ export function App({ gw }: { gw: GatewayClient }) {
         case 'new':
           setStatus('forging session…')
           newSession('new session started')
+
           return true
 
         case 'undo':
@@ -582,44 +643,51 @@ export function App({ gw }: { gw: GatewayClient }) {
             return true
           }
 
-          rpc('session.undo', { session_id: sid })
-            .then((r: any) => {
-              if (r.removed > 0) {
-                setMessages(prev => {
-                  const q = [...prev]
+          rpc('session.undo', { session_id: sid }).then((r: any) => {
+            if (r.removed > 0) {
+              setMessages(prev => {
+                const q = [...prev]
 
-                  while (q.at(-1)?.role === 'assistant' || q.at(-1)?.role === 'tool') {
-                    q.pop()
-                  }
+                while (q.at(-1)?.role === 'assistant' || q.at(-1)?.role === 'tool') {
+                  q.pop()
+                }
 
-                  if (q.at(-1)?.role === 'user') {
-                    q.pop()
-                  }
+                if (q.at(-1)?.role === 'user') {
+                  q.pop()
+                }
 
-                  return q
-                })
-                sys(`undid ${r.removed} messages`)
-              } else {
-                sys('nothing to undo')
-              }
-            })
+                return q
+              })
+              sys(`undid ${r.removed} messages`)
+            } else {
+              sys('nothing to undo')
+            }
+          })
 
           return true
 
         case 'retry':
           if (!lastUserMsg) {
             sys('nothing to retry')
+
             return true
           }
+
           if (sid) {
             gw.request('session.undo', { session_id: sid }).catch(() => {})
           }
+
           setMessages(prev => {
             const q = [...prev]
-            while (q.at(-1)?.role === 'assistant' || q.at(-1)?.role === 'tool') q.pop()
+
+            while (q.at(-1)?.role === 'assistant' || q.at(-1)?.role === 'tool') {
+              q.pop()
+            }
+
             return q
           })
           send(lastUserMsg)
+
           return true
 
         case 'compact':
@@ -633,14 +701,13 @@ export function App({ gw }: { gw: GatewayClient }) {
             return true
           }
 
-          rpc('session.compress', { session_id: sid })
-            .then((r: any) => {
-              sys('context compressed')
+          rpc('session.compress', { session_id: sid }).then((r: any) => {
+            sys('context compressed')
 
-              if (r.usage) {
-                setUsage(r.usage)
-              }
-            })
+            if (r.usage) {
+              setUsage(r.usage)
+            }
+          })
 
           return true
 
@@ -695,319 +762,484 @@ export function App({ gw }: { gw: GatewayClient }) {
 
         case 'resume':
           setPicker(true)
+
           return true
 
         case 'history':
-          if (!sid) { setPicker(true); return true }
-          rpc('session.history', { session_id: sid })
-            .then((r: any) => sys(`session ${sid}: ${r.count} messages in context`))
+          if (!sid) {
+            setPicker(true)
+
+            return true
+          }
+
+          rpc('session.history', { session_id: sid }).then((r: any) =>
+            sys(`session ${sid}: ${r.count} messages in context`)
+          )
+
           return true
 
         case 'title':
-          if (!sid) return true
-          if (!arg) {
-            rpc('session.title', { session_id: sid })
-              .then((r: any) => sys(`title: ${r.title || '(none)'}  session: ${r.session_key}`))
+          if (!sid) {
             return true
           }
-          rpc('session.title', { session_id: sid, title: arg })
-            .then(() => sys(`title → ${arg}`))
+
+          if (!arg) {
+            rpc('session.title', { session_id: sid }).then((r: any) =>
+              sys(`title: ${r.title || '(none)'}  session: ${r.session_key}`)
+            )
+
+            return true
+          }
+
+          rpc('session.title', { session_id: sid, title: arg }).then(() => sys(`title → ${arg}`))
+
           return true
 
         case 'tools':
           if (!info?.tools || !Object.keys(info.tools).length) {
             sys('no tools loaded')
+
             return true
           }
+
           sys(
             Object.entries(info.tools)
               .map(([k, vs]) => `${k} (${vs.length}): ${vs.join(', ')}`)
               .join('\n')
           )
+
           return true
 
         case 'skills':
           if (!arg || arg === 'list') {
             if (!info?.skills || !Object.keys(info.skills).length) {
               sys('no skills loaded')
+
               return true
             }
-            sys(Object.entries(info.skills).map(([k, vs]) => `${k}: ${vs.join(', ')}`).join('\n'))
+
+            sys(
+              Object.entries(info.skills)
+                .map(([k, vs]) => `${k}: ${vs.join(', ')}`)
+                .join('\n')
+            )
+
             return true
           }
+
           if (arg.startsWith('search ')) {
-            rpc('skills.manage', { action: 'search', query: arg.slice(7).trim() })
-              .then((r: any) => {
-                if (!r.results?.length) { sys('no results'); return }
-                sys(r.results.map((s: any) => `  ${s.name}: ${s.description}`).join('\n'))
-              })
+            rpc('skills.manage', { action: 'search', query: arg.slice(7).trim() }).then((r: any) => {
+              if (!r.results?.length) {
+                sys('no results')
+
+                return
+              }
+
+              sys(r.results.map((s: any) => `  ${s.name}: ${s.description}`).join('\n'))
+            })
+
             return true
           }
+
           if (arg.startsWith('install ')) {
-            rpc('skills.manage', { action: 'install', query: arg.slice(8).trim() })
-              .then((r: any) => sys(r.installed ? `installed ${r.name}` : 'install failed'))
+            rpc('skills.manage', { action: 'install', query: arg.slice(8).trim() }).then((r: any) =>
+              sys(r.installed ? `installed ${r.name}` : 'install failed')
+            )
+
             return true
           }
+
           if (arg === 'browse' || arg.startsWith('browse ')) {
-            rpc('skills.manage', { action: 'browse', query: arg.slice(6).trim() })
-              .then((r: any) => {
-                if (!r.results?.length) { sys('no skills available'); return }
-                sys(r.results.map((s: any) => `  ${s.name}: ${s.description}`).join('\n'))
-              })
+            rpc('skills.manage', { action: 'browse', query: arg.slice(6).trim() }).then((r: any) => {
+              if (!r.results?.length) {
+                sys('no skills available')
+
+                return
+              }
+
+              sys(r.results.map((s: any) => `  ${s.name}: ${s.description}`).join('\n'))
+            })
+
             return true
           }
+
           if (arg.startsWith('inspect ')) {
-            rpc('skills.manage', { action: 'inspect', query: arg.slice(8).trim() })
-              .then((r: any) => sys(JSON.stringify(r.info, null, 2)))
+            rpc('skills.manage', { action: 'inspect', query: arg.slice(8).trim() }).then((r: any) =>
+              sys(JSON.stringify(r.info, null, 2))
+            )
+
             return true
           }
+
           sys('usage: /skills [list|search <q>|install <name>|browse|inspect <name>]')
+
           return true
 
         case 'verbose':
-          rpc('config.set', { key: 'verbose', value: arg || 'cycle' })
-            .then((r: any) => sys(`verbose → ${r.value}`))
+          rpc('config.set', { key: 'verbose', value: arg || 'cycle' }).then((r: any) => sys(`verbose → ${r.value}`))
+
           return true
 
         case 'yolo':
-          rpc('config.set', { key: 'yolo', value: '' })
-            .then((r: any) => sys(`yolo → ${r.value === '1' ? 'on' : 'off'}`))
+          rpc('config.set', { key: 'yolo', value: '' }).then((r: any) =>
+            sys(`yolo → ${r.value === '1' ? 'on' : 'off'}`)
+          )
+
           return true
 
         case 'reasoning':
           if (!arg) {
             sys('usage: /reasoning <none|low|medium|high|xhigh|show|hide>')
+
             return true
           }
-          rpc('config.set', { key: 'reasoning', value: arg })
-            .then((r: any) => sys(`reasoning → ${r.value}`))
+
+          rpc('config.set', { key: 'reasoning', value: arg }).then((r: any) => sys(`reasoning → ${r.value}`))
+
           return true
 
         case 'stop':
-          rpc('process.stop')
-            .then((r: any) => sys(`killed ${r.killed} process(es)`))
+          rpc('process.stop').then((r: any) => sys(`killed ${r.killed} process(es)`))
+
           return true
 
         case 'profile':
           gw.request('config.get', { key: 'profile' })
             .then((r: any) => sys(`profile: ${r.display}`))
             .catch(() => sys(`profile: ${process.env.HERMES_HOME ?? '~/.hermes'}`))
+
           return true
 
         case 'save':
-          if (!sid) return true
-          rpc('session.save', { session_id: sid })
-            .then((r: any) => sys(`saved to ${r.file}`))
+          if (!sid) {
+            return true
+          }
+
+          rpc('session.save', { session_id: sid }).then((r: any) => sys(`saved to ${r.file}`))
+
           return true
 
         case 'provider':
-          rpc('config.get', { key: 'provider' })
-            .then((r: any) => {
-              const lines = [`model: ${r.model}  provider: ${r.provider}`]
-              if (r.providers?.length) lines.push(`available: ${r.providers.join(', ')}`)
-              sys(lines.join('\n'))
-            })
+          rpc('config.get', { key: 'provider' }).then((r: any) => {
+            const lines = [`model: ${r.model}  provider: ${r.provider}`]
+
+            if (r.providers?.length) {
+              lines.push(`available: ${r.providers.join(', ')}`)
+            }
+
+            sys(lines.join('\n'))
+          })
+
           return true
 
         case 'prompt':
           if (!arg) {
-            rpc('config.get', { key: 'prompt' })
-              .then((r: any) => sys(`custom prompt: ${r.prompt || '(none set)'}`))
+            rpc('config.get', { key: 'prompt' }).then((r: any) => sys(`custom prompt: ${r.prompt || '(none set)'}`))
+
             return true
           }
-          rpc('config.set', { key: 'prompt', value: arg })
-            .then((r: any) => sys(r.value ? `prompt set (${r.value.length} chars)` : 'prompt cleared'))
+
+          rpc('config.set', { key: 'prompt', value: arg }).then((r: any) =>
+            sys(r.value ? `prompt set (${r.value.length} chars)` : 'prompt cleared')
+          )
+
           return true
 
         case 'personality':
           if (!arg) {
             sys('usage: /personality <name>  (concise, creative, analytical, friendly, none)')
+
             return true
           }
-          rpc('config.set', { key: 'personality', value: arg })
-            .then((r: any) => sys(`personality → ${r.value || 'default'}`))
+
+          rpc('config.set', { key: 'personality', value: arg }).then((r: any) =>
+            sys(`personality → ${r.value || 'default'}`)
+          )
+
           return true
 
         case 'plan':
           send(arg ? `/plan ${arg}` : 'Create a detailed plan for the current task.')
+
           return true
 
         case 'background':
+
         case 'bg':
           if (!arg) {
             sys('usage: /background <prompt>')
+
             return true
           }
-          rpc('prompt.background', { session_id: sid, text: arg })
-            .then((r: any) => sys(`background task ${r.task_id} started`))
+
+          rpc('prompt.background', { session_id: sid, text: arg }).then((r: any) =>
+            sys(`background task ${r.task_id} started`)
+          )
+
           return true
 
         case 'btw':
           if (!arg) {
             sys('usage: /btw <question>')
+
             return true
           }
-          rpc('prompt.btw', { session_id: sid, text: arg })
-            .then(() => sys('btw running…'))
+
+          rpc('prompt.btw', { session_id: sid, text: arg }).then(() => sys('btw running…'))
+
           return true
 
         case 'queue':
           if (!arg) {
             sys(`${queueRef.current.length} queued message(s)`)
+
             return true
           }
+
           enqueue(arg)
           sys(`queued: "${arg.slice(0, 50)}${arg.length > 50 ? '…' : ''}"`)
+
           return true
 
         case 'rollback':
-          if (!sid) return true
-          if (!arg) {
-            rpc('rollback.list', { session_id: sid })
-              .then((r: any) => {
-                if (!r.enabled) { sys('checkpoints not enabled — use hermes --checkpoints'); return }
-                if (!r.checkpoints?.length) { sys('no checkpoints'); return }
-                sys(r.checkpoints.map((c: any, i: number) =>
-                  `  ${i + 1}. ${c.message || c.hash.slice(0, 8)} (${c.timestamp})`
-                ).join('\n'))
-              })
+          if (!sid) {
             return true
           }
+
+          if (!arg) {
+            rpc('rollback.list', { session_id: sid }).then((r: any) => {
+              if (!r.enabled) {
+                sys('checkpoints not enabled — use hermes --checkpoints')
+
+                return
+              }
+
+              if (!r.checkpoints?.length) {
+                sys('no checkpoints')
+
+                return
+              }
+
+              sys(
+                r.checkpoints
+                  .map((c: any, i: number) => `  ${i + 1}. ${c.message || c.hash.slice(0, 8)} (${c.timestamp})`)
+                  .join('\n')
+              )
+            })
+
+            return true
+          }
+
           if (arg.startsWith('diff ')) {
             const ref = arg.slice(5).trim()
             rpc('rollback.list', { session_id: sid }).then((r: any) => {
               const hash = /^\d+$/.test(ref) ? r.checkpoints?.[parseInt(ref) - 1]?.hash : ref
-              if (!hash) { sys(`checkpoint ${ref} not found`); return }
-              rpc('rollback.diff', { session_id: sid, hash })
-                .then((d: any) => sys(d.stat || d.diff || 'no changes'))
+
+              if (!hash) {
+                sys(`checkpoint ${ref} not found`)
+
+                return
+              }
+
+              rpc('rollback.diff', { session_id: sid, hash }).then((d: any) => sys(d.stat || d.diff || 'no changes'))
             })
+
             return true
           }
+
           {
             const parts = arg.trim().split(/\s+/)
             const ref = parts[0]!
             const file = parts[1]
             rpc('rollback.list', { session_id: sid }).then((r: any) => {
               const hash = /^\d+$/.test(ref) ? r.checkpoints?.[parseInt(ref) - 1]?.hash : ref
-              if (!hash) { sys(`checkpoint ${ref} not found`); return }
-              rpc('rollback.restore', { session_id: sid, hash, ...(file ? { file } : {}) })
-                .then((d: any) => sys(d.success ? `restored${file ? ` ${file}` : ''}` : `failed: ${d.error || 'unknown'}`))
+
+              if (!hash) {
+                sys(`checkpoint ${ref} not found`)
+
+                return
+              }
+
+              rpc('rollback.restore', { session_id: sid, hash, ...(file ? { file } : {}) }).then((d: any) =>
+                sys(d.success ? `restored${file ? ` ${file}` : ''}` : `failed: ${d.error || 'unknown'}`)
+              )
             })
           }
+
           return true
 
         case 'insights':
-          rpc('insights.get', { days: arg ? parseInt(arg) : 30 })
-            .then((r: any) => sys(`last ${r.days}d: ${r.sessions} sessions, ${r.messages} messages`))
+          rpc('insights.get', { days: arg ? parseInt(arg) : 30 }).then((r: any) =>
+            sys(`last ${r.days}d: ${r.sessions} sessions, ${r.messages} messages`)
+          )
+
           return true
 
         case 'toolsets':
           if (!info?.tools) {
             sys('no toolsets loaded')
+
             return true
           }
-          sys(Object.entries(info.tools).map(([k, vs]) => `${k}: ${vs.length} tools`).join('\n'))
+
+          sys(
+            Object.entries(info.tools)
+              .map(([k, vs]) => `${k}: ${vs.length} tools`)
+              .join('\n')
+          )
+
           return true
 
         case 'paste':
-          sys('clipboard paste: use your terminal\'s paste shortcut (images not yet supported in TUI)')
+          sys("clipboard paste: use your terminal's paste shortcut (images not yet supported in TUI)")
+
           return true
 
         case 'reload-mcp':
+
         case 'reload_mcp':
-          rpc('reload.mcp', { session_id: sid })
-            .then(() => sys('MCP servers reloaded'))
+          rpc('reload.mcp', { session_id: sid }).then(() => sys('MCP servers reloaded'))
+
           return true
 
         case 'browser':
           if (!arg || arg === 'status') {
-            rpc('browser.manage', { action: 'status' })
-              .then((r: any) => sys(r.connected ? `browser: connected (${r.url})` : 'browser: not connected'))
+            rpc('browser.manage', { action: 'status' }).then((r: any) =>
+              sys(r.connected ? `browser: connected (${r.url})` : 'browser: not connected')
+            )
           } else if (arg === 'connect' || arg.startsWith('connect ')) {
             const url = arg.split(/\s+/)[1]
-            rpc('browser.manage', { action: 'connect', ...(url ? { url } : {}) })
-              .then((r: any) => sys(`browser connected: ${r.url}`))
+            rpc('browser.manage', { action: 'connect', ...(url ? { url } : {}) }).then((r: any) =>
+              sys(`browser connected: ${r.url}`)
+            )
           } else if (arg === 'disconnect') {
-            rpc('browser.manage', { action: 'disconnect' })
-              .then(() => sys('browser disconnected'))
+            rpc('browser.manage', { action: 'disconnect' }).then(() => sys('browser disconnected'))
           } else {
             sys('usage: /browser [connect|disconnect|status]')
           }
+
           return true
 
         case 'platforms':
+
         case 'gateway':
           sys('gateway status is not available in TUI mode')
+
           return true
 
         case 'statusbar':
+
         case 'sb':
           setStatusBar(v => !v)
           sys(`status bar ${statusBar ? 'off' : 'on'}`)
+
           return true
 
         case 'voice':
           if (!arg || arg === 'status') {
-            rpc('voice.toggle', { action: 'status' })
-              .then((r: any) => sys(`voice: ${r.enabled ? 'on' : 'off'}`))
+            rpc('voice.toggle', { action: 'status' }).then((r: any) => sys(`voice: ${r.enabled ? 'on' : 'off'}`))
           } else if (arg === 'on' || arg === 'off') {
-            rpc('voice.toggle', { action: arg })
-              .then((r: any) => sys(`voice → ${r.enabled ? 'on' : 'off'}`))
+            rpc('voice.toggle', { action: arg }).then((r: any) => sys(`voice → ${r.enabled ? 'on' : 'off'}`))
           } else if (arg === 'record') {
-            rpc('voice.record', { action: 'start' })
-              .then(() => sys('recording… (use /voice stop to transcribe)'))
+            rpc('voice.record', { action: 'start' }).then(() => sys('recording… (use /voice stop to transcribe)'))
           } else if (arg === 'stop') {
-            rpc('voice.record', { action: 'stop' })
-              .then((r: any) => {
-                if (r.text) { send(r.text) } else { sys('no speech detected') }
-              })
+            rpc('voice.record', { action: 'stop' }).then((r: any) => {
+              if (r.text) {
+                send(r.text)
+              } else {
+                sys('no speech detected')
+              }
+            })
           } else if (arg === 'tts') {
             const last = messages.filter(m => m.role === 'assistant').at(-1)
+
             if (last) {
-              rpc('voice.tts', { text: last.text })
-                .then(() => sys('speaking…'))
+              rpc('voice.tts', { text: last.text }).then(() => sys('speaking…'))
             } else {
               sys('no response to speak')
             }
           } else {
             sys('usage: /voice [on|off|status|record|stop|tts]')
           }
+
           return true
 
         case 'plugins':
-          rpc('plugins.list')
-            .then((r: any) => {
-              if (!r.plugins?.length) { sys('no plugins installed'); return }
-              sys(r.plugins.map((p: any) => `  ${p.name} v${p.version} ${p.enabled ? '✓' : '✗'}`).join('\n'))
-            })
+          rpc('plugins.list').then((r: any) => {
+            if (!r.plugins?.length) {
+              sys('no plugins installed')
+
+              return
+            }
+
+            sys(r.plugins.map((p: any) => `  ${p.name} v${p.version} ${p.enabled ? '✓' : '✗'}`).join('\n'))
+          })
+
           return true
 
         case 'cron':
           if (!arg || arg === 'list') {
-            rpc('cron.manage', { action: 'list' })
-              .then((r: any) => {
-                const jobs = r.jobs || r.schedules || []
-                if (!jobs.length) { sys('no cron jobs'); return }
-                sys(jobs.map((j: any) => `  ${j.name}: ${j.schedule} ${j.paused ? '(paused)' : ''}`).join('\n'))
-              })
+            rpc('cron.manage', { action: 'list' }).then((r: any) => {
+              const jobs = r.jobs || r.schedules || []
+
+              if (!jobs.length) {
+                sys('no cron jobs')
+
+                return
+              }
+
+              sys(jobs.map((j: any) => `  ${j.name}: ${j.schedule} ${j.paused ? '(paused)' : ''}`).join('\n'))
+            })
           } else {
             const parts = arg.split(/\s+/)
             const sub = parts[0]!
+
             if (sub === 'add' || sub === 'create') {
               const name = parts[1] || ''
               const schedule = parts[2] || ''
               const prompt = parts.slice(3).join(' ')
-              rpc('cron.manage', { action: 'add', name, schedule, prompt })
-                .then((r: any) => sys(r.message || r.status || 'created'))
+              rpc('cron.manage', { action: 'add', name, schedule, prompt }).then((r: any) =>
+                sys(r.message || r.status || 'created')
+              )
             } else {
-              rpc('cron.manage', { action: sub, name: parts[1] || '' })
-                .then((r: any) => sys(r.message || r.status || JSON.stringify(r)))
+              rpc('cron.manage', { action: sub, name: parts[1] || '' }).then((r: any) =>
+                sys(r.message || r.status || JSON.stringify(r))
+              )
             }
           }
+
           return true
 
         case 'update':
           sys('update not available in TUI mode — run: pip install -U hermes-agent')
+
+          return true
+
+        case 'hermes':
+          if (!arg) {
+            sys(
+              'usage: /hermes <args…>  non-interactive `hermes` CLI (e.g. sessions list, chat -q "hi"). Interactive setup/browse/edit must run in a separate terminal.'
+            )
+
+            return true
+          }
+
+          rpc('cli.exec', { argv: arg.split(/\s+/).filter(Boolean) })
+            .then((r: any) => {
+              if (r.blocked) {
+                sys(r.hint ?? 'blocked')
+
+                return
+              }
+
+              sys(r.output ?? '(no output)')
+
+              if (r.code !== 0) {
+                sys(`exit ${r.code}`)
+              }
+            })
+            .catch((e: Error) => sys(`error: ${e.message}`))
+
           return true
 
         case 'model':
@@ -1017,8 +1249,7 @@ export function App({ gw }: { gw: GatewayClient }) {
             return true
           }
 
-          rpc('config.set', { key: 'model', value: arg })
-            .then(() => sys(`model → ${arg}`))
+          rpc('config.set', { key: 'model', value: arg }).then(() => sys(`model → ${arg}`))
 
           return true
 
@@ -1029,8 +1260,7 @@ export function App({ gw }: { gw: GatewayClient }) {
             return true
           }
 
-          rpc('config.set', { key: 'skin', value: arg })
-            .then(() => sys(`skin → ${arg} (restart to apply)`))
+          rpc('config.set', { key: 'skin', value: arg }).then(() => sys(`skin → ${arg} (restart to apply)`))
 
           return true
 
@@ -1060,11 +1290,12 @@ export function App({ gw }: { gw: GatewayClient }) {
                 })
                 .catch(() => sys(`unknown command: /${name}`))
             })
+
           return true
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [compact, gw, info, lastUserMsg, messages, newSession, rpc, send, sid, status, sys, usage, statusBar]
+    [catalog, compact, gw, info, lastUserMsg, messages, newSession, rpc, send, sid, status, sys, usage, statusBar]
   )
 
   const submit = useCallback(
@@ -1320,7 +1551,7 @@ export function App({ gw }: { gw: GatewayClient }) {
           />
         )}
 
-        {!blocked && input.startsWith('/') && <CommandPalette filter={input} t={theme} />}
+        {!blocked && input.startsWith('/') && <CommandPalette matches={paletteForLine(input, catalog)} t={theme} />}
 
         <QueuedMessages cols={cols} queued={queuedDisplay} queueEditIdx={queueEditIdx} t={theme} />
 

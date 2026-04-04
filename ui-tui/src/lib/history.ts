@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, appendFileSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
@@ -17,34 +17,51 @@ function decode(s: string): string {
 }
 
 export function load(): string[] {
-  if (cache) return cache
+  if (cache) {
+    return cache
+  }
+
   try {
     if (existsSync(file)) {
-      cache = readFileSync(file, 'utf8')
-        .split('\n')
-        .filter(Boolean)
-        .map(decode)
-        .slice(-MAX)
+      cache = readFileSync(file, 'utf8').split('\n').filter(Boolean).map(decode).slice(-MAX)
     } else {
       cache = []
     }
   } catch {
     cache = []
   }
+
   return cache
 }
 
 export function append(line: string): void {
   const trimmed = line.trim()
-  if (!trimmed) return
+
+  if (!trimmed) {
+    return
+  }
+
   const items = load()
-  if (items.at(-1) === trimmed) return
+
+  if (items.at(-1) === trimmed) {
+    return
+  }
+
   items.push(trimmed)
-  if (items.length > MAX) items.splice(0, items.length - MAX)
+
+  if (items.length > MAX) {
+    items.splice(0, items.length - MAX)
+  }
+
   try {
-    if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
+    if (!existsSync(dir)) {
+      mkdirSync(dir, { recursive: true })
+    }
+
     appendFileSync(file, encode(trimmed) + '\n')
-  } catch { /* ignore */ }
+  } catch {
+    /* ignore */
+  }
 }
 
 export function all(): string[] {

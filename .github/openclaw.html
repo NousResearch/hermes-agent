@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Login — OpenClaw Cloud</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#0d1117;color:#c9d1d9;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh}
+.login-card{background:#161b22;border:1px solid #30363d;border-radius:12px;padding:40px;width:100%;max-width:400px;box-shadow:0 8px 32px rgba(0,0,0,.4)}
+.logo{text-align:center;margin-bottom:24px}
+.logo-icon{font-size:48px;margin-bottom:8px}
+.logo h1{font-size:22px;font-weight:600;color:#e6edf3}
+.logo p{font-size:13px;color:#8b949e;margin-top:4px}
+.form-group{margin-bottom:16px}
+.form-group label{display:block;font-size:13px;color:#8b949e;font-weight:500;margin-bottom:6px}
+.form-group input{width:100%;background:#0d1117;border:1px solid #30363d;color:#c9d1d9;padding:10px 14px;border-radius:6px;font-size:14px;transition:border-color .15s}
+.form-group input:focus{border-color:#58a6ff;outline:none}
+.btn-login{width:100%;padding:12px;background:#238636;color:#fff;border:none;border-radius:6px;font-size:15px;font-weight:600;cursor:pointer;transition:background .15s;margin-top:8px}
+.btn-login:hover{background:#2ea043}
+.btn-login:disabled{opacity:.5;cursor:not-allowed}
+.error-msg{background:rgba(248,81,73,.1);border:1px solid rgba(248,81,73,.3);color:#f85149;padding:10px 14px;border-radius:6px;font-size:13px;margin-bottom:16px;display:none}
+</style>
+</head>
+<body>
+<div class="login-card">
+  <div class="logo">
+    <div class="logo-icon">&#128029;</div>
+    <h1>pornhub cloud
+    </h1>
+    <p>Sign in to access the control panel</p>
+  </div>
+  <div class="error-msg" id="errorMsg"></div>
+  <form id="loginForm">
+    <div class="form-group">
+      <label for="username">Username</label>
+      <input type="text" id="username" name="username" autocomplete="username" autofocus required>
+    </div>
+    <div class="form-group">
+      <label for="password">Password</label>
+      <input type="password" id="password" name="password" autocomplete="current-password" required>
+    </div>
+    <button type="submit" class="btn-login" id="btnLogin">Sign in</button>
+  </form>
+</div>
+<script>
+document.getElementById('loginForm').addEventListener('submit', function(e) {
+  e.preventDefault();
+  var btn = document.getElementById('btnLogin');
+  var errEl = document.getElementById('errorMsg');
+  btn.disabled = true;
+  btn.textContent = 'Signing in...';
+  errEl.style.display = 'none';
+
+  fetch('/api/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      username: document.getElementById('username').value,
+      password: document.getElementById('password').value
+    })
+  }).then(function(r) { return r.json(); }).then(function(data) {
+    if (data.ok) {
+      window.location.href = '/';
+    } else {
+      errEl.textContent = data.error || 'Invalid credentials';
+      errEl.style.display = 'block';
+      btn.disabled = false;
+      btn.textContent = 'Sign in';
+    }
+  }).catch(function(err) {
+    errEl.textContent = 'Connection error: ' + err.message;
+    errEl.style.display = 'block';
+    btn.disabled = false;
+    btn.textContent = 'Sign in';
+  });
+});
+</script>
+</body>
+</html>
+

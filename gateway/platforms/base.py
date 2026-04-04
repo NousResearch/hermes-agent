@@ -1068,6 +1068,28 @@ class BasePlatformAdapter(ABC):
                     logger.error("[%s] Approval dispatch failed: %s", self.name, e, exc_info=True)
                 return
 
+            # /status must also bypass the active-session guard so it always
+            # returns a system-generated response instead of being queued as
+            # user text and passed to the agent (#5046).
+            if cmd == "status":
+                logger.debug(
+                    "[%s] Status command bypassing active-session guard for %s",
+                    self.name, session_key,
+                )
+                try:
+                    _thread_meta = {"thread_id": event.source.thread_id} if event.source.thread_id else None
+                    response = await self._message_handler(event)
+                    if response:
+                        await self._send_with_retry(
+                            chat_id=event.source.chat_id,
+                            content=response,
+                            reply_to=event.message_id,
+                            metadata=_thread_meta,
+                        )
+                except Exception as e:
+                    logger.error("[%s] Status dispatch failed: %s", self.name, e, exc_info=True)
+                return
+
             # Special case: photo bursts/albums frequently arrive as multiple near-
             # simultaneous messages. Queue them without interrupting the active run,
             # then process them immediately after the current task finishes.

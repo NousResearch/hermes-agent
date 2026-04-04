@@ -172,7 +172,7 @@ def _is_third_party_anthropic_endpoint(base_url: str | None) -> bool:
     """
     if not base_url:
         return False  # No base_url = direct Anthropic API
-    normalized = base_url.rstrip("/").lower()
+    normalized = str(base_url).rstrip("/").lower()
     if "anthropic.com" in normalized:
         return False  # Direct Anthropic API — OAuth applies
     return True  # Any other endpoint is a third-party proxy
@@ -187,7 +187,7 @@ def _requires_bearer_auth(base_url: str | None) -> bool:
     """
     if not base_url:
         return False
-    normalized = base_url.rstrip("/").lower()
+    normalized = str(base_url).rstrip("/").lower()
     return normalized.startswith("https://api.minimax.io/anthropic") or normalized.startswith(
         "https://api.minimaxi.com/anthropic"
     )

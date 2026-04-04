@@ -449,6 +449,11 @@ class DiscordAdapter(BasePlatformAdapter):
         self._bot_task: Optional[asyncio.Task] = None
         # Cap to prevent unbounded growth (Discord threads get archived).
         self._MAX_TRACKED_THREADS = 500
+        # Dedup cache: message_id → timestamp.  Prevents duplicate bot
+        # responses when Discord RESUME replays events after reconnects.
+        self._seen_messages: Dict[str, float] = {}
+        self._SEEN_TTL = 300   # 5 minutes
+        self._SEEN_MAX = 2000  # prune threshold
 
     async def connect(self) -> bool:
         """Connect to Discord and start receiving events."""
@@ -539,6 +544,19 @@ class DiscordAdapter(BasePlatformAdapter):
 
             @self._client.event
             async def on_message(message: DiscordMessage):
+                # Dedup: Discord RESUME replays events after reconnects (#4777)
+                msg_id = str(message.id)
+                now = time.time()
+                if msg_id in adapter_self._seen_messages:
+                    return
+                adapter_self._seen_messages[msg_id] = now
+                if len(adapter_self._seen_messages) > adapter_self._SEEN_MAX:
+                    cutoff = now - adapter_self._SEEN_TTL
+                    adapter_self._seen_messages = {
+                        k: v for k, v in adapter_self._seen_messages.items()
+                        if v > cutoff
+                    }
+
                 # Always ignore our own messages
                 if message.author == self._client.user:
                     return

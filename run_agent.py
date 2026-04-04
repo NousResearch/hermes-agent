@@ -4488,6 +4488,29 @@ class AIAgent:
                     pass
                 raise InterruptedError("Agent interrupted during streaming API call")
         if result["error"] is not None:
+            if deltas_were_sent["yes"]:
+                # Streaming failed AFTER some tokens were already delivered to
+                # the platform.  Re-raising would let the outer retry loop make
+                # a new API call, creating a duplicate message.  Return a
+                # partial "stop" response instead so the outer loop treats this
+                # turn as complete (no retry, no fallback).
+                logger.warning(
+                    "Partial stream delivered before error; returning stub "
+                    "response to prevent duplicate messages: %s",
+                    result["error"],
+                )
+                _stub_msg = SimpleNamespace(
+                    role="assistant", content=None, tool_calls=None,
+                    reasoning_content=None,
+                )
+                return SimpleNamespace(
+                    id="partial-stream-stub",
+                    model=getattr(self, "model", "unknown"),
+                    choices=[SimpleNamespace(
+                        index=0, message=_stub_msg, finish_reason="stop",
+                    )],
+                    usage=None,
+                )
             raise result["error"]
         return result["response"]
 

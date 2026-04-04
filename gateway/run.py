@@ -3049,11 +3049,31 @@ class GatewayRunner:
                             {"role": "assistant", "content": response, "timestamp": ts}
                         )
                 else:
-                    # The agent already persisted these messages to SQLite via
-                    # _flush_messages_to_session_db(), so skip the DB write here
-                    # to prevent the duplicate-write bug (#860).  We still write
-                    # to JSONL for backward compatibility and as a backup.
-                    agent_persisted = self._session_db is not None
+                    # Check if agent actually persisted to SQLite. The agent's
+                    # _flush_messages_to_session_db() may fail silently (locked,
+                    # busy, timeout), so we verify by counting messages in DB.
+                    # If count is low, we persist from gateway to prevent data loss.
+                    agent_persisted_count = 0
+                    if self._session_db is not None:
+                        try:
+                            agent_persisted_count = self._session_db.count_messages(session_entry.session_id)
+                        except Exception:
+                            pass  # Will trigger fallback persistence
+                    
+                    # Expected count: messages from this turn (excluding system)
+                    expected_count = len([m for m in new_messages if m.get("role") != "system"])
+                    
+                    # If DB has fewer messages than expected, agent failed to persist.
+                    # Persist from gateway to ensure SQLite has the data.
+                    agent_persisted_ok = agent_persisted_count >= expected_count and expected_count > 0
+                    
+                    if not agent_persisted_ok and self._session_db is not None:
+                        logger.warning(
+                            "Agent failed to persist session %s to SQLite (%d < %d msgs). "
+                            "Gateway will persist.",
+                            session_entry.session_id, agent_persisted_count, expected_count
+                        )
+                    
                     for msg in new_messages:
                         # Skip system messages (they're rebuilt each run)
                         if msg.get("role") == "system":
@@ -3062,7 +3082,7 @@ class GatewayRunner:
                         entry = {**msg, "timestamp": ts}
                         self.session_store.append_to_transcript(
                             session_entry.session_id, entry,
-                            skip_db=agent_persisted,
+                            skip_db=agent_persisted_ok,
                         )
             
             # Token counts and model are now persisted by the agent directly.

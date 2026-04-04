@@ -1,0 +1,55 @@
+diff --git a/gateway/platforms/signal.py b/gateway/platforms/signal.py
+index 1234567..abcdefg 100644
+--- a/gateway/platforms/signal.py
++++ b/gateway/platforms/signal.py
+@@ -749,6 +749,45 @@ class SignalAdapter(BasePlatformAdapter):
+             return SendResult(success=True)
+         return SendResult(success=False, error="RPC send document failed")
+ 
++    async def send_image_file(
++        self,
++        chat_id: str,
++        image_path: str,
++        caption: Optional[str] = None,
++        reply_to: Optional[str] = None,
++        metadata: Optional[Dict[str, Any]] = None,
++        **kwargs,
++    ) -> SendResult:
++        """Send a local image file natively via Signal.
++
++        This method is called by the gateway's media delivery flow when
++        MEDIA:/path/to/image.png tags are extracted from agent responses.
++        
++        Unlike send_image() which takes a URL, this takes a local file path
++        and sends it directly via signal-cli RPC.
++        """
++        await self._stop_typing_indicator(chat_id)
++
++        if not Path(image_path).exists():
++            return SendResult(success=False, error=f"Image file not found: {image_path}")
++
++        # Validate size
++        file_size = Path(image_path).stat().st_size
++        if file_size > SIGNAL_MAX_ATTACHMENT_SIZE:
++            return SendResult(success=False, error=f"Image too large ({file_size} bytes)")
++
++        params: Dict[str, Any] = {
++            "account": self.account,
++            "message": caption or "",
++            "attachments": [image_path],
++        }
++
++        if chat_id.startswith("group:"):
++            params["groupId"] = chat_id[6:]
++        else:
++            params["recipient"] = [chat_id]
++
++        result = await self._rpc("send", params)
++        if result is not None:
++            self._track_sent_timestamp(result)
++            return SendResult(success=True)
++        return SendResult(success=False, error="RPC send image file failed")
++
+     # ------------------------------------------------------------------
+     # Typing Indicators
+     # ------------------------------------------------------------------

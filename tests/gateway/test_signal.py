@@ -368,3 +368,101 @@ class TestSignalSendMessage:
         # Just verify the import works and Signal is a valid platform
         from gateway.config import Platform
         assert Platform.SIGNAL.value == "signal"
+
+
+# ---------------------------------------------------------------------------
+# send_image_file method
+# ---------------------------------------------------------------------------
+
+class TestSignalSendImageFile:
+    @pytest.mark.asyncio
+    async def test_send_image_file_sends_via_rpc(self, monkeypatch, tmp_path):
+        """send_image_file should send image via signal-cli RPC."""
+        adapter = _make_signal_adapter(monkeypatch)
+        mock_rpc, captured = _stub_rpc({"timestamp": 1234567890})
+        adapter._rpc = mock_rpc
+        adapter._stop_typing_indicator = AsyncMock()
+
+        # Create test image
+        img_path = tmp_path / "test.png"
+        img_path.write_bytes(b"PNG fake image data")
+
+        result = await adapter.send_image_file(chat_id="+155****4567", image_path=str(img_path))
+
+        assert result.success is True
+        assert len(captured) == 1
+        assert captured[0]["method"] == "send"
+        assert captured[0]["params"]["recipient"] == ["+155****4567"]
+        assert captured[0]["params"]["attachments"] == [str(img_path)]
+
+    @pytest.mark.asyncio
+    async def test_send_image_file_to_group(self, monkeypatch, tmp_path):
+        """send_image_file should handle group chats."""
+        adapter = _make_signal_adapter(monkeypatch)
+        mock_rpc, captured = _stub_rpc({"timestamp": 1234567890})
+        adapter._rpc = mock_rpc
+        adapter._stop_typing_indicator = AsyncMock()
+
+        # Create test image
+        img_path = tmp_path / "test.png"
+        img_path.write_bytes(b"PNG fake image data")
+
+        result = await adapter.send_image_file(
+            chat_id="group:xyz123==", image_path=str(img_path), caption="Test caption"
+        )
+
+        assert result.success is True
+        assert captured[0]["params"]["groupId"] == "xyz123=="
+        assert captured[0]["params"]["message"] == "Test caption"
+
+    @pytest.mark.asyncio
+    async def test_send_image_file_missing_file(self, monkeypatch):
+        """send_image_file should return error for nonexistent file."""
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter._stop_typing_indicator = AsyncMock()
+
+        result = await adapter.send_image_file(chat_id="+155****4567", image_path="/nonexistent.png")
+
+        assert result.success is False
+        assert "not found" in result.error.lower()
+
+    @pytest.mark.asyncio
+    async def test_send_image_file_size_limit(self, monkeypatch, tmp_path):
+        """send_image_file should reject oversized files."""
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter._stop_typing_indicator = AsyncMock()
+
+        # Create a file that reports large size via mock
+        img_path = tmp_path / "huge.png"
+        img_path.write_bytes(b"small")
+
+        # Mock stat to return huge size
+        import stat
+        original_stat = Path.stat
+
+        def mock_stat(self):
+            class FakeStat:
+                st_size = 200 * 1024 * 1024  # 200 MB > 100 MB limit
+            return FakeStat()
+
+        with patch.object(Path, "stat", mock_stat):
+            result = await adapter.send_image_file(chat_id="+155****4567", image_path=str(img_path))
+
+        assert result.success is False
+        assert "too large" in result.error.lower()
+
+    @pytest.mark.asyncio
+    async def test_send_image_file_rpc_failure(self, monkeypatch, tmp_path):
+        """send_image_file should return error when RPC fails."""
+        adapter = _make_signal_adapter(monkeypatch)
+        mock_rpc, captured = _stub_rpc(None)  # RPC returns None on failure
+        adapter._rpc = mock_rpc
+        adapter._stop_typing_indicator = AsyncMock()
+
+        img_path = tmp_path / "test.png"
+        img_path.write_bytes(b"PNG fake image data")
+
+        result = await adapter.send_image_file(chat_id="+155****4567", image_path=str(img_path))
+
+        assert result.success is False
+        assert "failed" in result.error.lower()

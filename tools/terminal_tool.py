@@ -1058,6 +1058,7 @@ def terminal_tool(
 
         # Pre-exec security checks (tirith + dangerous command detection)
         # Skip check if force=True (user has confirmed they want to run it)
+        approval_note = None
         if not force:
             approval = _check_all_guards(command, env_type)
             if not approval["approved"]:
@@ -1084,6 +1085,13 @@ def terminal_tool(
                     "error": approval.get("message", fallback_msg),
                     "status": "blocked"
                 }, ensure_ascii=False)
+            # Track whether approval was explicitly granted by the user
+            if approval.get("user_approved"):
+                desc = approval.get("description", "flagged as dangerous")
+                approval_note = f"Command required approval ({desc}) and was approved by the user."
+            elif approval.get("smart_approved"):
+                desc = approval.get("description", "flagged as dangerous")
+                approval_note = f"Command was flagged ({desc}) and auto-approved by smart approval."
 
         # Prepare command for execution
         if background:
@@ -1121,6 +1129,8 @@ def terminal_tool(
                     "exit_code": 0,
                     "error": None,
                 }
+                if approval_note:
+                    result_data["approval"] = approval_note
 
                 # Transparent timeout clamping note
                 max_timeout = effective_timeout
@@ -1232,11 +1242,14 @@ def terminal_tool(
             from agent.redact import redact_sensitive_text
             output = redact_sensitive_text(output.strip()) if output else ""
 
-            return json.dumps({
+            result_dict = {
                 "output": output,
                 "exit_code": returncode,
                 "error": None
-            }, ensure_ascii=False)
+            }
+            if approval_note:
+                result_dict["approval"] = approval_note
+            return json.dumps(result_dict, ensure_ascii=False)
 
     except Exception as e:
         import traceback

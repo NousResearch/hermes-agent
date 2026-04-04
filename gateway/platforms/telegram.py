@@ -2475,6 +2475,38 @@ class TelegramAdapter(BasePlatformAdapter):
 
         return None
 
+    def _get_group_topic_info(self, chat_id: str, thread_id: str) -> Optional[Dict[str, Any]]:
+        """Look up the config for a group/supergroup forum topic thread.
+
+        Reads from ``config.extra['group_topics']``, which mirrors the DM
+        topic structure::
+
+            platforms:
+              telegram:
+                extra:
+                  group_topics:
+                    - chat_id: -1001234567890
+                      topics:
+                        - name: Engineering
+                          thread_id: 42
+                          skill: my-skill-name   # optional
+
+        Returns the topic config dict (``name``, ``skill``, …) or ``None``.
+        """
+        group_topics_config: list = self.config.extra.get("group_topics", [])
+        thread_id_int = int(thread_id)
+        for chat_entry in group_topics_config:
+            if str(chat_entry.get("chat_id", "")) == str(chat_id):
+                for topic in chat_entry.get("topics", []):
+                    tid = topic.get("thread_id")
+                    if tid is not None and int(tid) == thread_id_int:
+                        logger.debug(
+                            "[%s] Group topic binding: chat=%s thread=%s topic=%s",
+                            self.name, chat_id, thread_id, topic.get("name"),
+                        )
+                        return topic
+        return None
+
     def _cache_dm_topic_from_message(self, chat_id: str, thread_id: str, topic_name: str) -> None:
         """Cache a thread_id -> topic_name mapping discovered from an incoming message."""
         cache_key = f"{chat_id}:{topic_name}"
@@ -2518,17 +2550,12 @@ class TelegramAdapter(BasePlatformAdapter):
                         chat_topic = created_name
 
         elif chat_type == "group" and thread_id_str:
-            # Group/supergroup forum topic skill binding via config.extra['group_topics']
-            group_topics_config: list = self.config.extra.get("group_topics", [])
-            for chat_entry in group_topics_config:
-                if str(chat_entry.get("chat_id", "")) == str(chat.id):
-                    for topic in chat_entry.get("topics", []):
-                        tid = topic.get("thread_id")
-                        if tid is not None and str(tid) == thread_id_str:
-                            chat_topic = topic.get("name")
-                            topic_skill = topic.get("skill")
-                            break
-                    break
+            # Skill + topic-name binding for group/supergroup forum topics.
+            # Reads from platforms.telegram.extra.group_topics (mirrors dm_topics structure).
+            group_topic_info = self._get_group_topic_info(str(chat.id), thread_id_str)
+            if group_topic_info:
+                chat_topic = group_topic_info.get("name")
+                topic_skill = group_topic_info.get("skill")
 
         # Build source
         source = self.build_source(

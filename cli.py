@@ -4363,6 +4363,15 @@ class HermesCLI:
                             try:
                                 if self._session_db.set_session_title(self.session_id, new_title):
                                     _cprint(f"  Session title set: {new_title}")
+                                    try:
+                                        import os as _os
+                                        _seq = f"\x1b]0;⚕\x07".encode("utf-8")
+                                        _fd = _os.open(_os.ctermid(), _os.O_WRONLY | _os.O_NOCTTY)
+                                        _os.write(_fd, _seq)
+                                        _os.close(_fd)
+                                        _cprint(f"  {_DIM}Tab title updated via ctermid{_RST}")
+                                    except Exception as _te:
+                                        _cprint(f"  {_DIM}Tab title error: {_te}{_RST}")
                                     self._set_terminal_title(session_title=new_title)
                                 else:
                                     _cprint("  Session not found in database.")

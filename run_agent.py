@@ -5486,6 +5486,17 @@ class AIAgent:
                             old_text=args.get("old_text"),
                             store=self._memory_store,
                         )
+                        # Bridge: mirror flush writes to external memory providers
+                        if self._memory_manager and args.get("action") in ("add", "replace"):
+                            try:
+                                self._memory_manager.on_memory_write(
+                                    args.get("action", ""),
+                                    flush_target,
+                                    args.get("content", ""),
+                                    old_text=args.get("old_text"),
+                                )
+                            except Exception:
+                                pass
                         if not self.quiet_mode:
                             print(f"  🧠 Memory flush: saved to {args.get('target', 'memory')}")
                     except Exception as e:
@@ -5514,7 +5525,12 @@ class AIAgent:
         # Notify external memory provider before compression discards context
         if self._memory_manager:
             try:
-                self._memory_manager.on_pre_compress(messages)
+                pre_compress_context = self._memory_manager.on_pre_compress(messages)
+                if pre_compress_context and pre_compress_context.strip():
+                    messages.append({
+                        "role": "user",
+                        "content": f"[Memory provider context — preserve in summary]\n{pre_compress_context}",
+                    })
             except Exception:
                 pass
 

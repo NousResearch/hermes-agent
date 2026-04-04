@@ -325,11 +325,15 @@ class MemoryManager:
         if "hermes_home" not in kwargs:
             from hermes_constants import get_hermes_home
             kwargs["hermes_home"] = str(get_hermes_home())
+        failed = []
         for provider in self._providers:
             try:
                 provider.initialize(session_id=session_id, **kwargs)
             except Exception as e:
                 logger.warning(
-                    "Memory provider '%s' initialize failed: %s",
+                    "Memory provider '%s' initialize failed, removing: %s",
                     provider.name, e,
                 )
+                failed.append(provider)
+        for p in failed:
+            self._providers.remove(p)

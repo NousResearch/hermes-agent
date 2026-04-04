@@ -5520,6 +5520,17 @@ class HermesCLI:
 
         candidates = _get_chrome_debug_candidates(system)
 
+    @staticmethod
+    def _try_launch_chrome_debug(port: int, system: str,
+                                 user_data_dir: Optional[str] = None) -> bool:
+        """Launch Chrome with remote debugging on *port*.
+
+        user_data_dir: dedicated Chrome user-data dir (e.g. ~/.hermes/chrome-profile).
+        Chrome's security policy blocks CDP on the real default profile,
+        so a dedicated directory is required for persistent logins.
+        """
+        import subprocess as _sp
+        candidates = HermesCLI._chrome_candidates(system)
         if not candidates:
             return False
 
@@ -5545,14 +5556,51 @@ class HermesCLI:
         except Exception:
             return False
 
-    def _handle_browser_command(self, cmd: str):
-        """Handle /browser connect|disconnect|status — manage live Chrome CDP connection."""
-        import platform as _plat
+    @classmethod
+    def _ensure_chrome_debug(cls, port: int, user_data_dir: Optional[str] = None) -> bool:
+        """Ensure Chrome is listening on *port*, launching it if needed.
+        Returns True if the port is (or becomes) reachable within ~5 s.
+        """
+        import platform as _plat, socket, time as _time
 
+        def _check():
+            try:
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s.settimeout(1)
+                s.connect(("127.0.0.1", port))
+                s.close()
+                return True
+            except (OSError, socket.timeout):
+                return False
+
+        if _check():
+            return True
+        if not cls._try_launch_chrome_debug(port, _plat.system(), user_data_dir):
+            return False
+        for _ in range(10):
+            _time.sleep(0.5)
+            if _check():
+                return True
+        return False
+
+    def _handle_browser_command(self, cmd: str):
+        """Handle /browser connect|disconnect|status — manage live Chrome CDP connection.
+
+        Usage:
+          /browser connect        — auto-launch Chrome with Hermes profile (from config)
+          /browser connect setup  — first-time: create profile dir, open Chrome to log in
+          /browser connect <url>  — connect to an already-running Chrome at a custom CDP URL
+          /browser disconnect     — revert to default headless / Browserbase mode
+          /browser status         — show current connection state
+        """
         parts = cmd.strip().split(None, 1)
         sub = parts[1].lower().strip() if len(parts) > 1 else "status"
 
-        _DEFAULT_CDP = "http://localhost:9222"
+        # Read browser config
+        _browser_cfg = CLI_CONFIG.get("browser", {})
+        _profile_dir = str(_browser_cfg.get("hermes_profile_dir") or "~/.hermes/chrome-profile").strip()
+        _cdp_port = int(_browser_cfg.get("cdp_port") or 9222)
+        _DEFAULT_CDP = f"http://localhost:{_cdp_port}"
         current = os.environ.get("BROWSER_CDP_URL", "").strip()
 
         if sub.startswith("connect"):
@@ -5560,7 +5608,6 @@ class HermesCLI:
             connect_parts = cmd.strip().split(None, 2)  # ["/browser", "connect", "ws://..."]
             cdp_url = connect_parts[2].strip() if len(connect_parts) > 2 else _DEFAULT_CDP
 
-            # Clear any existing browser sessions so the next tool call uses the new backend
             try:
                 from tools.browser_tool import cleanup_all_browsers
                 cleanup_all_browsers()
@@ -5569,24 +5616,7 @@ class HermesCLI:
 
             print()
 
-            # Extract port for connectivity checks
-            _port = 9222
-            try:
-                _port = int(cdp_url.rsplit(":", 1)[-1].split("/")[0])
-            except (ValueError, IndexError):
-                pass
-
-            # Check if Chrome is already listening on the debug port
-            import socket
-            _already_open = False
-            try:
-                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                s.settimeout(1)
-                s.connect(("127.0.0.1", _port))
-                s.close()
-                _already_open = True
-            except (OSError, socket.timeout):
-                pass
+            _already_open = self._ensure_chrome_debug(_cdp_port, _user_data_dir)
 
             if _already_open:
                 print(f"   ✓ Chrome is already listening on port {_port}")
@@ -5639,7 +5669,11 @@ class HermesCLI:
                     print(f"     Launch Chrome manually:")
                     print(f"     {chrome_cmd}")
             else:
-                print(f"   ⚠ Port {_port} is not reachable at {cdp_url}")
+                print(f"   ⚠ Chrome didn't respond on port {_cdp_port}")
+                if _user_data_dir:
+                    chrome_bin = (self._chrome_candidates(__import__("platform").system()) or ["Google Chrome"])[0]
+                    print("   Try manually:")
+                    print(f'   "{chrome_bin}" --remote-debugging-port={_cdp_port} --user-data-dir="{os.path.expanduser(_user_data_dir)}"')
 
             os.environ["BROWSER_CDP_URL"] = cdp_url
             print()

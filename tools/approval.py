@@ -724,7 +724,8 @@ def check_all_command_guards(command: str, env_type: str,
             logger.debug("Smart approval: auto-approved '%s' (%s)",
                          command[:60], combined_desc_for_llm)
             return {"approved": True, "message": None,
-                    "smart_approved": True}
+                    "smart_approved": True,
+                    "description": combined_desc_for_llm}
         elif verdict == "deny":
             combined_desc_for_llm = "; ".join(desc for _, desc, _ in warnings)
             return {
@@ -819,7 +820,8 @@ def check_all_command_guards(command: str, env_type: str,
                     approve_permanent(key)
                     save_permanent_allowlist(_permanent_approved)
 
-            return {"approved": True, "message": None}
+            return {"approved": True, "message": None,
+                    "user_approved": True, "description": combined_desc}
 
         # Fallback: no gateway callback registered (e.g. cron, batch).
         # Return approval_required for backward compat.
@@ -865,4 +867,5 @@ def check_all_command_guards(command: str, env_type: str,
             approve_permanent(key)
             save_permanent_allowlist(_permanent_approved)
 
-    return {"approved": True, "message": None}
+    return {"approved": True, "message": None,
+            "user_approved": True, "description": combined_desc}

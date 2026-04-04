@@ -131,6 +131,10 @@ if _config_path.exists():
             }
             for _cfg_key, _env_var in _terminal_env_map.items():
                 if _cfg_key in _terminal_cfg:
+                    # Don't clobber TERMINAL_CWD if cli.py already resolved
+                    # a relative path (like ".") to an absolute path.
+                    if _env_var == "TERMINAL_CWD" and os.path.isabs(os.environ.get("TERMINAL_CWD", "")):
+                        continue
                     _val = _terminal_cfg[_cfg_key]
                     if isinstance(_val, list):
                         os.environ[_env_var] = json.dumps(_val)

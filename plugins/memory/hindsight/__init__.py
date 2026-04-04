@@ -141,6 +141,7 @@ def _load_config() -> dict:
     return {
         "mode": os.environ.get("HINDSIGHT_MODE", "cloud"),
         "apiKey": os.environ.get("HINDSIGHT_API_KEY", ""),
+        "apiUrl": os.environ.get("HINDSIGHT_API_URL", ""),
         "banks": {
             "hermes": {
                 "bankId": os.environ.get("HINDSIGHT_BANK_ID", "hermes"),
@@ -205,6 +206,7 @@ class HindsightMemoryProvider(MemoryProvider):
         return [
             {"key": "mode", "description": "Cloud API or local embedded mode", "default": "cloud", "choices": ["cloud", "local"]},
             {"key": "api_key", "description": "Hindsight Cloud API key", "secret": True, "env_var": "HINDSIGHT_API_KEY", "url": "https://app.hindsight.vectorize.io"},
+            {"key": "api_url", "description": "API endpoint for self-hosted Hindsight (env: HINDSIGHT_API_URL)", "default": _DEFAULT_API_URL},
             {"key": "bank_id", "description": "Memory bank identifier", "default": "hermes"},
             {"key": "budget", "description": "Recall thoroughness", "default": "mid", "choices": ["low", "mid", "high"]},
             {"key": "llm_provider", "description": "LLM provider for local mode", "default": "anthropic", "choices": ["anthropic", "openai", "groq", "ollama"]},
@@ -224,7 +226,13 @@ class HindsightMemoryProvider(MemoryProvider):
                 llm_model=embed.get("llmModel", ""),
             )
         from hindsight_client import Hindsight
-        return Hindsight(api_key=self._api_key, timeout=30.0)
+        # Resolve base_url: config -> env -> default
+        base_url = (
+            self._config.get("apiUrl")
+            or os.environ.get("HINDSIGHT_API_URL")
+            or _DEFAULT_API_URL
+        )
+        return Hindsight(base_url=base_url, api_key=self._api_key, timeout=120.0)
 
     def initialize(self, session_id: str, **kwargs) -> None:
         self._config = _load_config()

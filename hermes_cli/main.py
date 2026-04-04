@@ -4389,9 +4389,12 @@ For more help on a command:
         help="Authenticate with an inference provider",
         description="Run OAuth device authorization flow for Hermes CLI"
     )
+    # Dynamically build list of OAuth providers from registry
+    from hermes_cli.auth import PROVIDER_REGISTRY
+    oauth_provider_ids = [pid for pid, cfg in PROVIDER_REGISTRY.items() if 'oauth' in cfg.auth_type]
     login_parser.add_argument(
         "--provider",
-        choices=["nous", "openai-codex"],
+        choices=sorted(oauth_provider_ids),
         default=None,
         help="Provider to authenticate with (default: nous)"
     )
@@ -4443,9 +4446,10 @@ For more help on a command:
         help="Clear authentication for an inference provider",
         description="Remove stored credentials and reset provider config"
     )
+    # Dynamically build list of OAuth providers from registry (same as login)
     logout_parser.add_argument(
         "--provider",
-        choices=["nous", "openai-codex"],
+        choices=sorted(oauth_provider_ids),
         default=None,
         help="Provider to log out from (default: active provider)"
     )

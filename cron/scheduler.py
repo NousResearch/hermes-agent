@@ -13,6 +13,7 @@ import concurrent.futures
 import json
 import logging
 import os
+import subprocess
 import sys
 import traceback
 
@@ -229,10 +230,88 @@ def _deliver_result(job: dict, content: str) -> None:
         logger.info("Job '%s': delivered to %s:%s", job["id"], platform_name, chat_id)
 
 
+_SCRIPT_TIMEOUT = 120  # seconds
+
+
+def _run_job_script(script_path: str) -> tuple[bool, str]:
+    """Execute a cron job's data-collection script and capture its output.
+
+    Args:
+        script_path: Path to a Python script (resolved via HERMES_HOME/scripts/ or absolute).
+
+    Returns:
+        (success, output) — on failure *output* contains the error message so the
+        LLM can report the problem to the user.
+    """
+    from hermes_constants import get_hermes_home
+
+    path = Path(script_path).expanduser()
+    if not path.is_absolute():
+        # Resolve relative paths against HERMES_HOME/scripts/
+        path = get_hermes_home() / "scripts" / path
+
+    if not path.exists():
+        return False, f"Script not found: {path}"
+    if not path.is_file():
+        return False, f"Script path is not a file: {path}"
+
+    try:
+        result = subprocess.run(
+            [sys.executable, str(path)],
+            capture_output=True,
+            text=True,
+            timeout=_SCRIPT_TIMEOUT,
+            cwd=str(path.parent),
+        )
+        stdout = (result.stdout or "").strip()
+        stderr = (result.stderr or "").strip()
+
+        if result.returncode != 0:
+            parts = [f"Script exited with code {result.returncode}"]
+            if stderr:
+                parts.append(f"stderr:\n{stderr}")
+            if stdout:
+                parts.append(f"stdout:\n{stdout}")
+            return False, "\n".join(parts)
+
+        return True, stdout
+
+    except subprocess.TimeoutExpired:
+        return False, f"Script timed out after {_SCRIPT_TIMEOUT}s: {path}"
+    except Exception as exc:
+        return False, f"Script execution failed: {exc}"
+
+
 def _build_job_prompt(job: dict) -> str:
     """Build the effective prompt for a cron job, optionally loading one or more skills first."""
     prompt = job.get("prompt", "")
     skills = job.get("skills")
+
+    # Run data-collection script if configured, inject output as context.
+    script_path = job.get("script")
+    if script_path:
+        success, script_output = _run_job_script(script_path)
+        if success:
+            if script_output:
+                prompt = (
+                    "## Script Output\n"
+                    "The following data was collected by a pre-run script. "
+                    "Use it as context for your analysis.\n\n"
+                    f"```\n{script_output}\n```\n\n"
+                    f"{prompt}"
+                )
+            else:
+                prompt = (
+                    "[Script ran successfully but produced no output.]\n\n"
+                    f"{prompt}"
+                )
+        else:
+            prompt = (
+                "## Script Error\n"
+                "The data-collection script failed. Report this to the user.\n\n"
+                f"```\n{script_output}\n```\n\n"
+                f"{prompt}"
+            )
 
     # Always prepend [SILENT] guidance so the cron agent can suppress
     # delivery when it has nothing new or noteworthy to report.

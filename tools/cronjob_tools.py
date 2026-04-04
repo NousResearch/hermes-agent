@@ -116,7 +116,7 @@ def _normalize_optional_job_value(value: Optional[Any], *, strip_trailing_slash:
 def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
     prompt = job.get("prompt", "")
     skills = _canonical_skills(job.get("skill"), job.get("skills"))
-    return {
+    result = {
         "job_id": job["id"],
         "name": job["name"],
         "skill": skills[0] if skills else None,
@@ -136,6 +136,9 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
         "paused_at": job.get("paused_at"),
         "paused_reason": job.get("paused_reason"),
     }
+    if job.get("script"):
+        result["script"] = job["script"]
+    return result
 
 
 def cronjob(
@@ -153,6 +156,7 @@ def cronjob(
     provider: Optional[str] = None,
     base_url: Optional[str] = None,
     reason: Optional[str] = None,
+    script: Optional[str] = None,
     task_id: str = None,
 ) -> str:
     """Unified cron job management tool."""
@@ -183,6 +187,7 @@ def cronjob(
                 model=_normalize_optional_job_value(model),
                 provider=_normalize_optional_job_value(provider),
                 base_url=_normalize_optional_job_value(base_url, strip_trailing_slash=True),
+                script=_normalize_optional_job_value(script),
             )
             return json.dumps(
                 {
@@ -265,6 +270,9 @@ def cronjob(
                 updates["provider"] = _normalize_optional_job_value(provider)
             if base_url is not None:
                 updates["base_url"] = _normalize_optional_job_value(base_url, strip_trailing_slash=True)
+            if script is not None:
+                # Pass empty string to clear an existing script
+                updates["script"] = _normalize_optional_job_value(script) if script else None
             if repeat is not None:
                 # Normalize: treat 0 or negative as None (infinite)
                 normalized_repeat = None if repeat <= 0 else repeat
@@ -338,6 +346,11 @@ Jobs run in a fresh session with no current-chat context, so prompts must be sel
 If skill or skills are provided on create, the future cron run loads those skills in order, then follows the prompt as the task instruction.
 On update, passing skills=[] clears attached skills.
 
+If script is provided on create, the referenced Python script runs before each agent turn.
+Its stdout is injected into the prompt as context. Use this for data collection and change
+detection — the script handles gathering data, the agent analyzes and reports.
+On update, pass script="" to clear an attached script.
+
 NOTE: The agent's final response is auto-delivered to the target. Put the primary
 user-facing content in the final response. Cron jobs run autonomously with no user
 present — they cannot ask questions or request clarification.
@@ -402,6 +415,10 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
             "reason": {
                 "type": "string",
                 "description": "Optional pause reason"
+            },
+            "script": {
+                "type": "string",
+                "description": "Optional path to a Python script that runs before each cron job execution. Its stdout is injected into the prompt as context. Use for data collection and change detection. Relative paths resolve under ~/.hermes/scripts/. On update, pass empty string to clear."
             }
         },
         "required": ["action"]
@@ -451,6 +468,7 @@ registry.register(
         provider=args.get("provider"),
         base_url=args.get("base_url"),
         reason=args.get("reason"),
+        script=args.get("script"),
         task_id=kw.get("task_id"),
     ),
     check_fn=check_cronjob_requirements,

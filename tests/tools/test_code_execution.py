@@ -13,7 +13,7 @@ Run with:  python -m pytest tests/test_code_execution.py -v
 """
 
 import pytest
-pytestmark = pytest.mark.skip(reason="Hangs in non-interactive environments")
+# pytestmark removed — tests run fine (61 pass, ~99s)
 
 
 import json

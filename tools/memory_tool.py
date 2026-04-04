@@ -36,8 +36,18 @@ from typing import Dict, Any, List, Optional
 
 logger = logging.getLogger(__name__)
 
-# Where memory files live
-MEMORY_DIR = get_hermes_home() / "memories"
+# Where memory files live — resolved dynamically so profile overrides
+# (HERMES_HOME env var changes) are always respected.  The old module-level
+# constant was cached at import time and could go stale if a profile switch
+# happened after the first import.
+def get_memory_dir() -> Path:
+    """Return the profile-scoped memories directory."""
+    return get_hermes_home() / "memories"
+
+# Backward-compatible alias — gateway/run.py imports this at runtime inside
+# a function body, so it gets the correct snapshot for that process.  New code
+# should prefer get_memory_dir().
+MEMORY_DIR = get_memory_dir()
 
 ENTRY_DELIMITER = "\n§\n"
 
@@ -108,10 +118,11 @@ class MemoryStore:
 
     def load_from_disk(self):
         """Load entries from MEMORY.md and USER.md, capture system prompt snapshot."""
-        MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+        mem_dir = get_memory_dir()
+        mem_dir.mkdir(parents=True, exist_ok=True)
 
-        self.memory_entries = self._read_file(MEMORY_DIR / "MEMORY.md")
-        self.user_entries = self._read_file(MEMORY_DIR / "USER.md")
+        self.memory_entries = self._read_file(mem_dir / "MEMORY.md")
+        self.user_entries = self._read_file(mem_dir / "USER.md")
 
         # Deduplicate entries (preserves order, keeps first occurrence)
         self.memory_entries = list(dict.fromkeys(self.memory_entries))
@@ -143,9 +154,10 @@ class MemoryStore:
 
     @staticmethod
     def _path_for(target: str) -> Path:
+        mem_dir = get_memory_dir()
         if target == "user":
-            return MEMORY_DIR / "USER.md"
-        return MEMORY_DIR / "MEMORY.md"
+            return mem_dir / "USER.md"
+        return mem_dir / "MEMORY.md"
 
     def _reload_target(self, target: str):
         """Re-read entries from disk into in-memory state.
@@ -158,7 +170,7 @@ class MemoryStore:
 
     def save_to_disk(self, target: str):
         """Persist entries to the appropriate file. Called after every mutation."""
-        MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+        get_memory_dir().mkdir(parents=True, exist_ok=True)
         self._write_file(self._path_for(target), self._entries_for(target))
 
     def _entries_for(self, target: str) -> List[str]:

@@ -1348,9 +1348,12 @@ class HermesCLI:
         self._agent_running = False
         self._pending_input = queue.Queue()
         self._interrupt_queue = queue.Queue()
-        self._followup_queue: list = []  # mirror of _pending_input for display; entries are {"id": str, "payload": ...}
+        self._followup_queue: list = []  # 📬 Alt+Enter queue — entries are {"id": str, "payload": ...}
         self._cancelled_followups: set = set()  # UUIDs recalled via Alt+Up, skipped in process_loop
         self._followup_recall_count: int = 0   # how many recalls done in this recall session
+        self._steering_queue: list = []  # 🎯 Enter-during-run queue (busy_input_mode=queue)
+        self._cancelled_steerings: set = set()  # UUIDs recalled via Alt+Down
+        self._steering_recall_count: int = 0
         self._should_exit = False
         self._last_ctrl_c_time = 0
         self._stashed_input = None  # Ctrl+S stash: (text, [images]) or None
@@ -1608,10 +1611,13 @@ class HermesCLI:
             if self._stashed_input:
                 frags.append(("class:status-bar-dim", " │ "))
                 frags.append(("class:status-bar-warn", "📌 stashed"))
-            # Follow-up queue indicator
+            # Follow-up queue (📬) and steering queue (🎯) indicators
             if self._followup_queue:
                 frags.append(("class:status-bar-dim", " │ "))
                 frags.append(("class:status-bar-warn", f"📬 {len(self._followup_queue)}"))
+            if self._steering_queue:
+                frags.append(("class:status-bar-dim", " │ "))
+                frags.append(("class:status-bar-warn", f"🎯 {len(self._steering_queue)}"))
 
             total_width = sum(self._status_bar_display_width(text) for _, text in frags)
             if total_width > width:
@@ -7119,10 +7125,16 @@ class HermesCLI:
                     _is_slash_cmd = bool(_resolve_cmd_fn(_fw))
                 if self._agent_running and not _is_slash_cmd:
                     if self.busy_input_mode == "queue":
-                        # Queue for the next turn instead of interrupting
-                        self._pending_input.put(payload)
-                        preview = text if text else f"[{len(images)} image{'s' if len(images) != 1 else ''} attached]"
-                        _cprint(f"  Queued for the next turn: {preview[:80]}{'...' if len(preview) > 80 else ''}")
+                        # Tag and track in the 🎯 steering queue
+                        import uuid as _uuid_mod
+                        _stag = _uuid_mod.uuid4().hex
+                        cli_ref._pending_input.put({"_steering_tag": _stag, "payload": payload})
+                        _steer_text = text if text else f"[{len(images)} image{'s' if len(images) != 1 else ''} attached]"
+                        cli_ref._steering_queue.append({"id": _stag, "payload": payload, "text": _steer_text})
+                        _sdepth = len(cli_ref._steering_queue)
+                        _spreview = _steer_text[:60] + ("..." if len(_steer_text) > 60 else "")
+                        _cprint(f"  {_DIM}🎯 Steering queued #{_sdepth}: \"{_spreview}\"{_RST}")
+                        event.app.invalidate()
                     else:
                         self._interrupt_queue.put(payload)
                         # Debug: log to file when message enters interrupt queue
@@ -7229,6 +7241,39 @@ class HermesCLI:
             else:
                 cli_ref._followup_recall_count = 0
                 _cprint(f"  {_DIM}📬 Follow-up recalled — queue empty{_RST}")
+            event.app.invalidate()
+
+        @kb.add('escape', 'down')
+        def handle_recall_steering(event):
+            """Alt+Down: recall the most recently queued steering message into the input.
+
+            Symmetric to Alt+Up (follow-up recall) but operates on the 🎯 steering queue.
+            Items are popped LIFO and appended with \\n---\\n separators from the second
+            recall onwards.  Recalled items are UUID-cancelled so process_loop skips them.
+            """
+            if not cli_ref._steering_queue:
+                return
+
+            buf = event.app.current_buffer
+
+            item = cli_ref._steering_queue.pop()
+            recalled_text = item["text"]
+            cli_ref._cancelled_steerings.add(item["id"])
+
+            current = buf.text
+            if cli_ref._steering_recall_count > 0 and current.strip():
+                buf.text = current.rstrip() + '\n---\n' + recalled_text
+            else:
+                buf.text = (current + recalled_text) if current else recalled_text
+            buf.cursor_position = len(buf.text)
+            cli_ref._steering_recall_count += 1
+
+            remaining = len(cli_ref._steering_queue)
+            if remaining:
+                _cprint(f"  {_DIM}🎯 Recalled steering ({remaining} still queued){_RST}")
+            else:
+                cli_ref._steering_recall_count = 0
+                _cprint(f"  {_DIM}🎯 Steering recalled — queue empty{_RST}")
             event.app.invalidate()
 
         @kb.add('tab', eager=True)
@@ -7901,13 +7946,23 @@ class HermesCLI:
             if cli_ref._agent_running:
                 hints = []
                 if cli_ref._followup_queue:
-                    hints.append(f"📬 {len(cli_ref._followup_queue)} queued")
+                    hints.append(f"📬 {len(cli_ref._followup_queue)}")
+                if cli_ref._steering_queue:
+                    hints.append(f"🎯 {len(cli_ref._steering_queue)}")
                 if cli_ref._stashed_input:
                     hints.append("📌 stashed")
                 suffix = "  · " + " · ".join(hints) if hints else ""
-                return f"Enter to interrupt · Alt+Enter to queue follow-up{suffix}"
-            if cli_ref._followup_queue:
-                return f"📬 {len(cli_ref._followup_queue)} follow-up{'s' if len(cli_ref._followup_queue) > 1 else ''} queued — Alt+Enter to add more"
+                # Hint depends on busy_input_mode
+                if cli_ref.busy_input_mode == "queue":
+                    return f"Enter to steer (🎯) · Alt+Enter to follow-up (📬){suffix}"
+                return f"Enter to interrupt · Alt+Enter to queue follow-up (📬){suffix}"
+            if cli_ref._followup_queue or cli_ref._steering_queue:
+                parts = []
+                if cli_ref._followup_queue:
+                    parts.append(f"📬 {len(cli_ref._followup_queue)} follow-up{'s' if len(cli_ref._followup_queue) > 1 else ''} — Alt+Up to recall")
+                if cli_ref._steering_queue:
+                    parts.append(f"🎯 {len(cli_ref._steering_queue)} steering — Alt+Down to recall")
+                return "  ·  ".join(parts)
             if cli_ref._stashed_input:
                 stashed_text = cli_ref._stashed_input[0]
                 preview = stashed_text[:40] + ("..." if len(stashed_text) > 40 else "")
@@ -8402,18 +8457,26 @@ class HermesCLI:
                     # Check for pending input with timeout
                     try:
                         user_input = self._pending_input.get(timeout=0.1)
-                        # Unwrap tagged followup items (queued via Alt+Enter)
-                        if isinstance(user_input, dict) and "_followup_tag" in user_input:
-                            tag = user_input["_followup_tag"]
-                            user_input = user_input["payload"]
-                            # Sync display mirror — only pop for tagged items, not regular Enter
-                            if self._followup_queue:
-                                self._followup_queue.pop(0)
-                                app.invalidate()
-                            # Skip items recalled via Alt+Up (cancelled by UUID, not text)
-                            if tag in self._cancelled_followups:
-                                self._cancelled_followups.discard(tag)
-                                continue
+                        # Unwrap tagged items (📬 followup or 🎯 steering)
+                        if isinstance(user_input, dict):
+                            if "_followup_tag" in user_input:
+                                tag = user_input["_followup_tag"]
+                                user_input = user_input["payload"]
+                                if self._followup_queue:
+                                    self._followup_queue.pop(0)
+                                    app.invalidate()
+                                if tag in self._cancelled_followups:
+                                    self._cancelled_followups.discard(tag)
+                                    continue
+                            elif "_steering_tag" in user_input:
+                                tag = user_input["_steering_tag"]
+                                user_input = user_input["payload"]
+                                if self._steering_queue:
+                                    self._steering_queue.pop(0)
+                                    app.invalidate()
+                                if tag in self._cancelled_steerings:
+                                    self._cancelled_steerings.discard(tag)
+                                    continue
                     except queue.Empty:
                         # Periodic config watcher — auto-reload MCP on mcp_servers change
                         if not self._agent_running:

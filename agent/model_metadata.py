@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 # are preserved so the full model name reaches cache lookups and server queries.
 _PROVIDER_PREFIXES: frozenset[str] = frozenset({
     "openrouter", "nous", "openai-codex", "copilot", "copilot-acp",
-    "zai", "kimi-coding", "minimax", "minimax-cn", "anthropic", "deepseek",
+    "zai", "kimi-coding", "minimax", "minimax-cn", "anthropic", "deepseek", "avian",
     "opencode-zen", "opencode-go", "ai-gateway", "kilocode", "alibaba",
     "custom", "local",
     # Common aliases
@@ -178,6 +178,7 @@ _URL_TO_PROVIDER: Dict[str, str] = {
     "generativelanguage.googleapis.com": "google",
     "inference-api.nousresearch.com": "nous",
     "api.deepseek.com": "deepseek",
+    "api.avian.io": "avian",
     "api.githubcopilot.com": "copilot",
     "models.github.ai": "copilot",
     "api.fireworks.ai": "fireworks",

@@ -64,6 +64,7 @@ _API_KEY_PROVIDER_AUX_MODELS: Dict[str, str] = {
     "opencode-zen": "gemini-3-flash",
     "opencode-go": "glm-5",
     "kilocode": "google/gemini-3-flash-preview",
+    "avian": "deepseek-v3.2",
 }
 
 # OpenRouter app attribution headers

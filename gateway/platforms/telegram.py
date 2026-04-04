@@ -900,7 +900,9 @@ class TelegramAdapter(BasePlatformAdapter):
                 except Exception:
                     pass  # best-effort truncation
                 return SendResult(success=True, message_id=message_id)
-            # Flood control / RetryAfter — back off and retry once
+            # Flood control / RetryAfter — short waits are retried inline,
+            # long waits return a failure immediately so streaming can fall back
+            # to a normal final send instead of leaving a truncated partial.
             retry_after = getattr(e, "retry_after", None)
             if retry_after is not None or "retry after" in err_str:
                 wait = retry_after if retry_after else 1.0
@@ -908,6 +910,8 @@ class TelegramAdapter(BasePlatformAdapter):
                     "[%s] Telegram flood control, waiting %.1fs",
                     self.name, wait,
                 )
+                if wait > 5.0:
+                    return SendResult(success=False, error=f"flood_control:{wait}")
                 await asyncio.sleep(wait)
                 try:
                     await self._bot.edit_message_text(
@@ -2096,6 +2100,19 @@ class TelegramAdapter(BasePlatformAdapter):
                     self._cache_dm_topic_from_message(str(chat.id), thread_id_str, created_name)
                     if not chat_topic:
                         chat_topic = created_name
+
+        elif chat_type == "group" and thread_id_str:
+            # Group/supergroup forum topic skill binding via config.extra['group_topics']
+            group_topics_config: list = self.config.extra.get("group_topics", [])
+            for chat_entry in group_topics_config:
+                if str(chat_entry.get("chat_id", "")) == str(chat.id):
+                    for topic in chat_entry.get("topics", []):
+                        tid = topic.get("thread_id")
+                        if tid is not None and str(tid) == thread_id_str:
+                            chat_topic = topic.get("name")
+                            topic_skill = topic.get("skill")
+                            break
+                    break
 
         # Build source
         source = self.build_source(

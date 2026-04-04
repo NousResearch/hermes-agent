@@ -235,6 +235,7 @@ SUPPORTED_DOCUMENT_TYPES = {
     ".pdf": "application/pdf",
     ".md": "text/markdown",
     ".txt": "text/plain",
+    ".zip": "application/zip",
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
@@ -1021,6 +1022,32 @@ class BasePlatformAdapter(ABC):
         
         # Check if there's already an active handler for this session
         if session_key in self._active_sessions:
+            # /approve and /deny must bypass the active-session guard.
+            # The agent thread is blocked on threading.Event.wait() inside
+            # tools/approval.py — queuing these commands creates a deadlock:
+            # the agent waits for approval, approval waits for agent to finish.
+            # Dispatch directly to the message handler without touching session
+            # lifecycle (no competing background task, no session guard removal).
+            cmd = event.get_command()
+            if cmd in ("approve", "deny"):
+                logger.debug(
+                    "[%s] Approval command '/%s' bypassing active-session guard for %s",
+                    self.name, cmd, session_key,
+                )
+                try:
+                    _thread_meta = {"thread_id": event.source.thread_id} if event.source.thread_id else None
+                    response = await self._message_handler(event)
+                    if response:
+                        await self._send_with_retry(
+                            chat_id=event.source.chat_id,
+                            content=response,
+                            reply_to=event.message_id,
+                            metadata=_thread_meta,
+                        )
+                except Exception as e:
+                    logger.error("[%s] Approval dispatch failed: %s", self.name, e, exc_info=True)
+                return
+
             # Special case: photo bursts/albums frequently arrive as multiple near-
             # simultaneous messages. Queue them without interrupting the active run,
             # then process them immediately after the current task finishes.
@@ -1046,6 +1073,13 @@ class BasePlatformAdapter(ABC):
             self._active_sessions[session_key].set()
             return  # Don't process now - will be handled after current task finishes
         
+        # Mark session as active BEFORE spawning background task to close
+        # the race window where a second message arriving before the task
+        # starts would also pass the _active_sessions check and spawn a
+        # duplicate task.  (grammY sequentialize / aiogram EventIsolation
+        # pattern — set the guard synchronously, not inside the task.)
+        self._active_sessions[session_key] = asyncio.Event()
+
         # Spawn background task to process this message
         task = asyncio.create_task(self._process_message_background(event, session_key))
         try:
@@ -1092,8 +1126,10 @@ class BasePlatformAdapter(ABC):
             if getattr(result, "success", False):
                 delivery_succeeded = True
 
-        # Create interrupt event for this session
-        interrupt_event = asyncio.Event()
+        # Reuse the interrupt event set by handle_message() (which marks
+        # the session active before spawning this task to prevent races).
+        # Fall back to a new Event only if the entry was removed externally.
+        interrupt_event = self._active_sessions.get(session_key) or asyncio.Event()
         self._active_sessions[session_key] = interrupt_event
         
         # Start continuous typing indicator (refreshes every 2 seconds)
@@ -1106,9 +1142,12 @@ class BasePlatformAdapter(ABC):
             # Call the handler (this can take a while with tool calls)
             response = await self._message_handler(event)
             
-            # Send response if any
+            # Send response if any.  A None/empty response is normal when
+            # streaming already delivered the text (already_sent=True) or
+            # when the message was queued behind an active agent.  Log at
+            # DEBUG to avoid noisy warnings for expected behavior.
             if not response:
-                logger.warning("[%s] Handler returned empty/None response for %s", self.name, event.source.chat_id)
+                logger.debug("[%s] Handler returned empty/None response for %s", self.name, event.source.chat_id)
             if response:
                 # Extract MEDIA:<path> tags (from TTS tool) before other processing
                 media_files, response = self.extract_media(response)

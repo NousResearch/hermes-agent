@@ -28,7 +28,7 @@ GITHUB_MODELS_CATALOG_URL = COPILOT_MODELS_URL
 OPENROUTER_MODELS: list[tuple[str, str]] = [
     ("anthropic/claude-opus-4.6",       "recommended"),
     ("anthropic/claude-sonnet-4.6",     ""),
-    ("qwen/qwen3.6-plus-preview:free", "free"),
+    ("qwen/qwen3.6-plus:free", "free"),
     ("anthropic/claude-sonnet-4.5",     ""),
     ("anthropic/claude-haiku-4.5",      ""),
     ("openai/gpt-5.4",                  ""),
@@ -51,6 +51,7 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
     ("nvidia/nemotron-3-super-120b-a12b",      ""),
     ("nvidia/nemotron-3-super-120b-a12b:free", "free"),
     ("arcee-ai/trinity-large-preview:free", "free"),
+    ("arcee-ai/trinity-large-thinking",  ""),
     ("openai/gpt-5.4-pro",              ""),
     ("openai/gpt-5.4-nano",             ""),
 ]
@@ -59,7 +60,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     "nous": [
         "anthropic/claude-opus-4.6",
         "anthropic/claude-sonnet-4.6",
-        "qwen/qwen3.6-plus-preview:free",
+        "qwen/qwen3.6-plus:free",
         "anthropic/claude-sonnet-4.5",
         "anthropic/claude-haiku-4.5",
         "openai/gpt-5.4",
@@ -82,6 +83,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "nvidia/nemotron-3-super-120b-a12b",
         "nvidia/nemotron-3-super-120b-a12b:free",
         "arcee-ai/trinity-large-preview:free",
+        "arcee-ai/trinity-large-thinking",
         "openai/gpt-5.4-pro",
         "openai/gpt-5.4-nano",
     ],
@@ -199,7 +201,10 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     "opencode-go": [
         "glm-5",
         "kimi-k2.5",
+        "mimo-v2-pro",
+        "mimo-v2-omni",
         "minimax-m2.7",
+        "minimax-m2.5",
     ],
     "ai-gateway": [
         "anthropic/claude-opus-4.6",

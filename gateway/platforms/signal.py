@@ -535,7 +535,7 @@ class SignalAdapter(BasePlatformAdapter):
 
         # Send read receipt (fire-and-forget, DMs only — Signal protocol
         # restricts read receipts to 1-on-1 conversations)
-        if self.send_read_receipts and ts_ms and sender and not is_group:
+        if self.send_read_receipts and ts_ms and sender and not is_group and not is_note_to_self:
             asyncio.ensure_future(self._send_read_receipt(sender, ts_ms))
 
         # Build and dispatch event
@@ -570,14 +570,18 @@ class SignalAdapter(BasePlatformAdapter):
             timestamp_ms: The originating message timestamp (millis since epoch).
         """
         try:
-            await self._rpc("sendReceipt", {
+            result = await self._rpc("sendReceipt", {
                 "account": self.account,
                 "recipient": sender,
                 "targetTimestamp": timestamp_ms,
                 "type": "read",
             }, rpc_id="read_receipt")
-            logger.debug("Signal: sent read receipt to %s for ts=%s",
-                          _redact_phone(sender), timestamp_ms)
+            if result is not None:
+                logger.debug("Signal: sent read receipt to %s for ts=%s",
+                              _redact_phone(sender), timestamp_ms)
+            else:
+                logger.debug("Signal: read receipt for %s may not have been accepted (rpc returned None)",
+                              _redact_phone(sender))
         except Exception:
             logger.debug("Signal: failed to send read receipt", exc_info=True)
 

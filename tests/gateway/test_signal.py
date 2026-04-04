@@ -505,6 +505,41 @@ class TestSignalReadReceipts:
         receipt_calls = [c for c in captured if c["method"] == "sendReceipt"]
         assert len(receipt_calls) == 0
 
+    @pytest.mark.asyncio
+    async def test_handle_envelope_no_receipt_for_note_to_self(self, monkeypatch):
+        """Note to Self messages should NOT get read receipts."""
+        adapter = _make_signal_adapter(monkeypatch)
+        rpc_mock, captured = _stub_rpc(None)
+        adapter._rpc = rpc_mock
+        adapter.handle_message = AsyncMock()
+
+        # Note to Self: syncMessage.sentMessage with destination == own account
+        envelope = {
+            "envelope": {
+                "sourceNumber": "+15551234567",
+                "sourceName": "Me",
+                "sourceUuid": "uuid-self",
+                "timestamp": 1625821234567,
+                "syncMessage": {
+                    "sentMessage": {
+                        "destinationNumber": "+15551234567",
+                        "message": "Note to self",
+                        "timestamp": 1625821234567,
+                    },
+                },
+            }
+        }
+
+        await adapter._handle_envelope(envelope)
+        await asyncio.sleep(0)
+
+        # Note to Self — no sendReceipt expected
+        receipt_calls = [c for c in captured if c["method"] == "sendReceipt"]
+        assert len(receipt_calls) == 0
+
+        # But the message itself should still be handled
+        assert adapter.handle_message.called
+
 
 class TestSignalReadReceiptConfig:
     """Verify SIGNAL_READ_RECEIPTS env var is wired into gateway config."""

@@ -208,6 +208,40 @@ async def test_require_mention_dm_always_responds(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_dm_strips_mention(monkeypatch):
+    """DMs strip mention from body, matching Discord behavior."""
+    monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("MATRIX_FREE_RESPONSE_ROOMS", raising=False)
+    monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
+
+    adapter = _make_adapter()
+    room = _make_room(member_count=2)
+    event = _make_event("@hermes:example.org help me")
+
+    await adapter._on_room_message(room, event)
+    adapter.handle_message.assert_awaited_once()
+    msg = adapter.handle_message.await_args.args[0]
+    assert msg.text == "help me"
+
+
+@pytest.mark.asyncio
+async def test_bare_mention_passes_empty_string(monkeypatch):
+    """A message that is only a mention should pass through as empty, not be dropped."""
+    monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("MATRIX_FREE_RESPONSE_ROOMS", raising=False)
+    monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
+
+    adapter = _make_adapter()
+    room = _make_room()
+    event = _make_event("@hermes:example.org")
+
+    await adapter._on_room_message(room, event)
+    adapter.handle_message.assert_awaited_once()
+    msg = adapter.handle_message.await_args.args[0]
+    assert msg.text == ""
+
+
+@pytest.mark.asyncio
 async def test_require_mention_free_response_room(monkeypatch):
     """Free-response rooms bypass mention requirement."""
     monkeypatch.delenv("MATRIX_REQUIRE_MENTION", raising=False)

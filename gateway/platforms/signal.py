@@ -544,6 +544,12 @@ class SignalAdapter(BasePlatformAdapter):
         logger.debug("Signal: message from %s in %s: %s",
                       _redact_phone(sender), chat_id[:20], (text or "")[:50])
 
+        # Send read receipt for direct messages so Signal shows the message as read.
+        # Groups are skipped because group receipt semantics are noisier and this
+        # behavior was requested specifically for 1:1 chats.
+        if ts_ms and sender and not is_group:
+            asyncio.create_task(self._send_read_receipt(sender, ts_ms))
+
         await self.handle_message(event)
 
     # ------------------------------------------------------------------
@@ -618,6 +624,23 @@ class SignalAdapter(BasePlatformAdapter):
         except Exception as e:
             logger.warning("Signal RPC %s failed: %s", method, e)
             return None
+
+    # ------------------------------------------------------------------
+    # Read Receipts
+    # ------------------------------------------------------------------
+
+    async def _send_read_receipt(self, sender: str, timestamp: int) -> None:
+        """Send a read receipt for an incoming direct message."""
+        try:
+            await self._rpc("sendReceipt", {
+                "account": self.account,
+                "recipient": sender,
+                "type": "read",
+                "targetTimestamp": [timestamp],
+            }, rpc_id="receipt")
+            logger.debug("Signal: sent read receipt to %s", _redact_phone(sender))
+        except Exception as e:
+            logger.debug("Signal: failed to send read receipt: %s", e)
 
     # ------------------------------------------------------------------
     # Sending

@@ -1,4 +1,5 @@
 """Tests for Signal messenger platform adapter."""
+import asyncio
 import base64
 import json
 import pytest
@@ -259,6 +260,49 @@ class TestSignalAttachmentFetch:
 
         assert path == "/tmp/test.pdf"
         assert ext == ".pdf"
+
+
+# ---------------------------------------------------------------------------
+# Read Receipts
+# ---------------------------------------------------------------------------
+
+class TestSignalReadReceipts:
+    @pytest.mark.asyncio
+    async def test_send_read_receipt_uses_signal_rpc(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter._rpc, captured = _stub_rpc({"timestamp": 123})
+
+        await adapter._send_read_receipt("+155****9999", 1712100000123)
+
+        call = captured[0]
+        assert call["method"] == "sendReceipt"
+        assert call["params"]["account"] == adapter.account
+        assert call["params"]["recipient"] == "+155****9999"
+        assert call["params"]["type"] == "read"
+        assert call["params"]["targetTimestamp"] == [1712100000123]
+
+    @pytest.mark.asyncio
+    async def test_handle_envelope_sends_read_receipt_for_dm(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter.handle_message = AsyncMock()
+        adapter._send_read_receipt = AsyncMock()
+
+        envelope = {
+            "envelope": {
+                "sourceNumber": "+155****9999",
+                "sourceName": "Charlie",
+                "timestamp": 1712100000123,
+                "dataMessage": {
+                    "message": "hey",
+                },
+            }
+        }
+
+        await adapter._handle_envelope(envelope)
+        await asyncio.sleep(0)
+
+        adapter._send_read_receipt.assert_awaited_once_with("+155****9999", 1712100000123)
+        adapter.handle_message.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------

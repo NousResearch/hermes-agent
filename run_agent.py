@@ -637,7 +637,11 @@ class AIAgent:
         self.status_callback = status_callback
         self.tool_gen_callback = tool_gen_callback
         self._last_reported_tool = None  # Track for "new tool" mode
-        
+
+        # Typed event bus (agno-inspired) — coexists with callbacks
+        from agent.events import EventBus
+        self.event_bus = EventBus()
+
         # Tool execution state — allows _vprint during tool execution
         # even when stream consumers are registered (no tokens streaming then)
         self._executing_tools = False
@@ -1249,6 +1253,7 @@ class AIAgent:
         self.session_cache_read_tokens = 0
         self.session_cache_write_tokens = 0
         self.session_reasoning_tokens = 0
+        self._reasoning_chain = None  # Current turn's ReasoningChain
         self.session_estimated_cost_usd = 0.0
         self.session_cost_status = "unknown"
         self.session_cost_source = "none"
@@ -5269,6 +5274,32 @@ class AIAgent:
                 except Exception:
                     pass
 
+        # Structured reasoning chain (agno-inspired)
+        if reasoning_text:
+            try:
+                from agent.reasoning import ReasoningChain
+                chain = ReasoningChain(
+                    session_id=self.session_id,
+                    turn_number=self.session_api_calls,
+                    model=self.model or "",
+                )
+                chain.ingest_text(reasoning_text)
+                chain.complete(reasoning_tokens=self.session_reasoning_tokens)
+                self._reasoning_chain = chain
+                # Persist to session state for self-evolution analysis
+                if self._session_db:
+                    chain.persist(self._session_db)
+                # Emit structured reasoning events
+                from agent.events import ReasoningCompleted as _RC
+                self.event_bus.emit(_RC(
+                    session_id=self.session_id,
+                    total_steps=chain.total_steps,
+                    reasoning_tokens=chain.reasoning_tokens,
+                    duration_ms=chain.duration_ms,
+                ))
+            except Exception:
+                pass  # Reasoning chain is best-effort
+
         msg = {
             "role": "assistant",
             "content": assistant_message.content or "",
@@ -5749,6 +5780,16 @@ class AIAgent:
                 max_iterations=function_args.get("max_iterations"),
                 parent_agent=self,
             )
+        elif function_name == "team_execute":
+            from tools.team_tool import team_execute as _team_execute
+            return _team_execute(
+                tasks=function_args.get("tasks", []),
+                mode=function_args.get("mode", "parallel"),
+                shared_context=function_args.get("shared_context", ""),
+                parent_agent=self,
+                session_db=self._session_db,
+                session_id=self.session_id,
+            )
         else:
             return handle_function_call(
                 function_name, function_args, effective_task_id,
@@ -6184,6 +6225,36 @@ class AIAgent:
                     self._delegate_spinner = None
                     tool_duration = time.time() - tool_start_time
                     cute_msg = _get_cute_tool_message_impl('delegate_task', function_args, tool_duration, result=_delegate_result)
+                    if spinner:
+                        spinner.stop(cute_msg)
+                    elif self.quiet_mode:
+                        self._vprint(f"  {cute_msg}")
+            elif function_name == "team_execute":
+                from tools.team_tool import team_execute as _team_execute
+                spinner = None
+                mode = function_args.get("mode", "parallel")
+                n_tasks = len(function_args.get("tasks", []))
+                spinner_label = f"👥 team {mode}: {n_tasks} tasks"
+                if self.quiet_mode and not self.tool_progress_callback:
+                    face = random.choice(KawaiiSpinner.KAWAII_WAITING)
+                    spinner = KawaiiSpinner(f"{face} {spinner_label}", spinner_type='dots', print_fn=self._print_fn)
+                    spinner.start()
+                self._delegate_spinner = spinner
+                _team_result = None
+                try:
+                    function_result = _team_execute(
+                        tasks=function_args.get("tasks", []),
+                        mode=mode,
+                        shared_context=function_args.get("shared_context", ""),
+                        parent_agent=self,
+                        session_db=self._session_db,
+                        session_id=self.session_id,
+                    )
+                    _team_result = function_result
+                finally:
+                    self._delegate_spinner = None
+                    tool_duration = time.time() - tool_start_time
+                    cute_msg = _get_cute_tool_message_impl('team_execute', function_args, tool_duration, result=_team_result)
                     if spinner:
                         spinner.stop(cute_msg)
                     elif self.quiet_mode:

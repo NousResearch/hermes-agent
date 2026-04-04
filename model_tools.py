@@ -158,6 +158,7 @@ def _discover_tools():
         "tools.clarify_tool",
         "tools.code_execution_tool",
         "tools.delegate_tool",
+        "tools.team_tool",
         "tools.process_registry",
         "tools.send_message_tool",
         "tools.honcho_tools",
@@ -371,7 +372,7 @@ def get_tool_definitions(
 # because they need agent-level state (TodoStore, MemoryStore, etc.).
 # The registry still holds their schemas; dispatch just returns a stub error
 # so if something slips through, the LLM sees a sensible message.
-_AGENT_LOOP_TOOLS = {"todo", "memory", "session_state", "session_search", "delegate_task"}
+_AGENT_LOOP_TOOLS = {"todo", "memory", "session_state", "session_search", "delegate_task", "team_execute"}
 _READ_SEARCH_TOOLS = {"read_file", "search_files"}
 
 

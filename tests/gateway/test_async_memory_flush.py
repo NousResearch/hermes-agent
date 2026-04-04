@@ -7,6 +7,7 @@ Verifies that:
 4. The background watcher can detect expired sessions
 """
 
+import asyncio
 import pytest
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -247,3 +248,52 @@ class TestMemoryFlushedFlag:
         }
         entry = SessionEntry.from_dict(data)
         assert entry.memory_flushed is False
+
+
+class TestGatewayMemoryProviderShutdown:
+    def test_shutdown_uses_transcript_messages(self):
+        from gateway.run import GatewayRunner
+
+        runner = object.__new__(GatewayRunner)
+        runner.session_store = MagicMock()
+        runner.session_store.load_transcript.return_value = [
+            {"role": "user", "content": "remember my timezone"},
+            {"role": "assistant", "content": "noted"},
+            {"role": "tool", "content": "{\"ok\": true}"},
+            {"role": "assistant"},  # missing content -> ignored
+            "not-a-message",
+        ]
+        agent = MagicMock()
+
+        runner._shutdown_agent_memory_provider(agent, "sid_memory")
+
+        agent.shutdown_memory_provider.assert_called_once_with([
+            {"role": "user", "content": "remember my timezone"},
+            {"role": "assistant", "content": "noted"},
+            {"role": "tool", "content": "{\"ok\": true}"},
+        ])
+
+    def test_async_flush_accepts_session_key_and_cached_agent(self):
+        from gateway.run import GatewayRunner
+
+        runner = object.__new__(GatewayRunner)
+        runner._flush_memories_for_session = MagicMock()
+        runner._shutdown_agent_memory_provider = MagicMock()
+        runner._pop_cached_agent = MagicMock()
+        cached_agent = MagicMock()
+
+        asyncio.run(
+            GatewayRunner._async_flush_memories(
+                runner,
+                "sid_flush",
+                session_key="agent:main:telegram:dm:123",
+                cached_agent=cached_agent,
+            )
+        )
+
+        runner._flush_memories_for_session.assert_called_once_with("sid_flush")
+        runner._shutdown_agent_memory_provider.assert_called_once_with(
+            cached_agent,
+            "sid_flush",
+        )
+        runner._pop_cached_agent.assert_not_called()

@@ -60,6 +60,36 @@ def _normalize_forward_env_names(forward_env: list[str] | None) -> list[str]:
     return normalized
 
 
+def _normalize_env_dict(env: dict | None) -> dict[str, str]:
+    """Validate and normalize a docker_env dict to {str: str}.
+
+    Filters out entries with invalid variable names or non-string values.
+    """
+    if not env:
+        return {}
+    if not isinstance(env, dict):
+        logger.warning("docker_env is not a dict: %r", env)
+        return {}
+
+    normalized: dict[str, str] = {}
+    for key, value in env.items():
+        if not isinstance(key, str) or not _ENV_VAR_NAME_RE.match(key.strip()):
+            logger.warning("Ignoring invalid docker_env key: %r", key)
+            continue
+        key = key.strip()
+        if not isinstance(value, str):
+            # Coerce simple scalar types (int, bool, float) to string;
+            # reject complex types.
+            if isinstance(value, (int, float, bool)):
+                value = str(value)
+            else:
+                logger.warning("Ignoring non-string docker_env value for %r: %r", key, value)
+                continue
+        normalized[key] = value
+
+    return normalized
+
+
 def _load_hermes_env_vars() -> dict[str, str]:
     """Load ~/.hermes/.env values without failing Docker command execution."""
     try:
@@ -210,6 +240,7 @@ class DockerEnvironment(BaseEnvironment):
         task_id: str = "default",
         volumes: list = None,
         forward_env: list[str] | None = None,
+        env: dict | None = None,
         network: bool = True,
         host_cwd: str = None,
         auto_mount_cwd: bool = False,
@@ -221,6 +252,7 @@ class DockerEnvironment(BaseEnvironment):
         self._persistent = persistent_filesystem
         self._task_id = task_id
         self._forward_env = _normalize_forward_env_names(forward_env)
+        self._env = _normalize_env_dict(env)
         self._container_id: Optional[str] = None
         logger.info(f"DockerEnvironment volumes: {volumes}")
         # Ensure volumes is a list (config.yaml could be malformed)
@@ -362,8 +394,14 @@ class DockerEnvironment(BaseEnvironment):
         except Exception as e:
             logger.debug("Docker: could not load credential file mounts: %s", e)
 
+        # Explicit environment variables (docker_env config) — set at container
+        # creation so they're available to all processes (including entrypoint).
+        env_args = []
+        for key in sorted(self._env):
+            env_args.extend(["-e", f"{key}={self._env[key]}"])
+
         logger.info(f"Docker volume_args: {volume_args}")
-        all_run_args = list(_SECURITY_ARGS) + writable_args + resource_args + volume_args
+        all_run_args = list(_SECURITY_ARGS) + writable_args + resource_args + volume_args + env_args
         logger.info(f"Docker run_args: {all_run_args}")
 
         # Resolve the docker executable once so it works even when
@@ -456,9 +494,11 @@ class DockerEnvironment(BaseEnvironment):
         if effective_stdin is not None:
             cmd.append("-i")
         cmd.extend(["-w", work_dir])
-        # Combine explicit docker_forward_env with skill-declared env_passthrough
-        # vars so skills that declare required_environment_variables (e.g. Notion)
-        # have their keys forwarded into the container automatically.
+        # Build the per-exec environment: start with explicit docker_env values
+        # (static config), then overlay docker_forward_env / skill env_passthrough
+        # (dynamic from host process).  Forward values take precedence.
+        exec_env: dict[str, str] = dict(self._env)
+
         forward_keys = set(self._forward_env)
         try:
             from tools.env_passthrough import get_all_passthrough
@@ -471,7 +511,10 @@ class DockerEnvironment(BaseEnvironment):
             if value is None:
                 value = hermes_env.get(key)
             if value is not None:
-                cmd.extend(["-e", f"{key}={value}"])
+                exec_env[key] = value
+
+        for key in sorted(exec_env):
+            cmd.extend(["-e", f"{key}={exec_env[key]}"])
         cmd.extend([self._container_id, "bash", "-lc", exec_command])
 
         try:

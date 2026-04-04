@@ -583,6 +583,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
     persistent = cc.get("container_persistent", True)
     volumes = cc.get("docker_volumes", [])
     docker_forward_env = cc.get("docker_forward_env", [])
+    docker_env = cc.get("docker_env", {})
 
     if env_type == "local":
         lc = local_config or {}
@@ -598,6 +599,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
             host_cwd=host_cwd,
             auto_mount_cwd=cc.get("docker_mount_cwd_to_workspace", False),
             forward_env=docker_forward_env,
+            env=docker_env,
         )
     
     elif env_type == "singularity":

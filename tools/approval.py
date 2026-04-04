@@ -812,7 +812,9 @@ def check_all_command_guards(command: str, env_type: str,
 
             # User approved — persist based on scope (same logic as CLI)
             for key, _, is_tirith in warnings:
-                if choice in ("once", "session") or (choice == "always" and is_tirith):
+                if choice == "session" or (choice == "always" and is_tirith):
+                    # "once" is intentionally excluded — it grants a single
+                    # execution without persisting session-wide approval.
                     approve_session(session_key, key)
                 elif choice == "always":
                     approve_session(session_key, key)

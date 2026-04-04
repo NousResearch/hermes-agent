@@ -3320,6 +3320,117 @@ class HermesCLI:
         else:
             _cprint(f"  ↻ Resumed session {target_id}{title_part} — no messages, starting fresh.")
 
+    def _handle_branch_command(self, cmd_original: str) -> None:
+        """Handle /branch [name] — fork the current session into a new independent copy.
+
+        Copies the full conversation history to a new session so the user can
+        explore a different approach without losing the original session state.
+        Inspired by Claude Code's /branch command.
+        """
+        if not self.conversation_history:
+            _cprint("  No conversation to branch — send a message first.")
+            return
+
+        if not self._session_db:
+            _cprint("  Session database not available.")
+            return
+
+        parts = cmd_original.split(None, 1)
+        branch_name = parts[1].strip() if len(parts) > 1 else ""
+
+        # Generate the new session ID
+        now = datetime.now()
+        timestamp_str = now.strftime("%Y%m%d_%H%M%S")
+        short_uuid = uuid.uuid4().hex[:6]
+        new_session_id = f"{timestamp_str}_{short_uuid}"
+
+        # Determine branch title
+        if branch_name:
+            branch_title = branch_name
+        else:
+            # Auto-generate from the current session title
+            current_title = None
+            if self._session_db:
+                current_title = self._session_db.get_session_title(self.session_id)
+            base = current_title or "branch"
+            branch_title = self._session_db.get_next_title_in_lineage(base)
+
+        # Save the current session's state before branching
+        parent_session_id = self.session_id
+
+        # End the old session
+        try:
+            self._session_db.end_session(self.session_id, "branched")
+        except Exception:
+            pass
+
+        # Create the new session with parent link
+        try:
+            self._session_db.create_session(
+                session_id=new_session_id,
+                source=os.environ.get("HERMES_SESSION_SOURCE", "cli"),
+                model=self.model,
+                model_config={
+                    "max_iterations": self.max_turns,
+                    "reasoning_config": self.reasoning_config,
+                },
+                parent_session_id=parent_session_id,
+            )
+        except Exception as e:
+            _cprint(f"  Failed to create branch session: {e}")
+            return
+
+        # Copy conversation history to the new session
+        for msg in self.conversation_history:
+            try:
+                self._session_db.append_message(
+                    session_id=new_session_id,
+                    role=msg.get("role", "user"),
+                    content=msg.get("content"),
+                    tool_name=msg.get("tool_name") or msg.get("name"),
+                    tool_calls=msg.get("tool_calls"),
+                    tool_call_id=msg.get("tool_call_id"),
+                    reasoning=msg.get("reasoning"),
+                )
+            except Exception:
+                pass  # Best-effort copy
+
+        # Set title on the branch
+        try:
+            self._session_db.set_session_title(new_session_id, branch_title)
+        except Exception:
+            pass
+
+        # Switch to the new session
+        self.session_id = new_session_id
+        self.session_start = now
+        self._pending_title = None
+        self._resumed = True  # Prevents auto-title generation
+
+        # Sync the agent
+        if self.agent:
+            self.agent.session_id = new_session_id
+            self.agent.session_start = now
+            self.agent.reset_session_state()
+            if hasattr(self.agent, "_last_flushed_db_idx"):
+                self.agent._last_flushed_db_idx = len(self.conversation_history)
+            if hasattr(self.agent, "_todo_store"):
+                try:
+                    from tools.todo_tool import TodoStore
+                    self.agent._todo_store = TodoStore()
+                except Exception:
+                    pass
+            if hasattr(self.agent, "_invalidate_system_prompt"):
+                self.agent._invalidate_system_prompt()
+
+        msg_count = len([m for m in self.conversation_history if m.get("role") == "user"])
+        _cprint(
+            f"  ⑂ Branched session \"{branch_title}\""
+            f" ({msg_count} user message{'s' if msg_count != 1 else ''})"
+        )
+        _cprint(f"  Original session: {parent_session_id}")
+        _cprint(f"  Branch session:   {new_session_id}")
+
     def reset_conversation(self):
         """Reset the conversation by starting a new session."""
         # Shut down memory provider before resetting — actual session boundary
@@ -4040,6 +4151,8 @@ class HermesCLI:
                 self._pending_input.put(retry_msg)
         elif canonical == "undo":
             self.undo_last()
+        elif canonical == "branch":
+            self._handle_branch_command(cmd_original)
         elif canonical == "save":
             self.save_conversation()
         elif canonical == "cron":
@@ -7658,6 +7771,49 @@ class HermesCLI:
             **({'cursor': _STEADY_CURSOR} if _STEADY_CURSOR is not None else {}),
         )
         self._app = app  # Store reference for clarify_callback
+
+        # ── Fix ghost status-bar lines on terminal resize ──────────────
+        # When the terminal shrinks (e.g. un-maximize), the emulator reflows
+        # the previously-rendered full-width rows (status bar, input rules)
+        # into multiple narrower rows.  prompt_toolkit's _on_resize handler
+        # only cursor_up()s by the stored layout height, missing the extra
+        # rows created by reflow — leaving ghost duplicates visible.
+        #
+        # Fix: before the standard erase, inflate _cursor_pos.y so the
+        # cursor moves up far enough to cover the reflowed ghost content.
+        _original_on_resize = app._on_resize
+
+        def _resize_clear_ghosts():
+            from prompt_toolkit.data_structures import Point as _Pt
+            renderer = app.renderer
+            try:
+                old_size = renderer._last_size
+                new_size = renderer.output.get_size()
+                if (
+                    old_size
+                    and new_size.columns < old_size.columns
+                    and new_size.columns > 0
+                ):
+                    reflow_factor = (
+                        (old_size.columns + new_size.columns - 1)
+                        // new_size.columns
+                    )
+                    last_h = (
+                        renderer._last_screen.height
+                        if renderer._last_screen
+                        else 0
+                    )
+                    extra = last_h * (reflow_factor - 1)
+                    if extra > 0:
+                        renderer._cursor_pos = _Pt(
+                            x=renderer._cursor_pos.x,
+                            y=renderer._cursor_pos.y + extra,
+                        )
+            except Exception:
+                pass  # never break resize handling
+            _original_on_resize()
+
+        app._on_resize = _resize_clear_ghosts
 
         def spinner_loop():
             import time as _time

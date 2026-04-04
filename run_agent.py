@@ -1686,6 +1686,7 @@ class AIAgent:
                     review_agent._user_profile_enabled = self._user_profile_enabled
                     review_agent._memory_nudge_interval = 0
                     review_agent._skill_nudge_interval = 0
+                    review_agent._memory_manager = self._memory_manager  # share, don't duplicate
 
                     review_agent.run_conversation(
                         user_message=prompt,

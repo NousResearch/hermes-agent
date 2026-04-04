@@ -403,6 +403,85 @@ class TestPluginManagerList:
 
 
 
+# ── TestPluginMissingEnvWarnings ───────────────────────────────────────────
+
+
+class TestPluginMissingEnvWarnings:
+    """Warnings emitted when required env vars are absent or tools are not registered."""
+
+    def test_missing_requires_env_logs_warning(self, tmp_path, monkeypatch, caplog):
+        """A warning is logged when required env vars listed in plugin.yaml are absent."""
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        _make_plugin_dir(
+            plugins_dir, "needs_env_plugin",
+            manifest_extra={"requires_env": ["MY_PLUGIN_API_URL"]},
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+        monkeypatch.delenv("MY_PLUGIN_API_URL", raising=False)
+
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+            mgr = PluginManager()
+            mgr.discover_and_load()
+
+        assert any("MY_PLUGIN_API_URL" in r.message for r in caplog.records)
+        assert any("systemd" in r.message for r in caplog.records)
+
+    def test_present_requires_env_no_warning(self, tmp_path, monkeypatch, caplog):
+        """No missing-env warning when all required env vars are present."""
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        _make_plugin_dir(
+            plugins_dir, "has_env_plugin",
+            manifest_extra={"requires_env": ["MY_PLUGIN_API_URL"]},
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+        monkeypatch.setenv("MY_PLUGIN_API_URL", "http://localhost:8888")
+
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+            mgr = PluginManager()
+            mgr.discover_and_load()
+
+        assert not any("MY_PLUGIN_API_URL" in r.message for r in caplog.records)
+
+    def test_zero_registrations_logs_warning(self, tmp_path, monkeypatch, caplog):
+        """A warning is logged when register() completes but registers nothing."""
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        # register() does nothing — simulates a plugin that returns early
+        # because a required env var is absent (the Hindsight pattern).
+        _make_plugin_dir(plugins_dir, "silent_plugin", register_body="pass")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+            mgr = PluginManager()
+            mgr.discover_and_load()
+
+        assert any("zero tools" in r.message for r in caplog.records)
+        assert any("~/.hermes/.env" in r.message for r in caplog.records)
+
+    def test_no_zero_warning_when_tool_registered(self, tmp_path, monkeypatch, caplog):
+        """No zero-registration warning when at least one tool is registered."""
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        plugin_dir = plugins_dir / "active_plugin"
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "plugin.yaml").write_text(yaml.dump({"name": "active_plugin"}))
+        (plugin_dir / "__init__.py").write_text(
+            'def register(ctx):\n'
+            '    ctx.register_tool(\n'
+            '        name="active_tool",\n'
+            '        toolset="plugin_active_plugin",\n'
+            '        schema={"name": "active_tool", "description": "x", '
+            '"parameters": {"type": "object", "properties": {}}},\n'
+            '        handler=lambda args, **kw: "ok",\n'
+            '    )\n'
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+            mgr = PluginManager()
+            mgr.discover_and_load()
+
+        assert not any("zero tools" in r.message for r in caplog.records)
+
+
 # NOTE: TestPluginCommands removed – register_command() was never implemented
 # in PluginContext (hermes_cli/plugins.py).  The tests referenced _plugin_commands,
 # commands_registered, get_plugin_command_handler, and GATEWAY_KNOWN_COMMANDS

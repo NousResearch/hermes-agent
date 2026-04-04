@@ -346,6 +346,22 @@ class PluginManager:
 
             loaded.module = module
 
+            # Warn early if required env vars are missing so the user gets a
+            # clear message instead of a silent no-op from the plugin itself.
+            missing_env = [
+                var for var in manifest.requires_env
+                if not os.environ.get(var)
+            ]
+            if missing_env:
+                logger.warning(
+                    "Plugin '%s' is missing required environment variable(s): %s. "
+                    "Tools may not be registered. "
+                    "If running as a systemd service, add these to the service's "
+                    "Environment= directives (they are not loaded from ~/.hermes/.env).",
+                    manifest.name,
+                    ", ".join(missing_env),
+                )
+
             # Call register()
             register_fn = getattr(module, "register", None)
             if register_fn is None:
@@ -375,6 +391,19 @@ class PluginManager:
                     }
                 )
                 loaded.enabled = True
+
+                # Warn when the plugin registered nothing at all — this is the
+                # silent-skip pattern reported in #2765 (e.g. Hindsight plugin
+                # returns early when HINDSIGHT_API_URL is absent without any
+                # log output of its own).
+                if not loaded.tools_registered and not loaded.hooks_registered:
+                    logger.warning(
+                        "Plugin '%s' registered zero tools and zero hooks. "
+                        "If this plugin requires environment variables, ensure "
+                        "they are set in the process that loads it "
+                        "(~/.hermes/.env is NOT loaded by systemd-managed services).",
+                        manifest.name,
+                    )
 
         except Exception as exc:
             loaded.error = str(exc)

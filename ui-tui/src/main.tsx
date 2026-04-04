@@ -1,5 +1,5 @@
-import React from 'react'
 import { render } from 'ink'
+import React from 'react'
 
 import { App } from './app.js'
 import { GatewayClient } from './gatewayClient.js'

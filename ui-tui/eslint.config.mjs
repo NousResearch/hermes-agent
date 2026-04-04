@@ -28,6 +28,7 @@ export default [
       'unused-imports': unusedImports
     },
     rules: {
+      'no-fallthrough': ['error', { allowEmptyCase: true }],
       curly: ['error', 'all'],
       '@typescript-eslint/consistent-type-imports': ['error', { prefer: 'type-imports' }],
       '@typescript-eslint/no-unused-vars': 'off',
@@ -63,6 +64,6 @@ export default [
     }
   },
   {
-    ignores: ['node_modules/', 'dist/', '*.config.*']
+    ignores: ['node_modules/', 'dist/', '*.config.*', 'src/**/*.js']
   }
 ]

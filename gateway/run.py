@@ -2648,7 +2648,7 @@ class GatewayRunner:
             found_in_history = any(
                 reply_snippet[:200] in (msg.get("content") or "")
                 for msg in history
-                if msg.get("role") in ("assistant", "user", "tool")
+                if isinstance(msg, dict) and msg.get("role") in ("assistant", "user", "tool")
             )
             if not found_in_history:
                 message_text = f'[Replying to: "{reply_snippet}"]\n\n{message_text}'
@@ -4644,6 +4644,8 @@ class GatewayRunner:
 
         # Copy conversation history to the new session
         for msg in history:
+            if not isinstance(msg, dict):
+                continue
             try:
                 self._session_db.append_message(
                     session_id=new_session_id,
@@ -5895,6 +5897,10 @@ class GatewayRunner:
             #        assistant→tool sequences (dropping tool_calls causes 500 errors)
             agent_history = []
             for msg in history:
+                # Defensive: skip non-dict messages (corrupted history entries)
+                if not isinstance(msg, dict):
+                    logger.warning("Skipping non-dict message in history: %s (type: %s)", msg[:100] if isinstance(msg, str) else msg, type(msg).__name__)
+                    continue
                 role = msg.get("role")
                 if not role:
                     continue
@@ -6071,6 +6077,8 @@ class GatewayRunner:
                 media_tags = []
                 has_voice_directive = False
                 for msg in result.get("messages", []):
+                    if not isinstance(msg, dict):
+                        continue
                     if msg.get("role") in ("tool", "function"):
                         content = msg.get("content", "")
                         if "MEDIA:" in content:

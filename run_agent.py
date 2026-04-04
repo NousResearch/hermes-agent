@@ -2306,8 +2306,18 @@ class AIAgent:
             # with partial history and would otherwise clobber the full JSON log.
             if self.session_log_file.exists():
                 try:
-                    existing = json.loads(self.session_log_file.read_text(encoding="utf-8"))
-                    existing_count = existing.get("message_count", len(existing.get("messages", [])))
+                    # Count lines in existing JSONL file (each line = one message or metadata)
+                    existing_text = self.session_log_file.read_text(encoding="utf-8")
+                    existing_lines = [l for l in existing_text.strip().split("\n") if l.strip()]
+                    # Filter out non-dict lines (corrupted entries)
+                    existing_count = 0
+                    for line in existing_lines:
+                        try:
+                            obj = json.loads(line)
+                            if isinstance(obj, dict) and obj.get("role") not in ("session_meta", None):
+                                existing_count += 1
+                        except json.JSONDecodeError:
+                            continue
                     if existing_count > len(cleaned):
                         logging.debug(
                             "Skipping session log overwrite: existing has %d messages, current has %d",
@@ -2317,7 +2327,14 @@ class AIAgent:
                 except Exception:
                     pass  # corrupted existing file — allow the overwrite
 
-            entry = {
+            # Build JSONL format: one JSON object per line
+            # Line 1: session metadata (for session recovery/reference)
+            # Lines 2+: individual messages
+            jsonl_lines = []
+
+            # Session metadata entry (for backward compatibility with session recovery)
+            meta_entry = {
+                "role": "session_meta",
                 "session_id": self.session_id,
                 "model": self.model,
                 "base_url": self.base_url,
@@ -2327,15 +2344,32 @@ class AIAgent:
                 "system_prompt": self._cached_system_prompt or "",
                 "tools": self.tools or [],
                 "message_count": len(cleaned),
-                "messages": cleaned,
             }
+            jsonl_lines.append(json.dumps(meta_entry, ensure_ascii=False, default=str))
 
-            atomic_json_write(
-                self.session_log_file,
-                entry,
-                indent=2,
-                default=str,
+            # Individual messages (one per line - true JSONL format)
+            for msg in cleaned:
+                jsonl_lines.append(json.dumps(msg, ensure_ascii=False, default=str))
+
+            # Atomic write of JSONL file (temp file + fsync + replace)
+            import tempfile
+            fd, tmp_path = tempfile.mkstemp(
+                dir=str(self.session_log_file.parent),
+                prefix=f".{self.session_log_file.stem}_",
+                suffix=".tmp",
             )
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    f.write("\n".join(jsonl_lines) + "\n")
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(tmp_path, self.session_log_file)
+            except BaseException:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                raise
 
         except Exception as e:
             if self.verbose_logging:

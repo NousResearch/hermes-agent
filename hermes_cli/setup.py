@@ -384,6 +384,113 @@ def print_noninteractive_setup_guidance(reason: str | None = None) -> None:
     print()
 
 
+def run_noninteractive_setup(args) -> None:
+    """Configure Hermes without a TTY using CLI flags and/or env vars."""
+    from hermes_cli.auth import PROVIDER_REGISTRY
+
+    ensure_hermes_home()
+    config = load_config()
+
+    provider_id = getattr(args, 'provider', None)
+    api_key = getattr(args, 'api_key', None)
+    model_name = getattr(args, 'model', None)
+    base_url = getattr(args, 'base_url', None)
+
+    # --- Resolve provider ---
+    # Well-known non-registry providers and their env vars
+    _BUILTIN_PROVIDERS = {
+        "openrouter": "OPENROUTER_API_KEY",
+        "custom": "OPENAI_API_KEY",
+    }
+
+    if not provider_id:
+        # Auto-detect from environment
+        for pid, env_var in _BUILTIN_PROVIDERS.items():
+            if os.environ.get(env_var, "").strip():
+                provider_id = pid
+                break
+
+        if not provider_id:
+            for pid, pcfg in PROVIDER_REGISTRY.items():
+                if pcfg.auth_type != "api_key":
+                    continue
+                for env_var in pcfg.api_key_env_vars:
+                    if os.environ.get(env_var, "").strip():
+                        provider_id = pid
+                        break
+                if provider_id:
+                    break
+
+    if not provider_id:
+        print_error("No --provider given and no API key found in environment.")
+        print_info("Use --provider <id> or set an API key env var (e.g. OPENROUTER_API_KEY).")
+        sys.exit(1)
+
+    # --- Determine env var name for the API key ---
+    env_var_name = _BUILTIN_PROVIDERS.get(provider_id)
+    inference_base_url = ""
+
+    if not env_var_name and provider_id in PROVIDER_REGISTRY:
+        pcfg = PROVIDER_REGISTRY[provider_id]
+        if pcfg.api_key_env_vars:
+            env_var_name = pcfg.api_key_env_vars[0]
+        inference_base_url = pcfg.inference_base_url or ""
+
+    # --- Save API key ---
+    if api_key and env_var_name:
+        save_env_value(env_var_name, api_key)
+        print_success(f"Saved API key to {env_var_name}")
+    elif api_key and not env_var_name:
+        print_info(f"Warning: no known env var for provider '{provider_id}'; API key not saved.")
+
+    # --- Handle base URL ---
+    effective_base_url = base_url or ""
+    if provider_id == "custom" and not effective_base_url:
+        existing = get_env_value("OPENAI_BASE_URL") or os.environ.get("OPENAI_BASE_URL", "")
+        if existing.strip():
+            effective_base_url = existing.strip()
+        else:
+            print_error("Provider 'custom' requires --base-url.")
+            sys.exit(1)
+
+    if provider_id == "custom" and effective_base_url:
+        save_env_value("OPENAI_BASE_URL", effective_base_url)
+    elif base_url and provider_id in PROVIDER_REGISTRY:
+        pcfg = PROVIDER_REGISTRY[provider_id]
+        if pcfg.base_url_env_var:
+            save_env_value(pcfg.base_url_env_var, base_url)
+            effective_base_url = base_url
+
+    if not effective_base_url:
+        effective_base_url = inference_base_url
+
+    # --- Write config ---
+    _set_model_provider(config, provider_id, effective_base_url)
+    if model_name:
+        _set_default_model(config, model_name)
+    save_config(config)
+
+    # --- Validate ---
+    has_key = bool(api_key)
+    if not has_key and env_var_name:
+        existing_key = get_env_value(env_var_name) or os.environ.get(env_var_name, "")
+        has_key = bool(existing_key.strip())
+
+    # --- Summary ---
+    print()
+    print(color("◆ Hermes configured (non-interactive)", Colors.CYAN, Colors.BOLD))
+    print_success(f"Provider: {provider_id}")
+    if model_name:
+        print_success(f"Model:    {model_name}")
+    if effective_base_url:
+        print_info(f"Base URL: {effective_base_url}")
+    if has_key:
+        print_success("API key:  set")
+    else:
+        print_error(f"API key:  NOT SET — set {env_var_name or 'the appropriate env var'} before use")
+    print()
+
+
 def prompt(question: str, default: str = None, password: bool = False) -> str:
     """Prompt for input with optional default."""
     if default:
@@ -2612,9 +2719,7 @@ def run_setup_wizard(args):
         non_interactive = True
 
     if non_interactive:
-        print_noninteractive_setup_guidance(
-            "Running in a non-interactive environment (no TTY detected)."
-        )
+        run_noninteractive_setup(args)
         return
 
     # Check if a specific section was requested

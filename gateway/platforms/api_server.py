@@ -935,15 +935,23 @@ class APIServerAdapter(BasePlatformAdapter):
     _CRON_AVAILABLE = False
     try:
         from cron.jobs import (
-            list_jobs as _cron_list,
-            get_job as _cron_get,
-            create_job as _cron_create,
-            update_job as _cron_update,
-            remove_job as _cron_remove,
-            pause_job as _cron_pause,
-            resume_job as _cron_resume,
-            trigger_job as _cron_trigger,
+            list_jobs as _cron_list_fn,
+            get_job as _cron_get_fn,
+            create_job as _cron_create_fn,
+            update_job as _cron_update_fn,
+            remove_job as _cron_remove_fn,
+            pause_job as _cron_pause_fn,
+            resume_job as _cron_resume_fn,
+            trigger_job as _cron_trigger_fn,
         )
+        _cron_list = staticmethod(_cron_list_fn)
+        _cron_get = staticmethod(_cron_get_fn)
+        _cron_create = staticmethod(_cron_create_fn)
+        _cron_update = staticmethod(_cron_update_fn)
+        _cron_remove = staticmethod(_cron_remove_fn)
+        _cron_pause = staticmethod(_cron_pause_fn)
+        _cron_resume = staticmethod(_cron_resume_fn)
+        _cron_trigger = staticmethod(_cron_trigger_fn)
         _CRON_AVAILABLE = True
     except ImportError:
         pass

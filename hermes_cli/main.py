@@ -850,7 +850,8 @@ def cmd_whatsapp(args):
 
 def cmd_setup(args):
     """Interactive setup wizard."""
-    _require_tty("setup")
+    if not getattr(args, 'non_interactive', False):
+        _require_tty("setup")
     from hermes_cli.setup import run_setup_wizard
     run_setup_wizard(args)
 
@@ -4000,6 +4001,30 @@ For more help on a command:
         "--reset",
         action="store_true",
         help="Reset configuration to defaults"
+    )
+    setup_parser.add_argument(
+        "--provider",
+        type=str,
+        default=None,
+        help="Provider ID (e.g. openrouter, anthropic, custom, deepseek)"
+    )
+    setup_parser.add_argument(
+        "--api-key",
+        type=str,
+        default=None,
+        help="API key to store for the selected provider"
+    )
+    setup_parser.add_argument(
+        "--model",
+        type=str,
+        default=None,
+        help="Default model name (e.g. anthropic/claude-sonnet-4)"
+    )
+    setup_parser.add_argument(
+        "--base-url",
+        type=str,
+        default=None,
+        help="Base URL for custom or overridden provider endpoints"
     )
     setup_parser.set_defaults(func=cmd_setup)
 

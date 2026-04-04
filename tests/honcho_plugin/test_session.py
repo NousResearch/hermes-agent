@@ -1,6 +1,7 @@
 """Tests for plugins/memory/honcho/session.py — HonchoSession and helpers."""
 
 from datetime import datetime
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from plugins.memory.honcho.session import (
@@ -187,3 +188,82 @@ class TestManagerCacheOps:
         assert keys == {"k1", "k2"}
         s1_info = next(s for s in sessions if s["key"] == "k1")
         assert s1_info["message_count"] == 1
+
+
+class TestPeerLookupHelpers:
+    def _make_cached_manager(self):
+        mgr = HonchoSessionManager()
+        session = HonchoSession(
+            key="telegram:123",
+            user_peer_id="robert",
+            assistant_peer_id="hermes",
+            honcho_session_id="telegram-123",
+        )
+        mgr._cache[session.key] = session
+        return mgr, session
+
+    def test_get_peer_card_uses_direct_peer_lookup(self):
+        mgr, session = self._make_cached_manager()
+        user_peer = MagicMock()
+        user_peer.get_card.return_value = ["Name: Robert"]
+        mgr._get_or_create_peer = MagicMock(return_value=user_peer)
+
+        assert mgr.get_peer_card(session.key) == ["Name: Robert"]
+        user_peer.get_card.assert_called_once_with()
+
+    def test_search_context_uses_peer_context_response(self):
+        mgr, session = self._make_cached_manager()
+        user_peer = MagicMock()
+        user_peer.context.return_value = SimpleNamespace(
+            representation="Robert runs neuralancer",
+            peer_card=["Location: Melbourne"],
+        )
+        mgr._get_or_create_peer = MagicMock(return_value=user_peer)
+
+        result = mgr.search_context(session.key, "neuralancer")
+
+        assert "Robert runs neuralancer" in result
+        assert "- Location: Melbourne" in result
+        user_peer.context.assert_called_once_with(search_query="neuralancer")
+
+    def test_get_prefetch_context_fetches_user_and_ai_from_peer_api(self):
+        mgr, session = self._make_cached_manager()
+        user_peer = MagicMock()
+        user_peer.context.return_value = SimpleNamespace(
+            representation="User representation",
+            peer_card=["Name: Robert"],
+        )
+        ai_peer = MagicMock()
+        ai_peer.context.return_value = SimpleNamespace(
+            representation="AI representation",
+            peer_card=["Owner: Robert"],
+        )
+        mgr._get_or_create_peer = MagicMock(side_effect=[user_peer, ai_peer])
+
+        result = mgr.get_prefetch_context(session.key)
+
+        assert result == {
+            "representation": "User representation",
+            "card": "Name: Robert",
+            "ai_representation": "AI representation",
+            "ai_card": "Owner: Robert",
+        }
+        user_peer.context.assert_called_once_with()
+        ai_peer.context.assert_called_once_with()
+
+    def test_get_ai_representation_uses_peer_api(self):
+        mgr, session = self._make_cached_manager()
+        ai_peer = MagicMock()
+        ai_peer.context.return_value = SimpleNamespace(
+            representation="AI representation",
+            peer_card=["Owner: Robert"],
+        )
+        mgr._get_or_create_peer = MagicMock(return_value=ai_peer)
+
+        result = mgr.get_ai_representation(session.key)
+
+        assert result == {
+            "representation": "AI representation",
+            "card": "Owner: Robert",
+        }
+        ai_peer.context.assert_called_once_with()

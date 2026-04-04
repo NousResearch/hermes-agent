@@ -618,35 +618,19 @@ class HonchoSessionManager:
         if not session:
             return {}
 
-        honcho_session = self._sessions_cache.get(session.honcho_session_id)
-        if not honcho_session:
-            return {}
-
         result: dict[str, str] = {}
         try:
-            ctx = honcho_session.context(
-                summary=False,
-                tokens=self._context_tokens,
-                peer_target=session.user_peer_id,
-                peer_perspective=session.assistant_peer_id,
-            )
-            card = ctx.peer_card or []
-            result["representation"] = ctx.peer_representation or ""
-            result["card"] = "\n".join(card) if isinstance(card, list) else str(card)
+            user_ctx = self._fetch_peer_context(session.user_peer_id)
+            result["representation"] = user_ctx["representation"]
+            result["card"] = "\n".join(user_ctx["card"])
         except Exception as e:
             logger.warning("Failed to fetch user context from Honcho: %s", e)
 
         # Also fetch AI peer's own representation so Hermes knows itself.
         try:
-            ai_ctx = honcho_session.context(
-                summary=False,
-                tokens=self._context_tokens,
-                peer_target=session.assistant_peer_id,
-                peer_perspective=session.user_peer_id,
-            )
-            ai_card = ai_ctx.peer_card or []
-            result["ai_representation"] = ai_ctx.peer_representation or ""
-            result["ai_card"] = "\n".join(ai_card) if isinstance(ai_card, list) else str(ai_card)
+            ai_ctx = self._fetch_peer_context(session.assistant_peer_id)
+            result["ai_representation"] = ai_ctx["representation"]
+            result["ai_card"] = "\n".join(ai_ctx["card"])
         except Exception as e:
             logger.debug("Failed to fetch AI peer context from Honcho: %s", e)
 
@@ -823,6 +807,64 @@ class HonchoSessionManager:
 
         return uploaded
 
+    @staticmethod
+    def _normalize_card(card: Any) -> list[str]:
+        """Normalize Honcho card payloads into a plain list of strings."""
+        if not card:
+            return []
+        if isinstance(card, list):
+            return [str(item) for item in card if item]
+        return [str(card)]
+
+    def _fetch_peer_card(self, peer_id: str) -> list[str]:
+        """Fetch a peer card directly from the peer object.
+
+        This avoids relying on session.context(), which can return an empty
+        peer_card for per-session messaging sessions even when the peer itself
+        has a populated card.
+        """
+        peer = self._get_or_create_peer(peer_id)
+        getter = getattr(peer, "get_card", None)
+        if callable(getter):
+            return self._normalize_card(getter())
+
+        legacy_getter = getattr(peer, "card", None)
+        if callable(legacy_getter):
+            return self._normalize_card(legacy_getter())
+
+        return []
+
+    def _fetch_peer_context(self, peer_id: str, search_query: str | None = None) -> dict[str, Any]:
+        """Fetch representation + peer card directly from a peer object."""
+        peer = self._get_or_create_peer(peer_id)
+        representation = ""
+        card: list[str] = []
+
+        try:
+            ctx = peer.context(search_query=search_query) if search_query else peer.context()
+            representation = (
+                getattr(ctx, "representation", None)
+                or getattr(ctx, "peer_representation", None)
+                or ""
+            )
+            card = self._normalize_card(getattr(ctx, "peer_card", None))
+        except Exception as e:
+            logger.debug("Direct peer.context() failed for '%s': %s", peer_id, e)
+
+        if not representation:
+            try:
+                representation = peer.representation() or ""
+            except Exception as e:
+                logger.debug("Direct peer.representation() failed for '%s': %s", peer_id, e)
+
+        if not card:
+            try:
+                card = self._fetch_peer_card(peer_id)
+            except Exception as e:
+                logger.debug("Direct peer card fetch failed for '%s': %s", peer_id, e)
+
+        return {"representation": representation, "card": card}
+
     def get_peer_card(self, session_key: str) -> list[str]:
         """
         Fetch the user peer's card — a curated list of key facts.
@@ -835,19 +877,8 @@ class HonchoSessionManager:
         if not session:
             return []
 
-        honcho_session = self._sessions_cache.get(session.honcho_session_id)
-        if not honcho_session:
-            return []
-
         try:
-            ctx = honcho_session.context(
-                summary=False,
-                tokens=200,
-                peer_target=session.user_peer_id,
-                peer_perspective=session.assistant_peer_id,
-            )
-            card = ctx.peer_card or []
-            return card if isinstance(card, list) else [str(card)]
+            return self._fetch_peer_card(session.user_peer_id)
         except Exception as e:
             logger.debug("Failed to fetch peer card from Honcho: %s", e)
             return []
@@ -872,25 +903,14 @@ class HonchoSessionManager:
         if not session:
             return ""
 
-        honcho_session = self._sessions_cache.get(session.honcho_session_id)
-        if not honcho_session:
-            return ""
-
         try:
-            ctx = honcho_session.context(
-                summary=False,
-                tokens=max_tokens,
-                peer_target=session.user_peer_id,
-                peer_perspective=session.assistant_peer_id,
-                search_query=query,
-            )
+            ctx = self._fetch_peer_context(session.user_peer_id, search_query=query)
             parts = []
-            if ctx.peer_representation:
-                parts.append(ctx.peer_representation)
-            card = ctx.peer_card or []
+            if ctx["representation"]:
+                parts.append(ctx["representation"])
+            card = ctx["card"] or []
             if card:
-                facts = card if isinstance(card, list) else [str(card)]
-                parts.append("\n".join(f"- {f}" for f in facts))
+                parts.append("\n".join(f"- {f}" for f in card))
             return "\n\n".join(parts)
         except Exception as e:
             logger.debug("Honcho search_context failed: %s", e)
@@ -994,21 +1014,11 @@ class HonchoSessionManager:
         if not session:
             return {"representation": "", "card": ""}
 
-        honcho_session = self._sessions_cache.get(session.honcho_session_id)
-        if not honcho_session:
-            return {"representation": "", "card": ""}
-
         try:
-            ctx = honcho_session.context(
-                summary=False,
-                tokens=self._context_tokens,
-                peer_target=session.assistant_peer_id,
-                peer_perspective=session.user_peer_id,
-            )
-            ai_card = ctx.peer_card or []
+            ctx = self._fetch_peer_context(session.assistant_peer_id)
             return {
-                "representation": ctx.peer_representation or "",
-                "card": "\n".join(ai_card) if isinstance(ai_card, list) else str(ai_card),
+                "representation": ctx["representation"] or "",
+                "card": "\n".join(ctx["card"]),
             }
         except Exception as e:
             logger.debug("Failed to fetch AI representation: %s", e)

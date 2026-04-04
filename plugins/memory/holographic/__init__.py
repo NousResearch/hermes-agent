@@ -8,7 +8,7 @@ Original plugin by dusterbloom (PR #2351), adapted to the MemoryProvider ABC.
 Config in $HERMES_HOME/config.yaml (profile-scoped):
   plugins:
     hermes-memory-store:
-      db_path: $HERMES_HOME/memory_store.db
+      db_path: $HERMES_HOME/memory_store.db   # omit to use the default
       auto_extract: false
       default_trust: 0.5
       min_trust_threshold: 0.3
@@ -156,8 +156,15 @@ class HolographicMemoryProvider(MemoryProvider):
 
     def initialize(self, session_id: str, **kwargs) -> None:
         from hermes_constants import get_hermes_home
-        _default_db = str(get_hermes_home() / "memory_store.db")
+        _hermes_home = str(get_hermes_home())
+        _default_db = _hermes_home + "/memory_store.db"
         db_path = self._config.get("db_path", _default_db)
+        # Expand $HERMES_HOME in user-supplied paths so config values like
+        # "$HERMES_HOME/memory_store.db" or "~/.hermes/memory_store.db" both
+        # resolve to the active profile's directory.
+        if isinstance(db_path, str):
+            db_path = db_path.replace("$HERMES_HOME", _hermes_home)
+            db_path = db_path.replace("${HERMES_HOME}", _hermes_home)
         default_trust = float(self._config.get("default_trust", 0.5))
         hrr_dim = int(self._config.get("hrr_dim", 1024))
         hrr_weight = float(self._config.get("hrr_weight", 0.3))
@@ -182,7 +189,12 @@ class HolographicMemoryProvider(MemoryProvider):
         except Exception:
             total = 0
         if total == 0:
-            return ""
+            return (
+                "# Holographic Memory\n"
+                "Active. Empty fact store — proactively add facts the user would expect you to remember.\n"
+                "Use fact_store(action='add') to store durable structured facts about people, projects, preferences, decisions.\n"
+                "Use fact_feedback to rate facts after using them (trains trust scores)."
+            )
         return (
             f"# Holographic Memory\n"
             f"Active. {total} facts stored with entity resolution and trust scoring.\n"
@@ -199,7 +211,7 @@ class HolographicMemoryProvider(MemoryProvider):
                 return ""
             lines = []
             for r in results:
-                trust = r.get("trust", 0)
+                trust = r.get("trust_score", r.get("trust", 0))
                 lines.append(f"- [{trust:.1f}] {r.get('content', '')}")
             return "## Holographic Memory\n" + "\n".join(lines)
         except Exception as e:

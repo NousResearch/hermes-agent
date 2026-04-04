@@ -349,19 +349,23 @@ def _check_unavailable_skill(command_name: str) -> str | None:
     # Normalize: command uses hyphens, skill names may use hyphens or underscores
     normalized = command_name.lower().replace("_", "-")
     try:
-        from tools.skills_tool import SKILLS_DIR, _get_disabled_skill_names
+        from tools.skills_tool import _get_disabled_skill_names
+        from agent.skill_utils import get_all_skills_dirs
         disabled = _get_disabled_skill_names()
 
-        # Check disabled built-in skills
-        for skill_md in SKILLS_DIR.rglob("SKILL.md"):
-            if any(part in ('.git', '.github', '.hub') for part in skill_md.parts):
+        # Check disabled skills across all dirs (local + external)
+        for skills_dir in get_all_skills_dirs():
+            if not skills_dir.exists():
                 continue
-            name = skill_md.parent.name.lower().replace("_", "-")
-            if name == normalized and name in disabled:
-                return (
-                    f"The **{command_name}** skill is installed but disabled.\n"
-                    f"Enable it with: `hermes skills config`"
-                )
+            for skill_md in skills_dir.rglob("SKILL.md"):
+                if any(part in ('.git', '.github', '.hub') for part in skill_md.parts):
+                    continue
+                name = skill_md.parent.name.lower().replace("_", "-")
+                if name == normalized and name in disabled:
+                    return (
+                        f"The **{command_name}** skill is installed but disabled.\n"
+                        f"Enable it with: `hermes skills config`"
+                    )
 
         # Check optional skills (shipped with repo but not installed)
         from hermes_constants import get_hermes_home, get_optional_skills_dir
@@ -667,12 +671,13 @@ class GatewayRunner:
             # what's already saved and avoid overwriting newer entries.
             _current_memory = ""
             try:
-                from tools.memory_tool import MEMORY_DIR
+                from tools.memory_tool import get_memory_dir
+                _mem_dir = get_memory_dir()
                 for fname, label in [
                     ("MEMORY.md", "MEMORY (your personal notes)"),
                     ("USER.md", "USER PROFILE (who the user is)"),
                 ]:
-                    fpath = MEMORY_DIR / fname
+                    fpath = _mem_dir / fname
                     if fpath.exists():
                         content = fpath.read_text(encoding="utf-8").strip()
                         if content:
@@ -1744,7 +1749,8 @@ class GatewayRunner:
         # Staleness eviction: if an entry has been in _running_agents for
         # longer than the agent timeout, it's a leaked lock from a hung or
         # crashed handler.  Evict it so the session isn't permanently stuck.
-        _STALE_TTL = float(os.getenv("HERMES_AGENT_TIMEOUT", 600)) + 60  # timeout + 1 min grace
+        _raw_stale_timeout = float(os.getenv("HERMES_AGENT_TIMEOUT", 600))
+        _STALE_TTL = (_raw_stale_timeout + 60) if _raw_stale_timeout > 0 else float("inf")
         _stale_ts = self._running_agents_ts.get(_quick_key, 0)
         if _quick_key in self._running_agents and _stale_ts and (time.time() - _stale_ts) > _STALE_TTL:
             logger.warning(
@@ -1820,6 +1826,15 @@ class GatewayRunner:
                     )
                     adapter._pending_messages[_quick_key] = queued_event
                 return "Queued for the next turn."
+
+            # /approve and /deny must bypass the running-agent interrupt path.
+            # The agent thread is blocked on a threading.Event inside
+            # tools/approval.py — sending an interrupt won't unblock it.
+            # Route directly to the approval handler so the event is signalled.
+            if _cmd_def_inner and _cmd_def_inner.name in ("approve", "deny"):
+                if _cmd_def_inner.name == "approve":
+                    return await self._handle_approve_command(event)
+                return await self._handle_deny_command(event)
 
             if event.message_type == MessageType.PHOTO:
                 logger.debug("PRIORITY photo follow-up for session %s — queueing without interrupt", _quick_key[:20])
@@ -1975,6 +1990,9 @@ class GatewayRunner:
         if canonical == "resume":
             return await self._handle_resume_command(event)
 
+        if canonical == "branch":
+            return await self._handle_branch_command(event)
+
         if canonical == "rollback":
             return await self._handle_rollback_command(event)
 
@@ -2051,6 +2069,19 @@ class GatewayRunner:
                 skill_cmds = get_skill_commands()
                 cmd_key = f"/{command}"
                 if cmd_key in skill_cmds:
+                    # Check per-platform disabled status before executing.
+                    # get_skill_commands() only applies the *global* disabled
+                    # list at scan time; per-platform overrides need checking
+                    # here because the cache is process-global across platforms.
+                    _skill_name = skill_cmds[cmd_key].get("name", "")
+                    _plat = source.platform.value if source.platform else None
+                    if _plat and _skill_name:
+                        from agent.skill_utils import get_disabled_skill_names as _get_plat_disabled
+                        if _skill_name in _get_plat_disabled(platform=_plat):
+                            return (
+                                f"The **{_skill_name}** skill is disabled for {_plat}.\n"
+                                f"Enable it with: `hermes skills config`"
+                            )
                     user_instruction = event.get_command_args().strip()
                     msg = build_skill_invocation_message(
                         cmd_key, user_instruction, task_id=_quick_key
@@ -4336,9 +4367,9 @@ class GatewayRunner:
         cycle = ["off", "new", "all", "verbose"]
         descriptions = {
             "off": "⚙️ Tool progress: **OFF** — no tool activity shown.",
-            "new": "⚙️ Tool progress: **NEW** — shown when tool changes.",
-            "all": "⚙️ Tool progress: **ALL** — every tool call shown.",
-            "verbose": "⚙️ Tool progress: **VERBOSE** — full args and results.",
+            "new": "⚙️ Tool progress: **NEW** — shown when tool changes (short previews).",
+            "all": "⚙️ Tool progress: **ALL** — every tool call shown (short previews).",
+            "verbose": "⚙️ Tool progress: **VERBOSE** — every tool call with full arguments.",
         }
 
         raw_progress = user_config.get("display", {}).get("tool_progress", "all")
@@ -4558,6 +4589,96 @@ class GatewayRunner:
         msg_part = f" ({msg_count} message{'s' if msg_count != 1 else ''})" if msg_count else ""
 
         return f"↻ Resumed session **{title}**{msg_part}. Conversation restored."
+
+    async def _handle_branch_command(self, event: MessageEvent) -> str:
+        """Handle /branch [name] — fork the current session into a new independent copy.
+
+        Copies conversation history to a new session so the user can explore
+        a different approach without losing the original.
+        Inspired by Claude Code's /branch command.
+        """
+        import uuid as _uuid
+
+        if not self._session_db:
+            return "Session database not available."
+
+        source = event.source
+        session_key = self._session_key_for_source(source)
+
+        # Load the current session and its transcript
+        current_entry = self.session_store.get_or_create_session(source)
+        history = self.session_store.load_transcript(current_entry.session_id)
+        if not history:
+            return "No conversation to branch — send a message first."
+
+        branch_name = event.get_command_args().strip()
+
+        # Generate the new session ID
+        from datetime import datetime as _dt
+        now = _dt.now()
+        timestamp_str = now.strftime("%Y%m%d_%H%M%S")
+        short_uuid = _uuid.uuid4().hex[:6]
+        new_session_id = f"{timestamp_str}_{short_uuid}"
+
+        # Determine branch title
+        if branch_name:
+            branch_title = branch_name
+        else:
+            current_title = self._session_db.get_session_title(current_entry.session_id)
+            base = current_title or "branch"
+            branch_title = self._session_db.get_next_title_in_lineage(base)
+
+        parent_session_id = current_entry.session_id
+
+        # Create the new session with parent link
+        try:
+            self._session_db.create_session(
+                session_id=new_session_id,
+                source=source.platform.value if source.platform else "gateway",
+                model=(self.config.get("model", {}) or {}).get("default") if isinstance(self.config, dict) else None,
+                parent_session_id=parent_session_id,
+            )
+        except Exception as e:
+            logger.error("Failed to create branch session: %s", e)
+            return f"Failed to create branch: {e}"
+
+        # Copy conversation history to the new session
+        for msg in history:
+            try:
+                self._session_db.append_message(
+                    session_id=new_session_id,
+                    role=msg.get("role", "user"),
+                    content=msg.get("content"),
+                    tool_name=msg.get("tool_name") or msg.get("name"),
+                    tool_calls=msg.get("tool_calls"),
+                    tool_call_id=msg.get("tool_call_id"),
+                    reasoning=msg.get("reasoning"),
+                )
+            except Exception:
+                pass  # Best-effort copy
+
+        # Set title
+        try:
+            self._session_db.set_session_title(new_session_id, branch_title)
+        except Exception:
+            pass
+
+        # Switch the session store entry to the new session
+        new_entry = self.session_store.switch_session(session_key, new_session_id)
+        if not new_entry:
+            return "Branch created but failed to switch to it."
+
+        # Evict any cached agent for this session
+        self._evict_cached_agent(session_key)
+
+        msg_count = len([m for m in history if m.get("role") == "user"])
+        return (
+            f"⑂ Branched to **{branch_title}**"
+            f" ({msg_count} message{'s' if msg_count != 1 else ''} copied)\n"
+            f"Original: `{parent_session_id}`\n"
+            f"Branch: `{new_session_id}`\n"
+            f"Use `/resume` to switch back to the original."
+        )
 
     async def _handle_usage_command(self, event: MessageEvent) -> str:
         """Handle /usage command -- show token usage for the session's last agent run."""
@@ -4849,7 +4970,9 @@ class GatewayRunner:
             "user_id": event.source.user_id,
             "timestamp": datetime.now().isoformat(),
         }
-        pending_path.write_text(json.dumps(pending))
+        _tmp_pending = pending_path.with_suffix(".tmp")
+        _tmp_pending.write_text(json.dumps(pending))
+        _tmp_pending.replace(pending_path)
         exit_code_path.unlink(missing_ok=True)
 
         # Spawn `hermes update` detached so it survives gateway restart.
@@ -5394,22 +5517,28 @@ class GatewayRunner:
             from agent.display import get_tool_emoji
             emoji = get_tool_emoji(tool_name, default="⚙️")
             
-            # Verbose mode: show detailed arguments
-            if progress_mode == "verbose" and args:
-                import json as _json
-                args_str = _json.dumps(args, ensure_ascii=False, default=str)
-                if len(args_str) > 200:
-                    args_str = args_str[:197] + "..."
-                msg = f"{emoji} {tool_name}({list(args.keys())})\n{args_str}"
+            # Verbose mode: show detailed arguments, respects tool_preview_length
+            if progress_mode == "verbose":
+                if args:
+                    from agent.display import get_tool_preview_max_len
+                    _pl = get_tool_preview_max_len()
+                    import json as _json
+                    args_str = _json.dumps(args, ensure_ascii=False, default=str)
+                    _cap = _pl if _pl > 0 else 200
+                    if len(args_str) > _cap:
+                        args_str = args_str[:_cap - 3] + "..."
+                    msg = f"{emoji} {tool_name}({list(args.keys())})\n{args_str}"
+                elif preview:
+                    msg = f"{emoji} {tool_name}: \"{preview}\""
+                else:
+                    msg = f"{emoji} {tool_name}..."
                 progress_queue.put(msg)
                 return
             
+            # "all" / "new" modes: short preview, always truncated (40 chars)
             if preview:
-                # Truncate preview unless config says unlimited
-                from agent.display import get_tool_preview_max_len
-                _pl = get_tool_preview_max_len()
-                if _pl > 0 and len(preview) > _pl:
-                    preview = preview[:_pl - 3] + "..."
+                if len(preview) > 40:
+                    preview = preview[:37] + "..."
                 msg = f"{emoji} {tool_name}: \"{preview}\""
             else:
                 msg = f"{emoji} {tool_name}..."
@@ -5826,13 +5955,47 @@ class GatewayRunner:
             # command approval blocks the agent thread (mirrors CLI input()).
             # The callback bridges sync→async to send the approval request
             # to the user immediately.
-            from tools.approval import register_gateway_notify, unregister_gateway_notify
+            from tools.approval import (
+                register_gateway_notify,
+                reset_current_session_key,
+                set_current_session_key,
+                unregister_gateway_notify,
+            )
 
             def _approval_notify_sync(approval_data: dict) -> None:
-                """Send the approval request to the user from the agent thread."""
+                """Send the approval request to the user from the agent thread.
+
+                If the adapter supports interactive button-based approvals
+                (e.g. Discord's ``send_exec_approval``), use that for a richer
+                UX.  Otherwise fall back to a plain text message with
+                ``/approve`` instructions.
+                """
                 cmd = approval_data.get("command", "")
-                cmd_preview = cmd[:200] + "..." if len(cmd) > 200 else cmd
                 desc = approval_data.get("description", "dangerous command")
+
+                # Prefer button-based approval when the adapter supports it.
+                # Check the *class* for the method, not the instance — avoids
+                # false positives from MagicMock auto-attribute creation in tests.
+                if getattr(type(_status_adapter), "send_exec_approval", None) is not None:
+                    try:
+                        asyncio.run_coroutine_threadsafe(
+                            _status_adapter.send_exec_approval(
+                                chat_id=_status_chat_id,
+                                command=cmd,
+                                session_key=_approval_session_key,
+                                description=desc,
+                                metadata=_status_thread_metadata,
+                            ),
+                            _loop_for_step,
+                        ).result(timeout=15)
+                        return
+                    except Exception as _e:
+                        logger.warning(
+                            "Button-based approval failed, falling back to text: %s", _e
+                        )
+
+                # Fallback: plain text approval prompt
+                cmd_preview = cmd[:200] + "..." if len(cmd) > 200 else cmd
                 msg = (
                     f"⚠️ **Dangerous command requires approval:**\n"
                     f"```\n{cmd_preview}\n```\n"
@@ -5853,11 +6016,13 @@ class GatewayRunner:
                     logger.error("Failed to send approval request: %s", _e)
 
             _approval_session_key = session_key or ""
+            _approval_session_token = set_current_session_key(_approval_session_key)
             register_gateway_notify(_approval_session_key, _approval_notify_sync)
             try:
                 result = agent.run_conversation(message, conversation_history=agent_history, task_id=session_id)
             finally:
                 unregister_gateway_notify(_approval_session_key)
+                reset_current_session_key(_approval_session_token)
             result_holder[0] = result
 
             # Signal the stream consumer that the agent is done
@@ -6034,12 +6199,37 @@ class GatewayRunner:
                         break
         
         interrupt_monitor = asyncio.create_task(monitor_for_interrupt())
-        
+
+        # Periodic "still working" notifications for long-running tasks.
+        # Fires every 10 minutes so the user knows the agent hasn't died.
+        _NOTIFY_INTERVAL = 600  # 10 minutes
+        _notify_start = time.time()
+
+        async def _notify_long_running():
+            _notify_adapter = self.adapters.get(source.platform)
+            if not _notify_adapter:
+                return
+            while True:
+                await asyncio.sleep(_NOTIFY_INTERVAL)
+                _elapsed_mins = int((time.time() - _notify_start) // 60)
+                try:
+                    await _notify_adapter.send(
+                        source.chat_id,
+                        f"⏳ Still working... ({_elapsed_mins} minutes elapsed)",
+                        metadata=_status_thread_metadata,
+                    )
+                except Exception as _ne:
+                    logger.debug("Long-running notification error: %s", _ne)
+
+        _notify_task = asyncio.create_task(_notify_long_running())
+
         try:
             # Run in thread pool to not block.  Cap total execution time
             # so a hung API call or runaway tool doesn't permanently lock
             # the session.  Default 10 minutes; override with env var.
-            _agent_timeout = float(os.getenv("HERMES_AGENT_TIMEOUT", 600))
+            # Set to 0 for no limit (infinite).
+            _agent_timeout_raw = float(os.getenv("HERMES_AGENT_TIMEOUT", 600))
+            _agent_timeout = _agent_timeout_raw if _agent_timeout_raw > 0 else None
             loop = asyncio.get_event_loop()
             try:
                 response = await asyncio.wait_for(
@@ -6056,10 +6246,13 @@ class GatewayRunner:
                 _timed_out_agent = agent_holder[0]
                 if _timed_out_agent and hasattr(_timed_out_agent, "interrupt"):
                     _timed_out_agent.interrupt("Execution timed out")
+                _timeout_mins = int(_agent_timeout // 60)
                 response = {
                     "final_response": (
-                        f"⏱️ Request timed out after {int(_agent_timeout // 60)} minutes. "
+                        f"⏱️ Request timed out after {_timeout_mins} minutes. "
                         "The agent may have been stuck on a tool or API call.\n"
+                        "To increase the limit, set HERMES_AGENT_TIMEOUT in your .env "
+                        "(value in seconds, 0 = no limit) and restart the gateway.\n"
                         "Try again, or use /reset to start fresh."
                     ),
                     "messages": result_holder[0].get("messages", []) if result_holder[0] else [],
@@ -6156,10 +6349,11 @@ class GatewayRunner:
                     _interrupt_depth=_interrupt_depth + 1,
                 )
         finally:
-            # Stop progress sender and interrupt monitor
+            # Stop progress sender, interrupt monitor, and notification task
             if progress_task:
                 progress_task.cancel()
             interrupt_monitor.cancel()
+            _notify_task.cancel()
 
             # Wait for stream consumer to finish its final edit
             if stream_task:
@@ -6180,7 +6374,7 @@ class GatewayRunner:
                 self._running_agents_ts.pop(session_key, None)
             
             # Wait for cancelled tasks
-            for task in [progress_task, interrupt_monitor, tracking_task]:
+            for task in [progress_task, interrupt_monitor, tracking_task, _notify_task]:
                 if task:
                     try:
                         await task

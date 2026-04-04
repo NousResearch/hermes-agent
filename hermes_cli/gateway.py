@@ -89,7 +89,7 @@ def find_gateway_pids() -> list:
 
 
 def kill_gateway_processes(force: bool = False) -> int:
-    """Kill any running gateway processes. Returns count killed."""
+    """Kill ALL running gateway processes (across all profiles). Returns count killed."""
     pids = find_gateway_pids()
     killed = 0
     
@@ -107,6 +107,43 @@ def kill_gateway_processes(force: bool = False) -> int:
             print(f"⚠ Permission denied to kill PID {pid}")
     
     return killed
+
+
+def stop_profile_gateway() -> bool:
+    """Stop only the gateway for the current profile (HERMES_HOME-scoped).
+
+    Uses the PID file written by start_gateway(), so it only kills the
+    gateway belonging to this profile — not gateways from other profiles.
+    Returns True if a process was stopped, False if none was found.
+    """
+    try:
+        from gateway.status import get_running_pid, remove_pid_file
+    except ImportError:
+        return False
+
+    pid = get_running_pid()
+    if pid is None:
+        return False
+
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass  # Already gone
+    except PermissionError:
+        print(f"⚠ Permission denied to kill PID {pid}")
+        return False
+
+    # Wait briefly for it to exit
+    import time as _time
+    for _ in range(20):
+        try:
+            os.kill(pid, 0)
+            _time.sleep(0.5)
+        except (ProcessLookupError, PermissionError):
+            break
+
+    remove_pid_file()
+    return True
 
 
 def is_linux() -> bool:
@@ -1831,7 +1868,7 @@ def gateway_setup():
                     elif is_macos():
                         launchd_restart()
                     else:
-                        kill_gateway_processes()
+                        stop_profile_gateway()
                         print_info("Start manually: hermes gateway")
                 except subprocess.CalledProcessError as e:
                     print_error(f"  Restart failed: {e}")
@@ -1945,31 +1982,54 @@ def gateway_command(args):
             sys.exit(1)
     
     elif subcmd == "stop":
-        # Try service first, then sweep any stray/manual gateway processes.
-        service_available = False
+        stop_all = getattr(args, 'all', False)
         system = getattr(args, 'system', False)
-        
-        if is_linux() and (get_systemd_unit_path(system=False).exists() or get_systemd_unit_path(system=True).exists()):
-            try:
-                systemd_stop(system=system)
-                service_available = True
-            except subprocess.CalledProcessError:
-                pass  # Fall through to process kill
-        elif is_macos() and get_launchd_plist_path().exists():
-            try:
-                launchd_stop()
-                service_available = True
-            except subprocess.CalledProcessError:
-                pass
 
-        killed = kill_gateway_processes()
-        if not service_available:
-            if killed:
-                print(f"✓ Stopped {killed} gateway process(es)")
+        if stop_all:
+            # --all: kill every gateway process on the machine
+            service_available = False
+            if is_linux() and (get_systemd_unit_path(system=False).exists() or get_systemd_unit_path(system=True).exists()):
+                try:
+                    systemd_stop(system=system)
+                    service_available = True
+                except subprocess.CalledProcessError:
+                    pass
+            elif is_macos() and get_launchd_plist_path().exists():
+                try:
+                    launchd_stop()
+                    service_available = True
+                except subprocess.CalledProcessError:
+                    pass
+            killed = kill_gateway_processes()
+            total = killed + (1 if service_available else 0)
+            if total:
+                print(f"✓ Stopped {total} gateway process(es) across all profiles")
             else:
                 print("✗ No gateway processes found")
-        elif killed:
-            print(f"✓ Stopped {killed} additional manual gateway process(es)")
+        else:
+            # Default: stop only the current profile's gateway
+            service_available = False
+            if is_linux() and (get_systemd_unit_path(system=False).exists() or get_systemd_unit_path(system=True).exists()):
+                try:
+                    systemd_stop(system=system)
+                    service_available = True
+                except subprocess.CalledProcessError:
+                    pass
+            elif is_macos() and get_launchd_plist_path().exists():
+                try:
+                    launchd_stop()
+                    service_available = True
+                except subprocess.CalledProcessError:
+                    pass
+
+            if not service_available:
+                # No systemd/launchd — use profile-scoped PID file
+                if stop_profile_gateway():
+                    print("✓ Stopped gateway for this profile")
+                else:
+                    print("✗ No gateway running for this profile")
+            else:
+                print(f"✓ Stopped {get_service_name()} service")
     
     elif subcmd == "restart":
         # Try service first, fall back to killing and restarting
@@ -2016,10 +2076,9 @@ def gateway_command(args):
                 print("  Fix the service, then retry: hermes gateway start")
                 sys.exit(1)
 
-            # Manual restart: kill existing processes
-            killed = kill_gateway_processes()
-            if killed:
-                print(f"✓ Stopped {killed} gateway process(es)")
+            # Manual restart: stop only this profile's gateway
+            if stop_profile_gateway():
+                print("✓ Stopped gateway for this profile")
 
             _wait_for_gateway_exit(timeout=10.0, force_after=5.0)
 

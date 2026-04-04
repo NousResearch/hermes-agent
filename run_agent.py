@@ -2585,6 +2585,8 @@ class AIAgent:
             return tc.get("id", "") or ""
         return getattr(tc, "id", "") or ""
 
+    _VALID_API_ROLES = frozenset({"system", "user", "assistant", "tool", "function", "developer"})
+
     @staticmethod
     def _sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Fix orphaned tool_call / tool_result pairs before every LLM call.
@@ -2593,6 +2595,19 @@ class AIAgent:
         is present — so orphans from session loading or manual message
         manipulation are always caught.
         """
+        # --- Role allowlist: drop messages with roles the API won't accept ---
+        filtered = []
+        for msg in messages:
+            role = msg.get("role")
+            if role not in AIAgent._VALID_API_ROLES:
+                logger.debug(
+                    "Pre-call sanitizer: dropping message with invalid role %r",
+                    role,
+                )
+                continue
+            filtered.append(msg)
+        messages = filtered
+
         surviving_call_ids: set = set()
         for msg in messages:
             if msg.get("role") == "assistant":
@@ -4473,6 +4488,29 @@ class AIAgent:
                     pass
                 raise InterruptedError("Agent interrupted during streaming API call")
         if result["error"] is not None:
+            if deltas_were_sent["yes"]:
+                # Streaming failed AFTER some tokens were already delivered to
+                # the platform.  Re-raising would let the outer retry loop make
+                # a new API call, creating a duplicate message.  Return a
+                # partial "stop" response instead so the outer loop treats this
+                # turn as complete (no retry, no fallback).
+                logger.warning(
+                    "Partial stream delivered before error; returning stub "
+                    "response to prevent duplicate messages: %s",
+                    result["error"],
+                )
+                _stub_msg = SimpleNamespace(
+                    role="assistant", content=None, tool_calls=None,
+                    reasoning_content=None,
+                )
+                return SimpleNamespace(
+                    id="partial-stream-stub",
+                    model=getattr(self, "model", "unknown"),
+                    choices=[SimpleNamespace(
+                        index=0, message=_stub_msg, finish_reason="stop",
+                    )],
+                    usage=None,
+                )
             raise result["error"]
         return result["response"]
 
@@ -6010,10 +6048,29 @@ class AIAgent:
                     elif self.quiet_mode:
                         self._vprint(f"  {cute_msg}")
             elif self._memory_manager and self._memory_manager.has_tool(function_name):
-                function_result = self._memory_manager.handle_tool_call(function_name, function_args)
-                tool_duration = time.time() - tool_start_time
-                if self.quiet_mode:
-                    self._vprint(f"  {_get_cute_tool_message_impl(function_name, function_args, tool_duration, result=function_result)}")
+                # Memory provider tools (hindsight_retain, honcho_search, etc.)
+                # These are not in the tool registry — route through MemoryManager.
+                spinner = None
+                if self.quiet_mode and not self.tool_progress_callback:
+                    face = random.choice(KawaiiSpinner.KAWAII_WAITING)
+                    emoji = _get_tool_emoji(function_name)
+                    preview = _build_tool_preview(function_name, function_args) or function_name
+                    spinner = KawaiiSpinner(f"{face} {emoji} {preview}", spinner_type='dots', print_fn=self._print_fn)
+                    spinner.start()
+                _mem_result = None
+                try:
+                    function_result = self._memory_manager.handle_tool_call(function_name, function_args)
+                    _mem_result = function_result
+                except Exception as tool_error:
+                    function_result = json.dumps({"error": f"Memory tool '{function_name}' failed: {tool_error}"})
+                    logger.error("memory_manager.handle_tool_call raised for %s: %s", function_name, tool_error, exc_info=True)
+                finally:
+                    tool_duration = time.time() - tool_start_time
+                    cute_msg = _get_cute_tool_message_impl(function_name, function_args, tool_duration, result=_mem_result)
+                    if spinner:
+                        spinner.stop(cute_msg)
+                    elif self.quiet_mode:
+                        self._vprint(f"  {cute_msg}")
             elif self.quiet_mode:
                 spinner = None
                 if not self.tool_progress_callback:
@@ -6632,10 +6689,12 @@ class AIAgent:
         # External memory provider: prefetch once before the tool loop.
         # Reuse the cached result on every iteration to avoid re-calling
         # prefetch_all() on each tool call (10 tool calls = 10x latency + cost).
+        # Use original_user_message (clean input) — user_message may contain
+        # injected skill content that bloats / breaks provider queries.
         _ext_prefetch_cache = ""
         if self._memory_manager:
             try:
-                _query = user_message if isinstance(user_message, str) else ""
+                _query = original_user_message if isinstance(original_user_message, str) else ""
                 _ext_prefetch_cache = self._memory_manager.prefetch_all(_query) or ""
             except Exception:
                 pass
@@ -8609,11 +8668,13 @@ class AIAgent:
             _should_review_skills = True
             self._iters_since_skill = 0
 
-        # External memory provider: sync the completed turn + queue next prefetch
-        if self._memory_manager and final_response and user_message:
+        # External memory provider: sync the completed turn + queue next prefetch.
+        # Use original_user_message (clean input) — user_message may contain
+        # injected skill content that bloats / breaks provider queries.
+        if self._memory_manager and final_response and original_user_message:
             try:
-                self._memory_manager.sync_all(user_message, final_response)
-                self._memory_manager.queue_prefetch_all(user_message)
+                self._memory_manager.sync_all(original_user_message, final_response)
+                self._memory_manager.queue_prefetch_all(original_user_message)
             except Exception:
                 pass
 

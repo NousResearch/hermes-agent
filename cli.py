@@ -3269,55 +3269,193 @@ class HermesCLI:
         print()
         return True
 
-    def show_sessions_full(self) -> None:
-        """Show all resumable sessions through a pager (same mechanism as Ctrl+P history).
+    def _pick_session_interactive(self, sessions: list) -> "str | None":
+        """Interactive fuzzy session picker built with prompt_toolkit.
 
-        Fetches up to 200 recent sessions and pipes the formatted list through
-        ``less`` so the user can scroll, search with '/', and pick an ID to
-        resume with ``/resume <id>``.
+        Shows a filter input + scrollable list.  Returns the selected session
+        ID, or None if the user cancelled (Esc / Ctrl+C / q on empty filter).
         """
         import shutil as _shutil
-        import subprocess as _subprocess
+        from prompt_toolkit import Application
+        from prompt_toolkit.buffer import Buffer
+        from prompt_toolkit.formatted_text import HTML, to_formatted_text
+        from prompt_toolkit.key_binding import KeyBindings
+        from prompt_toolkit.layout import Layout
+        from prompt_toolkit.layout.containers import HSplit, Window
+        from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
+        from prompt_toolkit.styles import Style
 
+        from hermes_cli.main import _relative_time
+
+        W = min(_shutil.get_terminal_size().columns - 4, 116)
+
+        def _label(s: dict) -> str:
+            """Best available label: title if set, else first user message."""
+            t = (s.get("title") or "").strip()
+            if not t:
+                t = (s.get("preview") or "").strip()
+            return t or s["id"]
+
+        # State
+        selected_id: list = [None]
+        cursor: list = [0]
+        filter_buf = Buffer()
+
+        def _filtered() -> list:
+            q = filter_buf.text.lower()
+            if not q:
+                return sessions
+            return [
+                s for s in sessions
+                if q in _label(s).lower()
+                or q in (s.get("preview") or "").lower()
+                or q in s["id"].lower()
+            ]
+
+        def _render_list():
+            filtered = _filtered()
+            # Clamp cursor
+            if cursor[0] >= len(filtered):
+                cursor[0] = max(len(filtered) - 1, 0)
+
+            lines = []
+            # header
+            lines.append(HTML(
+                f"<ansibrightblack>  {'Label':<40} {'Age':<12} {'Preview':<{W - 58}} ID</ansibrightblack>\n"
+                f"<ansibrightblack>  {'─' * 40} {'─' * 12} {'─' * (W - 58)} {'─' * 8}</ansibrightblack>\n"
+            ))
+            if not filtered:
+                lines.append(HTML("<ansiyellow>  (no matches)</ansiyellow>\n"))
+            for i, s in enumerate(filtered):
+                label   = _label(s)[:39]
+                age     = _relative_time(s.get("last_active"))
+                preview = (s.get("preview") or "")[:W - 59]
+                sid     = s["id"][:8]
+                row = f"  {label:<40} {age:<12} {preview:<{W - 58}} {sid}"
+                if i == cursor[0]:
+                    lines.append(HTML(f"<reverse>{row}</reverse>\n"))
+                else:
+                    lines.append(row + "\n")
+            lines.append(HTML(
+                "\n<ansibrightblack>  ↑↓ navigate  Enter select  Esc cancel</ansibrightblack>"
+            ))
+            return to_formatted_text(lines)
+
+        list_control = FormattedTextControl(_render_list, focusable=False)
+        list_window  = Window(list_control, dont_extend_height=False)
+
+        filter_window = Window(
+            BufferControl(buffer=filter_buf),
+            height=1,
+            get_line_prefix=lambda *_: HTML("<ansigreen>  filter: </ansigreen>"),
+        )
+
+        layout = Layout(HSplit([
+            Window(
+                FormattedTextControl(lambda: HTML(
+                    "<ansibrightyellow>  Resume session</ansibrightyellow>"
+                )),
+                height=1,
+            ),
+            filter_window,
+            list_window,
+        ]), focused_element=filter_window)
+
+        kb = KeyBindings()
+
+        @kb.add("up")
+        def _up(event):
+            cursor[0] = max(cursor[0] - 1, 0)
+
+        @kb.add("down")
+        def _down(event):
+            filtered = _filtered()
+            cursor[0] = min(cursor[0] + 1, max(len(filtered) - 1, 0))
+
+        @kb.add("enter")
+        def _enter(event):
+            filtered = _filtered()
+            if filtered and 0 <= cursor[0] < len(filtered):
+                selected_id[0] = filtered[cursor[0]]["id"]
+            event.app.exit()
+
+        @kb.add("escape")
+        @kb.add("c-c")
+        def _cancel(event):
+            event.app.exit()
+
+        # 'q' cancels only when filter is empty
+        @kb.add("q")
+        def _q(event):
+            if not filter_buf.text:
+                event.app.exit()
+            else:
+                filter_buf.insert_text("q")
+
+        # Reset cursor to 0 whenever filter changes
+        def _on_filter_change(_):
+            cursor[0] = 0
+
+        filter_buf.on_text_changed += _on_filter_change  # type: ignore[operator]
+
+        app = Application(
+            layout=layout,
+            key_bindings=kb,
+            style=Style.from_dict({"": ""}),
+            full_screen=False,
+            mouse_support=False,
+        )
+        app.run()
+        return selected_id[0]
+
+    def show_sessions_full(self) -> None:
+        """Open an interactive session picker (prompt_toolkit mini-app).
+
+        Type to filter, ↑↓ to navigate, Enter to select and auto-resume,
+        Esc/q to cancel.  Falls back to a plain ``less`` list if the picker
+        fails (e.g. non-interactive terminal).
+        """
         sessions = self._list_recent_sessions(limit=200)
         if not sessions:
             print("  No other sessions found.")
             return
 
-        from hermes_cli.main import _relative_time
+        try:
+            chosen_id = self._pick_session_interactive(sessions)
+            if chosen_id:
+                self._handle_resume_command(f"/resume {chosen_id}")
+        except Exception:
+            # Fallback: less pager
+            import shutil as _shutil, subprocess as _subprocess
+            from hermes_cli.main import _relative_time
 
-        W = min(_shutil.get_terminal_size().columns, 120)
-        id_w, time_w, title_w = 24, 13, 34
-        prev_w = max(W - id_w - time_w - title_w - 6, 20)
-
-        header = (
-            f"  {'Title':<{title_w}} {'Last Active':<{time_w}} {'Preview':<{prev_w}} {'ID'}\n"
-            f"  {'─' * title_w} {'─' * time_w} {'─' * prev_w} {'─' * id_w}\n"
-        )
-        rows = []
-        for s in sessions:
-            title    = (s.get("title") or "—")[:title_w - 1]
-            last_act = _relative_time(s.get("last_active"))
-            preview  = (s.get("preview") or "")[:prev_w - 1]
-            rows.append(
-                f"  {title:<{title_w}} {last_act:<{time_w}} {preview:<{prev_w}} {s['id']}\n"
-            )
-
-        footer = "\n  /resume <id or title>  to continue a session\n"
-        output = header + "".join(rows) + footer
-
-        pager = _shutil.which("less") or _shutil.which("more")
-        if pager and pager.endswith("less"):
-            try:
-                proc = _subprocess.Popen(
-                    [pager, "-R", "--no-init", "--quit-if-one-screen"],
-                    stdin=_subprocess.PIPE,
+            W = min(_shutil.get_terminal_size().columns, 120)
+            id_w, time_w, label_w = 24, 13, 38
+            prev_w = max(W - id_w - time_w - label_w - 6, 20)
+            rows = [
+                f"  {'Label':<{label_w}} {'Age':<{time_w}} {'Preview':<{prev_w}} ID\n",
+                f"  {'─' * label_w} {'─' * time_w} {'─' * prev_w} {'─' * id_w}\n",
+            ]
+            for s in sessions:
+                label = ((s.get("title") or s.get("preview") or s["id"]))[:label_w - 1]
+                rows.append(
+                    f"  {label:<{label_w}} {_relative_time(s.get('last_active')):<{time_w}} "
+                    f"{(s.get('preview') or '')[:prev_w - 1]:<{prev_w}} {s['id']}\n"
                 )
-                proc.communicate(output.encode("utf-8", errors="replace"))
-                return
-            except Exception:
-                pass
-        print(output)
+            rows.append("\n  /resume <id or title>  to continue a session\n")
+            output = "".join(rows)
+            pager = _shutil.which("less")
+            if pager:
+                try:
+                    proc = _subprocess.Popen(
+                        [pager, "-R", "--no-init", "--quit-if-one-screen"],
+                        stdin=_subprocess.PIPE,
+                    )
+                    proc.communicate(output.encode("utf-8", errors="replace"))
+                    return
+                except Exception:
+                    pass
+            print(output)
 
     def show_history_full(self) -> None:
         """Show full conversation history newest-first, piped through a pager.

@@ -80,6 +80,20 @@ _UTC_NOW = lambda: datetime.now(timezone.utc)
 
 # Official docs snapshot entries. Models whose published pricing and cache
 # semantics are stable enough to encode exactly.
+# Model alias resolution: short names → canonical dated names.
+# When the API reports usage for "claude-opus-4-6", we need to find the
+# pricing entry keyed under the full dated name.
+_MODEL_ALIASES: Dict[str, str] = {
+    "claude-opus-4-6": "claude-opus-4-20250514",
+    "claude-sonnet-4-6": "claude-sonnet-4-20250514",
+    "claude-3.5-sonnet": "claude-3-5-sonnet-20241022",
+    "claude-3.5-haiku": "claude-3-5-haiku-20241022",
+    "claude-3-opus": "claude-3-opus-20240229",
+    "claude-3-haiku": "claude-3-haiku-20240307",
+    "gpt-4o-2024-11-20": "gpt-4o",
+    "gpt-4o-2024-08-06": "gpt-4o",
+}
+
 _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
     (
         "anthropic",
@@ -331,7 +345,14 @@ def resolve_billing_route(
 
 
 def _lookup_official_docs_pricing(route: BillingRoute) -> Optional[PricingEntry]:
-    return _OFFICIAL_DOCS_PRICING.get((route.provider, route.model.lower()))
+    model = route.model.lower()
+    # Try direct lookup first, then resolve through aliases
+    entry = _OFFICIAL_DOCS_PRICING.get((route.provider, model))
+    if entry is None:
+        canonical = _MODEL_ALIASES.get(model)
+        if canonical:
+            entry = _OFFICIAL_DOCS_PRICING.get((route.provider, canonical))
+    return entry
 
 
 def _openrouter_pricing_entry(route: BillingRoute) -> Optional[PricingEntry]:

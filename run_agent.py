@@ -7278,8 +7278,8 @@ class AIAgent:
                                     if cost_result.status == "included" else None,
                                     model=self.model,
                                 )
-                            except Exception:
-                                pass  # never block the agent loop
+                            except Exception as _db_err:
+                                logging.debug("Token DB write failed for session %s: %s", self.session_id, _db_err)
                         
                         if self.verbose_logging:
                             logging.debug(f"Token usage: prompt={usage_dict['prompt_tokens']:,}, completion={usage_dict['completion_tokens']:,}, total={usage_dict['total_tokens']:,}")

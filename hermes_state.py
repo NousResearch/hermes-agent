@@ -363,12 +363,26 @@ class SessionDB:
         user_id: str = None,
         parent_session_id: str = None,
     ) -> str:
-        """Create a new session record. Returns the session_id."""
+        """Create or enrich a session record. Returns the session_id.
+
+        Uses INSERT ... ON CONFLICT to handle the gateway/agent race:
+        the gateway creates a bare row (source + user_id only) before
+        the agent exists, then the agent calls this with richer metadata
+        (model, model_config, system_prompt).  The ON CONFLICT clause
+        backfills NULL fields without overwriting data already present.
+        """
         def _do(conn):
             conn.execute(
-                """INSERT OR IGNORE INTO sessions (id, source, user_id, model, model_config,
+                """INSERT INTO sessions (id, source, user_id, model, model_config,
                    system_prompt, parent_session_id, started_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(id) DO UPDATE SET
+                       model = COALESCE(sessions.model, excluded.model),
+                       model_config = COALESCE(sessions.model_config, excluded.model_config),
+                       system_prompt = COALESCE(sessions.system_prompt, excluded.system_prompt),
+                       user_id = COALESCE(sessions.user_id, excluded.user_id),
+                       parent_session_id = COALESCE(sessions.parent_session_id, excluded.parent_session_id)
+                """,
                 (
                     session_id,
                     source,

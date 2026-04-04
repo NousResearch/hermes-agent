@@ -984,6 +984,28 @@ def _build_compact_banner() -> str:
 
 
 # ============================================================================
+# Slash-command detection helper
+# ============================================================================
+
+def _looks_like_slash_command(text: str) -> bool:
+    """Return True if *text* looks like a slash command, not a file path.
+
+    Slash commands are ``/help``, ``/model gpt-4``, ``/q``, etc.
+    File paths like ``/Users/ironin/file.md:45-46 can you fix this?``
+    also start with ``/`` but contain additional ``/`` characters in
+    the first whitespace-delimited word.  This helper distinguishes
+    the two so that pasted paths are sent to the agent instead of
+    triggering "Unknown command".
+    """
+    if not text or not text.startswith("/"):
+        return False
+    first_word = text.split()[0]
+    # After stripping the leading /, a command name has no slashes.
+    # A path like /Users/foo/bar.md always does.
+    return "/" not in first_word[1:]
+
+
+# ============================================================================
 # Skill Slash Commands — dynamic commands generated from installed skills
 # ============================================================================
 
@@ -6712,7 +6734,7 @@ class HermesCLI:
                 event.app.invalidate()
                 # Bundle text + images as a tuple when images are present
                 payload = (text, images) if images else text
-                if self._agent_running and not (text and text.startswith("/")):
+                if self._agent_running and not (text and _looks_like_slash_command(text)):
                     if self.busy_input_mode == "queue":
                         # Queue for the next turn instead of interrupting
                         self._pending_input.put(payload)
@@ -7696,7 +7718,7 @@ class HermesCLI:
                                 + (f"\n{_remainder}" if _remainder else "")
                             )
 
-                    if not _file_drop and isinstance(user_input, str) and user_input.startswith("/"):
+                    if not _file_drop and isinstance(user_input, str) and _looks_like_slash_command(user_input):
                         _cprint(f"\n⚙️  {user_input}")
                         if not self.process_command(user_input):
                             self._should_exit = True

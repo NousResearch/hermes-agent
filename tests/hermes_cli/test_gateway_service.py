@@ -311,6 +311,58 @@ class TestGatewaySystemServiceRouting:
         assert run_calls == []
 
 
+class TestLaunchdRestartKickstart:
+    """Tests for launchd_restart() kickstart behavior."""
+
+    def test_kickstart_success_skips_stop_wait_start(self, monkeypatch):
+        """When kickstart succeeds, stop/wait/start should not be called."""
+        monkeypatch.setattr(gateway_cli, "get_launchd_label", lambda: "ai.hermes.gateway")
+        monkeypatch.setattr(gateway_cli, "refresh_launchd_plist_if_needed", lambda: None)
+
+        kickstart_calls = []
+        stop_calls = []
+
+        import subprocess as _subprocess
+
+        def fake_run(cmd, **kwargs):
+            if "kickstart" in cmd:
+                kickstart_calls.append(cmd)
+                return _subprocess.CompletedProcess(cmd, 0)
+            raise AssertionError(f"Unexpected subprocess.run call: {cmd}")
+
+        monkeypatch.setattr("subprocess.run", fake_run)
+        monkeypatch.setattr(gateway_cli, "launchd_stop", lambda: stop_calls.append(1))
+
+        gateway_cli.launchd_restart()
+
+        assert len(kickstart_calls) == 1
+        assert "kickstart" in kickstart_calls[0]
+        assert f"gui/{os.getuid()}/ai.hermes.gateway" in kickstart_calls[0][-1]
+        assert stop_calls == []
+
+    def test_kickstart_failure_falls_back_to_stop_wait_start(self, monkeypatch):
+        """When kickstart fails, fall back to stop → wait → start."""
+        monkeypatch.setattr(gateway_cli, "get_launchd_label", lambda: "ai.hermes.gateway")
+        monkeypatch.setattr(gateway_cli, "refresh_launchd_plist_if_needed", lambda: None)
+
+        import subprocess as _subprocess
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            if "kickstart" in cmd:
+                raise _subprocess.CalledProcessError(1, cmd)
+            return _subprocess.CompletedProcess(cmd, 0)
+
+        monkeypatch.setattr("subprocess.run", fake_run)
+        monkeypatch.setattr(gateway_cli, "launchd_stop", lambda: calls.append("stop"))
+        monkeypatch.setattr(gateway_cli, "_wait_for_gateway_exit", lambda: calls.append("wait"))
+        monkeypatch.setattr(gateway_cli, "launchd_start", lambda: calls.append("start"))
+
+        gateway_cli.launchd_restart()
+
+        assert calls == ["stop", "wait", "start"]
+
+
 class TestDetectVenvDir:
     """Tests for _detect_venv_dir() virtualenv detection."""
 

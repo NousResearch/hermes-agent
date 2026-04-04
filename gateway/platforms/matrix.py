@@ -5,13 +5,16 @@ matrix-nio Python SDK.  Supports optional end-to-end encryption (E2EE)
 when installed with ``pip install "matrix-nio[e2e]"``.
 
 Environment variables:
-    MATRIX_HOMESERVER       Homeserver URL (e.g. https://matrix.example.org)
-    MATRIX_ACCESS_TOKEN     Access token (preferred auth method)
-    MATRIX_USER_ID          Full user ID (@bot:server) — required for password login
-    MATRIX_PASSWORD         Password (alternative to access token)
-    MATRIX_ENCRYPTION       Set "true" to enable E2EE
-    MATRIX_ALLOWED_USERS    Comma-separated Matrix user IDs (@user:server)
-    MATRIX_HOME_ROOM        Room ID for cron/notification delivery
+    MATRIX_HOMESERVER           Homeserver URL (e.g. https://matrix.example.org)
+    MATRIX_ACCESS_TOKEN         Access token (preferred auth method)
+    MATRIX_USER_ID              Full user ID (@bot:server) — required for password login
+    MATRIX_PASSWORD             Password (alternative to access token)
+    MATRIX_ENCRYPTION           Set "true" to enable E2EE
+    MATRIX_ALLOWED_USERS        Comma-separated Matrix user IDs (@user:server)
+    MATRIX_HOME_ROOM            Room ID for cron/notification delivery
+    MATRIX_REQUIRE_MENTION      Require @mention in rooms (default: true)
+    MATRIX_FREE_RESPONSE_ROOMS  Comma-separated room IDs exempt from mention requirement
+    MATRIX_AUTO_THREAD          Auto-create threads for room messages (default: true)
 """
 
 from __future__ import annotations
@@ -122,6 +125,10 @@ class MatrixAdapter(BasePlatformAdapter):
         # Buffer for undecrypted events pending key receipt.
         # Each entry: (room, event, timestamp)
         self._pending_megolm: list = []
+
+        # Thread participation tracking (for require_mention bypass)
+        self._bot_participated_threads: set = self._load_participated_threads()
+        self._MAX_TRACKED_THREADS = 500
 
     def _is_duplicate_event(self, event_id) -> bool:
         """Return True if this event was already processed. Tracks the ID otherwise."""
@@ -902,6 +909,32 @@ class MatrixAdapter(BasePlatformAdapter):
         if relates_to.get("rel_type") == "m.thread":
             thread_id = relates_to.get("event_id")
 
+        # Require-mention gating.
+        if not is_dm:
+            free_rooms_raw = os.getenv("MATRIX_FREE_RESPONSE_ROOMS", "")
+            free_rooms = {r.strip() for r in free_rooms_raw.split(",") if r.strip()}
+            require_mention = os.getenv("MATRIX_REQUIRE_MENTION", "true").lower() not in ("false", "0", "no")
+            is_free_room = room.room_id in free_rooms
+            in_bot_thread = bool(thread_id and thread_id in self._bot_participated_threads)
+
+            formatted_body = source_content.get("formatted_body")
+            if require_mention and not is_free_room and not in_bot_thread:
+                if not self._is_bot_mentioned(body, formatted_body):
+                    return
+
+            # Strip mention from body when present.
+            if self._is_bot_mentioned(body, source_content.get("formatted_body")):
+                body = self._strip_mention(body)
+                if not body:
+                    return
+
+        # Auto-thread: create a thread for non-DM, non-threaded messages.
+        if not is_dm and not thread_id:
+            auto_thread = os.getenv("MATRIX_AUTO_THREAD", "true").lower() in ("true", "1", "yes")
+            if auto_thread:
+                thread_id = event.event_id
+                self._track_thread(thread_id)
+
         # Reply-to detection.
         reply_to = None
         in_reply_to = relates_to.get("m.in_reply_to", {})
@@ -945,6 +978,9 @@ class MatrixAdapter(BasePlatformAdapter):
             message_id=event.event_id,
             reply_to_message_id=reply_to,
         )
+
+        if thread_id:
+            self._track_thread(thread_id)
 
         await self.handle_message(msg_event)
 
@@ -1031,6 +1067,27 @@ class MatrixAdapter(BasePlatformAdapter):
         if relates_to.get("rel_type") == "m.thread":
             thread_id = relates_to.get("event_id")
 
+        # Require-mention gating (media messages).
+        if not is_dm:
+            free_rooms_raw = os.getenv("MATRIX_FREE_RESPONSE_ROOMS", "")
+            free_rooms = {r.strip() for r in free_rooms_raw.split(",") if r.strip()}
+            require_mention = os.getenv("MATRIX_REQUIRE_MENTION", "true").lower() not in ("false", "0", "no")
+            is_free_room = room.room_id in free_rooms
+            in_bot_thread = bool(thread_id and thread_id in self._bot_participated_threads)
+
+            if require_mention and not is_free_room and not in_bot_thread:
+                # Media messages have no formatted_body; check plain body only.
+                formatted_body = source_content.get("formatted_body")
+                if not self._is_bot_mentioned(body, formatted_body):
+                    return
+
+        # Auto-thread: create a thread for non-DM, non-threaded messages.
+        if not is_dm and not thread_id:
+            auto_thread = os.getenv("MATRIX_AUTO_THREAD", "true").lower() in ("true", "1", "yes")
+            if auto_thread:
+                thread_id = event.event_id
+                self._track_thread(thread_id)
+
         # For voice messages, cache audio locally for transcription tools.
         # Use the authenticated nio client to download (Matrix requires auth for media).
         media_urls = [http_url] if http_url else None
@@ -1078,6 +1135,9 @@ class MatrixAdapter(BasePlatformAdapter):
             media_urls=media_urls,
             media_types=media_types,
         )
+
+        if thread_id:
+            self._track_thread(thread_id)
 
         await self.handle_message(msg_event)
 
@@ -1165,6 +1225,82 @@ class MatrixAdapter(BasePlatformAdapter):
             rid: (rid in dm_room_ids)
             for rid in self._joined_rooms
         }
+
+    # ------------------------------------------------------------------
+    # Thread participation tracking
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _thread_state_path() -> Path:
+        """Path to the persisted thread participation set."""
+        from hermes_cli.config import get_hermes_home
+        return get_hermes_home() / "matrix_threads.json"
+
+    @classmethod
+    def _load_participated_threads(cls) -> set:
+        """Load persisted thread IDs from disk."""
+        path = cls._thread_state_path()
+        try:
+            if path.exists():
+                data = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(data, list):
+                    return set(data)
+        except Exception as e:
+            logger.debug("Could not load matrix thread state: %s", e)
+        return set()
+
+    def _save_participated_threads(self) -> None:
+        """Persist the current thread set to disk (best-effort)."""
+        path = self._thread_state_path()
+        try:
+            thread_list = list(self._bot_participated_threads)
+            if len(thread_list) > self._MAX_TRACKED_THREADS:
+                thread_list = thread_list[-self._MAX_TRACKED_THREADS:]
+                self._bot_participated_threads = set(thread_list)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(thread_list), encoding="utf-8")
+        except Exception as e:
+            logger.debug("Could not save matrix thread state: %s", e)
+
+    def _track_thread(self, thread_id: str) -> None:
+        """Add a thread to the participation set and persist."""
+        if thread_id not in self._bot_participated_threads:
+            self._bot_participated_threads.add(thread_id)
+            self._save_participated_threads()
+
+    # ------------------------------------------------------------------
+    # Mention detection helpers
+    # ------------------------------------------------------------------
+
+    def _is_bot_mentioned(self, body: str, formatted_body: Optional[str] = None) -> bool:
+        """Return True if the bot is mentioned in the message."""
+        if not body and not formatted_body:
+            return False
+        # Check for full @user:server in body
+        if self._user_id and self._user_id in body:
+            return True
+        # Check for localpart with word boundaries (case-insensitive)
+        if self._user_id and ":" in self._user_id:
+            localpart = self._user_id.split(":")[0].lstrip("@")
+            if localpart and re.search(r'\b' + re.escape(localpart) + r'\b', body, re.IGNORECASE):
+                return True
+        # Check formatted_body for Matrix pill
+        if formatted_body and self._user_id:
+            if f"matrix.to/#/{self._user_id}" in formatted_body:
+                return True
+        return False
+
+    def _strip_mention(self, body: str) -> str:
+        """Remove bot mention from message body."""
+        # Remove full @user:server
+        if self._user_id:
+            body = body.replace(self._user_id, "")
+        # If still contains localpart mention, remove it
+        if self._user_id and ":" in self._user_id:
+            localpart = self._user_id.split(":")[0].lstrip("@")
+            if localpart:
+                body = re.sub(r'\b' + re.escape(localpart) + r'\b', '', body, flags=re.IGNORECASE)
+        return body.strip()
 
     def _get_display_name(self, room: Any, user_id: str) -> str:
         """Get a user's display name in a room, falling back to user_id."""

@@ -28,6 +28,32 @@ from pathlib import Path
 from datetime import datetime
 from typing import List, Dict, Any, Optional
 
+# ---------------------------------------------------------------------------
+# Monkey-patch asyncio.BaseEventLoop._check_closed to suppress "Event loop is
+# closed" RuntimeError during late cleanup.  This is a last-resort defense —
+# the primary fix is neuter_async_httpx_del() + _suppress_closed_loop_errors.
+# Without this patch, any __del__ or close() that runs after the loop has
+# stopped will raise synchronously from call_soon() before exception handlers
+# can intercept it.
+# ---------------------------------------------------------------------------
+try:
+    import asyncio
+    _orig_check_closed = asyncio.AbstractEventLoop._check_closed if hasattr(asyncio.AbstractEventLoop, '_check_closed') else None
+    if _orig_check_closed is None:
+        from asyncio import BaseEventLoop
+        _orig_check_closed = BaseEventLoop._check_closed
+
+    def _silence_check_closed(self):
+        try:
+            _orig_check_closed(self)
+        except RuntimeError as e:
+            if "Event loop is closed" in str(e):
+                return  # silently suppress
+            raise
+    BaseEventLoop._check_closed = _silence_check_closed
+except Exception:
+    pass
+
 logger = logging.getLogger(__name__)
 
 # Suppress startup messages for clean CLI experience

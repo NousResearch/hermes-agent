@@ -2312,6 +2312,78 @@ class TestBudgetPressure:
         assert "BUDGET WARNING" in messages[-1]["content"]
 
 
+class TestToolRepeatHint:
+    """Tool-repeat batching hints (consecutive same-tool detection)."""
+
+    def test_no_hint_below_threshold(self, agent):
+        agent._recent_tool_names = []
+        assert agent._get_tool_repeat_hint(["terminal", "read_file"]) is None
+
+    def test_hint_at_threshold(self, agent):
+        agent._recent_tool_names = ["terminal", "terminal"]
+        hint = agent._get_tool_repeat_hint(["terminal"])
+        assert hint is not None
+        assert "terminal" in hint
+        assert "3 times" in hint
+        assert "&&" in hint  # terminal-specific advice
+
+    def test_hint_longer_streak(self, agent):
+        agent._recent_tool_names = ["terminal"] * 4
+        hint = agent._get_tool_repeat_hint(["terminal"])
+        assert "5 times" in hint
+
+    def test_hint_for_any_tool(self, agent):
+        """Hints fire for any tool, not just a hardcoded set."""
+        agent._recent_tool_names = ["browser_click", "browser_click"]
+        hint = agent._get_tool_repeat_hint(["browser_click"])
+        assert hint is not None
+        assert "browser_click" in hint
+        assert "consolidated" in hint
+
+    def test_read_file_specific_advice(self, agent):
+        agent._recent_tool_names = ["read_file", "read_file"]
+        hint = agent._get_tool_repeat_hint(["read_file"])
+        assert "execute_code" in hint
+        assert "consolidated summary" in hint
+
+    def test_patch_specific_advice(self, agent):
+        agent._recent_tool_names = ["patch", "patch"]
+        hint = agent._get_tool_repeat_hint(["patch"])
+        assert "V4A" in hint
+
+    def test_streak_broken_by_different_tool(self, agent):
+        agent._recent_tool_names = ["terminal", "terminal", "read_file"]
+        assert agent._get_tool_repeat_hint(["terminal"]) is None
+
+    def test_accumulates_across_iterations(self, agent):
+        agent._recent_tool_names = []
+        assert agent._get_tool_repeat_hint(["terminal"]) is None
+        assert agent._get_tool_repeat_hint(["terminal"]) is None
+        hint = agent._get_tool_repeat_hint(["terminal"])
+        assert hint is not None
+        assert "3 times" in hint
+
+    def test_strip_from_json_history(self):
+        import json
+        from run_agent import _strip_tool_repeat_hints_from_history
+        hint = "[Hint: You've called terminal 3 times consecutively. Consider using execute_code.]"
+        msg = {"role": "tool", "content": json.dumps({"output": "ok", "_tool_repeat_hint": hint}), "tool_call_id": "tc1"}
+        messages = [msg]
+        _strip_tool_repeat_hints_from_history(messages)
+        parsed = json.loads(messages[0]["content"])
+        assert "_tool_repeat_hint" not in parsed
+        assert parsed["output"] == "ok"
+
+    def test_strip_from_plaintext_history(self):
+        from run_agent import _strip_tool_repeat_hints_from_history
+        hint = "[Hint: You've called terminal 3 times consecutively. Consider using execute_code to batch multiple operations in a single Python script — it saves iterations and is faster.]"
+        msg = {"role": "tool", "content": f"some result\n\n{hint}", "tool_call_id": "tc1"}
+        messages = [msg]
+        _strip_tool_repeat_hints_from_history(messages)
+        assert "execute_code" not in messages[0]["content"]
+        assert "some result" in messages[0]["content"]
+
+
 class TestSafeWriter:
     """Verify _SafeWriter guards stdout against OSError (broken pipes)."""
 

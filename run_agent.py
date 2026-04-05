@@ -339,6 +339,14 @@ _BUDGET_WARNING_RE = re.compile(
     re.DOTALL,
 )
 
+_TOOL_REPEAT_HINT_RE = re.compile(
+    r"\[Hint: You've called \S+ \d+ times consecutively\..*?\]",
+    re.DOTALL,
+)
+
+# Minimum consecutive same-tool calls before injecting a hint
+_TOOL_REPEAT_THRESHOLD = 3
+
 
 def _sanitize_surrogates(text: str) -> str:
     """Replace lone surrogate code points with U+FFFD (replacement character).
@@ -401,6 +409,36 @@ def _strip_budget_warnings_from_history(messages: list) -> None:
 
         # Fallback: strip the text pattern from plain-text tool results
         cleaned = _BUDGET_WARNING_RE.sub("", content).strip()
+        if cleaned != content:
+            msg["content"] = cleaned
+
+
+def _strip_tool_repeat_hints_from_history(messages: list) -> None:
+    """Remove tool-repeat hints from tool-result messages in-place.
+
+    Like budget warnings, these are turn-scoped signals that must not persist
+    in replayed history.  They live in tool-result ``content`` either as a
+    JSON key (``_tool_repeat_hint``) or appended plain text.
+    """
+    for msg in messages:
+        if not isinstance(msg, dict) or msg.get("role") != "tool":
+            continue
+        content = msg.get("content")
+        if not isinstance(content, str) or "_tool_repeat_hint" not in content and "[Hint: You've called" not in content:
+            continue
+
+        # Try JSON first
+        try:
+            parsed = json.loads(content)
+            if isinstance(parsed, dict) and "_tool_repeat_hint" in parsed:
+                del parsed["_tool_repeat_hint"]
+                msg["content"] = json.dumps(parsed, ensure_ascii=False)
+                continue
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+        # Fallback: strip the text pattern from plain-text tool results
+        cleaned = _TOOL_REPEAT_HINT_RE.sub("", content).strip()
         if cleaned != content:
             msg["content"] = cleaned
 
@@ -1256,6 +1294,9 @@ class AIAgent:
         
         # Turn counter (added after reset_session_state was first written — #2635)
         self._user_turn_count = 0
+
+        # Consecutive tool-call tracker for batching hints
+        self._recent_tool_names: list = []
 
         # Context compressor internal counters (if present)
         if hasattr(self, "context_compressor") and self.context_compressor:
@@ -6087,6 +6128,21 @@ class AIAgent:
                 tier = "⚠️  WARNING" if remaining <= self.max_iterations * 0.1 else "💡 CAUTION"
                 print(f"{self.log_prefix}{tier}: {remaining} iterations remaining")
 
+        # ── Tool-repeat batching hint ─────────────────────────────────────
+        iteration_tool_names = [r[0] for r in results if r is not None]
+        repeat_hint = self._get_tool_repeat_hint(iteration_tool_names)
+        if repeat_hint and messages and messages[-1].get("role") == "tool":
+            last_content = messages[-1]["content"]
+            try:
+                parsed = json.loads(last_content)
+                if isinstance(parsed, dict):
+                    parsed["_tool_repeat_hint"] = repeat_hint
+                    messages[-1]["content"] = json.dumps(parsed, ensure_ascii=False)
+                else:
+                    messages[-1]["content"] = last_content + f"\n\n{repeat_hint}"
+            except (json.JSONDecodeError, TypeError):
+                messages[-1]["content"] = last_content + f"\n\n{repeat_hint}"
+
     def _execute_tool_calls_sequential(self, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
         """Execute tool calls sequentially (original behavior). Used for single calls or interactive tools."""
         for i, tool_call in enumerate(assistant_message.tool_calls, 1):
@@ -6397,6 +6453,23 @@ class AIAgent:
                 tier = "⚠️  WARNING" if remaining <= self.max_iterations * 0.1 else "💡 CAUTION"
                 print(f"{self.log_prefix}{tier}: {remaining} iterations remaining")
 
+        # ── Tool-repeat batching hint ─────────────────────────────────────
+        iteration_tool_names = [
+            tc.function.name for tc in assistant_message.tool_calls
+        ]
+        repeat_hint = self._get_tool_repeat_hint(iteration_tool_names)
+        if repeat_hint and messages and messages[-1].get("role") == "tool":
+            last_content = messages[-1]["content"]
+            try:
+                parsed = json.loads(last_content)
+                if isinstance(parsed, dict):
+                    parsed["_tool_repeat_hint"] = repeat_hint
+                    messages[-1]["content"] = json.dumps(parsed, ensure_ascii=False)
+                else:
+                    messages[-1]["content"] = last_content + f"\n\n{repeat_hint}"
+            except (json.JSONDecodeError, TypeError):
+                messages[-1]["content"] = last_content + f"\n\n{repeat_hint}"
+
     def _get_budget_warning(self, api_call_count: int) -> Optional[str]:
         """Return a budget pressure string, or None if not yet needed.
 
@@ -6420,6 +6493,59 @@ class AIAgent:
                 f"{remaining} iterations left. Start consolidating your work.]"
             )
         return None
+
+    def _get_tool_repeat_hint(self, tool_names: list) -> Optional[str]:
+        """Return a batching hint if recent tool calls show a consecutive same-tool streak.
+
+        Appends *tool_names* (from the current iteration) to the running
+        tracker ``_recent_tool_names`` and checks whether the tail forms a
+        streak of ``_TOOL_REPEAT_THRESHOLD`` or more identical calls to a
+        tool.  Returns a ``[Hint: ...]`` string or ``None``.
+        """
+        if not hasattr(self, "_recent_tool_names"):
+            self._recent_tool_names = []
+        self._recent_tool_names.extend(tool_names)
+
+        if len(self._recent_tool_names) < _TOOL_REPEAT_THRESHOLD:
+            return None
+
+        # Count the trailing streak of the same tool name
+        last = self._recent_tool_names[-1]
+        streak = 0
+        for name in reversed(self._recent_tool_names):
+            if name == last:
+                streak += 1
+            else:
+                break
+        if streak < _TOOL_REPEAT_THRESHOLD:
+            return None
+
+        # Tool-specific batching advice
+        if last == "terminal":
+            advice = (
+                "Combine commands with && or ; operators in a single terminal call, "
+                "or use execute_code to run a script that does all the work at once."
+            )
+        elif last in ("read_file", "search_files"):
+            advice = (
+                "Use execute_code to read/search multiple files in one call "
+                "and print a consolidated summary."
+            )
+        elif last in ("write_file", "patch"):
+            advice = (
+                "Use execute_code to apply multiple file changes in one call, "
+                "or use patch in V4A multi-file mode."
+            )
+        else:
+            advice = (
+                "Consider whether these calls can be consolidated into fewer "
+                "iterations — use execute_code or combine operations where possible."
+            )
+
+        return (
+            f"[Hint: You've called {last} {streak} times consecutively. "
+            f"{advice}]"
+        )
 
     def _emit_context_pressure(self, compaction_progress: float, compressor) -> None:
         """Notify the user that context is approaching the compaction threshold.
@@ -6702,6 +6828,7 @@ class AIAgent:
         # making tool calls in ALL subsequent turns.
         if messages:
             _strip_budget_warnings_from_history(messages)
+            _strip_tool_repeat_hints_from_history(messages)
         
         # Hydrate todo store from conversation history (gateway creates a fresh
         # AIAgent per message, so the in-memory store is empty -- we need to

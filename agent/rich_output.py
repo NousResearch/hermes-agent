@@ -50,6 +50,8 @@ _DIFF_BG_ADD    = "#145a14"   # rgb(20,  90, 20)  — base addition background
 _DIFF_BG_DEL    = "#781414"   # rgb(120, 20, 20)  — base deletion background
 _DIFF_BG_ADD_HL = "#289428"   # rgb(40, 148, 40)  — bright add bg for changed chars
 _DIFF_BG_DEL_HL = "#b43030"   # rgb(180, 48, 48)  — bright del bg for changed chars
+_DIFF_FG_ADD_SIGIL = "#56D364"
+_DIFF_FG_DEL_SIGIL = "#FF7B72"
 
 # Minimum SequenceMatcher ratio to apply intra-line highlighting.
 # Below this the lines are too dissimilar and highlighting would be noise.
@@ -337,7 +339,14 @@ class SyntaxHighlighter:
         markup = self.to_markup(code, language, filename)
         buf = StringIO()
         width = shutil.get_terminal_size((220, 50)).columns
-        Console(file=buf, highlight=False, force_terminal=True, width=width).print(markup)
+        Console(
+            file=buf,
+            highlight=False,
+            force_terminal=True,
+            no_color=False,
+            color_system="truecolor",
+            width=width,
+        ).print(markup)
         return buf.getvalue()
 
     # -- Helpers -------------------------------------------------------------
@@ -463,7 +472,7 @@ def _flat_del(ln: int, content: str, filename: Optional[str] = None) -> Text:
     syn.stylize(Style(bgcolor=_DIFF_BG_DEL))
     return Text.assemble(
         Text(f"{ln:>4} ", style=Style(dim=True, bgcolor=_DIFF_BG_DEL)),
-        Text("- ", style=Style(color="white", bold=True, bgcolor=_DIFF_BG_DEL)),
+        Text("- ", style=Style(color=_DIFF_FG_DEL_SIGIL, bgcolor=_DIFF_BG_DEL)),
         syn,
     )
 
@@ -474,7 +483,7 @@ def _flat_add(ln: int, content: str, filename: Optional[str] = None) -> Text:
     syn.stylize(Style(bgcolor=_DIFF_BG_ADD))
     return Text.assemble(
         Text(f"{ln:>4} ", style=Style(dim=True, bgcolor=_DIFF_BG_ADD)),
-        Text("+ ", style=Style(color="white", bold=True, bgcolor=_DIFF_BG_ADD)),
+        Text("+ ", style=Style(color=_DIFF_FG_ADD_SIGIL, bgcolor=_DIFF_BG_ADD)),
         syn,
     )
 
@@ -569,7 +578,14 @@ class DiffRenderer:
         import shutil
         render_width = width or shutil.get_terminal_size((220, 24)).columns
         buf = StringIO()
-        Console(file=buf, highlight=False, force_terminal=True, width=render_width).print(
+        Console(
+            file=buf,
+            highlight=False,
+            force_terminal=True,
+            no_color=False,
+            color_system="truecolor",
+            width=render_width,
+        ).print(
             self.from_unified(diff_text)
         )
         # Drop the trailing empty line that Console adds
@@ -632,7 +648,7 @@ class DiffRenderer:
                 if i < n_pairs and pair_segs[i][0] is not None:
                     styled.append(Text.assemble(
                         Text(f"{ln:>4} ", style=Style(dim=True, bgcolor=_DIFF_BG_DEL)),
-                        Text("- ", style=Style(color="white", bold=True, bgcolor=_DIFF_BG_DEL)),
+                        Text("- ", style=Style(color=_DIFF_FG_DEL_SIGIL, bgcolor=_DIFF_BG_DEL)),
                         *pair_segs[i][0],
                     ))
                 else:
@@ -642,7 +658,7 @@ class DiffRenderer:
                 if i < n_pairs and pair_segs[i][1] is not None:
                     styled.append(Text.assemble(
                         Text(f"{ln:>4} ", style=Style(dim=True, bgcolor=_DIFF_BG_ADD)),
-                        Text("+ ", style=Style(color="white", bold=True, bgcolor=_DIFF_BG_ADD)),
+                        Text("+ ", style=Style(color=_DIFF_FG_ADD_SIGIL, bgcolor=_DIFF_BG_ADD)),
                         *pair_segs[i][1],
                     ))
                 else:

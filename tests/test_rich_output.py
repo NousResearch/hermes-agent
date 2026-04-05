@@ -686,7 +686,14 @@ class TestDiffRendererV2:
         from io import StringIO
         from rich.console import Console
         buf = StringIO()
-        Console(file=buf, force_terminal=True, highlight=False, width=220).print(
+        Console(
+            file=buf,
+            force_terminal=True,
+            highlight=False,
+            no_color=False,
+            color_system="truecolor",
+            width=220,
+        ).print(
             DiffRenderer()._style(diff.splitlines())
         )
         output = buf.getvalue()
@@ -2655,3 +2662,16 @@ class TestSetextInBlockquoteEdgeCases:
         assert "Heading" in result
         # Depth-2 indent
         assert result.startswith("  ")
+
+
+def test_diff_renderer_marker_sigils_have_distinct_colours():
+    diff = (
+        "--- a/f.py\n+++ b/f.py\n"
+        "@@ -1 +1 @@\n"
+        "-old\n"
+        "+new\n"
+    )
+    lines = DiffRenderer().to_lines(diff)
+    all_ansi = "\n".join(lines)
+    assert "38;2;255;123;114" in all_ansi
+    assert "38;2;86;211;100" in all_ansi

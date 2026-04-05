@@ -2111,6 +2111,67 @@ class HermesCLI:
         except Exception:
             return [("class:status-bar", f" {self._build_status_bar_text()} ")]
 
+    @staticmethod
+    def _fmt_stash_age(stashed_at: float) -> str:
+        """Return human-readable age string for a stash entry."""
+        import time as _t
+        secs = int(_t.monotonic() - stashed_at)
+        if secs < 10:
+            return "just now"
+        if secs < 90:
+            return f"{secs}s ago"
+        mins = secs // 60
+        if mins < 60:
+            return f"{mins} min ago"
+        return f"{mins // 60}h ago"
+
+    def _render_stash_panel(self, stash_list: list, cursor: int, width: int) -> list:
+        """Return prompt_toolkit formatted_text fragments for the stash panel box."""
+        W = min(width - 4, 80)
+
+        HDR_PREFIX = "╭─ 📌 Stash ("
+        n = len(stash_list)
+        title_mid = f"{n} item{'s' if n != 1 else ''}) "
+        HDR_SUFFIX = " Ctrl+S ─╮"
+        FTR_PREFIX = "╰"
+        FTR_SUFFIX = " ↑↓ Enter=restore  D=delete  Esc ─╯"
+
+        # Header dashes fill between title and suffix
+        # HDR_PREFIX includes emoji (📌 = 2 wide) — measure in display cols
+        hdr_fixed = 2 + len(HDR_PREFIX) - 2 + len(title_mid) + len(HDR_SUFFIX)
+        # 📌 is 2 wide, "╭─ " already counted title chars fine since we
+        # just need to fit in W columns
+        hdr_prefix_str = f"{HDR_PREFIX}{title_mid}"
+        hdr_dashes = max(0, W - len(hdr_prefix_str) - len(HDR_SUFFIX))
+        ftr_dashes = max(0, W - len(FTR_PREFIX) - len(FTR_SUFFIX))
+
+        # Row inner width: W minus 2 border chars '│' on each side
+        INNER = W - 2
+
+        frags: list = []
+
+        def line(text: str, style: str = "") -> None:
+            frags.append((style, text + "\n"))
+
+        line(f"{hdr_prefix_str}{'─' * hdr_dashes}{HDR_SUFFIX}", "class:subagent-border")
+
+        for i, item in enumerate(stash_list):
+            age = self._fmt_stash_age(item["stashed_at"])
+            # Row: " ► [N] {age:<10} {preview} "
+            prefix = f" {'►' if i == cursor else ' '} [{i+1}] {age:<10} "
+            avail = max(0, INNER - len(prefix) - 1)
+            preview = item["preview"][:avail].ljust(avail)
+            row = f"│{prefix}{preview} │"
+            if i == cursor:
+                frags.append(("class:subagent-selected", row + "\n"))
+            else:
+                frags.append(("class:subagent-border", "│"))
+                frags.append(("class:subagent-sub", f"{prefix}{preview} "))
+                frags.append(("class:subagent-border", "│\n"))
+
+        line(f"{FTR_PREFIX}{'─' * ftr_dashes}{FTR_SUFFIX}", "class:subagent-border")
+        return frags
+
     def _normalize_model_for_provider(self, resolved_provider: str) -> bool:
         """Normalize provider-specific model IDs and routing."""
         current_model = (self.model or "").strip()

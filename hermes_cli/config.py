@@ -199,6 +199,7 @@ def ensure_hermes_home():
 
 DEFAULT_CONFIG = {
     "model": "",
+    "providers": {},
     "fallback_providers": [],
     "credential_pool_strategies": {},
     "toolsets": ["hermes-cli"],
@@ -531,7 +532,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 11,
+    "_config_version": 12,
 }
 
 # =============================================================================
@@ -1311,6 +1312,69 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                     print("  ✓ Cleared ANTHROPIC_TOKEN from .env (no longer used)")
         except Exception:
             pass
+
+    # ── Version 11 → 12: migrate custom_providers list → providers dict ──
+    if current_ver < 12:
+        config = load_config()
+        custom_list = config.get("custom_providers")
+        if isinstance(custom_list, list) and custom_list:
+            providers_dict = config.get("providers", {})
+            if not isinstance(providers_dict, dict):
+                providers_dict = {}
+            migrated_count = 0
+            for entry in custom_list:
+                if not isinstance(entry, dict):
+                    continue
+                old_name = entry.get("name", "")
+                old_url = entry.get("base_url", "") or entry.get("url", "") or ""
+                old_key = entry.get("api_key", "")
+                if not old_url:
+                    continue  # skip entries with no URL
+
+                # Generate a kebab-case key from the display name
+                key = old_name.strip().lower().replace(" ", "-").replace("(", "").replace(")", "")
+                # Remove consecutive hyphens and trailing hyphens
+                while "--" in key:
+                    key = key.replace("--", "-")
+                key = key.strip("-")
+                if not key:
+                    # Fallback: derive from URL hostname
+                    try:
+                        from urllib.parse import urlparse
+                        parsed = urlparse(old_url)
+                        key = (parsed.hostname or "endpoint").replace(".", "-")
+                    except Exception:
+                        key = f"endpoint-{migrated_count}"
+
+                # Don't overwrite existing entries
+                if key in providers_dict:
+                    key = f"{key}-{migrated_count}"
+
+                new_entry = {"api": old_url}
+                if old_name:
+                    new_entry["name"] = old_name
+                if old_key and old_key not in ("no-key", "no-key-required", ""):
+                    new_entry["api_key"] = old_key
+
+                # Carry over model and api_mode if present
+                if entry.get("model"):
+                    new_entry["default_model"] = entry["model"]
+                if entry.get("api_mode"):
+                    new_entry["transport"] = entry["api_mode"]
+
+                providers_dict[key] = new_entry
+                migrated_count += 1
+
+            if migrated_count > 0:
+                config["providers"] = providers_dict
+                # Remove the old list
+                del config["custom_providers"]
+                save_config(config)
+                if not quiet:
+                    print(f"  ✓ Migrated {migrated_count} custom provider(s) to providers: section")
+                    for key in list(providers_dict.keys())[-migrated_count:]:
+                        ep = providers_dict[key]
+                        print(f"    → {key}: {ep.get('api', '')}")
 
     if current_ver < latest_ver and not quiet:
         print(f"Config version: {current_ver} → {latest_ver}")

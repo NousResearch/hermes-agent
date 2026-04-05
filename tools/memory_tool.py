@@ -23,7 +23,15 @@ Design:
 - Frozen snapshot pattern: system prompt is stable, tool responses show live state
 """
 
-import fcntl
+# fcntl is Unix-only; on Windows use msvcrt for file locking
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
+    try:
+        import msvcrt
+    except ImportError:
+        msvcrt = None
 import json
 import logging
 import os
@@ -144,13 +152,28 @@ class MemoryStore:
         """
         lock_path = path.with_suffix(path.suffix + ".lock")
         lock_path.parent.mkdir(parents=True, exist_ok=True)
-        fd = open(lock_path, "w")
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX)
+        if fcntl is not None:
+            fd = open(lock_path, "w")
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX)
+                yield
+            finally:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+                fd.close()
+        elif msvcrt is not None:
+            fd = open(lock_path, "w")
+            fd.write(" ")
+            fd.flush()
+            fd.seek(0)
+            try:
+                msvcrt.locking(fd.fileno(), msvcrt.LK_LOCK, 1)
+                yield
+            finally:
+                fd.seek(0)
+                msvcrt.locking(fd.fileno(), msvcrt.LK_UNLCK, 1)
+                fd.close()
+        else:
             yield
-        finally:
-            fcntl.flock(fd, fcntl.LOCK_UN)
-            fd.close()
 
     @staticmethod
     def _path_for(target: str) -> Path:

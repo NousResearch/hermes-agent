@@ -6949,7 +6949,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
                     existing_pid,
                 )
                 try:
-                    os.kill(existing_pid, signal.SIGKILL)
+                    os.kill(existing_pid, getattr(signal, "SIGKILL", signal.SIGTERM))
                     _time.sleep(0.5)
                 except (ProcessLookupError, PermissionError):
                     pass

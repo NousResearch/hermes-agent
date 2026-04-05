@@ -2138,7 +2138,7 @@ def _kill_orphaned_mcp_children() -> None:
 
     for pid in pids:
         try:
-            os.kill(pid, _signal.SIGKILL)
+            os.kill(pid, getattr(_signal, "SIGKILL", _signal.SIGTERM))
             logger.debug("Force-killed orphaned MCP stdio process %d", pid)
         except (ProcessLookupError, PermissionError, OSError):
             pass  # Already exited or inaccessible

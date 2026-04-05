@@ -1072,7 +1072,7 @@ def _wait_for_gateway_exit(timeout: float = 10.0, force_after: float = 5.0):
         if not force_sent and time.monotonic() >= force_deadline:
             # Grace period expired — force-kill the specific PID.
             try:
-                os.kill(pid, signal.SIGKILL)
+                os.kill(pid, getattr(signal, "SIGKILL", signal.SIGTERM))
                 print(f"⚠ Gateway PID {pid} did not exit gracefully; sent SIGKILL")
             except (ProcessLookupError, PermissionError):
                 return  # Already gone or we can't touch it.

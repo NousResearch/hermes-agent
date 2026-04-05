@@ -1152,10 +1152,13 @@ def _rich_text_from_ansi(text: str) -> _RichText:
 
 # Matches common markdown characters: #heading, *bold*, `code`, |table|,
 # >blockquote, [link], ~strikethrough, double-newline (block break),
-# and numbered lists (1. item).  Checked against the first 500 chars only
-# to avoid scanning multi-KB responses — if markdown is present it almost
-# always appears early (headers, opening paragraph, first code fence).
+# and numbered lists (1. item).
 _MD_SYNTAX_RE = re.compile(r'[#*`|>\[~]|\n\n|^\d+\.\s|\n\d+\.\s', re.MULTILINE)
+
+# How many characters to scan when checking for markdown syntax.
+# 8 KB covers agentic responses with a plain-text preamble before tables/code;
+# re.search short-circuits on the first match so early markdown costs nothing.
+_MD_SCAN_LIMIT = 8192
 
 
 def _has_markdown_syntax(text: str) -> bool:
@@ -1165,7 +1168,7 @@ def _has_markdown_syntax(text: str) -> bool:
     markdown syntax at all (common for short answers and tool output).
     Inspired by claude-code's hasMarkdownSyntax() optimisation.
     """
-    return bool(_MD_SYNTAX_RE.search(text[:500] if len(text) > 500 else text))
+    return bool(_MD_SYNTAX_RE.search(text[:_MD_SCAN_LIMIT]))
 
 
 def _render_response(text: str, as_markdown: bool = True,
@@ -1187,7 +1190,8 @@ def _render_response(text: str, as_markdown: bool = True,
         # Use skin text colour as base style; "none" means default terminal colour
         md_style = text_color if text_color else "none"
         return _RichMarkdown(text, code_theme=code_theme, style=md_style)
-    except Exception:
+    except Exception as _e:
+        logger.debug("Markdown render failed, falling back to plain text: %s", _e)
         return _rich_text_from_ansi(text)
 
 
@@ -2828,7 +2832,8 @@ class HermesCLI:
         buf = self._stream_md_iobuf
         buf.seek(0)
         buf.truncate()
-        self._stream_md_console.width = shutil.get_terminal_size((80, 24)).columns
+        # Use cached terminal width set at stream-open time; avoids a syscall per chunk
+        self._stream_md_console.width = getattr(self, "_stream_md_term_width", shutil.get_terminal_size((80, 24)).columns)
         try:
             # Use skin-aware code theme and text colour for streamed blocks
             _theme = getattr(self, "_stream_md_code_theme", "monokai")
@@ -2837,7 +2842,8 @@ class HermesCLI:
             self._stream_md_console.print(
                 _RichMarkdown(chunk, code_theme=_theme, style=_md_style)
             )
-        except Exception:
+        except Exception as _e:
+            logger.debug("Streaming markdown render failed, falling back to plain text: %s", _e)
             self._stream_md_console.print(chunk)
         for line in buf.getvalue().rstrip("\n").split("\n"):
             _cprint(line)
@@ -2872,12 +2878,15 @@ class HermesCLI:
                 from hermes_cli.skin_engine import get_active_skin
                 _skin = get_active_skin()
                 label = _skin.get_branding("response_label", "⚕ Hermes")
-                # Capture skin settings for markdown chunk rendering
+                # Capture skin settings once per response stream open.
+                # A /skin change mid-stream won't affect the current response
+                # but will take effect from the next response onward.
                 self._stream_md_code_theme = _skin.get_color("code_theme", "monokai")
                 self._stream_md_text_color = _skin.get_color("banner_text", "#FFF8DC")
             except Exception:
                 label = "⚕ Hermes"
             w = shutil.get_terminal_size().columns
+            self._stream_md_term_width = w  # cache for chunk rendering; avoids syscall per chunk
             fill = w - 2 - len(label)
             _cprint(f"\n{_GOLD}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}")
 
@@ -3187,7 +3196,9 @@ class HermesCLI:
                 provider_require_parameters=self._provider_require_params,
                 provider_data_collection=self._provider_data_collection,
                 session_id=self.session_id,
-                platform="cli",
+                # Use a markdown-off platform hint when rendering is disabled
+                # so the LLM doesn't produce markdown that would display raw.
+                platform="cli" if self.markdown_enabled else "cli_no_markdown",
                 session_db=self._session_db,
                 clarify_callback=self._clarify_callback,
                 reasoning_callback=self._current_reasoning_callback(),

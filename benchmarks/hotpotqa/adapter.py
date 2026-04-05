@@ -1,8 +1,8 @@
 """
-HotpotQA adapter for Hermes cognitive memory.
+HotpotQA adapter for Hermes memory backends.
 
 Loads questions from the hotpotqa/hotpot_qa HuggingFace dataset (distractor
-split), ingests per-question context paragraphs into a CognitiveMemoryStore,
+split), ingests per-question context paragraphs into a BenchmarkableStore,
 then answers questions via recall.
 
 The key differentiator for HotpotQA is multi-hop reasoning: questions require
@@ -500,8 +500,8 @@ def run_hotpotqa(
         HotpotSummary with aggregated scores.
     """
     if backend_cls is None:
-        from cognitive_memory.benchmark_adapter import CognitiveBenchmarkAdapter
-        backend_cls = CognitiveBenchmarkAdapter
+        from benchmarks.baseline.flat_store import FlatMemoryStore
+        backend_cls = FlatMemoryStore
 
     backend_kwargs = backend_kwargs or {}
 

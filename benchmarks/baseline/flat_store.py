@@ -3,7 +3,7 @@ Flat Memory Store — the simplest possible memory backend.
 
 Stores memories as a list of strings. Recall is substring matching.
 No decay, no importance weighting, no consolidation.
-This is the baseline that cognitive memory must beat.
+This is the baseline that memory plugins must beat.
 """
 
 from typing import Dict, List, Any, Optional
@@ -94,5 +94,7 @@ from benchmarks.capabilities import BackendCapabilities
 
 BACKEND_CAPABILITIES = BackendCapabilities(
     universal_store_recall=True,   # basic store + recall
+    scopes=True,                   # recall() filters by scope parameter
+    time_simulation=True,          # simulate_time() advances internal clock
 )
 BACKEND_CLASS = FlatMemoryStore

@@ -1,7 +1,7 @@
 """
-Hermes Cognitive Memory Benchmark Suite
+Hermes Memory Benchmark Suite
 
-Benchmarks memory backends (baseline flat, cognitive, engram) across
+Benchmarks memory backends (baseline flat + all memory plugins) across
 recall accuracy, contradiction handling, temporal decay, cross-referencing,
 and importance filtering.
 

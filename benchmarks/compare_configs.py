@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Compare multiple cognitive memory configurations side-by-side.
+Compare multiple memory backend configurations side-by-side.
 
 Usage:
     # Compare profiles
@@ -32,20 +32,14 @@ from benchmarks.runner import (
     BACKENDS,
 )
 
-# Ensure cognitive backend is registered
-try:
-    from cognitive_memory.benchmark_adapter import CognitiveBenchmarkAdapter
-    if "cognitive" not in BACKENDS:
-        register_backend("cognitive", CognitiveBenchmarkAdapter)
-except ImportError:
-    pass
+# Plugin backends are auto-discovered by runner.py from benchmarks/backends/
 
 
 def run_config(name: str, params: dict, runs: int = 3,
                judge_model: str = "heuristic") -> tuple:
     """Run a single configuration and return (AggregateResult, runs)."""
     config = BenchmarkConfig(
-        backend_name="cognitive",
+        backend_name="baseline-flat",
         profile=params.get("profile", "balanced"),
         embedding_model=params.get("embedding_model", "tfidf"),
         num_runs=runs,

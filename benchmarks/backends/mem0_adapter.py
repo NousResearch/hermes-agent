@@ -146,7 +146,14 @@ class Mem0BenchmarkAdapter(BenchmarkableStore):
             truncated to at most *top_k* entries.
         """
         del scope  # unused by this backend
-        results = self._client.search(query, user_id=self._user_id, top_k=top_k)
+        response = self._client.search(
+            query,
+            user_id=self._user_id,
+            top_k=top_k,
+            filters={"user_id": self._user_id},
+        )
+        # The response may be a dict with "results" key or a list directly
+        results = response.get("results", response) if isinstance(response, dict) else response
         return [r["memory"] for r in results[:top_k]]
 
     def simulate_time(self, days: float) -> None:

@@ -27,7 +27,7 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 
 RESULTS_DIR = Path(__file__).parent / "results"
-DEFAULT_RESULT = RESULTS_DIR / "cognitive.json"
+DEFAULT_RESULT = RESULTS_DIR / "baseline-flat.json"
 
 
 def _load_json(path: str) -> dict:
@@ -40,7 +40,7 @@ def _load_json(path: str) -> dict:
 
 
 def _latest_result() -> dict:
-    """Load the default/latest cognitive result file."""
+    """Load the default/latest result file."""
     if not DEFAULT_RESULT.exists():
         # Fall back to any json in results/
         candidates = sorted(RESULTS_DIR.glob("*.json"), key=lambda p: p.stat().st_mtime,
@@ -376,18 +376,18 @@ def main() -> None:
         mode_academic(full=args.full, passthrough=runner_argv)
 
     elif args.quick:
-        # Suite A, 1 run, cognitive backend
+        # Suite A, 1 run, baseline-flat backend
         argv = ["--suite", "a", "--runs", "1"]
         if not any(a.startswith("--backend") for a in runner_argv):
-            argv += ["--backend", "cognitive"]
+            argv += ["--backend", "baseline-flat"]
         argv += runner_argv
         mode_standard(argv)
 
     elif args.full:
-        # All suites, 3 runs, cognitive backend
+        # All suites, 3 runs, baseline-flat backend
         argv = ["--suite", "all", "--runs", "3"]
         if not any(a.startswith("--backend") for a in runner_argv):
-            argv += ["--backend", "cognitive"]
+            argv += ["--backend", "baseline-flat"]
         argv += runner_argv
         mode_standard(argv)
 

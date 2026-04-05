@@ -179,9 +179,8 @@ A time-simulation benchmark should not penalize a backend that legitimately has 
 
 | Backend | Capabilities |
 |---------|-------------|
-| `baseline-flat` | universal_store_recall |
-| `structured` | universal_store_recall, access_rehearsal, consolidation, scopes, typed_facts |
-| `mnemoria` | All capabilities |
+| `baseline-flat` | universal_store_recall, scopes, time_simulation |
+| `mnemoria` | universal_store_recall |
 | `holographic` | universal_store_recall |
 | `honcho` | universal_store_recall |
 | `mem0` | universal_store_recall |
@@ -401,16 +400,17 @@ When using `--compare`, the suite runs both backends with identical seeds and re
 
 ## Reference Scores
 
-Tested with TF-IDF embeddings (no ML model needed):
+Tested on macOS, 16GB RAM, seed=42:
 
-| Backend | A-F Overall | Suite H | Suite I | Notes |
-|---------|------------|---------|---------|-------|
-| baseline-flat | 80.4% | 66.0% | 86.7% | Simple list + substring match |
-| cognitive | 96.8% | 90.6% | 86.7% | ACT-R + Hebbian + Q-value |
-| mnemoria | 97.2% | 73.6%* | 86.7% | Full cognitive + structured + Ori-Mnemos |
+| Backend | A | B | D | E | M | N |
+|---------|---|---|---|---|---|---|
+| baseline-flat | 82.5% | 90.0% | 86.7% | **100%** | **90.0%** | **88.9%** |
+| holographic | 70.0% | 93.3% | **100%** | **100%** | **90.0%** | 66.7% |
+| mnemoria | **86.0%** | **100%** | **100%** | **100%** | **90.0%** | **88.9%** |
 
-*Suite H mnemoria score lower due to TF-IDF limitations on notation parsing.
-With sentence-transformers embeddings, mnemoria scores significantly higher.
+Suites C and O are only scored for backends that declare `scopes` and
+`time_simulation` capabilities respectively. See `benchmarks/results/COMPARISON_REPORT.md`
+for detailed analysis.
 
 ## Adding New Suites
 

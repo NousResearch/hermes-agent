@@ -79,6 +79,7 @@ class _MinimalConfig:
     dialectic_reasoning_level: str = "low"
     dialectic_max_chars: int = 600
     recall_mode: str = "hybrid"
+    observation_mode: str = "unified"
 
     def __post_init__(self):
         if self.peer_memory_modes is None:

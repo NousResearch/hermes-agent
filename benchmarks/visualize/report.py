@@ -411,7 +411,7 @@ def generate_comparison_report(before_json: dict, after_json: dict) -> str:
 if __name__ == "__main__":
     import pathlib
 
-    results_path = pathlib.Path(__file__).parent.parent / "results" / "cognitive.json"
+    results_path = pathlib.Path(__file__).parent.parent / "results" / "baseline-flat.json"
     if not results_path.exists():
         print(f"Result file not found: {results_path}")
         raise SystemExit(1)

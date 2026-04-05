@@ -47,27 +47,6 @@ def get_backend(name: str, config: BenchmarkConfig) -> BenchmarkableStore:
 from benchmarks.baseline.flat_store import FlatMemoryStore, BACKEND_CAPABILITIES as BASELINE_CAPS
 register_backend("baseline-flat", FlatMemoryStore, BASELINE_CAPS)
 
-# Register cognitive memory backend
-try:
-    from cognitive_memory.benchmark_adapter import CognitiveBenchmarkAdapter
-    register_backend("cognitive", CognitiveBenchmarkAdapter)
-except ImportError:
-    pass  # cognitive_memory not available
-
-# Register structured memory backend
-try:
-    from tools.structured_memory.benchmark_adapter import StructuredMemoryBenchmarkAdapter, BACKEND_CAPABILITIES as STRUCTURED_CAPS
-    register_backend("structured", StructuredMemoryBenchmarkAdapter, STRUCTURED_CAPS)
-except ImportError:
-    pass  # structured_memory not available
-
-# Register mnemoria backend
-try:
-    from mnemoria.benchmark_adapter import MnemoriaBenchmarkAdapter, BACKEND_CAPABILITIES as MNEMORIA_CAPS
-    register_backend("mnemoria", MnemoriaBenchmarkAdapter, MNEMORIA_CAPS)
-except ImportError:
-    pass  # mnemoria not available
-
 # Auto-discover plugin backends from benchmarks/backends/
 try:
     import importlib
@@ -2129,6 +2108,14 @@ def run_single(config: BenchmarkConfig, seed: int) -> RunResult:
         for category_name, scenarios in fixtures.items():
             runner = CATEGORY_RUNNERS.get(category_name)
             if runner:
+                # Skip categories the backend doesn't support
+                caps = BACKEND_CAPABILITIES.get(config.backend_name)
+                if caps is not None:
+                    from benchmarks.tracks import backend_supports_category, missing_capabilities
+                    if not backend_supports_category(caps, category_name):
+                        missing = missing_capabilities(caps, category_name)
+                        print(f"  Skipping {category_name} (missing: {', '.join(missing)})")
+                        continue
                 # Shuffle scenarios to measure order-dependence
                 shuffled = list(scenarios)
                 random.shuffle(shuffled)

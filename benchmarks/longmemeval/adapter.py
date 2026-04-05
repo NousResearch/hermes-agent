@@ -1,8 +1,8 @@
 """
-LongMemEval adapter for Hermes cognitive memory.
+LongMemEval adapter for Hermes memory backends.
 
 Loads questions from the xiaowu0162/longmemeval-cleaned HuggingFace dataset,
-ingests haystack conversations into a CognitiveMemoryStore, then answers
+ingests haystack conversations into a BenchmarkableStore, then answers
 questions via recall.
 
 Each question is isolated: a fresh store is created per question to avoid
@@ -19,7 +19,10 @@ from pathlib import Path
 from typing import Any
 
 from benchmarks.metrics import compute_metric_suite, token_f1
-from cognitive_memory.ingestion import ingest_raw, ingest_chunked, ingest_summarized
+try:
+    from cognitive_memory.ingestion import ingest_raw, ingest_chunked, ingest_summarized
+except ImportError:
+    ingest_raw = ingest_chunked = ingest_summarized = None  # cognitive_memory not available
 
 logger = logging.getLogger(__name__)
 
@@ -349,8 +352,8 @@ def run_longmemeval(
         LongMemSummary with aggregated scores.
     """
     if backend_cls is None:
-        from cognitive_memory.benchmark_adapter import CognitiveBenchmarkAdapter
-        backend_cls = CognitiveBenchmarkAdapter
+        from benchmarks.baseline.flat_store import FlatMemoryStore
+        backend_cls = FlatMemoryStore
 
     backend_kwargs = backend_kwargs or {}
 

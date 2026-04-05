@@ -1,1 +1,1 @@
-"""LongMemEval benchmark adapter for Hermes cognitive memory."""
+"""LongMemEval benchmark adapter for Hermes memory backends."""

@@ -83,7 +83,7 @@ class ParamRange:
         return round(v, 6)
 
 
-# Default search space covering the most impactful cognitive memory parameters
+# Default search space covering tunable memory backend parameters
 DEFAULT_SEARCH_SPACE: List[ParamRange] = [
     ParamRange('gravity_dampening_factor',   0.2, 0.8,  step=0.1),
     ParamRange('hub_dampening_max_penalty',  0.3, 0.9,  step=0.1),
@@ -122,7 +122,7 @@ def make_evaluator(suite: str = 'a', runs: int = 1,
 
     def evaluate(params: dict) -> dict:
         config = BenchmarkConfig(
-            backend_name='cognitive',
+            backend_name='baseline-flat',
             profile='balanced',
             embedding_model=embedding,
             num_runs=runs,

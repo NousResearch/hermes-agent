@@ -218,9 +218,9 @@ class TestLaunchdPlistRefresh:
         assert result is True
         # Plist should now contain the generated content (which includes --replace)
         assert "--replace" in plist_path.read_text()
-        # Should have unloaded then reloaded
-        assert any("unload" in str(c) for c in calls)
-        assert any("load" in str(c) for c in calls)
+        # Should have booted out then bootstrapped
+        assert any("bootout" in str(c) for c in calls)
+        assert any("bootstrap" in str(c) for c in calls)
 
     def test_refresh_skips_when_current(self, tmp_path, monkeypatch):
         plist_path = tmp_path / "ai.hermes.gateway.plist"
@@ -262,10 +262,10 @@ class TestLaunchdPlistRefresh:
 
         gateway_cli.launchd_start()
 
-        # First calls should be refresh (unload/load), then start
+        # First calls should be refresh (bootout/bootstrap), then kickstart
         cmd_strs = [" ".join(c) for c in calls]
-        assert any("unload" in s for s in cmd_strs)
-        assert any("start" in s for s in cmd_strs)
+        assert any("bootout" in s for s in cmd_strs)
+        assert any("kickstart" in s for s in cmd_strs)
 
     def test_launchd_start_recreates_missing_plist_and_loads_service(self, tmp_path, monkeypatch):
         """launchd_start self-heals when the plist file is missing entirely."""
@@ -288,11 +288,11 @@ class TestLaunchdPlistRefresh:
         assert "--replace" in plist_path.read_text()
 
         cmd_strs = [" ".join(c) for c in calls]
-        # Should load the new plist, then start
-        assert any("load" in s for s in cmd_strs)
-        assert any("start" in s for s in cmd_strs)
-        # Should NOT call unload (nothing to unload)
-        assert not any("unload" in s for s in cmd_strs)
+        # Should bootstrap the new plist, then kickstart
+        assert any("bootstrap" in s for s in cmd_strs)
+        assert any("kickstart" in s for s in cmd_strs)
+        # Should NOT call bootout (nothing to bootout)
+        assert not any("bootout" in s for s in cmd_strs)
 
 
 class TestCmdUpdateLaunchdRestart:

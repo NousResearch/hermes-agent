@@ -6233,6 +6233,14 @@ class GatewayRunner:
                 logger.debug("status_callback error (%s): %s", event_type, _e)
 
         def run_sync():
+            # The conditional re-assignment of `message` further below
+            # (prepending model-switch notes) makes Python treat it as a
+            # local variable in the entire function.  `nonlocal` lets us
+            # read *and* reassign the outer `_run_agent` parameter without
+            # triggering an UnboundLocalError on the earlier read at
+            # `_resolve_turn_agent_config(message, …)`.
+            nonlocal message
+
             # Pass session_key to process registry via env var so background
             # processes can be mapped back to this gateway session
             os.environ["HERMES_SESSION_KEY"] = session_key or ""

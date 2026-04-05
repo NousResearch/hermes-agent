@@ -60,9 +60,9 @@ class FakeAgent:
         self.tools = []
 
     def run_conversation(self, message, conversation_history=None, task_id=None):
-        self.tool_progress_callback("terminal", "pwd")
+        self.tool_progress_callback("tool.started", "terminal", "pwd", {})
         time.sleep(0.35)
-        self.tool_progress_callback("browser_navigate", "https://example.com")
+        self.tool_progress_callback("tool.started", "browser_navigate", "https://example.com", {})
         time.sleep(0.35)
         return {
             "final_response": "done",

@@ -423,8 +423,8 @@ class APIServerAdapter(BasePlatformAdapter):
 
         # Load fallback provider chain so the API server platform has the
         # same fallback behaviour as Telegram/Discord/Slack (fixes #4954).
-        from gateway.run import GatewayApp
-        fallback_model = GatewayApp._load_fallback_model()
+        from gateway.run import GatewayRunner
+        fallback_model = GatewayRunner._load_fallback_model()
 
         agent = AIAgent(
             model=model,

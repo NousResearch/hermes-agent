@@ -590,6 +590,7 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
                 from hermes_cli.models import copilot_default_headers
 
                 extra["default_headers"] = copilot_default_headers()
+            extra["max_retries"] = 3
             return OpenAI(api_key=api_key, base_url=base_url, **extra), model
 
         creds = resolve_api_key_provider_credentials(provider_id)
@@ -607,6 +608,7 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
             from hermes_cli.models import copilot_default_headers
 
             extra["default_headers"] = copilot_default_headers()
+        extra["max_retries"] = 3
         return OpenAI(api_key=api_key, base_url=base_url, **extra), model
 
     return None, None
@@ -649,15 +651,14 @@ def _try_openrouter() -> Tuple[Optional[OpenAI], Optional[str]]:
         base_url = _pool_runtime_base_url(entry, OPENROUTER_BASE_URL) or OPENROUTER_BASE_URL
         logger.debug("Auxiliary client: OpenRouter via pool")
         return OpenAI(api_key=or_key, base_url=base_url,
-                       default_headers=_OR_HEADERS), _OPENROUTER_MODEL
+                       default_headers=_OR_HEADERS, max_retries=3), _OPENROUTER_MODEL
 
     or_key = os.getenv("OPENROUTER_API_KEY")
     if not or_key:
         return None, None
     logger.debug("Auxiliary client: OpenRouter")
     return OpenAI(api_key=or_key, base_url=OPENROUTER_BASE_URL,
-                   default_headers=_OR_HEADERS), _OPENROUTER_MODEL
-
+                   default_headers=_OR_HEADERS, max_retries=3), _OPENROUTER_MODEL
 
 def _try_nous() -> Tuple[Optional[OpenAI], Optional[str]]:
     nous = _read_nous_auth()
@@ -671,6 +672,7 @@ def _try_nous() -> Tuple[Optional[OpenAI], Optional[str]]:
         OpenAI(
             api_key=_nous_api_key(nous),
             base_url=str(nous.get("inference_base_url") or _nous_base_url()).rstrip("/"),
+            max_retries=3,
         ),
         model,
     )
@@ -763,8 +765,7 @@ def _try_custom_endpoint() -> Tuple[Optional[OpenAI], Optional[str]]:
         return None, None
     model = _read_main_model() or "gpt-4o-mini"
     logger.debug("Auxiliary client: custom endpoint (%s)", model)
-    return OpenAI(api_key=custom_key, base_url=custom_base), model
-
+    return OpenAI(api_key=custom_key, base_url=custom_base, max_retries=3), model
 
 def _try_codex() -> Tuple[Optional[Any], Optional[str]]:
     pool_present, entry = _select_pool_entry("openai-codex")
@@ -779,7 +780,7 @@ def _try_codex() -> Tuple[Optional[Any], Optional[str]]:
             return None, None
         base_url = _CODEX_AUX_BASE_URL
     logger.debug("Auxiliary client: Codex OAuth (%s via Responses API)", _CODEX_AUX_MODEL)
-    real_client = OpenAI(api_key=codex_token, base_url=base_url)
+    real_client = OpenAI(api_key=codex_token, base_url=base_url, max_retries=3)
     return CodexAuxiliaryClient(real_client, _CODEX_AUX_MODEL), _CODEX_AUX_MODEL
 
 
@@ -947,6 +948,7 @@ def _to_async_client(sync_client, model: str):
     async_kwargs = {
         "api_key": sync_client.api_key,
         "base_url": str(sync_client.base_url),
+        "max_retries": 3,
     }
     base_lower = str(sync_client.base_url).lower()
     if "openrouter" in base_lower:
@@ -1052,7 +1054,7 @@ def resolve_provider_client(
                                "but no Codex OAuth token found (run: hermes model)")
                 return None, None
             final_model = model or _CODEX_AUX_MODEL
-            raw_client = OpenAI(api_key=codex_token, base_url=_CODEX_AUX_BASE_URL)
+            raw_client = OpenAI(api_key=codex_token, base_url=_CODEX_AUX_BASE_URL, max_retries=3)
             return (raw_client, final_model)
         # Standard path: wrap in CodexAuxiliaryClient adapter
         client, default = _try_codex()
@@ -1080,7 +1082,7 @@ def resolve_provider_client(
                 )
                 return None, None
             final_model = model or _read_main_model() or "gpt-4o-mini"
-            client = OpenAI(api_key=custom_key, base_url=custom_base)
+            client = OpenAI(api_key=custom_key, base_url=custom_base, max_retries=3)
             return (_to_async_client(client, final_model) if async_mode
                     else (client, final_model))
         # Try custom first, then codex, then API-key providers
@@ -1141,8 +1143,7 @@ def resolve_provider_client(
 
             headers.update(copilot_default_headers())
 
-        client = OpenAI(api_key=api_key, base_url=base_url,
-                        **({"default_headers": headers} if headers else {}))
+        client = OpenAI(api_key=api_key, base_url=base_url, max_retries=3, **({"default_headers": headers} if headers else {}))
         logger.debug("resolve_provider_client: %s (%s)", provider, final_model)
         return (_to_async_client(client, final_model) if async_mode
                 else (client, final_model))
@@ -1812,29 +1813,15 @@ def call_llm(
         base_url=resolved_base_url)
 
     # Handle max_tokens vs max_completion_tokens retry
-    for attempt in range(2):
-        try:
-            return await client.chat.completions.create(**kwargs)
-        except Exception as first_err:
-            err_str = str(first_err)
-            if "max_tokens" in err_str or "unsupported_parameter" in err_str:
-                kwargs.pop("max_tokens", None)
-                kwargs["max_completion_tokens"] = max_tokens
-                try:
-                    return await client.chat.completions.create(**kwargs)
-                except Exception as inner_err:
-                    first_err = inner_err
-                    err_str = str(inner_err)
-            
-            if attempt == 0:
-                status = getattr(first_err, "status_code", getattr(getattr(first_err, "response", None), "status_code", None))
-                err_type = type(first_err).__name__
-                if status in (429, 500, 502, 503, 504) or "Timeout" in err_type or "Connect" in err_type:
-                    logger.warning("Auxiliary client transient error: %s. Retrying in 2s...", err_type)
-                    import asyncio
-                    await asyncio.sleep(2.0)
-                    continue
-            raise
+    try:
+        return client.chat.completions.create(**kwargs)
+    except Exception as first_err:
+        err_str = str(first_err)
+        if "max_tokens" in err_str or "unsupported_parameter" in err_str:
+            kwargs.pop("max_tokens", None)
+            kwargs["max_completion_tokens"] = max_tokens
+            return client.chat.completions.create(**kwargs)
+        raise
 
 
 def extract_content_or_reasoning(response) -> str:

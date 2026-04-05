@@ -6365,6 +6365,10 @@ class AIAgent:
             if self.ephemeral_system_prompt:
                 effective_system = (effective_system + "\n\n" + self.ephemeral_system_prompt).strip()
             if effective_system:
+                # Inject current time into system prompt on every API call
+                from hermes_time import now as _hermes_now
+                _current_time = _hermes_now().strftime("%A, %B %d, %Y %I:%M %p")
+                effective_system = effective_system + f"\n\nCurrent time: {_current_time}"
                 api_messages = [{"role": "system", "content": effective_system}] + api_messages
             if self.prefill_messages:
                 sys_offset = 1 if effective_system else 0
@@ -6900,6 +6904,10 @@ class AIAgent:
             # This is intentional — system prompt modifications break the prompt
             # cache prefix.  The system prompt is reserved for Hermes internals.
             if effective_system:
+                # Inject current time into system prompt on every API call
+                from hermes_time import now as _hermes_now
+                _current_time = _hermes_now().strftime("%A, %B %d, %Y %I:%M %p")
+                effective_system = effective_system + f"\n\nCurrent time: {_current_time}"
                 api_messages = [{"role": "system", "content": effective_system}] + api_messages
 
             # Inject ephemeral prefill messages right after the system prompt

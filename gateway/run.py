@@ -2650,8 +2650,20 @@ class GatewayRunner:
         # Enrich document messages with context notes for the agent
         # -----------------------------------------------------------------
         if event.media_urls and event.message_type == MessageType.DOCUMENT:
+            import mimetypes as _mimetypes
+            _TEXT_EXTENSIONS = {".txt", ".md", ".csv", ".log", ".json", ".xml", ".yaml", ".yml", ".toml", ".ini", ".cfg"}
             for i, path in enumerate(event.media_urls):
                 mtype = event.media_types[i] if i < len(event.media_types) else ""
+                # Fall back to extension-based detection when MIME type is unreliable.
+                if mtype in ("", "application/octet-stream"):
+                    import os as _os2
+                    _ext = _os2.path.splitext(path)[1].lower()
+                    if _ext in _TEXT_EXTENSIONS:
+                        mtype = "text/plain"
+                    else:
+                        guessed, _ = _mimetypes.guess_type(path)
+                        if guessed:
+                            mtype = guessed
                 if not (mtype.startswith("application/") or mtype.startswith("text/")):
                     continue
                 # Extract display filename by stripping the doc_{uuid12}_ prefix

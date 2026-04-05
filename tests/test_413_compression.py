@@ -7,7 +7,7 @@ Verifies that:
 """
 
 import pytest
-pytestmark = pytest.mark.skip(reason="Hangs in non-interactive environments")
+#pytestmark = pytest.mark.skip(reason="Hangs in non-interactive environments")
 
 
 
@@ -318,12 +318,13 @@ class TestPreflightCompression:
     def test_preflight_compresses_oversized_history(self, agent):
         """When loaded history exceeds the model's context threshold, compress before API call."""
         agent.compression_enabled = True
-        # Set a very small context so the history is "oversized"
-        agent.context_compressor.context_length = 100
-        agent.context_compressor.threshold_tokens = 85  # 85% of 100
+        # Set a small context so the history is "oversized", but large enough
+        # that the compressed result (2 short messages) fits in a single pass.
+        agent.context_compressor.context_length = 2000
+        agent.context_compressor.threshold_tokens = 200
 
         # Build a history that will be large enough to trigger preflight
-        # (each message ~20 chars = ~5 tokens, 20 messages = ~100 tokens > 85 threshold)
+        # (each message ~50 chars ≈ 13 tokens, 40 messages ≈ 520 tokens > 200 threshold)
         big_history = []
         for i in range(20):
             big_history.append({"role": "user", "content": f"Message number {i} with some extra text padding"})
@@ -338,7 +339,7 @@ class TestPreflightCompression:
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
-            # Simulate compression reducing messages
+            # Simulate compression reducing messages to a small set that fits
             mock_compress.return_value = (
                 [
                     {"role": "user", "content": f"{SUMMARY_PREFIX}\nPrevious conversation"},
@@ -411,7 +412,7 @@ class TestToolResultPreflightCompression:
         """When tool results push estimated tokens past threshold, compress before next call."""
         agent.compression_enabled = True
         agent.context_compressor.context_length = 200_000
-        agent.context_compressor.threshold_tokens = 140_000
+        agent.context_compressor.threshold_tokens = 130_000  # below the 135k reported usage
         agent.context_compressor.last_prompt_tokens = 130_000
         agent.context_compressor.last_completion_tokens = 5_000
 

@@ -575,6 +575,20 @@ def load_gateway_config() -> GatewayConfig:
                     if isinstance(frc, list):
                         frc = ",".join(str(v) for v in frc)
                     os.environ["WHATSAPP_FREE_RESPONSE_CHATS"] = str(frc)
+
+            # Matrix settings → env vars (env vars take precedence)
+            matrix_cfg = yaml_cfg.get("matrix", {})
+            if isinstance(matrix_cfg, dict):
+                if "require_mention" in matrix_cfg and not os.getenv("MATRIX_REQUIRE_MENTION"):
+                    os.environ["MATRIX_REQUIRE_MENTION"] = str(matrix_cfg["require_mention"]).lower()
+                frc = matrix_cfg.get("free_response_rooms")
+                if frc is not None and not os.getenv("MATRIX_FREE_RESPONSE_ROOMS"):
+                    if isinstance(frc, list):
+                        frc = ",".join(str(v) for v in frc)
+                    os.environ["MATRIX_FREE_RESPONSE_ROOMS"] = str(frc)
+                if "auto_thread" in matrix_cfg and not os.getenv("MATRIX_AUTO_THREAD"):
+                    os.environ["MATRIX_AUTO_THREAD"] = str(matrix_cfg["auto_thread"]).lower()
+
     except Exception as e:
         logger.warning(
             "Failed to process config.yaml — falling back to .env / gateway.json values. "

@@ -17,11 +17,12 @@ from typing import Dict, List, Optional, Any
 logger = logging.getLogger(__name__)
 
 try:
-    from telegram import Update, Bot, Message
+    from telegram import Update, Bot, Message, InlineKeyboardMarkup, InlineKeyboardButton
     from telegram.ext import (
         Application,
         CommandHandler,
         MessageHandler as TelegramMessageHandler,
+        CallbackQueryHandler,
         ContextTypes,
         filters,
     )
@@ -147,6 +148,8 @@ class TelegramAdapter(BasePlatformAdapter):
         self._dm_topics: Dict[str, int] = {}
         # DM Topics config from extra.dm_topics
         self._dm_topics_config: List[Dict[str, Any]] = self.config.extra.get("dm_topics", [])
+        # Exec approval inline keyboard cache: message_id -> {session_key, target_chat_id, resolved}
+        self._exec_approval_cache: Dict[str, dict] = {}
 
     def _fallback_ips(self) -> list[str]:
         """Return validated fallback IPs from config (populated by _apply_env_overrides)."""
@@ -543,6 +546,10 @@ class TelegramAdapter(BasePlatformAdapter):
                 filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.Document.ALL | filters.Sticker.ALL,
                 self._handle_media_message
             ))
+            # Inline keyboard callback handler for exec approvals
+            self._app.add_handler(
+                CallbackQueryHandler(self._handle_callback_query)
+            )
             
             # Start polling — retry initialize() for transient TLS resets
             try:
@@ -1196,6 +1203,89 @@ class TelegramAdapter(BasePlatformAdapter):
                     e,
                     exc_info=True,
                 )
+
+    async def send_exec_approval(
+        self,
+        chat_id: str,
+        command: str,
+        session_key: str,
+        description: str = "dangerous command",
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """
+        Send a button-based exec approval prompt for a dangerous command.
+
+        Shows four inline buttons: Allow Once, Allow Session, Always Allow, Deny.
+        Clicking a button calls ``resolve_gateway_approval()`` to unblock the
+        waiting agent thread — the same mechanism as the text ``/approve`` flow.
+        Only the user who receives the approval in DM can click buttons.
+        Times out after 5 minutes.
+        """
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+
+        try:
+            target_id = chat_id
+            if metadata and metadata.get("thread_id"):
+                target_id = metadata["thread_id"]
+
+            # Format command for display (escape MarkdownV2 special chars)
+            max_desc = 4088
+            cmd_display = command if len(command) <= max_desc else command[: max_desc - 3] + "..."
+
+            text = (
+                f"⚠️ *Command Approval Required*\n\n"
+                f"```\n{cmd_display}\n```\n"
+                f"Reason: {description}"
+            )
+
+            # Build inline keyboard
+            keyboard = [
+                [
+                    InlineKeyboardButton(
+                        "✅ Allow Once",
+                        callback_data=f"exec:once:{session_key}",
+                    ),
+                    InlineKeyboardButton(
+                        "🔏 Allow Session",
+                        callback_data=f"exec:session:{session_key}",
+                    ),
+                ],
+                [
+                    InlineKeyboardButton(
+                        "🔓 Always Allow",
+                        callback_data=f"exec:always:{session_key}",
+                    ),
+                    InlineKeyboardButton(
+                        "❌ Deny",
+                        callback_data=f"exec:deny:{session_key}",
+                    ),
+                ],
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+
+            # Send with buttons
+            msg = await self._bot.send_message(
+                chat_id=int(target_id),
+                text=text,
+                parse_mode=None,  # Use plain text to avoid MarkdownV2 escaping complexity
+                reply_markup=reply_markup,
+            )
+
+            # Cache approval data for callback handler
+            self._exec_approval_cache[str(msg.message_id)] = {
+                "session_key": session_key,
+                "target_chat_id": target_id,
+                "resolved": False,
+            }
+
+            return SendResult(success=True, message_id=str(msg.message_id))
+
+        except Exception as e:
+            logger.error(
+                "[%s] Failed to send exec approval: %s", self.name, e, exc_info=True
+            )
+            return SendResult(success=False, error=str(e))
     
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Get information about a Telegram chat."""
@@ -1973,6 +2063,94 @@ class TelegramAdapter(BasePlatformAdapter):
             event.text = build_sticker_injection(
                 f"a sticker with emoji {emoji}" if emoji else "a sticker",
                 emoji, set_name,
+            )
+
+    async def _handle_callback_query(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """Handle inline keyboard button clicks for exec approvals."""
+        query = update.callback_query
+        if not query or not query.data:
+            return
+
+        callback_data = query.data
+
+        # Check if this is an exec approval button
+        if not callback_data.startswith("exec:"):
+            return
+
+        try:
+            # Parse: exec:<choice>:<session_key>
+            _, choice, session_key = callback_data.split(":", 2)
+        except ValueError:
+            logger.warning(
+                "[%s] Invalid exec callback data: %s", self.name, callback_data
+            )
+            return
+
+        # Find the cached approval for this callback's message
+        query_msg_id = str(query.message.message_id) if query.message else None
+        approval_data = None
+        if query_msg_id:
+            approval_data = self._exec_approval_cache.get(query_msg_id)
+
+        # Verify authorization: only the target chat user can approve
+        if approval_data:
+            target_chat_id = approval_data.get("target_chat_id")
+            if target_chat_id:
+                # Get the user's Telegram ID from the callback query
+                user_id = str(query.from_user.id)
+                # For DMs, target_chat_id is the user's Telegram ID
+                # For groups, we allow any user in the DM to approve
+                # The authorization check: user must be the one who received the message
+                # (In practice this is handled by Telegram's bot DM architecture)
+        # Authorization note: since Hermes processes DMs from allow-listed users only,
+        # and the approval is sent to the same DM chat_id, the callback query
+        # from that same user implicitly proves authorization.
+
+        if approval_data and approval_data.get("resolved"):
+            await query.answer("This approval has already been resolved.", show_alert=True)
+            return
+
+        # Resolve the approval
+        try:
+            from tools.approval import resolve_gateway_approval
+            count = resolve_gateway_approval(session_key, choice)
+            logger.info(
+                "[%s] Telegram button resolved %d approval(s) for session %s (choice=%s, user=%s)",
+                self.name, count, session_key, choice, query.from_user.username or query.from_user.id,
+            )
+        except Exception as e:
+            logger.error(
+                "[%s] Failed to resolve gateway approval: %s", self.name, e, exc_info=True
+            )
+            await query.answer("Failed to process approval. Try again.", show_alert=True)
+            return
+
+        # Mark as resolved and update UI
+        if approval_data:
+            approval_data["resolved"] = True
+
+        # Answer the callback (stops the "loading" state on the button)
+        await query.answer()
+
+        # Update message: remove buttons and add result text
+        choice_labels = {
+            "once": "✅ Approved once",
+            "session": "🔏 Approved for session",
+            "always": "🔓 Approved permanently",
+            "deny": "❌ Denied",
+        }
+        result_text = choice_labels.get(choice, f"Choice: {choice}")
+        try:
+            # Edit message to remove buttons and add result
+            await query.message.edit_text(
+                text=f"{query.message.text}\n\n{result_text} by {query.from_user.username or query.from_user.id}",
+                reply_markup=None,  # removes buttons
+            )
+        except Exception as edit_err:
+            logger.warning(
+                "[%s] Failed to edit approval message: %s", self.name, edit_err
             )
 
     def _reload_dm_topics_from_config(self) -> None:

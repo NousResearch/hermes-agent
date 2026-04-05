@@ -31,6 +31,8 @@ logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
+_DOCS_BASE = "https://hermes-agent.nousresearch.com/docs"
+
 
 def _model_config_dict(config: Dict[str, Any]) -> Dict[str, Any]:
     current_model = config.get("model")
@@ -900,6 +902,7 @@ def setup_model_provider(config: dict):
 
     print_header("Inference Provider")
     print_info("Choose how to connect to your main chat model.")
+    print_info(f"   Guide: {_DOCS_BASE}/integrations/providers")
     print()
 
     # Delegate to the shared hermes model flow — handles provider picker,
@@ -1311,6 +1314,7 @@ def setup_terminal_backend(config: dict):
     print_header("Terminal Backend")
     print_info("Choose where Hermes runs shell commands and code.")
     print_info("This affects tool execution, file access, and isolation.")
+    print_info(f"   Guide: {_DOCS_BASE}/developer-guide/environments")
     print()
 
     current_backend = config.get("terminal", {}).get("backend", "local")
@@ -1652,6 +1656,8 @@ def setup_agent_settings(config: dict):
 
     # ── Max Iterations ──
     print_header("Agent Settings")
+    print_info(f"   Guide: {_DOCS_BASE}/user-guide/configuration")
+    print()
 
     current_max = get_env_value("HERMES_MAX_ITERATIONS") or str(
         config.get("agent", {}).get("max_turns", 90)
@@ -1819,6 +1825,7 @@ def setup_gateway(config: dict):
     """Configure messaging platform integrations."""
     print_header("Messaging Platforms")
     print_info("Connect to messaging platforms to chat with Hermes from anywhere.")
+    print_info(f"   All platforms: {_DOCS_BASE}/user-guide/messaging")
     print()
 
     # ── Telegram ──
@@ -1830,6 +1837,8 @@ def setup_gateway(config: dict):
 
     if not existing_telegram and prompt_yes_no("Set up Telegram bot?", False):
         print_info("Create a bot via @BotFather on Telegram")
+        print_info(f"   Full guide: {_DOCS_BASE}/user-guide/messaging/telegram")
+        print()
         token = prompt("Telegram bot token", password=True)
         if token:
             save_env_value("TELEGRAM_BOT_TOKEN", token)
@@ -1914,6 +1923,8 @@ def setup_gateway(config: dict):
 
     if not existing_discord and prompt_yes_no("Set up Discord bot?", False):
         print_info("Create a bot at https://discord.com/developers/applications")
+        print_info(f"   Full guide: {_DOCS_BASE}/user-guide/messaging/discord")
+        print()
         token = prompt("Discord bot token", password=True)
         if token:
             save_env_value("DISCORD_BOT_TOKEN", token)
@@ -2034,7 +2045,7 @@ def setup_gateway(config: dict):
         )
         print()
         print_info(
-            "   Full guide: https://hermes-agent.nousresearch.com/docs/user-guide/messaging/slack/"
+            f"   Full guide: {_DOCS_BASE}/user-guide/messaging/slack"
         )
         print()
         bot_token = prompt("Slack Bot Token (xoxb-...)", password=True)
@@ -2085,6 +2096,7 @@ def setup_gateway(config: dict):
         print_info("Works with any Matrix homeserver (Synapse, Conduit, Dendrite, or matrix.org).")
         print_info("   1. Create a bot user on your homeserver, or use your own account")
         print_info("   2. Get an access token from Element, or provide user ID + password")
+        print_info(f"   Full guide: {_DOCS_BASE}/user-guide/messaging/matrix")
         print()
         homeserver = prompt("Homeserver URL (e.g. https://matrix.example.org)")
         if homeserver:
@@ -2189,6 +2201,7 @@ def setup_gateway(config: dict):
         print_info("Works with any self-hosted Mattermost instance.")
         print_info("   1. In Mattermost: Integrations → Bot Accounts → Add Bot Account")
         print_info("   2. Copy the bot token")
+        print_info(f"   Full guide: {_DOCS_BASE}/user-guide/messaging/mattermost")
         print()
         mm_url = prompt("Mattermost server URL (e.g. https://mm.example.com)")
         if mm_url:
@@ -2238,6 +2251,7 @@ def setup_gateway(config: dict):
     if not existing_whatsapp and prompt_yes_no("Set up WhatsApp?", False):
         print_info("WhatsApp connects via a built-in bridge (Baileys).")
         print_info("Requires Node.js. Run 'hermes whatsapp' for guided setup.")
+        print_info(f"   Full guide: {_DOCS_BASE}/user-guide/messaging/whatsapp")
         print()
         if prompt_yes_no("Enable WhatsApp now?", True):
             save_env_value("WHATSAPP_ENABLED", "true")
@@ -2265,7 +2279,7 @@ def setup_gateway(config: dict):
         )
         print()
         print_info(
-            "   Full guide: https://hermes-agent.nousresearch.com/docs/user-guide/messaging/webhooks/"
+            f"   Full guide: {_DOCS_BASE}/user-guide/messaging/webhooks"
         )
         print()
 
@@ -2296,7 +2310,7 @@ def setup_gateway(config: dict):
             "   Route configuration guide:"
         )
         print_info(
-            "   https://hermes-agent.nousresearch.com/docs/user-guide/messaging/webhooks/#configuring-routes"
+            f"   {_DOCS_BASE}/user-guide/messaging/webhooks#configuring-routes"
         )
         print()
         print_info("   Open config in your editor:  hermes config edit")

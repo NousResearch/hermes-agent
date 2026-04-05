@@ -1923,4 +1923,33 @@ async def async_call_llm(
             kwargs.pop("max_tokens", None)
             kwargs["max_completion_tokens"] = max_tokens
             return await client.chat.completions.create(**kwargs)
+
+        # Vision-specific auth fallback: if the resolved provider 401s (e.g.
+        # stale Codex session), try the next available vision backend instead
+        # of failing immediately.
+        if task == "vision" and any(
+            hint in err_str for hint in ("401", "User not found", "unauthorized", "Unauthorized")
+        ):
+            logger.warning(
+                "Vision provider %s returned auth error, trying fallback: %s",
+                resolved_provider, str(first_err)[:100],
+            )
+            for fallback in _VISION_AUTO_PROVIDER_ORDER:
+                if fallback == resolved_provider:
+                    continue
+                fb_client, fb_model = _resolve_strict_vision_backend(fallback)
+                if fb_client is None:
+                    continue
+                fb_client, fb_model = _to_async_client(fb_client, fb_model)
+                fb_kwargs = _build_call_kwargs(
+                    fallback, fb_model, messages,
+                    temperature=temperature, max_tokens=max_tokens,
+                    tools=tools, timeout=effective_timeout, extra_body=extra_body,
+                    base_url=None)
+                try:
+                    logger.info("Vision fallback to %s (%s)", fallback, fb_model)
+                    return await fb_client.chat.completions.create(**fb_kwargs)
+                except Exception as fb_err:
+                    logger.debug("Vision fallback %s also failed: %s", fallback, fb_err)
+                    continue
         raise

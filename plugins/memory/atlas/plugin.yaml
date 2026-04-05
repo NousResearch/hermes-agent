@@ -1,0 +1,5 @@
+name: atlas
+version: 0.1.0
+description: "Atlas memory provider — continuity-first personal memory backed by Supabase."
+hooks:
+  - on_session_end

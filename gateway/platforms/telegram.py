@@ -1277,7 +1277,14 @@ class TelegramAdapter(BasePlatformAdapter):
                 "session_key": session_key,
                 "target_chat_id": target_id,
                 "resolved": False,
+                "_original_text": text,
             }
+
+            # Schedule 5-minute expiry
+            timeout_task = asyncio.create_task(
+                self._expire_exec_approval(str(msg.message_id), session_key)
+            )
+            self._exec_approval_cache[str(msg.message_id)]["_timeout_task"] = timeout_task
 
             return SendResult(success=True, message_id=str(msg.message_id))
 
@@ -2065,6 +2072,31 @@ class TelegramAdapter(BasePlatformAdapter):
                 emoji, set_name,
             )
 
+    async def _expire_exec_approval(self, msg_id: str, session_key: str) -> None:
+        """Mark an approval as expired after the 5-minute timeout."""
+        try:
+            await asyncio.sleep(300)  # 5 minutes
+        except asyncio.CancelledError:
+            return  # was resolved before timeout — normal
+
+        approval = self._exec_approval_cache.get(msg_id)
+        if not approval or approval.get("resolved"):
+            return  # already resolved or evicted
+
+        approval["resolved"] = True
+        try:
+            await self._bot.edit_message_text(
+                chat_id=int(approval["target_chat_id"]),
+                message_id=int(msg_id),
+                text=(
+                    f"{approval.get('_original_text', 'Approval request')}\n\n"
+                    "⏰ Expired — command was not approved."
+                ),
+                reply_markup=None,
+            )
+        except Exception:
+            pass  # message may have been deleted
+
     async def _handle_callback_query(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> None:
@@ -2097,16 +2129,21 @@ class TelegramAdapter(BasePlatformAdapter):
         # Verify authorization: only the target chat user can approve
         if approval_data:
             target_chat_id = approval_data.get("target_chat_id")
-            if target_chat_id:
-                # Get the user's Telegram ID from the callback query
-                user_id = str(query.from_user.id)
-                # For DMs, target_chat_id is the user's Telegram ID
-                # For groups, we allow any user in the DM to approve
-                # The authorization check: user must be the one who received the message
-                # (In practice this is handled by Telegram's bot DM architecture)
-        # Authorization note: since Hermes processes DMs from allow-listed users only,
-        # and the approval is sent to the same DM chat_id, the callback query
-        # from that same user implicitly proves authorization.
+            user_id = str(query.from_user.id)
+            if target_chat_id and str(target_chat_id) != user_id:
+                await query.answer(
+                    "You cannot approve commands sent to another user.",
+                    show_alert=True,
+                )
+                return
+
+        # Deny callbacks with no cache entry (e.g. after bot restart)
+        if not approval_data:
+            await query.answer(
+                "Approval session expired. The bot may have restarted.",
+                show_alert=True,
+            )
+            return
 
         if approval_data and approval_data.get("resolved"):
             await query.answer("This approval has already been resolved.", show_alert=True)
@@ -2127,9 +2164,13 @@ class TelegramAdapter(BasePlatformAdapter):
             await query.answer("Failed to process approval. Try again.", show_alert=True)
             return
 
-        # Mark as resolved and update UI
+        # Mark as resolved, cancel timeout task, and remove from cache
         if approval_data:
             approval_data["resolved"] = True
+            timeout_task = approval_data.get("_timeout_task")
+            if timeout_task and not timeout_task.done():
+                timeout_task.cancel()
+            del self._exec_approval_cache[query_msg_id]
 
         # Answer the callback (stops the "loading" state on the button)
         await query.answer()

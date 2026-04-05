@@ -1537,6 +1537,39 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertEqual(event.reply_to_text, "父消息内容")
 
     @patch.dict(os.environ, {}, clear=True)
+    def test_duplicate_card_action_logs_masked_token(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        token = "tok_super_secret_123456789"
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter.get_chat_info = AsyncMock(
+            return_value={"chat_id": "oc_chat", "name": "Feishu DM", "type": "dm"}
+        )
+        adapter._resolve_sender_profile = AsyncMock(
+            return_value={"user_id": "ou_user", "user_name": "User", "user_id_alt": None}
+        )
+        adapter._handle_message_with_guards = AsyncMock()
+        data = SimpleNamespace(
+            event=SimpleNamespace(
+                token=token,
+                context=SimpleNamespace(open_chat_id="oc_chat"),
+                operator=SimpleNamespace(open_id="ou_user"),
+                action=SimpleNamespace(tag="button", value={}),
+            )
+        )
+
+        with self.assertLogs("gateway.platforms.feishu", level="DEBUG") as logs:
+            asyncio.run(adapter._handle_card_action_event(data))
+            asyncio.run(adapter._handle_card_action_event(data))
+
+        self.assertTrue(
+            any("Dropping duplicate card action token: ***6789" in entry for entry in logs.output),
+            logs.output,
+        )
+        self.assertFalse(any(token in entry for entry in logs.output), logs.output)
+
+    @patch.dict(os.environ, {}, clear=True)
     def test_send_replies_in_thread_when_thread_metadata_present(self):
         from gateway.config import PlatformConfig
         from gateway.platforms.feishu import FeishuAdapter

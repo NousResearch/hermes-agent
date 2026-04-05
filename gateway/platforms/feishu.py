@@ -222,6 +222,15 @@ _SKIP_TEXT_KEYS = {
 }
 
 
+def _mask_secret_for_log(secret: str, keep_suffix: int = 4) -> str:
+    """Return a log-safe representation of a secret value."""
+    if not secret:
+        return "<redacted>"
+    if len(secret) <= keep_suffix:
+        return "<redacted>"
+    return f"***{secret[-keep_suffix:]}"
+
+
 @dataclass(frozen=True)
 class FeishuPostMediaRef:
     file_key: str
@@ -1656,7 +1665,10 @@ class FeishuAdapter(BasePlatformAdapter):
         event = getattr(data, "event", None)
         token = str(getattr(event, "token", "") or "")
         if token and self._is_card_action_duplicate(token):
-            logger.debug("[Feishu] Dropping duplicate card action token: %s", token)
+            logger.debug(
+                "[Feishu] Dropping duplicate card action token: %s",
+                _mask_secret_for_log(token),
+            )
             return
 
         context = getattr(event, "context", None)

@@ -1932,6 +1932,37 @@ class DiscordAdapter(BasePlatformAdapter):
         except Exception as e:
             return SendResult(success=False, error=str(e))
 
+    async def send_update_prompt(
+        self, chat_id: str, prompt: str, default: str = "",
+        session_key: str = "",
+    ) -> SendResult:
+        """Send an interactive button-based update prompt (Yes / No).
+
+        Used by the gateway ``/update`` watcher when ``hermes update --gateway``
+        needs user input (stash restore, config migration).
+        """
+        if not self._client or not DISCORD_AVAILABLE:
+            return SendResult(success=False, error="Not connected")
+        try:
+            channel = self._client.get_channel(int(chat_id))
+            if not channel:
+                channel = await self._client.fetch_channel(int(chat_id))
+
+            default_hint = f" (default: {default})" if default else ""
+            embed = discord.Embed(
+                title="⚕ Update Needs Your Input",
+                description=f"{prompt}{default_hint}",
+                color=discord.Color.gold(),
+            )
+            view = UpdatePromptView(
+                session_key=session_key,
+                allowed_user_ids=self._allowed_user_ids,
+            )
+            msg = await channel.send(embed=embed, view=view)
+            return SendResult(success=True, message_id=str(msg.id))
+        except Exception as e:
+            return SendResult(success=False, error=str(e))
+
     def _get_parent_channel_id(self, channel: Any) -> Optional[str]:
         """Return the parent channel ID for a Discord thread-like channel, if present."""
         parent = getattr(channel, "parent", None)
@@ -2341,6 +2372,85 @@ if DISCORD_AVAILABLE:
 
         async def on_timeout(self):
             """Handle view timeout -- disable buttons and mark as expired."""
+            self.resolved = True
+            for child in self.children:
+                child.disabled = True
+
+    class UpdatePromptView(discord.ui.View):
+        """Interactive Yes/No buttons for ``hermes update`` prompts.
+
+        Clicking a button writes the answer to ``.update_response`` so the
+        detached update process can pick it up.  Only authorized users can
+        click.  Times out after 5 minutes (the update process also has a
+        5-minute timeout on its side).
+        """
+
+        def __init__(self, session_key: str, allowed_user_ids: set):
+            super().__init__(timeout=300)
+            self.session_key = session_key
+            self.allowed_user_ids = allowed_user_ids
+            self.resolved = False
+
+        def _check_auth(self, interaction: discord.Interaction) -> bool:
+            if not self.allowed_user_ids:
+                return True
+            return str(interaction.user.id) in self.allowed_user_ids
+
+        async def _respond(
+            self, interaction: discord.Interaction, answer: str,
+            color: discord.Color, label: str,
+        ):
+            if self.resolved:
+                await interaction.response.send_message(
+                    "Already answered~", ephemeral=True
+                )
+                return
+            if not self._check_auth(interaction):
+                await interaction.response.send_message(
+                    "You're not authorized~", ephemeral=True
+                )
+                return
+
+            self.resolved = True
+
+            # Update embed
+            embed = interaction.message.embeds[0] if interaction.message.embeds else None
+            if embed:
+                embed.color = color
+                embed.set_footer(text=f"{label} by {interaction.user.display_name}")
+
+            for child in self.children:
+                child.disabled = True
+            await interaction.response.edit_message(embed=embed, view=self)
+
+            # Write response file
+            try:
+                from hermes_constants import get_hermes_home
+                home = get_hermes_home()
+                response_path = home / ".update_response"
+                tmp = response_path.with_suffix(".tmp")
+                tmp.write_text(answer)
+                tmp.replace(response_path)
+                logger.info(
+                    "Discord update prompt answered '%s' by %s",
+                    answer, interaction.user.display_name,
+                )
+            except Exception as exc:
+                logger.error("Failed to write update response: %s", exc)
+
+        @discord.ui.button(label="Yes", style=discord.ButtonStyle.green, emoji="✓")
+        async def yes_btn(
+            self, interaction: discord.Interaction, button: discord.ui.Button
+        ):
+            await self._respond(interaction, "y", discord.Color.green(), "Yes")
+
+        @discord.ui.button(label="No", style=discord.ButtonStyle.red, emoji="✗")
+        async def no_btn(
+            self, interaction: discord.Interaction, button: discord.ui.Button
+        ):
+            await self._respond(interaction, "n", discord.Color.red(), "No")
+
+        async def on_timeout(self):
             self.resolved = True
             for child in self.children:
                 child.disabled = True

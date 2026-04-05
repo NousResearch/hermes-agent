@@ -17,10 +17,11 @@ from typing import Dict, List, Optional, Any
 logger = logging.getLogger(__name__)
 
 try:
-    from telegram import Update, Bot, Message
+    from telegram import Update, Bot, Message, InlineKeyboardButton, InlineKeyboardMarkup
     from telegram.ext import (
         Application,
         CommandHandler,
+        CallbackQueryHandler,
         MessageHandler as TelegramMessageHandler,
         ContextTypes,
         filters,
@@ -33,8 +34,11 @@ except ImportError:
     Update = Any
     Bot = Any
     Message = Any
+    InlineKeyboardButton = Any
+    InlineKeyboardMarkup = Any
     Application = Any
     CommandHandler = Any
+    CallbackQueryHandler = Any
     TelegramMessageHandler = Any
     HTTPXRequest = Any
     filters = None
@@ -543,6 +547,8 @@ class TelegramAdapter(BasePlatformAdapter):
                 filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.Document.ALL | filters.Sticker.ALL,
                 self._handle_media_message
             ))
+            # Handle inline keyboard button callbacks (update prompts)
+            self._app.add_handler(CallbackQueryHandler(self._handle_callback_query))
             
             # Start polling — retry initialize() for transient TLS resets
             try:
@@ -949,6 +955,72 @@ class TelegramAdapter(BasePlatformAdapter):
                 exc_info=True,
             )
             return SendResult(success=False, error=str(e))
+
+    async def send_update_prompt(
+        self, chat_id: str, prompt: str, default: str = "",
+        session_key: str = "",
+    ) -> SendResult:
+        """Send an inline-keyboard update prompt (Yes / No buttons).
+
+        Used by the gateway ``/update`` watcher when ``hermes update --gateway``
+        needs user input (stash restore, config migration).
+        """
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+        try:
+            default_hint = f" (default: {default})" if default else ""
+            text = f"⚕ *Update needs your input:*\n\n{prompt}{default_hint}"
+            keyboard = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("✓ Yes", callback_data="update_prompt:y"),
+                    InlineKeyboardButton("✗ No", callback_data="update_prompt:n"),
+                ]
+            ])
+            msg = await self._bot.send_message(
+                chat_id=int(chat_id),
+                text=text,
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=keyboard,
+            )
+            return SendResult(success=True, message_id=str(msg.message_id))
+        except Exception as e:
+            logger.warning("[%s] send_update_prompt failed: %s", self.name, e)
+            return SendResult(success=False, error=str(e))
+
+    async def _handle_callback_query(
+        self, update: "Update", context: "ContextTypes.DEFAULT_TYPE"
+    ) -> None:
+        """Handle inline keyboard button clicks (update prompts)."""
+        query = update.callback_query
+        if not query or not query.data:
+            return
+        data = query.data
+        if not data.startswith("update_prompt:"):
+            return
+        answer = data.split(":", 1)[1]  # "y" or "n"
+        await query.answer(text=f"Sent '{answer}' to the update process.")
+        # Edit the message to show the choice and remove buttons
+        label = "Yes" if answer == "y" else "No"
+        try:
+            await query.edit_message_text(
+                text=f"⚕ Update prompt answered: *{label}*",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=None,
+            )
+        except Exception:
+            pass  # non-fatal if edit fails
+        # Write the response file
+        try:
+            from hermes_constants import get_hermes_home
+            home = get_hermes_home()
+            response_path = home / ".update_response"
+            tmp = response_path.with_suffix(".tmp")
+            tmp.write_text(answer)
+            tmp.replace(response_path)
+            logger.info("Telegram update prompt answered '%s' by user %s",
+                        answer, getattr(query.from_user, "id", "unknown"))
+        except Exception as exc:
+            logger.error("Failed to write update response from callback: %s", exc)
 
     async def send_voice(
         self,

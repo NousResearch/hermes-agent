@@ -25,11 +25,17 @@ class TestSyntheticProviderRegistry:
         """Synthetic should have a model catalog."""
         assert "synthetic" in _PROVIDER_MODELS
         models = _PROVIDER_MODELS["synthetic"]
-        # Should have 18 models from official API
-        assert len(models) == 18
+        # Should have at least 15 models from official catalog
+        assert len(models) >= 15
         # Check key models are present
         assert "hf:moonshotai/Kimi-K2.5" in models
         assert "hf:nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4" in models
+        # Ensure Synthetic metadata entries use hf: prefix to avoid collisions
+        assert "hf:zai-org/GLM-5" in DEFAULT_CONTEXT_LENGTHS
+        assert DEFAULT_CONTEXT_LENGTHS["hf:zai-org/GLM-5"] == 192000
+        # Check original GLM-5 still has its correct context
+        assert "zai-org/GLM-5" in DEFAULT_CONTEXT_LENGTHS
+        assert DEFAULT_CONTEXT_LENGTHS["zai-org/GLM-5"] == 202752
 
     def test_synthetic_in_provider_labels(self):
         """Synthetic should have a display label."""

@@ -1,7 +1,51 @@
 import pytest
+import uuid
 from unittest.mock import MagicMock, patch
 from datetime import datetime, timezone, timedelta
+from types import SimpleNamespace
 from run_agent import AIAgent
+
+def _mock_assistant_msg(
+    content="Hello",
+    tool_calls=None,
+    reasoning=None,
+    reasoning_content=None,
+    reasoning_details=None,
+):
+    """Return a SimpleNamespace mimicking an OpenAI ChatCompletionMessage."""
+    msg = SimpleNamespace(content=content, tool_calls=tool_calls)
+    if reasoning is not None:
+        msg.reasoning = reasoning
+    if reasoning_content is not None:
+        msg.reasoning_content = reasoning_content
+    if reasoning_details is not None:
+        msg.reasoning_details = reasoning_details
+    return msg
+
+def _mock_response(
+    content="Hello",
+    finish_reason="stop",
+    tool_calls=None,
+    reasoning=None,
+    reasoning_content=None,
+    reasoning_details=None,
+    usage=None,
+):
+    """Return a SimpleNamespace mimicking an OpenAI ChatCompletion response."""
+    msg = _mock_assistant_msg(
+        content=content,
+        tool_calls=tool_calls,
+        reasoning=reasoning,
+        reasoning_content=reasoning_content,
+        reasoning_details=reasoning_details,
+    )
+    choice = SimpleNamespace(message=msg, finish_reason=finish_reason)
+    resp = SimpleNamespace(choices=[choice], model="test/model")
+    if usage:
+        resp.usage = SimpleNamespace(**usage)
+    else:
+        resp.usage = None
+    return resp
 
 @pytest.fixture
 def synthetic_agent():
@@ -81,17 +125,14 @@ def test_synthetic_429_backoff_calculation(synthetic_agent):
          patch("time.sleep", side_effect=mt.sleep) as mock_sleep, \
          patch("run_agent.IterationBudget.consume", return_value=True):
         
-        mock_response = MagicMock()
-        mock_response.choices = [MagicMock()]
-        mock_response.choices[0].message.content = "Success"
-        mock_response.choices[0].finish_reason = "stop"
+        # Use properly structured mock response
+        mock_resp = _mock_response(content="Success")
         
         # First call fails with 429, second succeeds
-        synthetic_agent.client.chat.completions.create.side_effect = [MockAPIError(), mock_response]
+        synthetic_agent.client.chat.completions.create.side_effect = [MockAPIError(), mock_resp]
         
         synthetic_agent.run_conversation("test")
         
         # Renewal was 10s out, so wait_time should be 12s (10 + 2 buffer)
-        # Verify that we slept a total of approximately 12 seconds
         total_slept = sum(args[0] for args, kwargs in mock_sleep.call_args_list)
         assert 11 <= total_slept <= 13

@@ -117,6 +117,19 @@ export function App({ gw }: { gw: GatewayClient }) {
     }
   }, [messages.length])
 
+  useEffect(() => {
+    if (!sid || !stdout) {
+      return
+    }
+
+    const onResize = () => rpc('terminal.resize', { session_id: sid, cols: stdout.columns ?? 80 })
+    stdout.on('resize', onResize)
+
+    return () => {
+      stdout.off('resize', onResize)
+    }
+  }, [sid, stdout]) // eslint-disable-line react-hooks/exhaustive-deps
+
   const msgBudget = Math.max(3, rows - 2 - (empty ? 0 : 2) - (thinking ? 2 : 0) - 2)
 
   const viewport = useMemo(() => {
@@ -144,6 +157,10 @@ export function App({ gw }: { gw: GatewayClient }) {
       start = end - 1
     }
 
+    if (start > 0 && messages[start - 1]?.role === 'user') {
+      start--
+    }
+
     return { above: start, end, start }
   }, [cols, messages, msgBudget, scrollOffset])
 
@@ -155,7 +172,7 @@ export function App({ gw }: { gw: GatewayClient }) {
     })
 
   const newSession = (msg?: string) =>
-    rpc('session.create').then((r: any) => {
+    rpc('session.create', { cols }).then((r: any) => {
       if (!r) {
         return
       }
@@ -534,7 +551,7 @@ export function App({ gw }: { gw: GatewayClient }) {
             break
           }
 
-          buf.current += p.text
+          buf.current += p.rendered ?? p.text
           setThinking(false)
           setTools([])
           setReasoning('')
@@ -543,7 +560,7 @@ export function App({ gw }: { gw: GatewayClient }) {
           break
         case 'message.complete': {
           idle()
-          setMessages(prev => upsert(prev, 'assistant', (p?.text ?? buf.current).trimStart()))
+          setMessages(prev => upsert(prev, 'assistant', (p?.rendered ?? p?.text ?? buf.current).trimStart()))
           buf.current = ''
           setStatus('ready')
 
@@ -1050,7 +1067,9 @@ export function App({ gw }: { gw: GatewayClient }) {
                 return
               }
 
-              rpc('rollback.diff', { session_id: sid, hash }).then((d: any) => sys(d.stat || d.diff || 'no changes'))
+              rpc('rollback.diff', { session_id: sid, hash }).then((d: any) =>
+                sys(d.rendered || d.stat || d.diff || 'no changes')
+              )
             })
 
             return true
@@ -1239,6 +1258,7 @@ export function App({ gw }: { gw: GatewayClient }) {
               if (r.blocked) {
                 return sys(r.hint ?? 'blocked')
               }
+
               sys(r.output ?? '(no output)')
 
               if (r.code !== 0) {
@@ -1548,7 +1568,7 @@ export function App({ gw }: { gw: GatewayClient }) {
             onSelect={id => {
               setPicker(false)
               setStatus('resuming…')
-              gw.request('session.resume', { session_id: id })
+              gw.request('session.resume', { session_id: id, cols })
                 .then((r: any) => {
                   setSid(r.session_id)
                   setMessages([])

@@ -1,7 +1,7 @@
 import { Box, Text } from 'ink'
 
 import { LONG_MSG, ROLE } from '../constants.js'
-import { userDisplay } from '../lib/text.js'
+import { hasAnsi, userDisplay } from '../lib/text.js'
 import type { Theme } from '../theme.js'
 import type { Msg } from '../types.js'
 
@@ -12,6 +12,10 @@ export function MessageLine({ compact, msg, t }: { compact?: boolean; msg: Msg; 
 
   const content = (() => {
     if (msg.role === 'assistant') {
+      if (hasAnsi(msg.text)) {
+        return <Text>{msg.text}</Text>
+      }
+
       return <Md compact={compact} t={t} text={msg.text} />
     }
 

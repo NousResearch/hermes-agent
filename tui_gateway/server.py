@@ -12,6 +12,8 @@ from hermes_cli.env_loader import load_hermes_dotenv
 _hermes_home = get_hermes_home()
 load_hermes_dotenv(hermes_home=_hermes_home, project_env=Path(__file__).parent.parent / ".env")
 
+from tui_gateway.render import make_stream_renderer, render_diff, render_message
+
 _sessions: dict[str, dict] = {}
 _methods: dict[str, callable] = {}
 _pending: dict[str, threading.Event] = {}
@@ -194,13 +196,14 @@ def _make_agent(sid: str, key: str, session_id: str | None = None):
     )
 
 
-def _init_session(sid: str, key: str, agent, history: list):
+def _init_session(sid: str, key: str, agent, history: list, cols: int = 80):
     _sessions[sid] = {
         "agent": agent,
         "session_key": key,
         "history": history,
         "attached_images": [],
         "image_counter": 0,
+        "cols": cols,
     }
     try:
         from tools.approval import register_gateway_notify, load_permanent_allowlist
@@ -259,7 +262,7 @@ def _(rid, params: dict) -> dict:
     try:
         agent = _make_agent(sid, key)
         _get_db().create_session(key, source="tui", model=_resolve_model())
-        _init_session(sid, key, agent, [])
+        _init_session(sid, key, agent, [], cols=int(params.get("cols", 80)))
     except Exception as e:
         return _err(rid, 5000, f"agent init failed: {e}")
     return _ok(rid, {"session_id": sid})
@@ -300,7 +303,7 @@ def _(rid, params: dict) -> dict:
                    for m in db.get_messages(target)
                    if m.get("role") in ("user", "assistant", "tool", "system")]
         agent = _make_agent(sid, target, session_id=target)
-        _init_session(sid, target, agent, history)
+        _init_session(sid, target, agent, history, cols=int(params.get("cols", 80)))
     except Exception as e:
         return _err(rid, 5000, f"resume failed: {e}")
     return _ok(rid, {"session_id": sid, "resumed": target, "message_count": len(history)})
@@ -392,6 +395,15 @@ def _(rid, params: dict) -> dict:
     return _ok(rid, {"status": "interrupted"})
 
 
+@method("terminal.resize")
+def _(rid, params: dict) -> dict:
+    session, err = _sess(params, rid)
+    if err:
+        return err
+    session["cols"] = int(params.get("cols", 80))
+    return _ok(rid, {"cols": session["cols"]})
+
+
 # ── Methods: prompt ──────────────────────────────────────────────────
 
 @method("prompt.submit")
@@ -405,19 +417,36 @@ def _(rid, params: dict) -> dict:
 
     def run():
         try:
+            cols = session.get("cols", 80)
+            streamer = make_stream_renderer(cols)
             images = session.pop("attached_images", [])
             prompt = _enrich_with_attached_images(text, images) if images else text
+
+            def _stream(delta):
+                payload = {"text": delta}
+                if streamer and (r := streamer.feed(delta)) is not None:
+                    payload["rendered"] = r
+                _emit("message.delta", sid, payload)
+
             result = agent.run_conversation(
                 prompt, conversation_history=list(history),
-                stream_callback=lambda delta: _emit("message.delta", sid, {"text": delta}),
+                stream_callback=_stream,
             )
+
             if isinstance(result, dict):
                 if isinstance(result.get("messages"), list):
                     session["history"] = result["messages"]
+                raw = result.get("final_response", "")
                 status = "interrupted" if result.get("interrupted") else "error" if result.get("error") else "complete"
-                _emit("message.complete", sid, {"text": result.get("final_response", ""), "usage": _get_usage(agent), "status": status})
             else:
-                _emit("message.complete", sid, {"text": str(result), "usage": _get_usage(agent), "status": "complete"})
+                raw = str(result)
+                status = "complete"
+
+            payload = {"text": raw, "usage": _get_usage(agent), "status": status}
+            rendered = render_message(raw, cols)
+            if rendered:
+                payload["rendered"] = rendered
+            _emit("message.complete", sid, payload)
         except Exception as e:
             _emit("error", sid, {"message": str(e)})
 
@@ -868,7 +897,12 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 4014, "hash required")
     try:
         r = _with_checkpoints(session, lambda mgr, cwd: mgr.diff(cwd, target))
-        return _ok(rid, {"stat": r.get("stat", ""), "diff": r.get("diff", "")[:4000]})
+        raw = r.get("diff", "")[:4000]
+        payload = {"stat": r.get("stat", ""), "diff": raw}
+        rendered = render_diff(raw, session.get("cols", 80))
+        if rendered:
+            payload["rendered"] = rendered
+        return _ok(rid, payload)
     except Exception as e:
         return _err(rid, 5022, str(e))
 

@@ -1,5 +1,12 @@
 import { INTERPOLATION_RE, LONG_MSG } from '../constants.js'
 
+// eslint-disable-next-line no-control-regex
+const ANSI_RE = /\x1b\[[0-9;]*m/g
+
+export const stripAnsi = (s: string) => s.replace(ANSI_RE, '')
+
+export const hasAnsi = (s: string) => s.includes('\x1b[')
+
 export const compactPreview = (s: string, max: number) => {
   const one = s.replace(/\s+/g, ' ').trim()
 
@@ -7,7 +14,7 @@ export const compactPreview = (s: string, max: number) => {
 }
 
 export const estimateRows = (text: string, w: number) =>
-  text.split('\n').reduce((s, l) => s + Math.max(1, Math.ceil(Math.max(1, l.length) / w)), 0)
+  text.split('\n').reduce((sum, line) => sum + Math.ceil((stripAnsi(line).length || 1) / w), 0)
 
 export const flat = (r: Record<string, string[]>) => Object.values(r).flat()
 

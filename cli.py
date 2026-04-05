@@ -7618,30 +7618,27 @@ class HermesCLI:
                 self._approval_state["selected"] = min(max_idx, self._approval_state["selected"] + 1)
                 event.app.invalidate()
 
-        # --- Up/Down arrow behaviour in normal input mode ---
-        # display.arrow_keys_move_cursor: true  → pure cursor movement (like CC / Pi)
-        # display.arrow_keys_move_cursor: false → auto_up/auto_down (history on
-        #                                          first/last line, default legacy behaviour)
-        _arrow_cursor_only = bool(
-            CLI_CONFIG.get("display", {}).get("arrow_keys_move_cursor", True)
-        )
+        # --- Up/Down arrow behaviour (matches CC / Pi) ---
+        # In multiline input: move cursor line by line preserving column.
+        # At the very first line: go to previous history entry.
+        # At the very last line: go to next history entry.
+        # This is auto_up/auto_down — but we call cursor_up/cursor_down first
+        # so prompt_toolkit tracks the preferred column correctly, then fall
+        # back to history only when already on the boundary line.
         _normal_input = Condition(
-            lambda: not self._clarify_state and not self._approval_state and not self._sudo_state and not self._secret_state
+            lambda: not self._clarify_state and not self._approval_state
+            and not self._sudo_state and not self._secret_state
         )
 
         @kb.add('up', filter=_normal_input)
         def history_up(event):
-            if _arrow_cursor_only:
-                event.app.current_buffer.cursor_up(count=event.arg)
-            else:
-                event.app.current_buffer.auto_up(count=event.arg)
+            """Up: cursor up in multiline, history backward on first line."""
+            event.app.current_buffer.auto_up(count=event.arg)
 
         @kb.add('down', filter=_normal_input)
         def history_down(event):
-            if _arrow_cursor_only:
-                event.app.current_buffer.cursor_down(count=event.arg)
-            else:
-                event.app.current_buffer.auto_down(count=event.arg)
+            """Down: cursor down in multiline, history forward on last line."""
+            event.app.current_buffer.auto_down(count=event.arg)
 
         @kb.add('c-c')
         def handle_ctrl_c(event):

@@ -197,6 +197,22 @@ def _cmd_migrate(args):
         logger.debug("OpenClaw migration error", exc_info=True)
         return
 
+
+    # Warn about openclaw.json not being copied
+    if not dry_run:
+        source_config = source_dir / "openclaw.json"
+        if source_config.exists():
+            import shutil
+            hermes_home = get_hermes_home()
+            dest_config = hermes_home / "openclaw.json"
+            if not dest_config.exists():
+                shutil.copy2(source_config, dest_config)
+                print()
+                print_success(f"Copied openclaw.json to {dest_config}")
+            else:
+                print()
+                print_warning("openclaw.json already exists in Hermes home, skipping copy.")
+
     # Print results
     _print_migration_report(report, dry_run)
 

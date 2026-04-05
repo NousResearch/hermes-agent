@@ -1700,7 +1700,7 @@ class HermesCLI:
         FTR_PREFIX = "╰"
         FTR_SUFFIX = " ↑↓ Enter=restore  D=delete  Esc ─╯"
 
-        hdr_dashes = max(0, W - len(hdr_prefix_str) - len(HDR_SUFFIX))
+        hdr_dashes = max(0, W - len(hdr_prefix_str) - len(HDR_SUFFIX) - 1)
         ftr_dashes = max(0, W - len(FTR_PREFIX) - len(FTR_SUFFIX))
 
         # Row inner width: W minus 2 border chars '│' on each side

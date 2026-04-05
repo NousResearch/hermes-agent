@@ -1,0 +1,106 @@
+{
+  "backend": "honcho",
+  "profile": "balanced",
+  "embedding_model": "auto",
+  "timestamp": "2026-04-05T13:38:59.087053Z",
+  "suites": [
+    "N"
+  ],
+  "mean_score": 0.7777777777777778,
+  "std": 0.0,
+  "ci_95": [
+    0.7777777777777778,
+    0.7777777777777778
+  ],
+  "per_category_mean": {
+    "retrieval_ablation": 0.7777777777777778
+  },
+  "per_category_std": {
+    "retrieval_ablation": 0.0
+  },
+  "num_runs": 1,
+  "retrieval_metrics": {
+    "recall_at_1": 0.5555555555555556,
+    "recall_at_3": 0.6666666666666666,
+    "recall_at_5": 0.6666666666666666,
+    "recall_at_10": 0.6666666666666666,
+    "mrr": 0.6111111111111112,
+    "ndcg_at_5": 0.6256588615079397,
+    "ndcg_at_10": 0.6256588615079397,
+    "average_precision": 0.6111111111111112,
+    "exact_match": 0.0,
+    "token_f1": 0.3203034680158863,
+    "token_precision": 0.2143684202507732,
+    "token_recall": 0.7
+  },
+  "cost_metrics": {
+    "tokens_per_query": 45.111111111111114,
+    "tokens_per_correct": 58.0,
+    "cost_efficiency": 0.140722235135517,
+    "score": 0.7777777777777778,
+    "total_tokens": 406.0,
+    "total_queries": 9.0,
+    "correct": 7.0,
+    "total": 9.0
+  },
+  "runs": [
+    {
+      "seed": 42,
+      "overall_score": 0.7777777777777778,
+      "wall_time_seconds": 106.3730309009552,
+      "token_usage": {
+        "recall_tokens": 406,
+        "recall_chars": 1651,
+        "recall_queries": 9,
+        "avg_recall_tokens_per_query": 45
+      },
+      "retrieval_metrics": {
+        "recall_at_1": 0.5555555555555556,
+        "recall_at_3": 0.6666666666666666,
+        "recall_at_5": 0.6666666666666666,
+        "recall_at_10": 0.6666666666666666,
+        "mrr": 0.6111111111111112,
+        "ndcg_at_5": 0.6256588615079397,
+        "ndcg_at_10": 0.6256588615079397,
+        "average_precision": 0.6111111111111112,
+        "exact_match": 0.0,
+        "token_f1": 0.3203034680158863,
+        "token_precision": 0.2143684202507732,
+        "token_recall": 0.7
+      },
+      "cost_metrics": {
+        "tokens_per_query": 45.111111111111114,
+        "tokens_per_correct": 58.0,
+        "cost_efficiency": 0.140722235135517,
+        "score": 0.7777777777777778,
+        "total_tokens": 406,
+        "total_queries": 9,
+        "correct": 7,
+        "total": 9
+      },
+      "categories": {
+        "retrieval_ablation": {
+          "score": 0.7777777777777778,
+          "correct": 7,
+          "total": 9,
+          "recall_tokens": 406,
+          "recall_chars": 1651,
+          "retrieval_metrics": {
+            "recall_at_1": 0.5555555555555556,
+            "recall_at_3": 0.6666666666666666,
+            "recall_at_5": 0.6666666666666666,
+            "recall_at_10": 0.6666666666666666,
+            "mrr": 0.6111111111111112,
+            "ndcg_at_5": 0.6256588615079397,
+            "ndcg_at_10": 0.6256588615079397,
+            "average_precision": 0.6111111111111112,
+            "exact_match": 0.0,
+            "token_f1": 0.3203034680158863,
+            "token_precision": 0.2143684202507732,
+            "token_recall": 0.7
+          }
+        }
+      }
+    }
+  ]
+}

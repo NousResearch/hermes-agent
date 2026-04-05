@@ -1,8 +1,11 @@
-"""Benchmark adapter for the Hindsight cloud memory backend.
+"""Benchmark adapter for the Hindsight memory backend.
 
-Hindsight is a hosted memory service accessed via the hindsight_client SDK.
-This adapter wraps retain/recall calls in a dedicated thread to avoid event-loop
-conflicts with the benchmark harness, matching the pattern used by other adapters.
+Supports both cloud mode (HINDSIGHT_API_KEY) and local mode
+(HINDSIGHT_BASE_URL pointing to a local hindsight-api server).
+
+The hindsight_client SDK uses aiohttp internally and owns its own event
+loop.  To avoid conflicts, all SDK calls are dispatched to a single
+dedicated worker thread that holds the client instance.
 """
 
 from __future__ import annotations
@@ -21,51 +24,60 @@ BACKEND_CAPABILITIES = BackendCapabilities(
 )
 
 
-def _run_in_thread(fn, timeout: float = 30.0):
-    """Run *fn* in a daemon thread that has no asyncio event loop.
+class _HindsightWorker:
+    """Single-threaded worker that owns the Hindsight client."""
 
-    This prevents conflicts when the calling thread already owns an event loop
-    (e.g. pytest-asyncio or Jupyter environments).
-    """
-    result_q: queue.Queue = queue.Queue(maxsize=1)
+    def __init__(self, client_kwargs: dict):
+        self._client_kwargs = client_kwargs
+        self._client = None
+        self._cmd_q: queue.Queue = queue.Queue()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
 
-    def _run():
-        import asyncio  # noqa: PLC0415
+    def _run(self):
+        from hindsight_client import Hindsight
+        self._client = Hindsight(**self._client_kwargs)
+        while True:
+            fn, result_q = self._cmd_q.get()
+            if fn is None:
+                break
+            try:
+                result_q.put(("ok", fn(self._client)))
+            except Exception as exc:
+                result_q.put(("err", exc))
 
-        asyncio.set_event_loop(None)
-        try:
-            result_q.put(("ok", fn()))
-        except Exception as exc:  # noqa: BLE001
-            result_q.put(("err", exc))
-
-    t = threading.Thread(target=_run, daemon=True)
-    t.start()
-    kind, value = result_q.get(timeout=timeout)
-    if kind == "err":
-        raise value
-    return value
+    def call(self, fn, timeout: float = 120.0):
+        result_q: queue.Queue = queue.Queue(maxsize=1)
+        self._cmd_q.put((fn, result_q))
+        kind, value = result_q.get(timeout=timeout)
+        if kind == "err":
+            raise value
+        return value
 
 
 class HindsightBenchmarkAdapter(BenchmarkableStore):
-    """Adapter exposing the Hindsight cloud backend through BenchmarkableStore."""
+    """Adapter exposing Hindsight through BenchmarkableStore."""
 
     def __init__(self, **kwargs):
         api_key = os.environ.get("HINDSIGHT_API_KEY")
-        if not api_key:
+        base_url = os.environ.get("HINDSIGHT_BASE_URL", "")
+
+        if not api_key and not base_url:
             raise RuntimeError(
-                "HINDSIGHT_API_KEY environment variable is not set. "
-                "Export a valid API key before running Hindsight benchmarks."
+                "Set HINDSIGHT_API_KEY (cloud) or HINDSIGHT_BASE_URL "
+                "(local, e.g. http://localhost:8888) before running "
+                "Hindsight benchmarks."
             )
 
-        from hindsight_client import Hindsight  # noqa: PLC0415
+        client_kwargs = {}
+        if base_url:
+            client_kwargs["base_url"] = base_url
+        if api_key:
+            client_kwargs["api_key"] = api_key
 
-        self._client = Hindsight(api_key=api_key)
+        self._worker = _HindsightWorker(client_kwargs)
         self._bank_id: str = kwargs.get("bank_id", "benchmark-bank")
         self._budget: str = kwargs.get("budget", "mid")
-
-    # ------------------------------------------------------------------
-    # BenchmarkableStore interface
-    # ------------------------------------------------------------------
 
     def store(
         self,
@@ -75,10 +87,9 @@ class HindsightBenchmarkAdapter(BenchmarkableStore):
         importance: float = 0.5,
     ) -> None:
         del category, scope, importance
-        client = self._client
         bank_id = self._bank_id
-        _run_in_thread(
-            lambda: client.retain(bank_id=bank_id, content=content, context="benchmark")
+        self._worker.call(
+            lambda c: c.retain(bank_id=bank_id, content=content, context="benchmark")
         )
 
     def recall(
@@ -88,27 +99,21 @@ class HindsightBenchmarkAdapter(BenchmarkableStore):
         scope: Optional[str] = None,
     ) -> list[str]:
         del scope
-        client = self._client
         bank_id = self._bank_id
         budget = self._budget
-        resp = _run_in_thread(
-            lambda: client.recall(bank_id=bank_id, query=query, budget=budget)
+        resp = self._worker.call(
+            lambda c: c.recall(bank_id=bank_id, query=query, budget=budget)
         )
         return [r.text for r in resp.results[:top_k]]
 
     def simulate_time(self, days: float) -> None:
         del days
-        # Hindsight is a cloud service with no local time-simulation hook.
-        return None
 
     def simulate_access(self, content_substring: str) -> None:
         del content_substring
-        # No rehearsal API available; leave as no-op.
-        return None
 
     def consolidate(self) -> None:
-        # Consolidation is managed server-side; no client hook available.
-        return None
+        pass
 
     def get_stats(self) -> dict[str, Any]:
         return {
@@ -118,8 +123,7 @@ class HindsightBenchmarkAdapter(BenchmarkableStore):
         }
 
     def reset(self) -> None:
-        # Cloud banks cannot be reset in a benchmark context; no-op.
-        return None
+        pass
 
 
 BACKEND_CLASS = HindsightBenchmarkAdapter

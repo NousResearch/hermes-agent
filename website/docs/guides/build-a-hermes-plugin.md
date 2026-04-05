@@ -237,7 +237,7 @@ def register(ctx):
 - Called exactly once at startup
 - `ctx.register_tool()` puts your tool in the registry — the model sees it immediately
 - `ctx.register_hook()` subscribes to lifecycle events
-- `ctx.register_command()` — _planned but not yet implemented_
+- `ctx.register_cli_command()` registers a CLI subcommand (e.g. `hermes my-plugin <subcommand>`)
 - If this function crashes, the plugin is disabled but Hermes continues fine
 
 ## Step 6: Test it
@@ -480,6 +480,44 @@ def register(ctx):
 #### Multiple plugins returning context
 
 When multiple plugins return context from `pre_llm_call`, their outputs are joined with double newlines and appended to the user message together. The order follows plugin discovery order (alphabetical by plugin directory name).
+
+### Register CLI commands
+
+Plugins can add their own `hermes <plugin>` subcommand tree:
+
+```python
+def _my_command(args):
+    """Handler for hermes my-plugin <subcommand>."""
+    sub = getattr(args, "my_command", None)
+    if sub == "status":
+        print("All good!")
+    elif sub == "config":
+        print("Current config: ...")
+    else:
+        print("Usage: hermes my-plugin <status|config>")
+
+def _setup_argparse(subparser):
+    """Build the argparse tree for hermes my-plugin."""
+    subs = subparser.add_subparsers(dest="my_command")
+    subs.add_parser("status", help="Show plugin status")
+    subs.add_parser("config", help="Show plugin config")
+    subparser.set_defaults(func=_my_command)
+
+def register(ctx):
+    ctx.register_tool(...)
+    ctx.register_cli_command(
+        name="my-plugin",
+        help="Manage my plugin",
+        setup_fn=_setup_argparse,
+        handler_fn=_my_command,
+    )
+```
+
+After registration, users can run `hermes my-plugin status`, `hermes my-plugin config`, etc.
+
+**Memory provider plugins** use a convention-based approach instead: add a `register_cli(subparser)` function to your plugin's `cli.py` file. The memory plugin discovery system finds it automatically — no `ctx.register_cli_command()` call needed. See the [Memory Provider Plugin guide](/docs/developer-guide/memory-provider-plugin#adding-cli-commands) for details.
+
+**Active-provider gating:** Memory plugin CLI commands only appear when their provider is the active `memory.provider` in config. If a user hasn't set up your provider, your CLI commands won't clutter the help output.
 
 ### Distribute via pip
 

@@ -363,22 +363,30 @@ Notes:
 ## `hermes honcho`
 
 ```bash
-hermes honcho <subcommand>
+hermes honcho [--target-profile NAME] <subcommand>
 ```
+
+Manage Honcho cross-session memory integration. This command is provided by the Honcho memory provider plugin and is only available when `memory.provider` is set to `honcho` in your config.
+
+The `--target-profile` flag lets you manage another profile's Honcho config without switching to it.
 
 Subcommands:
 
 | Subcommand | Description |
 |------------|-------------|
-| `setup` | Interactive Honcho setup wizard. |
-| `status` | Show current Honcho config and connection status. |
+| `setup` | Redirects to `hermes memory setup` (unified setup path). |
+| `status [--all]` | Show current Honcho config and connection status. `--all` shows a cross-profile overview. |
+| `peers` | Show peer identities across all profiles. |
 | `sessions` | List known Honcho session mappings. |
-| `map` | Map the current directory to a Honcho session name. |
-| `peer` | Show or update peer names and dialectic reasoning level. |
-| `mode` | Show or set memory mode: `hybrid`, `honcho`, or `local`. |
-| `tokens` | Show or set token budgets for context and dialectic. |
-| `identity` | Seed or show the AI peer identity representation. |
-| `migrate` | Migration guide from openclaw-honcho to Hermes Honcho. |
+| `map [name]` | Map the current directory to a Honcho session name. Omit `name` to list current mappings. |
+| `peer` | Show or update peer names and dialectic reasoning level. Options: `--user NAME`, `--ai NAME`, `--reasoning LEVEL`. |
+| `mode [mode]` | Show or set recall mode: `hybrid`, `context`, or `tools`. Omit to show current. |
+| `tokens` | Show or set token budgets for context and dialectic. Options: `--context N`, `--dialectic N`. |
+| `identity [file] [--show]` | Seed or show the AI peer identity representation. |
+| `enable` | Enable Honcho for the active profile. |
+| `disable` | Disable Honcho for the active profile. |
+| `sync` | Sync Honcho config to all existing profiles (creates missing host blocks). |
+| `migrate` | Step-by-step migration guide from openclaw-honcho to Hermes Honcho. |
 
 ## `hermes memory`
 

@@ -2276,6 +2276,22 @@ class DiscordAdapter(BasePlatformAdapter):
         if not event_text or not event_text.strip():
             event_text = "(The user sent a message with no text content)"
 
+        # Extract reply context — Discord provides message.reference with a
+        # message_id but not the content.  Try the cached resolved_reference
+        # first (free, no API call); fall back to fetch_message if missing.
+        reply_to_msg_id = None
+        reply_to_text = None
+        if message.reference:
+            reply_to_msg_id = str(message.reference.message_id)
+            ref_msg = message.reference.resolved
+            if ref_msg is None and message.reference.message_id:
+                try:
+                    ref_msg = await message.channel.fetch_message(message.reference.message_id)
+                except Exception as e:
+                    logger.debug("Could not fetch reply-to message %s: %s", message.reference.message_id, e)
+            if ref_msg:
+                reply_to_text = ref_msg.content or None
+
         event = MessageEvent(
             text=event_text,
             message_type=msg_type,
@@ -2284,7 +2300,8 @@ class DiscordAdapter(BasePlatformAdapter):
             message_id=str(message.id),
             media_urls=media_urls,
             media_types=media_types,
-            reply_to_message_id=str(message.reference.message_id) if message.reference else None,
+            reply_to_message_id=reply_to_msg_id,
+            reply_to_text=reply_to_text,
             timestamp=message.created_at,
         )
 

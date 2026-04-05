@@ -13,12 +13,6 @@ import concurrent.futures
 import json
 import logging
 import os
-_KNOWN_DELIVERY_PLATFORMS = frozenset({
-    "telegram", "discord", "slack", "whatsapp", "signal",
-    "matrix", "mattermost", "dingtalk", "feishu", "wecom",
-    "sms", "email", "webhook",
-})
-import subprocess
 import subprocess
 import sys
 
@@ -39,6 +33,14 @@ from typing import Optional
 from hermes_time import now as _hermes_now
 
 logger = logging.getLogger(__name__)
+
+# Valid delivery platforms — used to validate user-supplied platform names
+# in cron delivery targets, preventing env var enumeration via crafted names.
+_KNOWN_DELIVERY_PLATFORMS = frozenset({
+    "telegram", "discord", "slack", "whatsapp", "signal",
+    "matrix", "mattermost", "homeassistant", "dingtalk", "feishu",
+    "wecom", "sms", "email", "webhook",
+})
 
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -141,7 +143,6 @@ def _resolve_delivery_target(job: dict) -> Optional[dict]:
             "thread_id": origin.get("thread_id"),
         }
 
-    
     if platform_name.lower() not in _KNOWN_DELIVERY_PLATFORMS:
         return None
     chat_id = os.getenv(f"{platform_name.upper()}_HOME_CHANNEL", "")

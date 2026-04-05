@@ -307,6 +307,12 @@ def load_cli_config() -> Dict[str, Any]:
             "provider": "",    # Subagent provider override (empty = inherit parent provider)
             "base_url": "",    # Direct OpenAI-compatible endpoint for subagents
             "api_key": "",     # API key for delegation.base_url (falls back to OPENAI_API_KEY)
+            # Semantic aliases for multi-agent workflows:
+            # supervisor_model: the orchestrating agent's model (maps to model.default)
+            # execution_model:  default model for all subagents (maps to delegation.model)
+            # Both accept provider/model strings: "anthropic/claude-opus-4-6"
+            "supervisor_model": "",
+            "execution_model": "",
         },
     }
     
@@ -387,6 +393,19 @@ def load_cli_config() -> Dict[str, Any]:
     # Expand ${ENV_VAR} references in config values before bridging to env vars.
     from hermes_cli.config import _expand_env_vars
     defaults = _expand_env_vars(defaults)
+
+    # Resolve semantic model aliases:
+    #   delegation.supervisor_model → model.default  (main agent model)
+    #   delegation.execution_model  → delegation.model (default subagent model)
+    # These are convenience keys for multi-agent setups; explicit model.default
+    # or delegation.model always takes precedence if both are set.
+    _delegation_cfg = defaults.get("delegation", {})
+    _supervisor = str(_delegation_cfg.get("supervisor_model") or "").strip()
+    _execution = str(_delegation_cfg.get("execution_model") or "").strip()
+    if _supervisor and not defaults["model"].get("default"):
+        defaults["model"]["default"] = _supervisor
+    if _execution and not _delegation_cfg.get("model"):
+        defaults["delegation"]["model"] = _execution
 
     # Apply terminal config to environment variables (so terminal_tool picks them up)
     terminal_config = defaults.get("terminal", {})
@@ -1976,6 +1995,62 @@ class HermesCLI:
         except Exception:
             return [("class:status-bar", f" {self._build_status_bar_text()} ")]
 
+    @staticmethod
+    def _fmt_stash_age(stashed_at: float) -> str:
+        """Return human-readable age string for a stash entry."""
+        import time as _t
+        secs = int(_t.monotonic() - stashed_at)
+        if secs < 10:
+            return "just now"
+        if secs < 90:
+            return f"{secs}s ago"
+        mins = secs // 60
+        if mins < 60:
+            return f"{mins} min ago"
+        return f"{mins // 60}h ago"
+
+    def _render_stash_panel(self, stash_list: list, cursor: int, width: int) -> list:
+        """Return prompt_toolkit formatted_text fragments for the stash panel box."""
+        W = min(width - 4, 80)
+
+        n = len(stash_list)
+        hdr_prefix_str = f"╭─ 📌 Stash ({n} item{'s' if n != 1 else ''}) "
+        HDR_SUFFIX = " Ctrl+S ─╮"
+        FTR_PREFIX = "╰"
+        FTR_SUFFIX = " ↑↓ Enter=restore  D=delete  Esc ─╯"
+
+        # len() counts 📌 as 1 char but it renders as 2 wide — subtract 1
+        # from the len() result so dashes fill the remaining visual width.
+        hdr_dashes = max(0, W - (len(hdr_prefix_str) - 1) - len(HDR_SUFFIX))
+        ftr_dashes = max(0, W - len(FTR_PREFIX) - len(FTR_SUFFIX))
+
+        # Row inner width: W minus 2 border chars '│' on each side
+        INNER = W - 2
+
+        frags: list = []
+
+        def line(text: str, style: str = "") -> None:
+            frags.append((style, text + "\n"))
+
+        line(f"{hdr_prefix_str}{'─' * hdr_dashes}{HDR_SUFFIX}", "class:subagent-border")
+
+        for i, item in enumerate(stash_list):
+            age = self._fmt_stash_age(item["stashed_at"])
+            # Row: " ► [N] {age:<10} {preview} "
+            prefix = f" {'►' if i == cursor else ' '} [{i+1}] {age:<10} "
+            avail = max(0, INNER - len(prefix) - 1)
+            preview = item["preview"][:avail].ljust(avail)
+            row = f"│{prefix}{preview} │"
+            if i == cursor:
+                frags.append(("class:subagent-selected", row + "\n"))
+            else:
+                frags.append(("class:subagent-border", "│"))
+                frags.append(("class:subagent-sub", f"{prefix}{preview} "))
+                frags.append(("class:subagent-border", "│\n"))
+
+        line(f"{FTR_PREFIX}{'─' * ftr_dashes}{FTR_SUFFIX}", "class:subagent-border")
+        return frags
+
     def _normalize_model_for_provider(self, resolved_provider: str) -> bool:
         """Normalize provider-specific model IDs and routing."""
         current_model = (self.model or "").strip()
@@ -2723,6 +2798,19 @@ class HermesCLI:
             # Route agent status output through prompt_toolkit so ANSI escape
             # sequences aren't garbled by patch_stdout's StdoutProxy (#2262).
             self.agent._print_fn = _cprint
+            # Attach subagent panel registry so delegate_tool can update it
+            if hasattr(self, '_subagent_panel'):
+                def _invalidate_panel():
+                    try:
+                        from prompt_toolkit.application import get_app as _gapp
+                        _gapp().invalidate()
+                    except Exception:
+                        pass
+                self.agent._cli_subagent_registry = (
+                    self._subagent_panel,
+                    threading.Lock(),
+                    _invalidate_panel,
+                )
             self._active_agent_route_signature = (
                 effective_model,
                 runtime.get("provider"),
@@ -3648,12 +3736,18 @@ class HermesCLI:
         print()
     
     def _list_recent_sessions(self, limit: int = 10) -> list[dict[str, Any]]:
-        """Return recent CLI sessions for in-chat browsing/resume affordances."""
+        """Return recent sessions for in-chat browsing/resume affordances.
+
+        With display.resume_include_gateway: true, gateway sessions
+        (Telegram, Discord, etc.) are included alongside CLI sessions.
+        Tool-spawned sessions are always excluded.
+        """
         if not self._session_db:
             return []
+        include_gateway = CLI_CONFIG.get("display", {}).get("resume_include_gateway", False)
         try:
             sessions = self._session_db.list_sessions_rich(
-                source="cli",
+                source=None if include_gateway else "cli",
                 exclude_sources=["tool"],
                 limit=limit,
             )
@@ -3818,10 +3912,7 @@ class HermesCLI:
         target = parts[1].strip() if len(parts) > 1 else ""
 
         if not target:
-            _cprint("  Usage: /resume <session_id_or_title>")
-            if self._show_recent_sessions(reason="resume"):
-                return
-            _cprint("  Tip:   Use /history or `hermes sessions list` to find sessions.")
+            self.show_sessions_full()
             return
 
         if not self._session_db:
@@ -7804,22 +7895,26 @@ class HermesCLI:
                 self._approval_state["selected"] = min(max_idx, self._approval_state["selected"] + 1)
                 event.app.invalidate()
 
-        # --- History navigation: up/down browse history in normal input mode ---
-        # The TextArea is multiline, so by default up/down only move the cursor.
-        # Buffer.auto_up/auto_down handle both: cursor movement when multi-line,
-        # history browsing when on the first/last line (or single-line input).
+        # --- Up/Down arrow behaviour (matches CC / Pi) ---
+        # In multiline input: move cursor line by line preserving column.
+        # At the very first line: go to previous history entry.
+        # At the very last line: go to next history entry.
+        # This is auto_up/auto_down — but we call cursor_up/cursor_down first
+        # so prompt_toolkit tracks the preferred column correctly, then fall
+        # back to history only when already on the boundary line.
         _normal_input = Condition(
-            lambda: not self._clarify_state and not self._approval_state and not self._sudo_state and not self._secret_state
+            lambda: not self._clarify_state and not self._approval_state
+            and not self._sudo_state and not self._secret_state
         )
 
         @kb.add('up', filter=_normal_input)
         def history_up(event):
-            """Up arrow: browse history when on first line, else move cursor up."""
+            """Up: cursor up in multiline, history backward on first line."""
             event.app.current_buffer.auto_up(count=event.arg)
 
         @kb.add('down', filter=_normal_input)
         def history_down(event):
-            """Down arrow: browse history when on last line, else move cursor down."""
+            """Down: cursor down in multiline, history forward on last line."""
             event.app.current_buffer.auto_down(count=event.arg)
 
         @kb.add('c-c')
@@ -8072,6 +8167,38 @@ class HermesCLI:
         # Dynamic prompt: shows Hermes symbol when agent is working,
         # or answer prompt when clarify freetext mode is active.
         cli_ref = self
+
+        @kb.add('c-x')
+        def handle_ctrl_x(event):
+            """Ctrl+X: toggle subagent control panel."""
+            cli_ref._subagent_panel_open = not cli_ref._subagent_panel_open
+            cli_ref._subagent_panel_cursor = 0
+            event.app.invalidate()
+
+        @kb.add('up', filter=Condition(lambda: cli_ref._subagent_panel_open and bool(cli_ref._subagent_panel)), eager=True)
+        def panel_up(event):
+            cli_ref._subagent_panel_cursor = max(0, cli_ref._subagent_panel_cursor - 1)
+            event.app.invalidate()
+
+        @kb.add('down', filter=Condition(lambda: cli_ref._subagent_panel_open and bool(cli_ref._subagent_panel)), eager=True)
+        def panel_down(event):
+            n = len(cli_ref._subagent_panel)
+            cli_ref._subagent_panel_cursor = min(n - 1, cli_ref._subagent_panel_cursor + 1)
+            event.app.invalidate()
+
+        @kb.add('k', filter=Condition(lambda: cli_ref._subagent_panel_open and bool(cli_ref._subagent_panel)))
+        def panel_kill(event):
+            """K: interrupt the selected subagent."""
+            records = sorted(cli_ref._subagent_panel.values(), key=lambda r: r.index)
+            if records:
+                target = records[cli_ref._subagent_panel_cursor % len(records)]
+                if target.child_ref:
+                    try:
+                        target.child_ref.interrupt()
+                    except Exception:
+                        pass
+                    target.status = "interrupted"
+            event.app.invalidate()
 
         def get_prompt():
             return cli_ref._get_tui_prompt_fragments()
@@ -8553,25 +8680,75 @@ class HermesCLI:
         # the corresponding interactive prompt is active.
         completions_menu = CompletionsMenu(max_height=12, scroll_offset=1)
 
-        layout = Layout(
-            HSplit(
-                self._build_tui_layout_children(
-                    sudo_widget=sudo_widget,
-                    secret_widget=secret_widget,
-                    approval_widget=approval_widget,
-                    clarify_widget=clarify_widget,
-                    spinner_widget=spinner_widget,
-                    spacer=spacer,
-                    status_bar=status_bar,
-                    input_rule_top=input_rule_top,
-                    image_bar=image_bar,
-                    input_area=input_area,
-                    input_rule_bot=input_rule_bot,
-                    voice_status_bar=voice_status_bar,
-                    completions_menu=completions_menu,
-                )
-            )
+        _layout_children = self._build_tui_layout_children(
+            sudo_widget=sudo_widget,
+            secret_widget=secret_widget,
+            approval_widget=approval_widget,
+            clarify_widget=clarify_widget,
+            spinner_widget=spinner_widget,
+            spacer=spacer,
+            status_bar=status_bar,
+            input_rule_top=input_rule_top,
+            image_bar=image_bar,
+            input_area=input_area,
+            input_rule_bot=input_rule_bot,
+            voice_status_bar=voice_status_bar,
+            completions_menu=completions_menu,
         )
+        # Inject the subagent panel widget just before the status bar.
+        # Done here (not via _get_extra_tui_widgets) so the extension hook
+        # stays clean for subclass use.
+        try:
+            from hermes_cli.subagent_panel import render_panel as _render_panel
+            from prompt_toolkit.application import get_app as _get_app
+            _cli_ref = self
+            _panel_filter = Condition(
+                lambda: _cli_ref._subagent_panel_open and bool(_cli_ref._subagent_panel)
+            )
+            _panel_widget = ConditionalContainer(
+                content=Window(
+                    content=FormattedTextControl(
+                        lambda: _render_panel(
+                            sorted(_cli_ref._subagent_panel.values(), key=lambda r: r.index),
+                            _cli_ref._subagent_panel_cursor,
+                            _get_app().output.get_size().columns,
+                        )
+                    ),
+                    dont_extend_height=True,
+                ),
+                filter=_panel_filter,
+            )
+            status_idx = _layout_children.index(status_bar)
+            _layout_children.insert(status_idx, _panel_widget)
+        except Exception:
+            pass
+
+        # Inject the stash panel widget just before the status bar (above subagent panel).
+        try:
+            from prompt_toolkit.application import get_app as _get_stash_app
+            _stash_cli_ref = self
+            _stash_filter = Condition(
+                lambda: _stash_cli_ref._stash_panel_open and bool(_stash_cli_ref._stash_list)
+            )
+            _stash_widget = ConditionalContainer(
+                content=Window(
+                    content=FormattedTextControl(
+                        lambda: _stash_cli_ref._render_stash_panel(
+                            _stash_cli_ref._stash_list,
+                            _stash_cli_ref._stash_panel_cursor,
+                            _get_stash_app().output.get_size().columns,
+                        )
+                    ),
+                    dont_extend_height=True,
+                ),
+                filter=_stash_filter,
+            )
+            _stash_status_idx = _layout_children.index(status_bar)
+            _layout_children.insert(_stash_status_idx, _stash_widget)
+        except Exception:
+            pass
+
+        layout = Layout(HSplit(_layout_children))
         
         # Style for the application
         self._tui_style_base = {
@@ -8622,6 +8799,14 @@ class HermesCLI:
             'voice-processing': '#FFA500 italic',
             'voice-status': 'bg:#1a1a2e #87CEEB',
             'voice-status-recording': 'bg:#1a1a2e #FF4444 bold',
+            # Subagent control panel
+            'subagent-border':   '#CD7F32',
+            'subagent-running':  'ansiyellow',
+            'subagent-done':     'ansigreen',
+            'subagent-error':    'ansired',
+            'subagent-warn':     'ansiyellow',
+            'subagent-sub':      '#888888',
+            'subagent-selected': 'reverse',
         }
         style = PTStyle.from_dict(self._build_tui_style_dict())
         
@@ -8786,6 +8971,9 @@ class HermesCLI:
                             ChatConsole().print(
                                 f"[bold {_accent_hex()}]\u25cf[/] [bold]{_escape(f'[Pasted text: {total_lines} lines]')}[/]"
                             )
+                        _hint = " Ctrl+P to peek"
+                        _dashes = max(0, 40 - 1 - len(_hint))
+                        ChatConsole().print(f"[{_accent_hex()}]╰{'─' * _dashes}{_hint}[/]")
                         user_input = expanded
                     else:
                         _user_bar = f"[{_accent_hex()}]{'─' * 40}[/]"

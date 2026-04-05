@@ -172,6 +172,49 @@ def test_runtime_resolution_failure_is_not_sticky(monkeypatch):
     assert shell.agent is not None
 
 
+def test_runtime_resolution_failure_uses_chat_console_when_tui_active(monkeypatch):
+    cli = _import_cli()
+
+    def _runtime_resolve(**kwargs):
+        raise AuthError("Codex token refresh failed with status 401.", provider="openai-codex")
+
+    class _DummyChatConsole:
+        calls = []
+
+        def print(self, markup):
+            self.calls.append(markup)
+
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", _runtime_resolve)
+    monkeypatch.setattr("hermes_cli.runtime_provider.format_runtime_provider_error", lambda exc: str(exc))
+    monkeypatch.setattr(cli, "ChatConsole", _DummyChatConsole)
+
+    shell = cli.HermesCLI(model="gpt-5", compact=True, max_turns=1)
+    shell._app = object()
+    shell.console = SimpleNamespace(print=lambda *_args, **_kwargs: pytest.fail("console.print should not be used"))
+
+    assert shell._ensure_runtime_credentials() is False
+    assert _DummyChatConsole.calls == ["[bold red]Codex token refresh failed with status 401.[/]"]
+
+
+def test_runtime_resolution_failure_uses_console_without_tui(monkeypatch):
+    cli = _import_cli()
+
+    def _runtime_resolve(**kwargs):
+        raise AuthError("Codex token refresh failed with status 401.", provider="openai-codex")
+
+    console_calls = []
+
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", _runtime_resolve)
+    monkeypatch.setattr("hermes_cli.runtime_provider.format_runtime_provider_error", lambda exc: str(exc))
+
+    shell = cli.HermesCLI(model="gpt-5", compact=True, max_turns=1)
+    shell._app = None
+    shell.console = SimpleNamespace(print=lambda markup: console_calls.append(markup))
+
+    assert shell._ensure_runtime_credentials() is False
+    assert console_calls == ["[bold red]Codex token refresh failed with status 401.[/]"]
+
+
 def test_runtime_resolution_rebuilds_agent_on_routing_change(monkeypatch):
     cli = _import_cli()
 

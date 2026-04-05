@@ -1392,7 +1392,9 @@ class HermesCLI:
         self._steering_recall_count: int = 0
         self._should_exit = False
         self._last_ctrl_c_time = 0
-        self._stashed_input = None  # Ctrl+S stash: (text, [images]) or None
+        self._stash_list: list = []   # multi-item stash [{id, text, images, stashed_at, preview}]
+        self._stash_panel_open: bool = False
+        self._stash_panel_cursor: int = 0
         self._clarify_state = None
         self._clarify_freetext = False
         self._clarify_deadline = 0
@@ -1644,9 +1646,10 @@ class HermesCLI:
                     ]
 
             # Stash indicator
-            if self._stashed_input:
+            if self._stash_list:
                 frags.append(("class:status-bar-dim", " │ "))
-                frags.append(("class:status-bar-warn", "📌 stashed"))
+                label = f"📌 {len(self._stash_list)}" + (" ▲" if self._stash_panel_open else "")
+                frags.append(("class:status-bar-warn", label))
             # Follow-up queue (📬) and steering queue (🎯) indicators
             if self._followup_queue:
                 frags.append(("class:status-bar-dim", " │ "))
@@ -1672,6 +1675,67 @@ class HermesCLI:
             return frags
         except Exception:
             return [("class:status-bar", f" {self._build_status_bar_text()} ")]
+
+    @staticmethod
+    def _fmt_stash_age(stashed_at: float) -> str:
+        """Return human-readable age string for a stash entry."""
+        import time as _t
+        secs = int(_t.monotonic() - stashed_at)
+        if secs < 10:
+            return "just now"
+        if secs < 90:
+            return f"{secs}s ago"
+        mins = secs // 60
+        if mins < 60:
+            return f"{mins} min ago"
+        return f"{mins // 60}h ago"
+
+    def _render_stash_panel(self, stash_list: list, cursor: int, width: int) -> list:
+        """Return prompt_toolkit formatted_text fragments for the stash panel box."""
+        W = min(width - 4, 80)
+
+        HDR_PREFIX = "╭─ 📌 Stash ("
+        n = len(stash_list)
+        title_mid = f"{n} item{'s' if n != 1 else ''}) "
+        HDR_SUFFIX = " Ctrl+S ─╮"
+        FTR_PREFIX = "╰"
+        FTR_SUFFIX = " ↑↓ Enter=restore  D=delete  Esc ─╯"
+
+        # Header dashes fill between title and suffix
+        # HDR_PREFIX includes emoji (📌 = 2 wide) — measure in display cols
+        hdr_fixed = 2 + len(HDR_PREFIX) - 2 + len(title_mid) + len(HDR_SUFFIX)
+        # 📌 is 2 wide, "╭─ " already counted title chars fine since we
+        # just need to fit in W columns
+        hdr_prefix_str = f"{HDR_PREFIX}{title_mid}"
+        hdr_dashes = max(0, W - len(hdr_prefix_str) - len(HDR_SUFFIX))
+        ftr_dashes = max(0, W - len(FTR_PREFIX) - len(FTR_SUFFIX))
+
+        # Row inner width: W minus 2 border chars '│' on each side
+        INNER = W - 2
+
+        frags: list = []
+
+        def line(text: str, style: str = "") -> None:
+            frags.append((style, text + "\n"))
+
+        line(f"{hdr_prefix_str}{'─' * hdr_dashes}{HDR_SUFFIX}", "class:subagent-border")
+
+        for i, item in enumerate(stash_list):
+            age = self._fmt_stash_age(item["stashed_at"])
+            # Row: " ► [N] {age:<10} {preview} "
+            prefix = f" {'►' if i == cursor else ' '} [{i+1}] {age:<10} "
+            avail = max(0, INNER - len(prefix) - 1)
+            preview = item["preview"][:avail].ljust(avail)
+            row = f"│{prefix}{preview} │"
+            if i == cursor:
+                frags.append(("class:subagent-selected", row + "\n"))
+            else:
+                frags.append(("class:subagent-border", "│"))
+                frags.append(("class:subagent-sub", f"{prefix}{preview} "))
+                frags.append(("class:subagent-border", "│\n"))
+
+        line(f"{FTR_PREFIX}{'─' * ftr_dashes}{FTR_SUFFIX}", "class:subagent-border")
+        return frags
 
     def _normalize_model_for_provider(self, resolved_provider: str) -> bool:
         """Normalize provider-specific model IDs and routing."""
@@ -2953,7 +3017,7 @@ class HermesCLI:
             ]),
             ("Drafting", [
                 ("Ctrl+G",          "Open input in external editor ($VISUAL / VS Code)"),
-                ("Ctrl+S",          "Stash input (pop with Ctrl+S; auto-restores after response if buffer empty)"),
+                ("Ctrl+S",          "Stash input (multi-item); Ctrl+S on empty = pop/browse; ↑↓ Enter D in panel"),
                 ("Ctrl+P",          "Peek paste / preview input / full history pager (empty input)"),
                 ("Ctrl+V",          "Paste from clipboard (image-aware)"),
                 ("ESC ESC",         "Clear input buffer and attached images"),
@@ -7847,36 +7911,100 @@ class HermesCLI:
 
         @kb.add('c-s')
         def handle_stash(event):
-            """Ctrl+S: stash current input (text + images) or pop stash.
+            """Ctrl+S: push to multi-item stash or pop/browse stash.
 
-            When the input area has text or attached images, stash them and
-            clear the input so the user can type a different message.  If the
-            input is empty *and* there's a stash, restore it immediately.
-            The stash is also auto-restored after the agent finishes responding
-            (see process_loop).
+            Buffer has content → push to front of stash list, clear buffer.
+            Buffer empty + panel open → close panel.
+            Buffer empty + 1 item → pop immediately.
+            Buffer empty + 2+ items → open stash browser panel.
+            Buffer empty + stash empty → print notice.
             """
+            import uuid as _uuid_mod, time as _time_mod
             buf = event.app.current_buffer
-            text = buf.text
+            text = buf.text.strip()
             has_images = bool(cli_ref._attached_images)
 
+            if cli_ref._stash_panel_open:
+                # Ctrl+S closes the panel
+                cli_ref._stash_panel_open = False
+                event.app.invalidate()
+                return
+
             if text or has_images:
-                # --- Stash current input ---
-                images_snapshot = list(cli_ref._attached_images)
-                cli_ref._stashed_input = (text, images_snapshot)
+                # Push to stash
+                images = list(cli_ref._attached_images)
                 cli_ref._attached_images.clear()
+                preview = text[:60] + ("..." if len(text) > 60 else "")
+                cli_ref._stash_list.insert(0, {
+                    "id": _uuid_mod.uuid4().hex,
+                    "text": buf.text,
+                    "images": images,
+                    "stashed_at": _time_mod.monotonic(),
+                    "preview": preview or f"[{len(images)} image{'s' if len(images) != 1 else ''}]",
+                })
                 buf.reset()
-                _cprint(f"  {_DIM}📌 Input stashed (Ctrl+S to pop; auto-restores if buffer empty after response){_RST}")
-                event.app.invalidate()
-            elif cli_ref._stashed_input:
-                # --- Pop stash into input ---
-                stashed_text, stashed_images = cli_ref._stashed_input
-                cli_ref._stashed_input = None
-                if stashed_images:
-                    cli_ref._attached_images.extend(stashed_images)
-                buf.text = stashed_text
-                buf.cursor_position = len(stashed_text)
-                _cprint(f"  {_DIM}📌 Stash restored{_RST}")
-                event.app.invalidate()
+                _cprint(f"  {_DIM}📌 Stashed #{len(cli_ref._stash_list)} (Ctrl+S to browse/pop){_RST}")
+            elif cli_ref._stash_list:
+                if len(cli_ref._stash_list) == 1:
+                    # Single item — pop immediately
+                    item = cli_ref._stash_list.pop(0)
+                    buf.text = item["text"]
+                    buf.cursor_position = len(item["text"])
+                    if item["images"]:
+                        cli_ref._attached_images.extend(item["images"])
+                    _cprint(f"  {_DIM}📌 Stash popped{_RST}")
+                else:
+                    # Multiple items — open browser
+                    cli_ref._stash_panel_open = True
+                    cli_ref._stash_panel_cursor = 0
+            else:
+                _cprint(f"  {_DIM}📌 Stash is empty{_RST}")
+            event.app.invalidate()
+
+        # Stash panel navigation keybindings (only active when panel is open)
+        _stash_panel_active = Condition(lambda: cli_ref._stash_panel_open and bool(cli_ref._stash_list))
+
+        @kb.add('up', filter=_stash_panel_active, eager=True)
+        def stash_panel_up(event):
+            cli_ref._stash_panel_cursor = max(0, cli_ref._stash_panel_cursor - 1)
+            event.app.invalidate()
+
+        @kb.add('down', filter=_stash_panel_active, eager=True)
+        def stash_panel_down(event):
+            cli_ref._stash_panel_cursor = min(len(cli_ref._stash_list) - 1, cli_ref._stash_panel_cursor + 1)
+            event.app.invalidate()
+
+        @kb.add('enter', filter=_stash_panel_active, eager=True)
+        def stash_panel_enter(event):
+            if cli_ref._stash_list:
+                item = cli_ref._stash_list.pop(cli_ref._stash_panel_cursor)
+                buf = event.app.current_buffer
+                buf.text = item["text"]
+                buf.cursor_position = len(item["text"])
+                if item["images"]:
+                    cli_ref._attached_images.extend(item["images"])
+                cli_ref._stash_panel_open = False
+                cli_ref._stash_panel_cursor = min(
+                    cli_ref._stash_panel_cursor, max(0, len(cli_ref._stash_list) - 1)
+                )
+                _cprint(f"  {_DIM}📌 Stash item restored{_RST}")
+            event.app.invalidate()
+
+        @kb.add('d', filter=_stash_panel_active)
+        def stash_panel_delete(event):
+            if cli_ref._stash_list:
+                cli_ref._stash_list.pop(cli_ref._stash_panel_cursor)
+                cli_ref._stash_panel_cursor = min(
+                    cli_ref._stash_panel_cursor, max(0, len(cli_ref._stash_list) - 1)
+                )
+                if not cli_ref._stash_list:
+                    cli_ref._stash_panel_open = False
+            event.app.invalidate()
+
+        @kb.add('escape', filter=_stash_panel_active)
+        def stash_panel_esc(event):
+            cli_ref._stash_panel_open = False
+            event.app.invalidate()
 
         @kb.add('c-p')
         def handle_peek_or_history(event):
@@ -8279,8 +8407,8 @@ class HermesCLI:
                     hints.append(f"📬 {len(cli_ref._followup_queue)} (Alt+↑ to recall)")
                 if cli_ref._steering_queue:
                     hints.append(f"🎯 {len(cli_ref._steering_queue)} (Alt+↓ to recall)")
-                if cli_ref._stashed_input:
-                    hints.append("📌 stashed")
+                if cli_ref._stash_list:
+                    hints.append(f"📌 {len(cli_ref._stash_list)} stashed")
                 suffix = "  · " + " · ".join(hints) if hints else ""
                 # Hint depends on busy_input_mode
                 if cli_ref.busy_input_mode == "queue":
@@ -8293,10 +8421,10 @@ class HermesCLI:
                 if cli_ref._steering_queue:
                     parts.append(f"🎯 {len(cli_ref._steering_queue)} (Alt+↓)")
                 return "  ·  ".join(parts)
-            if cli_ref._stashed_input:
-                stashed_text = cli_ref._stashed_input[0]
-                preview = stashed_text[:40] + ("..." if len(stashed_text) > 40 else "")
-                return f"📌 stashed: \"{preview}\" — Ctrl+S to pop"
+            if cli_ref._stash_list:
+                n = len(cli_ref._stash_list)
+                preview = cli_ref._stash_list[0]["preview"][:40]
+                return f"📌 {n} stashed: \"{preview}\" — Ctrl+S to browse/pop"
             if cli_ref._voice_mode:
                 return "type or Ctrl+B to record"
             return ""
@@ -8676,6 +8804,31 @@ class HermesCLI:
         except Exception:
             pass
 
+        # Inject the stash panel widget just before the status bar (above subagent panel).
+        try:
+            from prompt_toolkit.application import get_app as _get_stash_app
+            _stash_cli_ref = self
+            _stash_filter = Condition(
+                lambda: _stash_cli_ref._stash_panel_open and bool(_stash_cli_ref._stash_list)
+            )
+            _stash_widget = ConditionalContainer(
+                content=Window(
+                    content=FormattedTextControl(
+                        lambda: _stash_cli_ref._render_stash_panel(
+                            _stash_cli_ref._stash_list,
+                            _stash_cli_ref._stash_panel_cursor,
+                            _get_stash_app().output.get_size().columns,
+                        )
+                    ),
+                    dont_extend_height=True,
+                ),
+                filter=_stash_filter,
+            )
+            _stash_status_idx = _layout_children.index(status_bar)
+            _layout_children.insert(_stash_status_idx, _stash_widget)
+        except Exception:
+            pass
+
         layout = Layout(HSplit(_layout_children))
         
         # Style for the application
@@ -8967,26 +9120,22 @@ class HermesCLI:
                         # Auto-restore stashed input after agent finishes,
                         # but only if the buffer is empty — never clobber text
                         # the user started typing while the agent was responding.
-                        if self._stashed_input:
-                            if self.stash_auto_restore:
-                                stashed_text, stashed_images = self._stashed_input
-                                try:
-                                    buf = app.layout.current_buffer
-                                    if buf.text.strip():
-                                        # Buffer has content — leave stash intact,
-                                        # user can pop it manually with Ctrl+S.
-                                        _cprint(f"  {_DIM}📌 Stash kept (buffer not empty — Ctrl+S to pop){_RST}")
-                                    else:
-                                        self._stashed_input = None
-                                        if stashed_images:
-                                            self._attached_images.extend(stashed_images)
-                                        buf.text = stashed_text
-                                        buf.cursor_position = len(stashed_text)
-                                        _cprint(f"  {_DIM}📌 Stashed input restored{_RST}")
-                                except Exception:
-                                    pass
-                            else:
-                                _cprint(f"  {_DIM}📌 Stash ready — Ctrl+S to pop{_RST}")
+                        if self.stash_auto_restore and self._stash_list:
+                            try:
+                                buf = app.layout.current_buffer
+                                if not buf.text.strip():
+                                    item = self._stash_list.pop(0)
+                                    buf.text = item["text"]
+                                    buf.cursor_position = len(item["text"])
+                                    if item["images"]:
+                                        self._attached_images.extend(item["images"])
+                                    _cprint(f"  {_DIM}📌 Stash item auto-restored{_RST}")
+                                else:
+                                    _cprint(f"  {_DIM}📌 Stash has {len(self._stash_list)} item{'s' if len(self._stash_list) != 1 else ''} — Ctrl+S to browse{_RST}")
+                            except Exception:
+                                pass
+                        elif self._stash_list:
+                            _cprint(f"  {_DIM}📌 Stash has {len(self._stash_list)} item{'s' if len(self._stash_list) != 1 else ''} — Ctrl+S to browse/pop{_RST}")
 
                         # Post-turn queue dispatch.
                         # Steering always takes priority — follow-up only runs when steering is empty.

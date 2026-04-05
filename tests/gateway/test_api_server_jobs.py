@@ -541,8 +541,8 @@ class TestCronUnavailable:
                 assert "not available" in data["error"].lower()
 
     @pytest.mark.asyncio
-    async def test_cron_handler_accepts_plain_function_patch(self, adapter):
-        """The adapter should call cron helpers without binding self into class-level patches."""
+    async def test_pause_handler_accepts_plain_function_patch(self, adapter):
+        """Pause should work when the cron helper is patched with a plain class-level function."""
         app = _create_app(adapter)
         captured = {}
 
@@ -559,6 +559,52 @@ class TestCronUnavailable:
                 data = await resp.json()
                 assert data["job"] == SAMPLE_JOB
                 assert captured["job_id"] == VALID_JOB_ID
+
+    @pytest.mark.asyncio
+    async def test_list_handler_accepts_plain_function_patch(self, adapter):
+        """List should preserve keyword arguments when the helper is a plain class-level function."""
+        app = _create_app(adapter)
+        captured = {}
+
+        def _plain_list(include_disabled=False):
+            captured["include_disabled"] = include_disabled
+            return [SAMPLE_JOB]
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(APIServerAdapter, "_CRON_AVAILABLE", True), patch.object(
+                APIServerAdapter, "_cron_list", _plain_list
+            ):
+                resp = await cli.get("/api/jobs?include_disabled=true")
+                assert resp.status == 200
+                data = await resp.json()
+                assert data["jobs"] == [SAMPLE_JOB]
+                assert captured["include_disabled"] is True
+
+    @pytest.mark.asyncio
+    async def test_update_handler_accepts_plain_function_patch(self, adapter):
+        """Update should pass positional arguments correctly to plain class-level patches."""
+        app = _create_app(adapter)
+        captured = {}
+        updated_job = {**SAMPLE_JOB, "name": "updated-name"}
+
+        def _plain_update(job_id, updates):
+            captured["job_id"] = job_id
+            captured["updates"] = updates
+            return updated_job
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(APIServerAdapter, "_CRON_AVAILABLE", True), patch.object(
+                APIServerAdapter, "_cron_update", _plain_update
+            ):
+                resp = await cli.patch(
+                    f"/api/jobs/{VALID_JOB_ID}",
+                    json={"name": "updated-name"},
+                )
+                assert resp.status == 200
+                data = await resp.json()
+                assert data["job"] == updated_job
+                assert captured["job_id"] == VALID_JOB_ID
+                assert captured["updates"] == {"name": "updated-name"}
 
     @pytest.mark.asyncio
     async def test_cron_unavailable_create(self, adapter):

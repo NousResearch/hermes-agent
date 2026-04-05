@@ -4102,8 +4102,6 @@ class HermesCLI:
             self.console.print(f"  Status bar {state}")
         elif canonical == "verbose":
             self._toggle_verbose()
-        elif canonical == "code-highlight":
-            self._toggle_code_highlight()
         elif canonical == "yolo":
             self._toggle_yolo()
         elif canonical == "reasoning":

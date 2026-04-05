@@ -459,6 +459,12 @@ class TestFormatResponse:
         for line in plain.splitlines():
             assert not line.strip().startswith("````"), f"4-backtick fence leaked: {line!r}"
 
+    @pytest.mark.parametrize("lang", ["c++", "objective-c", "shell-session", "f#"])
+    def test_fence_info_strings_accept_common_punctuation(self, lang):
+        plain = _strip(format_response(f"```{lang}\nint x;\n```\n"))
+        assert "```" not in plain
+        assert "int x;" in plain
+
     def test_inline_code_in_prose_styled(self):
         """Inline code spans in prose get ANSI styling."""
         text = "Use `foo()` to call it."
@@ -1811,6 +1817,12 @@ class TestStreamingBlockBuffer:
         ansi_idx = next(i for i, l in enumerate(lines) if ansi in l)
         assert table_idx < ansi_idx
 
+    def test_blockquote_pending_prose_flushes_before_ansi_code(self):
+        result = render_stateful_blocks("> quote\n\033[2m1 │\033[0m x=1\n")
+        lines = _strip(result).splitlines()
+        assert lines[0].startswith("▌ quote")
+        assert "1 │ x=1" in lines[1]
+
     def test_ol_item_not_setext_candidate_with_hr(self):
         """OL item followed by '---' must NOT become a setext heading."""
         buf = StreamingBlockBuffer()
@@ -1852,6 +1864,12 @@ class TestStreamingBlockBuffer:
         assert "x" in plain
         # separator row must be replaced by dashes
         assert "---|" not in plain
+
+    def test_loose_table_separator_shape_must_match_header(self):
+        result = render_stateful_blocks("foo | bar\n---\n")
+        plain = _strip(result)
+        assert "foo | bar" in plain
+        assert "foo  bar" not in plain
 
     def test_streaming_loose_table_strict_separator(self):
         """StreamingBlockBuffer handles loose header + strict separator."""
@@ -2219,6 +2237,19 @@ class TestRefLinkResolution:
         buf.process_line("[myref]: https://example.com")
         assert "myref" in buf._ref_map
         assert buf._ref_map["myref"] == "https://example.com"
+
+    def test_fenced_ref_def_does_not_leak_into_batch_resolution(self):
+        result = format_response("```\n[ref]: https://example.com\n```\nUse [x][ref].\n")
+        plain = _strip(result)
+        assert "[x][ref]" in plain
+
+    def test_fenced_ref_def_does_not_populate_streaming_ref_map(self):
+        buf = StreamingBlockBuffer()
+        buf.process_line("```")
+        buf.process_line("[ref]: https://example.com")
+        buf.process_line("```")
+        buf.flush()
+        assert "ref" not in buf._ref_map
 
     def test_streaming_bq_line_uses_ref_map(self):
         # BQ continuation content IS rendered via apply_inline_markdown with ref_map.

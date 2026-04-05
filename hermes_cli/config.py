@@ -362,6 +362,7 @@ DEFAULT_CONFIG = {
         "show_reasoning": False,
         "streaming": False,
         "inline_diffs": True,     # Show inline diff previews for write actions (write_file, patch, skill_manage)
+        "code_highlight": True,   # Highlight source-like tool output previews and fenced code blocks
         "show_cost": False,       # Show $ cost in the status bar (off by default)
         "skin": "default",
         "tool_progress_command": False,  # Enable /verbose command in messaging gateway

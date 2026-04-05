@@ -917,6 +917,9 @@ _MD_REF_LINK_RE = re.compile(r"^\[[^\]]+\]:\s+\S+")
 _REF_DEF_RE = re.compile(r'^\[([^\]]+)\]:\s*(\S+)(?:\s+(?:"[^"]*"|\'[^\']*\'|\([^)]*\)))?\s*$')
 _MD_REF_LINK_USE_RE = re.compile(r'\[([^\]]+)\]\[([^\]]*)\]')
 _MD_REF_LINK_COLL_RE = re.compile(r'\[([^\]]+)\]\[\]')
+_FENCE_INFO_RE = r"[^\s`]*"
+_FENCE_OPEN_LINE_RE = re.compile(rf"^(`{{3,}})\s*({_FENCE_INFO_RE})$")
+_FENCE_CLOSE_LINE_RE = re.compile(r"^(`+)\s*$")
 
 _HEADING_STYLES = {
     1: "\033[1;97m",
@@ -1084,6 +1087,26 @@ def _is_heading_candidate(pending: Optional[str]) -> bool:
     return apply_block_line(pending) is pending
 
 
+def _collect_ref_defs(text: str) -> dict[str, str]:
+    ref_map: dict[str, str] = {}
+    fence_depth = 0
+    for raw_line in text.splitlines():
+        stripped = raw_line.strip()
+        if fence_depth:
+            m = _FENCE_CLOSE_LINE_RE.match(stripped)
+            if m and len(m.group(1)) >= fence_depth:
+                fence_depth = 0
+            continue
+        m = _FENCE_OPEN_LINE_RE.match(stripped)
+        if m:
+            fence_depth = len(m.group(1))
+            continue
+        rm = _REF_DEF_RE.match(stripped)
+        if rm:
+            ref_map[rm.group(1).lower()] = rm.group(2)
+    return ref_map
+
+
 def _render_table(rows: list[list[str]], sep_idx: Optional[int], align: list[str], cols: int, framed: bool = False) -> str:
     if not rows:
         return ""
@@ -1151,12 +1174,7 @@ def render_stateful_blocks(text: str) -> str:
     Runs a single left-to-right scan.  Skips lines that already contain
     ``\\x1b`` (highlighted code from pass 1).
     """
-    # Pre-pass: collect reference link definitions into ref_map
-    ref_map: dict[str, str] = {}
-    for raw_line in text.splitlines():
-        rm = _REF_DEF_RE.match(raw_line.strip())
-        if rm:
-            ref_map[rm.group(1).lower()] = rm.group(2)
+    ref_map = _collect_ref_defs(text)
 
     lines = text.splitlines()
     out: list = []
@@ -1225,6 +1243,10 @@ def render_stateful_blocks(text: str) -> str:
         if "\x1b" in line:
             _flush_table_to_out()
             if _bq_depth:
+                if _pending is not None and _MD_BQ_LEVEL_RE.match(_pending):
+                    pm = _MD_BQ_LEVEL_RE.match(_pending)
+                    _emit(_render_bq_depth(pm.group(2), pm.group(1).count('>')))
+                    _pending = None
                 _emit(f"{_BLOCKQUOTE_ANSI}▌ {_MD_RST_ANSI}{line}")
             else:
                 _bq_depth = 0
@@ -1331,8 +1353,13 @@ def render_stateful_blocks(text: str) -> str:
         # Loose table separator (no leading pipe, e.g. "---|---|---" or "--- --- ---").
         # Current line must look like a separator; pending line must be a loose header.
         if _pending is not None and "|" in _pending and "-" in line and _TABLE_SEP_RE.match(line.strip()):
+            _header_cells = _split_row(_pending)
             _loose_cells = _split_row(line)
-            if _loose_cells and all(_SEP_CELL_RE.match(c) for c in _loose_cells):
+            if (
+                _loose_cells
+                and len(_loose_cells) == len(_header_cells)
+                and all(_SEP_CELL_RE.match(c) for c in _loose_cells)
+            ):
                 _on_table_row(_pending)
                 _pending = None
                 _on_table_row(line)
@@ -1398,6 +1425,7 @@ class StreamingBlockBuffer:
         self._table_strict: bool = False
         self._emit_next: Optional[str] = None
         self._ref_map: dict[str, str] = {}
+        self._fence_depth: int = 0
 
     def reset(self) -> None:
         """Reset all state for a new response turn."""
@@ -1411,6 +1439,7 @@ class StreamingBlockBuffer:
         self._table_strict = False
         self._emit_next = None
         self._ref_map = {}
+        self._fence_depth = 0
 
     def process_line(self, line: str) -> Optional[str]:
         """Process one line.
@@ -1464,10 +1493,19 @@ class StreamingBlockBuffer:
 
     def _handle_line(self, line: str) -> Optional[str]:
         """Core state machine: priorities 2–4."""
-        # Collect reference link definitions as they arrive (streaming pre-pass)
-        rm = _REF_DEF_RE.match(line.strip())
-        if rm:
-            self._ref_map[rm.group(1).lower()] = rm.group(2)
+        stripped = line.strip()
+        if self._fence_depth:
+            m = _FENCE_CLOSE_LINE_RE.match(stripped)
+            if m and len(m.group(1)) >= self._fence_depth:
+                self._fence_depth = 0
+        else:
+            m = _FENCE_OPEN_LINE_RE.match(stripped)
+            if m:
+                self._fence_depth = len(m.group(1))
+            else:
+                rm = _REF_DEF_RE.match(stripped)
+                if rm:
+                    self._ref_map[rm.group(1).lower()] = rm.group(2)
 
         # Priority 2: blockquote continuation
         if self._bq_depth:
@@ -1613,8 +1651,13 @@ class StreamingBlockBuffer:
 
         # Loose table separator (no leading pipe, e.g. "---|---|---" or "--- --- ---").
         if self._pending is not None and "|" in self._pending and "-" in line and _TABLE_SEP_RE.match(line.strip()):
+            _header_cells = _split_row(self._pending)
             _loose_cells = _split_row(line)
-            if _loose_cells and all(_SEP_CELL_RE.match(c) for c in _loose_cells):
+            if (
+                _loose_cells
+                and len(_loose_cells) == len(_header_cells)
+                and all(_SEP_CELL_RE.match(c) for c in _loose_cells)
+            ):
                 self._on_table_row(self._pending)
                 self._pending = None
                 self._on_table_row(line)
@@ -1757,17 +1800,11 @@ def format_response(text: str) -> str:
         highlighted = _hl.to_ansi(code, language=lang).rstrip("\n")
         return _number_code_lines(highlighted)
 
-    # Pre-pass: collect reference link definitions for inline resolution
-    ref_map: dict[str, str] = {}
-    for raw_line in text.splitlines():
-        rm = _REF_DEF_RE.match(raw_line.strip())
-        if rm:
-            ref_map[rm.group(1).lower()] = rm.group(2)
-
     # Match fenced code blocks of any depth (3+ backticks); \1 backreference
     # ensures the closing fence uses the same backtick sequence as the opener.
-    fence_re = re.compile(r"(?m)^(`{3,})(\w*)\n(.*?)\1", re.DOTALL)
+    fence_re = re.compile(rf"(?m)^(`{{3,}})\s*({_FENCE_INFO_RE})\n(.*?)\1", re.DOTALL)
     text = re.sub(fence_re, _highlight_block, text)
+    ref_map = _collect_ref_defs(text)
     # Pass 2: stateful block elements (setext headings, blockquote continuation, tables)
     text = render_stateful_blocks(text)
     # Pass 3: per non-ANSI line — block + inline markdown.
@@ -1804,8 +1841,9 @@ class StreamingCodeBlockHighlighter:
             emit(tail)
     """
 
-    # Matches an opening fence: 3+ backticks, optional language hint (word chars)
-    _FENCE_OPEN_RE = re.compile(r"^(`{3,})\s*(\w*)$")
+    # Matches an opening fence: 3+ backticks, optional language hint supporting
+    # common Markdown info-string punctuation like c++, f#, or shell-session.
+    _FENCE_OPEN_RE = re.compile(rf"^(`{{3,}})\s*({_FENCE_INFO_RE})$")
     # Matches a closing fence: 3+ backticks, optional trailing whitespace only
     _FENCE_CLOSE_RE = re.compile(r"^(`+)\s*$")
 

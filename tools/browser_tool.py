@@ -65,6 +65,11 @@ import requests
 from typing import Dict, Any, Optional, List, Tuple, Union
 from pathlib import Path
 from agent.auxiliary_client import call_llm
+from agent.redact import (
+    redact_sensitive_text,
+    _redact_url_query_params,
+    _redact_url_userinfo,
+)
 from hermes_constants import agent_browser_runnable, get_hermes_home
 from utils import env_int, is_truthy_value
 from hermes_cli.config import DEFAULT_CONFIG, cfg_get
@@ -234,6 +239,26 @@ _EMPTY_OK_COMMANDS: frozenset = frozenset({"close", "record"})
 
 _cached_command_timeout: Optional[int] = None
 _command_timeout_resolved = False
+
+
+def _sanitize_url_for_logs(value: object) -> str:
+    """Mask secrets in logged browser endpoint URLs and URL-like errors.
+
+    The global ``redact_sensitive_text`` deliberately passes web-URL query
+    params and ``user:pass@`` userinfo through unmasked (OAuth callbacks,
+    magic-link / pre-signed URLs the agent is meant to follow — see the
+    web-URL note in ``agent/redact.py``). CDP discovery endpoints are NOT
+    such a workflow: their query-string tokens and userinfo passwords are
+    pure credentials that must never reach the logs. So at these log sites
+    we opt INTO the URL redactors that the global pass leaves off, reusing
+    the shared ``redact.py`` helpers rather than a second regex.
+    """
+    text = redact_sensitive_text(value)
+    if not text:
+        return text
+    text = _redact_url_query_params(text)
+    text = _redact_url_userinfo(text)
+    return text
 
 
 def _get_command_timeout() -> int:
@@ -409,15 +434,27 @@ def _resolve_cdp_override(cdp_url: str) -> str:
         response.raise_for_status()
         payload = response.json()
     except Exception as exc:
-        logger.warning("Failed to resolve CDP endpoint %s via %s: %s", raw, version_url, exc)
+        logger.warning(
+            "Failed to resolve CDP endpoint %s via %s: %s",
+            _sanitize_url_for_logs(raw),
+            _sanitize_url_for_logs(version_url),
+            _sanitize_url_for_logs(exc),
+        )
         return raw
 
     ws_url = str(payload.get("webSocketDebuggerUrl") or "").strip()
     if ws_url:
-        logger.info("Resolved CDP endpoint %s -> %s", raw, ws_url)
+        logger.info(
+            "Resolved CDP endpoint %s -> %s",
+            _sanitize_url_for_logs(raw),
+            _sanitize_url_for_logs(ws_url),
+        )
         return ws_url
 
-    logger.warning("CDP discovery at %s did not return webSocketDebuggerUrl; using raw endpoint", version_url)
+    logger.warning(
+        "CDP discovery at %s did not return webSocketDebuggerUrl; using raw endpoint",
+        _sanitize_url_for_logs(version_url),
+    )
     return raw
 
 

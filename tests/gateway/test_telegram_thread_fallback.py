@@ -37,6 +37,12 @@ class FakeTimedOut(FakeNetworkError):
     pass
 
 
+class FakeRetryAfter(Exception):
+    def __init__(self, seconds):
+        super().__init__(f"Retry after {seconds}")
+        self.retry_after = seconds
+
+
 # Build a fake telegram module tree so the adapter's internal imports work
 _fake_telegram = types.ModuleType("telegram")
 _fake_telegram_error = types.ModuleType("telegram.error")
@@ -230,3 +236,25 @@ async def test_thread_fallback_only_fires_once():
     # Second chunk: should use thread_id=None directly (effective_thread_id
     # was cleared per-chunk but the metadata doesn't change between chunks)
     # The key point: the message was delivered despite the invalid thread
+
+
+@pytest.mark.asyncio
+async def test_send_retries_retry_after_errors():
+    """Telegram flood control should back off and retry instead of failing fast."""
+    adapter = _make_adapter()
+
+    attempt = [0]
+
+    async def mock_send_message(**kwargs):
+        attempt[0] += 1
+        if attempt[0] == 1:
+            raise FakeRetryAfter(2)
+        return SimpleNamespace(message_id=300)
+
+    adapter._bot = SimpleNamespace(send_message=mock_send_message)
+
+    result = await adapter.send(chat_id="123", content="test message")
+
+    assert result.success is True
+    assert result.message_id == "300"
+    assert attempt[0] == 2

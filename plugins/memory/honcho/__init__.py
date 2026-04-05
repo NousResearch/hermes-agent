@@ -187,7 +187,7 @@ class HonchoMemoryProvider(MemoryProvider):
     def get_config_schema(self):
         return [
             {"key": "api_key", "description": "Honcho API key", "secret": True, "env_var": "HONCHO_API_KEY", "url": "https://app.honcho.dev"},
-            {"key": "base_url", "description": "Honcho base URL", "default": "https://api.honcho.dev"},
+            {"key": "baseUrl", "description": "Honcho base URL", "default": "https://api.honcho.dev"},
         ]
 
     def initialize(self, session_id: str, **kwargs) -> None:

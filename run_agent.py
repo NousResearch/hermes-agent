@@ -8702,6 +8702,11 @@ class AIAgent:
                 break
 
         # Build result with interrupt info if applicable
+        # Calculate history_offset for gateway to identify new messages
+        # This is the key to preventing "unindexed sessions" - gateway needs to know
+        # which messages were already in conversation_history vs which are new
+        history_offset = len(conversation_history) if conversation_history else 0
+        
         result = {
             "final_response": final_response,
             "last_reasoning": last_reasoning,
@@ -8726,6 +8731,7 @@ class AIAgent:
             "estimated_cost_usd": self.session_estimated_cost_usd,
             "cost_status": self.session_cost_status,
             "cost_source": self.session_cost_source,
+            "history_offset": history_offset,  # Key for gateway to identify new messages
         }
         self._response_was_previewed = False
         

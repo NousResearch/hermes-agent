@@ -4,6 +4,7 @@ set -e
 
 HERMES_HOME="/opt/data"
 INSTALL_DIR="/opt/hermes"
+INSTALL_CAMOUFOX_BROWSER="${INSTALL_CAMOUFOX_BROWSER:-0}"
 
 # Create essential directory structure.  Cache and platform directories
 # (cache/images, cache/audio, platforms/whatsapp, etc.) are created on
@@ -29,6 +30,16 @@ fi
 # Sync bundled skills (manifest-based so user edits are preserved)
 if [ -d "$INSTALL_DIR/skills" ]; then
     python3 "$INSTALL_DIR/tools/skills_sync.py"
+fi
+
+# Optional: install the Camoufox browser package at container start.
+if [ "$INSTALL_CAMOUFOX_BROWSER" = "1" ] || [ "$INSTALL_CAMOUFOX_BROWSER" = "true" ] || [ "$INSTALL_CAMOUFOX_BROWSER" = "TRUE" ]; then
+    if [ -d "$INSTALL_DIR/node_modules/@askjo/camoufox-browser" ]; then
+        echo "Camoufox browser package already installed."
+    else
+        echo "Installing Camoufox browser package..."
+        npm install --prefix "$INSTALL_DIR" --no-audit @askjo/camoufox-browser
+    fi
 fi
 
 exec hermes gateway run

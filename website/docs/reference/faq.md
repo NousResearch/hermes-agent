@@ -527,6 +527,187 @@ There is no hard limit. Each profile is just a directory under `~/.hermes/profil
 
 ---
 
+## Workflows & Patterns
+
+### Using different models for different tasks (multi-model workflows)
+
+**Scenario:** You use GPT-5.4 as your daily driver, but Gemini or Grok writes better social media content. Manually switching models every time is tedious.
+
+**Solution: Delegation config.** Hermes can route subagents to a different model automatically. Set this in `~/.hermes/config.yaml`:
+
+```yaml
+delegation:
+  model: "google/gemini-3-flash-preview"   # subagents use this model
+  provider: "openrouter"                    # provider for subagents
+```
+
+Now when you tell Hermes "write me a Twitter thread about X" and it spawns a `delegate_task` subagent, that subagent runs on Gemini instead of your main model. Your primary conversation stays on GPT-5.4.
+
+You can also be explicit in your prompt: *"Delegate a task to write social media posts about our product launch. Use your subagent for the actual writing."* The agent will use `delegate_task`, which automatically picks up the delegation config.
+
+For one-off model switches without delegation, use `/model` in the CLI:
+
+```bash
+/model google/gemini-3-flash-preview    # switch for this session
+# ... write your content ...
+/model openai/gpt-5.4                   # switch back
+```
+
+See [Subagent Delegation](../user-guide/features/delegation.md) for more on how delegation works.
+
+### Running multiple agents on one WhatsApp number (per-chat binding)
+
+**Scenario:** In OpenClaw, you had multiple independent agents bound to specific WhatsApp chats — one for a family shopping list group, another for your private chat. Can Hermes do this?
+
+**Current limitation:** Hermes profiles each require their own WhatsApp number/session. You cannot bind multiple profiles to different chats on the same WhatsApp number — the WhatsApp bridge (Baileys) uses one authenticated session per number.
+
+**Workarounds:**
+
+1. **Use a single profile with personality switching.** Create different `AGENTS.md` context files or use the `/personality` command to change behavior per chat. The agent sees which chat it's in and can adapt.
+
+2. **Use cron jobs for specialized tasks.** For a shopping list tracker, set up a cron job that monitors a specific chat and manages the list — no separate agent needed.
+
+3. **Use separate numbers.** If you need truly independent agents, pair each profile with its own WhatsApp number. Virtual numbers from services like Google Voice work for this.
+
+4. **Use Telegram or Discord instead.** These platforms support per-chat binding more naturally — each Telegram group or Discord channel gets its own session, and you can run multiple bot tokens (one per profile) on the same account.
+
+See [Profiles](../user-guide/profiles.md) and [WhatsApp setup](../user-guide/messaging/whatsapp.md) for more details.
+
+### Controlling what shows up in Telegram (hiding logs and reasoning)
+
+**Scenario:** You see gateway exec logs, Hermes reasoning, and tool call details in Telegram instead of just the final output.
+
+**Solution:** The `display.tool_progress` setting in `config.yaml` controls how much tool activity is shown:
+
+```yaml
+display:
+  tool_progress: "off"   # options: off, new, all, verbose
+```
+
+- **`off`** — Only the final response. No tool calls, no reasoning, no logs.
+- **`new`** — Shows new tool calls as they happen (brief one-liners).
+- **`all`** — Shows all tool activity including results.
+- **`verbose`** — Full detail including tool arguments and outputs.
+
+For messaging platforms, `off` or `new` is usually what you want. After editing `config.yaml`, restart the gateway for changes to take effect.
+
+You can also toggle this per-session with the `/verbose` command (if enabled):
+
+```yaml
+display:
+  tool_progress_command: true   # enables /verbose in the gateway
+```
+
+### Managing skills on Telegram (slash command limit)
+
+**Scenario:** Telegram has a 100 slash command limit, and your skills are pushing past it. You want to disable skills you don't need on Telegram, but `hermes skills config` settings don't seem to take effect.
+
+**Solution:** Use `hermes skills config` to disable skills per-platform. This writes to `config.yaml`:
+
+```yaml
+skills:
+  disabled: []                    # globally disabled skills
+  platform_disabled:
+    telegram: [skill-a, skill-b]  # disabled only on telegram
+```
+
+After changing this, **restart the gateway** (`hermes gateway restart` or kill and relaunch). The Telegram bot command menu rebuilds on startup.
+
+:::tip
+Skills with very long descriptions are truncated to 40 characters in the Telegram menu to stay within payload size limits. If skills aren't appearing, it may be a total payload size issue rather than the 100 command count limit — disabling unused skills helps with both.
+:::
+
+### Shared thread sessions (multiple users, one conversation)
+
+**Scenario:** You have a Telegram or Discord thread where multiple people mention the bot. You want all mentions in that thread to be part of one shared conversation, not separate per-user sessions.
+
+**Current behavior:** Hermes creates sessions keyed by user ID on most platforms, so each person gets their own conversation context. This is by design for privacy and context isolation.
+
+**Workarounds:**
+
+1. **Use Slack.** Slack sessions are keyed by thread, not by user. Multiple users in the same thread share one conversation — exactly the behavior you're describing. This is the most natural fit.
+
+2. **Use a group chat with a single user.** If one person is the designated "operator" who relays questions, the session stays unified. Others can read along.
+
+3. **Use a Discord channel.** Discord sessions are keyed by channel, so all users in the same channel share context. Use a dedicated channel for the shared conversation.
+
+### Exporting Hermes to another machine
+
+**Scenario:** You've built up skills, cron jobs, and memories on one machine and want to move everything to a new dedicated Linux box.
+
+**Solution:**
+
+1. Install Hermes Agent on the new machine:
+   ```bash
+   curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
+   ```
+
+2. Copy your entire `~/.hermes/` directory **except** the `hermes-agent` subdirectory (that's the code repo — the new install has its own):
+   ```bash
+   # On the source machine
+   rsync -av --exclude='hermes-agent' ~/.hermes/ newmachine:~/.hermes/
+   ```
+
+   Or use profile export/import:
+   ```bash
+   # On source machine
+   hermes profile export default ./hermes-backup.tar.gz
+
+   # On target machine
+   hermes profile import ./hermes-backup.tar.gz default
+   ```
+
+3. On the new machine, run `hermes setup` to verify API keys and provider config are working. Re-authenticate any messaging platforms (especially WhatsApp, which uses QR pairing).
+
+The `~/.hermes/` directory contains everything: `config.yaml`, `.env`, `SOUL.md`, `memories/`, `skills/`, `state.db` (sessions), `cron/`, and any custom plugins. The code itself lives in `~/.hermes/hermes-agent/` and is installed fresh.
+
+### Permission denied when reloading shell after install
+
+**Scenario:** After running the Hermes installer, `source ~/.zshrc` gives a permission denied error.
+
+**Cause:** This usually happens when `~/.zshrc` (or `~/.bashrc`) has incorrect file permissions, or when the installer couldn't write to it cleanly. It's not a Hermes-specific issue — it's a shell config permissions problem.
+
+**Solution:**
+```bash
+# Check permissions
+ls -la ~/.zshrc
+
+# Fix if needed (should be -rw-r--r-- or 644)
+chmod 644 ~/.zshrc
+
+# Then reload
+source ~/.zshrc
+
+# Or just open a new terminal window — it picks up PATH changes automatically
+```
+
+If the installer added the PATH line but permissions are wrong, you can add it manually:
+```bash
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
+```
+
+### Error 400 on first agent run
+
+**Scenario:** Setup completes fine, but the first chat attempt fails with HTTP 400.
+
+**Cause:** Usually a model name mismatch — the configured model doesn't exist on your provider, or the API key doesn't have access to it.
+
+**Solution:**
+```bash
+# Check what model and provider are configured
+hermes config show | head -20
+
+# Re-run model selection
+hermes model
+
+# Or test with a known-good model
+hermes chat -q "hello" --model anthropic/claude-sonnet-4.6
+```
+
+If using OpenRouter, make sure your API key has credits. A 400 from OpenRouter often means the model requires a paid plan or the model ID has a typo.
+
+---
+
 ## Still Stuck?
 
 If your issue isn't covered here:

@@ -191,6 +191,145 @@ class TestHistoryDisplay:
         assert "A" * 250 in output
         assert "A" * 250 + "..." not in output
 
+    def test_history_shows_recent_sessions_when_current_chat_is_empty(self, capsys):
+        cli = _make_cli()
+        cli.session_id = "current"
+        cli._session_db = MagicMock()
+        cli._session_db.list_sessions_rich.return_value = [
+            {
+                "id": "current",
+                "title": "Current",
+                "preview": "Current preview",
+                "last_active": 0,
+            },
+            {
+                "id": "20260401_201329_d85961",
+                "title": "Checking Running Hermes Agent",
+                "preview": "check running gateways for hermes agent",
+                "last_active": 0,
+            },
+        ]
+
+        cli.show_history()
+        output = capsys.readouterr().out
+
+        assert "No messages in the current chat yet" in output
+        assert "Checking Running Hermes Agent" in output
+        assert "20260401_201329_d85961" in output
+        assert "/resume" in output
+        assert "Current preview" not in output
+
+    def test_resume_without_target_lists_recent_sessions(self, capsys):
+        cli = _make_cli()
+        cli.session_id = "current"
+        cli._session_db = MagicMock()
+        cli._session_db.list_sessions_rich.return_value = [
+            {
+                "id": "current",
+                "title": "Current",
+                "preview": "Current preview",
+                "last_active": 0,
+            },
+            {
+                "id": "20260401_201329_d85961",
+                "title": "Checking Running Hermes Agent",
+                "preview": "check running gateways for hermes agent",
+                "last_active": 0,
+            },
+        ]
+
+        cli._handle_resume_command("/resume")
+        output = capsys.readouterr().out
+
+        assert "Recent sessions" in output
+        assert "Checking Running Hermes Agent" in output
+        assert "Use /resume <session id or title> to continue" in output
+
+
+class TestRootLevelProviderOverride:
+    """Root-level provider/base_url in config.yaml must NOT override model.provider."""
+
+    def test_model_provider_wins_over_root_provider(self, tmp_path, monkeypatch):
+        """model.provider takes priority — root-level provider is only a fallback."""
+        import yaml
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(yaml.safe_dump({
+            "provider": "opencode-go",  # stale root-level key
+            "model": {
+                "default": "google/gemini-3-flash-preview",
+                "provider": "openrouter",  # correct canonical key
+            },
+        }))
+
+        import cli
+        monkeypatch.setattr(cli, "_hermes_home", hermes_home)
+        cfg = cli.load_cli_config()
+
+        assert cfg["model"]["provider"] == "openrouter"
+
+    def test_root_provider_ignored_when_default_model_provider_exists(self, tmp_path, monkeypatch):
+        """Even when model.provider is the default 'auto', root-level provider is ignored."""
+        import yaml
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(yaml.safe_dump({
+            "provider": "opencode-go",  # stale root key
+            "model": {
+                "default": "google/gemini-3-flash-preview",
+                # no explicit model.provider — defaults provide "auto"
+            },
+        }))
+
+        import cli
+        monkeypatch.setattr(cli, "_hermes_home", hermes_home)
+        cfg = cli.load_cli_config()
+
+        # Root-level "opencode-go" must NOT leak through
+        assert cfg["model"]["provider"] != "opencode-go"
+
+    def test_normalize_root_model_keys_moves_to_model(self):
+        """_normalize_root_model_keys migrates root keys into model section."""
+        from hermes_cli.config import _normalize_root_model_keys
+
+        config = {
+            "provider": "opencode-go",
+            "base_url": "https://example.com/v1",
+            "model": {
+                "default": "some-model",
+            },
+        }
+        result = _normalize_root_model_keys(config)
+        # Root keys removed
+        assert "provider" not in result
+        assert "base_url" not in result
+        # Migrated into model section
+        assert result["model"]["provider"] == "opencode-go"
+        assert result["model"]["base_url"] == "https://example.com/v1"
+
+    def test_normalize_root_model_keys_does_not_override_existing(self):
+        """Existing model.provider is never overridden by root-level key."""
+        from hermes_cli.config import _normalize_root_model_keys
+
+        config = {
+            "provider": "stale-provider",
+            "model": {
+                "default": "some-model",
+                "provider": "correct-provider",
+            },
+        }
+        result = _normalize_root_model_keys(config)
+        assert result["model"]["provider"] == "correct-provider"
+        assert "provider" not in result  # root key still cleaned up
+
 
 class TestRootLevelProviderOverride:
     """Root-level provider/base_url in config.yaml must NOT override model.provider."""

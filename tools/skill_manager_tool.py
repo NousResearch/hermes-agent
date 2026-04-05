@@ -203,14 +203,19 @@ def _resolve_skill_dir(name: str, category: str = None) -> Path:
 
 def _find_skill(name: str) -> Optional[Dict[str, Any]]:
     """
-    Find a skill by name in ~/.hermes/skills/.
-    Returns {"path": Path} or None.
+    Find a skill by name across all skill directories.
+
+    Searches the local skills dir (~/.hermes/skills/) first, then any
+    external dirs configured via skills.external_dirs.  Returns
+    {"path": Path} or None.
     """
-    if not SKILLS_DIR.exists():
-        return None
-    for skill_md in SKILLS_DIR.rglob("SKILL.md"):
-        if skill_md.parent.name == name:
-            return {"path": skill_md.parent}
+    from agent.skill_utils import get_all_skills_dirs
+    for skills_dir in get_all_skills_dirs():
+        if not skills_dir.exists():
+            continue
+        for skill_md in skills_dir.rglob("SKILL.md"):
+            if skill_md.parent.name == name:
+                return {"path": skill_md.parent}
     return None
 
 

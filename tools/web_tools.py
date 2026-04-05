@@ -803,6 +803,15 @@ Create a single, unified markdown summary."""
             logger.warning("Synthesis LLM returned empty content, retrying once")
             response = await async_call_llm(**call_kwargs)
             final_summary = extract_content_or_reasoning(response)
+
+        # If still None after retry, fall back to concatenated summaries
+        if not final_summary:
+            logger.warning("Synthesis failed after retry — concatenating chunk summaries")
+            fallback = "\n\n".join(summaries)
+            if len(fallback) > max_output_size:
+                fallback = fallback[:max_output_size] + "\n\n[... truncated ...]"
+            return fallback
+
         # Enforce hard cap
         if len(final_summary) > max_output_size:
             final_summary = final_summary[:max_output_size] + "\n\n[... summary truncated for context management ...]"

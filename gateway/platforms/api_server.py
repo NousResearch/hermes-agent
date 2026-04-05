@@ -391,6 +391,24 @@ class APIServerAdapter(BasePlatformAdapter):
         )
 
     # ------------------------------------------------------------------
+    # Session DB helper
+    # ------------------------------------------------------------------
+
+    def _ensure_session_db(self):
+        """Lazily initialise and return the shared SessionDB instance.
+
+        Sessions are persisted to ``state.db`` so that ``hermes sessions list``
+        shows API-server conversations alongside CLI and gateway ones.
+        """
+        if self._session_db is None:
+            try:
+                from hermes_state import SessionDB
+                self._session_db = SessionDB()
+            except Exception as e:
+                logger.debug("SessionDB unavailable for API server: %s", e)
+        return self._session_db
+
+    # ------------------------------------------------------------------
     # Agent creation helper
     # ------------------------------------------------------------------
 
@@ -433,6 +451,7 @@ class APIServerAdapter(BasePlatformAdapter):
             platform="api_server",
             stream_delta_callback=stream_delta_callback,
             tool_progress_callback=tool_progress_callback,
+            session_db=self._ensure_session_db(),
         )
         return agent
 
@@ -521,10 +540,9 @@ class APIServerAdapter(BasePlatformAdapter):
         if provided_session_id:
             session_id = provided_session_id
             try:
-                if self._session_db is None:
-                    from hermes_state import SessionDB
-                    self._session_db = SessionDB()
-                history = self._session_db.get_messages_as_conversation(session_id)
+                db = self._ensure_session_db()
+                if db is not None:
+                    history = db.get_messages_as_conversation(session_id)
             except Exception as e:
                 logger.warning("Failed to load session history for %s: %s", session_id, e)
                 history = []

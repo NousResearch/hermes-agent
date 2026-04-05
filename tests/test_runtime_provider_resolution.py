@@ -643,6 +643,34 @@ def test_model_config_api_mode(monkeypatch):
     assert resolved["base_url"] == "http://127.0.0.1:9208/v1"
 
 
+def test_model_config_api_mode_ignored_when_provider_differs(monkeypatch):
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "zai")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "opencode-go",
+            "default": "minimax-m2.5",
+            "api_mode": "anthropic_messages",
+        },
+    )
+    monkeypatch.setattr(
+        rp,
+        "resolve_api_key_provider_credentials",
+        lambda provider: {
+            "provider": provider,
+            "api_key": "test-key",
+            "base_url": "https://api.z.ai/api/paas/v4",
+            "source": "env",
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="zai")
+
+    assert resolved["provider"] == "zai"
+    assert resolved["api_mode"] == "chat_completions"
+
+
 def test_invalid_api_mode_ignored(monkeypatch):
     """Invalid api_mode values should fall back to chat_completions."""
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
@@ -806,6 +834,81 @@ def test_alibaba_anthropic_endpoint_override_uses_anthropic_messages(monkeypatch
     assert resolved["provider"] == "alibaba"
     assert resolved["api_mode"] == "anthropic_messages"
     assert resolved["base_url"] == "https://coding-intl.dashscope.aliyuncs.com/apps/anthropic"
+
+
+def test_opencode_zen_gpt_defaults_to_responses(monkeypatch):
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "opencode-zen")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {"default": "gpt-5.4"})
+    monkeypatch.setenv("OPENCODE_ZEN_API_KEY", "test-opencode-zen-key")
+    monkeypatch.delenv("OPENCODE_ZEN_BASE_URL", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="opencode-zen")
+
+    assert resolved["provider"] == "opencode-zen"
+    assert resolved["api_mode"] == "codex_responses"
+    assert resolved["base_url"] == "https://opencode.ai/zen/v1"
+
+
+def test_opencode_zen_claude_defaults_to_messages(monkeypatch):
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "opencode-zen")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {"default": "claude-sonnet-4-6"})
+    monkeypatch.setenv("OPENCODE_ZEN_API_KEY", "test-opencode-zen-key")
+    monkeypatch.delenv("OPENCODE_ZEN_BASE_URL", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="opencode-zen")
+
+    assert resolved["provider"] == "opencode-zen"
+    assert resolved["api_mode"] == "anthropic_messages"
+    # Trailing /v1 stripped for anthropic_messages mode — the Anthropic SDK
+    # appends its own /v1/messages to the base_url.
+    assert resolved["base_url"] == "https://opencode.ai/zen"
+
+
+def test_opencode_go_minimax_defaults_to_messages(monkeypatch):
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "opencode-go")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {"default": "minimax-m2.5"})
+    monkeypatch.setenv("OPENCODE_GO_API_KEY", "test-opencode-go-key")
+    monkeypatch.delenv("OPENCODE_GO_BASE_URL", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="opencode-go")
+
+    assert resolved["provider"] == "opencode-go"
+    assert resolved["api_mode"] == "anthropic_messages"
+    # Trailing /v1 stripped — Anthropic SDK appends /v1/messages itself.
+    assert resolved["base_url"] == "https://opencode.ai/zen/go"
+
+
+def test_opencode_go_glm_defaults_to_chat_completions(monkeypatch):
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "opencode-go")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {"default": "glm-5"})
+    monkeypatch.setenv("OPENCODE_GO_API_KEY", "test-opencode-go-key")
+    monkeypatch.delenv("OPENCODE_GO_BASE_URL", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="opencode-go")
+
+    assert resolved["provider"] == "opencode-go"
+    assert resolved["api_mode"] == "chat_completions"
+    assert resolved["base_url"] == "https://opencode.ai/zen/go/v1"
+
+
+def test_opencode_go_configured_api_mode_still_overrides_default(monkeypatch):
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "opencode-go")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "opencode-go",
+            "default": "minimax-m2.5",
+            "api_mode": "chat_completions",
+        },
+    )
+    monkeypatch.setenv("OPENCODE_GO_API_KEY", "test-opencode-go-key")
+    monkeypatch.delenv("OPENCODE_GO_BASE_URL", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="opencode-go")
+
+    assert resolved["provider"] == "opencode-go"
+    assert resolved["api_mode"] == "chat_completions"
 
 
 def test_named_custom_provider_anthropic_api_mode(monkeypatch):

@@ -9,9 +9,11 @@ runs at a time if multiple processes overlap.
 """
 
 import asyncio
+import concurrent.futures
 import json
 import logging
 import os
+import subprocess
 import sys
 import traceback
 
@@ -228,10 +230,88 @@ def _deliver_result(job: dict, content: str) -> None:
         logger.info("Job '%s': delivered to %s:%s", job["id"], platform_name, chat_id)
 
 
+_SCRIPT_TIMEOUT = 120  # seconds
+
+
+def _run_job_script(script_path: str) -> tuple[bool, str]:
+    """Execute a cron job's data-collection script and capture its output.
+
+    Args:
+        script_path: Path to a Python script (resolved via HERMES_HOME/scripts/ or absolute).
+
+    Returns:
+        (success, output) — on failure *output* contains the error message so the
+        LLM can report the problem to the user.
+    """
+    from hermes_constants import get_hermes_home
+
+    path = Path(script_path).expanduser()
+    if not path.is_absolute():
+        # Resolve relative paths against HERMES_HOME/scripts/
+        path = get_hermes_home() / "scripts" / path
+
+    if not path.exists():
+        return False, f"Script not found: {path}"
+    if not path.is_file():
+        return False, f"Script path is not a file: {path}"
+
+    try:
+        result = subprocess.run(
+            [sys.executable, str(path)],
+            capture_output=True,
+            text=True,
+            timeout=_SCRIPT_TIMEOUT,
+            cwd=str(path.parent),
+        )
+        stdout = (result.stdout or "").strip()
+        stderr = (result.stderr or "").strip()
+
+        if result.returncode != 0:
+            parts = [f"Script exited with code {result.returncode}"]
+            if stderr:
+                parts.append(f"stderr:\n{stderr}")
+            if stdout:
+                parts.append(f"stdout:\n{stdout}")
+            return False, "\n".join(parts)
+
+        return True, stdout
+
+    except subprocess.TimeoutExpired:
+        return False, f"Script timed out after {_SCRIPT_TIMEOUT}s: {path}"
+    except Exception as exc:
+        return False, f"Script execution failed: {exc}"
+
+
 def _build_job_prompt(job: dict) -> str:
     """Build the effective prompt for a cron job, optionally loading one or more skills first."""
     prompt = job.get("prompt", "")
     skills = job.get("skills")
+
+    # Run data-collection script if configured, inject output as context.
+    script_path = job.get("script")
+    if script_path:
+        success, script_output = _run_job_script(script_path)
+        if success:
+            if script_output:
+                prompt = (
+                    "## Script Output\n"
+                    "The following data was collected by a pre-run script. "
+                    "Use it as context for your analysis.\n\n"
+                    f"```\n{script_output}\n```\n\n"
+                    f"{prompt}"
+                )
+            else:
+                prompt = (
+                    "[Script ran successfully but produced no output.]\n\n"
+                    f"{prompt}"
+                )
+        else:
+            prompt = (
+                "## Script Error\n"
+                "The data-collection script failed. Report this to the user.\n\n"
+                f"```\n{script_output}\n```\n\n"
+                f"{prompt}"
+            )
 
     # Always prepend [SILENT] guidance so the cron agent can suppress
     # delivery when it has nothing new or noteworthy to report.
@@ -437,13 +517,36 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             provider_sort=pr.get("sort"),
             disabled_toolsets=["cronjob", "messaging", "clarify"],
             quiet_mode=True,
+            skip_memory=True,  # Cron system prompts would corrupt user representations
             platform="cron",
             session_id=_cron_session_id,
             session_db=_session_db,
         )
         
-        result = agent.run_conversation(prompt)
-        
+        # Run the agent with a timeout so a hung API call or tool doesn't
+        # block the cron ticker thread indefinitely.  Default 10 minutes;
+        # override via env var.  Uses a separate thread because
+        # run_conversation is synchronous.
+        _cron_timeout = float(os.getenv("HERMES_CRON_TIMEOUT", 600))
+        _cron_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        _cron_future = _cron_pool.submit(agent.run_conversation, prompt)
+        try:
+            result = _cron_future.result(timeout=_cron_timeout)
+        except concurrent.futures.TimeoutError:
+            logger.error(
+                "Job '%s' timed out after %.0fs — interrupting agent",
+                job_name, _cron_timeout,
+            )
+            if hasattr(agent, "interrupt"):
+                agent.interrupt("Cron job timed out")
+            _cron_pool.shutdown(wait=False, cancel_futures=True)
+            raise TimeoutError(
+                f"Cron job '{job_name}' timed out after "
+                f"{int(_cron_timeout // 60)} minutes"
+            )
+        finally:
+            _cron_pool.shutdown(wait=False)
+
         final_response = result.get("final_response", "") or ""
         # Use a separate variable for log display; keep final_response clean
         # for delivery logic (empty response = no delivery).

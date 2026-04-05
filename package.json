@@ -4,7 +4,8 @@
   "description": "An AI agent with advanced tool-calling capabilities, featuring a flexible toolsets system for organizing and managing tools.",
   "private": true,
   "scripts": {
-    "postinstall": "echo '✅ Browser tools ready. Run: python run_agent.py --help'"
+    "postinstall": "echo '✅ Browser tools ready. Run: python run_agent.py --help'",
+    "test:run": "echo 'JavaScript tests skipped (Python project)' && exit 0"
   },
   "repository": {
     "type": "git",

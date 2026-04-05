@@ -1266,6 +1266,8 @@ class GatewayRunner:
         next message, so there's no blocking delay.
         """
         await asyncio.sleep(60)  # initial delay — let the gateway fully start
+        _flush_failures: dict[str, int] = {}  # session_id -> consecutive failure count
+        _MAX_FLUSH_RETRIES = 3
         while self._running:
             try:
                 self.session_store._ensure_loaded()
@@ -1298,8 +1300,25 @@ class GatewayRunner:
                             "Pre-reset memory flush completed for session %s",
                             entry.session_id,
                         )
+                        _flush_failures.pop(entry.session_id, None)
                     except Exception as e:
-                        logger.debug("Proactive memory flush failed for %s: %s", entry.session_id, e)
+                        failures = _flush_failures.get(entry.session_id, 0) + 1
+                        _flush_failures[entry.session_id] = failures
+                        if failures >= _MAX_FLUSH_RETRIES:
+                            logger.warning(
+                                "Proactive memory flush gave up after %d attempts for %s: %s. "
+                                "Marking as flushed to prevent infinite retry loop.",
+                                failures, entry.session_id, e,
+                            )
+                            with self.session_store._lock:
+                                entry.memory_flushed = True
+                                self.session_store._save()
+                            _flush_failures.pop(entry.session_id, None)
+                        else:
+                            logger.debug(
+                                "Proactive memory flush failed (%d/%d) for %s: %s",
+                                failures, _MAX_FLUSH_RETRIES, entry.session_id, e,
+                            )
             except Exception as e:
                 logger.debug("Session expiry watcher error: %s", e)
             # Sleep in small increments so we can stop quickly

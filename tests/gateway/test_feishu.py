@@ -8,7 +8,7 @@ import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 try:
     import lark_oapi
@@ -289,7 +289,7 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
             patch("gateway.platforms.feishu.FEISHU_AVAILABLE", True),
             patch("gateway.platforms.feishu.FEISHU_WEBSOCKET_AVAILABLE", True),
             patch("gateway.platforms.feishu.lark", SimpleNamespace(LogLevel=SimpleNamespace(INFO="INFO", WARNING="WARNING"))),
-            patch("gateway.platforms.feishu.EventDispatcherHandler", object()),
+            patch("gateway.platforms.feishu.EventDispatcherHandler") as mock_handler_class,
             patch("gateway.platforms.feishu.FeishuWSClient", return_value=ws_client),
             patch("gateway.platforms.feishu._run_official_feishu_ws_client"),
             patch("gateway.platforms.feishu.acquire_scoped_lock", return_value=(True, None)) as acquire_lock,
@@ -297,6 +297,15 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
             patch.object(adapter, "_hydrate_bot_identity", new=AsyncMock()),
             patch.object(adapter, "_build_lark_client", return_value=SimpleNamespace()),
         ):
+            mock_builder = Mock()
+            mock_builder.register_p2_im_message_message_read_v1 = Mock(return_value=mock_builder)
+            mock_builder.register_p2_im_message_receive_v1 = Mock(return_value=mock_builder)
+            mock_builder.register_p2_im_message_reaction_created_v1 = Mock(return_value=mock_builder)
+            mock_builder.register_p2_im_message_reaction_deleted_v1 = Mock(return_value=mock_builder)
+            mock_builder.register_p2_card_action_trigger = Mock(return_value=mock_builder)
+            mock_builder.build = Mock(return_value=object())
+            mock_handler_class.builder = Mock(return_value=mock_builder)
+
             loop = asyncio.new_event_loop()
             future = loop.create_future()
             future.set_result(None)
@@ -304,6 +313,9 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
             class _Loop:
                 def run_in_executor(self, *_args, **_kwargs):
                     return future
+
+                def is_closed(self):
+                    return False
 
             try:
                 with patch("gateway.platforms.feishu.asyncio.get_running_loop", return_value=_Loop()):
@@ -313,6 +325,7 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
                 loop.close()
 
         self.assertTrue(connected)
+        self.assertIsNone(adapter._event_handler)
         acquire_lock.assert_called_once_with(
             "feishu-app-id",
             "cli_app",
@@ -361,7 +374,7 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
             patch("gateway.platforms.feishu.FEISHU_AVAILABLE", True),
             patch("gateway.platforms.feishu.FEISHU_WEBSOCKET_AVAILABLE", True),
             patch("gateway.platforms.feishu.lark", SimpleNamespace(LogLevel=SimpleNamespace(INFO="INFO", WARNING="WARNING"))),
-            patch("gateway.platforms.feishu.EventDispatcherHandler", object()),
+            patch("gateway.platforms.feishu.EventDispatcherHandler") as mock_handler_class,
             patch("gateway.platforms.feishu.FeishuWSClient", return_value=ws_client),
             patch("gateway.platforms.feishu.acquire_scoped_lock", return_value=(True, None)),
             patch("gateway.platforms.feishu.release_scoped_lock"),
@@ -369,6 +382,15 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
             patch("gateway.platforms.feishu.asyncio.sleep", side_effect=lambda delay: sleeps.append(delay)),
             patch.object(adapter, "_build_lark_client", return_value=SimpleNamespace()),
         ):
+            mock_builder = Mock()
+            mock_builder.register_p2_im_message_message_read_v1 = Mock(return_value=mock_builder)
+            mock_builder.register_p2_im_message_receive_v1 = Mock(return_value=mock_builder)
+            mock_builder.register_p2_im_message_reaction_created_v1 = Mock(return_value=mock_builder)
+            mock_builder.register_p2_im_message_reaction_deleted_v1 = Mock(return_value=mock_builder)
+            mock_builder.register_p2_card_action_trigger = Mock(return_value=mock_builder)
+            mock_builder.build = Mock(return_value=object())
+            mock_handler_class.builder = Mock(return_value=mock_builder)
+
             loop = asyncio.new_event_loop()
             future = loop.create_future()
             future.set_result(None)
@@ -382,6 +404,9 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
                     if self.calls == 1:
                         raise OSError("temporary websocket failure")
                     return future
+
+                def is_closed(self):
+                    return False
 
             fake_loop = _Loop()
             try:
@@ -1196,7 +1221,12 @@ class TestAdapterBehavior(unittest.TestCase):
         from gateway.platforms.feishu import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
-        adapter._loop = object()
+
+        class _Loop:
+            def is_closed(self):
+                return False
+
+        adapter._loop = _Loop()
 
         message = SimpleNamespace(
             message_id="om_text",
@@ -1210,6 +1240,7 @@ class TestAdapterBehavior(unittest.TestCase):
         data = SimpleNamespace(event=SimpleNamespace(message=message, sender=sender))
 
         future = SimpleNamespace(add_done_callback=lambda *_args, **_kwargs: None)
+
         def _submit(coro, _loop):
             coro.close()
             return future
@@ -1218,6 +1249,30 @@ class TestAdapterBehavior(unittest.TestCase):
             adapter._on_message_event(data)
 
         self.assertTrue(submit.called)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_webhook_request_uses_same_message_dispatch_path(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._on_message_event = Mock()
+
+        body = json.dumps({
+            "header": {"event_type": "im.message.receive_v1"},
+            "event": {"message": {"message_id": "om_test"}},
+        }).encode("utf-8")
+        request = SimpleNamespace(
+            remote="127.0.0.1",
+            content_length=None,
+            headers={},
+            read=AsyncMock(return_value=body),
+        )
+
+        response = asyncio.run(adapter._handle_webhook_request(request))
+
+        self.assertEqual(response.status, 200)
+        adapter._on_message_event.assert_called_once()
 
     @patch.dict(os.environ, {}, clear=True)
     def test_process_inbound_message_uses_event_sender_identity_only(self):

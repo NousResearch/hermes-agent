@@ -1344,13 +1344,26 @@ def terminal_tool(
         }, ensure_ascii=False)
 
 
+_terminal_requirements_cache: Optional[bool] = None
+
+
 def check_terminal_requirements() -> bool:
-    """Check if all requirements for the terminal tool are met."""
+    """Check if all requirements for the terminal tool are met.
+
+    Results are cached after the first successful check so that transient
+    failures (e.g. Docker daemon momentarily busy) cannot strip tools from
+    subagents mid-session.
+    """
+    global _terminal_requirements_cache
+    if _terminal_requirements_cache is True:
+        return True
+
     config = _get_env_config()
     env_type = config["env_type"]
 
     try:
         if env_type == "local":
+            _terminal_requirements_cache = True
             return True
 
         elif env_type == "docker":
@@ -1360,7 +1373,11 @@ def check_terminal_requirements() -> bool:
                 logger.error("Docker executable not found in PATH or common install locations")
                 return False
             result = subprocess.run([docker, "version"], capture_output=True, timeout=5)
-            return result.returncode == 0
+            if result.returncode == 0:
+                _terminal_requirements_cache = True
+                return True
+            logger.warning("Docker version check failed (rc=%d)", result.returncode)
+            return False
 
         elif env_type == "singularity":
             executable = shutil.which("apptainer") or shutil.which("singularity")

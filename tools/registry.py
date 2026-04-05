@@ -126,11 +126,11 @@ class ToolRegistry:
                         check_results[entry.check_fn] = bool(entry.check_fn())
                     except Exception:
                         check_results[entry.check_fn] = False
-                        if not quiet:
-                            logger.debug("Tool %s check raised; skipping", name)
+                        # Always log check failures — silent drops in quiet
+                        # mode (subagents) make tool loss undiagnosable.
+                        logger.warning("Tool %s check raised; skipping", name)
                 if not check_results[entry.check_fn]:
-                    if not quiet:
-                        logger.debug("Tool %s unavailable (check failed)", name)
+                    logger.debug("Tool %s unavailable (check failed)", name)
                     continue
             # Ensure schema always has a "name" field — use entry.name as fallback
             schema_with_name = {**entry.schema, "name": entry.name}

@@ -19,6 +19,8 @@ def _clear_terminal_env(monkeypatch):
     ]
     for key in keys:
         monkeypatch.delenv(key, raising=False)
+    # Reset the module-level cache so each test starts clean.
+    monkeypatch.setattr(terminal_tool_module, "_terminal_requirements_cache", None)
 
 
 def test_local_terminal_requirements(monkeypatch, caplog):

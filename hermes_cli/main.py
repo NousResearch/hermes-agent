@@ -97,13 +97,6 @@ def _apply_profile_override() -> None:
             consume = 1
             break
 
-    # Respect an explicit HERMES_HOME override unless the user also passed
-    # a profile flag on this invocation. This keeps tests, wrappers, and
-    # manual environment overrides from being silently replaced by the
-    # sticky active-profile file in ~/.hermes/active_profile.
-    if profile_name is None and os.getenv("HERMES_HOME", "").strip():
-        return
-
     # 2. If no flag, check ~/.hermes/active_profile
     if profile_name is None:
         try:

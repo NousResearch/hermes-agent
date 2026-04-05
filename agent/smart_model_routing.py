@@ -192,7 +192,6 @@ def resolve_turn_route(
             "api_mode": runtime.get("api_mode"),
             "command": runtime.get("command"),
             "args": list(runtime.get("args") or []),
-            "credential_pool": runtime.get("credential_pool"),
         },
         "request_options": resolve_runtime_request_options(runtime),
         "label": f"smart route → {route.get('model')} ({runtime.get('provider')})",

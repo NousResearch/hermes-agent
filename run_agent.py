@@ -1690,9 +1690,6 @@ class AIAgent:
                         base_url=self.base_url,
                         api_key=getattr(self, "api_key", None),
                         api_mode=self.api_mode,
-                        acp_command=self.acp_command,
-                        acp_args=list(self.acp_args or []),
-                        credential_pool=getattr(self, "_credential_pool", None),
                         request_options=self.request_options,
                     )
                     review_agent._memory_store = self._memory_store

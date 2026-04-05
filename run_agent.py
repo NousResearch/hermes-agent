@@ -3553,12 +3553,18 @@ class AIAgent:
         return False
 
     def _create_openai_client(self, client_kwargs: dict, *, reason: str, shared: bool) -> Any:
-        if self.provider == "copilot-acp" or str(client_kwargs.get("base_url", "")).startswith("acp://copilot"):
-            from agent.copilot_acp_client import CopilotACPClient
+        base_url = str(client_kwargs.get("base_url", ""))
+        if base_url.startswith("acp://") or (self.provider and self.provider.endswith("-acp")):
+            from agent.acp_client import ACPClient, extract_agent_from_url
 
-            client = CopilotACPClient(**client_kwargs)
+            agent_name = extract_agent_from_url(base_url)
+            if not agent_name and self.provider:
+                # Derive agent name from provider id: "claude-acp" -> "claude"
+                agent_name = self.provider.removesuffix("-acp")
+            client = ACPClient(agent_name=agent_name, **client_kwargs)
             logger.info(
-                "Copilot ACP client created (%s, shared=%s) %s",
+                "ACP client created for agent '%s' (%s, shared=%s) %s",
+                client.agent_name,
                 reason,
                 shared,
                 self._client_log_context(),

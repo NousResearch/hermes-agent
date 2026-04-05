@@ -9,23 +9,18 @@ import sys
 import subprocess
 import shutil
 
-from hermes_cli.config import get_project_root, get_hermes_home, get_env_path
+from hermes_cli.config import get_project_root, get_hermes_home
+from hermes_cli.env_loader import load_hermes_dotenv
 from hermes_constants import display_hermes_home
 
 PROJECT_ROOT = get_project_root()
 HERMES_HOME = get_hermes_home()
 _DHH = display_hermes_home()  # user-facing display path (e.g. ~/.hermes or ~/.hermes/profiles/coder)
 
-# Load environment variables from ~/.hermes/.env so API key checks work
-from dotenv import load_dotenv
-_env_path = get_env_path()
-if _env_path.exists():
-    try:
-        load_dotenv(_env_path, encoding="utf-8")
-    except UnicodeDecodeError:
-        load_dotenv(_env_path, encoding="latin-1")
-# Also try project .env as dev fallback
-load_dotenv(PROJECT_ROOT / ".env", override=False, encoding="utf-8")
+# Load ~/.hermes/.env first so doctor sees user config, then project .env as a
+# dev fallback for local checkouts. Reuse the shared loader so both paths honor
+# the UTF-8 -> latin-1 fallback used elsewhere in the CLI.
+load_hermes_dotenv(hermes_home=HERMES_HOME, project_env=PROJECT_ROOT / ".env")
 
 from hermes_cli.colors import Colors, color
 from hermes_constants import OPENROUTER_MODELS_URL

@@ -1,5 +1,6 @@
 """Tests for hermes_cli.doctor."""
 
+import importlib.util
 import os
 import sys
 import types
@@ -102,6 +103,39 @@ def test_run_doctor_sets_interactive_env_for_tool_checks(monkeypatch, tmp_path):
         doctor_mod.run_doctor(Namespace(fix=False))
 
     assert seen["interactive"] == "1"
+
+
+def test_doctor_import_uses_shared_env_loader(monkeypatch, tmp_path):
+    """Doctor should reuse the shared dotenv loader for project .env fallback."""
+    import hermes_cli.config as config_mod
+    import hermes_cli.env_loader as env_loader_mod
+    import hermes_constants as constants_mod
+
+    project_root = tmp_path / "project"
+    hermes_home = tmp_path / ".hermes"
+    project_root.mkdir()
+    hermes_home.mkdir()
+
+    seen = {}
+
+    def fake_load_hermes_dotenv(**kwargs):
+        seen.update(kwargs)
+        return []
+
+    monkeypatch.setattr(config_mod, "get_project_root", lambda: project_root)
+    monkeypatch.setattr(config_mod, "get_hermes_home", lambda: hermes_home)
+    monkeypatch.setattr(env_loader_mod, "load_hermes_dotenv", fake_load_hermes_dotenv)
+    monkeypatch.setattr(constants_mod, "display_hermes_home", lambda: "~/.hermes")
+
+    spec = importlib.util.spec_from_file_location("doctor_import_probe", doctor_mod.__file__)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+
+    assert seen == {
+        "hermes_home": hermes_home,
+        "project_env": project_root / ".env",
+    }
 
 
 def test_check_gateway_service_linger_warns_when_disabled(monkeypatch, tmp_path, capsys):

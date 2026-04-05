@@ -13,6 +13,12 @@ import concurrent.futures
 import json
 import logging
 import os
+_KNOWN_DELIVERY_PLATFORMS = frozenset({
+    "telegram", "discord", "slack", "whatsapp", "signal",
+    "matrix", "mattermost", "dingtalk", "feishu", "wecom",
+    "sms", "email", "webhook",
+})
+import subprocess
 import subprocess
 import sys
 
@@ -135,14 +141,10 @@ def _resolve_delivery_target(job: dict) -> Optional[dict]:
             "thread_id": origin.get("thread_id"),
         }
 
-    _KNOWN_PLATFORMS = {
-            "telegram", "discord", "slack", "whatsapp", "signal",
-            "matrix", "mattermost", "dingtalk", "feishu", "wecom",
-            "sms", "email", "webhook",
-        }
-        if platform_name.lower() not in _KNOWN_PLATFORMS:
-            return None
-        chat_id = os.getenv(f"{platform_name.upper()}_HOME_CHANNEL", "")
+    
+    if platform_name.lower() not in _KNOWN_DELIVERY_PLATFORMS:
+        return None
+    chat_id = os.getenv(f"{platform_name.upper()}_HOME_CHANNEL", "")
     if not chat_id:
         return None
 

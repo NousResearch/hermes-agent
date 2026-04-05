@@ -240,32 +240,32 @@ class _PygmentsToRich:
         if cls._STYLES or not _PYGMENTS:
             return
         cls._STYLES = {
-            Keyword: "bold blue",
-            Keyword.Type: "bold cyan",
+            Keyword: "blue",
+            Keyword.Type: "cyan",
             Name: "white",
             Name.Builtin: "cyan",
-            Name.Class: "bold yellow",
-            Name.Constant: "bold yellow",
+            Name.Class: "yellow",
+            Name.Constant: "yellow",
             Name.Decorator: "bright_cyan",
-            Name.Exception: "bold red",
-            Name.Function: "bold yellow",
+            Name.Exception: "red",
+            Name.Function: "yellow",
             Name.Function.Magic: "cyan",
-            Name.Tag: "bold blue",
+            Name.Tag: "blue",
             Name.Variable.Magic: "cyan",
             Comment: "dim green",
-            Comment.Preproc: "bold green",
+            Comment.Preproc: "green",
             String: "green",
             String.Doc: "dim green",
-            String.Escape: "bold green",
-            String.Interpol: "bold green",
+            String.Escape: "green",
+            String.Interpol: "green",
             String.Regex: "magenta",
             Number: "magenta",
             Operator: "white",
-            Operator.Word: "bold blue",
+            Operator.Word: "blue",
             Generic.Deleted: "red",
             Generic.Inserted: "green",
-            Generic.Error: "bold red",
-            Error: "bold red",
+            Generic.Error: "red",
+            Error: "red",
         }
 
     def format(self, tokens) -> str:
@@ -429,7 +429,7 @@ def _make_header(filename: Optional[str], n_adds: int, n_dels: int) -> tuple[Tex
 
     parts: list[Text] = [
         Text("● ", style="bright_white"),
-        Text(filename or "?", style=Style(color="bright_white", bold=True)),
+        Text(filename or "?", style=Style(color="bright_white")),
         Text("   "),
     ]
     if n_adds > 0 and n_dels == 0:
@@ -513,9 +513,9 @@ def _intra_diff(
     # Brighter background on changed character ranges (overrides base bg).
     for tag, i1, i2, j1, j2 in SequenceMatcher(None, old, new, autojunk=False).get_opcodes():
         if tag in ("replace", "delete"):
-            del_text.stylize(Style(bgcolor=_DIFF_BG_DEL_HL, bold=True), i1, i2)
+            del_text.stylize(Style(bgcolor=_DIFF_BG_DEL_HL), i1, i2)
         if tag in ("replace", "insert"):
-            add_text.stylize(Style(bgcolor=_DIFF_BG_ADD_HL, bold=True), j1, j2)
+            add_text.stylize(Style(bgcolor=_DIFF_BG_ADD_HL), j1, j2)
 
     return [del_text], [add_text]
 
@@ -688,7 +688,7 @@ class DiffRenderer:
                 m = re.search(r"@@ -(\d+),?\d* \+(\d+),?\d* @@", line)
                 if m:
                     ln_old, ln_new = int(m.group(1)), int(m.group(2))
-                styled.append(Text(line, style=Style(color="cyan", bold=True)))
+                styled.append(Text(line, style=Style(color="cyan")))
                 continue
 
             if line.startswith("-"):

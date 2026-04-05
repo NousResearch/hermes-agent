@@ -593,12 +593,8 @@ class TestIntraDiff:
         add_bgs = {sp.style.bgcolor for sp in add_text._spans if sp.style.bgcolor}
         assert hl_del in del_bgs, "expected bright del bg on changed span"
         assert hl_add in add_bgs, "expected bright add bg on changed span"
-        # Changed spans must be bold.
-        del_bold = any(
-            sp.style.bold and sp.style.bgcolor == hl_del
-            for sp in del_text._spans
-        )
-        assert del_bold, "changed del span must be bold"
+        del_highlighted = any(sp.style.bgcolor == hl_del for sp in del_text._spans)
+        assert del_highlighted, "changed del span must be highlighted"
 
     def test_delete_opcode_no_add_seg(self):
         del_segs, add_segs = _intra_diff("abcXYZ", "abc")
@@ -697,15 +693,13 @@ class TestDiffRendererV2:
             DiffRenderer()._style(diff.splitlines())
         )
         output = buf.getvalue()
-        # Paired diff fragments should remain explicitly styled in this
-        # renderer path after rebasing the branch stack.
         plain = re.sub(r"\x1b\[[0-9;]*m", "", output)
         assert "return foo_value" in plain
         assert "return bar_value" in plain
         assert "return foo_result" in plain
         assert "return bar_result" in plain
-        assert len(re.findall(r"\x1b\[[0-9;]*mfoo\x1b\[0m", output)) >= 2
-        assert len(re.findall(r"\x1b\[[0-9;]*mbar\x1b\[0m", output)) >= 2
+        assert output.count("48;2;180;48;48") >= 2
+        assert output.count("48;2;40;148;40") >= 2
 
     def test_alternating_run_flush(self):
         # -A +B -C +D with no context between — should pair (-A,+B) and (-C,+D)

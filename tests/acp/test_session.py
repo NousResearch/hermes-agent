@@ -304,6 +304,7 @@ class TestPersistence:
                 provider=kwargs.get("provider"),
                 base_url=kwargs.get("base_url"),
                 api_mode=kwargs.get("api_mode"),
+                request_options=kwargs.get("request_options"),
             )
 
         monkeypatch.setattr("hermes_cli.config.load_config", lambda: {
@@ -312,6 +313,10 @@ class TestPersistence:
         monkeypatch.setattr(
             "hermes_cli.runtime_provider.resolve_runtime_provider",
             fake_resolve_runtime_provider,
+        )
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_request_options",
+            lambda runtime: {"service_tier": "priority"},
         )
         db = SessionDB(tmp_path / "state.db")
 
@@ -329,3 +334,4 @@ class TestPersistence:
         assert restored is not None
         assert restored.agent.provider == "anthropic"
         assert restored.agent.base_url == "https://anthropic.example/v1"
+        assert restored.agent.request_options == {"service_tier": "priority"}

@@ -485,6 +485,7 @@ class TestSlashCommands:
                 provider=kwargs.get("provider"),
                 base_url=kwargs.get("base_url"),
                 api_mode=kwargs.get("api_mode"),
+                request_options=kwargs.get("request_options"),
             )
 
         monkeypatch.setattr("hermes_cli.config.load_config", lambda: {
@@ -493,6 +494,10 @@ class TestSlashCommands:
         monkeypatch.setattr(
             "hermes_cli.runtime_provider.resolve_runtime_provider",
             fake_resolve_runtime_provider,
+        )
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_request_options",
+            lambda runtime: {"service_tier": "flex"},
         )
         manager = SessionManager(db=SessionDB(tmp_path / "state.db"))
 
@@ -504,6 +509,7 @@ class TestSlashCommands:
         assert "Provider: anthropic" in result
         assert state.agent.provider == "anthropic"
         assert state.agent.base_url == "https://anthropic.example/v1"
+        assert state.agent.request_options == {"service_tier": "flex"}
         assert runtime_calls[-1] == "anthropic"
 
 

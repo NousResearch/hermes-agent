@@ -55,7 +55,11 @@ class TestSaveModelChoiceAlwaysDict:
         """When config.model is already a dict, _save_model_choice preserves it."""
         import yaml
         (config_home / "config.yaml").write_text(
-            "model:\n  default: old-model\n  provider: openrouter\n"
+            "model:\n"
+            "  default: old-model\n"
+            "  provider: openrouter\n"
+            "  request_options:\n"
+            "    service_tier: priority\n"
         )
         from hermes_cli.auth import _save_model_choice
 
@@ -66,6 +70,7 @@ class TestSaveModelChoiceAlwaysDict:
         assert isinstance(model, dict)
         assert model["default"] == "new-model"
         assert model["provider"] == "openrouter"  # preserved
+        assert model["request_options"] == {"service_tier": "priority"}
 
 
 class TestProviderPersistsAfterModelSave:
@@ -99,6 +104,34 @@ class TestProviderPersistsAfterModelSave:
             f"provider should be 'kimi-coding', got {model.get('provider')}"
         )
         assert model.get("default") == "kimi-k2.5"
+
+    def test_api_key_provider_flow_preserves_request_options(self, config_home, monkeypatch):
+        """Provider flows should keep request_options leaves when rewriting model config."""
+        from hermes_cli.config import load_config
+        from hermes_cli.main import _model_flow_api_key_provider
+
+        monkeypatch.setenv("KIMI_API_KEY", "sk-kimi-test-key")
+        (config_home / "config.yaml").write_text(
+            "model:\n"
+            "  default: old-model\n"
+            "  provider: openrouter\n"
+            "  request_options:\n"
+            "    service_tier: flex\n"
+        )
+
+        with patch("hermes_cli.auth._prompt_model_selection", return_value="kimi-k2.5"), \
+             patch("hermes_cli.auth.deactivate_provider"), \
+             patch("builtins.input", return_value=""):
+            _model_flow_api_key_provider(load_config(), "kimi-coding", "old-model")
+
+        import yaml
+
+        config = yaml.safe_load((config_home / "config.yaml").read_text()) or {}
+        model = config.get("model")
+        assert isinstance(model, dict)
+        assert model.get("provider") == "kimi-coding"
+        assert model.get("default") == "kimi-k2.5"
+        assert model.get("request_options") == {"service_tier": "flex"}
 
     def test_copilot_provider_saved_when_selected(self, config_home):
         """_model_flow_copilot should persist provider/base_url/model together."""

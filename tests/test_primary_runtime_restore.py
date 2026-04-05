@@ -75,6 +75,7 @@ class TestPrimaryRuntimeSnapshot:
         assert rt["api_mode"] == agent.api_mode
         assert "client_kwargs" in rt
         assert "compressor_context_length" in rt
+        assert "request_options" not in rt
 
     def test_snapshot_includes_compressor_state(self):
         agent = _make_agent()

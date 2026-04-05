@@ -111,16 +111,26 @@ class TestSmartRoutingPoolPreservation:
 
 class TestCliTurnRoutePool:
     def test_resolve_turn_includes_pool(self, monkeypatch, tmp_path):
-        """CLI's _resolve_turn_agent_config must pass credential_pool to primary."""
+        """CLI's _resolve_turn_agent_config must pass pool and request options."""
         from agent.smart_model_routing import resolve_turn_route
         captured = {}
 
-        def spy_resolve(user_message, routing_config, primary):
+        def spy_resolve(user_message, routing_config, primary, primary_request_options=None):
             captured["primary"] = primary
-            return resolve_turn_route(user_message, routing_config, primary)
+            captured["primary_request_options"] = primary_request_options
+            return resolve_turn_route(
+                user_message,
+                routing_config,
+                primary,
+                primary_request_options=primary_request_options,
+            )
 
         monkeypatch.setattr(
             "agent.smart_model_routing.resolve_turn_route", spy_resolve
+        )
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_request_options",
+            lambda runtime: {"service_tier": "priority"},
         )
 
         # Build a minimal HermesCLI-like object with the method
@@ -143,20 +153,31 @@ class TestCliTurnRoutePool:
 
         assert "credential_pool" in captured["primary"]
         assert captured["primary"]["credential_pool"] is shell._credential_pool
+        assert captured["primary_request_options"] == {"service_tier": "priority"}
 
 
 class TestGatewayTurnRoutePool:
     def test_resolve_turn_includes_pool(self, monkeypatch):
-        """Gateway's _resolve_turn_agent_config must pass credential_pool."""
+        """Gateway's _resolve_turn_agent_config must pass pool and request options."""
         from agent.smart_model_routing import resolve_turn_route
         captured = {}
 
-        def spy_resolve(user_message, routing_config, primary):
+        def spy_resolve(user_message, routing_config, primary, primary_request_options=None):
             captured["primary"] = primary
-            return resolve_turn_route(user_message, routing_config, primary)
+            captured["primary_request_options"] = primary_request_options
+            return resolve_turn_route(
+                user_message,
+                routing_config,
+                primary,
+                primary_request_options=primary_request_options,
+            )
 
         monkeypatch.setattr(
             "agent.smart_model_routing.resolve_turn_route", spy_resolve
+        )
+        monkeypatch.setattr(
+            "gateway.run._resolve_runtime_request_options",
+            lambda runtime, config=None: {"service_tier": "flex"},
         )
 
         from gateway.run import GatewayRunner
@@ -180,6 +201,7 @@ class TestGatewayTurnRoutePool:
 
         assert "credential_pool" in captured["primary"]
         assert captured["primary"]["credential_pool"] is runtime_kwargs["credential_pool"]
+        assert captured["primary_request_options"] == {"service_tier": "flex"}
 
 
 # ---------------------------------------------------------------------------

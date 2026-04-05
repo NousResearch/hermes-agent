@@ -70,6 +70,28 @@ def _build_copilot_agent(monkeypatch, *, model="gpt-5.4"):
     return agent
 
 
+def _build_direct_openai_agent(monkeypatch, *, service_tier="priority"):
+    _patch_agent_bootstrap(monkeypatch)
+
+    agent = run_agent.AIAgent(
+        model="gpt-5.4",
+        provider="custom",
+        api_mode="codex_responses",
+        base_url="https://api.openai.com/v1",
+        api_key="sk-openai-direct",
+        request_options={"service_tier": service_tier},
+        quiet_mode=True,
+        max_iterations=4,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+    agent._cleanup_task_resources = lambda task_id: None
+    agent._persist_session = lambda messages, history=None: None
+    agent._save_trajectory = lambda messages, user_message, completed: None
+    agent._save_session_log = lambda messages: None
+    return agent
+
+
 def _codex_message_response(text: str):
     return SimpleNamespace(
         output=[
@@ -276,6 +298,22 @@ def test_build_api_kwargs_copilot_responses_omits_openai_only_fields(monkeypatch
     assert kwargs["reasoning"] == {"effort": "medium"}
     assert "prompt_cache_key" not in kwargs
     assert "include" not in kwargs
+
+
+def test_build_api_kwargs_direct_openai_includes_service_tier(monkeypatch):
+    agent = _build_direct_openai_agent(monkeypatch, service_tier="priority")
+    kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
+
+    assert kwargs["service_tier"] == "priority"
+
+
+def test_build_api_kwargs_codex_oauth_includes_service_tier(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    agent.request_options = {"service_tier": "priority"}
+
+    kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
+
+    assert kwargs["service_tier"] == "priority"
 
 
 def test_build_api_kwargs_copilot_responses_omits_reasoning_for_non_reasoning_model(monkeypatch):
@@ -596,6 +634,16 @@ def test_preflight_codex_api_kwargs_allows_reasoning_and_temperature(monkeypatch
     assert result["include"] == ["reasoning.encrypted_content"]
     assert result["temperature"] == 0.7
     assert result["max_output_tokens"] == 4096
+
+
+def test_preflight_codex_api_kwargs_allows_service_tier(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    kwargs = _codex_request_kwargs()
+    kwargs["service_tier"] = "priority"
+
+    result = agent._preflight_codex_api_kwargs(kwargs)
+
+    assert result["service_tier"] == "priority"
 
 
 def test_run_conversation_codex_replay_payload_keeps_call_id(monkeypatch):

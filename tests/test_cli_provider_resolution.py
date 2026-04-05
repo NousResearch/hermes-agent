@@ -640,3 +640,35 @@ def test_cmd_model_forwards_nous_login_tls_options(monkeypatch):
         "ca_bundle": "/tmp/local-ca.pem",
         "insecure": True,
     }
+
+
+def test_cli_init_agent_seeds_request_options(monkeypatch):
+    cli = _import_cli()
+
+    class _DummyAgent:
+        def __init__(self, *args, **kwargs):
+            self.kwargs = kwargs
+
+    monkeypatch.setattr(cli, "AIAgent", _DummyAgent)
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_request_options",
+        lambda runtime: {"service_tier": "priority"},
+    )
+
+    shell = cli.HermesCLI(model="gpt-5.4", compact=True, max_turns=1)
+    shell.provider = "custom"
+    shell.api_mode = "codex_responses"
+    shell.base_url = "https://api.openai.com/v1"
+    shell.api_key = "sk-openai-direct"
+    shell._smart_model_routing = {"enabled": False}
+    shell._ensure_runtime_credentials = lambda: True
+
+    turn_route = shell._resolve_turn_agent_config("ping")
+    assert shell._init_agent(
+        model_override=turn_route["model"],
+        runtime_override=turn_route["runtime"],
+        request_options_override=turn_route["request_options"],
+    ) is True
+
+    assert shell.agent is not None
+    assert shell.agent.kwargs["request_options"] == {"service_tier": "priority"}

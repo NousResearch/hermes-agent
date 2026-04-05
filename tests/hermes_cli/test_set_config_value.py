@@ -111,6 +111,16 @@ class TestConfigYamlRouting:
         assert "docker" in config
         assert "terminal" not in _read_env(_isolated_hermes_home)
 
+    def test_model_request_options_preserves_legacy_scalar_model(self, _isolated_hermes_home):
+        (_isolated_hermes_home / "config.yaml").write_text("model: gpt-5.4\n", encoding="utf-8")
+
+        set_config_value("model.request_options.service_tier", "priority")
+
+        config = _read_config(_isolated_hermes_home)
+        assert "default: gpt-5.4" in config
+        assert "service_tier: priority" in config
+        assert "request_options:" in config
+
     def test_terminal_image_goes_to_config(self, _isolated_hermes_home):
         """TERMINAL_DOCKER_IMAGE doesn't match _API_KEY or _TOKEN, so config.yaml."""
         set_config_value("terminal.docker_image", "python:3.12")

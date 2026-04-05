@@ -303,6 +303,21 @@ def _resolve_runtime_agent_kwargs() -> dict:
     }
 
 
+def _resolve_runtime_request_options(runtime_kwargs: dict, config: dict | None = None) -> dict:
+    """Resolve request-time options adjacent to gateway runtime resolution."""
+    from hermes_cli.runtime_provider import resolve_runtime_request_options
+
+    model_cfg = None
+    if isinstance(config, dict):
+        candidate = config.get("model")
+        if isinstance(candidate, dict):
+            model_cfg = candidate
+        elif isinstance(candidate, str) and candidate.strip():
+            model_cfg = {"default": candidate.strip()}
+
+    return resolve_runtime_request_options(dict(runtime_kwargs or {}), model_cfg=model_cfg)
+
+
 def _build_media_placeholder(event) -> str:
     """Build a text placeholder for media-only events so they aren't dropped.
 
@@ -640,15 +655,18 @@ class GatewayRunner:
             runtime_kwargs = _resolve_runtime_agent_kwargs()
             if not runtime_kwargs.get("api_key"):
                 return
+            gateway_config = _load_gateway_config()
+            request_options = _resolve_runtime_request_options(runtime_kwargs, config=gateway_config)
 
             # Resolve model from config — AIAgent's default is OpenRouter-
             # formatted ("anthropic/claude-opus-4.6") which fails when the
             # active provider is openai-codex.
-            model = _resolve_gateway_model()
+            model = _resolve_gateway_model(gateway_config)
 
             tmp_agent = AIAgent(
                 **runtime_kwargs,
                 model=model,
+                request_options=request_options,
                 max_iterations=8,
                 quiet_mode=True,
                 skip_memory=True,  # Flush agent — no memory provider
@@ -761,7 +779,13 @@ class GatewayRunner:
             group_sessions_per_user=getattr(config, "group_sessions_per_user", True),
         )
 
-    def _resolve_turn_agent_config(self, user_message: str, model: str, runtime_kwargs: dict) -> dict:
+    def _resolve_turn_agent_config(
+        self,
+        user_message: str,
+        model: str,
+        runtime_kwargs: dict,
+        config: dict | None = None,
+    ) -> dict:
         from agent.smart_model_routing import resolve_turn_route
 
         primary = {
@@ -774,7 +798,13 @@ class GatewayRunner:
             "args": list(runtime_kwargs.get("args") or []),
             "credential_pool": runtime_kwargs.get("credential_pool"),
         }
-        return resolve_turn_route(user_message, getattr(self, "_smart_model_routing", {}), primary)
+        primary_request_options = _resolve_runtime_request_options(primary, config=config)
+        return resolve_turn_route(
+            user_message,
+            getattr(self, "_smart_model_routing", {}),
+            primary,
+            primary_request_options=primary_request_options,
+        )
 
     async def _handle_adapter_fatal_error(self, adapter: BasePlatformAdapter) -> None:
         """React to an adapter failure after startup.
@@ -2422,6 +2452,11 @@ class GatewayRunner:
 
                         _hyg_runtime = _resolve_runtime_agent_kwargs()
                         if _hyg_runtime.get("api_key"):
+                            _hyg_cfg = _load_gateway_config()
+                            _hyg_request_options = _resolve_runtime_request_options(
+                                _hyg_runtime,
+                                config=_hyg_cfg,
+                            )
                             _hyg_msgs = [
                                 {"role": m.get("role"), "content": m.get("content")}
                                 for m in history
@@ -2433,6 +2468,7 @@ class GatewayRunner:
                                 _hyg_agent = AIAgent(
                                     **_hyg_runtime,
                                     model=_hyg_model,
+                                    request_options=_hyg_request_options,
                                     max_iterations=4,
                                     quiet_mode=True,
                                     enabled_toolsets=["memory"],
@@ -3987,12 +4023,18 @@ class GatewayRunner:
             max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
             reasoning_config = self._load_reasoning_config()
             self._reasoning_config = reasoning_config
-            turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs)
+            turn_route = self._resolve_turn_agent_config(
+                prompt,
+                model,
+                runtime_kwargs,
+                config=user_config,
+            )
 
             def run_sync():
                 agent = AIAgent(
                     model=turn_route["model"],
                     **turn_route["runtime"],
+                    request_options=turn_route.get("request_options"),
                     max_iterations=max_iterations,
                     quiet_mode=True,
                     verbose_logging=False,
@@ -4146,7 +4188,12 @@ class GatewayRunner:
             model = _resolve_gateway_model(user_config)
             platform_key = _platform_config_key(source.platform)
             reasoning_config = self._load_reasoning_config()
-            turn_route = self._resolve_turn_agent_config(question, model, runtime_kwargs)
+            turn_route = self._resolve_turn_agent_config(
+                question,
+                model,
+                runtime_kwargs,
+                config=user_config,
+            )
             pr = self._provider_routing
 
             # Snapshot history from running agent or stored transcript
@@ -4167,6 +4214,7 @@ class GatewayRunner:
                 agent = AIAgent(
                     model=turn_route["model"],
                     **turn_route["runtime"],
+                    request_options=turn_route.get("request_options"),
                     max_iterations=8,
                     quiet_mode=True,
                     verbose_logging=False,
@@ -4412,9 +4460,11 @@ class GatewayRunner:
             runtime_kwargs = _resolve_runtime_agent_kwargs()
             if not runtime_kwargs.get("api_key"):
                 return "No provider configured -- cannot compress."
+            gateway_config = _load_gateway_config()
+            request_options = _resolve_runtime_request_options(runtime_kwargs, config=gateway_config)
 
             # Resolve model from config (same reason as memory flush above).
-            model = _resolve_gateway_model()
+            model = _resolve_gateway_model(gateway_config)
 
             msgs = [
                 {"role": m.get("role"), "content": m.get("content")}
@@ -4427,6 +4477,7 @@ class GatewayRunner:
             tmp_agent = AIAgent(
                 **runtime_kwargs,
                 model=model,
+                request_options=request_options,
                 max_iterations=4,
                 quiet_mode=True,
                 enabled_toolsets=["memory"],
@@ -5805,7 +5856,12 @@ class GatewayRunner:
                 except Exception as _sc_err:
                     logger.debug("Could not set up stream consumer: %s", _sc_err)
 
-            turn_route = self._resolve_turn_agent_config(message, model, runtime_kwargs)
+            turn_route = self._resolve_turn_agent_config(
+                message,
+                model,
+                runtime_kwargs,
+                config=user_config,
+            )
 
             # Check agent cache — reuse the AIAgent from the previous message
             # in this session to preserve the frozen system prompt and tool
@@ -5831,6 +5887,7 @@ class GatewayRunner:
                 agent = AIAgent(
                     model=turn_route["model"],
                     **turn_route["runtime"],
+                    request_options=turn_route.get("request_options"),
                     max_iterations=max_iterations,
                     quiet_mode=True,
                     verbose_logging=False,
@@ -5861,6 +5918,9 @@ class GatewayRunner:
             agent.stream_delta_callback = _stream_delta_cb
             agent.status_callback = _status_callback_sync
             agent.reasoning_config = reasoning_config
+            # Request options are per-message mutable state like reasoning and
+            # do not belong in the cached agent signature.
+            agent.request_options = dict(turn_route.get("request_options") or {})
 
             # Background review delivery — send "💾 Memory updated" etc. to user
             def _bg_review_send(message: str) -> None:

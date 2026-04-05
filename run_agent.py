@@ -91,6 +91,11 @@ from agent.context_compressor import ContextCompressor
 from agent.prompt_caching import apply_anthropic_cache_control
 from agent.prompt_builder import build_skills_system_prompt, build_context_files_prompt, load_soul_md, TOOL_USE_ENFORCEMENT_GUIDANCE, TOOL_USE_ENFORCEMENT_MODELS, DEVELOPER_ROLE_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
+from agent.auxiliary_client import (
+    apply_openai_service_tier,
+    is_direct_openai_api_base_url,
+    uses_openai_max_completion_tokens,
+)
 from agent.display import (
     KawaiiSpinner, build_tool_preview as _build_tool_preview,
     get_cute_tool_message as _get_cute_tool_message_impl,
@@ -462,6 +467,7 @@ class AIAgent:
         status_callback: callable = None,
         max_tokens: int = None,
         reasoning_config: Dict[str, Any] = None,
+        request_options: Dict[str, Any] = None,
         prefill_messages: List[Dict[str, Any]] = None,
         platform: str = None,
         skip_context_files: bool = False,
@@ -505,6 +511,7 @@ class AIAgent:
             max_tokens (int): Maximum tokens for model responses (optional, uses model default if not set)
             reasoning_config (Dict): OpenRouter reasoning configuration override (e.g. {"effort": "none"} to disable thinking).
                 If None, defaults to {"enabled": True, "effort": "medium"} for OpenRouter. Set to disable/customize reasoning.
+            request_options (Dict): Request-time API metadata carried outside the cached system prompt/tool schema.
             prefill_messages (List[Dict]): Messages to prepend to conversation history as prefilled context.
                 Useful for injecting a few-shot example or priming the model's response style.
                 Example: [{"role": "user", "content": "Hi!"}, {"role": "assistant", "content": "Hello!"}]
@@ -620,6 +627,7 @@ class AIAgent:
         # Model response configuration
         self.max_tokens = max_tokens  # None = use model default
         self.reasoning_config = reasoning_config  # None = use default (medium for OpenRouter)
+        self.request_options = dict(request_options or {})
         self.prefill_messages = prefill_messages or []  # Prefilled conversation turns
         
         # Anthropic prompt caching: auto-enabled for Claude models via OpenRouter.
@@ -1328,8 +1336,7 @@ class AIAgent:
 
     def _is_direct_openai_url(self, base_url: str = None) -> bool:
         """Return True when a base URL targets OpenAI's native API."""
-        url = (base_url or self._base_url_lower).lower()
-        return "api.openai.com" in url and "openrouter" not in url
+        return is_direct_openai_api_base_url(base_url or self._base_url_lower)
 
     def _is_openrouter_url(self) -> bool:
         """Return True when the base URL targets OpenRouter."""
@@ -1346,7 +1353,7 @@ class AIAgent:
         'max_completion_tokens'. OpenRouter, local models, and older
         OpenAI models use 'max_tokens'.
         """
-        if self._is_direct_openai_url():
+        if uses_openai_max_completion_tokens(self.base_url):
             return {"max_completion_tokens": value}
         return {"max_tokens": value}
 
@@ -1680,6 +1687,13 @@ class AIAgent:
                         quiet_mode=True,
                         platform=self.platform,
                         provider=self.provider,
+                        base_url=self.base_url,
+                        api_key=getattr(self, "api_key", None),
+                        api_mode=self.api_mode,
+                        acp_command=self.acp_command,
+                        acp_args=list(self.acp_args or []),
+                        credential_pool=getattr(self, "_credential_pool", None),
+                        request_options=self.request_options,
                     )
                     review_agent._memory_store = self._memory_store
                     review_agent._memory_enabled = self._memory_enabled
@@ -3082,7 +3096,7 @@ class AIAgent:
         allowed_keys = {
             "model", "instructions", "input", "tools", "store",
             "reasoning", "include", "max_output_tokens", "temperature",
-            "tool_choice", "parallel_tool_calls", "prompt_cache_key",
+            "tool_choice", "parallel_tool_calls", "prompt_cache_key", "service_tier",
         }
         normalized: Dict[str, Any] = {
             "model": model,
@@ -3114,6 +3128,12 @@ class AIAgent:
             val = api_kwargs.get(passthrough_key)
             if val is not None:
                 normalized[passthrough_key] = val
+
+        service_tier = api_kwargs.get("service_tier")
+        if service_tier is not None:
+            if not isinstance(service_tier, str) or not service_tier.strip():
+                raise ValueError("Codex Responses request 'service_tier' must be a non-empty string when provided.")
+            normalized["service_tier"] = service_tier.strip().lower()
 
         if allow_stream:
             stream = api_kwargs.get("stream")
@@ -3588,6 +3608,9 @@ class AIAgent:
         """Execute one streaming Responses API request and return the final response."""
         import httpx as _httpx
 
+        # Every main Codex Responses dispatch should pass through the same
+        # validated local contract before network I/O.
+        api_kwargs = self._preflight_codex_api_kwargs(dict(api_kwargs), allow_stream=False)
         active_client = client or self._ensure_primary_openai_client(reason="codex_stream_direct")
         max_stream_retries = 1
         has_tool_calls = False
@@ -5001,7 +5024,14 @@ class AIAgent:
             if self.max_tokens is not None:
                 kwargs["max_output_tokens"] = self.max_tokens
 
-            return kwargs
+            return apply_openai_service_tier(
+                kwargs,
+                request_options=self.request_options,
+                base_url=self.base_url,
+                provider=self.provider,
+                api_key=self.api_key,
+                api_mode=self.api_mode,
+            )
 
         sanitized_messages = api_messages
         needs_sanitization = False

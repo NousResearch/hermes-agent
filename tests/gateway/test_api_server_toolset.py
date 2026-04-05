@@ -77,6 +77,7 @@ class TestApiServerAdapterToolset:
         adapter = APIServerAdapter(PlatformConfig())
 
         with patch("gateway.run._resolve_runtime_agent_kwargs") as mock_kwargs, \
+             patch("gateway.run._resolve_runtime_request_options", return_value={"service_tier": "priority"}) as mock_request_options, \
              patch("gateway.run._resolve_gateway_model") as mock_model, \
              patch("gateway.run._load_gateway_config") as mock_config, \
              patch("run_agent.AIAgent") as mock_agent_cls:
@@ -97,6 +98,8 @@ class TestApiServerAdapterToolset:
             assert isinstance(toolsets, list)
             assert len(toolsets) > 0
             assert call_kwargs.kwargs.get("platform") == "api_server"
+            assert call_kwargs.kwargs.get("request_options") == {"service_tier": "priority"}
+            mock_request_options.assert_called_once_with(mock_kwargs.return_value, config={})
 
     @patch("gateway.platforms.api_server.AIOHTTP_AVAILABLE", True)
     def test_create_agent_respects_config_override(self):
@@ -107,6 +110,7 @@ class TestApiServerAdapterToolset:
         adapter = APIServerAdapter(PlatformConfig())
 
         with patch("gateway.run._resolve_runtime_agent_kwargs") as mock_kwargs, \
+             patch("gateway.run._resolve_runtime_request_options", return_value={"service_tier": "flex"}), \
              patch("gateway.run._resolve_gateway_model") as mock_model, \
              patch("gateway.run._load_gateway_config") as mock_config, \
              patch("run_agent.AIAgent") as mock_agent_cls:
@@ -127,3 +131,4 @@ class TestApiServerAdapterToolset:
             call_kwargs = mock_agent_cls.call_args
             toolsets = call_kwargs.kwargs.get("enabled_toolsets")
             assert sorted(toolsets) == ["terminal", "web"]
+            assert call_kwargs.kwargs.get("request_options") == {"service_tier": "flex"}

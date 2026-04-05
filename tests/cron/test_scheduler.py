@@ -514,6 +514,7 @@ class TestRunJobPerJobOverrides:
              patch("dotenv.load_dotenv"), \
              patch("hermes_state.SessionDB", return_value=fake_db), \
              patch("hermes_cli.runtime_provider.resolve_runtime_provider", return_value=fake_runtime) as runtime_mock, \
+             patch("hermes_cli.runtime_provider.resolve_runtime_request_options", return_value={"service_tier": "priority"}), \
              patch("run_agent.AIAgent") as mock_agent_cls:
             mock_agent = MagicMock()
             mock_agent.run_conversation.return_value = {"final_response": "ok"}
@@ -530,6 +531,7 @@ class TestRunJobPerJobOverrides:
             explicit_base_url="http://127.0.0.1:4000/v1",
         )
         assert mock_agent_cls.call_args.kwargs["model"] == "perplexity/sonar-pro"
+        assert mock_agent_cls.call_args.kwargs["request_options"] == {"service_tier": "priority"}
         fake_db.close.assert_called_once()
 
 

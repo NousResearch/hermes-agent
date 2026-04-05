@@ -43,6 +43,7 @@ def _make_mock_parent(depth=0):
     parent.providers_ignored = None
     parent.providers_order = None
     parent.provider_sort = None
+    parent.request_options = {}
     parent._session_db = None
     parent._delegate_depth = depth
     parent._active_children = []
@@ -248,6 +249,50 @@ class TestDelegateTask(unittest.TestCase):
             self.assertEqual(kwargs["api_key"], parent.api_key)
             self.assertEqual(kwargs["provider"], parent.provider)
             self.assertEqual(kwargs["api_mode"], parent.api_mode)
+
+    def test_child_inherits_request_options_when_runtime_is_inherited(self):
+        parent = _make_mock_parent(depth=0)
+        parent.request_options = {"service_tier": "priority"}
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": "ok",
+                "completed": True,
+                "api_calls": 1,
+            }
+            MockAgent.return_value = mock_child
+
+            delegate_task(goal="Test request options inheritance", parent_agent=parent)
+
+            _, kwargs = MockAgent.call_args
+            self.assertEqual(kwargs["request_options"], {"service_tier": "priority"})
+
+    def test_child_re_normalizes_request_options_when_runtime_changes(self):
+        parent = _make_mock_parent(depth=0)
+        parent.request_options = {"service_tier": "priority"}
+
+        with patch("run_agent.AIAgent") as MockAgent, \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_request_options",
+                 return_value={"service_tier": "flex"},
+             ) as mock_resolve_request_options:
+            _build_child_agent(
+                task_index=0,
+                goal="Test request options override",
+                context=None,
+                toolsets=None,
+                model="gpt-5.4",
+                max_iterations=10,
+                parent_agent=parent,
+                override_provider="custom",
+                override_base_url="https://api.openai.com/v1",
+                override_api_key="sk-openai-direct",
+            )
+
+            _, kwargs = MockAgent.call_args
+            self.assertEqual(kwargs["request_options"], {"service_tier": "flex"})
+            self.assertTrue(mock_resolve_request_options.called)
 
 
 class TestToolNamePreservation(unittest.TestCase):

@@ -1,3 +1,5 @@
+import logging
+
 from hermes_cli import runtime_provider as rp
 
 
@@ -23,6 +25,106 @@ def test_resolve_runtime_provider_uses_credential_pool(monkeypatch):
     assert resolved["api_key"] == "pool-token"
     assert resolved["credential_pool"] is not None
     assert resolved["source"] == "manual"
+
+
+def test_resolve_runtime_request_options_supports_direct_openai_route_even_on_generic_provider(monkeypatch):
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {"request_options": {"service_tier": "priority"}},
+    )
+
+    request_options = rp.resolve_runtime_request_options(
+        {
+            "provider": "openrouter",
+            "requested_provider": "auto",
+            "api_mode": "codex_responses",
+            "base_url": "https://api.openai.com/v1",
+            "api_key": "sk-openai-direct",
+        }
+    )
+
+    assert request_options == {"service_tier": "priority"}
+
+
+def test_resolve_runtime_request_options_supports_known_codex_route(monkeypatch):
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {"request_options": {"service_tier": "flex"}},
+    )
+
+    request_options = rp.resolve_runtime_request_options(
+        {
+            "provider": "openai-codex",
+            "requested_provider": "openai-codex",
+            "api_mode": "codex_responses",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key": "oauth-token",
+        }
+    )
+
+    assert request_options == {"service_tier": "flex"}
+
+
+def test_resolve_runtime_request_options_omits_and_warns_once_for_unsupported_route(monkeypatch, caplog):
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {"request_options": {"service_tier": "flex"}},
+    )
+    warning_cache = set()
+
+    with caplog.at_level(logging.WARNING, logger=rp.__name__):
+        first = rp.resolve_runtime_request_options(
+            {
+                "provider": "custom",
+                "requested_provider": "custom",
+                "api_mode": "codex_responses",
+                "base_url": "https://proxy.example.com/v1",
+                "api_key": "proxy-token",
+            },
+            warning_cache=warning_cache,
+        )
+        second = rp.resolve_runtime_request_options(
+            {
+                "provider": "custom",
+                "requested_provider": "custom",
+                "api_mode": "codex_responses",
+                "base_url": "https://proxy.example.com/v1",
+                "api_key": "proxy-token",
+            },
+            warning_cache=warning_cache,
+        )
+
+    assert first == {}
+    assert second == {}
+    warnings = [record.message for record in caplog.records if "Omitting OpenAI service_tier" in record.message]
+    assert len(warnings) == 1
+    assert "service_tier=flex" in warnings[0]
+
+
+def test_resolve_runtime_request_options_rejects_invalid_service_tier(monkeypatch):
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {"request_options": {"service_tier": "turbo"}},
+    )
+
+    try:
+        rp.resolve_runtime_request_options(
+            {
+                "provider": "custom",
+                "requested_provider": "custom",
+                "api_mode": "codex_responses",
+                "base_url": "https://api.openai.com/v1",
+                "api_key": "sk-openai-direct",
+            }
+        )
+    except ValueError as exc:
+        assert "service_tier must be one of" in str(exc)
+    else:
+        raise AssertionError("Expected invalid service_tier to raise ValueError")
 
 
 def test_resolve_runtime_provider_anthropic_pool_respects_config_base_url(monkeypatch):

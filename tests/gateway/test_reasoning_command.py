@@ -3,6 +3,7 @@
 import asyncio
 import inspect
 import sys
+import threading
 import types
 from unittest.mock import AsyncMock, MagicMock
 
@@ -53,6 +54,23 @@ class _CapturingAgent:
     def __init__(self, *args, **kwargs):
         type(self).last_init = dict(kwargs)
         self.tools = []
+
+    def run_conversation(self, user_message: str, conversation_history=None, task_id=None):
+        return {
+            "final_response": "ok",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class _CachingRequestOptionsAgent:
+    created = []
+
+    def __init__(self, *args, **kwargs):
+        self.init_kwargs = dict(kwargs)
+        self.request_options = dict(kwargs.get("request_options") or {})
+        self.tools = []
+        type(self).created.append(self)
 
     def run_conversation(self, user_message: str, conversation_history=None, task_id=None):
         return {
@@ -128,6 +146,7 @@ class TestReasoningCommand:
         monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
         monkeypatch.setattr(gateway_run, "_env_path", hermes_home / ".env")
         monkeypatch.setattr(gateway_run, "load_dotenv", lambda *args, **kwargs: None)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
         monkeypatch.setattr(
             gateway_run,
             "_resolve_runtime_agent_kwargs",
@@ -169,6 +188,89 @@ class TestReasoningCommand:
         assert result["final_response"] == "ok"
         assert _CapturingAgent.last_init is not None
         assert _CapturingAgent.last_init["reasoning_config"] == {"enabled": True, "effort": "low"}
+
+    def test_run_agent_refreshes_request_options_on_cached_agent(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "model:\n"
+            "  default: gpt-5.4\n"
+            "  provider: custom\n"
+            "  base_url: https://api.openai.com/v1\n"
+            "  request_options:\n"
+            "    service_tier: priority\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
+        monkeypatch.setattr(gateway_run, "_env_path", hermes_home / ".env")
+        monkeypatch.setattr(gateway_run, "load_dotenv", lambda *args, **kwargs: None)
+        monkeypatch.setattr(
+            gateway_run,
+            "_resolve_runtime_agent_kwargs",
+            lambda: {
+                "provider": "custom",
+                "api_mode": "codex_responses",
+                "base_url": "https://api.openai.com/v1",
+                "api_key": "sk-openai-direct",
+            },
+        )
+        monkeypatch.delenv("HERMES_REASONING_EFFORT", raising=False)
+        fake_run_agent = types.ModuleType("run_agent")
+        fake_run_agent.AIAgent = _CachingRequestOptionsAgent
+        monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+        _CachingRequestOptionsAgent.created = []
+        runner = _make_runner()
+        runner._agent_cache = {}
+        runner._agent_cache_lock = threading.Lock()
+
+        source = SessionSource(
+            platform=Platform.LOCAL,
+            chat_id="cli",
+            chat_name="CLI",
+            chat_type="dm",
+            user_id="user-1",
+        )
+
+        first = asyncio.run(
+            runner._run_agent(
+                message="ping",
+                context_prompt="",
+                history=[],
+                source=source,
+                session_id="session-1",
+                session_key="agent:main:local:dm",
+            )
+        )
+
+        config_path.write_text(
+            "model:\n"
+            "  default: gpt-5.4\n"
+            "  provider: custom\n"
+            "  base_url: https://api.openai.com/v1\n"
+            "  request_options:\n"
+            "    service_tier: flex\n",
+            encoding="utf-8",
+        )
+
+        second = asyncio.run(
+            runner._run_agent(
+                message="ping again",
+                context_prompt="",
+                history=[],
+                source=source,
+                session_id="session-1",
+                session_key="agent:main:local:dm",
+            )
+        )
+
+        assert first["final_response"] == "ok"
+        assert second["final_response"] == "ok"
+        assert len(_CachingRequestOptionsAgent.created) == 1
+        cached_agent = runner._agent_cache["agent:main:local:dm"][0]
+        assert cached_agent.request_options == {"service_tier": "flex"}
 
     def test_run_agent_prefers_config_over_stale_reasoning_env(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / "hermes"

@@ -3,6 +3,7 @@
 import json
 import os
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -14,6 +15,8 @@ from agent.auxiliary_client import (
     resolve_vision_provider_client,
     resolve_provider_client,
     auxiliary_max_tokens_param,
+    _build_call_kwargs,
+    _CodexCompletionsAdapter,
     _read_codex_access_token,
     _get_auxiliary_provider,
     _resolve_forced_provider,
@@ -1106,3 +1109,90 @@ class TestAuxiliaryMaxTokensParam:
              patch("agent.auxiliary_client._read_codex_access_token", return_value=None):
             result = auxiliary_max_tokens_param(1024)
         assert result == {"max_tokens": 1024}
+
+
+class TestBuildCallKwargsServiceTier:
+    def test_direct_openai_custom_includes_service_tier(self):
+        kwargs = _build_call_kwargs(
+            "custom",
+            "gpt-5.4",
+            [{"role": "user", "content": "hi"}],
+            max_tokens=512,
+            base_url="https://api.openai.com/v1",
+            api_key="sk-openai-direct",
+            request_options={"service_tier": "priority"},
+        )
+
+        assert kwargs["max_completion_tokens"] == 512
+        assert "max_tokens" not in kwargs
+        assert kwargs["service_tier"] == "priority"
+
+    def test_codex_route_includes_service_tier(self):
+        kwargs = _build_call_kwargs(
+            "openai-codex",
+            "gpt-5.2-codex",
+            [{"role": "user", "content": "hi"}],
+            max_tokens=512,
+            base_url="https://chatgpt.com/backend-api/codex",
+            api_key="oauth-token",
+            request_options={"service_tier": "priority"},
+        )
+
+        assert kwargs["max_tokens"] == 512
+        assert kwargs["service_tier"] == "priority"
+
+    def test_non_direct_route_omits_service_tier(self):
+        kwargs = _build_call_kwargs(
+            "custom",
+            "gpt-5.4",
+            [{"role": "user", "content": "hi"}],
+            max_tokens=512,
+            base_url="http://localhost:11434/v1",
+            api_key="local-key",
+            request_options={"service_tier": "priority"},
+        )
+
+        assert kwargs["max_tokens"] == 512
+        assert "service_tier" not in kwargs
+
+
+class TestCodexCompletionsAdapterServiceTier:
+    def test_codex_adapter_includes_service_tier(self):
+        captured = {}
+
+        class _FakeStream:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def __iter__(self):
+                return iter(())
+
+            def get_final_response(self):
+                return SimpleNamespace(
+                    output=[
+                        SimpleNamespace(
+                            type="message",
+                            content=[SimpleNamespace(type="output_text", text="ok")],
+                        )
+                    ],
+                    usage=None,
+                )
+
+        def _fake_stream(**kwargs):
+            captured["kwargs"] = kwargs
+            return _FakeStream()
+
+        fake_client = SimpleNamespace(responses=SimpleNamespace(stream=_fake_stream))
+        adapter = _CodexCompletionsAdapter(fake_client, "gpt-5.2-codex")
+
+        response = adapter.create(
+            model="gpt-5.2-codex",
+            messages=[{"role": "user", "content": "hi"}],
+            service_tier="priority",
+        )
+
+        assert response.choices[0].message.content == "ok"
+        assert captured["kwargs"]["service_tier"] == "priority"

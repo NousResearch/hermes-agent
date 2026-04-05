@@ -410,13 +410,18 @@ class APIServerAdapter(BasePlatformAdapter):
         gateway platforms), falling back to the hermes-api-server default.
         """
         from run_agent import AIAgent
-        from gateway.run import _resolve_runtime_agent_kwargs, _resolve_gateway_model, _load_gateway_config
+        from gateway.run import (
+            _resolve_runtime_agent_kwargs,
+            _resolve_runtime_request_options,
+            _resolve_gateway_model,
+            _load_gateway_config,
+        )
         from hermes_cli.tools_config import _get_platform_tools
 
-        runtime_kwargs = _resolve_runtime_agent_kwargs()
-        model = _resolve_gateway_model()
-
         user_config = _load_gateway_config()
+        runtime_kwargs = _resolve_runtime_agent_kwargs()
+        request_options = _resolve_runtime_request_options(runtime_kwargs, config=user_config)
+        model = _resolve_gateway_model(user_config)
         enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
 
         max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
@@ -424,6 +429,7 @@ class APIServerAdapter(BasePlatformAdapter):
         agent = AIAgent(
             model=model,
             **runtime_kwargs,
+            request_options=request_options,
             max_iterations=max_iterations,
             quiet_mode=True,
             verbose_logging=False,

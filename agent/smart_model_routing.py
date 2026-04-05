@@ -107,11 +107,17 @@ def choose_cheap_model_route(user_message: str, routing_config: Optional[Dict[st
     return route
 
 
-def resolve_turn_route(user_message: str, routing_config: Optional[Dict[str, Any]], primary: Dict[str, Any]) -> Dict[str, Any]:
+def resolve_turn_route(
+    user_message: str,
+    routing_config: Optional[Dict[str, Any]],
+    primary: Dict[str, Any],
+    primary_request_options: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     """Resolve the effective model/runtime for one turn.
 
-    Returns a dict with model/runtime/signature/label fields.
+    Returns a dict with model/runtime/request_options/signature/label fields.
     """
+    primary_request_options = dict(primary_request_options or {})
     route = choose_cheap_model_route(user_message, routing_config)
     if not route:
         return {
@@ -125,6 +131,7 @@ def resolve_turn_route(user_message: str, routing_config: Optional[Dict[str, Any
                 "args": list(primary.get("args") or []),
                 "credential_pool": primary.get("credential_pool"),
             },
+            "request_options": primary_request_options,
             "label": None,
             "signature": (
                 primary.get("model"),
@@ -136,7 +143,10 @@ def resolve_turn_route(user_message: str, routing_config: Optional[Dict[str, Any
             ),
         }
 
-    from hermes_cli.runtime_provider import resolve_runtime_provider
+    from hermes_cli.runtime_provider import (
+        resolve_runtime_provider,
+        resolve_runtime_request_options,
+    )
 
     explicit_api_key = None
     api_key_env = str(route.get("api_key_env") or "").strip()
@@ -161,6 +171,7 @@ def resolve_turn_route(user_message: str, routing_config: Optional[Dict[str, Any
                 "args": list(primary.get("args") or []),
                 "credential_pool": primary.get("credential_pool"),
             },
+            "request_options": primary_request_options,
             "label": None,
             "signature": (
                 primary.get("model"),
@@ -181,7 +192,9 @@ def resolve_turn_route(user_message: str, routing_config: Optional[Dict[str, Any
             "api_mode": runtime.get("api_mode"),
             "command": runtime.get("command"),
             "args": list(runtime.get("args") or []),
+            "credential_pool": runtime.get("credential_pool"),
         },
+        "request_options": resolve_runtime_request_options(runtime),
         "label": f"smart route → {route.get('model')} ({runtime.get('provider')})",
         "signature": (
             route.get("model"),

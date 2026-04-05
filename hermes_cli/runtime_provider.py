@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 from typing import Any, Dict, Optional
+from urllib.parse import urlparse
 
 from hermes_cli import auth as auth_mod
 from agent.credential_pool import CredentialPool, PooledCredential, get_custom_provider_pool_key, load_pool
@@ -22,6 +24,11 @@ from hermes_cli.auth import (
 )
 from hermes_cli.config import load_config
 from hermes_constants import OPENROUTER_BASE_URL
+
+logger = logging.getLogger(__name__)
+
+_VALID_SERVICE_TIERS = frozenset({"auto", "default", "flex", "scale", "priority"})
+_UNSUPPORTED_SERVICE_TIER_WARNINGS: set[tuple[str, str, str, str]] = set()
 
 
 def _normalize_custom_provider_name(value: str) -> str:
@@ -128,6 +135,115 @@ def _parse_api_mode(raw: Any) -> Optional[str]:
         if normalized in _VALID_API_MODES:
             return normalized
     return None
+
+
+def _runtime_host(base_url: Any) -> str:
+    normalized = str(base_url or "").strip()
+    if not normalized:
+        return ""
+    if "://" not in normalized:
+        normalized = f"https://{normalized}"
+    parsed = urlparse(normalized)
+    return parsed.netloc.lower().split("@")[-1].split(":")[0]
+
+
+def _runtime_path(base_url: Any) -> str:
+    normalized = str(base_url or "").strip()
+    if not normalized:
+        return ""
+    if "://" not in normalized:
+        normalized = f"https://{normalized}"
+    parsed = urlparse(normalized)
+    return (parsed.path or "").rstrip("/")
+
+
+def _service_tier_warning_key(runtime: Dict[str, Any]) -> tuple[str, str, str, str]:
+    return (
+        str(runtime.get("provider") or "").strip().lower(),
+        str(runtime.get("requested_provider") or "").strip().lower(),
+        str(runtime.get("api_mode") or "").strip().lower(),
+        str(runtime.get("base_url") or "").strip().rstrip("/").lower(),
+    )
+
+
+def _is_known_codex_service_tier_route(runtime: Dict[str, Any]) -> bool:
+    return (
+        _runtime_host(runtime.get("base_url")) == "chatgpt.com"
+        and _runtime_path(runtime.get("base_url")) == "/backend-api/codex"
+    )
+
+
+def supports_openai_service_tier_runtime(runtime: Dict[str, Any]) -> bool:
+    """Return True only for the canonical OpenAI routes that Hermes supports.
+
+    Transport resolution stays transport-only; request policy is normalized
+    adjacent to it and keyed off the effective runtime facts.
+    """
+    provider = str(runtime.get("provider") or "").strip().lower()
+    api_mode = str(runtime.get("api_mode") or "").strip().lower()
+    api_key = str(runtime.get("api_key") or "").strip()
+
+    if provider == "openai-codex":
+        return api_mode == "codex_responses" and _is_known_codex_service_tier_route(runtime)
+    if api_mode not in {"chat_completions", "codex_responses"}:
+        return False
+    if _runtime_host(runtime.get("base_url")) != "api.openai.com":
+        return False
+    return bool(api_key) and api_key != "no-key-required"
+
+
+def resolve_runtime_request_options(
+    runtime: Dict[str, Any],
+    *,
+    model_cfg: Optional[Dict[str, Any]] = None,
+    warning_cache: Optional[set[tuple[str, str, str, str]]] = None,
+) -> Dict[str, Any]:
+    """Resolve request-time options for the effective runtime route.
+
+    The transport runtime stays narrow and route-identifying; request options
+    are normalized adjacent to it so CLI, gateway, cron, ACP, and helper
+    surfaces can all reuse the same config-to-request-policy seam.
+    """
+    model_cfg = model_cfg or _get_model_config()
+    raw_request_options = model_cfg.get("request_options")
+    if raw_request_options is None:
+        return {}
+    if not isinstance(raw_request_options, dict):
+        raise ValueError("config model.request_options must be a mapping when set")
+
+    raw_service_tier = raw_request_options.get("service_tier")
+    if raw_service_tier is None:
+        return {}
+    if not isinstance(raw_service_tier, str):
+        raise ValueError("config model.request_options.service_tier must be a string")
+
+    service_tier = raw_service_tier.strip().lower()
+    if not service_tier:
+        return {}
+    if service_tier not in _VALID_SERVICE_TIERS:
+        valid_values = ", ".join(sorted(_VALID_SERVICE_TIERS))
+        raise ValueError(
+            "config model.request_options.service_tier must be one of "
+            f"{valid_values}; got {raw_service_tier!r}"
+        )
+
+    if supports_openai_service_tier_runtime(runtime):
+        return {"service_tier": service_tier}
+
+    cache = warning_cache if warning_cache is not None else _UNSUPPORTED_SERVICE_TIER_WARNINGS
+    warning_key = _service_tier_warning_key(runtime)
+    if warning_key not in cache:
+        cache.add(warning_key)
+        logger.warning(
+            "Omitting OpenAI service_tier=%s for unsupported runtime route "
+            "provider=%s requested_provider=%s api_mode=%s base_url=%s",
+            service_tier,
+            str(runtime.get("provider") or "").strip().lower() or "unknown",
+            str(runtime.get("requested_provider") or "").strip().lower() or "unknown",
+            str(runtime.get("api_mode") or "").strip().lower() or "unknown",
+            str(runtime.get("base_url") or "").strip(),
+        )
+    return {}
 
 
 def _resolve_runtime_from_pool_entry(

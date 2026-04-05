@@ -36,7 +36,13 @@ def _stub_tts(monkeypatch):
     monkeypatch.setattr("hermes_cli.setup.prompt_yes_no", lambda *a, **kw: False)
 
 
-def _write_model_config(tmp_path, provider, base_url="", model_name="test-model"):
+def _write_model_config(
+    tmp_path,
+    provider,
+    base_url="",
+    model_name="test-model",
+    service_tier=None,
+):
     """Simulate what a _model_flow_* function writes to disk."""
     cfg = load_config()
     m = cfg.get("model")
@@ -48,6 +54,8 @@ def _write_model_config(tmp_path, provider, base_url="", model_name="test-model"
         m["base_url"] = base_url
     if model_name:
         m["default"] = model_name
+    if service_tier:
+        m["request_options"] = {"service_tier": service_tier}
     save_config(cfg)
 
 
@@ -117,6 +125,33 @@ def test_setup_syncs_nous_from_disk(tmp_path, monkeypatch):
     assert isinstance(reloaded["model"], dict)
     assert reloaded["model"]["provider"] == "nous"
     assert reloaded["model"]["base_url"] == "https://inference.example.com/v1"
+
+
+def test_setup_syncs_model_request_options_from_disk(tmp_path, monkeypatch):
+    """Disk refresh after provider selection must keep request_options leaves."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _clear_provider_env(monkeypatch)
+    _stub_tts(monkeypatch)
+
+    config = load_config()
+
+    def fake_select():
+        _write_model_config(
+            tmp_path,
+            "custom",
+            "https://api.openai.com/v1",
+            "gpt-5.4",
+            service_tier="priority",
+        )
+
+    monkeypatch.setattr("hermes_cli.main.select_provider_and_model", fake_select)
+
+    setup_model_provider(config)
+    save_config(config)
+
+    reloaded = load_config()
+    assert isinstance(reloaded["model"], dict)
+    assert reloaded["model"]["request_options"] == {"service_tier": "priority"}
 
 
 def test_setup_custom_providers_synced(tmp_path, monkeypatch):

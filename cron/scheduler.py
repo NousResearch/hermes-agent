@@ -472,6 +472,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
 
         from hermes_cli.runtime_provider import (
             resolve_runtime_provider,
+            resolve_runtime_request_options,
             format_runtime_provider_error,
         )
         try:
@@ -484,6 +485,8 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         except Exception as exc:
             message = format_runtime_provider_error(exc)
             raise RuntimeError(message) from exc
+
+        primary_request_options = resolve_runtime_request_options(runtime)
 
         from agent.smart_model_routing import resolve_turn_route
         turn_route = resolve_turn_route(
@@ -498,6 +501,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 "command": runtime.get("command"),
                 "args": list(runtime.get("args") or []),
             },
+            primary_request_options=primary_request_options,
         )
 
         agent = AIAgent(
@@ -508,6 +512,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             api_mode=turn_route["runtime"].get("api_mode"),
             acp_command=turn_route["runtime"].get("command"),
             acp_args=turn_route["runtime"].get("args"),
+            request_options=turn_route.get("request_options"),
             max_iterations=max_iterations,
             reasoning_config=reasoning_config,
             prefill_messages=prefill_messages,

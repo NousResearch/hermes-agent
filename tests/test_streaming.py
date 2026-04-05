@@ -740,6 +740,15 @@ class TestHasStreamConsumers:
 class TestCodexStreamCallbacks:
     """Verify _run_codex_stream fires delta callbacks."""
 
+    @staticmethod
+    def _minimal_codex_kwargs():
+        return {
+            "model": "gpt-5.2-codex",
+            "instructions": "You are a helpful assistant.",
+            "input": [{"role": "user", "content": "hi"}],
+            "store": False,
+        }
+
     def test_codex_text_delta_fires_callback(self):
         from run_agent import AIAgent
 
@@ -780,7 +789,7 @@ class TestCodexStreamCallbacks:
         mock_client = MagicMock()
         mock_client.responses.stream.return_value = mock_stream
 
-        response = agent._run_codex_stream({}, client=mock_client)
+        response = agent._run_codex_stream(self._minimal_codex_kwargs(), client=mock_client)
         assert "Hello from Codex!" in deltas
 
     def test_codex_remote_protocol_error_falls_back_to_create_stream(self):
@@ -809,8 +818,9 @@ class TestCodexStreamCallbacks:
         agent.api_mode = "codex_responses"
         agent._interrupt_requested = False
 
+        api_kwargs = self._minimal_codex_kwargs()
         with patch.object(agent, "_run_codex_create_stream_fallback", return_value=fallback_response) as mock_fallback:
-            response = agent._run_codex_stream({}, client=mock_client)
+            response = agent._run_codex_stream(api_kwargs, client=mock_client)
 
         assert response is fallback_response
-        mock_fallback.assert_called_once_with({}, client=mock_client)
+        mock_fallback.assert_called_once_with(api_kwargs, client=mock_client)

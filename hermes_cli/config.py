@@ -1190,8 +1190,17 @@ def _set_nested(config: dict, dotted_key: str, value):
     """
     parts = dotted_key.split(".")
     current = config
-    for part in parts[:-1]:
-        if part not in current or not isinstance(current.get(part), dict):
+    for index, part in enumerate(parts[:-1]):
+        next_value = current.get(part)
+        if isinstance(next_value, dict):
+            current = next_value
+            continue
+        if index == 0 and part == "model":
+            if isinstance(next_value, str) and next_value.strip():
+                current[part] = {"default": next_value.strip()}
+            else:
+                current[part] = {}
+        else:
             current[part] = {}
         current = current[part]
     current[parts[-1]] = value
@@ -2102,15 +2111,6 @@ def set_config_value(key: str, value: str):
         except Exception:
             user_config = {}
     
-    # Handle nested keys (e.g., "tts.provider")
-    parts = key.split('.')
-    current = user_config
-    
-    for part in parts[:-1]:
-        if part not in current or not isinstance(current.get(part), dict):
-            current[part] = {}
-        current = current[part]
-    
     # Convert value to appropriate type
     if value.lower() in ('true', 'yes', 'on'):
         value = True
@@ -2121,7 +2121,7 @@ def set_config_value(key: str, value: str):
     elif value.replace('.', '', 1).isdigit():
         value = float(value)
     
-    current[parts[-1]] = value
+    _set_nested(user_config, key, value)
     
     # Write only user config back (not the full merged defaults)
     ensure_hermes_home()

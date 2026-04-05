@@ -96,6 +96,12 @@ class TestBuildApiKwargsOpenRouter:
         assert "instructions" not in kwargs
         assert "store" not in kwargs
 
+    def test_request_options_do_not_bleed_service_tier(self, monkeypatch):
+        agent = _make_agent(monkeypatch, "openrouter")
+        agent.request_options = {"service_tier": "priority"}
+        kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
+        assert "service_tier" not in kwargs
+
     def test_strips_codex_only_tool_call_fields_from_chat_messages(self, monkeypatch):
         agent = _make_agent(monkeypatch, "openrouter")
         messages = [
@@ -356,6 +362,13 @@ class TestBuildApiKwargsCodex:
         # Responses format has "name" at top level, not nested under "function"
         assert "name" in tools[0]
         assert "function" not in tools[0]
+
+    def test_includes_service_tier_for_codex_route(self, monkeypatch):
+        agent = _make_agent(monkeypatch, "openai-codex", api_mode="codex_responses",
+                            base_url="https://chatgpt.com/backend-api/codex")
+        agent.request_options = {"service_tier": "priority"}
+        kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
+        assert kwargs["service_tier"] == "priority"
 
 
 # ── Message conversion tests ────────────────────────────────────────────────

@@ -205,6 +205,35 @@ def _build_child_agent(
     effective_api_mode = override_api_mode or getattr(parent_agent, "api_mode", None)
     effective_acp_command = getattr(parent_agent, "acp_command", None)
     effective_acp_args = list(getattr(parent_agent, "acp_args", []) or [])
+    parent_request_options = dict(getattr(parent_agent, "request_options", {}) or {})
+
+    parent_runtime_signature = (
+        getattr(parent_agent, "provider", None),
+        getattr(parent_agent, "base_url", None),
+        getattr(parent_agent, "api_mode", None),
+        parent_api_key,
+    )
+    child_runtime_signature = (
+        effective_provider,
+        effective_base_url,
+        effective_api_mode,
+        effective_api_key,
+    )
+    if child_runtime_signature == parent_runtime_signature:
+        child_request_options = parent_request_options
+    else:
+        from hermes_cli.runtime_provider import resolve_runtime_request_options
+
+        child_request_options = resolve_runtime_request_options(
+            {
+                "provider": effective_provider,
+                "base_url": effective_base_url,
+                "api_mode": effective_api_mode,
+                "api_key": effective_api_key,
+                "command": effective_acp_command,
+                "args": effective_acp_args,
+            }
+        )
 
     child = AIAgent(
         base_url=effective_base_url,
@@ -214,6 +243,7 @@ def _build_child_agent(
         api_mode=effective_api_mode,
         acp_command=effective_acp_command,
         acp_args=effective_acp_args,
+        request_options=child_request_options,
         max_iterations=max_iterations,
         max_tokens=getattr(parent_agent, "max_tokens", None),
         reasoning_config=getattr(parent_agent, "reasoning_config", None),

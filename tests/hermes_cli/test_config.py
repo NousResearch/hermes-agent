@@ -111,6 +111,22 @@ class TestSaveAndLoadRoundtrip:
             reloaded = load_config()
             assert reloaded["terminal"]["timeout"] == 999
 
+    def test_model_request_options_roundtrip_preserved(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            config = load_config()
+            config["model"] = {
+                "default": "gpt-5.4",
+                "provider": "custom",
+                "base_url": "https://api.openai.com/v1",
+                "request_options": {"service_tier": "priority"},
+            }
+            save_config(config)
+
+            reloaded = load_config()
+            assert isinstance(reloaded["model"], dict)
+            assert reloaded["model"]["default"] == "gpt-5.4"
+            assert reloaded["model"]["request_options"] == {"service_tier": "priority"}
+
 
 class TestSaveEnvValueSecure:
     def test_save_env_value_writes_without_stdout(self, tmp_path, capsys):

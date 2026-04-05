@@ -537,6 +537,7 @@ class AIAgent:
         checkpoint_max_snapshots: int = 50,
         pass_session_id: bool = False,
         persist_session: bool = True,
+        context_budget: int = 0,
     ):
         """
         Initialize the AI Agent.
@@ -1239,6 +1240,18 @@ class AIAgent:
             working_dir=os.getenv("TERMINAL_CWD") or None,
         )
         self._user_turn_count = 0
+
+        # ── Sliding window context budget (Option A: cache-friendly turns) ──
+        # When context_budget > 0, the agent drops the oldest conversation
+        # turns (keeping system prompt intact) so the API request stays
+        # within the budget.  Because consecutive turns share a long common
+        # prefix, the llama.cpp KV-cache gets near-100% hit rate instead of
+        # the ~0% caused by BPE re-tokenization of the full history.
+        self.context_budget = context_budget  # 0 = disabled
+        # Per-turn token history: list of dicts recording prompt_tokens
+        # reported by the server after each API call.  Used to estimate how
+        # many tokens each message contributes so we can trim accurately.
+        self._sliding_window_token_history: list[dict] = []
 
         # Cumulative token usage for the session
         self.session_prompt_tokens = 0
@@ -2859,6 +2872,99 @@ class AIAgent:
         return getattr(tc, "id", "") or ""
 
     _VALID_API_ROLES = frozenset({"system", "user", "assistant", "tool", "function", "developer"})
+
+    def _apply_sliding_window(self, api_messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Apply sliding window to keep API request within context_budget.
+
+        Drops the oldest non-system messages from the conversation until the
+        estimated token count fits within self.context_budget.  The system
+        prompt (first message if role=="system") is always preserved.
+
+        This ensures that consecutive API requests share the maximal common
+        prefix, which is critical for llama.cpp KV-cache reuse.  Without
+        this, BPE re-tokenization of the full conversation on each turn
+        produces different token IDs for the same text, causing ~0% cache
+        hit rate.
+
+        Tool-call / tool-result pairs are kept together: if an assistant
+        message with tool_calls is retained, all following tool-result
+        messages for those calls are also retained.  Conversely, we never
+        start the window on a bare tool-result message.
+
+        Returns:
+            The (potentially trimmed) api_messages list.
+        """
+        if self.context_budget <= 0:
+            return api_messages
+
+        # Estimate current token count (same rough heuristic used elsewhere)
+        total_chars = sum(len(str(msg)) for msg in api_messages)
+        estimated_tokens = total_chars // 4
+
+        if estimated_tokens <= self.context_budget:
+            return api_messages  # Fits already, no trimming needed
+
+        # Separate system prompt from conversation messages
+        sys_msg = None
+        conv_start = 0
+        if api_messages and api_messages[0].get("role") == "system":
+            sys_msg = api_messages[0]
+            conv_start = 1
+
+        conv_messages = api_messages[conv_start:]
+
+        # Estimate system prompt tokens (always kept)
+        sys_chars = len(str(sys_msg)) if sys_msg else 0
+        sys_tokens = sys_chars // 4
+        budget_for_conv = self.context_budget - sys_tokens
+
+        # Find the earliest start index in conv_messages such that
+        # the remaining messages fit within budget_for_conv.
+        # We scan from the end backwards, accumulating tokens.
+        cumulative_tokens = 0
+        cut_index = len(conv_messages)  # Start from the end
+
+        for i in range(len(conv_messages) - 1, -1, -1):
+            msg_tokens = len(str(conv_messages[i])) // 4
+            if cumulative_tokens + msg_tokens > budget_for_conv:
+                cut_index = i + 1
+                break
+            cumulative_tokens += msg_tokens
+        else:
+            # All messages fit
+            cut_index = 0
+
+        if cut_index >= len(conv_messages):
+            # Nothing fits except system prompt — keep at least the last message
+            cut_index = max(0, len(conv_messages) - 1)
+
+        # Adjust cut_index forward to avoid starting on a tool-result message
+        # (which would be orphaned without its preceding assistant+tool_calls).
+        while cut_index < len(conv_messages) and conv_messages[cut_index].get("role") == "tool":
+            cut_index += 1
+
+        # If we'd drop everything, keep at least the last exchange
+        if cut_index >= len(conv_messages):
+            cut_index = max(0, len(conv_messages) - 1)
+
+        trimmed = conv_messages[cut_index:]
+
+        # Build result: system prompt + trimmed conversation
+        result = []
+        if sys_msg:
+            result.append(sys_msg)
+        result.extend(trimmed)
+
+        dropped = len(conv_messages) - len(trimmed)
+        if dropped > 0 and not self.quiet_mode:
+            new_tokens = sum(len(str(m)) for m in result) // 4
+            self._safe_print(
+                f"{self.log_prefix}📐 Sliding window: dropped {dropped} oldest messages "
+                f"({estimated_tokens:,} -> {new_tokens:,} est. tokens, "
+                f"budget: {self.context_budget:,})"
+            )
+
+        return result
 
     @staticmethod
     def _sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -7152,6 +7258,11 @@ class AIAgent:
             # manual message manipulation are always caught.
             api_messages = self._sanitize_api_messages(api_messages)
 
+            # ── Sliding window: trim oldest turns to fit context budget ──
+            # Applied after sanitization so tool-call/result pairs are intact.
+            # This maximizes KV-cache prefix overlap for llama.cpp servers.
+            api_messages = self._apply_sliding_window(api_messages)
+
             # Calculate approximate request size for logging
             total_chars = sum(len(str(msg)) for msg in api_messages)
             approx_tokens = total_chars // 4  # Rough estimate: 4 chars per token
@@ -7548,6 +7659,18 @@ class AIAgent:
                             "total_tokens": total_tokens,
                         }
                         self.context_compressor.update_from_response(usage_dict)
+
+                        # ── Sliding window: record per-turn token usage ──
+                        # Track the server-reported prompt_tokens so we can
+                        # estimate per-message token cost for sliding window
+                        # trimming on subsequent turns.
+                        if self.context_budget > 0:
+                            self._sliding_window_token_history.append({
+                                "api_call": api_call_count,
+                                "prompt_tokens": prompt_tokens,
+                                "completion_tokens": completion_tokens,
+                                "num_messages": len(api_messages),
+                            })
 
                         # Cache discovered context length after successful call.
                         # Only persist limits confirmed by the provider (parsed

@@ -171,6 +171,7 @@ def _build_child_agent(
     # ACP transport overrides — lets a non-ACP parent spawn ACP child agents
     override_acp_command: Optional[str] = None,
     override_acp_args: Optional[List[str]] = None,
+    override_reasoning_effort: Optional[str] = None,
 ):
     """
     Build a child AIAgent on the main thread (thread-safe construction).
@@ -229,6 +230,19 @@ def _build_child_agent(
     effective_acp_command = override_acp_command or getattr(parent_agent, "acp_command", None)
     effective_acp_args = list(override_acp_args if override_acp_args is not None else (getattr(parent_agent, "acp_args", []) or []))
 
+    effective_reasoning_config = getattr(parent_agent, "reasoning_config", None)
+    if override_reasoning_effort is not None:
+        effort = str(override_reasoning_effort).strip().lower()
+        if effort == "none":
+            effective_reasoning_config = {"enabled": False, "effort": "none"}
+        elif effort:
+            if isinstance(effective_reasoning_config, dict):
+                effective_reasoning_config = dict(effective_reasoning_config)
+            else:
+                effective_reasoning_config = {}
+            effective_reasoning_config["enabled"] = True
+            effective_reasoning_config["effort"] = effort
+
     child = AIAgent(
         base_url=effective_base_url,
         api_key=effective_api_key,
@@ -239,7 +253,7 @@ def _build_child_agent(
         acp_args=effective_acp_args,
         max_iterations=max_iterations,
         max_tokens=getattr(parent_agent, "max_tokens", None),
-        reasoning_config=getattr(parent_agent, "reasoning_config", None),
+        reasoning_config=effective_reasoning_config,
         prefill_messages=getattr(parent_agent, "prefill_messages", None),
         enabled_toolsets=child_toolsets,
         quiet_mode=True,
@@ -517,6 +531,7 @@ def delegate_task(
                 override_api_mode=creds["api_mode"],
                 override_acp_command=t.get("acp_command") or acp_command,
                 override_acp_args=t.get("acp_args") or acp_args,
+                override_reasoning_effort=creds.get("reasoning_effort"),
             )
             # Override with correct parent tool names (before child construction mutated global)
             child._delegate_saved_tool_names = _parent_tool_names
@@ -629,6 +644,7 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     configured_provider = str(cfg.get("provider") or "").strip() or None
     configured_base_url = str(cfg.get("base_url") or "").strip() or None
     configured_api_key = str(cfg.get("api_key") or "").strip() or None
+    configured_reasoning_effort = str(cfg.get("reasoning_effort") or "").strip().lower() or None
 
     if configured_base_url:
         api_key = (
@@ -657,6 +673,7 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
             "base_url": configured_base_url,
             "api_key": api_key,
             "api_mode": api_mode,
+            "reasoning_effort": configured_reasoning_effort,
         }
 
     if not configured_provider:
@@ -667,6 +684,7 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
             "base_url": None,
             "api_key": None,
             "api_mode": None,
+            "reasoning_effort": configured_reasoning_effort,
         }
 
     # Provider is configured — resolve full credentials
@@ -696,6 +714,7 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
         "api_mode": runtime.get("api_mode"),
         "command": runtime.get("command"),
         "args": list(runtime.get("args") or []),
+        "reasoning_effort": configured_reasoning_effort,
     }
 
 

@@ -932,3 +932,38 @@ class TestDelegationProviderIntegration(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestDelegationReasoningEffort(unittest.TestCase):
+    def test_resolve_delegation_credentials_includes_reasoning_effort(self):
+        parent = _make_mock_parent(depth=0)
+        cfg = {"model": "gpt-5.4-mini", "provider": "", "reasoning_effort": "low"}
+        creds = _resolve_delegation_credentials(cfg, parent)
+        self.assertEqual(creds["reasoning_effort"], "low")
+
+    def test_build_child_agent_applies_override_reasoning_effort(self):
+        parent = _make_mock_parent(depth=0)
+        parent.reasoning_config = {"enabled": True, "effort": "xhigh"}
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            MockAgent.return_value = mock_child
+
+            _build_child_agent(
+                task_index=0,
+                goal="Test child",
+                context=None,
+                toolsets=["terminal"],
+                model="gpt-5.4-mini",
+                max_iterations=10,
+                parent_agent=parent,
+                override_provider="openai-codex",
+                override_base_url="https://chatgpt.com/backend-api/codex",
+                override_api_key="test-key",
+                override_api_mode="codex_responses",
+                override_reasoning_effort="low",
+            )
+
+            _, kwargs = MockAgent.call_args
+            self.assertEqual(kwargs["reasoning_config"]["effort"], "low")
+            self.assertTrue(kwargs["reasoning_config"]["enabled"])

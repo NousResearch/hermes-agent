@@ -2166,6 +2166,27 @@ class GatewayRunner:
                     _unavail_msg = _check_unavailable_skill(command)
                     if _unavail_msg:
                         return _unavail_msg
+                    # Genuinely unrecognized /command: not a built-in, not a
+                    # plugin, not a skill, not a known-inactive skill. Warn
+                    # the user instead of silently forwarding it to the LLM
+                    # as free text (which leads to silent-failure behavior
+                    # like the model inventing a delegate_task call).
+                    # Normalize to hyphenated form before checking known
+                    # built-ins (command may be an alias target set by the
+                    # quick-command block above, so _cmd_def can be stale).
+                    if command.replace("_", "-") not in GATEWAY_KNOWN_COMMANDS:
+                        logger.warning(
+                            "Unrecognized slash command /%s from %s — "
+                            "forwarding as plain text",
+                            command,
+                            source.platform.value if source.platform else "?",
+                        )
+                        return (
+                            f"Unknown command `/{command}`. "
+                            f"Type /commands to see what's available, "
+                            f"or resend without the leading slash to send "
+                            f"as a regular message."
+                        )
             except Exception as e:
                 logger.debug("Skill command check failed (non-fatal): %s", e)
         

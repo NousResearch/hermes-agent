@@ -8,6 +8,7 @@ This module is the single source of truth for the dangerous command system:
 - Permanent allowlist persistence (config.yaml)
 """
 
+import contextvars
 import logging
 import os
 import re
@@ -17,6 +18,33 @@ import unicodedata
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+# Per-thread/per-task gateway session identity.
+# Gateway runs agent turns concurrently in executor threads, so reading a
+# process-global env var for session identity is racy. Keep env fallback for
+# legacy single-threaded callers, but prefer the context-local value when set.
+_approval_session_key: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "approval_session_key",
+    default="",
+)
+
+
+def set_current_session_key(session_key: str) -> contextvars.Token[str]:
+    """Bind the active approval session key to the current context."""
+    return _approval_session_key.set(session_key or "")
+
+
+def reset_current_session_key(token: contextvars.Token[str]) -> None:
+    """Restore the prior approval session key context."""
+    _approval_session_key.reset(token)
+
+
+def get_current_session_key(default: str = "default") -> str:
+    """Return the active session key, preferring context-local state."""
+    session_key = _approval_session_key.get()
+    if session_key:
+        return session_key
+    return os.getenv("HERMES_SESSION_KEY", default)
 
 # Sensitive write targets that should trigger approval even when referenced
 # via shell expansions like $HOME or $HERMES_HOME.
@@ -534,7 +562,7 @@ def check_dangerous_command(command: str, env_type: str,
     if not is_dangerous:
         return {"approved": True, "message": None}
 
-    session_key = os.getenv("HERMES_SESSION_KEY", "default")
+    session_key = get_current_session_key()
     if is_approved(session_key, pattern_key):
         return {"approved": True, "message": None}
 
@@ -660,7 +688,7 @@ def check_all_command_guards(command: str, env_type: str,
     # Collect warnings that need approval
     warnings = []  # list of (pattern_key, description, is_tirith)
 
-    session_key = os.getenv("HERMES_SESSION_KEY", "default")
+    session_key = get_current_session_key()
 
     # Tirith block/warn → approvable warning with rich findings.
     # Previously, tirith "block" was a hard block with no approval prompt.
@@ -696,7 +724,8 @@ def check_all_command_guards(command: str, env_type: str,
             logger.debug("Smart approval: auto-approved '%s' (%s)",
                          command[:60], combined_desc_for_llm)
             return {"approved": True, "message": None,
-                    "smart_approved": True}
+                    "smart_approved": True,
+                    "description": combined_desc_for_llm}
         elif verdict == "deny":
             combined_desc_for_llm = "; ".join(desc for _, desc, _ in warnings)
             return {
@@ -791,7 +820,8 @@ def check_all_command_guards(command: str, env_type: str,
                     approve_permanent(key)
                     save_permanent_allowlist(_permanent_approved)
 
-            return {"approved": True, "message": None}
+            return {"approved": True, "message": None,
+                    "user_approved": True, "description": combined_desc}
 
         # Fallback: no gateway callback registered (e.g. cron, batch).
         # Return approval_required for backward compat.
@@ -837,4 +867,5 @@ def check_all_command_guards(command: str, env_type: str,
             approve_permanent(key)
             save_permanent_allowlist(_permanent_approved)
 
-    return {"approved": True, "message": None}
+    return {"approved": True, "message": None,
+            "user_approved": True, "description": combined_desc}

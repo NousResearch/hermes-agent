@@ -35,6 +35,7 @@ import json
 import logging
 import os
 import platform
+import re
 import time
 import threading
 import atexit
@@ -583,6 +584,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
     persistent = cc.get("container_persistent", True)
     volumes = cc.get("docker_volumes", [])
     docker_forward_env = cc.get("docker_forward_env", [])
+    docker_env = cc.get("docker_env", {})
 
     if env_type == "local":
         lc = local_config or {}
@@ -598,6 +600,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
             host_cwd=host_cwd,
             auto_mount_cwd=cc.get("docker_mount_cwd_to_workspace", False),
             forward_env=docker_forward_env,
+            env=docker_env,
         )
     
     elif env_type == "singularity":
@@ -897,6 +900,78 @@ def _atexit_cleanup():
 atexit.register(_atexit_cleanup)
 
 
+# =============================================================================
+# Exit Code Context for Common CLI Tools
+# =============================================================================
+# Many Unix commands use non-zero exit codes for informational purposes, not
+# to indicate failure.  The model sees a raw exit_code=1 from `grep` and
+# wastes a turn investigating something that just means "no matches".
+# This lookup adds a human-readable note so the agent can move on.
+
+def _interpret_exit_code(command: str, exit_code: int) -> str | None:
+    """Return a human-readable note when a non-zero exit code is non-erroneous.
+
+    Returns None when the exit code is 0 or genuinely signals an error.
+    The note is appended to the tool result so the model doesn't waste
+    turns investigating expected exit codes.
+    """
+    if exit_code == 0:
+        return None
+
+    # Extract the last command in a pipeline/chain — that determines the
+    # exit code.  Handles  `cmd1 && cmd2`, `cmd1 | cmd2`, `cmd1; cmd2`.
+    # Deliberately simple: split on shell operators and take the last piece.
+    segments = re.split(r'\s*(?:\|\||&&|[|;])\s*', command)
+    last_segment = (segments[-1] if segments else command).strip()
+
+    # Get base command name (first word), stripping env var assignments
+    # like  VAR=val cmd ...
+    words = last_segment.split()
+    base_cmd = ""
+    for w in words:
+        if "=" in w and not w.startswith("-"):
+            continue  # skip VAR=val
+        base_cmd = w.split("/")[-1]  # handle /usr/bin/grep -> grep
+        break
+
+    if not base_cmd:
+        return None
+
+    # Command-specific semantics
+    semantics: dict[str, dict[int, str]] = {
+        # grep/rg/ag/ack: 1=no matches found (normal), 2+=real error
+        "grep":  {1: "No matches found (not an error)"},
+        "egrep": {1: "No matches found (not an error)"},
+        "fgrep": {1: "No matches found (not an error)"},
+        "rg":    {1: "No matches found (not an error)"},
+        "ag":    {1: "No matches found (not an error)"},
+        "ack":   {1: "No matches found (not an error)"},
+        # diff: 1=files differ (expected), 2+=real error
+        "diff":  {1: "Files differ (expected, not an error)"},
+        "colordiff": {1: "Files differ (expected, not an error)"},
+        # find: 1=some dirs inaccessible but results may still be valid
+        "find":  {1: "Some directories were inaccessible (partial results may still be valid)"},
+        # test/[: 1=condition is false (expected)
+        "test":  {1: "Condition evaluated to false (expected, not an error)"},
+        "[":     {1: "Condition evaluated to false (expected, not an error)"},
+        # curl: common non-error codes
+        "curl":  {
+            6: "Could not resolve host",
+            7: "Failed to connect to host",
+            22: "HTTP response code indicated error (e.g. 404, 500)",
+            28: "Operation timed out",
+        },
+        # git: 1 is context-dependent but often normal (e.g. git diff with changes)
+        "git":   {1: "Non-zero exit (often normal — e.g. 'git diff' returns 1 when files differ)"},
+    }
+
+    cmd_semantics = semantics.get(base_cmd)
+    if cmd_semantics and exit_code in cmd_semantics:
+        return cmd_semantics[exit_code]
+
+    return None
+
+
 def terminal_tool(
     command: str,
     background: bool = False,
@@ -1056,6 +1131,7 @@ def terminal_tool(
 
         # Pre-exec security checks (tirith + dangerous command detection)
         # Skip check if force=True (user has confirmed they want to run it)
+        approval_note = None
         if not force:
             approval = _check_all_guards(command, env_type)
             if not approval["approved"]:
@@ -1082,15 +1158,23 @@ def terminal_tool(
                     "error": approval.get("message", fallback_msg),
                     "status": "blocked"
                 }, ensure_ascii=False)
+            # Track whether approval was explicitly granted by the user
+            if approval.get("user_approved"):
+                desc = approval.get("description", "flagged as dangerous")
+                approval_note = f"Command required approval ({desc}) and was approved by the user."
+            elif approval.get("smart_approved"):
+                desc = approval.get("description", "flagged as dangerous")
+                approval_note = f"Command was flagged ({desc}) and auto-approved by smart approval."
 
         # Prepare command for execution
         if background:
             # Spawn a tracked background process via the process registry.
             # For local backends: uses subprocess.Popen with output buffering.
             # For non-local backends: runs inside the sandbox via env.execute().
+            from tools.approval import get_current_session_key
             from tools.process_registry import process_registry
 
-            session_key = os.getenv("HERMES_SESSION_KEY", "")
+            session_key = get_current_session_key(default="")
             effective_cwd = workdir or cwd
             try:
                 if env_type == "local":
@@ -1118,6 +1202,8 @@ def terminal_tool(
                     "exit_code": 0,
                     "error": None,
                 }
+                if approval_note:
+                    result_data["approval"] = approval_note
 
                 # Transparent timeout clamping note
                 max_timeout = effective_timeout
@@ -1229,11 +1315,21 @@ def terminal_tool(
             from agent.redact import redact_sensitive_text
             output = redact_sensitive_text(output.strip()) if output else ""
 
-            return json.dumps({
+            # Interpret non-zero exit codes that aren't real errors
+            # (e.g. grep=1 means "no matches", diff=1 means "files differ")
+            exit_note = _interpret_exit_code(command, returncode)
+
+            result_dict = {
                 "output": output,
                 "exit_code": returncode,
-                "error": None
-            }, ensure_ascii=False)
+                "error": None,
+            }
+            if approval_note:
+                result_dict["approval"] = approval_note
+            if exit_note:
+                result_dict["exit_code_meaning"] = exit_note
+
+            return json.dumps(result_dict, ensure_ascii=False)
 
     except Exception as e:
         import traceback

@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import queue
+import re
 import time
 from dataclasses import dataclass
 from typing import Any, Optional
@@ -156,8 +157,39 @@ class GatewayStreamConsumer:
         except Exception as e:
             logger.error("Stream consumer error: %s", e)
 
+    # Pattern to strip MEDIA:<path> tags (including optional surrounding quotes).
+    # Matches the simple cleanup regex used by the non-streaming path in
+    # gateway/platforms/base.py for post-processing.
+    _MEDIA_RE = re.compile(r'''[`"']?MEDIA:\s*\S+[`"']?''')
+
+    @staticmethod
+    def _clean_for_display(text: str) -> str:
+        """Strip MEDIA: directives and internal markers from text before display.
+
+        The streaming path delivers raw text chunks that may include
+        ``MEDIA:<path>`` tags and ``[[audio_as_voice]]`` directives meant for
+        the platform adapter's post-processing.  The actual media files are
+        delivered separately via ``_deliver_media_from_response()`` after the
+        stream finishes — we just need to hide the raw directives from the
+        user.
+        """
+        if "MEDIA:" not in text and "[[audio_as_voice]]" not in text:
+            return text
+        cleaned = text.replace("[[audio_as_voice]]", "")
+        cleaned = GatewayStreamConsumer._MEDIA_RE.sub("", cleaned)
+        # Collapse excessive blank lines left behind by removed tags
+        cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
+        # Strip trailing whitespace/newlines but preserve leading content
+        return cleaned.rstrip()
+
     async def _send_or_edit(self, text: str) -> None:
         """Send or edit the streaming message."""
+        # Strip MEDIA: directives so they don't appear as visible text.
+        # Media files are delivered as native attachments after the stream
+        # finishes (via _deliver_media_from_response in gateway/run.py).
+        text = self._clean_for_display(text)
+        if not text.strip():
+            return
         try:
             if self._message_id is not None:
                 if self._edit_supported:

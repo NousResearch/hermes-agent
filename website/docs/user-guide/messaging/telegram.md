@@ -312,6 +312,71 @@ For example, a topic with `skill: arxiv` will have the arxiv skill pre-loaded wh
 Topics created outside of the config (e.g., by manually calling the Telegram API) are discovered automatically when a `forum_topic_created` service message arrives. You can also add topics to the config while the gateway is running — they'll be picked up on the next cache miss.
 :::
 
+## Group Forum Topic Skill Binding
+
+Supergroups with **Topics mode** enabled (also called "forum topics") already get session isolation per topic — each `thread_id` maps to its own conversation. But you may want to **auto-load a skill** when messages arrive in a specific group topic, just like DM topic skill binding works.
+
+### Use case
+
+A team supergroup with forum topics for different workstreams:
+
+- **Engineering** topic → auto-loads the `software-development` skill
+- **Research** topic → auto-loads the `arxiv` skill
+- **General** topic → no skill, general-purpose assistant
+
+### Configuration
+
+Add topic bindings under `platforms.telegram.extra.group_topics` in `~/.hermes/config.yaml`:
+
+```yaml
+platforms:
+  telegram:
+    extra:
+      group_topics:
+      - chat_id: -1001234567890       # Supergroup ID
+        topics:
+        - name: Engineering
+          thread_id: 5
+          skill: software-development
+        - name: Research
+          thread_id: 12
+          skill: arxiv
+        - name: General
+          thread_id: 1
+          # No skill — general purpose
+```
+
+**Fields:**
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `chat_id` | Yes | The supergroup's numeric ID (negative number starting with `-100`) |
+| `name` | No | Human-readable label for the topic (informational only) |
+| `thread_id` | Yes | Telegram forum topic ID — visible in `t.me/c/<group_id>/<thread_id>` links |
+| `skill` | No | Skill to auto-load on new sessions in this topic |
+
+### How it works
+
+1. When a message arrives in a mapped group topic, Hermes looks up the `chat_id` and `thread_id` in `group_topics` config
+2. If a matching entry has a `skill` field, that skill is auto-loaded for the session — identical to DM topic skill binding
+3. Topics without a `skill` key get session isolation only (existing behavior, unchanged)
+4. Unmapped `thread_id` values or `chat_id` values fall through silently — no error, no skill
+
+### Differences from DM Topics
+
+| | DM Topics | Group Topics |
+|---|---|---|
+| Config key | `extra.dm_topics` | `extra.group_topics` |
+| Topic creation | Hermes creates topics via API if `thread_id` is missing | Admin creates topics in Telegram UI |
+| `thread_id` | Auto-populated after creation | Must be set manually |
+| `icon_color` / `icon_custom_emoji_id` | Supported | Not applicable (admin controls appearance) |
+| Skill binding | ✓ | ✓ |
+| Session isolation | ✓ | ✓ (already built-in for forum topics) |
+
+:::tip
+To find a topic's `thread_id`, open the topic in Telegram Web or Desktop and look at the URL: `https://t.me/c/1234567890/5` — the last number (`5`) is the `thread_id`. The `chat_id` for supergroups is the group ID prefixed with `-100` (e.g., group `1234567890` becomes `-1001234567890`).
+:::
+
 ## Recent Bot API Features
 
 - **Bot API 9.4 (Feb 2026):** Private Chat Topics — bots can create forum topics in 1-on-1 DM chats via `createForumTopic`. See [Private Chat Topics](#private-chat-topics-bot-api-94) above.

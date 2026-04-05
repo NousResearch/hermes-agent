@@ -330,7 +330,7 @@ class TestHandleUpdateCommand:
              patch("subprocess.Popen"):
             result = await runner._handle_update_command(event)
 
-        assert "notify you when it's done" in result
+        assert "stream progress" in result
 
 
 # ---------------------------------------------------------------------------

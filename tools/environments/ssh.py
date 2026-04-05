@@ -135,9 +135,8 @@ class SSHEnvironment(PersistentShellMixin, BaseEnvironment):
                 else:
                     logger.debug("SSH: rsync credential failed: %s", result.stderr.strip())
 
-            # Sync skills directory (remap to detected home)
-            skills_mount = get_skills_directory_mount(container_base=container_base)
-            if skills_mount:
+            # Sync skill directories (local + external, remap to detected home)
+            for skills_mount in get_skills_directory_mount(container_base=container_base):
                 remote_path = skills_mount["container_path"]
                 mkdir_cmd = self._build_ssh_command()
                 mkdir_cmd.append(f"mkdir -p {remote_path}")

@@ -12,7 +12,6 @@ import acp
 from acp.schema import (
     AgentCapabilities,
     AuthenticateResponse,
-    AuthMethodAgent,
     AvailableCommand,
     AvailableCommandsUpdate,
     ClientCapabilities,
@@ -42,6 +41,12 @@ from acp.schema import (
     UnstructuredCommandInput,
     Usage,
 )
+
+# AuthMethodAgent was renamed from AuthMethod in agent-client-protocol 0.9.0
+try:
+    from acp.schema import AuthMethodAgent
+except ImportError:
+    from acp.schema import AuthMethod as AuthMethodAgent  # type: ignore[attr-defined]
 
 from acp_adapter.auth import detect_provider, has_provider
 from acp_adapter.events import (

@@ -54,14 +54,18 @@ def make_tool_progress_cb(
 
     Signature expected by AIAgent::
 
-        tool_progress_callback(name: str, preview: str, args: dict)
+        tool_progress_callback(event_type: str, name: str, preview: str, args: dict, **kwargs)
 
-    Emits ``ToolCallStart`` for each tool invocation and tracks IDs in a FIFO
+    Emits ``ToolCallStart`` for ``tool.started`` events and tracks IDs in a FIFO
     queue per tool name so duplicate/parallel same-name calls still complete
-    against the correct ACP tool call.
+    against the correct ACP tool call.  Other event types (``tool.completed``,
+    ``reasoning.available``) are silently ignored.
     """
 
-    def _tool_progress(name: str, preview: str, args: Any = None) -> None:
+    def _tool_progress(event_type: str, name: str = None, preview: str = None, args: Any = None, **kwargs) -> None:
+        # Only emit ACP ToolCallStart for tool.started; ignore other event types
+        if event_type != "tool.started":
+            return
         if isinstance(args, str):
             try:
                 args = json.loads(args)

@@ -91,7 +91,7 @@ def _strip_blocked_tools(toolsets: List[str]) -> List[str]:
     return [t for t in toolsets if t not in blocked_toolset_names]
 
 
-def _build_child_progress_callback(task_index: int, parent_agent, task_count: int = 1) -> Optional[callable]:
+def _build_child_progress_callback(task_index: int, parent_agent, task_count: int = 1, panel_rec=None, invalidate=None) -> Optional[callable]:
     """Build a callback that relays child agent tool calls to the parent display.
 
     Two display paths:
@@ -104,8 +104,12 @@ def _build_child_progress_callback(task_index: int, parent_agent, task_count: in
     spinner = getattr(parent_agent, '_delegate_spinner', None)
     parent_cb = getattr(parent_agent, 'tool_progress_callback', None)
 
-    if not spinner and not parent_cb:
+    if not spinner and not parent_cb and panel_rec is None:
         return None  # No display → no callback → zero behavior change
+
+    # Mutable containers so delegate_task can wire up records after child build
+    _panel_rec = [panel_rec]
+    _inv = [invalidate]
 
     # Show 1-indexed prefix only in batch mode (multiple tasks)
     prefix = f"[{task_index + 1}] " if task_count > 1 else ""
@@ -149,6 +153,19 @@ def _build_child_progress_callback(task_index: int, parent_agent, task_count: in
                     logger.debug("Parent callback failed: %s", e)
                 _batch.clear()
 
+        # Update panel record if available
+        _rec = _panel_rec[0]
+        if _rec is not None:
+            _rec.last_tool = tool_name
+            _rec.last_tool_preview = (preview or "")[:50]
+            _rec.tool_count += 1
+            _inv_fn = _inv[0]
+            if _inv_fn:
+                try:
+                    _inv_fn()
+                except Exception:
+                    pass
+
     def _flush():
         """Flush remaining batched tool names to gateway on completion."""
         if parent_cb and _batch:
@@ -160,6 +177,8 @@ def _build_child_progress_callback(task_index: int, parent_agent, task_count: in
             _batch.clear()
 
     _callback._flush = _flush
+    _callback._panel_rec = _panel_rec  # expose for delegate_task wiring
+    _callback._inv = _inv              # expose for delegate_task wiring
     return _callback
 
 
@@ -269,6 +288,8 @@ def _run_single_child(
     goal: str,
     child=None,
     parent_agent=None,
+    _panel_dict=None,
+    _panel_invalidate_fn=None,
     **_kwargs,
 ) -> Dict[str, Any]:
     """
@@ -381,6 +402,21 @@ def _run_single_child(
         if status == "failed":
             entry["error"] = result.get("error", "Subagent did not produce a response.")
 
+        # Update panel record on completion
+        if _panel_dict is not None and task_index in _panel_dict:
+            try:
+                rec = _panel_dict[task_index]
+                rec.status = entry.get("status", "error")
+                rec.duration_seconds = entry.get("duration_seconds", 0.0)
+                rec.api_calls = entry.get("api_calls", 0)
+                rec.exit_reason = entry.get("exit_reason", "")
+                rec.error = entry.get("error")
+                rec.child_ref = None
+                if _panel_invalidate_fn:
+                    _panel_invalidate_fn()
+            except Exception:
+                pass
+
         return entry
 
     except Exception as exc:
@@ -477,6 +513,12 @@ def delegate_task(
         if not task.get("goal", "").strip():
             return json.dumps({"error": f"Task {i} is missing a 'goal'."})
 
+    # Hook into CLI subagent panel if available
+    _panel_registry = getattr(parent_agent, '_cli_subagent_registry', None)
+    _panel: dict = _panel_registry[0] if _panel_registry else {}
+    _panel_lock = _panel_registry[1] if _panel_registry else None
+    _panel_invalidate = _panel_registry[2] if _panel_registry else None
+
     overall_start = time.monotonic()
     results = []
 
@@ -511,10 +553,43 @@ def delegate_task(
         # Authoritative restore: reset global to parent's tool names after all children built
         _model_tools._last_resolved_tool_names = _parent_tool_names
 
+    # Create panel records and wire up progress callbacks
+    if _panel_registry is not None:
+        try:
+            from hermes_cli.subagent_panel import SubagentRecord as _SubagentRecord
+            _panel_lock_ctx = _panel_lock if _panel_lock else __import__('contextlib').nullcontext()
+            with _panel_lock_ctx:
+                for i, t, child in children:
+                    rec = _SubagentRecord(
+                        index=i,
+                        goal=t["goal"],
+                        start_time=time.monotonic(),
+                        session_id=getattr(child, 'session_id', ''),
+                        child_ref=child,
+                    )
+                    _panel[i] = rec
+            # Wire up the mutable containers in each child's progress callback
+            for i, t, child in children:
+                rec = _panel.get(i)
+                cb = getattr(child, 'tool_progress_callback', None)
+                if cb and rec:
+                    if hasattr(cb, '_panel_rec'):
+                        cb._panel_rec[0] = rec
+                    if hasattr(cb, '_inv') and _panel_invalidate:
+                        cb._inv[0] = _panel_invalidate
+            if _panel_invalidate:
+                _panel_invalidate()
+        except Exception:
+            pass
+
     if n_tasks == 1:
         # Single task -- run directly (no thread pool overhead)
         _i, _t, child = children[0]
-        result = _run_single_child(0, _t["goal"], child, parent_agent)
+        result = _run_single_child(
+            0, _t["goal"], child, parent_agent,
+            _panel_dict=_panel if _panel_registry is not None else None,
+            _panel_invalidate_fn=_panel_invalidate,
+        )
         results.append(result)
     else:
         # Batch -- run in parallel with per-task progress lines
@@ -530,6 +605,8 @@ def delegate_task(
                     goal=t["goal"],
                     child=child,
                     parent_agent=parent_agent,
+                    _panel_dict=_panel if _panel_registry is not None else None,
+                    _panel_invalidate_fn=_panel_invalidate,
                 )
                 futures[future] = i
 

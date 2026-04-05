@@ -1170,6 +1170,10 @@ class HermesCLI:
         # busy_input_mode: "interrupt" (Enter interrupts current run) or "queue" (Enter queues for next turn)
         _bim = CLI_CONFIG["display"].get("busy_input_mode", "interrupt")
         self.busy_input_mode = "queue" if str(_bim).strip().lower() == "queue" else "interrupt"
+        # Subagent control panel state
+        self._subagent_panel: dict = {}          # task_index -> SubagentRecord
+        self._subagent_panel_open: bool = False
+        self._subagent_panel_cursor: int = 0
         # Dispatch mode for each queue:
         #   "one_by_one"  — each queued message triggers its own agent turn (default)
         #   "all_at_once" — after a turn, all queued messages are joined and sent as one turn
@@ -1629,6 +1633,12 @@ class HermesCLI:
             if self._steering_queue:
                 frags.append(("class:status-bar-dim", " │ "))
                 frags.append(("class:status-bar-warn", f"🎯 {len(self._steering_queue)}"))
+            if self._subagent_panel:
+                n_running = sum(1 for r in self._subagent_panel.values() if r.status == "running")
+                if n_running:
+                    frags.append(("class:status-bar-dim", " │ "))
+                    label = f"🔀 {n_running}" + (" [panel]" if self._subagent_panel_open else "")
+                    frags.append(("class:status-bar-warn", label))
             if self._show_full_user_message:
                 frags.append(("class:status-bar-dim", " │ "))
                 frags.append(("class:status-bar-warn", "↕ full msg"))
@@ -2307,6 +2317,19 @@ class HermesCLI:
             # Route agent status output through prompt_toolkit so ANSI escape
             # sequences aren't garbled by patch_stdout's StdoutProxy (#2262).
             self.agent._print_fn = _cprint
+            # Attach subagent panel registry so delegate_tool can update it
+            if hasattr(self, '_subagent_panel'):
+                def _invalidate_panel():
+                    try:
+                        from prompt_toolkit.application import get_app as _gapp
+                        _gapp().invalidate()
+                    except Exception:
+                        pass
+                self.agent._cli_subagent_registry = (
+                    self._subagent_panel,
+                    threading.Lock(),
+                    _invalidate_panel,
+                )
             self._active_agent_route_signature = (
                 effective_model,
                 runtime.get("provider"),
@@ -2913,6 +2936,9 @@ class HermesCLI:
                 ("Ctrl+P",          "Peek paste / preview input / full history pager (empty input)"),
                 ("Ctrl+V",          "Paste from clipboard (image-aware)"),
                 ("ESC ESC",         "Clear input buffer and attached images"),
+            ]),
+            ("Subagents", [
+                ("Ctrl+X",          "Toggle subagent panel (↑↓ navigate, K interrupt)"),
             ]),
             ("Queues", [
                 ("Alt+Enter",       "📬 Queue follow-up (sent after current response)"),
@@ -7085,7 +7111,29 @@ class HermesCLI:
         overlay menu) into the layout without overriding ``run()``.  Widgets
         are inserted between the spacer and the status bar.
         """
-        return []
+        try:
+            from hermes_cli.subagent_panel import render_panel as _render_panel
+            from prompt_toolkit.application import get_app as _get_app
+            _cli = self
+            _panel_visible = Condition(
+                lambda: _cli._subagent_panel_open and bool(_cli._subagent_panel)
+            )
+            _panel_widget = ConditionalContainer(
+                content=Window(
+                    content=FormattedTextControl(
+                        lambda: _render_panel(
+                            sorted(_cli._subagent_panel.values(), key=lambda r: r.index),
+                            _cli._subagent_panel_cursor,
+                            _get_app().output.get_size().columns,
+                        )
+                    ),
+                    dont_extend_height=True,
+                ),
+                filter=_panel_visible,
+            )
+            return [_panel_widget]
+        except Exception:
+            return []
 
     def _register_extra_tui_keybindings(self, kb, *, input_area) -> None:
         """Register extra keybindings on the TUI ``KeyBindings`` object.
@@ -8043,6 +8091,38 @@ class HermesCLI:
         # or answer prompt when clarify freetext mode is active.
         cli_ref = self
 
+        @kb.add('c-x')
+        def handle_ctrl_x(event):
+            """Ctrl+X: toggle subagent control panel."""
+            cli_ref._subagent_panel_open = not cli_ref._subagent_panel_open
+            cli_ref._subagent_panel_cursor = 0
+            event.app.invalidate()
+
+        @kb.add('up', filter=Condition(lambda: cli_ref._subagent_panel_open and bool(cli_ref._subagent_panel)), eager=True)
+        def panel_up(event):
+            cli_ref._subagent_panel_cursor = max(0, cli_ref._subagent_panel_cursor - 1)
+            event.app.invalidate()
+
+        @kb.add('down', filter=Condition(lambda: cli_ref._subagent_panel_open and bool(cli_ref._subagent_panel)), eager=True)
+        def panel_down(event):
+            n = len(cli_ref._subagent_panel)
+            cli_ref._subagent_panel_cursor = min(n - 1, cli_ref._subagent_panel_cursor + 1)
+            event.app.invalidate()
+
+        @kb.add('k', filter=Condition(lambda: cli_ref._subagent_panel_open and bool(cli_ref._subagent_panel)))
+        def panel_kill(event):
+            """K: interrupt the selected subagent."""
+            records = sorted(cli_ref._subagent_panel.values(), key=lambda r: r.index)
+            if records:
+                target = records[cli_ref._subagent_panel_cursor % len(records)]
+                if target.child_ref:
+                    try:
+                        target.child_ref.interrupt()
+                    except Exception:
+                        pass
+                    target.status = "interrupted"
+            event.app.invalidate()
+
         def get_prompt():
             return cli_ref._get_tui_prompt_fragments()
 
@@ -8610,6 +8690,14 @@ class HermesCLI:
             'voice-processing': '#FFA500 italic',
             'voice-status': 'bg:#1a1a2e #87CEEB',
             'voice-status-recording': 'bg:#1a1a2e #FF4444 bold',
+            # Subagent control panel
+            'subagent-border':   '#CD7F32',
+            'subagent-running':  'ansiyellow',
+            'subagent-done':     'ansigreen',
+            'subagent-error':    'ansired',
+            'subagent-warn':     'ansiyellow',
+            'subagent-sub':      '#888888',
+            'subagent-selected': 'reverse',
         }
         style = PTStyle.from_dict(self._build_tui_style_dict())
         

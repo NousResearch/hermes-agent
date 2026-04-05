@@ -22,7 +22,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Any
-from urllib.parse import quote, unquote
+from urllib.parse import quote, unquote, urlsplit, urlunsplit
 
 import httpx
 
@@ -66,6 +66,22 @@ def _redact_phone(phone: str) -> str:
     if len(phone) <= 8:
         return phone[:2] + "****" + phone[-2:] if len(phone) > 4 else "****"
     return phone[:4] + "****" + phone[-4:]
+
+
+def _redact_url_for_logging(url: str) -> str:
+    """Redact credentials and query data from a URL before logging it."""
+    if not url:
+        return "<none>"
+    try:
+        parsed = urlsplit(url)
+    except Exception:
+        return url
+    if not parsed.scheme or not parsed.netloc:
+        return url
+    netloc = parsed.netloc
+    if "@" in netloc:
+        netloc = "<redacted>@" + netloc.rsplit("@", 1)[-1]
+    return urlunsplit((parsed.scheme, netloc, parsed.path, "", ""))
 
 
 def _parse_comma_list(value: str) -> List[str]:
@@ -185,9 +201,10 @@ class SignalAdapter(BasePlatformAdapter):
         self._max_recent_timestamps = 50
 
         self._phone_lock_identity: Optional[str] = None
+        self._log_http_url = _redact_url_for_logging(self.http_url)
 
         logger.info("Signal adapter initialized: url=%s account=%s groups=%s",
-                     self.http_url, _redact_phone(self.account),
+                     self._log_http_url, _redact_phone(self.account),
                      "enabled" if self.group_allow_from else "disabled")
 
     # ------------------------------------------------------------------
@@ -232,7 +249,7 @@ class SignalAdapter(BasePlatformAdapter):
                 logger.error("Signal: health check failed (status %d)", resp.status_code)
                 return False
         except Exception as e:
-            logger.error("Signal: cannot reach signal-cli at %s: %s", self.http_url, e)
+            logger.error("Signal: cannot reach signal-cli at %s: %s", self._log_http_url, e)
             return False
 
         self._running = True
@@ -240,7 +257,7 @@ class SignalAdapter(BasePlatformAdapter):
         self._sse_task = asyncio.create_task(self._sse_listener())
         self._health_monitor_task = asyncio.create_task(self._health_monitor())
 
-        logger.info("Signal: connected to %s", self.http_url)
+        logger.info("Signal: connected to %s", self._log_http_url)
         return True
 
     async def disconnect(self) -> None:

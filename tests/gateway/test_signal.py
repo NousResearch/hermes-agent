@@ -1,6 +1,7 @@
 """Tests for Signal messenger platform adapter."""
 import base64
 import json
+import logging
 import pytest
 from unittest.mock import MagicMock, patch, AsyncMock
 from urllib.parse import quote
@@ -97,6 +98,17 @@ class TestSignalAdapterInit:
         assert adapter.http_url == "http://localhost:8080"
         assert adapter.account == "+15551234567"
         assert "group123" in adapter.group_allow_from
+
+    def test_init_redacts_credentials_in_logged_url(self, monkeypatch, caplog):
+        with caplog.at_level(logging.INFO, logger="gateway.platforms.signal"):
+            _make_signal_adapter(
+                monkeypatch,
+                http_url="http://alice:supersecret@localhost:8080/signal?token=abc123#frag",
+            )
+
+        assert "supersecret" not in caplog.text
+        assert "token=abc123" not in caplog.text
+        assert "http://<redacted>@localhost:8080/signal" in caplog.text
 
     def test_init_empty_allowlist(self, monkeypatch):
         adapter = _make_signal_adapter(monkeypatch)

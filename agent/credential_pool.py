@@ -760,11 +760,6 @@ class CredentialPool:
         raw = str(target or "").strip()
         if not raw:
             return None, None, "No credential target provided."
-        if raw.isdigit():
-            index = int(raw)
-            if 1 <= index <= len(self._entries):
-                return index, self._entries[index - 1], None
-            return None, None, f"No credential #{index}."
 
         for idx, entry in enumerate(self._entries, start=1):
             if entry.id == raw:
@@ -779,6 +774,11 @@ class CredentialPool:
             return label_matches[0][0], label_matches[0][1], None
         if len(label_matches) > 1:
             return None, None, f'Ambiguous credential label "{raw}". Use the numeric index or entry id instead.'
+        if raw.isdigit():
+            index = int(raw)
+            if 1 <= index <= len(self._entries):
+                return index, self._entries[index - 1], None
+            return None, None, f"No credential #{index}."
         return None, None, f'No credential matching "{raw}".'
 
     def add_entry(self, entry: PooledCredential) -> PooledCredential:

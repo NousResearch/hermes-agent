@@ -74,13 +74,28 @@ def _resolve_delivery_target(job: dict) -> Optional[dict]:
         return None
 
     if deliver == "origin":
-        if not origin:
-            return None
-        return {
-            "platform": origin["platform"],
-            "chat_id": str(origin["chat_id"]),
-            "thread_id": origin.get("thread_id"),
-        }
+        if origin:
+            return {
+                "platform": origin["platform"],
+                "chat_id": str(origin["chat_id"]),
+                "thread_id": origin.get("thread_id"),
+            }
+        # Origin missing (e.g. job created via API/script) — try each
+        # platform's home channel as a fallback instead of silently dropping.
+        for platform_name in ("matrix", "telegram", "discord", "slack"):
+            chat_id = os.getenv(f"{platform_name.upper()}_HOME_CHANNEL", "")
+            if chat_id:
+                logger.info(
+                    "Job '%s' has deliver=origin but no origin; falling back to %s home channel",
+                    job.get("name", job.get("id", "?")),
+                    platform_name,
+                )
+                return {
+                    "platform": platform_name,
+                    "chat_id": chat_id,
+                    "thread_id": None,
+                }
+        return None
 
     if ":" in deliver:
         platform_name, rest = deliver.split(":", 1)
@@ -130,12 +145,14 @@ def _resolve_delivery_target(job: dict) -> Optional[dict]:
     }
 
 
-def _deliver_result(job: dict, content: str) -> None:
+def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> None:
     """
     Deliver job output to the configured target (origin chat, specific platform, etc.).
 
-    Uses the standalone platform send functions from send_message_tool so delivery
-    works whether or not the gateway is running.
+    When ``adapters`` and ``loop`` are provided (gateway is running), tries to
+    use the live adapter first — this supports E2EE rooms (e.g. Matrix) where
+    the standalone HTTP path cannot encrypt.  Falls back to standalone send if
+    the adapter path fails or is unavailable.
     """
     target = _resolve_delivery_target(job)
     if not target:
@@ -206,7 +223,33 @@ def _deliver_result(job: dict, content: str) -> None:
     else:
         delivery_content = content
 
-    # Run the async send in a fresh event loop (safe from any thread)
+    # Prefer the live adapter when the gateway is running — this supports E2EE
+    # rooms (e.g. Matrix) where the standalone HTTP path cannot encrypt.
+    runtime_adapter = (adapters or {}).get(platform)
+    if runtime_adapter is not None and loop is not None and getattr(loop, "is_running", lambda: False)():
+        send_metadata = {"thread_id": thread_id} if thread_id else None
+        try:
+            future = asyncio.run_coroutine_threadsafe(
+                runtime_adapter.send(chat_id, delivery_content, metadata=send_metadata),
+                loop,
+            )
+            send_result = future.result(timeout=60)
+            if send_result and not getattr(send_result, "success", True):
+                err = getattr(send_result, "error", "unknown")
+                logger.warning(
+                    "Job '%s': live adapter send to %s:%s failed (%s), falling back to standalone",
+                    job["id"], platform_name, chat_id, err,
+                )
+            else:
+                logger.info("Job '%s': delivered to %s:%s via live adapter", job["id"], platform_name, chat_id)
+                return
+        except Exception as e:
+            logger.warning(
+                "Job '%s': live adapter delivery to %s:%s failed (%s), falling back to standalone",
+                job["id"], platform_name, chat_id, e,
+            )
+
+    # Standalone path: run the async send in a fresh event loop (safe from any thread)
     coro = _send_to_platform(platform, pconfig, chat_id, delivery_content, thread_id=thread_id)
     try:
         result = asyncio.run(coro)
@@ -629,7 +672,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 logger.debug("Job '%s': failed to close SQLite session store: %s", job_id, e)
 
 
-def tick(verbose: bool = True) -> int:
+def tick(verbose: bool = True, adapters=None, loop=None) -> int:
     """
     Check and run all due jobs.
     
@@ -638,6 +681,8 @@ def tick(verbose: bool = True) -> int:
     
     Args:
         verbose: Whether to print status messages
+        adapters: Optional dict mapping Platform → live adapter (from gateway)
+        loop: Optional asyncio event loop (from gateway) for live adapter sends
     
     Returns:
         Number of jobs executed (0 if another tick is already running)
@@ -694,7 +739,7 @@ def tick(verbose: bool = True) -> int:
 
                 if should_deliver:
                     try:
-                        _deliver_result(job, deliver_content)
+                        _deliver_result(job, deliver_content, adapters=adapters, loop=loop)
                     except Exception as de:
                         logger.error("Delivery failed for job %s: %s", job["id"], de)
 

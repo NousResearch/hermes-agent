@@ -719,7 +719,11 @@ async def _send_mattermost(token, extra, chat_id, message):
 
 
 async def _send_matrix(token, extra, chat_id, message):
-    """Send via Matrix Client-Server API."""
+    """Send via Matrix Client-Server API.
+
+    Converts markdown to HTML for rich rendering in Matrix clients.
+    Falls back to plain text if the ``markdown`` library is not installed.
+    """
     try:
         import aiohttp
     except ImportError:
@@ -729,11 +733,24 @@ async def _send_matrix(token, extra, chat_id, message):
         token = token or os.getenv("MATRIX_ACCESS_TOKEN", "")
         if not homeserver or not token:
             return {"error": "Matrix not configured (MATRIX_HOMESERVER, MATRIX_ACCESS_TOKEN required)"}
-        txn_id = f"hermes_{int(time.time() * 1000)}"
+        txn_id = f"hermes_{int(time.time() * 1000)}_{os.urandom(4).hex()}"
         url = f"{homeserver}/_matrix/client/v3/rooms/{chat_id}/send/m.room.message/{txn_id}"
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+
+        # Build message payload with optional HTML formatted_body.
+        payload = {"msgtype": "m.text", "body": message}
+        try:
+            import markdown as _md
+            html = _md.markdown(message, extensions=["fenced_code", "tables"])
+            # Convert h1-h6 to bold for Element X compatibility.
+            html = re.sub(r"<h[1-6]>(.*?)</h[1-6]>", r"<strong>\1</strong>", html)
+            payload["format"] = "org.matrix.custom.html"
+            payload["formatted_body"] = html
+        except ImportError:
+            pass
+
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
-            async with session.put(url, headers=headers, json={"msgtype": "m.text", "body": message}) as resp:
+            async with session.put(url, headers=headers, json=payload) as resp:
                 if resp.status not in (200, 201):
                     body = await resp.text()
                     return {"error": f"Matrix API error ({resp.status}): {body}"}

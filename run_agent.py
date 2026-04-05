@@ -2187,18 +2187,16 @@ class AIAgent:
         if "reset_at" not in context:
             message = context.get("message") or ""
             if isinstance(message, str):
-                import re as _re
-
-                delay_match = _re.search(r"quotaResetDelay[:\s\"]+(\d+(?:\.\d+)?)(ms|s)", message, _re.IGNORECASE)
+                delay_match = re.search(r"quotaResetDelay[:\s\"]+(\\d+(?:\\.\\d+)?)(ms|s)", message, re.IGNORECASE)
                 if delay_match:
                     value = float(delay_match.group(1))
                     seconds = value / 1000.0 if delay_match.group(2).lower() == "ms" else value
                     context["reset_at"] = time.time() + seconds
                 else:
-                    sec_match = _re.search(
+                    sec_match = re.search(
                         r"retry\s+(?:after\s+)?(\d+(?:\.\d+)?)\s*(?:sec|secs|seconds|s\b)",
                         message,
-                        _re.IGNORECASE,
+                        re.IGNORECASE,
                     )
                     if sec_match:
                         context["reset_at"] = time.time() + float(sec_match.group(1))

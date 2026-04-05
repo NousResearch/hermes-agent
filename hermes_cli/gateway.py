@@ -1094,14 +1094,23 @@ def _wait_for_gateway_exit(timeout: float = 10.0, force_after: float = 5.0):
 
 
 def launchd_restart():
+    label = get_launchd_label()
+    target = f"{_launchd_domain()}/{label}"
+    # Use kickstart -k so launchd performs an atomic kill+restart.
+    # A two-step stop/start from inside the gateway's own process tree
+    # would kill the shell before the start command is reached.
     try:
-        launchd_stop()
+        subprocess.run(["launchctl", "kickstart", "-k", target], check=True)
+        print("✓ Service restarted")
     except subprocess.CalledProcessError as e:
         if e.returncode != 3:
             raise
-        print("↻ launchd job was unloaded; skipping stop")
-    _wait_for_gateway_exit()
-    launchd_start()
+        # Job not loaded — bootstrap and start fresh
+        print("↻ launchd job was unloaded; reloading")
+        plist_path = get_launchd_plist_path()
+        subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=True)
+        subprocess.run(["launchctl", "kickstart", target], check=True)
+        print("✓ Service restarted")
 
 def launchd_status(deep: bool = False):
     plist_path = get_launchd_plist_path()

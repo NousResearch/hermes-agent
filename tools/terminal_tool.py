@@ -1253,11 +1253,56 @@ def terminal_tool(
             result = None
             
             while retry_count <= max_retries:
+                # Check interrupt before each attempt
+                if is_interrupted():
+                    return json.dumps({
+                        "output": "",
+                        "exit_code": 130,
+                        "error": "Command interrupted — user sent a new message"
+                    }, ensure_ascii=False)
+
                 try:
                     execute_kwargs = {"timeout": effective_timeout}
                     if workdir:
                         execute_kwargs["cwd"] = workdir
-                    result = env.execute(command, **execute_kwargs)
+
+                    # Run env.execute() in a thread so we can poll the
+                    # interrupt event while waiting.  The env backends
+                    # already check is_interrupted() internally, but
+                    # some paths (e.g. network-bound Modal/Daytona calls)
+                    # may block for seconds before reaching the next poll.
+                    _exc_holder: list[Exception | None] = [None]
+                    _result_holder: list[dict | None] = [None]
+
+                    def _run_execute():
+                        try:
+                            _result_holder[0] = env.execute(command, **execute_kwargs)
+                        except Exception as exc:
+                            _exc_holder[0] = exc
+
+                    exec_thread = threading.Thread(target=_run_execute, daemon=True)
+                    exec_thread.start()
+
+                    while exec_thread.is_alive():
+                        exec_thread.join(timeout=0.3)
+                        if is_interrupted():
+                            logger.info("Interrupt detected during env.execute() — killing running command")
+                            try:
+                                env.cleanup()
+                            except Exception:
+                                pass
+                            exec_thread.join(timeout=3)
+                            return json.dumps({
+                                "output": "",
+                                "exit_code": 130,
+                                "error": "Command interrupted — user sent a new message"
+                            }, ensure_ascii=False)
+
+                    # Thread finished — propagate any exception
+                    if _exc_holder[0] is not None:
+                        raise _exc_holder[0]
+                    result = _result_holder[0]
+
                 except Exception as e:
                     error_str = str(e).lower()
                     if "timeout" in error_str:
@@ -1267,13 +1312,22 @@ def terminal_tool(
                             "error": f"Command timed out after {effective_timeout} seconds"
                         }, ensure_ascii=False)
                     
-                    # Retry on transient errors
+                    # Retry on transient errors (with interrupt-aware sleep)
                     if retry_count < max_retries:
                         retry_count += 1
                         wait_time = 2 ** retry_count
                         logger.warning("Execution error, retrying in %ds (attempt %d/%d) - Command: %s - Error: %s: %s - Task: %s, Backend: %s",
                                        wait_time, retry_count, max_retries, command[:200], type(e).__name__, e, effective_task_id, env_type)
-                        time.sleep(wait_time)
+                        # Interrupt-aware sleep: wake early if interrupted
+                        _sleep_end = time.monotonic() + wait_time
+                        while time.monotonic() < _sleep_end:
+                            if is_interrupted():
+                                return json.dumps({
+                                    "output": "",
+                                    "exit_code": 130,
+                                    "error": "Command interrupted — user sent a new message"
+                                }, ensure_ascii=False)
+                            time.sleep(0.3)
                         continue
                     
                     logger.error("Execution failed after %d retries - Command: %s - Error: %s: %s - Task: %s, Backend: %s",

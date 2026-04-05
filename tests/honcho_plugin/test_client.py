@@ -437,6 +437,69 @@ class TestProfileScopedConfig:
         assert config.peer_name == "dreamer-user"
 
 
+class TestObservationModeMigration:
+    """Existing configs without explicit observationMode keep 'unified' default."""
+
+    def test_existing_config_defaults_to_unified(self, tmp_path):
+        """Config with host block but no observationMode → 'unified' (old default)."""
+        cfg_file = tmp_path / "config.json"
+        cfg_file.write_text(json.dumps({
+            "apiKey": "k",
+            "hosts": {"hermes": {"enabled": True, "aiPeer": "hermes"}},
+        }))
+        cfg = HonchoClientConfig.from_global_config(config_path=cfg_file)
+        assert cfg.observation_mode == "unified"
+
+    def test_new_config_defaults_to_directional(self, tmp_path):
+        """Config with no host block and no credentials → 'directional' (new default)."""
+        cfg_file = tmp_path / "config.json"
+        cfg_file.write_text(json.dumps({}))
+        cfg = HonchoClientConfig.from_global_config(config_path=cfg_file)
+        assert cfg.observation_mode == "directional"
+
+    def test_explicit_directional_respected(self, tmp_path):
+        """Existing config with explicit observationMode → uses what's set."""
+        cfg_file = tmp_path / "config.json"
+        cfg_file.write_text(json.dumps({
+            "apiKey": "k",
+            "hosts": {"hermes": {"enabled": True, "observationMode": "directional"}},
+        }))
+        cfg = HonchoClientConfig.from_global_config(config_path=cfg_file)
+        assert cfg.observation_mode == "directional"
+
+    def test_explicit_unified_respected(self, tmp_path):
+        """Existing config with explicit observationMode unified → stays unified."""
+        cfg_file = tmp_path / "config.json"
+        cfg_file.write_text(json.dumps({
+            "apiKey": "k",
+            "observationMode": "unified",
+            "hosts": {"hermes": {"enabled": True}},
+        }))
+        cfg = HonchoClientConfig.from_global_config(config_path=cfg_file)
+        assert cfg.observation_mode == "unified"
+
+    def test_granular_observation_overrides_preset(self, tmp_path):
+        """Explicit observation object overrides both preset and migration default."""
+        cfg_file = tmp_path / "config.json"
+        cfg_file.write_text(json.dumps({
+            "apiKey": "k",
+            "hosts": {"hermes": {
+                "enabled": True,
+                "observation": {
+                    "user": {"observeMe": True, "observeOthers": False},
+                    "ai": {"observeMe": False, "observeOthers": True},
+                },
+            }},
+        }))
+        cfg = HonchoClientConfig.from_global_config(config_path=cfg_file)
+        # observation_mode falls back to "unified" (migration), but
+        # granular booleans from the observation object win
+        assert cfg.user_observe_me is True
+        assert cfg.user_observe_others is False
+        assert cfg.ai_observe_me is False
+        assert cfg.ai_observe_others is True
+
+
 class TestResetHonchoClient:
     def test_reset_clears_singleton(self):
         import plugins.memory.honcho.client as mod

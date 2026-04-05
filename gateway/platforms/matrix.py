@@ -684,6 +684,13 @@ class MatrixAdapter(BasePlatformAdapter):
                 if isinstance(resp, nio.SyncError):
                     if self._closing:
                         return
+                    err_msg = str(getattr(resp, "message", resp)).lower()
+                    if "m_unknown_token" in err_msg or "m_forbidden" in err_msg or "401" in err_msg:
+                        logger.error(
+                            "Matrix: permanent auth error from sync: %s — stopping sync",
+                            getattr(resp, "message", resp),
+                        )
+                        return
                     logger.warning(
                         "Matrix: sync returned %s: %s — retrying in 5s",
                         type(resp).__name__,
@@ -697,6 +704,12 @@ class MatrixAdapter(BasePlatformAdapter):
                 return
             except Exception as exc:
                 if self._closing:
+                    return
+                # Detect permanent auth/permission failures that will never
+                # succeed on retry — stop syncing instead of looping forever.
+                err_str = str(exc).lower()
+                if "401" in err_str or "403" in err_str or "unauthorized" in err_str or "forbidden" in err_str:
+                    logger.error("Matrix: permanent auth error: %s — stopping sync", exc)
                     return
                 logger.warning("Matrix: sync error: %s — retrying in 5s", exc)
                 await asyncio.sleep(5)

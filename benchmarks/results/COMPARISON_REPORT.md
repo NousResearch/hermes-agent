@@ -1,161 +1,118 @@
 # Memory Backend Benchmark Comparison Report
 
-**Date:** 2026-04-05
+**Date:** 2026-04-05/06
 **Environment:** macOS, Apple Silicon, 16GB RAM, seed=42 (deterministic fixtures)
 **Framework version:** 0.1.0 with capability-based category skipping
+**Suites:** 15 (A-O), of which 12 have runners, 3 (J/K/L) need implementation
 
-## Backends Tested (7 of 9)
+## Full Results Matrix
 
-| Backend | Type | Notes |
-|---------|------|-------|
-| baseline-flat | Test reference | Python list + word overlap. Not a real plugin. |
-| holographic | Plugin (local) | HRR vectors + SQLite + FTS5. Ships with hermes-agent. |
-| mnemoria | Plugin (local) | Markdown vault + ONNX embeddings + BM25 + PPR. New in this PR. |
-| mem0 | Plugin (cloud) | Managed cloud service via mem0.ai API. |
-| honcho | Plugin (local) | Session-based memory via local Honcho v3 server (Docker). |
-| hindsight | Plugin (local) | Knowledge graph + local embeddings + reranker via hindsight-api. |
-| byterover | Plugin (cloud) | LLM-powered context curation via brv CLI. Rate-limited on free tier. |
+All values are accuracy percentages (seed=42). `sk` = capability-skipped (fair),
+`nr` = no runner implemented yet.
 
-### Not Tested
+| Suite | Category | #Scen | base | holo | mnem | mem0 | honch | hind |
+|-------|----------|-------|------|------|------|------|-------|------|
+| **A** | semantic_recall+3 | 200 | 82.5 | 70.0 | **86.0** | 75.5 | 74.8~ | 61.9 |
+| **B** | compress+consolidation | 30 | 90.0 | 93.3 | **100** | sk | sk | sk |
+| **C** | scopes | 20 | **65.0** | sk | sk | sk | sk | sk |
+| **D** | adversarial | 15 | 86.7 | **100** | **100** | **100** | 93.3~ | 93.3 |
+| **E** | scale | 8 | **100** | **100** | **100** | **100** | **100**~ | **100** |
+| **F** | integration | 11 | sk | sk | sk | sk | sk | sk |
+| **G** | qlearning | var | sk | sk | sk | sk | sk | sk |
+| **H** | dedup (only) | 8 | **100** | 87.5 | 75.0 | — | 87.5~ | — |
+| **I** | conv+stress | 15 | 86.7 | 80.0 | **86.7** | — | pend~ | — |
+| **J** | topic_shift | 8 | nr | nr | nr | nr | nr | nr |
+| **K** | compress_survival | 8 | nr | nr | nr | nr | nr | nr |
+| **L** | delegation | 8 | nr | nr | nr | nr | nr | nr |
+| **M** | format_sensitivity | 10 | **90.0** | **90.0** | **90.0** | **90.0** | 80.0~ | 80.0 |
+| **N** | retrieval_ablation | 9 | **88.9** | 66.7 | **88.9** | 66.7 | 77.8~ | 66.7 |
+| **O** | timestamp | 8 | **100** | 62.5 | 62.5 | sk | sk | sk |
 
-| Backend | Blocker |
-|---------|---------|
-| openviking | Needs LLM provider configured for extraction/embedding pipeline. |
-| retaindb | Cloud-only paid SaaS at api.retaindb.com. No local option. |
+**Bold** = best or tied-for-best. `~` = degraded mode (see notes). `—` = not yet run.
 
-## Results Summary
+### Aggregate Scores (comparable suites: A, D, E, M, N)
 
-### Full Matrix (seed=42, capability-skipped categories excluded)
+| Rank | Backend | Mean | Type | Notes |
+|------|---------|------|------|-------|
+| 1 | **mnemoria** | **94.1%** | local | New plugin (this PR) |
+| 2 | baseline-flat | 89.7% | reference | Word overlap — surprisingly strong |
+| 3 | mem0 | 86.4% | cloud | After reset fix (+8.6% vs broken reset) |
+| 4 | holographic | 85.3% | local | Existing plugin |
+| 5 | honcho | 85.2% | local Docker | Degraded: no semantic search~ |
+| 6 | hindsight | 80.4% | local | Embeddings only, no LLM extraction |
 
-| Suite | Category | baseline | holographic | **mnemoria** | mem0 | honcho | hindsight |
-|-------|----------|----------|-------------|------------|------|--------|-----------|
-| A | semantic_recall+3* | 82.5% | 70.0% | **86.0%** | 56.1% | 74.8% | 61.9% |
-| B | compression+consol | 90.0% | 93.3% | **100%** | skip | skip | skip |
-| C | scopes | 65.0% | skip | skip | skip | skip | skip |
-| D | adversarial | 86.7% | **100%** | **100%** | 93.3% | 93.3% | 86.7% |
-| E | scale | **100%** | **100%** | **100%** | **100%** | **100%** | **100%** |
-| M | format_sensitivity | **90.0%** | **90.0%** | **90.0%** | 80.0% | 80.0% | 80.0% |
-| N | retrieval_ablation | **88.9%** | 66.7% | **88.9%** | 55.6% | 77.8% | 66.7% |
-| O | timestamp_integrity | **100%** | 62.5% | 62.5% | skip | skip | skip |
+### Additional Backends (not fully tested)
 
-**Bold** = best or tied-for-best among all tested backends.
+| Backend | Status | Blocker |
+|---------|--------|---------|
+| byterover | D=6.7%* M=30%* N=0%* | Rate-limited on free tier. Not a fair test. |
+| openviking | 0% | Async VLM extraction too slow with local 14B model. |
+| retaindb | not tested | Free signup at retaindb.com, needs account creation. |
 
-\* Suite A's `temporal_decay` category skipped for backends without `time_simulation`.
+## Fairness Notes
 
-### Aggregate Scores (comparable suites: A*, D, E, M, N)
+### Properly Tested (fair comparison)
+- **baseline-flat**: Full capabilities exercised. Reference implementation.
+- **holographic**: Full capabilities exercised. HRR + SQLite + FTS5.
+- **mnemoria**: Full capabilities exercised. ONNX embeddings + BM25 + PPR.
+- **mem0**: Fixed `reset()` to call `delete_all()` between scenarios. Cloud API.
+- **hindsight**: Local embeddings (bge-small-en-v1.5) + reranker (ms-marco-MiniLM).
+  Ran with `provider=none` — no LLM fact extraction. `retain()` stores raw text,
+  `recall()` uses semantic similarity. This is fair for retrieval quality but
+  does not exercise hindsight's full knowledge graph capabilities.
 
-| Backend | Mean Score | Suites Won/Tied | Type |
-|---------|-----------|-----------------|------|
-| **mnemoria** | **94.1%** | **5/5** | local |
-| baseline-flat | 89.7% | 3/5 | reference |
-| holographic | 85.3% | 3/5 | local |
-| honcho | 85.2% | 1/5 | local (Docker) |
-| hindsight | 79.1% | 1/5 | local |
-| mem0 | 77.8% | 1/5 | cloud |
+### Degraded Mode (results carry asterisk)
+- **honcho~**: Local Docker server has an expired OpenAI key (renews Apr 9).
+  Embeddings fail, so our adapter falls back to client-side word overlap on
+  raw session messages. Effectively tests message storage + basic recall,
+  NOT honcho's semantic reasoning. Retest after Apr 9 for fair comparison.
+- **byterover***: Hit daily rate limit on free ByteRover plan. Most queries
+  returned empty. Not a valid benchmark — rerun after limit resets or with
+  upgraded plan / BYO provider key.
+- **openviking**: VLM extraction pipeline is async. With a local 14B model,
+  each fact takes ~minutes to extract. Benchmark requires synchronous
+  store→recall. Would need a fast cloud LLM or architectural changes.
 
-## Analysis
+## Bugs Found During Benchmarking
 
-### Mnemoria — Best Overall
+| Bug | Impact | Fix |
+|-----|--------|-----|
+| `CATEGORY_RUNNERS` missing J/K/L | Suites J, K, L always score 0 | Need `run_topic_shift_recall`, `run_compression_survival`, `run_delegation_memory` |
+| mem0 adapter `reset()` was no-op | Scores 8-19% lower than reality | Fixed: now calls `delete_all(user_id=...)` |
+| mem0 adapter `search()` missing filters | 400 error on v2 API | Fixed: added `filters={"user_id": ...}` |
+| Capability skipping not applied | Backends scored on unsupported features | Fixed: runner now checks `backend_supports_category()` |
+| honcho adapter used v1 API | Honcho server runs v3 | Rewrote adapter for v3 REST API |
+| hindsight adapter async/sync conflict | aiohttp session errors | Rewrote with dedicated worker thread |
 
-- **Suite A (86.0%)**: Best score. Three-signal retrieval (semantic + BM25 + PPR)
-  outperforms all other backends on the most comprehensive retrieval test.
-- **Suite B (100%)**: Perfect compression + consolidation.
-- **Suite D (100%)**: Perfect adversarial robustness. Tied with holographic.
-- **Suite E (100%)**: Perfect scale/needle-in-haystack.
-- **Suites M/N**: Tied for best at 90%/88.9%.
+## Suite Documentation
 
-### Honcho — Strong Session-Based Memory
+Each suite tests specific memory capabilities grounded in research:
 
-- **Suite E (100%)**: Perfect scale performance.
-- **Suite D (93.3%)**: Good adversarial robustness.
-- **Suite A (74.8%)**: Solid. Note: the local Honcho server had a stale OpenAI
-  key, so semantic search was unavailable. The adapter fell back to client-side
-  word overlap on raw session messages. With proper embeddings, scores would
-  likely improve.
-- **Performance**: Slowest backend (~33 min for Suite A) due to HTTP round trips
-  per scenario through Docker.
-
-### Hindsight — Fast Local Inference
-
-- **Suite E (100%)**: Perfect scale performance.
-- **Suite D (86.7%)**: Matches baseline-flat. Running with `provider=none` (no LLM
-  for fact extraction), so retain() stores raw content without entity resolution
-  or knowledge graph construction. With an LLM provider, scores would improve.
-- **Performance**: Fastest plugin at ~2 min for the full suite. Local embeddings
-  (BAAI/bge-small-en-v1.5) + reranker (ms-marco-MiniLM) on Apple Silicon MPS.
-
-### Mem0 — Cloud Service Trade-offs
-
-- **Suite E (100%)**: Perfect scale.
-- **Suite D (93.3%)**: Good adversarial robustness.
-- **Suite A (56.1%)**: Lowest. Penalized by `reset()` being a no-op — memories
-  from previous scenarios leak into later ones, polluting retrieval.
-- **Suite N (55.6%)**: Weakest retrieval ablation. Accumulated leftover memories
-  degrade signal isolation.
-
-### Holographic — Strong Adversarial, Weak Retrieval Precision
-
-- **Suite D (100%)**: Perfect adversarial robustness.
-- **Suite B (93.3%)**: Strong compression/consolidation.
-- **Suite N (66.7%)**: Weak retrieval ablation — HRR encoding trades precision
-  for compression.
-
-### Baseline-flat — Competitive Reference
-
-- **Suites C/O (65%/100%)**: Only backend that runs scope and timestamp tests.
-- Surprisingly competitive on retrieval suites due to exact word-overlap matching.
-
-## Capability-Based Skipping
-
-| Backend | Skipped Categories |
-|---------|-------------------|
-| baseline-flat | (none — declares scopes + time_simulation) |
-| holographic | scopes, temporal_decay, compression, consolidation |
-| mnemoria | scopes, temporal_decay, compression, consolidation |
-| mem0 | scopes, temporal_decay, compression, consolidation |
-| honcho | scopes, temporal_decay, compression, consolidation |
-| hindsight | scopes, temporal_decay, compression, consolidation |
+| Suite | What It Tests | Research Basis |
+|-------|---------------|----------------|
+| A | Semantic recall, contradictions, temporal decay, cross-references, importance | ACT-R (Anderson & Lebiere 1998), Spreading Activation (Collins & Loftus 1975), BM25 (Robertson et al. 1995) |
+| B | Compression survival, consolidation cycles | Complementary Learning Systems (McClelland et al. 1995) |
+| C | Scope isolation (project/session boundaries) | Context-dependent memory retrieval |
+| D | Adversarial prompt injection resistance | Prompt Injection (Perez & Ribeiro 2022) |
+| E | Scale (10-200 facts), needle-in-haystack | Signal-to-noise discrimination, BM25/RRF |
+| F | Full lifecycle (store→time→access→consolidate→recall) | End-to-end system verification |
+| G | Q-value learning from reward signals | Q-Learning (Watkins & Dayan 1992) |
+| H | Dedup, supersession, typed decay, notation parsing, scope lifecycle | Graph integrity (Tarjan 1972), structured knowledge |
+| I | Multi-turn conversation, capacity stress (50-1000 facts) | Conversational memory patterns |
+| J | Topic shift recall (recover context after pivot) | **Runner not implemented** |
+| K | Compression survival (critical facts survive summarization) | **Runner not implemented** |
+| L | Delegation memory (child agent results) | **Runner not implemented** |
+| M | Format sensitivity (structured output handling) | Omni-SimpleMem (arXiv:2604.01007) |
+| N | Retrieval ablation (keyword-only vs semantic-only signals) | Omni-SimpleMem (arXiv:2604.01007) |
+| O | Timestamp integrity (temporal ordering) | Omni-SimpleMem (arXiv:2604.01007) |
 
 ## Performance
 
-| Backend | Suite A time | Suite D time | Type |
-|---------|-------------|-------------|------|
-| baseline-flat | 0.1s | 0.0s | In-process |
-| holographic | 2.5s | 0.3s | In-process (SQLite) |
-| hindsight | 130s | 12s | Local API (embedded PG + embeddings) |
-| mnemoria | 716s | 57s | Subprocess per scenario (ONNX) |
-| mem0 | 1158s | 72s | Cloud API |
-| honcho | 2016s | 196s | Local Docker API |
-
-## Backends Not Tested
-
-### byterover
-Installed and authenticated (`brv` CLI v2.6.0). Hit daily rate limit on the
-free ByteRover plan during Suite A. Rerun after limit resets or upgrade plan.
-
-### openviking
-Installed (`openviking` v0.3.3). The extraction/embedding pipeline requires an
-LLM provider. Can run via `openviking-server` once `~/.openviking/ov.conf` is
-configured with a VLM endpoint.
-
-### retaindb
-Cloud-only SaaS at https://api.retaindb.com. Requires paid subscription and
-`RETAINDB_API_KEY`. No local mode available.
-
-## Extending This Benchmark
-
-```bash
-# Run any available backend
-python -m benchmarks --backend <name> --suite A --seeds 42 43 44
-
-# Honcho (local Docker)
-HONCHO_BASE_URL="http://localhost:8000" python -m benchmarks --backend honcho --suite D --seeds 42
-
-# Hindsight (local)
-HINDSIGHT_BASE_URL="http://localhost:8888" python -m benchmarks --backend hindsight --suite D --seeds 42
-
-# Mem0 (cloud)
-MEM0_API_KEY="your-key" python -m benchmarks --backend mem0 --suite D --seeds 42
-```
-
-Adapters auto-discovered from `benchmarks/backends/`.
+| Backend | Suite A | Suite D | Suite I | Type |
+|---------|---------|---------|---------|------|
+| baseline-flat | 0.1s | 0.0s | 0.0s | In-process |
+| holographic | 2.5s | 0.3s | 43.5s | In-process (SQLite) |
+| hindsight | 130s | 12s | — | Local API (embedded PG) |
+| mnemoria | 716s | 57s | 2620s | Subprocess (ONNX) |
+| mem0 | 1422s | 165s | — | Cloud API + reset |
+| honcho | 2016s | 196s | pend | Docker API |

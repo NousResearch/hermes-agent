@@ -195,13 +195,18 @@ class Mem0BenchmarkAdapter(BenchmarkableStore):
         }
 
     def reset(self) -> None:
-        """No-op — bulk deletion is not available via the Mem0 API.
+        """Delete all memories for the benchmark user.
 
-        In benchmark contexts that require a clean slate between runs, use a
-        dedicated Mem0 API key so leftover memories from a previous run do not
-        pollute subsequent ones.
+        Uses the Mem0 ``delete_all`` API to clear state between scenarios.
+        The deletion is asynchronous on the server side; a brief pause allows
+        the backend to process the request before the next scenario starts.
         """
-        return None
+        import time
+        try:
+            self._client.delete_all(user_id=self._user_id)
+            time.sleep(1)  # allow async deletion to propagate
+        except Exception:  # noqa: BLE001
+            pass  # best-effort reset
 
 
 # Module-level alias consumed by the benchmark runner's dynamic loader.

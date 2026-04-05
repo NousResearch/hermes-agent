@@ -2,9 +2,9 @@
   "backend": "mnemoria",
   "profile": "balanced",
   "embedding_model": "auto",
-  "timestamp": "2026-04-05T10:26:34.739985Z",
+  "timestamp": "2026-04-05T15:11:42.741763Z",
   "suites": [
-    "C"
+    "l"
   ],
   "mean_score": 0.0,
   "std": 0.0,
@@ -30,7 +30,7 @@
     {
       "seed": 42,
       "overall_score": 0,
-      "wall_time_seconds": 0.5426092147827148,
+      "wall_time_seconds": 0.29981517791748047,
       "token_usage": {
         "recall_tokens": 0,
         "recall_chars": 0,

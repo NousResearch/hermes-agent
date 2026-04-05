@@ -86,18 +86,49 @@ class _VikingClient:
         response.raise_for_status()
         return response.json()
 
+    def wait_for_task(self, task_id: str, timeout: float = 120.0,
+                      poll_interval: float = 2.0) -> bool:
+        """Poll a task until it completes or times out.
+
+        Returns True if the task completed successfully, False on timeout/error.
+        """
+        import time
+        start = time.time()
+        while time.time() - start < timeout:
+            try:
+                url = f"/api/v1/tasks/{task_id}"
+                response = self._client.get(url)
+                if response.status_code == 200:
+                    data = response.json()
+                    status = data.get("result", {}).get("status", "")
+                    if status in ("completed", "done", "success"):
+                        return True
+                    if status in ("failed", "error"):
+                        logger.warning("Task %s failed: %s", task_id, data)
+                        return False
+            except Exception:  # noqa: BLE001
+                pass
+            time.sleep(poll_interval)
+        logger.warning("Task %s timed out after %.0fs", task_id, timeout)
+        return False
+
     # ------------------------------------------------------------------
-    # Combined store helper (message + commit)
+    # Combined store helper (message + commit + wait)
     # ------------------------------------------------------------------
 
     def store(self, session_id: str, content: str) -> None:
-        """Post a message to the session then immediately commit it.
+        """Post a message, commit, and wait for extraction to complete.
 
-        Committing after every individual store is the safest strategy for
-        benchmark use where recall may follow immediately.
+        OpenViking extraction is async — memories aren't searchable until the
+        commit task finishes.  This method polls the task status to ensure
+        facts are available before the next benchmark query.
         """
         self.post_message(session_id, content)
-        self.commit_session(session_id)
+        result = self.commit_session(session_id)
+        # Wait for extraction to complete
+        task_id = result.get("result", {}).get("task_id")
+        if task_id:
+            self.wait_for_task(task_id, timeout=60.0, poll_interval=1.0)
 
     # ------------------------------------------------------------------
     # Semantic search

@@ -234,10 +234,12 @@ class Mem0MemoryProvider(MemoryProvider):
                 client = self._get_client()
                 results = client.search(
                     query=query,
-                    user_id=self._user_id,
+                    filters={"user_id": self._user_id},
                     rerank=self._rerank,
                     top_k=5,
                 )
+                if isinstance(results, dict):
+                    results = results.get("results", [])
                 if results:
                     lines = [r.get("memory", "") for r in results if r.get("memory")]
                     with self._prefetch_lock:
@@ -291,7 +293,9 @@ class Mem0MemoryProvider(MemoryProvider):
 
         if tool_name == "mem0_profile":
             try:
-                memories = client.get_all(user_id=self._user_id)
+                memories = client.get_all(filters={"user_id": self._user_id})
+                if isinstance(memories, dict):
+                    memories = memories.get("results", [])
                 self._record_success()
                 if not memories:
                     return json.dumps({"result": "No memories stored yet."})
@@ -309,9 +313,13 @@ class Mem0MemoryProvider(MemoryProvider):
             top_k = min(int(args.get("top_k", 10)), 50)
             try:
                 results = client.search(
-                    query=query, user_id=self._user_id,
-                    rerank=rerank, top_k=top_k,
+                    query=query,
+                    filters={"user_id": self._user_id},
+                    rerank=rerank,
+                    top_k=top_k,
                 )
+                if isinstance(results, dict):
+                    results = results.get("results", [])
                 self._record_success()
                 if not results:
                     return json.dumps({"result": "No relevant memories found."})

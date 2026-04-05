@@ -546,8 +546,23 @@ def _resolve_session_by_name_or_id(name_or_id: str) -> Optional[str]:
     return None
 
 
+def _launch_tui():
+    """Replace current process with the Ink TUI."""
+    tui_dir = PROJECT_ROOT / "ui-tui"
+
+    if not (tui_dir / "node_modules").exists():
+        print("TUI dependencies not installed.")
+        print(f"  cd {tui_dir} && npm install")
+        sys.exit(1)
+
+    sys.exit(subprocess.call(["npm", "start"], cwd=str(tui_dir)))
+
+
 def cmd_chat(args):
     """Run interactive chat CLI."""
+    if getattr(args, "tui", False) or os.environ.get("HERMES_TUI") == "1":
+        _launch_tui()
+
     # Resolve --continue into --resume with the latest CLI session or by name
     continue_val = getattr(args, "continue_last", None)
     if continue_val and not getattr(args, "resume", None):
@@ -4078,6 +4093,12 @@ For more help on a command:
         default=False,
         help="Include the session ID in the agent's system prompt"
     )
+    parser.add_argument(
+        "--tui",
+        action="store_true",
+        default=False,
+        help="Launch the Ink-based terminal UI instead of the classic REPL"
+    )
     
     subparsers = parser.add_subparsers(dest="command", help="Command to run")
     
@@ -4173,6 +4194,12 @@ For more help on a command:
         "--source",
         default=None,
         help="Session source tag for filtering (default: cli). Use 'tool' for third-party integrations that should not appear in user session lists."
+    )
+    chat_parser.add_argument(
+        "--tui",
+        action="store_true",
+        default=False,
+        help="Launch the Ink-based terminal UI instead of the classic REPL"
     )
     chat_parser.set_defaults(func=cmd_chat)
 

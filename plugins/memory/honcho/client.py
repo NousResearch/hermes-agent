@@ -366,16 +366,21 @@ class HonchoClientConfig:
                 or raw.get("recallMode")
                 or "hybrid"
             ),
+            # Migration guard: existing configs without an explicit
+            # observationMode keep the old "unified" default so users
+            # aren't silently switched to full bidirectional observation.
+            # New installations (no host block, no credentials) get
+            # "directional" (all observations on) as the new default.
             observation_mode=_normalize_observation_mode(
                 host_block.get("observationMode")
                 or raw.get("observationMode")
-                or "directional"
+                or ("unified" if _explicitly_configured else "directional")
             ),
             **_resolve_observation(
                 _normalize_observation_mode(
                     host_block.get("observationMode")
                     or raw.get("observationMode")
-                    or "directional"
+                    or ("unified" if _explicitly_configured else "directional")
                 ),
                 host_block.get("observation") or raw.get("observation"),
             ),

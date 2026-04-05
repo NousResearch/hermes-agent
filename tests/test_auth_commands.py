@@ -521,3 +521,139 @@ def test_auth_list_prefers_explicit_reset_time(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "device_code_exhausted" in out
     assert "7d 0h left" in out
+
+
+def test_auth_remove_env_seeded_clears_env_var(tmp_path, monkeypatch):
+    """Removing an env-seeded credential should also clear the env var from .env
+    so the entry doesn't get re-seeded on the next load_pool() call."""
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    # Write a .env with an OpenRouter key
+    env_path = hermes_home / ".env"
+    env_path.write_text("OPENROUTER_API_KEY=sk-or-test-key-12345\nOTHER_KEY=keep-me\n")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test-key-12345")
+
+    # Seed the pool with the env entry
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "openrouter": [
+                    {
+                        "id": "env-1",
+                        "label": "OPENROUTER_API_KEY",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "env:OPENROUTER_API_KEY",
+                        "access_token": "sk-or-test-key-12345",
+                    }
+                ]
+            },
+        },
+    )
+
+    from hermes_cli.auth_commands import auth_remove_command
+
+    class _Args:
+        provider = "openrouter"
+        target = "1"
+
+    auth_remove_command(_Args())
+
+    # Env var should be cleared from os.environ
+    import os
+    assert os.environ.get("OPENROUTER_API_KEY") is None
+
+    # Env var should be removed from .env file
+    env_content = env_path.read_text()
+    assert "OPENROUTER_API_KEY" not in env_content
+    # Other keys should still be there
+    assert "OTHER_KEY=keep-me" in env_content
+
+
+def test_auth_remove_env_seeded_does_not_resurrect(tmp_path, monkeypatch):
+    """After removing an env-seeded credential, load_pool should NOT re-create it."""
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    # Write .env with an OpenRouter key
+    env_path = hermes_home / ".env"
+    env_path.write_text("OPENROUTER_API_KEY=sk-or-test-key-12345\n")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test-key-12345")
+
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "openrouter": [
+                    {
+                        "id": "env-1",
+                        "label": "OPENROUTER_API_KEY",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "env:OPENROUTER_API_KEY",
+                        "access_token": "sk-or-test-key-12345",
+                    }
+                ]
+            },
+        },
+    )
+
+    from hermes_cli.auth_commands import auth_remove_command
+
+    class _Args:
+        provider = "openrouter"
+        target = "1"
+
+    auth_remove_command(_Args())
+
+    # Now reload the pool — the entry should NOT come back
+    from agent.credential_pool import load_pool
+    pool = load_pool("openrouter")
+    assert not pool.has_credentials()
+
+
+def test_auth_remove_manual_entry_does_not_touch_env(tmp_path, monkeypatch):
+    """Removing a manually-added credential should NOT touch .env."""
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+    env_path = hermes_home / ".env"
+    env_path.write_text("SOME_KEY=some-value\n")
+
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "openrouter": [
+                    {
+                        "id": "manual-1",
+                        "label": "my-key",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": "sk-or-manual-key",
+                    }
+                ]
+            },
+        },
+    )
+
+    from hermes_cli.auth_commands import auth_remove_command
+
+    class _Args:
+        provider = "openrouter"
+        target = "1"
+
+    auth_remove_command(_Args())
+
+    # .env should be untouched
+    assert env_path.read_text() == "SOME_KEY=some-value\n"

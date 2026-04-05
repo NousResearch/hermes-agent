@@ -248,7 +248,13 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
     path = Path(script_path).expanduser()
     if not path.is_absolute():
         # Resolve relative paths against HERMES_HOME/scripts/
-        path = get_hermes_home() / "scripts" / path
+        scripts_dir = get_hermes_home() / "scripts"
+        path = (scripts_dir / path).resolve()
+        # Guard against path traversal (e.g. "../../etc/passwd")
+        try:
+            path.relative_to(scripts_dir.resolve())
+        except ValueError:
+            return False, f"Script path escapes the scripts directory: {script_path!r}"
 
     if not path.exists():
         return False, f"Script not found: {path}"
@@ -274,6 +280,13 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
                 parts.append(f"stdout:\n{stdout}")
             return False, "\n".join(parts)
 
+        # Redact any secrets that may appear in script output before
+        # they are injected into the LLM prompt context.
+        try:
+            from agent.redact import redact_sensitive_text
+            stdout = redact_sensitive_text(stdout)
+        except Exception:
+            pass
         return True, stdout
 
     except subprocess.TimeoutExpired:

@@ -34,7 +34,7 @@ def _make_mock_parent(depth=0):
     """Create a mock parent agent with the fields delegate_task expects."""
     parent = MagicMock()
     parent.base_url = "https://openrouter.ai/api/v1"
-    parent.api_key = "parent-key"
+    parent.api_key="***"
     parent.provider = "openrouter"
     parent.api_mode = "chat_completions"
     parent.model = "anthropic/claude-sonnet-4"
@@ -47,6 +47,9 @@ def _make_mock_parent(depth=0):
     parent._delegate_depth = depth
     parent._active_children = []
     parent._active_children_lock = threading.Lock()
+    parent._print_fn = None
+    parent.tool_progress_callback = None
+    parent.thinking_callback = None
     return parent
 
 
@@ -228,7 +231,7 @@ class TestDelegateTask(unittest.TestCase):
     def test_child_inherits_runtime_credentials(self):
         parent = _make_mock_parent(depth=0)
         parent.base_url = "https://chatgpt.com/backend-api/codex"
-        parent.api_key = "codex-token"
+        parent.api_key="***"
         parent.provider = "openai-codex"
         parent.api_mode = "codex_responses"
 
@@ -248,6 +251,49 @@ class TestDelegateTask(unittest.TestCase):
             self.assertEqual(kwargs["api_key"], parent.api_key)
             self.assertEqual(kwargs["provider"], parent.provider)
             self.assertEqual(kwargs["api_mode"], parent.api_mode)
+
+    def test_child_inherits_parent_print_fn(self):
+        parent = _make_mock_parent(depth=0)
+        sink = MagicMock()
+        parent._print_fn = sink
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            MockAgent.return_value = mock_child
+
+            _build_child_agent(
+                task_index=0,
+                goal="Keep stdout clean",
+                context=None,
+                toolsets=None,
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+            )
+
+        self.assertIs(mock_child._print_fn, sink)
+
+    def test_child_uses_thinking_callback_when_progress_callback_available(self):
+        parent = _make_mock_parent(depth=0)
+        parent.tool_progress_callback = MagicMock()
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            MockAgent.return_value = mock_child
+
+            _build_child_agent(
+                task_index=0,
+                goal="Avoid raw child spinners",
+                context=None,
+                toolsets=None,
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+            )
+
+        self.assertTrue(callable(mock_child.thinking_callback))
+        mock_child.thinking_callback("deliberating...")
+        parent.tool_progress_callback.assert_not_called()
 
 
 class TestToolNamePreservation(unittest.TestCase):

@@ -1488,19 +1488,14 @@ class TestRunConversation:
         assert result["completed"] is True
         assert result["api_calls"] == 2
 
-    def test_empty_content_retry_uses_inline_reasoning_as_response(self, agent):
-        """Reasoning-only payloads should recover the inline reasoning text."""
+    def test_inline_think_blocks_reasoning_only_accepted(self, agent):
+        """Inline <think> reasoning-only responses accepted with (empty) content, no retries."""
         self._setup_agent(agent)
         empty_resp = _mock_response(
             content="<think>internal reasoning</think>",
             finish_reason="stop",
         )
-        # Return empty 3 times to exhaust retries
-        agent.client.chat.completions.create.side_effect = [
-            empty_resp,
-            empty_resp,
-            empty_resp,
-        ]
+        agent.client.chat.completions.create.side_effect = [empty_resp]
         with (
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
@@ -1508,10 +1503,14 @@ class TestRunConversation:
         ):
             result = agent.run_conversation("answer me")
         assert result["completed"] is True
-        assert result["final_response"] == "internal reasoning"
+        assert result["final_response"] == "(empty)"
+        assert result["api_calls"] == 1  # no retries
+        # Reasoning should be preserved in the assistant message
+        assistant_msgs = [m for m in result["messages"] if m.get("role") == "assistant"]
+        assert any(m.get("reasoning") for m in assistant_msgs)
 
-    def test_empty_content_local_resumed_session_triggers_compression(self, agent):
-        """Local resumed reasoning-only responses should compress before burning retries."""
+    def test_reasoning_only_local_resumed_no_compression_triggered(self, agent):
+        """Reasoning-only responses no longer trigger compression — accepted immediately."""
         self._setup_agent(agent)
         agent.base_url = "http://127.0.0.1:1234/v1"
         agent.compression_enabled = True
@@ -1520,39 +1519,34 @@ class TestRunConversation:
             finish_reason="stop",
             reasoning_content="reasoning only",
         )
-        ok_resp = _mock_response(content="Recovered after compression", finish_reason="stop")
         prefill = [
             {"role": "user", "content": "old question"},
             {"role": "assistant", "content": "old answer"},
         ]
 
         with (
-            patch.object(agent, "_interruptible_api_call", side_effect=[empty_resp, ok_resp]),
+            patch.object(agent, "_interruptible_api_call", side_effect=[empty_resp]),
             patch.object(agent, "_compress_context") as mock_compress,
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
-            mock_compress.return_value = (
-                [{"role": "user", "content": "compressed user message"}],
-                "compressed system prompt",
-            )
             result = agent.run_conversation("hello", conversation_history=prefill)
 
-        mock_compress.assert_called_once()
+        mock_compress.assert_not_called()  # no compression triggered
         assert result["completed"] is True
-        assert result["final_response"] == "Recovered after compression"
-        assert result["api_calls"] == 1  # compression retry is refunded, same as explicit overflow path
+        assert result["final_response"] == "(empty)"
+        assert result["api_calls"] == 1
 
-    def test_empty_content_repeated_structured_reasoning_salvages_early(self, agent):
-        """Repeated identical structured reasoning-only responses should stop retrying early."""
+    def test_reasoning_only_response_accepted_without_retry(self, agent):
+        """Reasoning-only response should be accepted with (empty) content, no retries."""
         self._setup_agent(agent)
         empty_resp = _mock_response(
             content=None,
             finish_reason="stop",
             reasoning_content="structured reasoning answer",
         )
-        agent.client.chat.completions.create.side_effect = [empty_resp, empty_resp]
+        agent.client.chat.completions.create.side_effect = [empty_resp]
         with (
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
@@ -1560,24 +1554,24 @@ class TestRunConversation:
         ):
             result = agent.run_conversation("answer me")
         assert result["completed"] is True
-        assert result["final_response"] == "structured reasoning answer"
-        assert result["api_calls"] == 2
+        assert result["final_response"] == "(empty)"
+        assert result["api_calls"] == 1  # no retries
 
-    def test_empty_content_local_custom_error_is_actionable(self, agent):
-        """Local/custom retries should return a diagnostic tailored to context/endpoint mismatch."""
+    def test_truly_empty_response_accepted_without_retry(self, agent):
+        """Truly empty response (no content, no reasoning) should still complete with (empty)."""
         self._setup_agent(agent)
         agent.base_url = "http://127.0.0.1:1234/v1"
         empty_resp = _mock_response(content=None, finish_reason="stop")
-        agent.client.chat.completions.create.side_effect = [empty_resp, empty_resp, empty_resp]
+        agent.client.chat.completions.create.side_effect = [empty_resp]
         with (
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
             result = agent.run_conversation("answer me")
-        assert result["completed"] is False
-        assert "Local/custom backend returned reasoning-only output" in result["error"]
-        assert "wrong /v1 endpoint" in result["error"]
+        assert result["completed"] is True
+        assert result["final_response"] == "(empty)"
+        assert result["api_calls"] == 1  # no retries
 
     def test_nous_401_refreshes_after_remint_and_retries(self, agent):
         self._setup_agent(agent)

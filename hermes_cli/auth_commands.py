@@ -20,12 +20,12 @@ from agent.credential_pool import (
     STRATEGY_LEAST_USED,
     SUPPORTED_POOL_STRATEGIES,
     PooledCredential,
+    _exhausted_until,
     _normalize_custom_pool_name,
     get_pool_strategy,
     label_from_token,
     list_custom_pool_providers,
     load_pool,
-    _exhausted_ttl,
 )
 import hermes_cli.auth as auth_mod
 from hermes_cli.auth import PROVIDER_REGISTRY
@@ -113,21 +113,27 @@ def _display_source(source: str) -> str:
 def _format_exhausted_status(entry) -> str:
     if entry.last_status != STATUS_EXHAUSTED:
         return ""
+    reason = getattr(entry, "last_error_reason", None)
+    reason_text = f" {reason}" if isinstance(reason, str) and reason.strip() else ""
     code = f" ({entry.last_error_code})" if entry.last_error_code else ""
-    if not entry.last_status_at:
-        return f" exhausted{code}"
-    remaining = max(0, int(math.ceil((entry.last_status_at + _exhausted_ttl(entry.last_error_code)) - time.time())))
+    exhausted_until = _exhausted_until(entry)
+    if exhausted_until is None:
+        return f" exhausted{reason_text}{code}"
+    remaining = max(0, int(math.ceil(exhausted_until - time.time())))
     if remaining <= 0:
-        return f" exhausted{code} (ready to retry)"
+        return f" exhausted{reason_text}{code} (ready to retry)"
     minutes, seconds = divmod(remaining, 60)
     hours, minutes = divmod(minutes, 60)
-    if hours:
+    days, hours = divmod(hours, 24)
+    if days:
+        wait = f"{days}d {hours}h"
+    elif hours:
         wait = f"{hours}h {minutes}m"
     elif minutes:
         wait = f"{minutes}m {seconds}s"
     else:
         wait = f"{seconds}s"
-    return f" exhausted{code} ({wait} left)"
+    return f" exhausted{reason_text}{code} ({wait} left)"
 
 
 def auth_add_command(args) -> None:
@@ -277,11 +283,16 @@ def auth_list_command(args) -> None:
 
 def auth_remove_command(args) -> None:
     provider = _normalize_provider(getattr(args, "provider", ""))
-    index = int(getattr(args, "index"))
+    target = getattr(args, "target", None)
+    if target is None:
+        target = getattr(args, "index", None)
     pool = load_pool(provider)
+    index, matched, error = pool.resolve_target(target)
+    if matched is None or index is None:
+        raise SystemExit(f"{error} Provider: {provider}.")
     removed = pool.remove_index(index)
     if removed is None:
-        raise SystemExit(f"No credential #{index} for provider {provider}.")
+        raise SystemExit(f'No credential matching "{target}" for provider {provider}.')
     print(f"Removed {provider} credential #{index} ({removed.label})")
 
 
@@ -369,8 +380,16 @@ def _interactive_add() -> None:
     else:
         auth_type = "api_key"
 
+    label = None
+    try:
+        typed_label = input("Label / account name (optional): ").strip()
+    except (EOFError, KeyboardInterrupt):
+        return
+    if typed_label:
+        label = typed_label
+
     auth_add_command(SimpleNamespace(
-        provider=provider, auth_type=auth_type, label=None, api_key=None,
+        provider=provider, auth_type=auth_type, label=label, api_key=None,
         portal_url=None, inference_url=None, client_id=None, scope=None,
         no_browser=False, timeout=None, insecure=False, ca_bundle=None,
     ))
@@ -386,22 +405,16 @@ def _interactive_remove() -> None:
     # Show entries with indices
     for i, e in enumerate(pool.entries(), 1):
         exhausted = _format_exhausted_status(e)
-        print(f"  #{i}  {e.label:25s} {e.auth_type:10s} {e.source}{exhausted}")
+        print(f"  #{i}  {e.label:25s} {e.auth_type:10s} {e.source}{exhausted} [id:{e.id}]")
 
     try:
-        raw = input("Remove # (or blank to cancel): ").strip()
+        raw = input("Remove #, id, or label (blank to cancel): ").strip()
     except (EOFError, KeyboardInterrupt):
         return
     if not raw:
         return
 
-    try:
-        index = int(raw)
-    except ValueError:
-        print("Invalid number.")
-        return
-
-    auth_remove_command(SimpleNamespace(provider=provider, index=index))
+    auth_remove_command(SimpleNamespace(provider=provider, target=raw))
 
 
 def _interactive_reset() -> None:

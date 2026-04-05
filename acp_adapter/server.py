@@ -12,7 +12,7 @@ import acp
 from acp.schema import (
     AgentCapabilities,
     AuthenticateResponse,
-    AuthMethod,
+    AuthMethodAgent,
     ClientCapabilities,
     EmbeddedResourceContentBlock,
     ForkSessionResponse,
@@ -177,7 +177,7 @@ class HermesACPAgent(acp.Agent):
         auth_methods = None
         if provider:
             auth_methods = [
-                AuthMethod(
+                AuthMethodAgent(
                     id=provider,
                     name=f"{provider} runtime credentials",
                     description=f"Authenticate Hermes using the currently configured {provider} runtime credentials.",

@@ -3390,6 +3390,17 @@ class GatewayRunner:
                     base_url=result.base_url,
                     api_mode=result.api_mode,
                 )
+                # Inject breadcrumb so the agent knows about the switch
+                _switch_note = (
+                    f"[System: model switched from {current_model} to {result.new_model}. "
+                    f"You are now running as {result.new_model} via "
+                    f"{result.provider_label or result.target_provider}. "
+                    f"Disregard any prior self-identification.]"
+                )
+                if hasattr(cached_entry[0], '_session_messages'):
+                    cached_entry[0]._session_messages.append(
+                        {"role": "system", "content": _switch_note}
+                    )
             except Exception as exc:
                 logger.warning("In-place model switch failed for cached agent: %s", exc)
 

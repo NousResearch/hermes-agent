@@ -115,6 +115,71 @@ MODEL_ALIASES: dict[str, ModelIdentity] = {
 
 
 # ---------------------------------------------------------------------------
+# Direct aliases — exact model+provider+base_url for endpoints that aren't
+# in the models.dev catalog (e.g. Ollama Cloud, local servers).
+# Checked BEFORE catalog resolution.  Format:
+#   alias -> (model_id, provider, base_url)
+# These can also be loaded from config.yaml ``model_aliases:`` section.
+# ---------------------------------------------------------------------------
+
+class DirectAlias(NamedTuple):
+    """Exact model mapping that bypasses catalog resolution."""
+    model: str
+    provider: str
+    base_url: str
+
+
+# Built-in direct aliases (can be extended via config.yaml model_aliases:)
+_BUILTIN_DIRECT_ALIASES: dict[str, DirectAlias] = {}
+
+# Merged dict (builtins + user config); populated by _load_direct_aliases()
+DIRECT_ALIASES: dict[str, DirectAlias] = {}
+
+
+def _load_direct_aliases() -> dict[str, DirectAlias]:
+    """Load direct aliases from config.yaml ``model_aliases:`` section.
+
+    Config format::
+
+        model_aliases:
+          qwen:
+            model: "qwen3.5:397b"
+            provider: custom
+            base_url: "https://ollama.com/v1"
+          minimax:
+            model: "minimax-m2.7"
+            provider: custom
+            base_url: "https://ollama.com/v1"
+    """
+    merged = dict(_BUILTIN_DIRECT_ALIASES)
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        user_aliases = cfg.get("model_aliases")
+        if isinstance(user_aliases, dict):
+            for name, entry in user_aliases.items():
+                if not isinstance(entry, dict):
+                    continue
+                model = entry.get("model", "")
+                provider = entry.get("provider", "custom")
+                base_url = entry.get("base_url", "")
+                if model:
+                    merged[name.strip().lower()] = DirectAlias(
+                        model=model, provider=provider, base_url=base_url,
+                    )
+    except Exception:
+        pass
+    return merged
+
+
+def _ensure_direct_aliases() -> None:
+    """Lazy-load direct aliases on first use."""
+    global DIRECT_ALIASES
+    if not DIRECT_ALIASES:
+        DIRECT_ALIASES = _load_direct_aliases()
+
+
+# ---------------------------------------------------------------------------
 # Result dataclasses
 # ---------------------------------------------------------------------------
 
@@ -211,6 +276,20 @@ def resolve_alias(
         exist or no matching model is available.
     """
     key = raw_input.strip().lower()
+
+    # Check direct aliases first (exact model+provider+base_url mappings)
+    _ensure_direct_aliases()
+    direct = DIRECT_ALIASES.get(key)
+    if direct is not None:
+        return (direct.provider, direct.model, key)
+
+    # Reverse lookup: match by model ID so full names (e.g. "kimi-k2.5",
+    # "glm-4.7") route through direct aliases instead of falling through
+    # to the catalog/OpenRouter.
+    for alias_name, da in DIRECT_ALIASES.items():
+        if da.model.lower() == key:
+            return (da.provider, da.model, alias_name)
+
     identity = MODEL_ALIASES.get(key)
     if identity is None:
         return None
@@ -486,6 +565,15 @@ def switch_model(
             api_mode = runtime.get("api_mode", "")
         except Exception:
             pass
+
+    # --- Direct alias override: use exact base_url from the alias if set ---
+    if resolved_alias:
+        _ensure_direct_aliases()
+        _da = DIRECT_ALIASES.get(resolved_alias)
+        if _da is not None and _da.base_url:
+            base_url = _da.base_url
+            if not api_key:
+                api_key = "no-key-required"
 
     # --- Normalize model name for target provider ---
     new_model = normalize_model_for_provider(new_model, target_provider)

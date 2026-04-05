@@ -3606,14 +3606,19 @@ class HermesCLI:
             _cprint(f"  ✗ {result.error_message}")
             return
 
-        # Apply to CLI state
+        # Apply to CLI state.
+        # Update requested_provider so _ensure_runtime_credentials() doesn't
+        # overwrite the switch on the next turn (it re-resolves from this).
         old_model = self.model
         self.model = result.new_model
         self.provider = result.target_provider
+        self.requested_provider = result.target_provider
         if result.api_key:
             self.api_key = result.api_key
+            self._explicit_api_key = result.api_key
         if result.base_url:
             self.base_url = result.base_url
+            self._explicit_base_url = result.base_url
         if result.api_mode:
             self.api_mode = result.api_mode
 
@@ -3629,6 +3634,17 @@ class HermesCLI:
                 )
             except Exception as exc:
                 _cprint(f"  ⚠ Agent swap failed ({exc}); change applied to next session.")
+
+        # Inject a system-level breadcrumb into conversation history so the
+        # agent knows a model switch occurred and reports its identity correctly.
+        _switch_note = (
+            f"[System: model switched from {old_model} to {result.new_model}. "
+            f"You are now running as {result.new_model} via {result.provider_label or result.target_provider}. "
+            f"Disregard any prior self-identification.]"
+        )
+        if self.agent is not None and hasattr(self.agent, '_session_messages'):
+            self.agent._session_messages.append({"role": "system", "content": _switch_note})
+        self.conversation_history.append({"role": "system", "content": _switch_note})
 
         # Display confirmation with full metadata
         provider_label = result.provider_label or result.target_provider

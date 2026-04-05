@@ -14,6 +14,7 @@ Config files are stored in ~/.hermes/ for easy access.
 import importlib.util
 import logging
 import os
+import shutil
 import sys
 from pathlib import Path
 from typing import Optional, Dict, Any

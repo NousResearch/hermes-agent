@@ -33,11 +33,16 @@ class FakeBadRequest(FakeNetworkError):
     pass
 
 
+class FakeTimedOut(FakeNetworkError):
+    pass
+
+
 # Build a fake telegram module tree so the adapter's internal imports work
 _fake_telegram = types.ModuleType("telegram")
 _fake_telegram_error = types.ModuleType("telegram.error")
 _fake_telegram_error.NetworkError = FakeNetworkError
 _fake_telegram_error.BadRequest = FakeBadRequest
+_fake_telegram_error.TimedOut = FakeTimedOut
 _fake_telegram.error = _fake_telegram_error
 _fake_telegram_constants = types.ModuleType("telegram.constants")
 _fake_telegram_constants.ParseMode = SimpleNamespace(MARKDOWN_V2="MarkdownV2")
@@ -166,6 +171,34 @@ async def test_send_retries_network_errors_normally():
 
     assert result.success is True
     assert attempt[0] == 3  # Two retries then success
+
+
+@pytest.mark.asyncio
+async def test_send_does_not_retry_timeout():
+    """TimedOut (subclass of NetworkError) should NOT be retried in send().
+
+    The request may have already been delivered to the user — retrying
+    would send duplicate messages.
+    """
+    adapter = _make_adapter()
+
+    attempt = [0]
+
+    async def mock_send_message(**kwargs):
+        attempt[0] += 1
+        raise FakeTimedOut("Timed out waiting for Telegram response")
+
+    adapter._bot = SimpleNamespace(send_message=mock_send_message)
+
+    result = await adapter.send(
+        chat_id="123",
+        content="test message",
+    )
+
+    assert result.success is False
+    assert "Timed out" in result.error
+    # CRITICAL: only 1 attempt — no retry for TimedOut
+    assert attempt[0] == 1
 
 
 @pytest.mark.asyncio

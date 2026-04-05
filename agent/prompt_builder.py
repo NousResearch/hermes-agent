@@ -44,6 +44,9 @@ _CONTEXT_THREAT_PATTERNS = [
     (r'translate\s+.*\s+into\s+.*\s+and\s+(execute|run|eval)', "translate_execute"),
     (r'curl\s+[^\n]*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)', "exfil_curl"),
     (r'cat\s+[^\n]*(\.env|credentials|\.netrc|\.pgpass)', "read_secrets"),
+    (r'<\|?(?:im_start|system|endoftext)\|?>', "xml_role_injection"),
+    (r'(?:you\s+are\s+now|pretend\s+(?:you\s+are|to\s+be)|from\s+now\s+on\s+you\s+are)', "roleplay_injection"),
+    (r'---+\s*\n\s*(?:system|instruction|role)\s*:', "delimiter_injection"),
 ]
 
 _CONTEXT_INVISIBLE_CHARS = {
@@ -290,6 +293,38 @@ PLATFORM_HINTS = {
 CONTEXT_FILE_MAX_CHARS = 20_000
 CONTEXT_TRUNCATE_HEAD_RATIO = 0.7
 CONTEXT_TRUNCATE_TAIL_RATIO = 0.2
+
+CONTEXT_GLOBAL_BUDGET = 50_000
+
+# (relative_path, display_name)
+_INSTRUCTION_FILES_TIER1: list[tuple[str, str]] = [
+    ("AGENTS.md", "AGENTS.md"), ("agents.md", "AGENTS.md"),
+    ("CLAUDE.md", "CLAUDE.md"), ("claude.md", "CLAUDE.md"),
+    (".cursorrules", ".cursorrules"),
+]
+
+_INSTRUCTION_FILES_TIER2: list[tuple[str, str]] = [
+    ("GEMINI.md", "GEMINI.md"), ("gemini.md", "GEMINI.md"),
+    ("codex.md", "codex.md"), ("CODEX.md", "CODEX.md"),
+    (".github/copilot-instructions.md", ".github/copilot-instructions.md"),
+    (".clinerules", ".clinerules"), (".roorules", ".roorules"),
+    (".windsurfrules", ".windsurfrules"),
+    (".augment-guidelines", ".augment-guidelines"),
+    (".goose/instructions.md", ".goose/instructions.md"),
+    (".goosehints", ".goosehints"), (".tabnine", ".tabnine"),
+    (".sourcegraph/instructions.md", ".sourcegraph/instructions.md"),
+]
+
+# (directory, glob_pattern, display_prefix)
+_INSTRUCTION_DIRS: list[tuple[str, str, str]] = [
+    (".cursor/rules", "*.mdc", ".cursor/rules"),
+    (".clinerules", "*.md", ".clinerules"),
+    (".roo/rules", "*.md", ".roo/rules"),
+    (".windsurf/rules", "*.md", ".windsurf/rules"),
+    (".amazonq/rules", "*.md", ".amazonq/rules"),
+    (".kiro/steering", "*.md", ".kiro/steering"),
+    (".gemini", "*.md", ".gemini"),
+]
 
 
 # =========================================================================
@@ -816,100 +851,123 @@ def _load_hermes_md(cwd_path: Path) -> str:
         return ""
 
 
-def _load_agents_md(cwd_path: Path) -> str:
-    """AGENTS.md — top-level only (no recursive walk)."""
-    for name in ["AGENTS.md", "agents.md"]:
-        candidate = cwd_path / name
-        if candidate.exists():
-            try:
-                content = candidate.read_text(encoding="utf-8").strip()
-                if content:
-                    content = _scan_context_content(content, name)
-                    result = f"## {name}\n\n{content}"
-                    return _truncate_content(result, "AGENTS.md")
-            except Exception as e:
-                logger.debug("Could not read %s: %s", candidate, e)
-    return ""
+def _load_instruction_file(
+    cwd_path: Path, rel_path: str, display_name: str
+) -> tuple[str, int]:
+    """Load a single instruction file and return (formatted_content, char_count).
+
+    Returns ("", 0) if the file doesn't exist, is empty, or fails to read.
+
+    Note: symlinks are followed (consistent with existing .hermes.md / AGENTS.md
+    behavior).  Content is scanned for prompt injection regardless of source.
+    """
+    candidate = cwd_path / rel_path
+    if not candidate.exists():
+        return ("", 0)
+    try:
+        content = candidate.read_text(encoding="utf-8").strip()
+        if not content:
+            return ("", 0)
+        content = _scan_context_content(content, display_name)
+        section = f"## {display_name}\n\n{content}"
+        section = _truncate_content(section, display_name)
+        return (section, len(section))
+    except Exception as e:
+        logger.debug("Could not read %s: %s", candidate, e)
+        return ("", 0)
 
 
-def _load_claude_md(cwd_path: Path) -> str:
-    """CLAUDE.md / claude.md — cwd only."""
-    for name in ["CLAUDE.md", "claude.md"]:
-        candidate = cwd_path / name
-        if candidate.exists():
-            try:
-                content = candidate.read_text(encoding="utf-8").strip()
-                if content:
-                    content = _scan_context_content(content, name)
-                    result = f"## {name}\n\n{content}"
-                    return _truncate_content(result, "CLAUDE.md")
-            except Exception as e:
-                logger.debug("Could not read %s: %s", candidate, e)
-    return ""
+def _load_instruction_dir(
+    cwd_path: Path, dir_path: str, glob_pattern: str, prefix: str
+) -> tuple[str, int]:
+    """Load all matching files from a rule directory.
 
-
-def _load_cursorrules(cwd_path: Path) -> str:
-    """.cursorrules + .cursor/rules/*.mdc — cwd only."""
-    cursorrules_content = ""
-    cursorrules_file = cwd_path / ".cursorrules"
-    if cursorrules_file.exists():
+    Returns (formatted_content, char_count). Each file gets its own section
+    header. The combined output is truncated to CONTEXT_FILE_MAX_CHARS.
+    """
+    target_dir = cwd_path / dir_path
+    if not target_dir.exists() or not target_dir.is_dir():
+        return ("", 0)
+    parts: list[str] = []
+    for rule_file in sorted(target_dir.glob(glob_pattern)):
         try:
-            content = cursorrules_file.read_text(encoding="utf-8").strip()
+            content = rule_file.read_text(encoding="utf-8").strip()
             if content:
-                content = _scan_context_content(content, ".cursorrules")
-                cursorrules_content += f"## .cursorrules\n\n{content}\n\n"
+                fname = f"{prefix}/{rule_file.name}"
+                content = _scan_context_content(content, fname)
+                parts.append(f"## {fname}\n\n{content}")
         except Exception as e:
-            logger.debug("Could not read .cursorrules: %s", e)
-
-    cursor_rules_dir = cwd_path / ".cursor" / "rules"
-    if cursor_rules_dir.exists() and cursor_rules_dir.is_dir():
-        mdc_files = sorted(cursor_rules_dir.glob("*.mdc"))
-        for mdc_file in mdc_files:
-            try:
-                content = mdc_file.read_text(encoding="utf-8").strip()
-                if content:
-                    content = _scan_context_content(content, f".cursor/rules/{mdc_file.name}")
-                    cursorrules_content += f"## .cursor/rules/{mdc_file.name}\n\n{content}\n\n"
-            except Exception as e:
-                logger.debug("Could not read %s: %s", mdc_file, e)
-
-    if not cursorrules_content:
-        return ""
-    return _truncate_content(cursorrules_content, ".cursorrules")
+            logger.debug("Could not read %s: %s", rule_file, e)
+    if not parts:
+        return ("", 0)
+    combined = "\n\n".join(parts)
+    combined = _truncate_content(combined, prefix)
+    return (combined, len(combined))
 
 
 def build_context_files_prompt(cwd: Optional[str] = None, skip_soul: bool = False) -> str:
-    """Discover and load context files for the system prompt.
+    """Discover and load ALL context files for the system prompt.
 
-    Priority (first found wins — only ONE project context type is loaded):
-      1. .hermes.md / HERMES.md  (walk to git root)
-      2. AGENTS.md / agents.md   (cwd only)
-      3. CLAUDE.md / claude.md   (cwd only)
-      4. .cursorrules / .cursor/rules/*.mdc  (cwd only)
+    **Behavior change (v0.7):** Previously, only one project context file was
+    loaded (first-match-wins).  Now ALL instruction files that exist are loaded,
+    within a global character budget (CONTEXT_GLOBAL_BUDGET).
 
-    SOUL.md from HERMES_HOME is independent and always included when present.
-    Each context source is capped at 20,000 chars.
-
-    When *skip_soul* is True, SOUL.md is not included here (it was already
-    loaded via ``load_soul_md()`` for the identity slot).
+    Priority order: tier 0 (.hermes.md, walks to git root), tier 1
+    (_INSTRUCTION_FILES_TIER1), tier 2 (_INSTRUCTION_FILES_TIER2), then
+    rule directories (_INSTRUCTION_DIRS).  SOUL.md from HERMES_HOME is always
+    included and exempt from the budget.
     """
     if cwd is None:
         cwd = os.getcwd()
 
     cwd_path = Path(cwd).resolve()
-    sections = []
+    sections: list[str] = []
+    budget_remaining = CONTEXT_GLOBAL_BUDGET
 
-    # Priority-based project context: first match wins
-    project_context = (
-        _load_hermes_md(cwd_path)
-        or _load_agents_md(cwd_path)
-        or _load_claude_md(cwd_path)
-        or _load_cursorrules(cwd_path)
-    )
-    if project_context:
-        sections.append(project_context)
+    # Track display names already loaded to avoid double-loading when both
+    # e.g. "AGENTS.md" and "agents.md" exist (case-insensitive FS).
+    loaded_display_names: set[str] = set()
 
-    # SOUL.md from HERMES_HOME only — skip when already loaded as identity
+    # --- Tier 0: .hermes.md (special: walks to git root, strips frontmatter) ---
+    hermes_content = _load_hermes_md(cwd_path)
+    if hermes_content:
+        sections.append(hermes_content)
+        budget_remaining -= len(hermes_content)
+
+    # --- Tier 1: Hermes-native instruction files ---
+    for rel_path, display_name in _INSTRUCTION_FILES_TIER1:
+        if budget_remaining <= 0:
+            break
+        if display_name.lower() in loaded_display_names:
+            continue
+        section, size = _load_instruction_file(cwd_path, rel_path, display_name)
+        if section:
+            sections.append(section)
+            budget_remaining -= size
+            loaded_display_names.add(display_name.lower())
+
+    # --- Tier 2: Third-party agent instruction files ---
+    for rel_path, display_name in _INSTRUCTION_FILES_TIER2:
+        if budget_remaining <= 0:
+            break
+        if display_name.lower() in loaded_display_names:
+            continue
+        section, size = _load_instruction_file(cwd_path, rel_path, display_name)
+        if section:
+            sections.append(section)
+            budget_remaining -= size
+            loaded_display_names.add(display_name.lower())
+
+    # --- Rule directories ---
+    for dir_path, glob_pattern, prefix in _INSTRUCTION_DIRS:
+        if budget_remaining <= 0:
+            break
+        section, size = _load_instruction_dir(cwd_path, dir_path, glob_pattern, prefix)
+        if section:
+            sections.append(section)
+            budget_remaining -= size
+
+    # --- SOUL.md (exempt from budget) ---
     if not skip_soul:
         soul_content = load_soul_md()
         if soul_content:

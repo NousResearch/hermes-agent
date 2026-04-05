@@ -215,16 +215,14 @@ Local memory and user profile data are injected as frozen snapshots at session s
 
 ## Context files
 
-`agent/prompt_builder.py` scans and sanitizes project context files using a **priority system** — only one type is loaded (first match wins):
+`agent/prompt_builder.py` discovers and loads **all** project instruction files that exist, within a 50K character global budget. Files are loaded in priority order:
 
 1. `.hermes.md` / `HERMES.md` (walks to git root)
-2. `AGENTS.md` (recursive directory walk)
-3. `CLAUDE.md` (CWD only)
-4. `.cursorrules` / `.cursor/rules/*.mdc` (CWD only)
+2. Tier 1: `AGENTS.md`, `CLAUDE.md`, `.cursorrules` (CWD only)
+3. Tier 2: Third-party instruction files — `GEMINI.md`, `codex.md`, `.github/copilot-instructions.md`, `.clinerules`, `.roorules`, `.windsurfrules`, `.augment-guidelines`, etc. (CWD only)
+4. Rule directories: `.cursor/rules/*.mdc`, `.cline/rules/*.md`, `.windsurf/rules/*.md`, etc. (CWD only)
 
-`SOUL.md` is loaded separately via `load_soul_md()` for the identity slot. When it loads successfully, `build_context_files_prompt(skip_soul=True)` prevents it from appearing twice.
-
-Long files are truncated before injection.
+`SOUL.md` is loaded separately via `load_soul_md()` for the identity slot and is exempt from the budget. Long files are truncated before injection. All files are scanned for prompt injection patterns.
 
 ## Skills index
 

@@ -1176,8 +1176,15 @@ def honcho_command(args) -> None:
     _profile_override = getattr(args, "target_profile", None)
 
     sub = getattr(args, "honcho_command", None)
-    if sub == "setup" or sub is None:
-        cmd_setup(args)
+    if sub == "setup":
+        # Redirect to memory setup — honcho setup goes through the unified path
+        print("\n  Honcho is configured via the memory provider system.")
+        print("  Running 'hermes memory setup'...\n")
+        from hermes_cli.memory_setup import cmd_setup_provider
+        cmd_setup_provider("honcho")
+        return
+    elif sub is None:
+        cmd_status(args)
     elif sub == "status":
         cmd_status(args)
     elif sub == "peers":
@@ -1204,4 +1211,96 @@ def honcho_command(args) -> None:
         cmd_sync(args)
     else:
         print(f"  Unknown honcho command: {sub}")
-        print("  Available: setup, status, sessions, map, peer, mode, tokens, identity, migrate, enable, disable, sync\n")
+        print("  Available: status, sessions, map, peer, mode, tokens, identity, migrate, enable, disable, sync\n")
+
+
+def register_cli(subparser) -> None:
+    """Build the ``hermes honcho`` argparse subcommand tree.
+
+    Called by the plugin CLI registration system during argparse setup.
+    The *subparser* is the parser for ``hermes honcho``.
+    """
+    import argparse
+
+    subparser.add_argument(
+        "--target-profile", metavar="NAME", dest="target_profile",
+        help="Target a specific profile's Honcho config without switching",
+    )
+    subs = subparser.add_subparsers(dest="honcho_command")
+
+    subs.add_parser(
+        "setup",
+        help="Initial Honcho setup (redirects to hermes memory setup)",
+    )
+
+    status_parser = subs.add_parser(
+        "status", help="Show current Honcho config and connection status",
+    )
+    status_parser.add_argument(
+        "--all", action="store_true", help="Show config overview across all profiles",
+    )
+
+    subs.add_parser("peers", help="Show peer identities across all profiles")
+    subs.add_parser("sessions", help="List known Honcho session mappings")
+
+    map_parser = subs.add_parser(
+        "map", help="Map current directory to a Honcho session name (no arg = list mappings)",
+    )
+    map_parser.add_argument(
+        "session_name", nargs="?", default=None,
+        help="Session name to associate with this directory. Omit to list current mappings.",
+    )
+
+    peer_parser = subs.add_parser(
+        "peer", help="Show or update peer names and dialectic reasoning level",
+    )
+    peer_parser.add_argument("--user", metavar="NAME", help="Set user peer name")
+    peer_parser.add_argument("--ai", metavar="NAME", help="Set AI peer name")
+    peer_parser.add_argument(
+        "--reasoning", metavar="LEVEL",
+        choices=("minimal", "low", "medium", "high", "max"),
+        help="Set default dialectic reasoning level (minimal/low/medium/high/max)",
+    )
+
+    mode_parser = subs.add_parser(
+        "mode", help="Show or set recall mode (hybrid/context/tools)",
+    )
+    mode_parser.add_argument(
+        "mode", nargs="?", metavar="MODE",
+        choices=("hybrid", "context", "tools"),
+        help="Recall mode to set (hybrid/context/tools). Omit to show current.",
+    )
+
+    tokens_parser = subs.add_parser(
+        "tokens", help="Show or set token budget for context and dialectic",
+    )
+    tokens_parser.add_argument(
+        "--context", type=int, metavar="N",
+        help="Max tokens Honcho returns from session.context() per turn",
+    )
+    tokens_parser.add_argument(
+        "--dialectic", type=int, metavar="N",
+        help="Max chars of dialectic result to inject into system prompt",
+    )
+
+    identity_parser = subs.add_parser(
+        "identity", help="Seed or show the AI peer's Honcho identity representation",
+    )
+    identity_parser.add_argument(
+        "file", nargs="?", default=None,
+        help="Path to file to seed from (e.g. SOUL.md). Omit to show usage.",
+    )
+    identity_parser.add_argument(
+        "--show", action="store_true",
+        help="Show current AI peer representation from Honcho",
+    )
+
+    subs.add_parser(
+        "migrate",
+        help="Step-by-step migration guide from openclaw-honcho to Hermes Honcho",
+    )
+    subs.add_parser("enable", help="Enable Honcho for the active profile")
+    subs.add_parser("disable", help="Disable Honcho for the active profile")
+    subs.add_parser("sync", help="Sync Honcho config to all existing profiles")
+
+    subparser.set_defaults(func=honcho_command)

@@ -1,7 +1,7 @@
 ---
 name: hermes-agent
 description: Complete guide to using and extending Hermes Agent — CLI usage, setup, configuration, spawning additional agents, gateway platforms, skills, voice, tools, profiles, and a concise contributor reference. Load this skill when helping users configure Hermes, troubleshoot issues, spawn agent instances, or make code contributions.
-version: 2.0.0
+version: 2.1.0
 author: Hermes Agent + Teknium
 license: MIT
 metadata:
@@ -485,6 +485,519 @@ terminal(command="tmux new-session -d -s resumed 'hermes --resume 20260225_14305
 - **Use `hermes chat -q` for fire-and-forget** — no PTY needed
 - **Use tmux for interactive sessions** — raw PTY mode has `\r` vs `\n` issues with prompt_toolkit
 - **For scheduled tasks**, use the `cronjob` tool instead of spawning — handles delivery and retry
+
+---
+
+## Agent Swarm Orchestration
+
+Multi-agent swarms enable parallel task execution across specialized agents. This section covers swarm architecture, shared memory systems, context optimization, and orchestration patterns for both small coding models and large context models.
+
+### Swarm Helper Script
+
+A helper script is available for quick swarm management:
+
+```bash
+~/.hermes/scripts/swarm.py <command>
+
+Commands:
+  init <project_name>           Initialize swarm with directory structure
+  add-task <swarm_id> <task>    Add task to queue
+  spawn <swarm_id> <agent>      Spawn tmux agent (with --task, --context minimal|full)
+  send <session> <msg>          Send message to running agent
+  read <session> [--lines N]    Read agent output
+  status <swarm_id>             Show swarm status
+  update <swarm_id>             Update progress (--agent, --task, --status, --step)
+  monitor <swarm_id>            Wait for completion (--timeout, --poll)
+  complete <swarm_id>           Mark complete, kill agents
+  cleanup <swarm_id> [--archive] Archive or delete swarm
+```
+
+**Quick Start:**
+```bash
+# 1. Init swarm
+swarm_id=$(python3 ~/.hermes/scripts/swarm.py init "MyApp" --desc "SaaS dashboard")
+
+# 2. Add tasks
+python3 ~/.hermes/scripts/swarm.py add-task $swarm_id backend "Build REST API" --agent backend
+python3 ~/.hermes/scripts/swarm.py add-task $swarm_id frontend "Build React UI" --agent frontend
+
+# 3. Spawn agents
+python3 ~/.hermes/scripts/swarm.py spawn $swarm_id backend --task "Build user auth API" --context minimal
+python3 ~/.hermes/scripts/swarm.py spawn $swarm_id frontend --task "Build login page" --context minimal
+
+# 4. Monitor
+python3 ~/.hermes/scripts/swarm.py monitor $swarm_id --timeout 60
+
+# 5. Collect & cleanup
+python3 ~/.hermes/scripts/swarm.py complete $swarm_id
+```
+
+### Swarm Architecture
+
+```
+                    ┌─────────────────────────────────────────┐
+                    │         ORCHESTRATOR (Parent Agent)      │
+                    │  - Task decomposition                    │
+                    │  - Agent spawning & coordination         │
+                    │  - Context optimization & distribution   │
+                    │  - Result aggregation & synthesis        │
+                    └─────────────────┬───────────────────────┘
+                                      │
+              ┌───────────────────────┼───────────────────────┐
+              │                       │                       │
+              ▼                       ▼                       ▼
+       ┌─────────────┐         ┌─────────────┐         ┌─────────────┐
+       │   Agent A   │         │   Agent B   │         │   Agent C   │
+       │  (Specialist)│         │  (Specialist)│         │  (Specialist)│
+       └──────┬──────┘         └──────┬──────┘         └──────┬──────┘
+              │                       │                       │
+              └───────────────────────┼───────────────────────┘
+                                      │
+                    ┌─────────────────▼───────────────────────┐
+                    │         SHARED MEMORY STORE              │
+                    │  - Task state & progress                 │
+                    │  - Intermediate artifacts                │
+                    │  - Agent-to-agent context references     │
+                    │  - Final deliverables                    │
+                    └─────────────────────────────────────────┘
+```
+
+### Shared Memory System
+
+Shared memory is the backbone of effective swarm coordination. Agents read/write to a shared store instead of passing bulky context directly.
+
+**Storage Backends:**
+
+| Backend | Best For | Setup |
+|---------|----------|-------|
+| **JSON files** | Simple, portable, small teams | File-based, no dependencies |
+| **SQLite** | Structured data, queries, larger swarms | Single file, ACID compliant |
+| **Redis** | Real-time, high-frequency updates | External server required |
+| **Hermes Memory** | Already integrated, cross-session | `hermes memory setup` |
+
+**JSON Shared Store (Recommended for most cases):**
+
+```bash
+# Create shared memory directory
+mkdir -p ~/.hermes/swarm/<project-name>/memory
+
+# Core files:
+#   task_queue.json     - Pending tasks for each agent
+#   progress.json       - Agent progress updates
+#   artifacts/         - Generated files (schemas, specs, code)
+#   context/           - Shared context references
+#   results/           - Final deliverables
+```
+
+**Schema for task_queue.json:**
+```json
+{
+  "swarm_id": "project-alpha-20260406",
+  "created_at": "2026-04-06T12:00:00Z",
+  "tasks": {
+    "backend": {
+      "id": "backend-001",
+      "description": "Build REST API for user management",
+      "status": "pending|in_progress|completed|blocked",
+      "assigned_to": null,
+      "dependencies": [],
+      "artifacts": [],
+      "progress": [],
+      "result": null,
+      "created_at": "...",
+      "updated_at": "..."
+    }
+  },
+  "agents": {
+    "backend": { "spawned_at": null, "pid": null, "status": "idle" }
+  }
+}
+```
+
+**Schema for progress.json:**
+```json
+{
+  "backend-001": {
+    "agent": "backend",
+    "status": "in_progress",
+    "step": "Implementing JWT authentication",
+    "artifacts_created": ["auth/jwt.py", "middleware/auth.go"],
+    "context_updates": ["Added JWT flow to shared context"],
+    "blocked_by": null,
+    "ready_for_handoff": false,
+    "handoff_notes": null,
+    "updated_at": "2026-04-06T12:15:00Z"
+  }
+}
+```
+
+### Context Partitioning (Critical for Small Models)
+
+Small coding models (7B-13B) have limited context. Optimize by partitioning context across agents and the shared store.
+
+**Principles:**
+1. **Never dump everything to every agent** — each agent only gets what it needs
+2. **Reference over content** — "see shared context file X" instead of copying content
+3. **Incremental updates** — agents write summaries, not full transcripts
+4. **Hierarchical context** — orchestrator holds global view, agents hold local view
+
+**Context Distribution Strategy:**
+
+| Model Size | Strategy | Prompt Size per Agent |
+|-----------|----------|----------------------|
+| ≤7B params | Heavy referencing, minimal prompts | <500 tokens |
+| 7B-13B | Balanced, key context inline | 500-1500 tokens |
+| 13B-34B | Moderate inlining | 1500-3000 tokens |
+| >34B (large ctx) | Full context when needed | No strict limit |
+
+**For Small Models - Optimized Prompt Template:**
+
+```
+# AGENT PROMPT (Small Model Optimized)
+
+## YOUR TASK
+{task_description}
+
+## PROJECT CONTEXT (File Reference)
+Read full context: ~/hermes/swarm/<project>/memory/context/project_overview.json
+
+## YOUR SCOPE
+- What you're building: {specific_deliverable}
+- Where it lives: {file_paths}
+- What's already there: {existing_artifacts}
+
+## SHARED STORE (Write Here)
+~/hermes/swarm/<project>/memory/artifacts/{your_work}.json
+
+## COORDINATION
+- Check progress: ~/hermes/swarm/<project>/memory/progress.json
+- Update your status: Write to progress.json on each major step
+- Signal completion: Set status="completed", artifacts=[list files]
+
+## DEPENDENCIES (Wait for These)
+{blocking_tasks}
+
+## START
+Begin work now. Update progress.json every 5 minutes.
+```
+
+**For Large Context Models - Full Context Template:**
+
+```
+# AGENT PROMPT (Large Context Optimized)
+
+## SWARM OVERVIEW
+Project: {name}
+Goal: {high_level_objective}
+Architecture: {system_design}
+Timeline: {milestones}
+
+## FULL PROJECT CONTEXT
+{include relevant project docs, schemas, specs here}
+
+## YOUR TASK
+{detailed_task_description}
+
+## EXISTING ARTIFACTS (Don't Recreate)
+{list and include relevant existing code}
+
+## COORDINATION PROTOCOL
+- Shared store: ~/hermes/swarm/<project>/memory/
+- Write all artifacts to artifacts/ directory
+- Update progress.json on each phase completion
+- Dependencies resolved via progress.json blocking status
+
+## COMPLETION CRITERIA
+{success_conditions}
+
+## HANDOFF
+When done, write summary to artifacts/{your_task}_handoff.json including:
+- What was built
+- API contracts exposed
+- Artifacts created
+- Recommendations for dependent agents
+```
+
+### Orchestration Patterns
+
+**Pattern 1: Boss-Agent (Recommended for Most Cases)**
+
+```
+Orchestrator → Spawns → Specialist Agents → Write to → Shared Store
+     ↑                                                    │
+     └──────────── Reads Results ←────────────────────────┘
+```
+
+Best for: Most multi-agent workflows. One coordinator, multiple specialists.
+
+```python
+# Orchestrator logic (pseudocode)
+def run_boss_agent_swarm(task, num_agents=3):
+    swarm_id = create_swarm(task)
+    context = build_initial_context(task)
+
+    # Phase 1: Decompose and spawn
+    subtasks = decompose_task(task, num_agents)
+    for subtask in subtasks:
+        spawn_agent(subtask, swarm_id, context)
+
+    # Phase 2: Monitor and coordinate
+    while not all_complete(subtasks):
+        progress = read_progress(swarm_id)
+        handle_blockers(progress)
+        sleep(30)
+
+    # Phase 3: Aggregate
+    results = collect_results(swarm_id)
+    return synthesize_output(results)
+```
+
+**Pattern 2: Pipeline (Sequential Handoffs)**
+
+```
+Agent A → Agent B → Agent C → Agent D
+   ↓         ↓         ↓         ↓
+ Shared Store (Each stage reads previous stage's output)
+```
+
+Best for: Tasks with strict dependencies (data flow: parse → transform → validate → render).
+
+**Pattern 3: Peer Network (Event-Driven)**
+
+```
+       ┌──→ Agent A ──┐
+       │              │
+Orchestrator ───→ Agent B ──→ Shared Store ←── Agent C
+       │              │
+       └──→ Agent D ──┘
+```
+
+Best for: Multiple agents working on independent tasks that occasionally need to collaborate.
+
+**Pattern 4: Hierarchical**
+
+```
+Top-Level Orchestrator
+    ├── Middle Manager A ──→ Agent A1, Agent A2
+    └── Middle Manager B ──→ Agent B1, Agent B2
+```
+
+Best for: Very large tasks requiring 10+ agents. Top orchestrator manages middle managers who each handle a subdomain.
+
+### Spawning Swarm Agents
+
+**Initialize Swarm:**
+```bash
+# Create swarm directory structure
+SWARM_ID="myapp-$(date +%Y%m%d-%H%M%S)"
+mkdir -p ~/.hermes/swarm/$SWARM_ID/{memory/{task_queue,progress,artifacts,context},logs}
+
+# Create initial context
+cat > ~/.hermes/swarm/$SWARM_ID/memory/context/project_overview.json << 'EOF'
+{
+  "swarm_id": "$SWARM_ID",
+  "project": "My App",
+  "goal": "Build a SaaS dashboard",
+  "tech_stack": ["Node.js", "React", "PostgreSQL"],
+  "shared_artifacts": {}
+}
+EOF
+```
+
+**Spawn via tmux (recommended for interactive):**
+```bash
+# Spawn orchestrator
+tmux new-session -d -s orchestrator -x 120 -y 40 'hermes'
+
+# Spawn specialist agents
+tmux new-session -d -s backend -x 120 -y 40 'hermes -p swarm-backend'
+tmux new-session -d -s frontend -x 120 -y 40 'hermes -p swarm-frontend'
+tmux new-session -d -s devops -x 120 -y 40 'hermes -p swarm-devops'
+
+# Wait for startup, send initial tasks
+sleep 8
+tmux send-keys -t orchestrator 'Initialize swarm $SWARM_ID. Architecture: backend (Node.js API), frontend (React dashboard), devops (Docker + CI/CD). Tech stack: PostgreSQL, Auth0. Begin task decomposition.' Enter
+```
+
+**Spawn via delegate_task (quick subtasks):**
+```python
+delegate_task(
+    goal="Build user authentication module with JWT",
+    context=f"""
+    SWARM: {swarm_id}
+    PROJECT: My App SaaS dashboard
+    YOUR TASK: Implement auth module
+
+    WRITE TO: ~/.hermes/swarm/{swarm_id}/memory/artifacts/auth_module.json
+    PROGRESS: ~/.hermes/swarm/{swarm_id}/memory/progress.json
+
+    REQUIREMENTS:
+    - JWT-based authentication
+    - User registration/login endpoints
+    - Password hashing with bcrypt
+    - Middleware for protected routes
+
+    EXISTING: No auth yet. Create from scratch.
+
+    COMPLETION: Write final artifact and update progress.json status='completed'
+    """,
+    toolsets=["terminal", "file"]
+)
+```
+
+**Spawn via hermes chat -q (fire-and-forget):**
+```bash
+hermes chat -q "Build the PostgreSQL schema for the user management system. Output to ~/.hermes/swarm/$SWARM_ID/memory/artifacts/db_schema.sql" --source swarm-backend
+```
+
+### Orchestrator Best Practices
+
+**1. Task Decomposition**
+- Break work into ~30-minute chunks per agent
+- Define clear interfaces between tasks (API contracts, data schemas)
+- Identify dependencies upfront, sequence accordingly
+
+**2. Context Injection**
+```python
+# Build minimal context for small models
+def build_minimal_context(task, agent_role):
+    return f"""
+    PROJECT GOAL: {task.goal}
+    YOUR ROLE: {agent_role}
+    YOUR TASK: {task.description}
+
+    READ: ~/hermes/swarm/{swarm_id}/memory/context/project_overview.json
+    READ: ~/hermes/swarm/{swarm_id}/memory/context/{agent_role}_spec.json
+
+    WRITE ARTIFACTS TO: ~/hermes/swarm/{swarm_id}/memory/artifacts/
+    UPDATE PROGRESS: ~/hermes/swarm/{swarm_id}/memory/progress.json
+
+    START: {task.instructions}
+    """
+```
+
+**3. Progress Monitoring**
+```python
+def monitor_swarm(swarm_id, timeout_minutes=60):
+    start = time.time()
+    while time.time() - start < timeout_minutes * 60:
+        progress = read_json(f"~/.hermes/swarm/{swarm_id}/memory/progress.json")
+        statuses = [p["status"] for p in progress.values()]
+
+        if all(s == "completed" for s in statuses):
+            return "SUCCESS"
+
+        blocked = [p for p in progress if p["status"] == "blocked"]
+        if blocked:
+            resolve_blocker(swarm_id, blocked[0])
+
+        sleep(30)
+
+    return "TIMEOUT"
+```
+
+**4. Result Aggregation**
+```python
+def aggregate_swarm_results(swarm_id):
+    artifacts_dir = f"~/.hermes/swarm/{swarm_id}/memory/artifacts"
+    progress = read_json(f"~/.hermes/swarm/{swarm_id}/memory/progress.json")
+
+    results = {
+        "completed": [],
+        "summaries": []
+    }
+
+    for task_id, p in progress.items():
+        if p["status"] == "completed":
+            artifact = read_json(f"{artifacts_dir}/{task_id}_handoff.json")
+            results["completed"].append(artifact)
+            results["summaries"].append(artifact["summary"])
+
+    return synthesize(results["summaries"])
+```
+
+### Context Window Optimization Checklist
+
+**For Small Models (≤13B):**
+- [ ] Each agent prompt <1500 tokens
+- [ ] Heavy use of "READ FILE X" instead of inline content
+- [ ] Agents write summaries, not full outputs
+- [ ] Orchestrator holds global view, distills for agents
+- [ ] No agent-to-agent direct communication (all via shared store)
+- [ ] Task chunks sized for 30-min completion
+
+**For Large Models (>13B):**
+- [ ] Include full relevant context inline
+- [ ] Agents can handle multi-step tasks without frequent context refreshes
+- [ ] More autonomy per agent (less hand-holding)
+- [ ] Can maintain conversation context across multiple handoffs
+- [ ] Full project docs included when helpful
+
+### Error Handling & Recovery
+
+**Agent Failure:**
+```python
+def handle_agent_failure(swarm_id, failed_agent):
+    # Read what was completed
+    progress = read_progress(swarm_id)
+
+    # Respawn with same context
+    task = progress[failed_agent]["task"]
+    context_summary = summarize_completed_work(progress)
+
+    new_agent = spawn_agent(task, swarm_id, f"""
+    PREVIOUS AGENT FAILED. Here is completed work so far:
+    {context_summary}
+
+    Your task: {task.description}
+    Continue from where it left off.
+    """)
+```
+
+**Context Corruption:**
+- Always validate JSON before writing
+- Use atomic writes (write to .tmp, then rename)
+- Keep backup of progress.json before updates
+
+**Swarm Timeout:**
+```python
+# If swarm times out, collect what we have
+def emergency_collect(swarm_id):
+    artifacts = glob(f"~/.hermes/swarm/{swarm_id}/memory/artifacts/*.json")
+    progress = read_progress(swarm_id)
+
+    return {
+        "completed": [p for p in progress if p["status"] == "completed"],
+        "in_progress": [p for p in progress if p["status"] == "in_progress"],
+        "artifacts": artifacts,
+        "reason": "timeout"
+    }
+```
+
+### Swarm Cleanup
+
+```bash
+# After completion, archive swarm
+SWARM_ID="myapp-20260406-120000"
+tar -czf ~/hermes/swarm/archive/$SWARM_ID.tar.gz ~/.hermes/swarm/$SWARM_ID
+
+# Or delete if not needed
+rm -rf ~/.hermes/swarm/$SWARM_ID
+
+# Keep logs for debugging
+mv ~/.hermes/swarm/$SWARM_ID/logs ~/hermes/swarm/archive/${SWARM_ID}_logs
+```
+
+### When to Use Each Approach
+
+| Scenario | Approach | Why |
+|----------|----------|-----|
+| Quick research task | `delegate_task` | No shared state needed, fire-and-forget |
+| App with 2-3 components | Boss-agent via tmux | Clear separation, easy coordination |
+| Large system (10+ components) | Hierarchical (orchestrator + middle managers) | Too many agents for single orchestrator |
+| Data pipeline | Pipeline pattern | Strict sequential dependencies |
+| Real-time collaboration | Peer network + events | Agents need to react to each other |
+| Single developer, complex task | Boss-agent, small model optimized | Maximizes parallel work within context limits |
 
 ---
 

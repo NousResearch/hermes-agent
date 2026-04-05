@@ -60,6 +60,16 @@ SAMPLE_REGISTRY = {
             },
         },
     },
+    "openai": {
+        "id": "openai",
+        "name": "OpenAI",
+        "models": {
+            "gpt-5.4": {
+                "id": "gpt-5.4",
+                "limit": {"context": 1050000, "output": 128000},
+            },
+        },
+    },
     "audio-only": {
         "id": "audio-only",
         "models": {
@@ -83,10 +93,11 @@ class TestProviderMapping:
         assert PROVIDER_TO_MODELS_DEV["copilot"] == "github-copilot"
         assert PROVIDER_TO_MODELS_DEV["kilocode"] == "kilo"
         assert PROVIDER_TO_MODELS_DEV["ai-gateway"] == "vercel"
+        assert PROVIDER_TO_MODELS_DEV["openai"] == "openai"
+        assert PROVIDER_TO_MODELS_DEV["openai-codex"] == "openai"
 
     def test_unmapped_provider_not_in_dict(self):
         assert "nous" not in PROVIDER_TO_MODELS_DEV
-        assert "openai-codex" not in PROVIDER_TO_MODELS_DEV
 
 
 class TestExtractContext:
@@ -138,6 +149,11 @@ class TestLookupModelsDevContext:
         assert lookup_models_dev_context("anthropic", "claude-opus-4-6") == 1000000
         # GitHub Copilot: only 128K for same model
         assert lookup_models_dev_context("copilot", "claude-opus-4.6") == 128000
+
+    @patch("agent.models_dev.fetch_models_dev")
+    def test_openai_codex_maps_to_openai_registry(self, mock_fetch):
+        mock_fetch.return_value = SAMPLE_REGISTRY
+        assert lookup_models_dev_context("openai-codex", "gpt-5.4") == 1050000
 
     @patch("agent.models_dev.fetch_models_dev")
     def test_zero_context_filtered(self, mock_fetch):

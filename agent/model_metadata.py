@@ -544,6 +544,46 @@ def get_cached_context_length(model: str, base_url: str) -> Optional[int]:
     return cache.get(key)
 
 
+def _looks_like_suspicious_context_cache_value(
+    model: str,
+    base_url: str,
+    length: int,
+    provider: str = "",
+) -> bool:
+    """Return True when a cached value likely captured output tokens, not context.
+
+    This mainly protects direct OpenAI/Codex endpoints where a prior overflow
+    error can mention small output-token budgets (for example 32K) that should
+    never be persisted as the model's context window.
+    """
+    if not isinstance(length, int) or length <= 0:
+        return False
+
+    effective_provider = provider
+    if not effective_provider or effective_provider in ("openrouter", "custom"):
+        if base_url:
+            inferred = _infer_provider_from_url(base_url)
+            if inferred:
+                effective_provider = inferred
+
+    if effective_provider not in {"openai", "openai-codex"}:
+        return False
+
+    try:
+        from agent.models_dev import lookup_models_dev_context
+
+        reference_context = lookup_models_dev_context("openai", model)
+    except Exception:
+        reference_context = None
+
+    if not isinstance(reference_context, int) or reference_context <= 0:
+        return False
+
+    # If the authoritative provider-aware context is very large, cached values
+    # at or below common output-token limits are almost certainly wrong.
+    return reference_context >= 400_000 and length <= 131_072
+
+
 def get_next_probe_tier(current_length: int) -> Optional[int]:
     """Return the next lower probe tier, or None if already at minimum."""
     for tier in CONTEXT_PROBE_TIERS:
@@ -797,7 +837,13 @@ def get_model_context_length(
     if base_url:
         cached = get_cached_context_length(model, base_url)
         if cached is not None:
-            return cached
+            if _looks_like_suspicious_context_cache_value(model, base_url, cached, provider=provider):
+                logger.warning(
+                    "Ignoring suspicious cached context length for %s @ %s: %s tokens",
+                    model, base_url, cached,
+                )
+            else:
+                return cached
 
     # 2. Active endpoint metadata for truly custom/unknown endpoints.
     # Known providers (Copilot, OpenAI, Anthropic, etc.) skip this — their

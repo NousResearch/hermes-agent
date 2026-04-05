@@ -30,6 +30,8 @@ _models_dev_cache_time: float = 0
 
 # Provider ID mapping: Hermes provider names → models.dev provider IDs
 PROVIDER_TO_MODELS_DEV: Dict[str, str] = {
+    "openai": "openai",
+    "openai-codex": "openai",
     "openrouter": "openrouter",
     "anthropic": "anthropic",
     "zai": "zai",

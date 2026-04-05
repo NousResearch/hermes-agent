@@ -22,6 +22,7 @@ from unittest.mock import patch, MagicMock
 from agent.model_metadata import (
     CONTEXT_PROBE_TIERS,
     DEFAULT_CONTEXT_LENGTHS,
+    _looks_like_suspicious_context_cache_value,
     _strip_provider_prefix,
     estimate_tokens_rough,
     estimate_messages_tokens_rough,
@@ -633,3 +634,34 @@ class TestContextLengthCache:
         with patch("agent.model_metadata._get_context_cache_path", return_value=cache_file):
             save_context_length(model, url, 200000)
             assert get_cached_context_length(model, url) == 200000
+
+    @patch("agent.models_dev.lookup_models_dev_context", return_value=1050000)
+    def test_suspicious_openai_codex_cache_is_ignored(self, _mock_lookup, tmp_path):
+        cache_file = tmp_path / "cache.yaml"
+        with patch("agent.model_metadata._get_context_cache_path", return_value=cache_file):
+            save_context_length("gpt-5.4", "https://chatgpt.com/backend-api/codex", 32000)
+            assert get_model_context_length(
+                "gpt-5.4",
+                base_url="https://chatgpt.com/backend-api/codex",
+                provider="openai-codex",
+            ) == 1050000
+
+
+class TestSuspiciousContextCacheValue:
+    @patch("agent.models_dev.lookup_models_dev_context", return_value=1050000)
+    def test_flags_small_cached_value_for_openai_codex(self, _mock_lookup):
+        assert _looks_like_suspicious_context_cache_value(
+            "gpt-5.4",
+            "https://chatgpt.com/backend-api/codex",
+            32000,
+            provider="openai-codex",
+        ) is True
+
+    @patch("agent.models_dev.lookup_models_dev_context", return_value=1050000)
+    def test_allows_large_cached_value_for_openai_codex(self, _mock_lookup):
+        assert _looks_like_suspicious_context_cache_value(
+            "gpt-5.4",
+            "https://chatgpt.com/backend-api/codex",
+            1050000,
+            provider="openai-codex",
+        ) is False

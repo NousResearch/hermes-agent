@@ -15,7 +15,6 @@ import logging
 import os
 import subprocess
 import sys
-import traceback
 
 # fcntl is Unix-only; on Windows use msvcrt for file locking
 try:
@@ -628,7 +627,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         
     except Exception as e:
         error_msg = f"{type(e).__name__}: {str(e)}"
-        logger.error("Job '%s' failed: %s", job_name, error_msg)
+        logger.exception("Job '%s' failed: %s", job_name, error_msg)
         
         output = f"""# Cron Job: {job_name} (FAILED)
 

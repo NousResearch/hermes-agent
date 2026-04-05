@@ -617,3 +617,107 @@ class TestCheckRequirements:
     @patch("gateway.platforms.webhook.AIOHTTP_AVAILABLE", False)
     def test_returns_false_without_aiohttp(self):
         assert check_webhook_requirements() is False
+
+
+# ===================================================================
+# __raw__ template token
+# ===================================================================
+
+
+class TestRawTemplateToken:
+    """Tests for the {__raw__} special token in _render_prompt."""
+
+    def test_raw_resolves_to_full_json_payload(self):
+        """{__raw__} in a template dumps the entire payload as JSON."""
+        adapter = _make_adapter()
+        payload = {"action": "opened", "number": 42}
+        result = adapter._render_prompt(
+            "Payload: {__raw__}", payload, "push", "test"
+        )
+        expected_json = json.dumps(payload, indent=2)
+        assert result == f"Payload: {expected_json}"
+
+    def test_raw_truncated_at_4000_chars(self):
+        """{__raw__} output is truncated at 4000 characters for large payloads."""
+        adapter = _make_adapter()
+        # Build a payload whose JSON repr exceeds 4000 chars
+        payload = {"data": "x" * 5000}
+        result = adapter._render_prompt("{__raw__}", payload, "push", "test")
+        assert len(result) <= 4000
+
+    def test_raw_mixed_with_other_variables(self):
+        """{__raw__} can be mixed with regular template variables."""
+        adapter = _make_adapter()
+        payload = {"action": "closed", "number": 7}
+        result = adapter._render_prompt(
+            "Action={action} Raw={__raw__}", payload, "push", "test"
+        )
+        assert result.startswith("Action=closed Raw=")
+        assert '"action": "closed"' in result
+        assert '"number": 7' in result
+
+
+# ===================================================================
+# Cross-platform delivery thread_id passthrough
+# ===================================================================
+
+
+class TestDeliverCrossPlatformThreadId:
+    """Tests for thread_id passthrough in _deliver_cross_platform."""
+
+    def _setup_adapter_with_mock_target(self):
+        """Set up a webhook adapter with a mocked gateway_runner and target adapter."""
+        adapter = _make_adapter()
+        mock_target = AsyncMock()
+        mock_target.send = AsyncMock(return_value=SendResult(success=True))
+
+        mock_runner = MagicMock()
+        mock_runner.adapters = {Platform("telegram"): mock_target}
+        mock_runner.config.get_home_channel.return_value = None
+
+        adapter.gateway_runner = mock_runner
+        return adapter, mock_target
+
+    @pytest.mark.asyncio
+    async def test_thread_id_passed_as_metadata(self):
+        """thread_id from deliver_extra is passed as metadata to adapter.send()."""
+        adapter, mock_target = self._setup_adapter_with_mock_target()
+        delivery = {
+            "deliver_extra": {
+                "chat_id": "12345",
+                "thread_id": "999",
+            }
+        }
+        await adapter._deliver_cross_platform("telegram", "hello", delivery)
+        mock_target.send.assert_awaited_once_with(
+            "12345", "hello", metadata={"thread_id": "999"}
+        )
+
+    @pytest.mark.asyncio
+    async def test_message_thread_id_passed_as_thread_id(self):
+        """message_thread_id from deliver_extra is mapped to thread_id in metadata."""
+        adapter, mock_target = self._setup_adapter_with_mock_target()
+        delivery = {
+            "deliver_extra": {
+                "chat_id": "12345",
+                "message_thread_id": "888",
+            }
+        }
+        await adapter._deliver_cross_platform("telegram", "hello", delivery)
+        mock_target.send.assert_awaited_once_with(
+            "12345", "hello", metadata={"thread_id": "888"}
+        )
+
+    @pytest.mark.asyncio
+    async def test_no_thread_id_sends_no_metadata(self):
+        """When no thread_id is present, metadata is None."""
+        adapter, mock_target = self._setup_adapter_with_mock_target()
+        delivery = {
+            "deliver_extra": {
+                "chat_id": "12345",
+            }
+        }
+        await adapter._deliver_cross_platform("telegram", "hello", delivery)
+        mock_target.send.assert_awaited_once_with(
+            "12345", "hello", metadata=None
+        )

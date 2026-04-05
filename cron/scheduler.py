@@ -98,24 +98,26 @@ def _resolve_delivery_target(job: dict) -> Optional[dict]:
 
     if ":" in deliver:
         platform_name, rest = deliver.split(":", 1)
-        # Check for thread_id suffix (e.g. "telegram:-1003724596514:17")
-        if ":" in rest:
-            chat_id, thread_id = rest.split(":", 1)
+        platform_key = platform_name.lower()
+
+        from tools.send_message_tool import _parse_target_ref
+
+        parsed_chat_id, parsed_thread_id, is_explicit = _parse_target_ref(platform_key, rest)
+        if is_explicit:
+            chat_id, thread_id = parsed_chat_id, parsed_thread_id
         else:
             chat_id, thread_id = rest, None
 
         # Resolve human-friendly labels like "Alice (dm)" to real IDs.
-        # send_message(action="list") shows labels with display suffixes
-        # that aren't valid platform IDs (e.g. WhatsApp JIDs).
         try:
             from gateway.channel_directory import resolve_channel_name
-            target = chat_id
-            # Strip display suffix like " (dm)" or " (group)"
-            if target.endswith(")") and " (" in target:
-                target = target.rsplit(" (", 1)[0].strip()
-            resolved = resolve_channel_name(platform_name.lower(), target)
+            resolved = resolve_channel_name(platform_key, chat_id)
             if resolved:
-                chat_id = resolved
+                parsed_chat_id, parsed_thread_id, resolved_is_explicit = _parse_target_ref(platform_key, resolved)
+                if resolved_is_explicit:
+                    chat_id, thread_id = parsed_chat_id, parsed_thread_id
+                else:
+                    chat_id = resolved
         except Exception:
             pass
 

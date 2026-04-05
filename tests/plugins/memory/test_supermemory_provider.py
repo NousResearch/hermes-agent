@@ -1,4 +1,5 @@
 import json
+import threading
 
 import pytest
 
@@ -161,6 +162,52 @@ def test_on_session_end_ingests_clean_messages(provider):
         {"role": "user", "content": "hello"},
         {"role": "assistant", "content": "hi there"},
     ]
+
+
+def test_on_memory_write_tracks_thread(provider):
+    provider.on_memory_write("add", "memory", "Jordan likes concise docs")
+    assert provider._write_thread is not None
+    provider._write_thread.join(timeout=1)
+    assert len(provider._client.add_calls) == 1
+    assert provider._client.add_calls[0]["metadata"]["type"] == "explicit_memory"
+
+
+def test_shutdown_joins_and_clears_threads(provider, monkeypatch):
+    started = threading.Event()
+    release = threading.Event()
+
+    def slow_add_memory(content, metadata=None, *, entity_context=""):
+        started.set()
+        release.wait(timeout=1)
+        provider._client.add_calls.append({
+            "content": content,
+            "metadata": metadata,
+            "entity_context": entity_context,
+        })
+        return {"id": "mem_slow"}
+
+    monkeypatch.setattr(provider._client, "add_memory", slow_add_memory)
+
+    provider.sync_turn(
+        "Please remember this request in long-term memory",
+        "Absolutely, I will keep that in long-term memory.",
+        session_id="session-1",
+    )
+    assert started.wait(timeout=1)
+    assert provider._sync_thread is not None
+
+    started.clear()
+    provider.on_memory_write("add", "memory", "Jordan likes concise docs")
+    assert started.wait(timeout=1)
+    assert provider._write_thread is not None
+
+    release.set()
+    provider.shutdown()
+
+    assert provider._sync_thread is None
+    assert provider._write_thread is None
+    assert provider._prefetch_thread is None
+    assert len(provider._client.add_calls) == 2
 
 
 def test_store_tool_returns_saved_payload(provider):

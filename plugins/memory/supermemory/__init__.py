@@ -391,6 +391,7 @@ class SupermemoryMemoryProvider(MemoryProvider):
         self._prefetch_lock = threading.Lock()
         self._prefetch_thread: Optional[threading.Thread] = None
         self._sync_thread: Optional[threading.Thread] = None
+        self._write_thread: Optional[threading.Thread] = None
         self._auto_recall = True
         self._auto_capture = True
         self._max_recall_results = _DEFAULT_MAX_RECALL_RESULTS
@@ -524,6 +525,7 @@ class SupermemoryMemoryProvider(MemoryProvider):
 
         if self._sync_thread and self._sync_thread.is_alive():
             self._sync_thread.join(timeout=2.0)
+        self._sync_thread = None
         self._sync_thread = threading.Thread(target=_run, daemon=True, name="supermemory-sync")
         self._sync_thread.start()
 
@@ -565,7 +567,18 @@ class SupermemoryMemoryProvider(MemoryProvider):
             except Exception:
                 logger.debug("Supermemory on_memory_write failed", exc_info=True)
 
-        threading.Thread(target=_run, daemon=True, name="supermemory-memory-write").start()
+        if self._write_thread and self._write_thread.is_alive():
+            self._write_thread.join(timeout=2.0)
+        self._write_thread = None
+        self._write_thread = threading.Thread(target=_run, daemon=False, name="supermemory-memory-write")
+        self._write_thread.start()
+
+    def shutdown(self) -> None:
+        for attr_name in ("_prefetch_thread", "_sync_thread", "_write_thread"):
+            thread = getattr(self, attr_name, None)
+            if thread and thread.is_alive():
+                thread.join(timeout=5.0)
+            setattr(self, attr_name, None)
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
         return [STORE_SCHEMA, SEARCH_SCHEMA, FORGET_SCHEMA, PROFILE_SCHEMA]

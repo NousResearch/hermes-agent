@@ -737,9 +737,9 @@ def cmd_whatsapp(args):
             response = "n"
         if response.lower() in ("y", "yes"):
             if wa_mode == "bot":
-                phone = input("  Phone numbers that can message the bot (comma-separated): ").strip()
+                phone = input("  Phone numbers that can message the bot (comma-separated, with country code, no +): ").strip()
             else:
-                phone = input("  Your phone number (e.g. 15551234567): ").strip()
+                phone = input("  Your phone number (with country code, no +, e.g. 15551234567): ").strip()
             if phone:
                 save_env_value("WHATSAPP_ALLOWED_USERS", phone.replace(" ", ""))
                 print(f"  ✓ Updated to: {phone}")
@@ -747,9 +747,9 @@ def cmd_whatsapp(args):
         print()
         if wa_mode == "bot":
             print("  Who should be allowed to message the bot?")
-            phone = input("  Phone numbers (comma-separated, or * for anyone): ").strip()
+            phone = input("  Phone numbers (comma-separated, with country code, no +, or * for anyone): ").strip()
         else:
-            phone = input("  Your phone number (e.g. 15551234567): ").strip()
+            phone = input("  Your phone number (with country code, no +, e.g. 15551234567): ").strip()
         if phone:
             save_env_value("WHATSAPP_ALLOWED_USERS", phone.replace(" ", ""))
             print(f"  ✓ Allowed users set: {phone}")

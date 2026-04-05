@@ -691,6 +691,13 @@ def get_prompt_toolkit_style_overrides() -> Dict[str, str]:
     warn = skin.get_color("ui_warn", "#FF8C00")
     error = skin.get_color("ui_error", "#FF6B6B")
 
+    completion_bg = skin.get_color("completion_bg", "#1a1a2e")
+    completion_active_bg = skin.get_color("completion_active_bg", "#333355")
+    completion_text_color = skin.get_color("completion_text", text)
+    completion_active_text_color = skin.get_color("completion_active_text", title)
+    completion_meta_color = skin.get_color("completion_meta", dim)
+    completion_meta_active_color = skin.get_color("completion_meta_active", label)
+
     return {
         "input-area": prompt,
         "placeholder": f"{dim} italic",
@@ -699,11 +706,11 @@ def get_prompt_toolkit_style_overrides() -> Dict[str, str]:
         "hint": f"{dim} italic",
         "input-rule": input_rule,
         "image-badge": f"{label} bold",
-        "completion-menu": f"bg:#1a1a2e {text}",
-        "completion-menu.completion": f"bg:#1a1a2e {text}",
-        "completion-menu.completion.current": f"bg:#333355 {title}",
-        "completion-menu.meta.completion": f"bg:#1a1a2e {dim}",
-        "completion-menu.meta.completion.current": f"bg:#333355 {label}",
+        "completion-menu": f"bg:{completion_bg} {completion_text_color}",
+        "completion-menu.completion": f"bg:{completion_bg} {completion_text_color}",
+        "completion-menu.completion.current": f"bg:{completion_active_bg} {completion_active_text_color}",
+        "completion-menu.meta.completion": f"bg:{completion_bg} {completion_meta_color}",
+        "completion-menu.meta.completion.current": f"bg:{completion_active_bg} {completion_meta_active_color}",
         "clarify-border": input_rule,
         "clarify-title": f"{title} bold",
         "clarify-question": f"{text} bold",

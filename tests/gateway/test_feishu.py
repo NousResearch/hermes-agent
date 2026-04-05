@@ -17,6 +17,18 @@ except ImportError:
     _HAS_LARK_OAPI = False
 
 
+def _mock_event_dispatcher_builder(mock_handler_class):
+    mock_builder = Mock()
+    mock_builder.register_p2_im_message_message_read_v1 = Mock(return_value=mock_builder)
+    mock_builder.register_p2_im_message_receive_v1 = Mock(return_value=mock_builder)
+    mock_builder.register_p2_im_message_reaction_created_v1 = Mock(return_value=mock_builder)
+    mock_builder.register_p2_im_message_reaction_deleted_v1 = Mock(return_value=mock_builder)
+    mock_builder.register_p2_card_action_trigger = Mock(return_value=mock_builder)
+    mock_builder.build = Mock(return_value=object())
+    mock_handler_class.builder = Mock(return_value=mock_builder)
+    return mock_builder
+
+
 class TestPlatformEnum(unittest.TestCase):
     def test_feishu_in_platform_enum(self):
         from gateway.config import Platform
@@ -269,14 +281,7 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
             patch.object(adapter, "_build_lark_client", return_value=SimpleNamespace()),
             patch("gateway.platforms.feishu.web", web_module),
         ):
-            mock_builder = Mock()
-            mock_builder.register_p2_im_message_message_read_v1 = Mock(return_value=mock_builder)
-            mock_builder.register_p2_im_message_receive_v1 = Mock(return_value=mock_builder)
-            mock_builder.register_p2_im_message_reaction_created_v1 = Mock(return_value=mock_builder)
-            mock_builder.register_p2_im_message_reaction_deleted_v1 = Mock(return_value=mock_builder)
-            mock_builder.register_p2_card_action_trigger = Mock(return_value=mock_builder)
-            mock_builder.build = Mock(return_value=object())
-            mock_handler_class.builder = Mock(return_value=mock_builder)
+            _mock_event_dispatcher_builder(mock_handler_class)
             connected = asyncio.run(adapter.connect())
 
         self.assertTrue(connected)
@@ -306,14 +311,7 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
             patch.object(adapter, "_hydrate_bot_identity", new=AsyncMock()),
             patch.object(adapter, "_build_lark_client", return_value=SimpleNamespace()),
         ):
-            mock_builder = Mock()
-            mock_builder.register_p2_im_message_message_read_v1 = Mock(return_value=mock_builder)
-            mock_builder.register_p2_im_message_receive_v1 = Mock(return_value=mock_builder)
-            mock_builder.register_p2_im_message_reaction_created_v1 = Mock(return_value=mock_builder)
-            mock_builder.register_p2_im_message_reaction_deleted_v1 = Mock(return_value=mock_builder)
-            mock_builder.register_p2_card_action_trigger = Mock(return_value=mock_builder)
-            mock_builder.build = Mock(return_value=object())
-            mock_handler_class.builder = Mock(return_value=mock_builder)
+            _mock_event_dispatcher_builder(mock_handler_class)
 
             loop = asyncio.new_event_loop()
             future = loop.create_future()
@@ -391,14 +389,7 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
             patch("gateway.platforms.feishu.asyncio.sleep", side_effect=lambda delay: sleeps.append(delay)),
             patch.object(adapter, "_build_lark_client", return_value=SimpleNamespace()),
         ):
-            mock_builder = Mock()
-            mock_builder.register_p2_im_message_message_read_v1 = Mock(return_value=mock_builder)
-            mock_builder.register_p2_im_message_receive_v1 = Mock(return_value=mock_builder)
-            mock_builder.register_p2_im_message_reaction_created_v1 = Mock(return_value=mock_builder)
-            mock_builder.register_p2_im_message_reaction_deleted_v1 = Mock(return_value=mock_builder)
-            mock_builder.register_p2_card_action_trigger = Mock(return_value=mock_builder)
-            mock_builder.build = Mock(return_value=object())
-            mock_handler_class.builder = Mock(return_value=mock_builder)
+            _mock_event_dispatcher_builder(mock_handler_class)
 
             loop = asyncio.new_event_loop()
             future = loop.create_future()

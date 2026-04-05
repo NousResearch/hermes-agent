@@ -362,28 +362,22 @@ def _strip_markdown_to_plain_text(text: str) -> str:
     return plain.strip()
 
 
-def _coerce_non_negative_int(value: Any, default: int) -> int:
+def _coerce_int(value: Any, default: Optional[int] = None, min_value: int = 0) -> Optional[int]:
+    """Coerce value to int with optional default and minimum constraint."""
     try:
         parsed = int(value)
     except (TypeError, ValueError):
         return default
-    return parsed if parsed >= 0 else default
+    return parsed if parsed >= min_value else default
 
 
-def _coerce_positive_int(value: Any, default: int) -> int:
-    try:
-        parsed = int(value)
-    except (TypeError, ValueError):
-        return default
-    return parsed if parsed >= 1 else default
+def _coerce_required_int(value: Any, default: int, min_value: int = 0) -> int:
+    parsed = _coerce_int(value, default=default, min_value=min_value)
+    return default if parsed is None else parsed
 
 
-def _coerce_optional_positive_int(value: Any) -> Optional[int]:
-    try:
-        parsed = int(value)
-    except (TypeError, ValueError):
-        return None
-    return parsed if parsed >= 1 else None
+def _is_loop_ready(loop: Optional[asyncio.AbstractEventLoop]) -> bool:
+    return loop is not None and not bool(getattr(loop, "is_closed", lambda: False)())
 
 
 # ---------------------------------------------------------------------------
@@ -970,12 +964,13 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
         return await original_connect(*args, **kwargs)
 
     def _configure_with_overrides(conf: Any) -> Any:
+        assert original_configure is not None
         result = original_configure(conf)
         _apply_runtime_ws_overrides()
         return result
 
     ws_client_module.websockets.connect = _connect_with_overrides
-    if callable(original_configure):
+    if original_configure is not None:
         setattr(ws_client, "_configure", _configure_with_overrides)
     _apply_runtime_ws_overrides()
     try:
@@ -984,7 +979,7 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
         pass
     finally:
         ws_client_module.websockets.connect = original_connect
-        if callable(original_configure):
+        if original_configure is not None:
             setattr(ws_client, "_configure", original_configure)
         pending = [t for t in asyncio.all_tasks(loop) if not t.done()]
         for task in pending:
@@ -1100,10 +1095,10 @@ class FeishuAdapter(BasePlatformAdapter):
                 str(extra.get("webhook_path") or os.getenv("FEISHU_WEBHOOK_PATH", _DEFAULT_WEBHOOK_PATH)).strip()
                 or _DEFAULT_WEBHOOK_PATH
             ),
-            ws_reconnect_nonce=_coerce_non_negative_int(extra.get("ws_reconnect_nonce"), 30),
-            ws_reconnect_interval=_coerce_positive_int(extra.get("ws_reconnect_interval"), 120),
-            ws_ping_interval=_coerce_optional_positive_int(extra.get("ws_ping_interval")),
-            ws_ping_timeout=_coerce_optional_positive_int(extra.get("ws_ping_timeout")),
+            ws_reconnect_nonce=_coerce_required_int(extra.get("ws_reconnect_nonce"), default=30, min_value=0),
+            ws_reconnect_interval=_coerce_required_int(extra.get("ws_reconnect_interval"), default=120, min_value=1),
+            ws_ping_interval=_coerce_int(extra.get("ws_ping_interval"), default=None, min_value=1),
+            ws_ping_timeout=_coerce_int(extra.get("ws_ping_timeout"), default=None, min_value=1),
         )
 
     def _apply_settings(self, settings: FeishuAdapterSettings) -> None:

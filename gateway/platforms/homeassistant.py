@@ -20,6 +20,7 @@ import time
 import uuid
 from datetime import datetime
 from typing import Any, Dict, Optional, Set
+from urllib.parse import urlsplit, urlunsplit
 
 try:
     import aiohttp
@@ -37,6 +38,17 @@ from gateway.platforms.base import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _safe_log_url(url: str) -> str:
+    """Remove URL credentials and auth query params before logging."""
+    parts = urlsplit(url)
+    host = parts.hostname or parts.netloc
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    if parts.port:
+        host = f"{host}:{parts.port}"
+    return urlunsplit((parts.scheme, host, parts.path, "", ""))
 
 
 def check_ha_requirements() -> bool:
@@ -130,7 +142,7 @@ class HomeAssistantAdapter(BasePlatformAdapter):
             # Start background listener
             self._listen_task = asyncio.create_task(self._listen_loop())
             self._running = True
-            logger.info("[%s] Connected to %s", self.name, self._hass_url)
+            logger.info("[%s] Connected to %s", self.name, _safe_log_url(self._hass_url))
             return True
 
         except Exception as e:

@@ -241,6 +241,22 @@ class TestAdapterInit:
         assert adapter._watch_all is False
         assert adapter._cooldown_seconds == 30
 
+    @pytest.mark.asyncio
+    async def test_connect_log_redacts_hass_url_credentials(self):
+        adapter = HomeAssistantAdapter(
+            PlatformConfig(enabled=True, token="tok", extra={"url": "https://user:supersecret@ha.local:8123/base?access_token=abc123"})
+        )
+        with patch.object(adapter, "_ws_connect", AsyncMock(return_value=True)), \
+                patch.object(adapter, "_listen_loop", AsyncMock(return_value=None)), \
+                patch("gateway.platforms.homeassistant.aiohttp") as mock_aiohttp, \
+                patch("gateway.platforms.homeassistant.logger.info") as mock_info:
+            mock_aiohttp.ClientSession = MagicMock(return_value=MagicMock())
+            mock_aiohttp.ClientTimeout = lambda total: total
+            assert await adapter.connect() is True
+        assert mock_info.call_args_list[-1].args == (
+            "[%s] Connected to %s", "Homeassistant", "https://ha.local:8123/base",
+        )
+
 
 # ---------------------------------------------------------------------------
 # Event filtering pipeline (_handle_ha_event)

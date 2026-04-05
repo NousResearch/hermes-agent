@@ -262,12 +262,21 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
         with (
             patch("gateway.platforms.feishu.FEISHU_AVAILABLE", True),
             patch("gateway.platforms.feishu.FEISHU_WEBHOOK_AVAILABLE", True),
+            patch("gateway.platforms.feishu.EventDispatcherHandler") as mock_handler_class,
             patch("gateway.platforms.feishu.acquire_scoped_lock", return_value=(True, None)),
             patch("gateway.platforms.feishu.release_scoped_lock"),
             patch.object(adapter, "_hydrate_bot_identity", new=AsyncMock()),
             patch.object(adapter, "_build_lark_client", return_value=SimpleNamespace()),
             patch("gateway.platforms.feishu.web", web_module),
         ):
+            mock_builder = Mock()
+            mock_builder.register_p2_im_message_message_read_v1 = Mock(return_value=mock_builder)
+            mock_builder.register_p2_im_message_receive_v1 = Mock(return_value=mock_builder)
+            mock_builder.register_p2_im_message_reaction_created_v1 = Mock(return_value=mock_builder)
+            mock_builder.register_p2_im_message_reaction_deleted_v1 = Mock(return_value=mock_builder)
+            mock_builder.register_p2_card_action_trigger = Mock(return_value=mock_builder)
+            mock_builder.build = Mock(return_value=object())
+            mock_handler_class.builder = Mock(return_value=mock_builder)
             connected = asyncio.run(adapter.connect())
 
         self.assertTrue(connected)
@@ -612,6 +621,61 @@ class TestAdapterModule(unittest.TestCase):
 
         self.assertIsNone(settings.ws_ping_interval)
         self.assertIsNone(settings.ws_ping_timeout)
+
+    def test_runtime_ws_overrides_reapply_after_sdk_configure(self):
+        import sys
+        from types import ModuleType
+
+        class _FakeWSClient:
+            def __init__(self):
+                self._reconnect_nonce = 30
+                self._reconnect_interval = 120
+                self._ping_interval = 120
+                self.configure_calls = []
+
+            def _configure(self, conf):
+                self.configure_calls.append(conf)
+                self._reconnect_nonce = conf.ReconnectNonce
+                self._reconnect_interval = conf.ReconnectInterval
+                self._ping_interval = conf.PingInterval
+
+            def start(self):
+                conf = SimpleNamespace(ReconnectNonce=99, ReconnectInterval=88, PingInterval=77)
+                self._configure(conf)
+                raise RuntimeError("stop test client")
+
+        fake_client = _FakeWSClient()
+        fake_adapter = SimpleNamespace(
+            _ws_thread_loop=None,
+            _ws_reconnect_nonce=2,
+            _ws_reconnect_interval=3,
+            _ws_ping_interval=4,
+            _ws_ping_timeout=5,
+        )
+        fake_client_module = ModuleType("lark_oapi.ws.client")
+        fake_client_module.loop = None
+        fake_client_module.websockets = SimpleNamespace(connect=AsyncMock())
+        fake_ws_module = ModuleType("lark_oapi.ws")
+        fake_ws_module.client = fake_client_module
+        fake_root_module = ModuleType("lark_oapi")
+        fake_root_module.ws = fake_ws_module
+
+        original_modules = sys.modules.copy()
+        sys.modules["lark_oapi"] = fake_root_module
+        sys.modules["lark_oapi.ws"] = fake_ws_module
+        sys.modules["lark_oapi.ws.client"] = fake_client_module
+        try:
+            from gateway.platforms.feishu import _run_official_feishu_ws_client
+
+            _run_official_feishu_ws_client(fake_client, fake_adapter)
+        finally:
+            sys.modules.clear()
+            sys.modules.update(original_modules)
+
+        self.assertEqual(len(fake_client.configure_calls), 1)
+        self.assertEqual(fake_client._reconnect_nonce, 2)
+        self.assertEqual(fake_client._reconnect_interval, 3)
+        self.assertEqual(fake_client._ping_interval, 4)
 
 
 class TestAdapterBehavior(unittest.TestCase):

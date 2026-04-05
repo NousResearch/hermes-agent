@@ -951,6 +951,16 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
     adapter._ws_thread_loop = loop
 
     original_connect = ws_client_module.websockets.connect
+    original_configure = getattr(ws_client, "_configure", None)
+
+    def _apply_runtime_ws_overrides() -> None:
+        try:
+            setattr(ws_client, "_reconnect_nonce", adapter._ws_reconnect_nonce)
+            setattr(ws_client, "_reconnect_interval", adapter._ws_reconnect_interval)
+            if adapter._ws_ping_interval is not None:
+                setattr(ws_client, "_ping_interval", adapter._ws_ping_interval)
+        except Exception:
+            logger.debug("[Feishu] Failed to apply websocket runtime overrides", exc_info=True)
 
     async def _connect_with_overrides(*args: Any, **kwargs: Any) -> Any:
         if adapter._ws_ping_interval is not None and "ping_interval" not in kwargs:
@@ -959,13 +969,23 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
             kwargs["ping_timeout"] = adapter._ws_ping_timeout
         return await original_connect(*args, **kwargs)
 
+    def _configure_with_overrides(conf: Any) -> Any:
+        result = original_configure(conf)
+        _apply_runtime_ws_overrides()
+        return result
+
     ws_client_module.websockets.connect = _connect_with_overrides
+    if callable(original_configure):
+        setattr(ws_client, "_configure", _configure_with_overrides)
+    _apply_runtime_ws_overrides()
     try:
         ws_client.start()
     except Exception:
         pass
     finally:
         ws_client_module.websockets.connect = original_connect
+        if callable(original_configure):
+            setattr(ws_client, "_configure", original_configure)
         pending = [t for t in asyncio.all_tasks(loop) if not t.done()]
         for task in pending:
             task.cancel()
@@ -3080,11 +3100,6 @@ class FeishuAdapter(BasePlatformAdapter):
             event_handler=self._event_handler,
             domain=domain,
         )
-        try:
-            setattr(self._ws_client, "_reconnect_nonce", self._ws_reconnect_nonce)
-            setattr(self._ws_client, "_reconnect_interval", self._ws_reconnect_interval)
-        except Exception:
-            logger.debug("[Feishu] Failed to override websocket reconnect settings", exc_info=True)
         self._ws_future = loop.run_in_executor(
             None,
             _run_official_feishu_ws_client,

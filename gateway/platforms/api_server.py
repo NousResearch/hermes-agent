@@ -8,6 +8,10 @@ Exposes an HTTP server with endpoints:
 - DELETE /v1/responses/{response_id} — Delete a stored response
 - GET  /v1/models                  — lists hermes-agent as an available model
 - GET  /health                     — health check
+- GET  /api/todos                  — list all sessions with persisted todos
+- GET  /api/todos/{session_id}     — get todos for a specific session
+- PATCH /api/todos/{session_id}    — update todos for a session (merge or replace)
+- DELETE /api/todos/{session_id}   — delete a session's todos
 
 Any OpenAI-compatible frontend (Open WebUI, LobeChat, LibreChat,
 AnythingLLM, NextChat, ChatBox, etc.) can connect to hermes-agent
@@ -1282,6 +1286,114 @@ class APIServerAdapter(BasePlatformAdapter):
         return await loop.run_in_executor(None, _run)
 
     # ------------------------------------------------------------------
+    # Todo API handlers
+    # ------------------------------------------------------------------
+
+    async def _handle_list_todos(self, request: "web.Request") -> "web.Response":
+        """GET /api/todos — list all sessions with persisted todos."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        from tools.todo_store import list_all_sessions
+        sessions = list_all_sessions()
+        return web.json_response({"sessions": sessions})
+
+    async def _handle_get_todos(self, request: "web.Request") -> "web.Response":
+        """GET /api/todos/{session_id} — get todos for a specific session."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        session_id = request.match_info["session_id"]
+
+        from tools.todo_store import load_session_todos
+        doc = load_session_todos(session_id)
+        if doc is None:
+            return web.json_response(
+                {"error": {"message": f"No todos found for session: {session_id}", "type": "not_found"}},
+                status=404,
+            )
+
+        return web.json_response(doc)
+
+    async def _handle_update_todos(self, request: "web.Request") -> "web.Response":
+        """
+        PATCH /api/todos/{session_id} — update todos for a session.
+
+        Body:
+            {
+                "todos": [ {id, content, status}, ... ],
+                "merge": true|false  (default: true)
+            }
+        """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        session_id = request.match_info["session_id"]
+
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, Exception):
+            return web.json_response(
+                {"error": {"message": "Invalid JSON in request body", "type": "invalid_request_error"}},
+                status=400,
+            )
+
+        todos = body.get("todos")
+        if not todos or not isinstance(todos, list):
+            return web.json_response(
+                {"error": {"message": "Missing or invalid 'todos' array", "type": "invalid_request_error"}},
+                status=400,
+            )
+
+        merge = body.get("merge", True)
+
+        from tools.todo_store import PersistentTodoStore
+        store = PersistentTodoStore(session_id)
+        items = store.write(todos, merge=merge)
+
+        # Build summary
+        pending = sum(1 for i in items if i["status"] == "pending")
+        in_progress = sum(1 for i in items if i["status"] == "in_progress")
+        completed = sum(1 for i in items if i["status"] == "completed")
+        cancelled = sum(1 for i in items if i["status"] == "cancelled")
+
+        return web.json_response({
+            "session_id": session_id,
+            "todos": items,
+            "summary": {
+                "total": len(items),
+                "pending": pending,
+                "in_progress": in_progress,
+                "completed": completed,
+                "cancelled": cancelled,
+            },
+        })
+
+    async def _handle_delete_todos(self, request: "web.Request") -> "web.Response":
+        """DELETE /api/todos/{session_id} — delete a session's todos."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        session_id = request.match_info["session_id"]
+
+        from tools.todo_store import delete_session_todos
+        deleted = delete_session_todos(session_id)
+        if not deleted:
+            return web.json_response(
+                {"error": {"message": f"No todos found for session: {session_id}", "type": "not_found"}},
+                status=404,
+            )
+
+        return web.json_response({
+            "session_id": session_id,
+            "deleted": True,
+        })
+
+    # ------------------------------------------------------------------
     # BasePlatformAdapter interface
     # ------------------------------------------------------------------
 
@@ -1311,6 +1423,11 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_post("/api/jobs/{job_id}/pause", self._handle_pause_job)
             self._app.router.add_post("/api/jobs/{job_id}/resume", self._handle_resume_job)
             self._app.router.add_post("/api/jobs/{job_id}/run", self._handle_run_job)
+            # Todo API
+            self._app.router.add_get("/api/todos", self._handle_list_todos)
+            self._app.router.add_get("/api/todos/{session_id}", self._handle_get_todos)
+            self._app.router.add_patch("/api/todos/{session_id}", self._handle_update_todos)
+            self._app.router.add_delete("/api/todos/{session_id}", self._handle_delete_todos)
 
             # Port conflict detection — fail fast if port is already in use
             import socket as _socket

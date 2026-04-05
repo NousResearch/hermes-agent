@@ -987,9 +987,15 @@ class AIAgent:
                     "Session DB create_session failed (session_search still available): %s", e
                 )
         
-        # In-memory todo list for task planning (one per agent/session)
-        from tools.todo_tool import TodoStore
-        self._todo_store = TodoStore()
+        # Todo list for task planning (one per agent/session).
+        # Use persistent store when session_id is available so todos
+        # survive across sessions and can be queried via /api/todos.
+        if self.session_id:
+            from tools.todo_store import PersistentTodoStore
+            self._todo_store = PersistentTodoStore(self.session_id)
+        else:
+            from tools.todo_tool import TodoStore
+            self._todo_store = TodoStore()
         
         # Load config once for memory, skills, and compression sections
         try:

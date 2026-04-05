@@ -270,6 +270,8 @@ class FeishuAdapterSettings:
     webhook_host: str
     webhook_port: int
     webhook_path: str
+    ws_reconnect_nonce: int = 30
+    ws_reconnect_interval: int = 120
 
 
 @dataclass
@@ -356,6 +358,22 @@ def _strip_markdown_to_plain_text(text: str) -> str:
     plain = re.sub(r"<u>([\s\S]*?)</u>", r"\1", plain)
     plain = re.sub(r"\n{3,}", "\n\n", plain)
     return plain.strip()
+
+
+def _coerce_non_negative_int(value: Any, default: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed >= 0 else default
+
+
+def _coerce_positive_int(value: Any, default: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed >= 1 else default
 
 
 # ---------------------------------------------------------------------------
@@ -1040,6 +1058,8 @@ class FeishuAdapter(BasePlatformAdapter):
                 str(extra.get("webhook_path") or os.getenv("FEISHU_WEBHOOK_PATH", _DEFAULT_WEBHOOK_PATH)).strip()
                 or _DEFAULT_WEBHOOK_PATH
             ),
+            ws_reconnect_nonce=_coerce_non_negative_int(extra.get("ws_reconnect_nonce"), 30),
+            ws_reconnect_interval=_coerce_positive_int(extra.get("ws_reconnect_interval"), 120),
         )
 
     def _apply_settings(self, settings: FeishuAdapterSettings) -> None:
@@ -1062,6 +1082,8 @@ class FeishuAdapter(BasePlatformAdapter):
         self._webhook_host = settings.webhook_host
         self._webhook_port = settings.webhook_port
         self._webhook_path = settings.webhook_path
+        self._ws_reconnect_nonce = settings.ws_reconnect_nonce
+        self._ws_reconnect_interval = settings.ws_reconnect_interval
 
     def _build_event_handler(self) -> Any:
         if EventDispatcherHandler is None:
@@ -3032,6 +3054,11 @@ class FeishuAdapter(BasePlatformAdapter):
             event_handler=self._event_handler,
             domain=domain,
         )
+        try:
+            setattr(self._ws_client, "_reconnect_nonce", self._ws_reconnect_nonce)
+            setattr(self._ws_client, "_reconnect_interval", self._ws_reconnect_interval)
+        except Exception:
+            logger.debug("[Feishu] Failed to override websocket reconnect settings", exc_info=True)
         self._ws_future = loop.run_in_executor(
             None,
             _run_official_feishu_ws_client,

@@ -283,7 +283,7 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
         from gateway.platforms.feishu import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
-        ws_client = object()
+        ws_client = SimpleNamespace()
 
         with (
             patch("gateway.platforms.feishu.FEISHU_AVAILABLE", True),
@@ -367,7 +367,7 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
         from gateway.platforms.feishu import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
-        ws_client = object()
+        ws_client = SimpleNamespace()
         sleeps = []
 
         with (
@@ -560,6 +560,32 @@ class TestAdapterModule(unittest.TestCase):
         self.assertIn("register_p2_im_message_reaction_created_v1", source)
         self.assertIn("register_p2_im_message_reaction_deleted_v1", source)
         self.assertIn("register_p2_card_action_trigger", source)
+
+    def test_load_settings_uses_sdk_defaults_for_invalid_ws_reconnect_values(self):
+        from gateway.platforms.feishu import FeishuAdapter
+
+        settings = FeishuAdapter._load_settings(
+            {
+                "ws_reconnect_nonce": -1,
+                "ws_reconnect_interval": "bad",
+            }
+        )
+
+        self.assertEqual(settings.ws_reconnect_nonce, 30)
+        self.assertEqual(settings.ws_reconnect_interval, 120)
+
+    def test_load_settings_accepts_custom_ws_reconnect_values(self):
+        from gateway.platforms.feishu import FeishuAdapter
+
+        settings = FeishuAdapter._load_settings(
+            {
+                "ws_reconnect_nonce": 0,
+                "ws_reconnect_interval": 3,
+            }
+        )
+
+        self.assertEqual(settings.ws_reconnect_nonce, 0)
+        self.assertEqual(settings.ws_reconnect_interval, 3)
 
 
 class TestAdapterBehavior(unittest.TestCase):

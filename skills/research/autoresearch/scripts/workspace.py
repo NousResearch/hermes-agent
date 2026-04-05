@@ -28,6 +28,7 @@ def init(d):
         f"cd {qd} && git init --initial-branch=main 2>/dev/null || (cd {qd} && git init && cd {qd} && git checkout -b main)",
         f"cd {qd} && git config user.email 'autoresearch@hermes'",
         f"cd {qd} && git config user.name 'autoresearch'",
+        f"cd {qd} && git commit --allow-empty -m 'init autoresearch workspace'",
     ])
 
 def branch(d, eid, desc):

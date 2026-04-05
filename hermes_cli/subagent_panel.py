@@ -33,12 +33,13 @@ class SubagentRecord:
         return self.duration_seconds
 
 
+# All icons exactly 1 display column wide (avoid emoji that render as 2-wide)
 STATUS_ICONS = {
     "running":     "●",
     "completed":   "✓",
     "failed":      "✗",
     "error":       "✗",
-    "interrupted": "⚡",
+    "interrupted": "~",
 }
 
 STATUS_STYLES = {
@@ -53,23 +54,24 @@ STATUS_STYLES = {
 def _fmt_elapsed(r: SubagentRecord) -> str:
     secs = int(r.elapsed)
     m, s = divmod(secs, 60)
-    suffix = "" if r.status == "running" else " done"
-    return f"{m}:{s:02d}{suffix}"
+    if r.status == "running":
+        return f"{m}:{s:02d}"
+    return f"{m}:{s:02d} done"
 
 
 def _tool_emoji(tool_name: str) -> str:
     t = tool_name.lower()
     if "web" in t or "search" in t or "browser" in t:
-        return "🌐"
+        return ">"   # avoid 2-wide emoji in fixed-width box
     if "file" in t or "read" in t or "write" in t:
-        return "📁"
+        return "f"
     if "terminal" in t or "bash" in t or "shell" in t:
-        return "💻"
+        return "$"
     if "memory" in t:
-        return "🧠"
+        return "m"
     if "skill" in t:
-        return "📚"
-    return "🔧"
+        return "s"
+    return "*"
 
 
 def render_panel(
@@ -77,42 +79,66 @@ def render_panel(
     cursor: int,
     width: int,
 ) -> list:
-    """Return a prompt_toolkit formatted_text fragment list for the full panel box."""
+    """Return prompt_toolkit formatted_text fragments for the panel box.
+
+    All measurements use display-column counts, assuming every character is
+    exactly 1 column wide (no emoji, no CJK).  W is the total box width
+    including the │ border characters on both sides.
+    """
     W = min(width - 4, 80)
+
+    # Fixed border strings — measure by len() since all chars are 1-wide
+    HDR_PREFIX = "╭─"          # 2
+    HDR_SUFFIX = " Ctrl+X ─╮"  # 10
+    FTR_PREFIX = "╰"           # 1
+    FTR_SUFFIX = " ↑↓ K=interrupt ─╯"  # 18
+
     n_running = sum(1 for r in records if r.status == "running")
     title = f" Subagents ({n_running} running) "
-    fill = W - len(title) - 14  # '╭─' + ' Ctrl+X ─╮'
-    frags = []
+
+    hdr_dashes = max(0, W - len(HDR_PREFIX) - len(title) - len(HDR_SUFFIX))
+    ftr_dashes = max(0, W - len(FTR_PREFIX) - len(FTR_SUFFIX))
+
+    # Row layout (all 1-wide):
+    # │ I [N] <goal_w> <ELAPSED_W> │
+    # 1+1+1+1+1+1+1+1 + goal_w + 1+ELAPSED_W+1+1 = goal_w + ELAPSED_W + 11 = W
+    ELAPSED_W = 9   # "0:00 done" = 9 chars; running "0:00" left-padded to 9
+    goal_w = max(10, W - ELAPSED_W - 11)
+
+    frags: list = []
 
     def line(text: str, style: str = "") -> None:
         frags.append((style, text + "\n"))
 
-    # Header
-    line(f"╭─{title}{'─' * max(fill, 0)} Ctrl+X ─╮", "class:subagent-border")
+    line(f"{HDR_PREFIX}{title}{'─' * hdr_dashes}{HDR_SUFFIX}",
+         "class:subagent-border")
 
     if not records:
-        line(f"│  (no subagents){'':>{W - 17}}│", "class:subagent-border")
+        content = "(no subagents)"
+        pad = max(0, W - 4 - len(content))
+        line(f"│  {content}{' ' * pad} │", "class:subagent-border")
     else:
         for i, r in enumerate(records):
-            icon  = STATUS_ICONS.get(r.status, "?")
+            icon   = STATUS_ICONS.get(r.status, "?")
             istyle = STATUS_STYLES.get(r.status, "")
-            elapsed = _fmt_elapsed(r)
-            goal_w = W - 12  # icon+index+elapsed+padding
-            goal  = r.goal[:goal_w - 1] if len(r.goal) > goal_w else r.goal
-            row   = f"│ {icon} [{r.index+1}] {goal:<{goal_w}} {elapsed:>7} │"
+            elapsed = _fmt_elapsed(r).ljust(ELAPSED_W)
+            goal    = r.goal[:goal_w].ljust(goal_w)
+            idx     = str(r.index + 1)
+            row = f"│ {icon} [{idx}] {goal} {elapsed} │"
             if i == cursor:
                 frags.append(("class:subagent-selected", row + "\n"))
             else:
                 frags.append(("", "│ "))
-                frags.append((istyle, f"{icon} [{r.index+1}]"))
-                frags.append(("", f" {goal:<{goal_w}} {elapsed:>7} │\n"))
-            # Tool sub-row (running only)
-            if r.status == "running" and r.last_tool:
-                emoji = _tool_emoji(r.last_tool)
-                preview = r.last_tool_preview[:W - 18]
-                sub = f"│   └─ {emoji} {r.last_tool:<14} {preview:<{W-18}} │"
-                line(sub, "class:subagent-sub")
+                frags.append((istyle, f"{icon} [{idx}]"))
+                frags.append(("", f" {goal} {elapsed} │\n"))
 
-    # Footer
-    line(f"╰{'─' * (W - 2)} ↑↓ K=interrupt ─╯", "class:subagent-border")
+            # Tool sub-row (running agents only)
+            if r.status == "running" and r.last_tool:
+                sym     = _tool_emoji(r.last_tool)
+                tool_s  = r.last_tool[:12].ljust(12)
+                prev_w  = max(0, W - 23)
+                preview = r.last_tool_preview[:prev_w].ljust(prev_w)
+                line(f"│  └─ {sym} {tool_s} {preview} │", "class:subagent-sub")
+
+    line(f"{FTR_PREFIX}{'─' * ftr_dashes}{FTR_SUFFIX}", "class:subagent-border")
     return frags

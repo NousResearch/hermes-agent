@@ -377,23 +377,26 @@ class SendResult:
     message_id: Optional[str] = None
     error: Optional[str] = None
     raw_response: Any = None
-    retryable: bool = False  # True for transient errors (network, timeout) — base will retry automatically
+    retryable: bool = False  # True for transient connection errors — base will retry automatically
 
 
-# Error substrings that indicate a transient network failure worth retrying
+# Error substrings that indicate a transient *connection* failure worth retrying.
+# "timeout" / "timed out" / "readtimeout" / "writetimeout" are intentionally
+# excluded: a read/write timeout on a non-idempotent call (e.g. send_message)
+# means the request may have reached the server — retrying risks duplicate
+# delivery.  "connecttimeout" is safe because the connection was never
+# established.  Platforms that know a timeout is safe to retry should set
+# SendResult.retryable = True explicitly.
 _RETRYABLE_ERROR_PATTERNS = (
     "connecterror",
     "connectionerror",
     "connectionreset",
     "connectionrefused",
-    "timeout",
-    "timed out",
+    "connecttimeout",
     "network",
     "broken pipe",
     "remotedisconnected",
     "eoferror",
-    "readtimeout",
-    "writetimeout",
 )
 
 
@@ -927,6 +930,18 @@ class BasePlatformAdapter(ABC):
         lowered = error.lower()
         return any(pat in lowered for pat in _RETRYABLE_ERROR_PATTERNS)
 
+    @staticmethod
+    def _is_timeout_error(error: Optional[str]) -> bool:
+        """Return True if the error string indicates a read/write timeout.
+
+        Timeout errors are NOT retryable and should NOT trigger plain-text
+        fallback — the request may have already been delivered.
+        """
+        if not error:
+            return False
+        lowered = error.lower()
+        return "timed out" in lowered or "readtimeout" in lowered or "writetimeout" in lowered
+
     async def _send_with_retry(
         self,
         chat_id: str,
@@ -957,6 +972,11 @@ class BasePlatformAdapter(ABC):
 
         error_str = result.error or ""
         is_network = result.retryable or self._is_retryable_error(error_str)
+
+        # Timeout errors are not safe to retry (message may have been
+        # delivered) and not formatting errors — return the failure as-is.
+        if not is_network and self._is_timeout_error(error_str):
+            return result
 
         if is_network:
             # Retry with exponential backoff for transient errors
@@ -1046,6 +1066,28 @@ class BasePlatformAdapter(ABC):
                         )
                 except Exception as e:
                     logger.error("[%s] Approval dispatch failed: %s", self.name, e, exc_info=True)
+                return
+
+            # /status must also bypass the active-session guard so it always
+            # returns a system-generated response instead of being queued as
+            # user text and passed to the agent (#5046).
+            if cmd == "status":
+                logger.debug(
+                    "[%s] Status command bypassing active-session guard for %s",
+                    self.name, session_key,
+                )
+                try:
+                    _thread_meta = {"thread_id": event.source.thread_id} if event.source.thread_id else None
+                    response = await self._message_handler(event)
+                    if response:
+                        await self._send_with_retry(
+                            chat_id=event.source.chat_id,
+                            content=response,
+                            reply_to=event.message_id,
+                            metadata=_thread_meta,
+                        )
+                except Exception as e:
+                    logger.error("[%s] Status dispatch failed: %s", self.name, e, exc_info=True)
                 return
 
             # Special case: photo bursts/albums frequently arrive as multiple near-

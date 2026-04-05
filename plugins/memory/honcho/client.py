@@ -85,6 +85,15 @@ def _normalize_recall_mode(val: str) -> str:
     return val if val in _VALID_RECALL_MODES else "hybrid"
 
 
+def _resolve_bool(host_val, root_val, *, default: bool) -> bool:
+    """Resolve a bool config field: host wins, then root, then default."""
+    if host_val is not None:
+        return bool(host_val)
+    if root_val is not None:
+        return bool(root_val)
+    return default
+
+
 _VALID_OBSERVATION_MODES = {"unified", "directional"}
 _OBSERVATION_MODE_ALIASES = {"shared": "unified", "separate": "directional", "cross": "directional"}
 
@@ -92,31 +101,52 @@ _OBSERVATION_MODE_ALIASES = {"shared": "unified", "separate": "directional", "cr
 def _normalize_observation_mode(val: str) -> str:
     """Normalize observation mode values."""
     val = _OBSERVATION_MODE_ALIASES.get(val, val)
-    return val if val in _VALID_OBSERVATION_MODES else "unified"
+    return val if val in _VALID_OBSERVATION_MODES else "directional"
 
 
-def _resolve_memory_mode(
-    global_val: str | dict,
-    host_val: str | dict | None,
+# Observation presets — granular booleans derived from legacy string mode.
+# Explicit per-peer config always wins over presets.
+_OBSERVATION_PRESETS = {
+    "directional": {
+        "user_observe_me": True, "user_observe_others": True,
+        "ai_observe_me": True, "ai_observe_others": True,
+    },
+    "unified": {
+        "user_observe_me": True, "user_observe_others": False,
+        "ai_observe_me": False, "ai_observe_others": True,
+    },
+}
+
+
+def _resolve_observation(
+    mode: str,
+    observation_obj: dict | None,
 ) -> dict:
-    """Parse memoryMode (string or object) into memory_mode + peer_memory_modes.
+    """Resolve per-peer observation booleans.
 
-    Resolution order: host-level wins over global.
-    String form:  applies as the default for all peers.
-    Object form:  { "default": "hybrid", "hermes": "honcho", ... }
-                  "default" key sets the fallback; other keys are per-peer overrides.
+    Config forms:
+      String shorthand:  ``"observationMode": "directional"``
+      Granular object:   ``"observation": {"user": {"observeMe": true, "observeOthers": true},
+                                           "ai": {"observeMe": true, "observeOthers": false}}``
+
+    Granular fields override preset defaults.
     """
-    # Pick the winning value (host beats global)
-    val = host_val if host_val is not None else global_val
+    preset = _OBSERVATION_PRESETS.get(mode, _OBSERVATION_PRESETS["directional"])
+    if not observation_obj or not isinstance(observation_obj, dict):
+        return dict(preset)
 
-    if isinstance(val, dict):
-        default = val.get("default", "hybrid")
-        overrides = {k: v for k, v in val.items() if k != "default"}
-    else:
-        default = str(val) if val else "hybrid"
-        overrides = {}
+    user_block = observation_obj.get("user") or {}
+    ai_block = observation_obj.get("ai") or {}
 
-    return {"memory_mode": default, "peer_memory_modes": overrides}
+    return {
+        "user_observe_me": user_block.get("observeMe", preset["user_observe_me"]),
+        "user_observe_others": user_block.get("observeOthers", preset["user_observe_others"]),
+        "ai_observe_me": ai_block.get("observeMe", preset["ai_observe_me"]),
+        "ai_observe_others": ai_block.get("observeOthers", preset["ai_observe_others"]),
+    }
+
+
+
 
 
 @dataclass
@@ -132,22 +162,9 @@ class HonchoClientConfig:
     # Identity
     peer_name: str | None = None
     ai_peer: str = "hermes"
-    linked_hosts: list[str] = field(default_factory=list)
     # Toggles
     enabled: bool = False
     save_messages: bool = True
-    # memoryMode: default for all peers. "hybrid" / "honcho"
-    memory_mode: str = "hybrid"
-    # Per-peer overrides — any named Honcho peer. Override memory_mode when set.
-    # Config object form: "memoryMode": { "default": "hybrid", "hermes": "honcho" }
-    peer_memory_modes: dict[str, str] = field(default_factory=dict)
-
-    def peer_memory_mode(self, peer_name: str) -> str:
-        """Return the effective memory mode for a named peer.
-
-        Resolution: per-peer override → global memory_mode default.
-        """
-        return self.peer_memory_modes.get(peer_name, self.memory_mode)
     # Write frequency: "async" (background thread), "turn" (sync per turn),
     # "session" (flush on session end), or int (every N turns)
     write_frequency: str | int = "async"
@@ -155,19 +172,32 @@ class HonchoClientConfig:
     context_tokens: int | None = None
     # Dialectic (peer.chat) settings
     # reasoning_level: "minimal" | "low" | "medium" | "high" | "max"
-    # Used as the default; prefetch_dialectic may bump it dynamically.
     dialectic_reasoning_level: str = "low"
+    # dynamic: auto-bump reasoning level based on query length
+    #   true  — low->medium (120+ chars), low->high (400+ chars), capped at "high"
+    #   false — always use dialecticReasoningLevel as-is
+    dialectic_dynamic: bool = True
     # Max chars of dialectic result to inject into Hermes system prompt
     dialectic_max_chars: int = 600
+    # Honcho API limits — configurable for self-hosted instances
+    # Max chars per message sent via add_messages() (Honcho cloud: 25000)
+    message_max_chars: int = 25000
+    # Max chars for dialectic query input to peer.chat() (Honcho cloud: 10000)
+    dialectic_max_input_chars: int = 10000
     # Recall mode: how memory retrieval works when Honcho is active.
     # "hybrid"  — auto-injected context + Honcho tools available (model decides)
     # "context" — auto-injected context only, Honcho tools removed
     # "tools"   — Honcho tools only, no auto-injected context
     recall_mode: str = "hybrid"
-    # Observation mode: how Honcho peers observe each other.
-    # "unified"      — user peer observes self; all agents share one observation pool
-    # "directional"  — AI peer observes user; each agent keeps its own view
-    observation_mode: str = "unified"
+    # Observation mode: legacy string shorthand ("directional" or "unified").
+    # Kept for backward compat; granular per-peer booleans below are preferred.
+    observation_mode: str = "directional"
+    # Per-peer observation booleans — maps 1:1 to Honcho's SessionPeerConfig.
+    # Resolved from "observation" object in config, falling back to observation_mode preset.
+    user_observe_me: bool = True
+    user_observe_others: bool = True
+    ai_observe_me: bool = True
+    ai_observe_others: bool = True
     # Session resolution
     session_strategy: str = "per-directory"
     session_peer_prefix: bool = False
@@ -238,8 +268,6 @@ class HonchoClientConfig:
             or raw.get("aiPeer")
             or resolved_host
         )
-        linked_hosts = host_block.get("linkedHosts", [])
-
         api_key = (
             host_block.get("apiKey")
             or raw.get("apiKey")
@@ -253,6 +281,7 @@ class HonchoClientConfig:
 
         base_url = (
             raw.get("baseUrl")
+            or raw.get("base_url")
             or os.environ.get("HONCHO_BASE_URL", "").strip()
             or None
         )
@@ -303,13 +332,8 @@ class HonchoClientConfig:
             base_url=base_url,
             peer_name=host_block.get("peerName") or raw.get("peerName"),
             ai_peer=ai_peer,
-            linked_hosts=linked_hosts,
             enabled=enabled,
             save_messages=save_messages,
-            **_resolve_memory_mode(
-                raw.get("memoryMode", "hybrid"),
-                host_block.get("memoryMode"),
-            ),
             write_frequency=write_frequency,
             context_tokens=host_block.get("contextTokens") or raw.get("contextTokens"),
             dialectic_reasoning_level=(
@@ -317,20 +341,48 @@ class HonchoClientConfig:
                 or raw.get("dialecticReasoningLevel")
                 or "low"
             ),
+            dialectic_dynamic=_resolve_bool(
+                host_block.get("dialecticDynamic"),
+                raw.get("dialecticDynamic"),
+                default=True,
+            ),
             dialectic_max_chars=int(
                 host_block.get("dialecticMaxChars")
                 or raw.get("dialecticMaxChars")
                 or 600
+            ),
+            message_max_chars=int(
+                host_block.get("messageMaxChars")
+                or raw.get("messageMaxChars")
+                or 25000
+            ),
+            dialectic_max_input_chars=int(
+                host_block.get("dialecticMaxInputChars")
+                or raw.get("dialecticMaxInputChars")
+                or 10000
             ),
             recall_mode=_normalize_recall_mode(
                 host_block.get("recallMode")
                 or raw.get("recallMode")
                 or "hybrid"
             ),
+            # Migration guard: existing configs without an explicit
+            # observationMode keep the old "unified" default so users
+            # aren't silently switched to full bidirectional observation.
+            # New installations (no host block, no credentials) get
+            # "directional" (all observations on) as the new default.
             observation_mode=_normalize_observation_mode(
                 host_block.get("observationMode")
                 or raw.get("observationMode")
-                or "unified"
+                or ("unified" if _explicitly_configured else "directional")
+            ),
+            **_resolve_observation(
+                _normalize_observation_mode(
+                    host_block.get("observationMode")
+                    or raw.get("observationMode")
+                    or ("unified" if _explicitly_configured else "directional")
+                ),
+                host_block.get("observation") or raw.get("observation"),
             ),
             session_strategy=session_strategy,
             session_peer_prefix=session_peer_prefix,
@@ -412,17 +464,6 @@ class HonchoClientConfig:
         # global: single session across all directories
         return self.workspace_id
 
-    def get_linked_workspaces(self) -> list[str]:
-        """Resolve linked host keys to workspace names."""
-        hosts = self.raw.get("hosts", {})
-        workspaces = []
-        for host_key in self.linked_hosts:
-            block = hosts.get(host_key, {})
-            ws = block.get("workspace") or host_key
-            if ws != self.workspace_id:
-                workspaces.append(ws)
-        return workspaces
-
 
 _honcho_client: Honcho | None = None
 
@@ -478,12 +519,22 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
 
     # Local Honcho instances don't require an API key, but the SDK
     # expects a non-empty string.  Use a placeholder for local URLs.
+    # For local: only use config.api_key if the host block explicitly
+    # sets apiKey (meaning the user wants local auth). Otherwise skip
+    # the stored key -- it's likely a cloud key that would break local.
     _is_local = resolved_base_url and (
         "localhost" in resolved_base_url
         or "127.0.0.1" in resolved_base_url
         or "::1" in resolved_base_url
     )
-    effective_api_key = config.api_key or ("local" if _is_local else None)
+    if _is_local:
+        # Check if the host block has its own apiKey (explicit local auth)
+        _raw = config.raw or {}
+        _host_block = (_raw.get("hosts") or {}).get(config.host, {})
+        _host_has_key = bool(_host_block.get("apiKey"))
+        effective_api_key = config.api_key if _host_has_key else "local"
+    else:
+        effective_api_key = config.api_key
 
     kwargs: dict = {
         "workspace_id": config.workspace_id,

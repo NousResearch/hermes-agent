@@ -90,8 +90,9 @@ class TestResolveDeliveryTarget:
         with patch(
             "gateway.channel_directory.resolve_channel_name",
             return_value="12345678901234@lid",
-        ):
+        ) as resolve_mock:
             result = _resolve_delivery_target(job)
+        resolve_mock.assert_called_once_with("whatsapp", "Alice (dm)")
         assert result == {
             "platform": "whatsapp",
             "chat_id": "12345678901234@lid",
@@ -110,6 +111,20 @@ class TestResolveDeliveryTarget:
             "platform": "telegram",
             "chat_id": "-1009999",
             "thread_id": None,
+        }
+
+    def test_human_friendly_topic_label_preserves_thread_id(self):
+        """Resolved Telegram topic labels should split chat_id and thread_id."""
+        job = {"deliver": "telegram:Coaching Chat / topic 17585 (group)"}
+        with patch(
+            "gateway.channel_directory.resolve_channel_name",
+            return_value="-1009999:17585",
+        ):
+            result = _resolve_delivery_target(job)
+        assert result == {
+            "platform": "telegram",
+            "chat_id": "-1009999",
+            "thread_id": "17585",
         }
 
     def test_raw_id_not_mangled_when_directory_returns_none(self):

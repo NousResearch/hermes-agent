@@ -18,6 +18,20 @@ logger = logging.getLogger(__name__)
 DIRECTORY_PATH = get_hermes_home() / "channel_directory.json"
 
 
+def _normalize_channel_query(value: str) -> str:
+    return value.lstrip("#").strip().lower()
+
+
+def _channel_target_name(platform_name: str, channel: Dict[str, Any]) -> str:
+    """Return the human-facing target label shown to users for a channel entry."""
+    name = channel["name"]
+    if platform_name == "discord" and channel.get("guild"):
+        return f"#{name}"
+    if platform_name != "discord" and channel.get("type"):
+        return f"{name} ({channel['type']})"
+    return name
+
+
 def _session_entry_id(origin: Dict[str, Any]) -> Optional[str]:
     chat_id = origin.get("chat_id")
     if not chat_id:
@@ -188,23 +202,25 @@ def resolve_channel_name(platform_name: str, name: str) -> Optional[str]:
     if not channels:
         return None
 
-    query = name.lstrip("#").lower()
+    query = _normalize_channel_query(name)
 
-    # 1. Exact name match
+    # 1. Exact name match, including the display labels shown by send_message(action="list")
     for ch in channels:
-        if ch["name"].lower() == query:
+        if _normalize_channel_query(ch["name"]) == query:
+            return ch["id"]
+        if _normalize_channel_query(_channel_target_name(platform_name, ch)) == query:
             return ch["id"]
 
     # 2. Guild-qualified match for Discord ("GuildName/channel")
     if "/" in query:
         guild_part, ch_part = query.rsplit("/", 1)
         for ch in channels:
-            guild = ch.get("guild", "").lower()
-            if guild == guild_part and ch["name"].lower() == ch_part:
+            guild = ch.get("guild", "").strip().lower()
+            if guild == guild_part and _normalize_channel_query(ch["name"]) == ch_part:
                 return ch["id"]
 
     # 3. Partial prefix match (only if unambiguous)
-    matches = [ch for ch in channels if ch["name"].lower().startswith(query)]
+    matches = [ch for ch in channels if _normalize_channel_query(ch["name"]).startswith(query)]
     if len(matches) == 1:
         return matches[0]["id"]
 
@@ -239,17 +255,16 @@ def format_directory_for_display() -> str:
             for guild_name, guild_channels in sorted(guilds.items()):
                 lines.append(f"Discord ({guild_name}):")
                 for ch in sorted(guild_channels, key=lambda c: c["name"]):
-                    lines.append(f"  discord:#{ch['name']}")
+                    lines.append(f"  discord:{_channel_target_name(plat_name, ch)}")
             if dms:
                 lines.append("Discord (DMs):")
                 for ch in dms:
-                    lines.append(f"  discord:{ch['name']}")
+                    lines.append(f"  discord:{_channel_target_name(plat_name, ch)}")
             lines.append("")
         else:
             lines.append(f"{plat_name.title()}:")
             for ch in channels:
-                type_label = f" ({ch['type']})" if ch.get("type") else ""
-                lines.append(f"  {plat_name}:{ch['name']}{type_label}")
+                lines.append(f"  {plat_name}:{_channel_target_name(plat_name, ch)}")
             lines.append("")
 
     lines.append('Use these as the "target" parameter when sending.')

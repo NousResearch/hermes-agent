@@ -84,6 +84,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
     # Configuration
     CommandDef("config", "Show current configuration", "Configuration",
                cli_only=True),
+    CommandDef("model", "Switch model for this session", "Configuration", args_hint="[model] [--global]"),
     CommandDef("provider", "Show available providers and current provider",
                "Configuration"),
     CommandDef("prompt", "View/set custom system prompt", "Configuration",
@@ -744,6 +745,39 @@ class SlashCommandCompleter(Completer):
             )
             count += 1
 
+    def _model_completions(self, sub_text: str, sub_lower: str):
+        """Yield completions for /model from config aliases + built-in aliases."""
+        seen = set()
+        # Config-based direct aliases (preferred — include provider info)
+        try:
+            from hermes_cli.model_switch import (
+                _ensure_direct_aliases, DIRECT_ALIASES, MODEL_ALIASES,
+            )
+            _ensure_direct_aliases()
+            for name, da in DIRECT_ALIASES.items():
+                if name.startswith(sub_lower) and name != sub_lower:
+                    seen.add(name)
+                    yield Completion(
+                        name,
+                        start_position=-len(sub_text),
+                        display=name,
+                        display_meta=f"{da.model} ({da.provider})",
+                    )
+            # Built-in catalog aliases not already covered
+            for name in sorted(MODEL_ALIASES.keys()):
+                if name in seen:
+                    continue
+                if name.startswith(sub_lower) and name != sub_lower:
+                    identity = MODEL_ALIASES[name]
+                    yield Completion(
+                        name,
+                        start_position=-len(sub_text),
+                        display=name,
+                        display_meta=f"{identity.vendor}/{identity.family}",
+                    )
+        except Exception:
+            pass
+
     def get_completions(self, document, complete_event):
         text = document.text_before_cursor
         if not text.startswith("/"):
@@ -764,6 +798,11 @@ class SlashCommandCompleter(Completer):
         if len(parts) > 1 or (len(parts) == 1 and text.endswith(" ")):
             sub_text = parts[1] if len(parts) > 1 else ""
             sub_lower = sub_text.lower()
+
+            # Dynamic model alias completions for /model
+            if " " not in sub_text and base_cmd == "/model":
+                yield from self._model_completions(sub_text, sub_lower)
+                return
 
             # Static subcommand completions
             if " " not in sub_text and base_cmd in SUBCOMMANDS:

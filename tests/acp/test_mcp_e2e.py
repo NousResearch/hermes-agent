@@ -130,7 +130,7 @@ class TestMcpRegistrationE2E:
             # 1) Agent fires tool_progress_callback (ToolCallStart)
             if agent.tool_progress_callback:
                 agent.tool_progress_callback(
-                    "terminal", "$ echo hello", {"command": "echo hello"}
+                    "tool.started", "terminal", "$ echo hello", {"command": "echo hello"}
                 )
 
             # 2) Agent fires step_callback with tool results (ToolCallUpdate)
@@ -197,8 +197,8 @@ class TestMcpRegistrationE2E:
             agent = state.agent
             # Fire two tool calls
             if agent.tool_progress_callback:
-                agent.tool_progress_callback("read_file", "read: /etc/hosts", {"path": "/etc/hosts"})
-                agent.tool_progress_callback("web_search", "web search: test", {"query": "test"})
+                agent.tool_progress_callback("tool.started", "read_file", "read: /etc/hosts", {"path": "/etc/hosts"})
+                agent.tool_progress_callback("tool.started", "web_search", "web search: test", {"query": "test"})
 
             if agent.step_callback:
                 agent.step_callback(1, [

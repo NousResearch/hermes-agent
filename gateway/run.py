@@ -509,6 +509,9 @@ class GatewayRunner:
         self._effective_model: Optional[str] = None
         self._effective_provider: Optional[str] = None
 
+        # Per-session model overrides from /model command.
+        # Key: session_key, Value: dict with model/provider/api_key/base_url/api_mode
+        self._session_model_overrides: Dict[str, Dict[str, str]] = {}
         # Track pending exec approvals per session
         # Key: session_key, Value: {"command": str, "pattern_key": str, ...}
         self._pending_approvals: Dict[str, Dict[str, Any]] = {}
@@ -516,6 +519,10 @@ class GatewayRunner:
         # Track platforms that failed to connect for background reconnection.
         # Key: Platform enum, Value: {"config": platform_config, "attempts": int, "next_retry": float}
         self._failed_platforms: Dict[Platform, Dict[str, Any]] = {}
+
+        # Track pending /update prompt responses per session.
+        # Key: session_key, Value: True when a prompt is waiting for user input.
+        self._update_prompt_pending: Dict[str, bool] = {}
 
         # Persistent Honcho managers keyed by gateway session key.
         # This preserves write_frequency="session" semantics across short-lived
@@ -1259,6 +1266,8 @@ class GatewayRunner:
         next message, so there's no blocking delay.
         """
         await asyncio.sleep(60)  # initial delay — let the gateway fully start
+        _flush_failures: dict[str, int] = {}  # session_id -> consecutive failure count
+        _MAX_FLUSH_RETRIES = 3
         while self._running:
             try:
                 self.session_store._ensure_loaded()
@@ -1291,8 +1300,25 @@ class GatewayRunner:
                             "Pre-reset memory flush completed for session %s",
                             entry.session_id,
                         )
+                        _flush_failures.pop(entry.session_id, None)
                     except Exception as e:
-                        logger.debug("Proactive memory flush failed for %s: %s", entry.session_id, e)
+                        failures = _flush_failures.get(entry.session_id, 0) + 1
+                        _flush_failures[entry.session_id] = failures
+                        if failures >= _MAX_FLUSH_RETRIES:
+                            logger.warning(
+                                "Proactive memory flush gave up after %d attempts for %s: %s. "
+                                "Marking as flushed to prevent infinite retry loop.",
+                                failures, entry.session_id, e,
+                            )
+                            with self.session_store._lock:
+                                entry.memory_flushed = True
+                                self.session_store._save()
+                            _flush_failures.pop(entry.session_id, None)
+                        else:
+                            logger.debug(
+                                "Proactive memory flush failed (%d/%d) for %s: %s",
+                                failures, _MAX_FLUSH_RETRIES, entry.session_id, e,
+                            )
             except Exception as e:
                 logger.debug("Session expiry watcher error: %s", e)
             # Sleep in small increments so we can stop quickly
@@ -1737,6 +1763,35 @@ class GatewayRunner:
                     self.pairing_store._record_rate_limit(platform_name, source.user_id)
             return None
         
+        # Intercept messages that are responses to a pending /update prompt.
+        # The update process (detached) wrote .update_prompt.json; the watcher
+        # forwarded it to the user; now the user's reply goes back via
+        # .update_response so the update process can continue.
+        _quick_key = self._session_key_for_source(source)
+        _update_prompts = getattr(self, "_update_prompt_pending", {})
+        if _update_prompts.get(_quick_key):
+            raw = (event.text or "").strip()
+            # Accept /approve and /deny as shorthand for yes/no
+            cmd = event.get_command()
+            if cmd in ("approve", "yes"):
+                response_text = "y"
+            elif cmd in ("deny", "no"):
+                response_text = "n"
+            else:
+                response_text = raw
+            if response_text:
+                response_path = _hermes_home / ".update_response"
+                try:
+                    tmp = response_path.with_suffix(".tmp")
+                    tmp.write_text(response_text)
+                    tmp.replace(response_path)
+                except OSError as e:
+                    logger.warning("Failed to write update response: %s", e)
+                    return f"✗ Failed to send response to update process: {e}"
+                _update_prompts.pop(_quick_key, None)
+                label = response_text if len(response_text) <= 20 else response_text[:20] + "…"
+                return f"✓ Sent `{label}` to the update process."
+
         # PRIORITY handling when an agent is already running for this session.
         # Default behavior is to interrupt immediately so user text/stop messages
         # are handled with minimal latency.
@@ -1744,12 +1799,11 @@ class GatewayRunner:
         # Special case: Telegram/photo bursts often arrive as multiple near-
         # simultaneous updates. Do NOT interrupt for photo-only follow-ups here;
         # let the adapter-level batching/queueing logic absorb them.
-        _quick_key = self._session_key_for_source(source)
 
         # Staleness eviction: if an entry has been in _running_agents for
         # longer than the agent timeout, it's a leaked lock from a hung or
         # crashed handler.  Evict it so the session isn't permanently stuck.
-        _raw_stale_timeout = float(os.getenv("HERMES_AGENT_TIMEOUT", 600))
+        _raw_stale_timeout = float(os.getenv("HERMES_AGENT_TIMEOUT", 1800))
         _STALE_TTL = (_raw_stale_timeout + 60) if _raw_stale_timeout > 0 else float("inf")
         _stale_ts = self._running_agents_ts.get(_quick_key, 0)
         if _quick_key in self._running_agents and _stale_ts and (time.time() - _stale_ts) > _STALE_TTL:
@@ -1826,6 +1880,10 @@ class GatewayRunner:
                     )
                     adapter._pending_messages[_quick_key] = queued_event
                 return "Queued for the next turn."
+
+            # /model must not be used while the agent is running.
+            if _cmd_def_inner and _cmd_def_inner.name == "model":
+                return "Agent is running — wait or /stop first, then switch models."
 
             # /approve and /deny must bypass the running-agent interrupt path.
             # The agent thread is blocked on a threading.Event inside
@@ -1925,6 +1983,9 @@ class GatewayRunner:
 
         if canonical == "yolo":
             return await self._handle_yolo_command(event)
+
+        if canonical == "model":
+            return await self._handle_model_command(event)
 
         if canonical == "provider":
             return await self._handle_provider_command(event)
@@ -2051,7 +2112,10 @@ class GatewayRunner:
         if command:
             try:
                 from hermes_cli.plugins import get_plugin_command_handler
-                plugin_handler = get_plugin_command_handler(command)
+                # Normalize underscores to hyphens so Telegram's underscored
+                # autocomplete form matches plugin commands registered with
+                # hyphens. See hermes_cli/commands.py:_build_telegram_menu.
+                plugin_handler = get_plugin_command_handler(command.replace("_", "-"))
                 if plugin_handler:
                     user_args = event.get_command_args().strip()
                     import asyncio as _aio
@@ -2062,13 +2126,20 @@ class GatewayRunner:
             except Exception as e:
                 logger.debug("Plugin command dispatch failed (non-fatal): %s", e)
 
-        # Skill slash commands: /skill-name loads the skill and sends to agent
+        # Skill slash commands: /skill-name loads the skill and sends to agent.
+        # resolve_skill_command_key() handles the Telegram underscore/hyphen
+        # round-trip so /claude_code from Telegram autocomplete still resolves
+        # to the claude-code skill.
         if command:
             try:
-                from agent.skill_commands import get_skill_commands, build_skill_invocation_message
+                from agent.skill_commands import (
+                    get_skill_commands,
+                    build_skill_invocation_message,
+                    resolve_skill_command_key,
+                )
                 skill_cmds = get_skill_commands()
-                cmd_key = f"/{command}"
-                if cmd_key in skill_cmds:
+                cmd_key = resolve_skill_command_key(command)
+                if cmd_key is not None:
                     # Check per-platform disabled status before executing.
                     # get_skill_commands() only applies the *global* disabled
                     # list at scan time; per-platform overrides need checking
@@ -2095,6 +2166,27 @@ class GatewayRunner:
                     _unavail_msg = _check_unavailable_skill(command)
                     if _unavail_msg:
                         return _unavail_msg
+                    # Genuinely unrecognized /command: not a built-in, not a
+                    # plugin, not a skill, not a known-inactive skill. Warn
+                    # the user instead of silently forwarding it to the LLM
+                    # as free text (which leads to silent-failure behavior
+                    # like the model inventing a delegate_task call).
+                    # Normalize to hyphenated form before checking known
+                    # built-ins (command may be an alias target set by the
+                    # quick-command block above, so _cmd_def can be stale).
+                    if command.replace("_", "-") not in GATEWAY_KNOWN_COMMANDS:
+                        logger.warning(
+                            "Unrecognized slash command /%s from %s — "
+                            "replying with unknown-command notice",
+                            command,
+                            source.platform.value if source.platform else "?",
+                        )
+                        return (
+                            f"Unknown command `/{command}`. "
+                            f"Type /commands to see what's available, "
+                            f"or resend without the leading slash to send "
+                            f"as a regular message."
+                        )
             except Exception as e:
                 logger.debug("Skill command check failed (non-fatal): %s", e)
         
@@ -2608,8 +2700,20 @@ class GatewayRunner:
         # Enrich document messages with context notes for the agent
         # -----------------------------------------------------------------
         if event.media_urls and event.message_type == MessageType.DOCUMENT:
+            import mimetypes as _mimetypes
+            _TEXT_EXTENSIONS = {".txt", ".md", ".csv", ".log", ".json", ".xml", ".yaml", ".yml", ".toml", ".ini", ".cfg"}
             for i, path in enumerate(event.media_urls):
                 mtype = event.media_types[i] if i < len(event.media_types) else ""
+                # Fall back to extension-based detection when MIME type is unreliable.
+                if mtype in ("", "application/octet-stream"):
+                    import os as _os2
+                    _ext = _os2.path.splitext(path)[1].lower()
+                    if _ext in _TEXT_EXTENSIONS:
+                        mtype = "text/plain"
+                    else:
+                        guessed, _ = _mimetypes.guess_type(path)
+                        if guessed:
+                            mtype = guessed
                 if not (mtype.startswith("application/") or mtype.startswith("text/")):
                     continue
                 # Extract display filename by stripping the doc_{uuid12}_ prefix
@@ -3236,6 +3340,206 @@ class GatewayRunner:
             lines.append(f"_(Requested page {requested_page} was out of range, showing page {page}.)_")
         return "\n".join(lines)
     
+    async def _handle_model_command(self, event: MessageEvent) -> str:
+        """Handle /model command — switch model for this session.
+
+        Supports:
+          /model                              — show current model info
+          /model <name>                       — switch for this session only
+          /model <name> --global              — switch and persist to config.yaml
+          /model <name> --provider <provider> — switch provider + model
+          /model --provider <provider>        — switch to provider, auto-detect model
+        """
+        import yaml
+        from hermes_cli.model_switch import (
+            switch_model as _switch_model, parse_model_flags,
+            list_authenticated_providers,
+        )
+        from hermes_cli.providers import get_label
+
+        raw_args = event.get_command_args().strip()
+
+        # Parse --provider and --global flags
+        model_input, explicit_provider, persist_global = parse_model_flags(raw_args)
+
+        # Read current model/provider from config
+        current_model = ""
+        current_provider = "openrouter"
+        current_base_url = ""
+        current_api_key = ""
+        user_provs = None
+        config_path = _hermes_home / "config.yaml"
+        try:
+            if config_path.exists():
+                with open(config_path, encoding="utf-8") as f:
+                    cfg = yaml.safe_load(f) or {}
+                model_cfg = cfg.get("model", {})
+                if isinstance(model_cfg, dict):
+                    current_model = model_cfg.get("name", "")
+                    current_provider = model_cfg.get("provider", current_provider)
+                    current_base_url = model_cfg.get("base_url", "")
+                user_provs = cfg.get("providers")
+        except Exception:
+            pass
+
+        # Check for session override
+        source = event.source
+        session_key = self._session_key_for_source(source)
+        override = getattr(self, "_session_model_overrides", {}).get(session_key, {})
+        if override:
+            current_model = override.get("model", current_model)
+            current_provider = override.get("provider", current_provider)
+            current_base_url = override.get("base_url", current_base_url)
+            current_api_key = override.get("api_key", current_api_key)
+
+        # No args: show authenticated providers with models
+        if not model_input and not explicit_provider:
+            provider_label = get_label(current_provider)
+            lines = [f"Current: `{current_model or 'unknown'}` on {provider_label}", ""]
+
+            try:
+                providers = list_authenticated_providers(
+                    current_provider=current_provider,
+                    user_providers=user_provs,
+                    max_models=5,
+                )
+                for p in providers:
+                    tag = " (current)" if p["is_current"] else ""
+                    lines.append(f"**{p['name']}** `--provider {p['slug']}`{tag}:")
+                    if p["models"]:
+                        model_strs = ", ".join(f"`{m}`" for m in p["models"])
+                        extra = f" (+{p['total_models'] - len(p['models'])} more)" if p["total_models"] > len(p["models"]) else ""
+                        lines.append(f"  {model_strs}{extra}")
+                    elif p.get("api_url"):
+                        lines.append(f"  `{p['api_url']}`")
+                    lines.append("")
+            except Exception:
+                pass
+
+            lines.append("`/model <name>` — switch model")
+            lines.append("`/model <name> --provider <slug>` — switch provider")
+            lines.append("`/model <name> --global` — persist")
+            return "\n".join(lines)
+
+        # Perform the switch
+        result = _switch_model(
+            raw_input=model_input,
+            current_provider=current_provider,
+            current_model=current_model,
+            current_base_url=current_base_url,
+            current_api_key=current_api_key,
+            is_global=persist_global,
+            explicit_provider=explicit_provider,
+        )
+
+        if not result.success:
+            return f"Error: {result.error_message}"
+
+        # If there's a cached agent, update it in-place
+        cached_entry = None
+        _cache_lock = getattr(self, "_agent_cache_lock", None)
+        _cache = getattr(self, "_agent_cache", None)
+        if _cache_lock and _cache is not None:
+            with _cache_lock:
+                cached_entry = _cache.get(session_key)
+
+        if cached_entry and cached_entry[0] is not None:
+            try:
+                cached_entry[0].switch_model(
+                    new_model=result.new_model,
+                    new_provider=result.target_provider,
+                    api_key=result.api_key,
+                    base_url=result.base_url,
+                    api_mode=result.api_mode,
+                )
+            except Exception as exc:
+                logger.warning("In-place model switch failed for cached agent: %s", exc)
+
+        # Store a note to prepend to the next user message so the model
+        # knows about the switch (avoids system messages mid-history).
+        if not hasattr(self, "_pending_model_notes"):
+            self._pending_model_notes = {}
+        self._pending_model_notes[session_key] = (
+            f"[Note: model was just switched from {current_model} to {result.new_model} "
+            f"via {result.provider_label or result.target_provider}. "
+            f"Adjust your self-identification accordingly.]"
+        )
+
+        # Store session override so next agent creation uses the new model
+        if not hasattr(self, "_session_model_overrides"):
+            self._session_model_overrides = {}
+        self._session_model_overrides[session_key] = {
+            "model": result.new_model,
+            "provider": result.target_provider,
+            "api_key": result.api_key,
+            "base_url": result.base_url,
+            "api_mode": result.api_mode,
+        }
+
+        # Persist to config if --global
+        if persist_global:
+            try:
+                if config_path.exists():
+                    with open(config_path, encoding="utf-8") as f:
+                        cfg = yaml.safe_load(f) or {}
+                else:
+                    cfg = {}
+                model_cfg = cfg.setdefault("model", {})
+                model_cfg["name"] = result.new_model
+                model_cfg["provider"] = result.target_provider
+                if result.base_url:
+                    model_cfg["base_url"] = result.base_url
+                from hermes_cli.config import save_config
+                save_config(cfg)
+            except Exception as e:
+                logger.warning("Failed to persist model switch: %s", e)
+
+        # Build confirmation message with full metadata
+        provider_label = result.provider_label or result.target_provider
+        lines = [f"Model switched to `{result.new_model}`"]
+        lines.append(f"Provider: {provider_label}")
+
+        # Rich metadata from models.dev
+        mi = result.model_info
+        if mi:
+            if mi.context_window:
+                lines.append(f"Context: {mi.context_window:,} tokens")
+            if mi.max_output:
+                lines.append(f"Max output: {mi.max_output:,} tokens")
+            if mi.has_cost_data():
+                lines.append(f"Cost: {mi.format_cost()}")
+            lines.append(f"Capabilities: {mi.format_capabilities()}")
+        else:
+            try:
+                from agent.model_metadata import get_model_context_length
+                ctx = get_model_context_length(
+                    result.new_model,
+                    base_url=result.base_url or current_base_url,
+                    api_key=result.api_key or current_api_key,
+                    provider=result.target_provider,
+                )
+                lines.append(f"Context: {ctx:,} tokens")
+            except Exception:
+                pass
+
+        # Cache notice
+        cache_enabled = (
+            ("openrouter" in (result.base_url or "").lower() and "claude" in result.new_model.lower())
+            or result.api_mode == "anthropic_messages"
+        )
+        if cache_enabled:
+            lines.append("Prompt caching: enabled")
+
+        if result.warning_message:
+            lines.append(f"Warning: {result.warning_message}")
+
+        if persist_global:
+            lines.append("Saved to config.yaml (`--global`)")
+        else:
+            lines.append("_(session only -- add `--global` to persist)_")
+
+        return "\n".join(lines)
+
     async def _handle_provider_command(self, event: MessageEvent) -> str:
         """Handle /provider command - show available providers."""
         import yaml
@@ -4929,6 +5233,15 @@ class GatewayRunner:
         logger.info("User denied %d dangerous command(s) via /deny", count)
         return f"❌ Command{'s' if count > 1 else ''} denied{count_msg}."
 
+    # Platforms where /update is allowed.  ACP, API server, and webhooks are
+    # programmatic interfaces that should not trigger system updates.
+    _UPDATE_ALLOWED_PLATFORMS = frozenset({
+        Platform.TELEGRAM, Platform.DISCORD, Platform.SLACK, Platform.WHATSAPP,
+        Platform.SIGNAL, Platform.MATTERMOST, Platform.MATRIX,
+        Platform.HOMEASSISTANT, Platform.EMAIL, Platform.SMS, Platform.DINGTALK,
+        Platform.FEISHU, Platform.WECOM, Platform.LOCAL,
+    })
+
     async def _handle_update_command(self, event: MessageEvent) -> str:
         """Handle /update command — update Hermes Agent to the latest version.
 
@@ -4942,6 +5255,11 @@ class GatewayRunner:
         import subprocess
         from datetime import datetime
         from hermes_cli.config import is_managed, format_managed_message
+
+        # Block non-messaging platforms (API server, webhooks, ACP)
+        platform = event.source.platform
+        if platform not in self._UPDATE_ALLOWED_PLATFORMS:
+            return "✗ /update is only available from messaging platforms. Run `hermes update` from the terminal."
 
         if is_managed():
             return f"✗ {format_managed_message('update Hermes Agent')}"
@@ -4964,10 +5282,12 @@ class GatewayRunner:
         pending_path = _hermes_home / ".update_pending.json"
         output_path = _hermes_home / ".update_output.txt"
         exit_code_path = _hermes_home / ".update_exit_code"
+        session_key = self._session_key_for_source(event.source)
         pending = {
             "platform": event.source.platform.value,
             "chat_id": event.source.chat_id,
             "user_id": event.source.user_id,
+            "session_key": session_key,
             "timestamp": datetime.now().isoformat(),
         }
         _tmp_pending = pending_path.with_suffix(".tmp")
@@ -4975,12 +5295,18 @@ class GatewayRunner:
         _tmp_pending.replace(pending_path)
         exit_code_path.unlink(missing_ok=True)
 
-        # Spawn `hermes update` detached so it survives gateway restart.
+        # Spawn `hermes update --gateway` detached so it survives gateway restart.
+        # --gateway enables file-based IPC for interactive prompts (stash
+        # restore, config migration) so the gateway can forward them to the
+        # user instead of silently skipping them.
         # Use setsid for portable session detach (works under system services
         # where systemd-run --user fails due to missing D-Bus session).
+        # PYTHONUNBUFFERED ensures output is flushed line-by-line so the
+        # gateway can stream it to the messenger in near-real-time.
         hermes_cmd_str = " ".join(shlex.quote(part) for part in hermes_cmd)
         update_cmd = (
-            f"{hermes_cmd_str} update > {shlex.quote(str(output_path))} 2>&1; "
+            f"PYTHONUNBUFFERED=1 {hermes_cmd_str} update --gateway"
+            f" > {shlex.quote(str(output_path))} 2>&1; "
             f"status=$?; printf '%s' \"$status\" > {shlex.quote(str(exit_code_path))}"
         )
         try:
@@ -5007,7 +5333,7 @@ class GatewayRunner:
             return f"✗ Failed to start update: {e}"
 
         self._schedule_update_notification_watch()
-        return "⚕ Starting Hermes update… I'll notify you when it's done."
+        return "⚕ Starting Hermes update… I'll stream progress here."
 
     def _schedule_update_notification_watch(self) -> None:
         """Ensure a background task is watching for update completion."""
@@ -5017,39 +5343,210 @@ class GatewayRunner:
 
         try:
             self._update_notification_task = asyncio.create_task(
-                self._watch_for_update_completion()
+                self._watch_update_progress()
             )
         except RuntimeError:
             logger.debug("Skipping update notification watcher: no running event loop")
 
-    async def _watch_for_update_completion(
+    async def _watch_update_progress(
         self,
         poll_interval: float = 2.0,
+        stream_interval: float = 4.0,
         timeout: float = 1800.0,
     ) -> None:
-        """Wait for ``hermes update`` to finish, then send its notification."""
+        """Watch ``hermes update --gateway``, streaming output + forwarding prompts.
+
+        Polls ``.update_output.txt`` for new content and sends chunks to the
+        user periodically.  Detects ``.update_prompt.json`` (written by the
+        update process when it needs user input) and forwards the prompt to
+        the messenger.  The user's next message is intercepted by
+        ``_handle_message`` and written to ``.update_response``.
+        """
+        import json
+        import re as _re
+
         pending_path = _hermes_home / ".update_pending.json"
         claimed_path = _hermes_home / ".update_pending.claimed.json"
+        output_path = _hermes_home / ".update_output.txt"
         exit_code_path = _hermes_home / ".update_exit_code"
+        prompt_path = _hermes_home / ".update_prompt.json"
+
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
 
-        while (pending_path.exists() or claimed_path.exists()) and loop.time() < deadline:
-            if exit_code_path.exists():
+        # Resolve the adapter and chat_id for sending messages
+        adapter = None
+        chat_id = None
+        session_key = None
+        for path in (claimed_path, pending_path):
+            if path.exists():
+                try:
+                    pending = json.loads(path.read_text())
+                    platform_str = pending.get("platform")
+                    chat_id = pending.get("chat_id")
+                    session_key = pending.get("session_key")
+                    if platform_str and chat_id:
+                        platform = Platform(platform_str)
+                        adapter = self.adapters.get(platform)
+                        # Fallback session key if not stored (old pending files)
+                        if not session_key:
+                            session_key = f"{platform_str}:{chat_id}"
+                    break
+                except Exception:
+                    pass
+
+        if not adapter or not chat_id:
+            logger.warning("Update watcher: cannot resolve adapter/chat_id, falling back to completion-only")
+            # Fall back to old behavior: wait for exit code and send final notification
+            while (pending_path.exists() or claimed_path.exists()) and loop.time() < deadline:
+                if exit_code_path.exists():
+                    await self._send_update_notification()
+                    return
+                await asyncio.sleep(poll_interval)
+            if (pending_path.exists() or claimed_path.exists()) and not exit_code_path.exists():
+                exit_code_path.write_text("124")
                 await self._send_update_notification()
+            return
+
+        def _strip_ansi(text: str) -> str:
+            return _re.sub(r'\x1b\[[0-9;]*[A-Za-z]', '', text)
+
+        bytes_sent = 0
+        last_stream_time = loop.time()
+        buffer = ""
+
+        async def _flush_buffer() -> None:
+            """Send buffered output to the user."""
+            nonlocal buffer, last_stream_time
+            if not buffer.strip():
+                buffer = ""
                 return
+            # Chunk to fit message limits (Telegram: 4096, others: generous)
+            clean = _strip_ansi(buffer).strip()
+            buffer = ""
+            last_stream_time = loop.time()
+            if not clean:
+                return
+            # Split into chunks if too long
+            max_chunk = 3500
+            chunks = [clean[i:i + max_chunk] for i in range(0, len(clean), max_chunk)]
+            for chunk in chunks:
+                try:
+                    await adapter.send(chat_id, f"```\n{chunk}\n```")
+                except Exception as e:
+                    logger.debug("Update stream send failed: %s", e)
+
+        while loop.time() < deadline:
+            # Check for completion
+            if exit_code_path.exists():
+                # Read any remaining output
+                if output_path.exists():
+                    try:
+                        content = output_path.read_text()
+                        if len(content) > bytes_sent:
+                            buffer += content[bytes_sent:]
+                            bytes_sent = len(content)
+                    except OSError:
+                        pass
+                await _flush_buffer()
+
+                # Send final status
+                try:
+                    exit_code_raw = exit_code_path.read_text().strip() or "1"
+                    exit_code = int(exit_code_raw)
+                    if exit_code == 0:
+                        await adapter.send(chat_id, "✅ Hermes update finished.")
+                    else:
+                        await adapter.send(chat_id, "❌ Hermes update failed (exit code {}).".format(exit_code))
+                    logger.info("Update finished (exit=%s), notified %s", exit_code, session_key)
+                except Exception as e:
+                    logger.warning("Update final notification failed: %s", e)
+
+                # Cleanup
+                for p in (pending_path, claimed_path, output_path,
+                          exit_code_path, prompt_path):
+                    p.unlink(missing_ok=True)
+                (_hermes_home / ".update_response").unlink(missing_ok=True)
+                self._update_prompt_pending.pop(session_key, None)
+                return
+
+            # Check for new output
+            if output_path.exists():
+                try:
+                    content = output_path.read_text()
+                    if len(content) > bytes_sent:
+                        buffer += content[bytes_sent:]
+                        bytes_sent = len(content)
+                except OSError:
+                    pass
+
+            # Flush buffer periodically
+            if buffer.strip() and (loop.time() - last_stream_time) >= stream_interval:
+                await _flush_buffer()
+
+            # Check for prompts
+            if prompt_path.exists() and session_key:
+                try:
+                    prompt_data = json.loads(prompt_path.read_text())
+                    prompt_text = prompt_data.get("prompt", "")
+                    default = prompt_data.get("default", "")
+                    if prompt_text:
+                        # Flush any buffered output first so the user sees
+                        # context before the prompt
+                        await _flush_buffer()
+                        # Try platform-native buttons first (Discord, Telegram)
+                        sent_buttons = False
+                        if getattr(type(adapter), "send_update_prompt", None) is not None:
+                            try:
+                                await adapter.send_update_prompt(
+                                    chat_id=chat_id,
+                                    prompt=prompt_text,
+                                    default=default,
+                                    session_key=session_key,
+                                )
+                                sent_buttons = True
+                            except Exception as btn_err:
+                                logger.debug("Button-based update prompt failed: %s", btn_err)
+                        if not sent_buttons:
+                            default_hint = f" (default: {default})" if default else ""
+                            await adapter.send(
+                                chat_id,
+                                f"⚕ **Update needs your input:**\n\n"
+                                f"{prompt_text}{default_hint}\n\n"
+                                f"Reply `/approve` (yes) or `/deny` (no), "
+                                f"or type your answer directly."
+                            )
+                        self._update_prompt_pending[session_key] = True
+                        logger.info("Forwarded update prompt to %s: %s", session_key, prompt_text[:80])
+                except (json.JSONDecodeError, OSError) as e:
+                    logger.debug("Failed to read update prompt: %s", e)
+
             await asyncio.sleep(poll_interval)
 
-        if (pending_path.exists() or claimed_path.exists()) and not exit_code_path.exists():
-            logger.warning("Update watcher timed out waiting for completion marker")
+        # Timeout
+        if not exit_code_path.exists():
+            logger.warning("Update watcher timed out after %.0fs", timeout)
             exit_code_path.write_text("124")
-            await self._send_update_notification()
+            await _flush_buffer()
+            try:
+                await adapter.send(chat_id, "❌ Hermes update timed out after 30 minutes.")
+            except Exception:
+                pass
+            for p in (pending_path, claimed_path, output_path,
+                      exit_code_path, prompt_path):
+                p.unlink(missing_ok=True)
+            (_hermes_home / ".update_response").unlink(missing_ok=True)
+            self._update_prompt_pending.pop(session_key, None)
 
     async def _send_update_notification(self) -> bool:
         """If an update finished, notify the user.
 
         Returns False when the update is still running so a caller can retry
         later. Returns True after a definitive send/skip decision.
+
+        This is the legacy notification path used when the streaming watcher
+        cannot resolve the adapter (e.g. after a gateway restart where the
+        platform hasn't reconnected yet).
         """
         import json
         import re as _re
@@ -5503,11 +6000,15 @@ class GatewayRunner:
         last_progress_msg = [None]  # Track last message for dedup
         repeat_count = [0]  # How many times the same message repeated
         
-        def progress_callback(tool_name: str, preview: str = None, args: dict = None):
-            """Callback invoked by agent when a tool is called."""
+        def progress_callback(event_type: str, tool_name: str = None, preview: str = None, args: dict = None, **kwargs):
+            """Callback invoked by agent on tool lifecycle events."""
             if not progress_queue:
                 return
-            
+
+            # Only act on tool.started events (ignore tool.completed, reasoning.available, etc.)
+            if event_type not in ("tool.started",):
+                return
+
             # "new" mode: only report when tool changes
             if progress_mode == "new" and tool_name == last_tool[0]:
                 return
@@ -5736,6 +6237,14 @@ class GatewayRunner:
                 logger.debug("status_callback error (%s): %s", event_type, _e)
 
         def run_sync():
+            # The conditional re-assignment of `message` further below
+            # (prepending model-switch notes) makes Python treat it as a
+            # local variable in the entire function.  `nonlocal` lets us
+            # read *and* reassign the outer `_run_agent` parameter without
+            # triggering an UnboundLocalError on the earlier read at
+            # `_resolve_turn_agent_config(message, …)`.
+            nonlocal message
+
             # Pass session_key to process registry via env var so background
             # processes can be mapped back to this gateway session
             os.environ["HERMES_SESSION_KEY"] = session_key or ""
@@ -6015,6 +6524,12 @@ class GatewayRunner:
                 except Exception as _e:
                     logger.error("Failed to send approval request: %s", _e)
 
+            # Prepend pending model switch note so the model knows about the switch
+            _pending_notes = getattr(self, '_pending_model_notes', {})
+            _msn = _pending_notes.pop(session_key, None) if session_key else None
+            if _msn:
+                message = _msn + "\n\n" + message
+
             _approval_session_key = session_key or ""
             _approval_session_token = set_current_session_key(_approval_session_key)
             register_gateway_notify(_approval_session_key, _approval_notify_sync)
@@ -6226,9 +6741,9 @@ class GatewayRunner:
         try:
             # Run in thread pool to not block.  Cap total execution time
             # so a hung API call or runaway tool doesn't permanently lock
-            # the session.  Default 10 minutes; override with env var.
+            # the session.  Default 30 minutes; override with env var.
             # Set to 0 for no limit (infinite).
-            _agent_timeout_raw = float(os.getenv("HERMES_AGENT_TIMEOUT", 600))
+            _agent_timeout_raw = float(os.getenv("HERMES_AGENT_TIMEOUT", 1800))
             _agent_timeout = _agent_timeout_raw if _agent_timeout_raw > 0 else None
             loop = asyncio.get_event_loop()
             try:
@@ -6390,12 +6905,15 @@ class GatewayRunner:
         return response
 
 
-def _start_cron_ticker(stop_event: threading.Event, adapters=None, interval: int = 60):
+def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, interval: int = 60):
     """
     Background thread that ticks the cron scheduler at a regular interval.
     
     Runs inside the gateway process so cronjobs fire automatically without
     needing a separate `hermes cron daemon` or system cron entry.
+
+    When ``adapters`` and ``loop`` are provided, passes them through to the
+    cron delivery path so live adapters can be used for E2EE rooms.
 
     Also refreshes the channel directory every 5 minutes and prunes the
     image/audio/document cache once per hour.
@@ -6410,7 +6928,7 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, interval: int
     tick_count = 0
     while not stop_event.is_set():
         try:
-            cron_tick(verbose=False)
+            cron_tick(verbose=False, adapters=adapters, loop=loop)
         except Exception as e:
             logger.debug("Cron tick error: %s", e)
 
@@ -6596,12 +7114,13 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     write_pid_file()
     atexit.register(remove_pid_file)
     
-    # Start background cron ticker so scheduled jobs fire automatically
+    # Start background cron ticker so scheduled jobs fire automatically.
+    # Pass the event loop so cron delivery can use live adapters (E2EE support).
     cron_stop = threading.Event()
     cron_thread = threading.Thread(
         target=_start_cron_ticker,
         args=(cron_stop,),
-        kwargs={"adapters": runner.adapters},
+        kwargs={"adapters": runner.adapters, "loop": asyncio.get_running_loop()},
         daemon=True,
         name="cron-ticker",
     )

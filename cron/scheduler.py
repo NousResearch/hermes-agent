@@ -15,7 +15,6 @@ import logging
 import os
 import subprocess
 import sys
-import traceback
 
 # fcntl is Unix-only; on Windows use msvcrt for file locking
 try:
@@ -34,6 +33,14 @@ from typing import Optional
 from hermes_time import now as _hermes_now
 
 logger = logging.getLogger(__name__)
+
+# Valid delivery platforms — used to validate user-supplied platform names
+# in cron delivery targets, preventing env var enumeration via crafted names.
+_KNOWN_DELIVERY_PLATFORMS = frozenset({
+    "telegram", "discord", "slack", "whatsapp", "signal",
+    "matrix", "mattermost", "homeassistant", "dingtalk", "feishu",
+    "wecom", "sms", "email", "webhook",
+})
 
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -74,34 +81,51 @@ def _resolve_delivery_target(job: dict) -> Optional[dict]:
         return None
 
     if deliver == "origin":
-        if not origin:
-            return None
-        return {
-            "platform": origin["platform"],
-            "chat_id": str(origin["chat_id"]),
-            "thread_id": origin.get("thread_id"),
-        }
+        if origin:
+            return {
+                "platform": origin["platform"],
+                "chat_id": str(origin["chat_id"]),
+                "thread_id": origin.get("thread_id"),
+            }
+        # Origin missing (e.g. job created via API/script) — try each
+        # platform's home channel as a fallback instead of silently dropping.
+        for platform_name in ("matrix", "telegram", "discord", "slack"):
+            chat_id = os.getenv(f"{platform_name.upper()}_HOME_CHANNEL", "")
+            if chat_id:
+                logger.info(
+                    "Job '%s' has deliver=origin but no origin; falling back to %s home channel",
+                    job.get("name", job.get("id", "?")),
+                    platform_name,
+                )
+                return {
+                    "platform": platform_name,
+                    "chat_id": chat_id,
+                    "thread_id": None,
+                }
+        return None
 
     if ":" in deliver:
         platform_name, rest = deliver.split(":", 1)
-        # Check for thread_id suffix (e.g. "telegram:-1003724596514:17")
-        if ":" in rest:
-            chat_id, thread_id = rest.split(":", 1)
+        platform_key = platform_name.lower()
+
+        from tools.send_message_tool import _parse_target_ref
+
+        parsed_chat_id, parsed_thread_id, is_explicit = _parse_target_ref(platform_key, rest)
+        if is_explicit:
+            chat_id, thread_id = parsed_chat_id, parsed_thread_id
         else:
             chat_id, thread_id = rest, None
 
         # Resolve human-friendly labels like "Alice (dm)" to real IDs.
-        # send_message(action="list") shows labels with display suffixes
-        # that aren't valid platform IDs (e.g. WhatsApp JIDs).
         try:
             from gateway.channel_directory import resolve_channel_name
-            target = chat_id
-            # Strip display suffix like " (dm)" or " (group)"
-            if target.endswith(")") and " (" in target:
-                target = target.rsplit(" (", 1)[0].strip()
-            resolved = resolve_channel_name(platform_name.lower(), target)
+            resolved = resolve_channel_name(platform_key, chat_id)
             if resolved:
-                chat_id = resolved
+                parsed_chat_id, parsed_thread_id, resolved_is_explicit = _parse_target_ref(platform_key, resolved)
+                if resolved_is_explicit:
+                    chat_id, thread_id = parsed_chat_id, parsed_thread_id
+                else:
+                    chat_id = resolved
         except Exception:
             pass
 
@@ -119,6 +143,8 @@ def _resolve_delivery_target(job: dict) -> Optional[dict]:
             "thread_id": origin.get("thread_id"),
         }
 
+    if platform_name.lower() not in _KNOWN_DELIVERY_PLATFORMS:
+        return None
     chat_id = os.getenv(f"{platform_name.upper()}_HOME_CHANNEL", "")
     if not chat_id:
         return None
@@ -130,12 +156,14 @@ def _resolve_delivery_target(job: dict) -> Optional[dict]:
     }
 
 
-def _deliver_result(job: dict, content: str) -> None:
+def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> None:
     """
     Deliver job output to the configured target (origin chat, specific platform, etc.).
 
-    Uses the standalone platform send functions from send_message_tool so delivery
-    works whether or not the gateway is running.
+    When ``adapters`` and ``loop`` are provided (gateway is running), tries to
+    use the live adapter first — this supports E2EE rooms (e.g. Matrix) where
+    the standalone HTTP path cannot encrypt.  Falls back to standalone send if
+    the adapter path fails or is unavailable.
     """
     target = _resolve_delivery_target(job)
     if not target:
@@ -206,7 +234,33 @@ def _deliver_result(job: dict, content: str) -> None:
     else:
         delivery_content = content
 
-    # Run the async send in a fresh event loop (safe from any thread)
+    # Prefer the live adapter when the gateway is running — this supports E2EE
+    # rooms (e.g. Matrix) where the standalone HTTP path cannot encrypt.
+    runtime_adapter = (adapters or {}).get(platform)
+    if runtime_adapter is not None and loop is not None and getattr(loop, "is_running", lambda: False)():
+        send_metadata = {"thread_id": thread_id} if thread_id else None
+        try:
+            future = asyncio.run_coroutine_threadsafe(
+                runtime_adapter.send(chat_id, delivery_content, metadata=send_metadata),
+                loop,
+            )
+            send_result = future.result(timeout=60)
+            if send_result and not getattr(send_result, "success", True):
+                err = getattr(send_result, "error", "unknown")
+                logger.warning(
+                    "Job '%s': live adapter send to %s:%s failed (%s), falling back to standalone",
+                    job["id"], platform_name, chat_id, err,
+                )
+            else:
+                logger.info("Job '%s': delivered to %s:%s via live adapter", job["id"], platform_name, chat_id)
+                return
+        except Exception as e:
+            logger.warning(
+                "Job '%s': live adapter delivery to %s:%s failed (%s), falling back to standalone",
+                job["id"], platform_name, chat_id, e,
+            )
+
+    # Standalone path: run the async send in a fresh event loop (safe from any thread)
     coro = _send_to_platform(platform, pconfig, chat_id, delivery_content, thread_id=thread_id)
     try:
         result = asyncio.run(coro)
@@ -248,7 +302,13 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
     path = Path(script_path).expanduser()
     if not path.is_absolute():
         # Resolve relative paths against HERMES_HOME/scripts/
-        path = get_hermes_home() / "scripts" / path
+        scripts_dir = get_hermes_home() / "scripts"
+        path = (scripts_dir / path).resolve()
+        # Guard against path traversal (e.g. "../../etc/passwd")
+        try:
+            path.relative_to(scripts_dir.resolve())
+        except ValueError:
+            return False, f"Script path escapes the scripts directory: {script_path!r}"
 
     if not path.exists():
         return False, f"Script not found: {path}"
@@ -274,6 +334,13 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
                 parts.append(f"stdout:\n{stdout}")
             return False, "\n".join(parts)
 
+        # Redact any secrets that may appear in script output before
+        # they are injected into the LLM prompt context.
+        try:
+            from agent.redact import redact_sensitive_text
+            stdout = redact_sensitive_text(stdout)
+        except Exception:
+            pass
         return True, stdout
 
     except subprocess.TimeoutExpired:
@@ -572,7 +639,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         
     except Exception as e:
         error_msg = f"{type(e).__name__}: {str(e)}"
-        logger.error("Job '%s' failed: %s", job_name, error_msg)
+        logger.exception("Job '%s' failed: %s", job_name, error_msg)
         
         output = f"""# Cron Job: {job_name} (FAILED)
 
@@ -588,8 +655,6 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
 
 ```
 {error_msg}
-
-{traceback.format_exc()}
 ```
 """
         return False, output, "", error_msg
@@ -616,7 +681,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 logger.debug("Job '%s': failed to close SQLite session store: %s", job_id, e)
 
 
-def tick(verbose: bool = True) -> int:
+def tick(verbose: bool = True, adapters=None, loop=None) -> int:
     """
     Check and run all due jobs.
     
@@ -625,6 +690,8 @@ def tick(verbose: bool = True) -> int:
     
     Args:
         verbose: Whether to print status messages
+        adapters: Optional dict mapping Platform → live adapter (from gateway)
+        loop: Optional asyncio event loop (from gateway) for live adapter sends
     
     Returns:
         Number of jobs executed (0 if another tick is already running)
@@ -681,7 +748,7 @@ def tick(verbose: bool = True) -> int:
 
                 if should_deliver:
                     try:
-                        _deliver_result(job, deliver_content)
+                        _deliver_result(job, deliver_content, adapters=adapters, loop=loop)
                     except Exception as de:
                         logger.error("Delivery failed for job %s: %s", job["id"], de)
 

@@ -98,11 +98,15 @@ def _build_child_progress_callback(task_index: int, parent_agent, task_count: in
     _BATCH_SIZE = 5
     _batch: List[str] = []
 
-    def _callback(tool_name: str, preview: str = None):
-        # Special "_thinking" event: model produced text content (reasoning)
-        if tool_name == "_thinking":
+    def _callback(event_type: str, tool_name: str = None, preview: str = None, args=None, **kwargs):
+        # event_type is one of: "tool.started", "tool.completed",
+        # "reasoning.available", "_thinking", "subagent_progress"
+
+        # "_thinking" / reasoning events
+        if event_type in ("_thinking", "reasoning.available"):
+            text = preview or tool_name or ""
             if spinner:
-                short = (preview[:55] + "...") if preview and len(preview) > 55 else (preview or "")
+                short = (text[:55] + "...") if len(text) > 55 else text
                 try:
                     spinner.print_above(f" {prefix}├─ 💭 \"{short}\"")
                 except Exception as e:
@@ -110,11 +114,15 @@ def _build_child_progress_callback(task_index: int, parent_agent, task_count: in
             # Don't relay thinking to gateway (too noisy for chat)
             return
 
-        # Regular tool call event
+        # tool.completed — no display needed here (spinner shows on started)
+        if event_type == "tool.completed":
+            return
+
+        # tool.started — display and batch for parent relay
         if spinner:
             short = (preview[:35] + "...") if preview and len(preview) > 35 else (preview or "")
             from agent.display import get_tool_emoji
-            emoji = get_tool_emoji(tool_name)
+            emoji = get_tool_emoji(tool_name or "")
             line = f" {prefix}├─ {emoji} {tool_name}"
             if short:
                 line += f"  \"{short}\""
@@ -124,7 +132,7 @@ def _build_child_progress_callback(task_index: int, parent_agent, task_count: in
                 logger.debug("Spinner print_above failed: %s", e)
 
         if parent_cb:
-            _batch.append(tool_name)
+            _batch.append(tool_name or "")
             if len(_batch) >= _BATCH_SIZE:
                 summary = ", ".join(_batch)
                 try:
@@ -160,6 +168,9 @@ def _build_child_agent(
     override_base_url: Optional[str] = None,
     override_api_key: Optional[str] = None,
     override_api_mode: Optional[str] = None,
+    # ACP transport overrides — lets a non-ACP parent spawn ACP child agents
+    override_acp_command: Optional[str] = None,
+    override_acp_args: Optional[List[str]] = None,
 ):
     """
     Build a child AIAgent on the main thread (thread-safe construction).
@@ -197,14 +208,26 @@ def _build_child_agent(
     # total iterations across parent + subagents can exceed the parent's
     # max_iterations.  The user controls the per-subagent cap in config.yaml.
 
+    child_thinking_cb = None
+    if child_progress_cb:
+        def _child_thinking(text: str) -> None:
+            if not text:
+                return
+            try:
+                child_progress_cb("_thinking", text)
+            except Exception as e:
+                logger.debug("Child thinking callback relay failed: %s", e)
+
+        child_thinking_cb = _child_thinking
+
     # Resolve effective credentials: config override > parent inherit
     effective_model = model or parent_agent.model
     effective_provider = override_provider or getattr(parent_agent, "provider", None)
     effective_base_url = override_base_url or parent_agent.base_url
     effective_api_key = override_api_key or parent_api_key
     effective_api_mode = override_api_mode or getattr(parent_agent, "api_mode", None)
-    effective_acp_command = getattr(parent_agent, "acp_command", None)
-    effective_acp_args = list(getattr(parent_agent, "acp_args", []) or [])
+    effective_acp_command = override_acp_command or getattr(parent_agent, "acp_command", None)
+    effective_acp_args = list(override_acp_args if override_acp_args is not None else (getattr(parent_agent, "acp_args", []) or []))
 
     child = AIAgent(
         base_url=effective_base_url,
@@ -226,7 +249,9 @@ def _build_child_agent(
         skip_context_files=True,
         skip_memory=True,
         clarify_callback=None,
+        thinking_callback=child_thinking_cb,
         session_db=getattr(parent_agent, '_session_db', None),
+        parent_session_id=getattr(parent_agent, 'session_id', None),
         providers_allowed=parent_agent.providers_allowed,
         providers_ignored=parent_agent.providers_ignored,
         providers_order=parent_agent.providers_order,
@@ -234,6 +259,7 @@ def _build_child_agent(
         tool_progress_callback=child_progress_cb,
         iteration_budget=None,  # fresh budget per subagent
     )
+    child._print_fn = getattr(parent_agent, '_print_fn', None)
     # Set delegation depth so children can't spawn grandchildren
     child._delegate_depth = getattr(parent_agent, '_delegate_depth', 0) + 1
 
@@ -406,6 +432,8 @@ def delegate_task(
     toolsets: Optional[List[str]] = None,
     tasks: Optional[List[Dict[str, Any]]] = None,
     max_iterations: Optional[int] = None,
+    acp_command: Optional[str] = None,
+    acp_args: Optional[List[str]] = None,
     parent_agent=None,
 ) -> str:
     """
@@ -487,6 +515,8 @@ def delegate_task(
                 override_provider=creds["provider"], override_base_url=creds["base_url"],
                 override_api_key=creds["api_key"],
                 override_api_mode=creds["api_mode"],
+                override_acp_command=t.get("acp_command") or acp_command,
+                override_acp_args=t.get("acp_args") or acp_args,
             )
             # Override with correct parent tool names (before child construction mutated global)
             child._delegate_saved_tool_names = _parent_tool_names
@@ -763,7 +793,16 @@ DELEGATE_TASK_SCHEMA = {
                         "toolsets": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "description": "Toolsets for this specific task",
+                            "description": "Toolsets for this specific task. Use 'web' for network access, 'terminal' for shell.",
+                        },
+                        "acp_command": {
+                            "type": "string",
+                            "description": "Per-task ACP command override (e.g. 'claude'). Overrides the top-level acp_command for this task only.",
+                        },
+                        "acp_args": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Per-task ACP args override.",
                         },
                     },
                     "required": ["goal"],
@@ -780,6 +819,23 @@ DELEGATE_TASK_SCHEMA = {
                 "description": (
                     "Max tool-calling turns per subagent (default: 50). "
                     "Only set lower for simple tasks."
+                ),
+            },
+            "acp_command": {
+                "type": "string",
+                "description": (
+                    "Override ACP command for child agents (e.g. 'claude', 'copilot'). "
+                    "When set, children use ACP subprocess transport instead of inheriting "
+                    "the parent's transport. Enables spawning Claude Code (claude --acp --stdio) "
+                    "or other ACP-capable agents from any parent, including Discord/Telegram/CLI."
+                ),
+            },
+            "acp_args": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Arguments for the ACP command (default: ['--acp', '--stdio']). "
+                    "Only used when acp_command is set. Example: ['--acp', '--stdio', '--model', 'claude-opus-4-6']"
                 ),
             },
         },
@@ -801,6 +857,8 @@ registry.register(
         toolsets=args.get("toolsets"),
         tasks=args.get("tasks"),
         max_iterations=args.get("max_iterations"),
+        acp_command=args.get("acp_command"),
+        acp_args=args.get("acp_args"),
         parent_agent=kw.get("parent_agent")),
     check_fn=check_delegate_requirements,
     emoji="🔀",

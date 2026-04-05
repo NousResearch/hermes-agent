@@ -1002,16 +1002,19 @@ class TestExecuteToolCalls:
         assert messages[0]["role"] == "tool"
         assert messages[0]["tool_call_id"] == "c1"
 
-    def test_result_truncation_over_100k(self, agent):
+    def test_result_truncation_over_100k(self, agent, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        (tmp_path / ".hermes").mkdir()
         tc = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
         mock_msg = _mock_assistant_msg(content="", tool_calls=[tc])
         messages = []
         big_result = "x" * 150_000
         with patch("run_agent.handle_function_call", return_value=big_result):
             agent._execute_tool_calls(mock_msg, messages, "task-1")
-        # Content should be truncated
+        # Content should be replaced with preview + file path
         assert len(messages[0]["content"]) < 150_000
-        assert "Truncated" in messages[0]["content"]
+        assert "Large tool response" in messages[0]["content"]
+        assert "Full output saved to:" in messages[0]["content"]
 
 
 class TestConcurrentToolExecution:
@@ -1230,8 +1233,10 @@ class TestConcurrentToolExecution:
         assert "cancelled" in messages[0]["content"].lower() or "skipped" in messages[0]["content"].lower()
         assert "cancelled" in messages[1]["content"].lower() or "skipped" in messages[1]["content"].lower()
 
-    def test_concurrent_truncates_large_results(self, agent):
-        """Concurrent path should truncate results over 100k chars."""
+    def test_concurrent_truncates_large_results(self, agent, tmp_path, monkeypatch):
+        """Concurrent path should save oversized results to file."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        (tmp_path / ".hermes").mkdir()
         tc1 = _mock_tool_call(name="web_search", arguments='{}', call_id="c1")
         tc2 = _mock_tool_call(name="web_search", arguments='{}', call_id="c2")
         mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
@@ -1244,7 +1249,8 @@ class TestConcurrentToolExecution:
         assert len(messages) == 2
         for m in messages:
             assert len(m["content"]) < 150_000
-            assert "Truncated" in m["content"]
+            assert "Large tool response" in m["content"]
+            assert "Full output saved to:" in m["content"]
 
     def test_invoke_tool_dispatches_to_handle_function_call(self, agent):
         """_invoke_tool should route regular tools through handle_function_call."""
@@ -1482,19 +1488,14 @@ class TestRunConversation:
         assert result["completed"] is True
         assert result["api_calls"] == 2
 
-    def test_empty_content_retry_uses_inline_reasoning_as_response(self, agent):
-        """Reasoning-only payloads should recover the inline reasoning text."""
+    def test_inline_think_blocks_reasoning_only_accepted(self, agent):
+        """Inline <think> reasoning-only responses accepted with (empty) content, no retries."""
         self._setup_agent(agent)
         empty_resp = _mock_response(
             content="<think>internal reasoning</think>",
             finish_reason="stop",
         )
-        # Return empty 3 times to exhaust retries
-        agent.client.chat.completions.create.side_effect = [
-            empty_resp,
-            empty_resp,
-            empty_resp,
-        ]
+        agent.client.chat.completions.create.side_effect = [empty_resp]
         with (
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
@@ -1502,10 +1503,14 @@ class TestRunConversation:
         ):
             result = agent.run_conversation("answer me")
         assert result["completed"] is True
-        assert result["final_response"] == "internal reasoning"
+        assert result["final_response"] == "(empty)"
+        assert result["api_calls"] == 1  # no retries
+        # Reasoning should be preserved in the assistant message
+        assistant_msgs = [m for m in result["messages"] if m.get("role") == "assistant"]
+        assert any(m.get("reasoning") for m in assistant_msgs)
 
-    def test_empty_content_local_resumed_session_triggers_compression(self, agent):
-        """Local resumed reasoning-only responses should compress before burning retries."""
+    def test_reasoning_only_local_resumed_no_compression_triggered(self, agent):
+        """Reasoning-only responses no longer trigger compression — accepted immediately."""
         self._setup_agent(agent)
         agent.base_url = "http://127.0.0.1:1234/v1"
         agent.compression_enabled = True
@@ -1514,39 +1519,34 @@ class TestRunConversation:
             finish_reason="stop",
             reasoning_content="reasoning only",
         )
-        ok_resp = _mock_response(content="Recovered after compression", finish_reason="stop")
         prefill = [
             {"role": "user", "content": "old question"},
             {"role": "assistant", "content": "old answer"},
         ]
 
         with (
-            patch.object(agent, "_interruptible_api_call", side_effect=[empty_resp, ok_resp]),
+            patch.object(agent, "_interruptible_api_call", side_effect=[empty_resp]),
             patch.object(agent, "_compress_context") as mock_compress,
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
-            mock_compress.return_value = (
-                [{"role": "user", "content": "compressed user message"}],
-                "compressed system prompt",
-            )
             result = agent.run_conversation("hello", conversation_history=prefill)
 
-        mock_compress.assert_called_once()
+        mock_compress.assert_not_called()  # no compression triggered
         assert result["completed"] is True
-        assert result["final_response"] == "Recovered after compression"
-        assert result["api_calls"] == 1  # compression retry is refunded, same as explicit overflow path
+        assert result["final_response"] == "(empty)"
+        assert result["api_calls"] == 1
 
-    def test_empty_content_repeated_structured_reasoning_salvages_early(self, agent):
-        """Repeated identical structured reasoning-only responses should stop retrying early."""
+    def test_reasoning_only_response_accepted_without_retry(self, agent):
+        """Reasoning-only response should be accepted with (empty) content, no retries."""
         self._setup_agent(agent)
         empty_resp = _mock_response(
             content=None,
             finish_reason="stop",
             reasoning_content="structured reasoning answer",
         )
-        agent.client.chat.completions.create.side_effect = [empty_resp, empty_resp]
+        agent.client.chat.completions.create.side_effect = [empty_resp]
         with (
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
@@ -1554,24 +1554,24 @@ class TestRunConversation:
         ):
             result = agent.run_conversation("answer me")
         assert result["completed"] is True
-        assert result["final_response"] == "structured reasoning answer"
-        assert result["api_calls"] == 2
+        assert result["final_response"] == "(empty)"
+        assert result["api_calls"] == 1  # no retries
 
-    def test_empty_content_local_custom_error_is_actionable(self, agent):
-        """Local/custom retries should return a diagnostic tailored to context/endpoint mismatch."""
+    def test_truly_empty_response_accepted_without_retry(self, agent):
+        """Truly empty response (no content, no reasoning) should still complete with (empty)."""
         self._setup_agent(agent)
         agent.base_url = "http://127.0.0.1:1234/v1"
         empty_resp = _mock_response(content=None, finish_reason="stop")
-        agent.client.chat.completions.create.side_effect = [empty_resp, empty_resp, empty_resp]
+        agent.client.chat.completions.create.side_effect = [empty_resp]
         with (
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
         ):
             result = agent.run_conversation("answer me")
-        assert result["completed"] is False
-        assert "Local/custom backend returned reasoning-only output" in result["error"]
-        assert "wrong /v1 endpoint" in result["error"]
+        assert result["completed"] is True
+        assert result["final_response"] == "(empty)"
+        assert result["api_calls"] == 1  # no retries
 
     def test_nous_401_refreshes_after_remint_and_retries(self, agent):
         self._setup_agent(agent)
@@ -1956,8 +1956,9 @@ class TestCredentialPoolRecovery:
             def current(self):
                 return current
 
-            def mark_exhausted_and_rotate(self, *, status_code):
+            def mark_exhausted_and_rotate(self, *, status_code, error_context=None):
                 assert status_code == 402
+                assert error_context is None
                 return next_entry
 
         agent._credential_pool = _Pool()
@@ -1979,8 +1980,9 @@ class TestCredentialPoolRecovery:
             def current(self):
                 return SimpleNamespace(label="primary")
 
-            def mark_exhausted_and_rotate(self, *, status_code):
+            def mark_exhausted_and_rotate(self, *, status_code, error_context=None):
                 assert status_code == 429
+                assert error_context is None
                 return next_entry
 
         agent._credential_pool = _Pool()
@@ -2030,8 +2032,9 @@ class TestCredentialPoolRecovery:
             def try_refresh_current(self):
                 return None  # refresh failed
 
-            def mark_exhausted_and_rotate(self, *, status_code):
+            def mark_exhausted_and_rotate(self, *, status_code, error_context=None):
                 assert status_code == 401
+                assert error_context is None
                 return next_entry
 
         agent._credential_pool = _Pool()
@@ -2053,7 +2056,8 @@ class TestCredentialPoolRecovery:
             def try_refresh_current(self):
                 return None
 
-            def mark_exhausted_and_rotate(self, *, status_code):
+            def mark_exhausted_and_rotate(self, *, status_code, error_context=None):
+                assert error_context is None
                 return None  # no more credentials
 
         agent._credential_pool = _Pool()
@@ -2066,6 +2070,52 @@ class TestCredentialPoolRecovery:
 
         assert recovered is False
         agent._swap_credential.assert_not_called()
+
+    def test_extract_api_error_context_uses_reset_timestamp_and_reason(self, agent):
+        response = SimpleNamespace(headers={})
+        error = SimpleNamespace(
+            body={
+                "error": {
+                    "code": "device_code_exhausted",
+                    "message": "Weekly credits exhausted.",
+                    "resets_at": "2026-04-12T10:30:00Z",
+                }
+            },
+            response=response,
+        )
+
+        context = agent._extract_api_error_context(error)
+
+        assert context["reason"] == "device_code_exhausted"
+        assert context["message"] == "Weekly credits exhausted."
+        assert context["reset_at"] == "2026-04-12T10:30:00Z"
+
+    def test_recover_with_pool_passes_error_context_on_rotated_429(self, agent):
+        next_entry = SimpleNamespace(label="secondary")
+        captured = {}
+
+        class _Pool:
+            def current(self):
+                return SimpleNamespace(label="primary")
+
+            def mark_exhausted_and_rotate(self, *, status_code, error_context=None):
+                captured["status_code"] = status_code
+                captured["error_context"] = error_context
+                return next_entry
+
+        agent._credential_pool = _Pool()
+        agent._swap_credential = MagicMock()
+
+        recovered, retry_same = agent._recover_with_credential_pool(
+            status_code=429,
+            has_retried_429=True,
+            error_context={"reason": "device_code_exhausted", "reset_at": "2026-04-12T10:30:00Z"},
+        )
+
+        assert recovered is True
+        assert retry_same is False
+        assert captured["status_code"] == 429
+        assert captured["error_context"]["reason"] == "device_code_exhausted"
 
 
 class TestMaxTokensParam:
@@ -2560,6 +2610,24 @@ def test_aiagent_uses_copilot_acp_client():
     assert mock_acp_client.call_args.kwargs["api_key"] == "copilot-acp"
     assert mock_acp_client.call_args.kwargs["command"] == "/usr/local/bin/copilot"
     assert mock_acp_client.call_args.kwargs["args"] == ["--acp", "--stdio"]
+
+
+def test_quiet_spinner_allowed_with_explicit_print_fn(agent):
+    agent._print_fn = lambda *_a, **_kw: None
+    with patch.object(run_agent.sys.stdout, "isatty", return_value=False):
+        assert agent._should_start_quiet_spinner() is True
+
+
+def test_quiet_spinner_allowed_on_real_tty(agent):
+    agent._print_fn = None
+    with patch.object(run_agent.sys.stdout, "isatty", return_value=True):
+        assert agent._should_start_quiet_spinner() is True
+
+
+def test_quiet_spinner_suppressed_on_non_tty_without_print_fn(agent):
+    agent._print_fn = None
+    with patch.object(run_agent.sys.stdout, "isatty", return_value=False):
+        assert agent._should_start_quiet_spinner() is False
 
 
 def test_is_openai_client_closed_honors_custom_client_flag():

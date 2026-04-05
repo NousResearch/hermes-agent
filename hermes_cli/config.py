@@ -199,6 +199,7 @@ def ensure_hermes_home():
 
 DEFAULT_CONFIG = {
     "model": "",
+    "providers": {},
     "fallback_providers": [],
     "credential_pool_strategies": {},
     "toolsets": ["hermes-cli"],
@@ -314,7 +315,7 @@ DEFAULT_CONFIG = {
             "model": "",
             "base_url": "",
             "api_key": "",
-            "timeout": 30,         # seconds — increase for slow local models
+            "timeout": 360,        # seconds (6min) — per-attempt LLM summarization timeout; increase for slow local models
         },
         "compression": {
             "provider": "auto",
@@ -531,7 +532,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 11,
+    "_config_version": 12,
 }
 
 # =============================================================================
@@ -1312,6 +1313,69 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
         except Exception:
             pass
 
+    # ── Version 11 → 12: migrate custom_providers list → providers dict ──
+    if current_ver < 12:
+        config = load_config()
+        custom_list = config.get("custom_providers")
+        if isinstance(custom_list, list) and custom_list:
+            providers_dict = config.get("providers", {})
+            if not isinstance(providers_dict, dict):
+                providers_dict = {}
+            migrated_count = 0
+            for entry in custom_list:
+                if not isinstance(entry, dict):
+                    continue
+                old_name = entry.get("name", "")
+                old_url = entry.get("base_url", "") or entry.get("url", "") or ""
+                old_key = entry.get("api_key", "")
+                if not old_url:
+                    continue  # skip entries with no URL
+
+                # Generate a kebab-case key from the display name
+                key = old_name.strip().lower().replace(" ", "-").replace("(", "").replace(")", "")
+                # Remove consecutive hyphens and trailing hyphens
+                while "--" in key:
+                    key = key.replace("--", "-")
+                key = key.strip("-")
+                if not key:
+                    # Fallback: derive from URL hostname
+                    try:
+                        from urllib.parse import urlparse
+                        parsed = urlparse(old_url)
+                        key = (parsed.hostname or "endpoint").replace(".", "-")
+                    except Exception:
+                        key = f"endpoint-{migrated_count}"
+
+                # Don't overwrite existing entries
+                if key in providers_dict:
+                    key = f"{key}-{migrated_count}"
+
+                new_entry = {"api": old_url}
+                if old_name:
+                    new_entry["name"] = old_name
+                if old_key and old_key not in ("no-key", "no-key-required", ""):
+                    new_entry["api_key"] = old_key
+
+                # Carry over model and api_mode if present
+                if entry.get("model"):
+                    new_entry["default_model"] = entry["model"]
+                if entry.get("api_mode"):
+                    new_entry["transport"] = entry["api_mode"]
+
+                providers_dict[key] = new_entry
+                migrated_count += 1
+
+            if migrated_count > 0:
+                config["providers"] = providers_dict
+                # Remove the old list
+                del config["custom_providers"]
+                save_config(config)
+                if not quiet:
+                    print(f"  ✓ Migrated {migrated_count} custom provider(s) to providers: section")
+                    for key in list(providers_dict.keys())[-migrated_count:]:
+                        ep = providers_dict[key]
+                        print(f"    → {key}: {ep.get('api', '')}")
+
     if current_ver < latest_ver and not quiet:
         print(f"Config version: {current_ver} → {latest_ver}")
     
@@ -1834,6 +1898,51 @@ def save_env_value(key: str, value: str):
             os.chmod(env_path, stat.S_IRUSR | stat.S_IWUSR)
         except OSError:
             pass
+
+
+def remove_env_value(key: str) -> bool:
+    """Remove a key from ~/.hermes/.env and os.environ.
+
+    Returns True if the key was found and removed, False otherwise.
+    """
+    if is_managed():
+        managed_error(f"remove {key}")
+        return False
+    if not _ENV_VAR_NAME_RE.match(key):
+        raise ValueError(f"Invalid environment variable name: {key!r}")
+    env_path = get_env_path()
+    if not env_path.exists():
+        os.environ.pop(key, None)
+        return False
+
+    read_kw = {"encoding": "utf-8", "errors": "replace"} if _IS_WINDOWS else {}
+    write_kw = {"encoding": "utf-8"} if _IS_WINDOWS else {}
+
+    with open(env_path, **read_kw) as f:
+        lines = f.readlines()
+    lines = _sanitize_env_lines(lines)
+
+    new_lines = [line for line in lines if not line.strip().startswith(f"{key}=")]
+    found = len(new_lines) < len(lines)
+
+    if found:
+        fd, tmp_path = tempfile.mkstemp(dir=str(env_path.parent), suffix='.tmp', prefix='.env_')
+        try:
+            with os.fdopen(fd, 'w', **write_kw) as f:
+                f.writelines(new_lines)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, env_path)
+        except BaseException:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+        _secure_file(env_path)
+
+    os.environ.pop(key, None)
+    return found
 
 
 def save_anthropic_oauth_token(value: str, save_fn=None):

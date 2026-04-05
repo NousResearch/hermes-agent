@@ -214,6 +214,39 @@ def test_exhausted_entry_resets_after_ttl(tmp_path, monkeypatch):
     assert entry.last_status == "ok"
 
 
+def test_explicit_reset_timestamp_overrides_default_429_ttl(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "openai-codex": [
+                    {
+                        "id": "cred-1",
+                        "label": "weekly-reset",
+                        "auth_type": "oauth",
+                        "priority": 0,
+                        "source": "manual:device_code",
+                        "access_token": "tok-1",
+                        "last_status": "exhausted",
+                        "last_status_at": time.time() - 7200,
+                        "last_error_code": 429,
+                        "last_error_reason": "device_code_exhausted",
+                        "last_error_reset_at": time.time() + 7 * 24 * 60 * 60,
+                    }
+                ]
+            },
+        },
+    )
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("openai-codex")
+    assert pool.has_available() is False
+    assert pool.select() is None
+
+
 def test_mark_exhausted_and_rotate_persists_status(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     _write_auth_store(

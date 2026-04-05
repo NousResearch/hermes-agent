@@ -217,6 +217,25 @@ def get_skill_commands() -> Dict[str, Dict[str, Any]]:
     return _skill_commands
 
 
+def resolve_skill_command_key(command: str) -> Optional[str]:
+    """Resolve a user-typed /command to its canonical skill_cmds key.
+
+    Skills are always stored with hyphens — ``scan_skill_commands`` normalizes
+    spaces and underscores to hyphens when building the key. Hyphens and
+    underscores are treated interchangeably in user input: this matches
+    ``_check_unavailable_skill`` and accommodates Telegram bot-command names
+    (which disallow hyphens, so ``/claude-code`` is registered as
+    ``/claude_code`` and comes back in the underscored form).
+
+    Returns the matching ``/slug`` key from ``get_skill_commands()`` or
+    ``None`` if no match.
+    """
+    if not command:
+        return None
+    cmd_key = f"/{command.replace('_', '-')}"
+    return cmd_key if cmd_key in get_skill_commands() else None
+
+
 def build_skill_invocation_message(
     cmd_key: str,
     user_instruction: str = "",

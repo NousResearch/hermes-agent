@@ -1,5 +1,7 @@
 """Tests for acp_adapter.session — SessionManager and SessionState."""
 
+import contextlib
+import io
 import json
 from types import SimpleNamespace
 import pytest
@@ -329,3 +331,40 @@ class TestPersistence:
         assert restored is not None
         assert restored.agent.provider == "anthropic"
         assert restored.agent.base_url == "https://anthropic.example/v1"
+
+    def test_acp_agents_route_human_output_to_stderr(self, tmp_path, monkeypatch):
+        """ACP agents must keep stdout clean for JSON-RPC stdio transport."""
+
+        def fake_resolve_runtime_provider(requested=None, **kwargs):
+            return {
+                "provider": "openrouter",
+                "api_mode": "chat_completions",
+                "base_url": "https://openrouter.example/v1",
+                "api_key": "test-key",
+                "command": None,
+                "args": [],
+            }
+
+        def fake_agent(**kwargs):
+            return SimpleNamespace(model=kwargs.get("model"), _print_fn=None)
+
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {
+            "model": {"provider": "openrouter", "default": "test-model"}
+        })
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            fake_resolve_runtime_provider,
+        )
+        db = SessionDB(tmp_path / "state.db")
+
+        with patch("run_agent.AIAgent", side_effect=fake_agent):
+            manager = SessionManager(db=db)
+            state = manager.create_session(cwd="/work")
+
+        stdout_buf = io.StringIO()
+        stderr_buf = io.StringIO()
+        with contextlib.redirect_stdout(stdout_buf), contextlib.redirect_stderr(stderr_buf):
+            state.agent._print_fn("ACP noise")
+
+        assert stdout_buf.getvalue() == ""
+        assert stderr_buf.getvalue() == "ACP noise\n"

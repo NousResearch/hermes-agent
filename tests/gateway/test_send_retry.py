@@ -72,6 +72,43 @@ class TestIsRetryableError:
     def test_case_insensitive(self):
         assert _StubAdapter._is_retryable_error("CONNECTERROR: host unreachable")
 
+    def test_timeout_not_retryable(self):
+        assert not _StubAdapter._is_retryable_error("ReadTimeout: request timed out")
+
+    def test_timed_out_not_retryable(self):
+        assert not _StubAdapter._is_retryable_error("Timed out waiting for response")
+
+    def test_connect_timeout_is_retryable(self):
+        assert _StubAdapter._is_retryable_error("ConnectTimeout: connection timed out")
+
+
+# ---------------------------------------------------------------------------
+# _is_timeout_error
+# ---------------------------------------------------------------------------
+
+class TestIsTimeoutError:
+    def test_none_is_not_timeout(self):
+        assert not _StubAdapter._is_timeout_error(None)
+
+    def test_empty_is_not_timeout(self):
+        assert not _StubAdapter._is_timeout_error("")
+
+    def test_timed_out(self):
+        assert _StubAdapter._is_timeout_error("Timed out waiting for response")
+
+    def test_read_timeout(self):
+        assert _StubAdapter._is_timeout_error("ReadTimeout: request timed out")
+
+    def test_write_timeout(self):
+        assert _StubAdapter._is_timeout_error("WriteTimeout: send stalled")
+
+    def test_connect_timeout_not_flagged(self):
+        """ConnectTimeout is a connection error, not a delivery-ambiguous timeout."""
+        assert not _StubAdapter._is_timeout_error("ConnectTimeout: host unreachable")
+
+    def test_connection_error_not_timeout(self):
+        assert not _StubAdapter._is_timeout_error("ConnectionError: host unreachable")
+
 
 # ---------------------------------------------------------------------------
 # _send_with_retry — success on first attempt
@@ -112,17 +149,33 @@ class TestSendWithRetryNetworkRetry:
         assert len(adapter._send_calls) == 2  # initial + 1 retry
 
     @pytest.mark.asyncio
-    async def test_retries_on_timeout_and_succeeds(self):
+    async def test_timeout_not_retried_to_prevent_duplicates(self):
+        """ReadTimeout is NOT retried because the request may have reached
+        the server — retrying a non-idempotent send risks duplicate delivery.
+        It also skips plain-text fallback (timeout is not a formatting issue)."""
         adapter = _StubAdapter()
         adapter._send_results = [
             SendResult(success=False, error="ReadTimeout: request timed out"),
-            SendResult(success=False, error="ReadTimeout: request timed out"),
+        ]
+        with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+            result = await adapter._send_with_retry("chat1", "hello", max_retries=3, base_delay=0)
+        # No retry, no fallback — timeout returns failure immediately
+        mock_sleep.assert_not_called()
+        assert not result.success
+        assert len(adapter._send_calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_connect_timeout_still_retried(self):
+        """ConnectTimeout is safe to retry — the connection was never established."""
+        adapter = _StubAdapter()
+        adapter._send_results = [
+            SendResult(success=False, error="ConnectTimeout: connection timed out"),
             SendResult(success=True, message_id="ok"),
         ]
         with patch("asyncio.sleep", new_callable=AsyncMock):
-            result = await adapter._send_with_retry("chat1", "hello", max_retries=3, base_delay=0)
+            result = await adapter._send_with_retry("chat1", "hello", max_retries=2, base_delay=0)
         assert result.success
-        assert len(adapter._send_calls) == 3
+        assert len(adapter._send_calls) == 2
 
     @pytest.mark.asyncio
     async def test_retryable_flag_respected(self):

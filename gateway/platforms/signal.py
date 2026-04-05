@@ -536,7 +536,11 @@ class SignalAdapter(BasePlatformAdapter):
         # Send read receipt (fire-and-forget, DMs only — Signal protocol
         # restricts read receipts to 1-on-1 conversations)
         if self.send_read_receipts and ts_ms and sender and not is_group and not is_note_to_self:
-            asyncio.ensure_future(self._send_read_receipt(sender, ts_ms))
+            if not hasattr(self, "_background_tasks"):
+                self._background_tasks = set()
+            task = asyncio.create_task(self._send_read_receipt(sender, ts_ms))
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
 
         # Build and dispatch event
         event = MessageEvent(

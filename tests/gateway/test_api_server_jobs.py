@@ -541,6 +541,26 @@ class TestCronUnavailable:
                 assert "not available" in data["error"].lower()
 
     @pytest.mark.asyncio
+    async def test_cron_handler_accepts_plain_function_patch(self, adapter):
+        """The adapter should call cron helpers without binding self into class-level patches."""
+        app = _create_app(adapter)
+        captured = {}
+
+        def _plain_pause(job_id):
+            captured["job_id"] = job_id
+            return SAMPLE_JOB
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(APIServerAdapter, "_CRON_AVAILABLE", True), patch.object(
+                APIServerAdapter, "_cron_pause", _plain_pause
+            ):
+                resp = await cli.post(f"/api/jobs/{VALID_JOB_ID}/pause")
+                assert resp.status == 200
+                data = await resp.json()
+                assert data["job"] == SAMPLE_JOB
+                assert captured["job_id"] == VALID_JOB_ID
+
+    @pytest.mark.asyncio
     async def test_cron_unavailable_create(self, adapter):
         """POST /api/jobs returns 501 when _CRON_AVAILABLE is False."""
         app = _create_app(adapter)

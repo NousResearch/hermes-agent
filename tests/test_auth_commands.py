@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
+from datetime import datetime, timezone
 
 import pytest
 
@@ -224,7 +225,7 @@ def test_auth_remove_reindexes_priorities(tmp_path, monkeypatch):
 
     class _Args:
         provider = "anthropic"
-        index = 1
+        target = "1"
 
     auth_remove_command(_Args())
 
@@ -233,6 +234,49 @@ def test_auth_remove_reindexes_priorities(tmp_path, monkeypatch):
     assert len(entries) == 1
     assert entries[0]["label"] == "secondary"
     assert entries[0]["priority"] == 0
+
+
+def test_auth_remove_accepts_label_target(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "openai-codex": [
+                    {
+                        "id": "cred-1",
+                        "label": "work-account",
+                        "auth_type": "oauth",
+                        "priority": 0,
+                        "source": "manual:device_code",
+                        "access_token": "tok-1",
+                    },
+                    {
+                        "id": "cred-2",
+                        "label": "personal-account",
+                        "auth_type": "oauth",
+                        "priority": 1,
+                        "source": "manual:device_code",
+                        "access_token": "tok-2",
+                    },
+                ]
+            },
+        },
+    )
+
+    from hermes_cli.auth_commands import auth_remove_command
+
+    class _Args:
+        provider = "openai-codex"
+        target = "personal-account"
+
+    auth_remove_command(_Args())
+
+    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    entries = payload["credential_pool"]["openai-codex"]
+    assert len(entries) == 1
+    assert entries[0]["label"] == "work-account"
 
 
 def test_auth_reset_clears_provider_statuses(tmp_path, monkeypatch, capsys):
@@ -389,3 +433,41 @@ def test_auth_list_shows_exhausted_cooldown(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "exhausted (429)" in out
     assert "59m 30s left" in out
+
+
+def test_auth_list_prefers_explicit_reset_time(monkeypatch, capsys):
+    from hermes_cli.auth_commands import auth_list_command
+
+    class _Entry:
+        id = "cred-1"
+        label = "weekly"
+        auth_type = "oauth"
+        source = "manual:device_code"
+        last_status = "exhausted"
+        last_error_code = 429
+        last_error_reason = "device_code_exhausted"
+        last_error_message = "Weekly credits exhausted."
+        last_error_reset_at = "2026-04-12T10:30:00Z"
+        last_status_at = 1000.0
+
+    class _Pool:
+        def entries(self):
+            return [_Entry()]
+
+        def peek(self):
+            return None
+
+    monkeypatch.setattr("hermes_cli.auth_commands.load_pool", lambda provider: _Pool())
+    monkeypatch.setattr(
+        "hermes_cli.auth_commands.time.time",
+        lambda: datetime(2026, 4, 5, 10, 30, tzinfo=timezone.utc).timestamp(),
+    )
+
+    class _Args:
+        provider = "openai-codex"
+
+    auth_list_command(_Args())
+
+    out = capsys.readouterr().out
+    assert "device_code_exhausted" in out
+    assert "7d 0h left" in out

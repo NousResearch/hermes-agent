@@ -1637,7 +1637,7 @@ class HermesCLI:
                 n_running = sum(1 for r in self._subagent_panel.values() if r.status == "running")
                 if n_running:
                     frags.append(("class:status-bar-dim", " │ "))
-                    label = f"🔀 {n_running}" + (" [panel]" if self._subagent_panel_open else "")
+                    label = f"🔀 {n_running}" + (" ▲" if self._subagent_panel_open else " Ctrl+X")
                     frags.append(("class:status-bar-warn", label))
             if self._show_full_user_message:
                 frags.append(("class:status-bar-dim", " │ "))

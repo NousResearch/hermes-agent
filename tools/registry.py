@@ -128,9 +128,13 @@ class ToolRegistry:
                         check_results[entry.check_fn] = False
                         if not quiet:
                             logger.debug("Tool %s check raised; skipping", name)
+                        else:
+                            logger.warning("Tool %s check raised exception; subagent will not have access", name, exc_info=True)
                 if not check_results[entry.check_fn]:
                     if not quiet:
                         logger.debug("Tool %s unavailable (check failed)", name)
+                    else:
+                        logger.warning("Tool %s unavailable (check failed); subagent will not have access", name)
                     continue
             # Ensure schema always has a "name" field — use entry.name as fallback
             schema_with_name = {**entry.schema, "name": entry.name}

@@ -225,7 +225,8 @@ class TestDelegateTask(unittest.TestCase):
             delegate_task(goal="Test tracking", parent_agent=parent)
             self.assertEqual(len(parent._active_children), 0)
 
-    def test_child_inherits_runtime_credentials(self):
+    @patch("tools.delegate_tool._load_config", return_value={})
+    def test_child_inherits_runtime_credentials(self, mock_cfg):
         parent = _make_mock_parent(depth=0)
         parent.base_url = "https://chatgpt.com/backend-api/codex"
         parent.api_key = "codex-token"

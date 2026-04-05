@@ -686,6 +686,18 @@ delegation:
   # provider: "openrouter"                    # Override provider for subagents (empty = inherit parent)
   #                                           # Resolves full credentials (base_url, api_key) automatically.
   #                                           # Supported: openrouter, nous, zai, kimi-coding, minimax
+  #
+  # Delegation model pool — opt models into subagent routing.
+  # The LLM sees this pool and picks the best model for each task.
+  # Models not in the pool cannot be selected (cost control).
+  # Per-entry 'provider' is optional — inherits delegation.provider.
+  # pool:
+  #   - model: "glm-5.1"
+  #     strengths: "coding, debugging, implementation"
+  #   - model: "glm-5"
+  #     strengths: "research, analysis, reasoning"
+  #   - model: "glm-5-turbo"
+  #     strengths: "general-purpose, writing, quick tasks"
 
 # =============================================================================
 # Honcho Integration (Cross-Session User Modeling)

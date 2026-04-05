@@ -406,6 +406,8 @@ def delegate_task(
     toolsets: Optional[List[str]] = None,
     tasks: Optional[List[Dict[str, Any]]] = None,
     max_iterations: Optional[int] = None,
+    model: Optional[str] = None,
+    provider: Optional[str] = None,
     parent_agent=None,
 ) -> str:
     """
@@ -432,8 +434,18 @@ def delegate_task(
 
     # Load config
     cfg = _load_config()
+    # Per-call provider override (from tool params) takes precedence
+    if provider:
+        cfg["provider"] = provider
     default_max_iter = cfg.get("max_iterations", DEFAULT_MAX_ITERATIONS)
     effective_max_iter = max_iterations or default_max_iter
+
+    # Load pool from config for model validation
+    pool_entries = cfg.get("pool") or []
+    pool_model_names = set()
+    for entry in pool_entries:
+        if isinstance(entry, dict) and entry.get("model"):
+            pool_model_names.add(str(entry["model"]).strip())
 
     # Resolve delegation credentials (provider:model pair).
     # When delegation.provider is configured, this resolves the full credential
@@ -444,6 +456,27 @@ def delegate_task(
         creds = _resolve_delegation_credentials(cfg, parent_agent)
     except ValueError as exc:
         return json.dumps({"error": str(exc)})
+
+    # --- Helper: resolve the effective model for a single task ---
+    def _resolve_model_for_task(task):
+        """Resolve model: per-call model > per-task model, then validate against pool."""
+        # 1. Per-call model override (top-level param, applies to all tasks)
+        resolved = model
+        # 2. Per-task model override (batch mode only)
+        if not resolved:
+            task_model = str(task.get("model") or "").strip()
+            if task_model:
+                resolved = task_model
+        # 3. Validate against pool (if pool is configured)
+        if resolved and pool_model_names and resolved not in pool_model_names:
+            logger.warning(
+                "delegate_task: model '%s' not in delegation pool %s; "
+                "falling back to default",
+                resolved, pool_model_names,
+            )
+            resolved = None
+        # 4. delegation.model from config (already in creds["model"])
+        return resolved  # None signals "use creds model"
 
     # Normalize to task list
     if tasks and isinstance(tasks, list):
@@ -480,9 +513,13 @@ def delegate_task(
     children = []
     try:
         for i, t in enumerate(task_list):
+            # Resolve model for this specific task
+            task_model = _resolve_model_for_task(t)
+            effective_model = task_model or creds["model"]
+
             child = _build_child_agent(
                 task_index=i, goal=t["goal"], context=t.get("context"),
-                toolsets=t.get("toolsets") or toolsets, model=creds["model"],
+                toolsets=t.get("toolsets") or toolsets, model=effective_model,
                 max_iterations=effective_max_iter, parent_agent=parent_agent,
                 override_provider=creds["provider"], override_base_url=creds["base_url"],
                 override_api_key=creds["api_key"],
@@ -696,96 +733,168 @@ def _load_config() -> dict:
 # OpenAI Function-Calling Schema
 # ---------------------------------------------------------------------------
 
-DELEGATE_TASK_SCHEMA = {
-    "name": "delegate_task",
-    "description": (
-        "Spawn one or more subagents to work on tasks in isolated contexts. "
-        "Each subagent gets its own conversation, terminal session, and toolset. "
-        "Only the final summary is returned -- intermediate tool results "
-        "never enter your context window.\n\n"
-        "TWO MODES (one of 'goal' or 'tasks' is required):\n"
-        "1. Single task: provide 'goal' (+ optional context, toolsets)\n"
-        "2. Batch (parallel): provide 'tasks' array with up to 3 items. "
-        "All run concurrently and results are returned together.\n\n"
-        "WHEN TO USE delegate_task:\n"
-        "- Reasoning-heavy subtasks (debugging, code review, research synthesis)\n"
-        "- Tasks that would flood your context with intermediate data\n"
-        "- Parallel independent workstreams (research A and B simultaneously)\n\n"
-        "WHEN NOT TO USE (use these instead):\n"
-        "- Mechanical multi-step work with no reasoning needed -> use execute_code\n"
-        "- Single tool call -> just call the tool directly\n"
-        "- Tasks needing user interaction -> subagents cannot use clarify\n\n"
-        "IMPORTANT:\n"
-        "- Subagents have NO memory of your conversation. Pass all relevant "
-        "info (file paths, error messages, constraints) via the 'context' field.\n"
-        "- Subagents CANNOT call: delegate_task, clarify, memory, send_message, "
-        "execute_code.\n"
-        "- Each subagent gets its own terminal session (separate working directory and state).\n"
-        "- Results are always returned as an array, one entry per task."
-    ),
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "goal": {
-                "type": "string",
-                "description": (
-                    "What the subagent should accomplish. Be specific and "
-                    "self-contained -- the subagent knows nothing about your "
-                    "conversation history."
-                ),
-            },
-            "context": {
-                "type": "string",
-                "description": (
-                    "Background information the subagent needs: file paths, "
-                    "error messages, project structure, constraints. The more "
-                    "specific you are, the better the subagent performs."
-                ),
-            },
-            "toolsets": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": (
-                    "Toolsets to enable for this subagent. "
-                    "Default: inherits your enabled toolsets. "
-                    "Common patterns: ['terminal', 'file'] for code work, "
-                    "['web'] for research, ['terminal', 'file', 'web'] for "
-                    "full-stack tasks."
-                ),
-            },
-            "tasks": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "goal": {"type": "string", "description": "Task goal"},
-                        "context": {"type": "string", "description": "Task-specific context"},
-                        "toolsets": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": "Toolsets for this specific task",
-                        },
-                    },
-                    "required": ["goal"],
+def _build_pool_description(pool):
+    """Build a human-readable pool description for injection into the tool schema."""
+    if not pool:
+        return ""
+    lines = ["AVAILABLE MODELS (pick from these via the 'model' param):"]
+    for entry in pool:
+        if isinstance(entry, dict):
+            name = entry.get("model", "unknown")
+            strengths = entry.get("strengths", "")
+            provider_note = entry.get("provider", "")
+            desc = f"  - {name}"
+            if strengths:
+                desc += f": {strengths}"
+            if provider_note:
+                desc += f" (provider: {provider_note})"
+            lines.append(desc)
+    return "\n".join(lines)
+
+
+def _build_delegate_schema():
+    """Build the delegate_task schema with pool info injected into description."""
+    # Load pool from config
+    _pool = []
+    try:
+        from cli import CLI_CONFIG
+        _cfg = CLI_CONFIG.get("delegation", {})
+        if _cfg:
+            _pool = _cfg.get("pool") or []
+    except Exception:
+        pass
+    if not _pool:
+        try:
+            from hermes_cli.config import load_config
+            _full = load_config()
+            _pool = (_full.get("delegation", {}) or {}).get("pool") or []
+        except Exception:
+            pass
+
+    pool_desc = _build_pool_description(_pool)
+    if pool_desc:
+        pool_section = f"\n\n{pool_desc}\n\n"
+    else:
+        pool_section = ""
+
+    return {
+        "name": "delegate_task",
+        "description": (
+            "Spawn one or more subagents to work on tasks in isolated contexts. "
+            "Each subagent gets its own conversation, terminal session, and toolset. "
+            "Only the final summary is returned -- intermediate tool results "
+            "never enter your context window.\n\n"
+            f"{pool_section}"
+            "TWO MODES (one of 'goal' or 'tasks' is required):\n"
+            "1. Single task: provide 'goal' (+ optional context, toolsets)\n"
+            "2. Batch (parallel): provide 'tasks' array with up to 3 items. "
+            "All run concurrently and results are returned together.\n\n"
+            "WHEN TO USE delegate_task:\n"
+            "- Reasoning-heavy subtasks (debugging, code review, research synthesis)\n"
+            "- Tasks that would flood your context with intermediate data\n"
+            "- Parallel independent workstreams (research A and B simultaneously)\n\n"
+            "WHEN NOT TO USE (use these instead):\n"
+            "- Mechanical multi-step work with no reasoning needed -> use execute_code\n"
+            "- Single tool call -> just call the tool directly\n"
+            "- Tasks needing user interaction -> subagents cannot use clarify\n\n"
+            "IMPORTANT:\n"
+            "- Subagents have NO memory of your conversation. Pass all relevant "
+            "info (file paths, error messages, constraints) via the 'context' field.\n"
+            "- Subagents CANNOT call: delegate_task, clarify, memory, send_message, "
+            "execute_code.\n"
+            "- Each subagent gets its own terminal session (separate working directory and state).\n"
+            "- Results are always returned as an array, one entry per task."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "goal": {
+                    "type": "string",
+                    "description": (
+                        "What the subagent should accomplish. Be specific and "
+                        "self-contained -- the subagent knows nothing about your "
+                        "conversation history."
+                    ),
                 },
-                "maxItems": 3,
-                "description": (
-                    "Batch mode: up to 3 tasks to run in parallel. Each gets "
-                    "its own subagent with isolated context and terminal session. "
-                    "When provided, top-level goal/context/toolsets are ignored."
-                ),
+                "context": {
+                    "type": "string",
+                    "description": (
+                        "Background information the subagent needs: file paths, "
+                        "error messages, project structure, constraints. The more "
+                        "specific you are, the better the subagent performs."
+                    ),
+                },
+                "toolsets": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Toolsets to enable for this subagent. "
+                        "Default: inherits your enabled toolsets. "
+                        "Common patterns: ['terminal', 'file'] for code work, "
+                        "['web'] for research, ['terminal', 'file', 'web'] for "
+                        "full-stack tasks."
+                    ),
+                },
+                "tasks": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "goal": {"type": "string", "description": "Task goal"},
+                            "context": {"type": "string", "description": "Task-specific context"},
+                            "toolsets": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "Toolsets for this specific task",
+                            },
+                            "model": {
+                                "type": "string",
+                                "description": (
+                                    "Override model for this specific task only. "
+                                    "Pick from the AVAILABLE MODELS listed in the "
+                                    "description above."
+                                ),
+                            },
+                        },
+                        "required": ["goal"],
+                    },
+                    "maxItems": 3,
+                    "description": (
+                        "Batch mode: up to 3 tasks to run in parallel. Each gets "
+                        "its own subagent with isolated context and terminal session. "
+                        "When provided, top-level goal/context/toolsets are ignored."
+                    ),
+                },
+                "max_iterations": {
+                    "type": "integer",
+                    "description": (
+                        "Max tool-calling turns per subagent (default: 50). "
+                        "Only set lower for simple tasks."
+                    ),
+                },
+                "model": {
+                    "type": "string",
+                    "description": (
+                        "Override model for ALL tasks in this delegation. "
+                        "Takes highest precedence — if not set, the LLM should "
+                        "pick the best model from the pool via per-task 'model' field."
+                    ),
+                },
+                "provider": {
+                    "type": "string",
+                    "description": (
+                        "Override provider for this delegation. "
+                        "Takes precedence over delegation.provider in config. "
+                        "Resolves full credentials (base_url, api_key) automatically."
+                    ),
+                },
             },
-            "max_iterations": {
-                "type": "integer",
-                "description": (
-                    "Max tool-calling turns per subagent (default: 50). "
-                    "Only set lower for simple tasks."
-                ),
-            },
+            "required": [],
         },
-        "required": [],
-    },
-}
+    }
+
+
+DELEGATE_TASK_SCHEMA = _build_delegate_schema()
 
 
 # --- Registry ---
@@ -801,6 +910,8 @@ registry.register(
         toolsets=args.get("toolsets"),
         tasks=args.get("tasks"),
         max_iterations=args.get("max_iterations"),
+        model=args.get("model"),
+        provider=args.get("provider"),
         parent_agent=kw.get("parent_agent")),
     check_fn=check_delegate_requirements,
     emoji="🔀",

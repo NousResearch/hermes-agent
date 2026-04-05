@@ -1,7 +1,7 @@
 ---
 name: claude-code
 description: Delegate coding tasks to Claude Code (Anthropic's CLI agent). Use for building features, refactoring, PR reviews, and iterative coding. Requires the claude CLI installed.
-version: 2.0.0
+version: 2.2.0
 author: Hermes Agent + Teknium
 license: MIT
 metadata:
@@ -18,7 +18,12 @@ Delegate coding tasks to [Claude Code](https://code.claude.com/docs/en/cli-refer
 
 - **Install:** `npm install -g @anthropic-ai/claude-code`
 - **Auth:** run `claude` once to log in (browser OAuth for Pro/Max, or set `ANTHROPIC_API_KEY`)
+- **Console auth:** `claude auth login --console` for API key billing
+- **SSO auth:** `claude auth login --sso` for Enterprise
+- **Check status:** `claude auth status` (JSON) or `claude auth status --text` (human-readable)
+- **Health check:** `claude doctor` — checks auto-updater and installation health
 - **Version check:** `claude --version` (requires v2.x+)
+- **Update:** `claude update` or `claude upgrade`
 
 ## Two Orchestration Modes
 
@@ -110,6 +115,30 @@ terminal(command="sleep 15 && tmux capture-pane -t claude-work -p -S -60")
 
 **Note:** After the first trust acceptance for a directory, the trust dialog won't appear again. Only the permissions dialog recurs each time you use `--dangerously-skip-permissions`.
 
+## CLI Subcommands
+
+| Subcommand | Purpose |
+|------------|---------|
+| `claude` | Start interactive REPL |
+| `claude "query"` | Start REPL with initial prompt |
+| `claude -p "query"` | Print mode (non-interactive, exits when done) |
+| `cat file \| claude -p "query"` | Pipe content as stdin context |
+| `claude -c` | Continue the most recent conversation in this directory |
+| `claude -r "id"` | Resume a specific session by ID or name |
+| `claude auth login` | Sign in (add `--console` for API billing, `--sso` for Enterprise) |
+| `claude auth status` | Check login status (returns JSON; `--text` for human-readable) |
+| `claude mcp add <name> -- <cmd>` | Add an MCP server |
+| `claude mcp list` | List configured MCP servers |
+| `claude mcp remove <name>` | Remove an MCP server |
+| `claude agents` | List configured agents |
+| `claude doctor` | Run health checks on installation and auto-updater |
+| `claude update` / `claude upgrade` | Update Claude Code to latest version |
+| `claude remote-control` | Start server to control Claude from claude.ai or mobile app |
+| `claude install [target]` | Install native build (stable, latest, or specific version) |
+| `claude setup-token` | Set up long-lived auth token (requires subscription) |
+| `claude plugin` / `claude plugins` | Manage Claude Code plugins |
+| `claude auto-mode` | Inspect auto mode classifier configuration |
+
 ## Print Mode Deep Dive
 
 ### Structured JSON Output
@@ -129,11 +158,33 @@ Returns a JSON object with:
   "duration_ms": 10276,
   "stop_reason": "end_turn",
   "terminal_reason": "completed",
-  "usage": { "input_tokens": 5, "output_tokens": 603, ... }
+  "usage": { "input_tokens": 5, "output_tokens": 603, ... },
+  "modelUsage": { "claude-sonnet-4-6": { "costUSD": 0.078, "contextWindow": 200000 } }
 }
 ```
 
-Use `session_id` to resume later. `num_turns` shows how many agentic loops it took. `total_cost_usd` tracks spend.
+**Key fields:** `session_id` for resumption, `num_turns` for agentic loop count, `total_cost_usd` for spend tracking, `subtype` for success/error detection (`success`, `error_max_turns`, `error_budget`).
+
+### Streaming JSON Output
+For real-time token streaming, use `stream-json` with `--verbose`:
+```
+terminal(command="claude -p 'Write a summary' --output-format stream-json --verbose --include-partial-messages", timeout=60)
+```
+
+Returns newline-delimited JSON events. Filter with jq for live text:
+```
+claude -p "Explain X" --output-format stream-json --verbose --include-partial-messages | \
+  jq -rj 'select(.type == "stream_event" and .event.delta.type? == "text_delta") | .event.delta.text'
+```
+
+Stream events include `system/api_retry` with `attempt`, `max_retries`, and `error` fields (e.g., `rate_limit`, `billing_error`).
+
+### Bidirectional Streaming
+For real-time input AND output streaming:
+```
+claude -p "task" --input-format stream-json --output-format stream-json --replay-user-messages
+```
+`--replay-user-messages` re-emits user messages on stdout for acknowledgment.
 
 ### Piped Input
 ```
@@ -152,7 +203,7 @@ terminal(command="git diff HEAD~3 | claude -p 'Summarize these changes' --max-tu
 terminal(command="claude -p 'List all functions in src/' --output-format json --json-schema '{\"type\":\"object\",\"properties\":{\"functions\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}}},\"required\":[\"functions\"]}' --max-turns 5", workdir="/project", timeout=90)
 ```
 
-Parse `structured_output` from the JSON result.
+Parse `structured_output` from the JSON result. Claude validates output against the schema before returning.
 
 ### Session Continuation
 ```
@@ -164,6 +215,9 @@ terminal(command="claude -p 'Continue and add connection pooling' --resume $(cat
 
 # Or resume the most recent session in the same directory
 terminal(command="claude -p 'What did you do last time?' --continue --max-turns 1", workdir="/project", timeout=30)
+
+# Fork a session (new ID, keeps history)
+terminal(command="claude -p 'Try a different approach' --resume <id> --fork-session --max-turns 10", workdir="/project", timeout=120)
 ```
 
 ### Bare Mode for CI/Scripting
@@ -173,115 +227,243 @@ terminal(command="claude --bare -p 'Run all tests and report failures' --allowed
 
 `--bare` skips hooks, plugins, MCP discovery, and CLAUDE.md loading. Fastest startup. Requires `ANTHROPIC_API_KEY` (skips OAuth).
 
-## Key Flags Reference
+To selectively load context in bare mode:
+| To load | Flag |
+|---------|------|
+| System prompt additions | `--append-system-prompt "text"` or `--append-system-prompt-file path` |
+| Settings | `--settings <file-or-json>` |
+| MCP servers | `--mcp-config <file-or-json>` |
+| Custom agents | `--agents '<json>'` |
 
-### Essential Flags
-| Flag | Effect | Mode |
-|------|--------|------|
-| `-p, --print` | Non-interactive one-shot mode | Both |
-| `-c, --continue` | Resume most recent conversation | Both |
-| `-r, --resume <id>` | Resume specific session by ID | Both |
-| `--model <alias>` | Model selection: `sonnet`, `opus`, `haiku`, or full name | Both |
-| `--effort <level>` | Reasoning depth: `low`, `medium`, `high`, `max` | Both |
-| `--max-turns <n>` | Limit agentic loops (prevents runaway) | Print only |
-| `--max-budget-usd <n>` | Cap API spend in dollars | Print only |
+### Fallback Model for Overload
+```
+terminal(command="claude -p 'task' --fallback-model haiku --max-turns 5", timeout=90)
+```
+Automatically falls back to the specified model when the default is overloaded (print mode only).
 
-### Permission & Safety Flags
+## Complete CLI Flags Reference
+
+### Session & Environment
 | Flag | Effect |
 |------|--------|
-| `--dangerously-skip-permissions` | Auto-approve ALL tool use (file writes, bash, etc.) |
+| `-p, --print` | Non-interactive one-shot mode (exits when done) |
+| `-c, --continue` | Resume most recent conversation in current directory |
+| `-r, --resume <id>` | Resume specific session by ID or name (interactive picker if no ID) |
+| `--fork-session` | When resuming, create new session ID instead of reusing original |
+| `--session-id <uuid>` | Use a specific UUID for the conversation |
+| `--no-session-persistence` | Don't save session to disk (print mode only) |
+| `--add-dir <paths...>` | Grant Claude access to additional working directories |
+| `-w, --worktree [name]` | Run in an isolated git worktree at `.claude/worktrees/<name>` |
+| `--tmux` | Create a tmux session for the worktree (requires `--worktree`) |
+| `--ide` | Auto-connect to a valid IDE on startup |
+| `--chrome` / `--no-chrome` | Enable/disable Chrome browser integration for web testing |
+| `--from-pr [number]` | Resume session linked to a specific GitHub PR |
+| `--file <specs...>` | File resources to download at startup (format: `file_id:relative_path`) |
+
+### Model & Performance
+| Flag | Effect |
+|------|--------|
+| `--model <alias>` | Model selection: `sonnet`, `opus`, `haiku`, or full name like `claude-sonnet-4-6` |
+| `--effort <level>` | Reasoning depth: `low`, `medium`, `high`, `max`, `auto` | Both |
+| `--max-turns <n>` | Limit agentic loops (print mode only; prevents runaway) |
+| `--max-budget-usd <n>` | Cap API spend in dollars (print mode only) |
+| `--fallback-model <model>` | Auto-fallback when default model is overloaded (print mode only) |
+| `--betas <betas...>` | Beta headers to include in API requests (API key users only) |
+
+### Permission & Safety
+| Flag | Effect |
+|------|--------|
+| `--dangerously-skip-permissions` | Auto-approve ALL tool use (file writes, bash, network, etc.) |
+| `--allow-dangerously-skip-permissions` | Enable bypass as an *option* without enabling it by default |
 | `--permission-mode <mode>` | `default`, `acceptEdits`, `plan`, `auto`, `dontAsk`, `bypassPermissions` |
-| `--allowedTools <tools>` | Whitelist specific tools: `"Read,Edit,Bash"` |
-| `--disallowedTools <tools>` | Blacklist specific tools |
+| `--allowedTools <tools...>` | Whitelist specific tools (comma or space-separated) |
+| `--disallowedTools <tools...>` | Blacklist specific tools |
+| `--tools <tools...>` | Override built-in tool set (`""` = none, `"default"` = all, or tool names) |
 
-### Output & Integration Flags
+### Output & Input Format
 | Flag | Effect |
 |------|--------|
-| `--output-format <fmt>` | `text` (default), `json` (structured), `stream-json` (streaming) |
+| `--output-format <fmt>` | `text` (default), `json` (single result object), `stream-json` (newline-delimited) |
+| `--input-format <fmt>` | `text` (default) or `stream-json` (real-time streaming input) |
 | `--json-schema <schema>` | Force structured JSON output matching a schema |
 | `--verbose` | Full turn-by-turn output |
-| `--bare` | Skip hooks/plugins/MCP/CLAUDE.md for fast scripting |
-| `--append-system-prompt <text>` | Add instructions to the system prompt (preserves built-ins) |
-| `--system-prompt <text>` | REPLACE the entire system prompt (use --append instead usually) |
-| `--add-dir <path>` | Grant access to additional directories |
-| `-w, --worktree <name>` | Run in an isolated git worktree |
+| `--include-partial-messages` | Include partial message chunks as they arrive (stream-json + print) |
+| `--replay-user-messages` | Re-emit user messages on stdout (stream-json bidirectional) |
 
-### Tool Name Syntax for --allowedTools
-- `Read` — file reading
-- `Edit` — file editing  
-- `Write` — file creation
-- `Bash` — shell commands
-- `Bash(git *)` — only git commands
-- `Bash(npm run lint:*)` — pattern matching
-- `WebSearch` — web search capability
+### System Prompt & Context
+| Flag | Effect |
+|------|--------|
+| `--append-system-prompt <text>` | **Add** to the default system prompt (preserves built-in capabilities) |
+| `--append-system-prompt-file <path>` | **Add** file contents to the default system prompt |
+| `--system-prompt <text>` | **Replace** the entire system prompt (use --append instead usually) |
+| `--system-prompt-file <path>` | **Replace** the system prompt with file contents |
+| `--bare` | Skip hooks, plugins, MCP discovery, CLAUDE.md, OAuth (fastest startup) |
+| `--agents '<json>'` | Define custom subagents dynamically as JSON |
+| `--mcp-config <path>` | Load MCP servers from JSON file (repeatable) |
+| `--strict-mcp-config` | Only use MCP servers from `--mcp-config`, ignoring all other MCP configs |
+| `--settings <file-or-json>` | Load additional settings from a JSON file or inline JSON |
+| `--setting-sources <sources>` | Comma-separated sources to load: `user`, `project`, `local` |
+| `--plugin-dir <paths...>` | Load plugins from directories for this session only |
+| `--disable-slash-commands` | Disable all skills/slash commands |
 
-## Interactive Session Patterns
+### Debugging
+| Flag | Effect |
+|------|--------|
+| `-d, --debug [filter]` | Enable debug logging with optional category filter (e.g., `"api,hooks"`, `"!1p,!file"`) |
+| `--debug-file <path>` | Write debug logs to file (implicitly enables debug mode) |
 
-### Multi-Turn Development Cycle
+### Agent Teams
+| Flag | Effect |
+|------|--------|
+| `--teammate-mode <mode>` | How agent teams display: `auto`, `in-process`, or `tmux` |
+| `--brief` | Enable `SendUserMessage` tool for agent-to-user communication |
+
+### Tool Name Syntax for --allowedTools / --disallowedTools
 ```
-# 1. Create tmux session
-terminal(command="tmux new-session -d -s dev -x 140 -y 40")
-
-# 2. Launch Claude in project
-terminal(command="tmux send-keys -t dev 'cd ~/myproject && claude' Enter")
-terminal(command="sleep 5")  # Wait for welcome screen
-
-# 3. First task: implement feature
-terminal(command="tmux send-keys -t dev 'Implement a caching layer for the API client in src/client.py' Enter")
-terminal(command="sleep 30 && tmux capture-pane -t dev -p -S -60")  # Check progress
-
-# 4. Follow-up: add tests
-terminal(command="tmux send-keys -t dev 'Now write comprehensive tests for the cache' Enter")
-terminal(command="sleep 20 && tmux capture-pane -t dev -p -S -40")
-
-# 5. Follow-up: run tests
-terminal(command="tmux send-keys -t dev 'Run the tests and fix any failures' Enter")
-terminal(command="sleep 20 && tmux capture-pane -t dev -p -S -40")
-
-# 6. Compact context if running long
-terminal(command="tmux send-keys -t dev '/compact focus on the caching implementation' Enter")
-
-# 7. Exit
-terminal(command="tmux send-keys -t dev '/exit' Enter")
-terminal(command="sleep 2 && tmux kill-session -t dev")
-```
-
-### Monitoring Long Operations
-```
-# Periodic capture to check if Claude is still working or waiting for input
-terminal(command="tmux capture-pane -t dev -p -S -10")
+Read                    # All file reading
+Edit                    # File editing (existing files)
+Write                   # File creation (new files)
+Bash                    # All shell commands
+Bash(git *)             # Only git commands
+Bash(git commit *)      # Only git commit commands
+Bash(npm run lint:*)    # Pattern matching with wildcards
+WebSearch               # Web search capability
+WebFetch                # Web page fetching
+mcp__<server>__<tool>   # Specific MCP tool
 ```
 
-Look for these indicators:
-- `❯` at bottom = waiting for your input (Claude is done or asking a question)
-- `●` lines = Claude is actively using tools (reading, writing, running commands)
-- `⏵⏵ bypass permissions on` = status bar indicator
-- `◐ medium · /effort` = current effort level
+## Settings & Configuration
 
-### Using Claude's Built-In Slash Commands (Interactive Only)
+### Settings Hierarchy (highest to lowest priority)
+1. **CLI flags** — override everything
+2. **Local project:** `.claude/settings.local.json` (personal, gitignored)
+3. **Project:** `.claude/settings.json` (shared, git-tracked)
+4. **User:** `~/.claude/settings.json` (global)
+
+### Permissions in Settings
+```json
+{
+  "permissions": {
+    "allow": ["Bash(npm run lint:*)", "WebSearch", "Read"],
+    "ask": ["Write(*.ts)", "Bash(git push*)"],
+    "deny": ["Read(.env)", "Bash(rm -rf *)"]
+  }
+}
+```
+
+### Memory Files (CLAUDE.md) Hierarchy
+1. **Global:** `~/.claude/CLAUDE.md` — applies to all projects
+2. **Project:** `./CLAUDE.md` — project-specific context (git-tracked)
+3. **Local:** `.claude/CLAUDE.local.md` — personal project overrides (gitignored)
+
+Use the `#` prefix in interactive mode to quickly add to memory: `# Always use 2-space indentation`.
+
+## Interactive Session: Slash Commands
+
+### Session & Context
 | Command | Purpose |
 |---------|---------|
-| `/compact [focus]` | Summarize context to save tokens (add focus topic) |
-| `/clear` | Wipe conversation history |
-| `/model` | Switch models mid-session |
-| `/review` | Request code review of current changes |
-| `/init` | Create CLAUDE.md for the project |
-| `/memory` | Edit CLAUDE.md directly |
-| `/context` | Visualize context window usage |
-| `/vim` | Enable vim-style editing |
-| `/exit` or Ctrl+D | End session |
+| `/help` | Show all commands (including custom and MCP commands) |
+| `/compact [focus]` | Compress context to save tokens; CLAUDE.md survives compaction. E.g., `/compact focus on auth logic` |
+| `/clear` | Wipe conversation history for a fresh start |
+| `/context` | Visualize context usage as a colored grid with optimization tips |
+| `/cost` | View token usage with per-model and cache-hit breakdowns |
+| `/resume` | Switch to or resume a different session |
+| `/rewind` | Revert to a previous checkpoint in conversation or code |
+| `/btw <question>` | Ask a side question without adding to context cost |
+| `/status` | Show version, connectivity, and session info |
+| `/todos` | List tracked action items from the conversation |
+| `/exit` or `Ctrl+D` | End session |
 
-### Keyboard Shortcuts (Interactive Only)
+### Development & Review
+| Command | Purpose |
+|---------|---------|
+| `/review` | Request code review of current changes |
+| `/security-review` | Perform security analysis of current changes |
+| `/plan [description]` | Enter Plan mode with auto-start for task planning |
+| `/loop [interval]` | Schedule recurring tasks within the session |
+| `/batch` | Auto-create worktrees for large parallel changes (5-30 worktrees) |
+
+### Configuration & Tools
+| Command | Purpose |
+|---------|---------|
+| `/model [model]` | Switch models mid-session (use arrow keys to adjust effort) |
+| `/effort [level]` | Set reasoning effort: `low`, `medium`, `high`, `max`, or `auto` |
+| `/init` | Create a CLAUDE.md file for project memory |
+| `/memory` | Open CLAUDE.md for editing |
+| `/config` | Open interactive settings configuration |
+| `/permissions` | View/update tool permissions |
+| `/agents` | Manage specialized subagents |
+| `/mcp` | Interactive UI to manage MCP servers |
+| `/add-dir` | Add additional working directories (useful for monorepos) |
+| `/usage` | Show plan limits and rate limit status |
+| `/voice` | Enable push-to-talk voice mode (20 languages; hold Space to record, release to send) |
+| `/release-notes` | Interactive picker for version release notes |
+
+### Custom Slash Commands
+Create `.claude/commands/<name>.md` (project-shared) or `~/.claude/commands/<name>.md` (personal):
+
+```markdown
+# .claude/commands/deploy.md
+Run the deploy pipeline:
+1. Run all tests
+2. Build the Docker image
+3. Push to registry
+4. Update the $ARGUMENTS environment (default: staging)
+```
+
+Usage: `/deploy production` — `$ARGUMENTS` is replaced with the user's input.
+
+### Skills (Natural Language Invocation)
+Unlike slash commands (manually invoked), skills in `.claude/skills/` are markdown guides that Claude invokes automatically via natural language when the task matches:
+
+```markdown
+# .claude/skills/database-migration.md
+When asked to create or modify database migrations:
+1. Use Alembic for migration generation
+2. Always create a rollback function
+3. Test migrations against a local database copy
+```
+
+## Interactive Session: Keyboard Shortcuts
+
+### General Controls
 | Key | Action |
 |-----|--------|
-| `Tab` | Toggle Extended Thinking mode |
-| `Shift+Tab` | Cycle permission modes |
-| `Ctrl+C` | Cancel current generation |
-| `Ctrl+R` | Search command history |
-| `Esc Esc` | Rewind conversation or code |
-| `!` prefix | Execute bash directly (e.g., `!npm test`) |
-| `@` prefix | Reference files (e.g., `@./src/api/`) |
-| `#` prefix | Quick add to CLAUDE.md memory |
+| `Ctrl+C` | Cancel current input or generation |
+| `Ctrl+D` | Exit session |
+| `Ctrl+R` | Reverse search command history |
+| `Ctrl+B` | Background a running task |
+| `Ctrl+V` | Paste image into conversation |
+| `Ctrl+O` | Transcript mode — see Claude's thinking process |
+| `Ctrl+G` or `Ctrl+X Ctrl+E` | Open prompt in external editor |
+| `Esc Esc` | Rewind conversation or code state / summarize |
+
+### Mode Toggles
+| Key | Action |
+|-----|--------|
+| `Shift+Tab` | Cycle permission modes (Normal → Auto-Accept → Plan) |
+| `Alt+P` | Switch model |
+| `Alt+T` | Toggle thinking mode |
+| `Alt+O` | Toggle Fast Mode |
+
+### Multiline Input
+| Key | Action |
+|-----|--------|
+| `\` + `Enter` | Quick newline |
+| `Shift+Enter` | Newline (alternative) |
+| `Ctrl+J` | Newline (alternative) |
+
+### Input Prefixes
+| Prefix | Action |
+|--------|--------|
+| `!` | Execute bash directly, bypassing AI (e.g., `!npm test`). Use `!` alone to toggle shell mode. |
+| `@` | Reference files/directories with autocomplete (e.g., `@./src/api/`) |
+| `#` | Quick add to CLAUDE.md memory (e.g., `# Use 2-space indentation`) |
+| `/` | Slash commands |
+
+### Pro Tip: "ultrathink"
+Use the keyword "ultrathink" in your prompt for maximum reasoning effort on a specific turn. This triggers the deepest thinking mode regardless of the current `/effort` setting.
 
 ## PR Review Pattern
 
@@ -304,6 +486,12 @@ terminal(command="sleep 30 && tmux capture-pane -t review -p -S -60")
 terminal(command="claude -p 'Review this PR thoroughly' --from-pr 42 --max-turns 10", workdir="/path/to/repo", timeout=120)
 ```
 
+### Claude Worktree with tmux
+```
+terminal(command="claude -w feature-x --tmux", workdir="/path/to/repo")
+```
+Creates an isolated git worktree at `.claude/worktrees/feature-x` AND a tmux session for it. Uses iTerm2 native panes when available; add `--tmux=classic` for traditional tmux.
+
 ## Parallel Claude Instances
 
 Run multiple independent Claude tasks simultaneously:
@@ -312,7 +500,7 @@ Run multiple independent Claude tasks simultaneously:
 # Task 1: Fix backend
 terminal(command="tmux new-session -d -s task1 -x 140 -y 40 && tmux send-keys -t task1 'cd ~/project && claude -p \"Fix the auth bug in src/auth.py\" --allowedTools \"Read,Edit\" --max-turns 10' Enter")
 
-# Task 2: Write tests  
+# Task 2: Write tests
 terminal(command="tmux new-session -d -s task2 -x 140 -y 40 && tmux send-keys -t task2 'cd ~/project && claude -p \"Write integration tests for the API endpoints\" --allowedTools \"Read,Write,Bash\" --max-turns 15' Enter")
 
 # Task 3: Update docs
@@ -346,11 +534,57 @@ Claude Code auto-loads `CLAUDE.md` from the project root. Use it to persist proj
 - No wildcard imports
 ```
 
-Global context: `~/.claude/CLAUDE.md` (applies to all projects).
+**Be specific.** Instead of "Write good code", use "Use 2-space indentation for JS" or "Name test files with `.test.ts` suffix." Specific instructions save correction cycles.
+
+### Rules Directory (Modular CLAUDE.md)
+For projects with many rules, use the rules directory instead of one massive CLAUDE.md:
+- **Project rules:** `.claude/rules/*.md` — team-shared, git-tracked
+- **User rules:** `~/.claude/rules/*.md` — personal, global
+
+Each `.md` file in the rules directory is loaded as additional context. This is cleaner than cramming everything into a single CLAUDE.md.
+
+### Auto-Memory
+Claude automatically stores learned project context in `~/.claude/projects/<project>/memory/`.
+- **Limit:** 25KB or 200 lines per project
+- This is separate from CLAUDE.md — it's Claude's own notes about the project, accumulated across sessions
+
+## Custom Subagents
+
+Define specialized agents in `.claude/agents/` (project), `~/.claude/agents/` (personal), or via `--agents` CLI flag (session):
+
+### Agent Location Priority
+1. `.claude/agents/` — project-level, team-shared
+2. `--agents` CLI flag — session-specific, dynamic
+3. `~/.claude/agents/` — user-level, personal
+
+### Creating an Agent
+```markdown
+# .claude/agents/security-reviewer.md
+---
+name: security-reviewer
+description: Security-focused code review
+model: opus
+tools: [Read, Bash]
+---
+You are a senior security engineer. Review code for:
+- Injection vulnerabilities (SQL, XSS, command injection)
+- Authentication/authorization flaws
+- Secrets in code
+- Unsafe deserialization
+```
+
+Invoke via: `@security-reviewer review the auth module`
+
+### Dynamic Agents via CLI
+```
+terminal(command="claude --agents '{\"reviewer\": {\"description\": \"Reviews code\", \"prompt\": \"You are a code reviewer focused on performance\"}}' -p 'Use @reviewer to check auth.py'", timeout=120)
+```
+
+Claude can orchestrate multiple agents: "Use @db-expert to optimize queries, then @security to audit the changes."
 
 ## Hooks — Automation on Events
 
-Configure in `.claude/settings.json` or `~/.claude/settings.json`:
+Configure in `.claude/settings.json` (project) or `~/.claude/settings.json` (global):
 
 ```json
 {
@@ -370,58 +604,102 @@ Configure in `.claude/settings.json` or `~/.claude/settings.json`:
 }
 ```
 
-**Hook types:** UserPromptSubmit, PreToolUse, PostToolUse, Notification, Stop, SubagentStop, PreCompact, SessionStart.
+### All 8 Hook Types
+| Hook | When it fires | Common use |
+|------|--------------|------------|
+| `UserPromptSubmit` | Before Claude processes a user prompt | Input validation, logging |
+| `PreToolUse` | Before tool execution | Security gates, block dangerous commands (exit 2 = block) |
+| `PostToolUse` | After a tool finishes | Auto-format code, run linters |
+| `Notification` | On permission requests or input waits | Desktop notifications, alerts |
+| `Stop` | When Claude finishes a response | Completion logging, status updates |
+| `SubagentStop` | When a subagent completes | Agent orchestration |
+| `PreCompact` | Before context memory is cleared | Backup session transcripts |
+| `SessionStart` | When a session begins | Load dev context (e.g., `git status`) |
 
-**Environment variables in hooks:** `CLAUDE_PROJECT_DIR`, `CLAUDE_FILE_PATHS`, `CLAUDE_TOOL_INPUT`.
+### Hook Environment Variables
+| Variable | Content |
+|----------|---------|
+| `CLAUDE_PROJECT_DIR` | Current project path |
+| `CLAUDE_FILE_PATHS` | Files being modified |
+| `CLAUDE_TOOL_INPUT` | Tool parameters as JSON |
 
-## Custom Subagents
-
-Define specialized agents in `.claude/agents/`:
-
-```markdown
-# .claude/agents/security-reviewer.md
----
-name: security-reviewer
-description: Security-focused code review
-model: opus
-tools: [Read, Bash]
----
-You are a senior security engineer. Review code for:
-- Injection vulnerabilities (SQL, XSS, command injection)
-- Authentication/authorization flaws
-- Secrets in code
-- Unsafe deserialization
+### Security Hook Examples
+```json
+{
+  "PreToolUse": [{
+    "matcher": "Bash",
+    "hooks": [{"type": "command", "command": "if echo \"$CLAUDE_TOOL_INPUT\" | grep -qE 'rm -rf|git push.*--force|:(){ :|:& };:'; then echo 'Dangerous command blocked!' && exit 2; fi"}]
+  }]
+}
 ```
-
-Invoke via: `@security-reviewer review the auth module`
 
 ## MCP Integration
 
-Add external tool servers:
+Add external tool servers for databases, APIs, and services:
+
 ```
-terminal(command="claude mcp add github -- npx @modelcontextprotocol/server-github", timeout=30)
-terminal(command="claude mcp add postgres -- npx @anthropic-ai/server-postgres --connection-string postgresql://localhost/mydb", timeout=30)
-```
+# GitHub integration
+terminal(command="claude mcp add -s user github -- npx @modelcontextprotocol/server-github", timeout=30)
 
-Scopes: `-s user` (global), `-s local` (project, gitignored), `-s project` (team-shared).
+# PostgreSQL queries
+terminal(command="claude mcp add -s local postgres -- npx @anthropic-ai/server-postgres --connection-string postgresql://localhost/mydb", timeout=30)
 
-## Custom Slash Commands
-
-Create `.claude/commands/<name>.md` for project shortcuts:
-
-```markdown
-# .claude/commands/deploy.md
-Run the deploy pipeline:
-1. Run all tests
-2. Build the Docker image
-3. Push to registry
-4. Update the staging deployment
-Environment: $ARGUMENTS (default: staging)
+# Puppeteer for web testing
+terminal(command="claude mcp add puppeteer -- npx @anthropic-ai/server-puppeteer", timeout=30)
 ```
 
-Usage in interactive session: `/deploy production`
+### MCP Scopes
+| Flag | Scope | Storage |
+|------|-------|---------|
+| `-s user` | Global (all projects) | `~/.claude.json` |
+| `-s local` | This project (personal) | `.claude/settings.local.json` (gitignored) |
+| `-s project` | This project (team-shared) | `.claude/settings.json` (git-tracked) |
 
-Parameterized with `$ARGUMENTS` for dynamic input.
+### MCP in Print/CI Mode
+```
+terminal(command="claude --bare -p 'Query database' --mcp-config mcp-servers.json --strict-mcp-config", timeout=60)
+```
+`--strict-mcp-config` ignores all MCP servers except those from `--mcp-config`.
+
+Reference MCP resources in chat: `@github:issue://123`
+
+### MCP Limits & Tuning
+- **Tool descriptions:** 2KB cap per server for tool descriptions and server instructions
+- **Result size:** Default capped; use `maxResultSizeChars` annotation to allow up to **500K** characters for large outputs
+- **Output tokens:** `export MAX_MCP_OUTPUT_TOKENS=50000` — cap output from MCP servers to prevent context flooding
+- **Transports:** `stdio` (local process), `http` (remote), `sse` (server-sent events)
+
+## Monitoring Interactive Sessions
+
+### Reading the TUI Status
+```
+# Periodic capture to check if Claude is still working or waiting for input
+terminal(command="tmux capture-pane -t dev -p -S -10")
+```
+
+Look for these indicators:
+- `❯` at bottom = waiting for your input (Claude is done or asking a question)
+- `●` lines = Claude is actively using tools (reading, writing, running commands)
+- `⏵⏵ bypass permissions on` = status bar showing permissions mode
+- `◐ medium · /effort` = current effort level in status bar
+- `ctrl+o to expand` = tool output was truncated (can be expanded interactively)
+
+### Context Window Health
+Use `/context` in interactive mode to see a colored grid of context usage. Key thresholds:
+- **< 70%** — Normal operation, full precision
+- **70-85%** — Precision starts dropping, consider `/compact`
+- **> 85%** — Hallucination risk spikes significantly, use `/compact` or `/clear`
+
+## Environment Variables
+
+| Variable | Effect |
+|----------|--------|
+| `ANTHROPIC_API_KEY` | API key for authentication (alternative to OAuth) |
+| `CLAUDE_CODE_EFFORT_LEVEL` | Default effort: `low`, `medium`, `high`, `max`, or `auto` |
+| `MAX_THINKING_TOKENS` | Cap thinking tokens (set to `0` to disable thinking entirely) |
+| `MAX_MCP_OUTPUT_TOKENS` | Cap output from MCP servers (default varies; set e.g., `50000`) |
+| `CLAUDE_CODE_NO_FLICKER=1` | Enable alt-screen rendering to eliminate terminal flicker |
+| `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB` | Strip credentials from sub-processes for security |
 
 ## Cost & Performance Tips
 
@@ -430,9 +708,12 @@ Parameterized with `$ARGUMENTS` for dynamic input.
 3. **Use `--effort low`** for simple tasks (faster, cheaper). `high` or `max` for complex reasoning.
 4. **Use `--bare`** for CI/scripting to skip plugin/hook discovery overhead.
 5. **Use `--allowedTools`** to restrict to only what's needed (e.g., `Read` only for reviews).
-6. **Use `/compact`** in interactive sessions when context gets large (precision drops at 70% context usage, hallucinations spike at 85%).
+6. **Use `/compact`** in interactive sessions when context gets large.
 7. **Pipe input** instead of having Claude read files when you just need analysis of known content.
 8. **Use `--model haiku`** for simple tasks (cheaper) and `--model opus` for complex multi-step work.
+9. **Use `--fallback-model haiku`** in print mode to gracefully handle model overload.
+10. **Start new sessions for distinct tasks** — sessions last 5 hours; fresh context is more efficient.
+11. **Use `--no-session-persistence`** in CI to avoid accumulating saved sessions on disk.
 
 ## Pitfalls & Gotchas
 
@@ -445,6 +726,9 @@ Parameterized with `$ARGUMENTS` for dynamic input.
 7. **`--json-schema` needs enough `--max-turns`** — Claude must read files before producing structured output, which takes multiple turns.
 8. **Trust dialog only appears once per directory** — first-time only, then cached.
 9. **Background tmux sessions persist** — always clean up with `tmux kill-session -t <name>` when done.
+10. **Slash commands (like `/commit`) only work in interactive mode** — in `-p` mode, describe the task in natural language instead.
+11. **`--bare` skips OAuth** — requires `ANTHROPIC_API_KEY` env var or an `apiKeyHelper` in settings.
+12. **Context degradation is real** — AI output quality measurably degrades above 70% context window usage. Monitor with `/context` and proactively `/compact`.
 
 ## Rules for Hermes Agents
 

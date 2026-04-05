@@ -1124,6 +1124,11 @@ def resolve_codex_runtime_credentials(
         or DEFAULT_CODEX_BASE_URL
     )
 
+    # Extract account_id for ChatGPT-Account-ID header (required by Codex backend)
+    account_id = ""
+    if isinstance(data.get("tokens"), dict):
+        account_id = str(data["tokens"].get("account_id", "") or "").strip()
+
     return {
         "provider": "openai-codex",
         "base_url": base_url,
@@ -1131,7 +1136,48 @@ def resolve_codex_runtime_credentials(
         "source": "hermes-auth-store",
         "last_refresh": data.get("last_refresh"),
         "auth_mode": "chatgpt",
+        "account_id": account_id,
     }
+
+
+# =============================================================================
+# Codex default headers (cached)
+# =============================================================================
+
+_codex_headers_cache: Optional[Dict[str, str]] = None
+
+
+def codex_default_headers(*, force_refresh: bool = False) -> Dict[str, str]:
+    """Return HTTP headers required by the ChatGPT Codex backend API.
+
+    The chatgpt.com/backend-api/codex endpoint requires a
+    ChatGPT-Account-ID header and a recognisable User-Agent.
+    Results are cached for the process lifetime; pass
+    *force_refresh=True* after a credential refresh.
+    """
+    global _codex_headers_cache
+    if _codex_headers_cache is not None and not force_refresh:
+        return _codex_headers_cache
+
+    import platform as _plat
+    from hermes_cli import __version__
+
+    headers: Dict[str, str] = {
+        "User-Agent": (
+            f"hermes-agent/{__version__}"
+            f" ({_plat.system()} {_plat.release()}; {_plat.machine()})"
+        ),
+    }
+    try:
+        creds = resolve_codex_runtime_credentials(refresh_if_expiring=False)
+        acct = creds.get("account_id", "")
+        if acct:
+            headers["ChatGPT-Account-ID"] = acct
+    except (AuthError, FileNotFoundError, KeyError):
+        logger.debug("Could not resolve Codex account_id for headers", exc_info=True)
+
+    _codex_headers_cache = headers
+    return headers
 
 
 # =============================================================================

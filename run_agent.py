@@ -790,6 +790,9 @@ class AIAgent:
                     client_kwargs["default_headers"] = {
                         "User-Agent": "KimiCLI/1.3",
                     }
+                elif "chatgpt.com/backend-api/codex" in effective_base.lower():
+                    from hermes_cli.auth import codex_default_headers
+                    client_kwargs["default_headers"] = codex_default_headers()
             else:
                 # No explicit creds — use the centralized provider router
                 from agent.auxiliary_client import resolve_provider_client
@@ -3719,6 +3722,8 @@ class AIAgent:
         self.base_url = base_url.strip().rstrip("/")
         self._client_kwargs["api_key"] = self.api_key
         self._client_kwargs["base_url"] = self.base_url
+        from hermes_cli.auth import codex_default_headers
+        self._client_kwargs["default_headers"] = codex_default_headers(force_refresh=True)
 
         if not self._replace_primary_openai_client(reason="codex_credential_refresh"):
             return False
@@ -3811,6 +3816,9 @@ class AIAgent:
             self._client_kwargs["default_headers"] = copilot_default_headers()
         elif "api.kimi.com" in normalized:
             self._client_kwargs["default_headers"] = {"User-Agent": "KimiCLI/1.3"}
+        elif "chatgpt.com/backend-api/codex" in normalized:
+            from hermes_cli.auth import codex_default_headers
+            self._client_kwargs["default_headers"] = codex_default_headers()
         else:
             self._client_kwargs.pop("default_headers", None)
 

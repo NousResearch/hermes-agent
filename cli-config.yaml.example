@@ -34,6 +34,12 @@ model:
   #     base_url: "http://localhost:1234/v1"
   #   No API key needed — local servers typically ignore auth.
   #
+  #   For Ollama Cloud (https://ollama.com/pricing):
+  #     provider: "custom"
+  #     base_url: "https://ollama.com/v1"
+  #   Set OLLAMA_API_KEY in .env — automatically picked up when base_url
+  #   points to ollama.com.
+  #
   # Can also be overridden with --provider flag or HERMES_INFERENCE_PROVIDER env var.
   provider: "auto"
   
@@ -788,6 +794,27 @@ display:
   #   tool_prefix: "╎"                       # Tool output line prefix (default: ┊)
   #
   skin: default
+
+# =============================================================================
+# Model Aliases — short names for /model command
+# =============================================================================
+# Map short aliases to exact (model, provider, base_url) tuples.
+# Used by /model tab completion and resolve_alias().
+# Aliases are checked BEFORE the models.dev catalog, so they can route
+# to endpoints not in the catalog (e.g. Ollama Cloud, local servers).
+#
+# model_aliases:
+#   opus:
+#     model: claude-opus-4-6
+#     provider: anthropic
+#   qwen:
+#     model: "qwen3.5:397b"
+#     provider: custom
+#     base_url: "https://ollama.com/v1"
+#   glm:
+#     model: glm-4.7
+#     provider: custom
+#     base_url: "https://ollama.com/v1"
 
 # =============================================================================
 # Privacy

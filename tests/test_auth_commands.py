@@ -279,6 +279,56 @@ def test_auth_remove_accepts_label_target(tmp_path, monkeypatch):
     assert entries[0]["label"] == "work-account"
 
 
+def test_auth_remove_prefers_exact_numeric_label_over_index(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "openai-codex": [
+                    {
+                        "id": "cred-a",
+                        "label": "first",
+                        "auth_type": "oauth",
+                        "priority": 0,
+                        "source": "manual:device_code",
+                        "access_token": "tok-a",
+                    },
+                    {
+                        "id": "cred-b",
+                        "label": "2",
+                        "auth_type": "oauth",
+                        "priority": 1,
+                        "source": "manual:device_code",
+                        "access_token": "tok-b",
+                    },
+                    {
+                        "id": "cred-c",
+                        "label": "third",
+                        "auth_type": "oauth",
+                        "priority": 2,
+                        "source": "manual:device_code",
+                        "access_token": "tok-c",
+                    },
+                ]
+            },
+        },
+    )
+
+    from hermes_cli.auth_commands import auth_remove_command
+
+    class _Args:
+        provider = "openai-codex"
+        target = "2"
+
+    auth_remove_command(_Args())
+
+    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    labels = [entry["label"] for entry in payload["credential_pool"]["openai-codex"]]
+    assert labels == ["first", "third"]
+
+
 def test_auth_reset_clears_provider_statuses(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     _write_auth_store(

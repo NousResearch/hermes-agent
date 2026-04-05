@@ -1056,10 +1056,20 @@ class MatrixAdapter(BasePlatformAdapter):
 
         media_type = "application/octet-stream"
         msg_type = MessageType.DOCUMENT
-        is_encrypted_image = isinstance(event, getattr(nio, "RoomEncryptedImage", ()))
-        is_encrypted_audio = isinstance(event, getattr(nio, "RoomEncryptedAudio", ()))
-        is_encrypted_video = isinstance(event, getattr(nio, "RoomEncryptedVideo", ()))
-        is_encrypted_file = isinstance(event, getattr(nio, "RoomEncryptedFile", ()))
+
+        # Safely resolve encrypted media classes — they may not exist on older
+        # nio versions, and in test environments nio may be mocked (MagicMock
+        # auto-attributes are not valid types for isinstance).
+        def _safe_isinstance(obj, cls_name):
+            cls = getattr(nio, cls_name, None)
+            if cls is None or not isinstance(cls, type):
+                return False
+            return isinstance(obj, cls)
+
+        is_encrypted_image = _safe_isinstance(event, "RoomEncryptedImage")
+        is_encrypted_audio = _safe_isinstance(event, "RoomEncryptedAudio")
+        is_encrypted_video = _safe_isinstance(event, "RoomEncryptedVideo")
+        is_encrypted_file = _safe_isinstance(event, "RoomEncryptedFile")
         is_encrypted_media = any((is_encrypted_image, is_encrypted_audio, is_encrypted_video, is_encrypted_file))
         is_voice_message = False
 

@@ -1268,6 +1268,129 @@ class AIAgent:
             # Iterative summary from previous session must not bleed into new one (#2635)
             self.context_compressor._previous_summary = None
     
+    def switch_model(self, new_model, new_provider, api_key='', base_url='', api_mode=''):
+        """Switch the model/provider in-place for a live agent.
+
+        Called by the /model command handlers (CLI and gateway) after
+        ``model_switch.switch_model()`` has resolved credentials and
+        validated the model.  This method performs the actual runtime
+        swap: rebuilding clients, updating caching flags, and refreshing
+        the context compressor.
+
+        The implementation mirrors ``_try_activate_fallback()`` for the
+        client-swap logic but also updates ``_primary_runtime`` so the
+        change persists across turns (unlike fallback which is
+        turn-scoped).
+        """
+        import logging
+        from hermes_cli.providers import determine_api_mode
+
+        # ── Determine api_mode if not provided ──
+        if not api_mode:
+            api_mode = determine_api_mode(new_provider, base_url)
+
+        old_model = self.model
+        old_provider = self.provider
+
+        # ── Swap core runtime fields ──
+        self.model = new_model
+        self.provider = new_provider
+        self.base_url = base_url or self.base_url
+        self.api_mode = api_mode
+        if api_key:
+            self.api_key = api_key
+
+        # ── Build new client ──
+        if api_mode == "anthropic_messages":
+            from agent.anthropic_adapter import (
+                build_anthropic_client,
+                resolve_anthropic_token,
+                _is_oauth_token,
+            )
+            effective_key = api_key or self.api_key or resolve_anthropic_token() or ""
+            self.api_key = effective_key
+            self._anthropic_api_key = effective_key
+            self._anthropic_base_url = base_url or getattr(self, "_anthropic_base_url", None)
+            self._anthropic_client = build_anthropic_client(
+                effective_key, self._anthropic_base_url,
+            )
+            self._is_anthropic_oauth = _is_oauth_token(effective_key)
+            self.client = None
+            self._client_kwargs = {}
+        else:
+            effective_key = api_key or self.api_key
+            effective_base = base_url or self.base_url
+            self._client_kwargs = {
+                "api_key": effective_key,
+                "base_url": effective_base,
+            }
+            self.client = self._create_openai_client(
+                dict(self._client_kwargs),
+                reason="switch_model",
+                shared=True,
+            )
+
+        # ── Re-evaluate prompt caching ──
+        is_native_anthropic = api_mode == "anthropic_messages"
+        self._use_prompt_caching = (
+            ("openrouter" in (self.base_url or "").lower() and "claude" in new_model.lower())
+            or is_native_anthropic
+        )
+
+        # ── Update context compressor ──
+        if hasattr(self, "context_compressor") and self.context_compressor:
+            from agent.model_metadata import get_model_context_length
+            new_context_length = get_model_context_length(
+                self.model,
+                base_url=self.base_url,
+                api_key=self.api_key,
+                provider=self.provider,
+            )
+            self.context_compressor.model = self.model
+            self.context_compressor.base_url = self.base_url
+            self.context_compressor.api_key = self.api_key
+            self.context_compressor.provider = self.provider
+            self.context_compressor.context_length = new_context_length
+            self.context_compressor.threshold_tokens = int(
+                new_context_length * self.context_compressor.threshold_percent
+            )
+
+        # ── Invalidate cached system prompt so it rebuilds next turn ──
+        self._cached_system_prompt = None
+
+        # ── Update _primary_runtime so the change persists across turns ──
+        _cc = self.context_compressor if hasattr(self, "context_compressor") and self.context_compressor else None
+        self._primary_runtime = {
+            "model": self.model,
+            "provider": self.provider,
+            "base_url": self.base_url,
+            "api_mode": self.api_mode,
+            "api_key": getattr(self, "api_key", ""),
+            "client_kwargs": dict(self._client_kwargs),
+            "use_prompt_caching": self._use_prompt_caching,
+            "compressor_model": _cc.model if _cc else self.model,
+            "compressor_base_url": _cc.base_url if _cc else self.base_url,
+            "compressor_api_key": getattr(_cc, "api_key", "") if _cc else "",
+            "compressor_provider": _cc.provider if _cc else self.provider,
+            "compressor_context_length": _cc.context_length if _cc else 0,
+            "compressor_threshold_tokens": _cc.threshold_tokens if _cc else 0,
+        }
+        if api_mode == "anthropic_messages":
+            self._primary_runtime.update({
+                "anthropic_api_key": self._anthropic_api_key,
+                "anthropic_base_url": self._anthropic_base_url,
+                "is_anthropic_oauth": self._is_anthropic_oauth,
+            })
+
+        # ── Reset fallback state ──
+        self._fallback_activated = False
+        self._fallback_index = 0
+
+        logging.info(
+            "Model switched in-place: %s (%s) -> %s (%s)",
+            old_model, old_provider, new_model, new_provider,
+        )
+
     def _safe_print(self, *args, **kwargs):
         """Print that silently handles broken pipes / closed stdout.
 

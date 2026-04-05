@@ -604,6 +604,7 @@ class MatrixAdapter(BasePlatformAdapter):
             io.BytesIO(data),
             content_type=content_type,
             filename=filename,
+            filesize=len(data),
         )
         if not isinstance(resp, nio.UploadResponse):
             err = getattr(resp, "message", str(resp))

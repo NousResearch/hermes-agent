@@ -88,6 +88,7 @@ from agent.model_metadata import (
     save_context_length, is_local_endpoint,
 )
 from agent.context_compressor import ContextCompressor
+from agent.subdirectory_hints import SubdirectoryHintTracker
 from agent.prompt_caching import apply_anthropic_cache_control
 from agent.prompt_builder import build_skills_system_prompt, build_context_files_prompt, load_soul_md, TOOL_USE_ENFORCEMENT_GUIDANCE, TOOL_USE_ENFORCEMENT_MODELS, DEVELOPER_ROLE_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
@@ -1234,6 +1235,9 @@ class AIAgent:
             provider=self.provider,
         )
         self.compression_enabled = compression_enabled
+        self._subdirectory_hints = SubdirectoryHintTracker(
+            working_dir=os.getenv("TERMINAL_CWD") or None,
+        )
         self._user_turn_count = 0
 
         # Cumulative token usage for the session
@@ -6155,6 +6159,11 @@ class AIAgent:
             # Save oversized results to file instead of destructive truncation
             function_result = _save_oversized_tool_result(name, function_result)
 
+            # Discover subdirectory context files from tool arguments
+            subdir_hints = self._subdirectory_hints.check_tool_call(name, args)
+            if subdir_hints:
+                function_result += subdir_hints
+
             # Append tool result message in order
             tool_msg = {
                 "role": "tool",
@@ -6437,6 +6446,11 @@ class AIAgent:
 
             # Save oversized results to file instead of destructive truncation
             function_result = _save_oversized_tool_result(function_name, function_result)
+
+            # Discover subdirectory context files from tool arguments
+            subdir_hints = self._subdirectory_hints.check_tool_call(function_name, function_args)
+            if subdir_hints:
+                function_result += subdir_hints
 
             tool_msg = {
                 "role": "tool",

@@ -218,7 +218,7 @@ Local memory and user profile data are injected as frozen snapshots at session s
 `agent/prompt_builder.py` scans and sanitizes project context files using a **priority system** — only one type is loaded (first match wins):
 
 1. `.hermes.md` / `HERMES.md` (walks to git root)
-2. `AGENTS.md` (recursive directory walk)
+2. `AGENTS.md` (CWD at startup; subdirectories discovered progressively during the session via `agent/subdirectory_hints.py`)
 3. `CLAUDE.md` (CWD only)
 4. `.cursorrules` / `.cursor/rules/*.mdc` (CWD only)
 

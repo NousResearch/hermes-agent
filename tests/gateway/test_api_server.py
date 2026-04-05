@@ -681,13 +681,26 @@ class TestHealthDetailedEndpoint:
 
 class TestModelsEndpoint:
     @pytest.mark.asyncio
-    async def test_models_returns_active_models_plus_hermes_alias(self, adapter):
+    async def test_models_returns_provider_qualified_models_for_configured_providers(self, adapter):
         app = _create_app(adapter)
         async with TestClient(TestServer(app)) as cli:
             with patch.object(
                 adapter,
-                "_get_served_model_ids",
-                return_value=["gpt-5.4", "gpt-4.1"],
+                "_get_served_model_records",
+                return_value=[
+                    {
+                        "public_model_id": "copilot/gpt-5.4",
+                        "provider": "copilot",
+                        "agent_model": "gpt-5.4",
+                        "runtime_kwargs": {"provider": "copilot"},
+                    },
+                    {
+                        "public_model_id": "anthropic/claude-sonnet-4-5-20250929",
+                        "provider": "anthropic",
+                        "agent_model": "claude-sonnet-4-5-20250929",
+                        "runtime_kwargs": {"provider": "anthropic"},
+                    },
+                ],
                 create=True,
             ):
                 resp = await cli.get("/v1/models")
@@ -696,8 +709,37 @@ class TestModelsEndpoint:
             assert data["object"] == "list"
             model_ids = [item["id"] for item in data["data"]]
             assert "hermes-agent" in model_ids
-            assert "gpt-5.4" in model_ids
-            assert "gpt-4.1" in model_ids
+            assert "copilot/gpt-5.4" in model_ids
+            assert "anthropic/claude-sonnet-4-5-20250929" in model_ids
+
+    def test_resolve_request_model_returns_runtime_for_provider_qualified_model(self, adapter):
+        runtime_kwargs = {
+            "provider": "copilot",
+            "base_url": "https://api.githubcopilot.com",
+            "api_key": "sk-test",
+            "api_mode": "codex_responses",
+        }
+
+        with patch.object(
+            adapter,
+            "_get_served_model_records",
+            return_value=[
+                {
+                    "public_model_id": "copilot/gpt-5.4",
+                    "provider": "copilot",
+                    "agent_model": "gpt-5.4",
+                    "runtime_kwargs": runtime_kwargs,
+                }
+            ],
+            create=True,
+        ):
+            resolved = adapter._resolve_request_model("copilot/gpt-5.4")
+
+        assert resolved == {
+            "requested_model": "copilot/gpt-5.4",
+            "agent_model": "gpt-5.4",
+            "agent_runtime_kwargs": runtime_kwargs,
+        }
 
     @pytest.mark.asyncio
     async def test_models_returns_profile_name(self):
@@ -1462,13 +1504,23 @@ class TestChatCompletionsEndpoint:
             "messages": [],
             "api_calls": 1,
         }
+        runtime_kwargs = {
+            "provider": "copilot",
+            "base_url": "https://api.githubcopilot.com",
+            "api_key": "sk-test",
+            "api_mode": "codex_responses",
+        }
 
         app = _create_app(adapter)
         async with TestClient(TestServer(app)) as cli:
             with patch.object(
                 adapter,
                 "_resolve_request_model",
-                return_value={"requested_model": "copilot/gpt-5.4", "agent_model": "gpt-5.4"},
+                return_value={
+                    "requested_model": "copilot/gpt-5.4",
+                    "agent_model": "gpt-5.4",
+                    "agent_runtime_kwargs": runtime_kwargs,
+                },
                 create=True,
             ) as mock_resolve, patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
                 mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
@@ -1485,6 +1537,7 @@ class TestChatCompletionsEndpoint:
             assert data["model"] == "copilot/gpt-5.4"
             assert mock_resolve.call_args.args[0] == "copilot/gpt-5.4"
             assert mock_run.call_args.kwargs["agent_model"] == "gpt-5.4"
+            assert mock_run.call_args.kwargs["agent_runtime_kwargs"] == runtime_kwargs
 
     @pytest.mark.asyncio
     async def test_chat_completion_rejects_unknown_model_with_openai_error(self, adapter):
@@ -1744,13 +1797,23 @@ class TestResponsesEndpoint:
             "messages": [],
             "api_calls": 1,
         }
+        runtime_kwargs = {
+            "provider": "copilot",
+            "base_url": "https://api.githubcopilot.com",
+            "api_key": "sk-test",
+            "api_mode": "codex_responses",
+        }
 
         app = _create_app(adapter)
         async with TestClient(TestServer(app)) as cli:
             with patch.object(
                 adapter,
                 "_resolve_request_model",
-                return_value={"requested_model": "copilot/gpt-5.4", "agent_model": "gpt-5.4"},
+                return_value={
+                    "requested_model": "copilot/gpt-5.4",
+                    "agent_model": "gpt-5.4",
+                    "agent_runtime_kwargs": runtime_kwargs,
+                },
                 create=True,
             ) as mock_resolve, patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
                 mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
@@ -1767,6 +1830,7 @@ class TestResponsesEndpoint:
             assert data["model"] == "copilot/gpt-5.4"
             assert mock_resolve.call_args.args[0] == "copilot/gpt-5.4"
             assert mock_run.call_args.kwargs["agent_model"] == "gpt-5.4"
+            assert mock_run.call_args.kwargs["agent_runtime_kwargs"] == runtime_kwargs
 
     @pytest.mark.asyncio
     async def test_responses_rejects_unknown_model_with_openai_error(self, adapter):

@@ -760,19 +760,18 @@ class APIServerAdapter(BasePlatformAdapter):
             }
 
         records: List[Dict[str, Any]] = []
-        default_model = str(active_context.get("default_model") or "").strip()
+        active_default_model = str(active_context.get("default_model") or "").strip()
         active_provider = str(active_context.get("provider") or "").strip()
         active_runtime_kwargs = dict(active_context.get("runtime_kwargs") or {})
-        if default_model and active_provider:
+        if active_default_model and active_provider:
             records.append(
                 {
-                    "public_model_id": f"{active_provider}/{default_model}",
+                    "public_model_id": f"{active_provider}/{active_default_model}",
                     "provider": active_provider,
-                    "agent_model": default_model,
+                    "agent_model": active_default_model,
                     "runtime_kwargs": active_runtime_kwargs,
                 }
             )
-
         try:
             from hermes_cli.models import fetch_api_models, provider_model_ids
             from hermes_cli.runtime_provider import resolve_runtime_provider
@@ -788,10 +787,10 @@ class APIServerAdapter(BasePlatformAdapter):
                 if not model_ids:
                     model_ids = provider_model_ids(resolved_provider)
 
-                for model_id in model_ids:
-                    agent_model = str(model_id or "").strip()
-                    if not agent_model:
-                        continue
+                if resolved_provider == active_provider and active_default_model:
+                    model_ids.append(active_default_model)
+
+                for agent_model in self._dedupe_model_ids(model_ids):
                     records.append(
                         {
                             "public_model_id": f"{resolved_provider}/{agent_model}",
@@ -2363,6 +2362,7 @@ class APIServerAdapter(BasePlatformAdapter):
         ephemeral_system_prompt: Optional[str] = None,
         session_id: Optional[str] = None,
         agent_model: Optional[str] = None,
+        agent_runtime_kwargs: Optional[Dict[str, Any]] = None,
         stream_delta_callback=None,
         tool_progress_callback=None,
         tool_start_callback=None,
@@ -2387,6 +2387,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=ephemeral_system_prompt,
                 session_id=session_id,
                 model=agent_model,
+                runtime_kwargs_override=agent_runtime_kwargs,
                 stream_delta_callback=stream_delta_callback,
                 tool_progress_callback=tool_progress_callback,
                 tool_start_callback=tool_start_callback,

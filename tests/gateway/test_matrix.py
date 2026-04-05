@@ -993,3 +993,358 @@ class TestMatrixKeyExportImport:
         # Should not have tried to export
         assert not hasattr(fake_client, "export_keys") or \
                not fake_client.export_keys.called
+
+
+# ---------------------------------------------------------------------------
+# E2EE: Encrypted media
+# ---------------------------------------------------------------------------
+
+class TestMatrixEncryptedMedia:
+    @pytest.mark.asyncio
+    async def test_connect_registers_callbacks_for_encrypted_media_events(self):
+        from gateway.platforms.matrix import MatrixAdapter
+
+        config = PlatformConfig(
+            enabled=True,
+            token="syt_te...oken",
+            extra={
+                "homeserver": "https://matrix.example.org",
+                "user_id": "@bot:example.org",
+                "encryption": True,
+            },
+        )
+        adapter = MatrixAdapter(config)
+
+        class FakeWhoamiResponse:
+            def __init__(self, user_id, device_id):
+                self.user_id = user_id
+                self.device_id = device_id
+
+        class FakeSyncResponse:
+            def __init__(self):
+                self.rooms = MagicMock(join={})
+
+        class FakeRoomMessageText: ...
+        class FakeRoomMessageImage: ...
+        class FakeRoomMessageAudio: ...
+        class FakeRoomMessageVideo: ...
+        class FakeRoomMessageFile: ...
+        class FakeRoomEncryptedImage: ...
+        class FakeRoomEncryptedAudio: ...
+        class FakeRoomEncryptedVideo: ...
+        class FakeRoomEncryptedFile: ...
+        class FakeInviteMemberEvent: ...
+        class FakeMegolmEvent: ...
+
+        fake_client = MagicMock()
+        fake_client.whoami = AsyncMock(return_value=FakeWhoamiResponse("@bot:example.org", "DEV123"))
+        fake_client.sync = AsyncMock(return_value=FakeSyncResponse())
+        fake_client.keys_upload = AsyncMock()
+        fake_client.keys_query = AsyncMock()
+        fake_client.keys_claim = AsyncMock()
+        fake_client.send_to_device_messages = AsyncMock(return_value=[])
+        fake_client.get_users_for_key_claiming = MagicMock(return_value={})
+        fake_client.close = AsyncMock()
+        fake_client.add_event_callback = MagicMock()
+        fake_client.rooms = {}
+        fake_client.account_data = {}
+        fake_client.olm = object()
+        fake_client.should_upload_keys = False
+        fake_client.should_query_keys = False
+        fake_client.should_claim_keys = False
+        fake_client.restore_login = MagicMock(side_effect=lambda u, d, t: None)
+
+        fake_nio = MagicMock()
+        fake_nio.AsyncClient = MagicMock(return_value=fake_client)
+        fake_nio.WhoamiResponse = FakeWhoamiResponse
+        fake_nio.SyncResponse = FakeSyncResponse
+        fake_nio.LoginResponse = type("LoginResponse", (), {})
+        fake_nio.RoomMessageText = FakeRoomMessageText
+        fake_nio.RoomMessageImage = FakeRoomMessageImage
+        fake_nio.RoomMessageAudio = FakeRoomMessageAudio
+        fake_nio.RoomMessageVideo = FakeRoomMessageVideo
+        fake_nio.RoomMessageFile = FakeRoomMessageFile
+        fake_nio.RoomEncryptedImage = FakeRoomEncryptedImage
+        fake_nio.RoomEncryptedAudio = FakeRoomEncryptedAudio
+        fake_nio.RoomEncryptedVideo = FakeRoomEncryptedVideo
+        fake_nio.RoomEncryptedFile = FakeRoomEncryptedFile
+        fake_nio.InviteMemberEvent = FakeInviteMemberEvent
+        fake_nio.MegolmEvent = FakeMegolmEvent
+
+        with patch.dict("sys.modules", {"nio": fake_nio}):
+            with patch.object(adapter, "_refresh_dm_cache", AsyncMock()):
+                with patch.object(adapter, "_sync_loop", AsyncMock(return_value=None)):
+                    assert await adapter.connect() is True
+
+        callback_classes = [call.args[1] for call in fake_client.add_event_callback.call_args_list]
+        assert FakeRoomEncryptedImage in callback_classes
+        assert FakeRoomEncryptedAudio in callback_classes
+        assert FakeRoomEncryptedVideo in callback_classes
+        assert FakeRoomEncryptedFile in callback_classes
+
+        await adapter.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_on_room_message_media_decrypts_encrypted_image_and_passes_local_path(self):
+        from nio.crypto.attachments import encrypt_attachment
+
+        adapter = _make_adapter()
+        adapter._user_id = "@bot:example.org"
+        adapter._startup_ts = 0.0
+        adapter._dm_rooms = {}
+        adapter.handle_message = AsyncMock()
+
+        plaintext = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
+        ciphertext, keys = encrypt_attachment(plaintext)
+
+        class FakeRoomEncryptedImage:
+            def __init__(self):
+                self.sender = "@alice:example.org"
+                self.event_id = "$img1"
+                self.server_timestamp = 0
+                self.body = "screenshot.png"
+                self.url = "mxc://example.org/media123"
+                self.key = keys["key"]["k"]
+                self.hashes = keys["hashes"]
+                self.iv = keys["iv"]
+                self.mimetype = "image/png"
+                self.source = {
+                    "content": {
+                        "body": "screenshot.png",
+                        "info": {"mimetype": "image/png"},
+                        "file": {
+                            "url": self.url,
+                            "key": keys["key"],
+                            "hashes": keys["hashes"],
+                            "iv": keys["iv"],
+                        },
+                    }
+                }
+
+        class FakeDownloadResponse:
+            def __init__(self, body):
+                self.body = body
+
+        fake_client = MagicMock()
+        fake_client.download = AsyncMock(return_value=FakeDownloadResponse(ciphertext))
+        adapter._client = fake_client
+
+        fake_nio = MagicMock()
+        fake_nio.RoomMessageImage = type("RoomMessageImage", (), {})
+        fake_nio.RoomMessageAudio = type("RoomMessageAudio", (), {})
+        fake_nio.RoomMessageVideo = type("RoomMessageVideo", (), {})
+        fake_nio.RoomMessageFile = type("RoomMessageFile", (), {})
+        fake_nio.RoomEncryptedImage = FakeRoomEncryptedImage
+        fake_nio.RoomEncryptedAudio = type("RoomEncryptedAudio", (), {})
+        fake_nio.RoomEncryptedVideo = type("RoomEncryptedVideo", (), {})
+        fake_nio.RoomEncryptedFile = type("RoomEncryptedFile", (), {})
+
+        room = MagicMock(room_id="!room:example.org", member_count=2, users={})
+        event = FakeRoomEncryptedImage()
+
+        with patch.dict("sys.modules", {"nio": fake_nio}):
+            with patch("gateway.platforms.base.cache_image_from_bytes", return_value="/tmp/cached-image.png") as cache_mock:
+                await adapter._on_room_message_media(room, event)
+
+        cache_mock.assert_called_once_with(plaintext, ext=".png")
+        msg_event = adapter.handle_message.await_args.args[0]
+        assert msg_event.message_type.name == "PHOTO"
+        assert msg_event.media_urls == ["/tmp/cached-image.png"]
+        assert msg_event.media_types == ["image/png"]
+
+    @pytest.mark.asyncio
+    async def test_on_room_message_media_decrypts_encrypted_voice_and_caches_audio(self):
+        from nio.crypto.attachments import encrypt_attachment
+
+        adapter = _make_adapter()
+        adapter._user_id = "@bot:example.org"
+        adapter._startup_ts = 0.0
+        adapter._dm_rooms = {}
+        adapter.handle_message = AsyncMock()
+
+        plaintext = b"OggS" + b"\x00" * 32
+        ciphertext, keys = encrypt_attachment(plaintext)
+
+        class FakeRoomEncryptedAudio:
+            def __init__(self):
+                self.sender = "@alice:example.org"
+                self.event_id = "$voice1"
+                self.server_timestamp = 0
+                self.body = "voice.ogg"
+                self.url = "mxc://example.org/voice123"
+                self.key = keys["key"]["k"]
+                self.hashes = keys["hashes"]
+                self.iv = keys["iv"]
+                self.mimetype = "audio/ogg"
+                self.source = {
+                    "content": {
+                        "body": "voice.ogg",
+                        "info": {"mimetype": "audio/ogg"},
+                        "org.matrix.msc3245.voice": {},
+                        "file": {
+                            "url": self.url,
+                            "key": keys["key"],
+                            "hashes": keys["hashes"],
+                            "iv": keys["iv"],
+                        },
+                    }
+                }
+
+        class FakeDownloadResponse:
+            def __init__(self, body):
+                self.body = body
+
+        fake_client = MagicMock()
+        fake_client.download = AsyncMock(return_value=FakeDownloadResponse(ciphertext))
+        adapter._client = fake_client
+
+        fake_nio = MagicMock()
+        fake_nio.RoomMessageImage = type("RoomMessageImage", (), {})
+        fake_nio.RoomMessageAudio = type("RoomMessageAudio", (), {})
+        fake_nio.RoomMessageVideo = type("RoomMessageVideo", (), {})
+        fake_nio.RoomMessageFile = type("RoomMessageFile", (), {})
+        fake_nio.RoomEncryptedImage = type("RoomEncryptedImage", (), {})
+        fake_nio.RoomEncryptedAudio = FakeRoomEncryptedAudio
+        fake_nio.RoomEncryptedVideo = type("RoomEncryptedVideo", (), {})
+        fake_nio.RoomEncryptedFile = type("RoomEncryptedFile", (), {})
+
+        room = MagicMock(room_id="!room:example.org", member_count=2, users={})
+        event = FakeRoomEncryptedAudio()
+
+        with patch.dict("sys.modules", {"nio": fake_nio}):
+            with patch("gateway.platforms.base.cache_audio_from_bytes", return_value="/tmp/cached-voice.ogg") as cache_mock:
+                await adapter._on_room_message_media(room, event)
+
+        cache_mock.assert_called_once_with(plaintext, ext=".ogg")
+        msg_event = adapter.handle_message.await_args.args[0]
+        assert msg_event.message_type.name == "VOICE"
+        assert msg_event.media_urls == ["/tmp/cached-voice.ogg"]
+        assert msg_event.media_types == ["audio/ogg"]
+
+    @pytest.mark.asyncio
+    async def test_on_room_message_media_decrypts_encrypted_file_and_caches_document(self):
+        from nio.crypto.attachments import encrypt_attachment
+
+        adapter = _make_adapter()
+        adapter._user_id = "@bot:example.org"
+        adapter._startup_ts = 0.0
+        adapter._dm_rooms = {}
+        adapter.handle_message = AsyncMock()
+
+        plaintext = b"hello from encrypted document"
+        ciphertext, keys = encrypt_attachment(plaintext)
+
+        class FakeRoomEncryptedFile:
+            def __init__(self):
+                self.sender = "@alice:example.org"
+                self.event_id = "$file1"
+                self.server_timestamp = 0
+                self.body = "notes.txt"
+                self.url = "mxc://example.org/file123"
+                self.key = keys["key"]
+                self.hashes = keys["hashes"]
+                self.iv = keys["iv"]
+                self.mimetype = "text/plain"
+                self.source = {
+                    "content": {
+                        "body": "notes.txt",
+                        "info": {"mimetype": "text/plain"},
+                        "file": {
+                            "url": self.url,
+                            "key": keys["key"],
+                            "hashes": keys["hashes"],
+                            "iv": keys["iv"],
+                        },
+                    }
+                }
+
+        class FakeDownloadResponse:
+            def __init__(self, body):
+                self.body = body
+
+        fake_client = MagicMock()
+        fake_client.download = AsyncMock(return_value=FakeDownloadResponse(ciphertext))
+        adapter._client = fake_client
+
+        fake_nio = MagicMock()
+        fake_nio.RoomMessageImage = type("RoomMessageImage", (), {})
+        fake_nio.RoomMessageAudio = type("RoomMessageAudio", (), {})
+        fake_nio.RoomMessageVideo = type("RoomMessageVideo", (), {})
+        fake_nio.RoomMessageFile = type("RoomMessageFile", (), {})
+        fake_nio.RoomEncryptedImage = type("RoomEncryptedImage", (), {})
+        fake_nio.RoomEncryptedAudio = type("RoomEncryptedAudio", (), {})
+        fake_nio.RoomEncryptedVideo = type("RoomEncryptedVideo", (), {})
+        fake_nio.RoomEncryptedFile = FakeRoomEncryptedFile
+
+        room = MagicMock(room_id="!room:example.org", member_count=2, users={})
+        event = FakeRoomEncryptedFile()
+
+        with patch.dict("sys.modules", {"nio": fake_nio}):
+            with patch("gateway.platforms.base.cache_document_from_bytes", return_value="/tmp/cached-notes.txt") as cache_mock:
+                await adapter._on_room_message_media(room, event)
+
+        cache_mock.assert_called_once_with(plaintext, "notes.txt")
+        msg_event = adapter.handle_message.await_args.args[0]
+        assert msg_event.message_type.name == "DOCUMENT"
+        assert msg_event.media_urls == ["/tmp/cached-notes.txt"]
+        assert msg_event.media_types == ["text/plain"]
+
+    @pytest.mark.asyncio
+    async def test_on_room_message_media_does_not_emit_ciphertext_url_when_encrypted_media_decryption_fails(self):
+        adapter = _make_adapter()
+        adapter._user_id = "@bot:example.org"
+        adapter._startup_ts = 0.0
+        adapter._dm_rooms = {}
+        adapter.handle_message = AsyncMock()
+
+        class FakeRoomEncryptedImage:
+            def __init__(self):
+                self.sender = "@alice:example.org"
+                self.event_id = "$img2"
+                self.server_timestamp = 0
+                self.body = "broken.png"
+                self.url = "mxc://example.org/media999"
+                self.key = {"k": "broken"}
+                self.hashes = {"sha256": "broken"}
+                self.iv = "broken"
+                self.mimetype = "image/png"
+                self.source = {
+                    "content": {
+                        "body": "broken.png",
+                        "info": {"mimetype": "image/png"},
+                        "file": {
+                            "url": self.url,
+                            "key": self.key,
+                            "hashes": self.hashes,
+                            "iv": self.iv,
+                        },
+                    }
+                }
+
+        class FakeDownloadResponse:
+            def __init__(self, body):
+                self.body = body
+
+        fake_client = MagicMock()
+        fake_client.download = AsyncMock(return_value=FakeDownloadResponse(b"ciphertext"))
+        adapter._client = fake_client
+
+        fake_nio = MagicMock()
+        fake_nio.RoomMessageImage = type("RoomMessageImage", (), {})
+        fake_nio.RoomMessageAudio = type("RoomMessageAudio", (), {})
+        fake_nio.RoomMessageVideo = type("RoomMessageVideo", (), {})
+        fake_nio.RoomMessageFile = type("RoomMessageFile", (), {})
+        fake_nio.RoomEncryptedImage = FakeRoomEncryptedImage
+        fake_nio.RoomEncryptedAudio = type("RoomEncryptedAudio", (), {})
+        fake_nio.RoomEncryptedVideo = type("RoomEncryptedVideo", (), {})
+        fake_nio.RoomEncryptedFile = type("RoomEncryptedFile", (), {})
+
+        room = MagicMock(room_id="!room:example.org", member_count=2, users={})
+        event = FakeRoomEncryptedImage()
+
+        with patch.dict("sys.modules", {"nio": fake_nio}):
+            await adapter._on_room_message_media(room, event)
+
+        msg_event = adapter.handle_message.await_args.args[0]
+        assert not msg_event.media_urls
+        assert not msg_event.media_types

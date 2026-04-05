@@ -10,6 +10,7 @@ from agent.skill_commands import (
     build_plan_path,
     build_preloaded_skills_prompt,
     build_skill_invocation_message,
+    resolve_skill_command_key,
     scan_skill_commands,
 )
 
@@ -99,6 +100,53 @@ class TestScanSkillCommands:
             result = scan_skill_commands()
         assert "/enabled-skill" in result
         assert "/disabled-skill" not in result
+
+
+class TestResolveSkillCommandKey:
+    """Telegram bot-command names disallow hyphens, so the menu registers
+    skills with hyphens swapped for underscores. When Telegram autocomplete
+    sends the underscored form back, we need to find the hyphenated key.
+    """
+
+    def test_hyphenated_form_matches_directly(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "claude-code")
+            scan_skill_commands()
+            assert resolve_skill_command_key("claude-code") == "/claude-code"
+
+    def test_underscore_form_resolves_to_hyphenated_skill(self, tmp_path):
+        """/claude_code from Telegram autocomplete must resolve to /claude-code."""
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "claude-code")
+            scan_skill_commands()
+            assert resolve_skill_command_key("claude_code") == "/claude-code"
+
+    def test_single_word_command_resolves(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "investigate")
+            scan_skill_commands()
+            assert resolve_skill_command_key("investigate") == "/investigate"
+
+    def test_unknown_command_returns_none(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "claude-code")
+            scan_skill_commands()
+            assert resolve_skill_command_key("does_not_exist") is None
+            assert resolve_skill_command_key("does-not-exist") is None
+
+    def test_empty_command_returns_none(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            scan_skill_commands()
+            assert resolve_skill_command_key("") is None
+
+    def test_hyphenated_command_is_not_mangled(self, tmp_path):
+        """A user-typed /foo-bar (hyphen) must not trigger the underscore fallback."""
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "foo-bar")
+            scan_skill_commands()
+            assert resolve_skill_command_key("foo-bar") == "/foo-bar"
+            # Underscore form also works (Telegram round-trip)
+            assert resolve_skill_command_key("foo_bar") == "/foo-bar"
 
 
 class TestBuildPreloadedSkillsPrompt:

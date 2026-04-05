@@ -1900,6 +1900,51 @@ def save_env_value(key: str, value: str):
             pass
 
 
+def remove_env_value(key: str) -> bool:
+    """Remove a key from ~/.hermes/.env and os.environ.
+
+    Returns True if the key was found and removed, False otherwise.
+    """
+    if is_managed():
+        managed_error(f"remove {key}")
+        return False
+    if not _ENV_VAR_NAME_RE.match(key):
+        raise ValueError(f"Invalid environment variable name: {key!r}")
+    env_path = get_env_path()
+    if not env_path.exists():
+        os.environ.pop(key, None)
+        return False
+
+    read_kw = {"encoding": "utf-8", "errors": "replace"} if _IS_WINDOWS else {}
+    write_kw = {"encoding": "utf-8"} if _IS_WINDOWS else {}
+
+    with open(env_path, **read_kw) as f:
+        lines = f.readlines()
+    lines = _sanitize_env_lines(lines)
+
+    new_lines = [line for line in lines if not line.strip().startswith(f"{key}=")]
+    found = len(new_lines) < len(lines)
+
+    if found:
+        fd, tmp_path = tempfile.mkstemp(dir=str(env_path.parent), suffix='.tmp', prefix='.env_')
+        try:
+            with os.fdopen(fd, 'w', **write_kw) as f:
+                f.writelines(new_lines)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, env_path)
+        except BaseException:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+        _secure_file(env_path)
+
+    os.environ.pop(key, None)
+    return found
+
+
 def save_anthropic_oauth_token(value: str, save_fn=None):
     """Persist an Anthropic OAuth/setup token and clear the API-key slot."""
     writer = save_fn or save_env_value

@@ -295,6 +295,16 @@ def auth_remove_command(args) -> None:
         raise SystemExit(f'No credential matching "{target}" for provider {provider}.')
     print(f"Removed {provider} credential #{index} ({removed.label})")
 
+    # If this was an env-seeded credential, also clear the env var from .env
+    # so it doesn't get re-seeded on the next load_pool() call.
+    if removed.source.startswith("env:"):
+        env_var = removed.source[len("env:"):]
+        if env_var:
+            from hermes_cli.config import remove_env_value
+            cleared = remove_env_value(env_var)
+            if cleared:
+                print(f"Cleared {env_var} from .env")
+
 
 def auth_reset_command(args) -> None:
     provider = _normalize_provider(getattr(args, "provider", ""))

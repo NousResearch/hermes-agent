@@ -259,6 +259,11 @@ class TestHighlightBlock:
         assert any("line one" in c for c in calls)
         assert any("line two" in c for c in calls)
 
+    def test_long_block_truncated_with_footer(self):
+        calls = self._collect("📄 foo.py", "\n".join(f"line {i}" for i in range(60)))
+        assert len(calls) == 42
+        assert "more lines omitted" in calls[-1]
+
 
 # ---------------------------------------------------------------------------
 # render_execute_code_preview
@@ -337,6 +342,11 @@ class TestRenderReadFilePreview:
     def test_invalid_json_returns_false(self):
         assert render_read_file_preview("foo.py", "not json", print_fn=MagicMock()) is False
 
+    def test_long_file_preview_truncated(self):
+        calls = []
+        render_read_file_preview("foo.py", self._result("\n".join(f"print({i})" for i in range(60))), print_fn=calls.append)
+        assert "more lines omitted" in calls[-1]
+
 
 # ---------------------------------------------------------------------------
 # render_terminal_preview
@@ -362,6 +372,14 @@ class TestRenderTerminalPreview:
         )
         assert result is True
         assert any("app.ts" in c for c in calls)
+
+    @pytest.mark.parametrize("command", [
+        "git diff app.py",
+        "pytest tests/test_app.py",
+        "ruff check foo.py",
+    ])
+    def test_non_reader_verbs_do_not_trigger_source_highlighting(self, command):
+        assert render_terminal_preview(command, self._result("stdout"), print_fn=MagicMock()) is False
 
     def test_exec_command_node_suppressed(self):
         """node script.js executes the file — stdout is not source code."""
@@ -416,6 +434,11 @@ class TestCuteMessageDedup:
         set_code_highlight_active(True)
         msg = get_cute_tool_message("terminal", {"command": "ls -la"}, 0.5)
         assert "ls -la" in msg
+
+
+def test_default_config_includes_code_highlight():
+    from hermes_cli.config import DEFAULT_CONFIG
+    assert DEFAULT_CONFIG["display"]["code_highlight"] is True
 
 
 # ---------------------------------------------------------------------------

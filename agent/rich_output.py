@@ -756,7 +756,7 @@ def format_response(text: str) -> str:
     # Match fenced code blocks of any depth (3+ backticks); \1 backreference
     # ensures the closing fence uses the same backtick sequence as the opener.
     # Apply inline-code highlighting only to prose segments between/around blocks.
-    fence_re = re.compile(r"(`{3,})(\w*)\n(.*?)\1", re.DOTALL)
+    fence_re = re.compile(r"(`{3,})\s*([^\s`]*)\n(.*?)\1", re.DOTALL)
     parts: list[str] = []
     last_end = 0
     for m in fence_re.finditer(text):
@@ -787,8 +787,9 @@ class StreamingCodeBlockHighlighter:
             emit(tail)
     """
 
-    # Matches an opening fence: 3+ backticks, optional language hint (word chars)
-    _FENCE_OPEN_RE = re.compile(r"^(`{3,})\s*(\w*)$")
+    # Matches an opening fence: 3+ backticks, optional language hint supporting
+    # common Markdown info-string punctuation like c++, f#, or shell-session.
+    _FENCE_OPEN_RE = re.compile(r"^(`{3,})\s*([^\s`]*)$")
     # Matches a closing fence: 3+ backticks, optional trailing whitespace only
     _FENCE_CLOSE_RE = re.compile(r"^(`+)\s*$")
 

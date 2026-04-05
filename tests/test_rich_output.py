@@ -180,6 +180,12 @@ class TestSyntaxHighlighter:
         result = self.hl.to_markup('x = "[bold]text[/bold]"', language="python")
         assert "[bold]" not in result or r"\[bold" in result
 
+    def test_to_ansi_brackets_and_backslashes_render_literally(self):
+        import re
+        plain = re.sub(r"\x1b\[[0-9;]*m", "", self.hl.to_ansi(r'x = r"\[abc]"', language="python"))
+        assert r'x = r"\[abc]"' in plain
+        assert r"\]" not in plain
+
 
 # ---------------------------------------------------------------------------
 # DiffRenderer
@@ -419,6 +425,13 @@ class TestFormatResponse:
         for line in plain.splitlines():
             assert not line.strip().startswith("````"), f"4-backtick fence leaked: {line!r}"
 
+    @pytest.mark.parametrize("lang", ["c++", "objective-c", "shell-session", "f#"])
+    def test_fence_info_strings_accept_common_punctuation(self, lang):
+        import re
+        plain = re.sub(r"\x1b\[[0-9;]*m", "", format_response(f"```{lang}\nint x;\n```\n"))
+        assert "```" not in plain
+        assert "int x;" in plain
+
     def test_inline_code_in_prose_styled(self):
         """Inline code spans in prose get ANSI styling."""
         text = "Use `foo()` to call it."
@@ -644,15 +657,15 @@ class TestDiffRendererV2:
             DiffRenderer()._style(diff.splitlines())
         )
         output = buf.getvalue()
-        # PR2 highlights paired changes via bold token styling in the rendered
-        # ANSI output; later branches add stronger background treatment.
+        # After rebasing onto the updated renderer base, paired diff fragments
+        # carry ANSI-styled tokens that may include background treatment.
         plain = re.sub(r"\x1b\[[0-9;]*m", "", output)
         assert "return foo_value" in plain
         assert "return bar_value" in plain
         assert "return foo_result" in plain
         assert "return bar_result" in plain
-        assert output.count("\x1b[1mfoo\x1b[0m") >= 2
-        assert output.count("\x1b[1mbar\x1b[0m") >= 2
+        assert len(re.findall(r"\x1b\[[0-9;]*mfoo\x1b\[0m", output)) >= 2
+        assert len(re.findall(r"\x1b\[[0-9;]*mbar\x1b\[0m", output)) >= 2
 
     def test_alternating_run_flush(self):
         # -A +B -C +D with no context between — should pair (-A,+B) and (-C,+D)

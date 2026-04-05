@@ -588,6 +588,22 @@ def render_edit_diff_with_delta(
 # execute_code / read_file / terminal syntax highlight previews
 # =========================================================================
 
+_PREVIEW_MAX_LINES = 40
+
+
+def _emit_highlighted_lines(block: str, print_fn) -> bool:
+    lines = block.rstrip("\n").splitlines()
+    if not lines:
+        return False
+    if len(lines) > _PREVIEW_MAX_LINES:
+        omitted = len(lines) - _PREVIEW_MAX_LINES
+        lines = lines[:_PREVIEW_MAX_LINES] + [
+            f"\033[2m╌╌ {omitted} more line{'s' if omitted != 1 else ''} omitted ╌╌\033[0m"
+        ]
+    for line in lines:
+        print_fn(line)
+    return True
+
 def _highlight_block(header: str, content: str, language: str, print_fn) -> bool:
     """Print a labelled syntax-highlighted block aligned with the ┊ tool log.
 
@@ -599,14 +615,10 @@ def _highlight_block(header: str, content: str, language: str, print_fn) -> bool
     _print = print_fn or print
     _print(f"\033[2m  ┊ {header}\033[0m")
     if not _RICH_OUTPUT:
-        for line in content.rstrip("\n").splitlines():
-            _print(line)
-        return True
+        return _emit_highlighted_lines(content, _print)
     try:
         highlighted = _rich_syntax.to_ansi(content, language=language).rstrip("\n")
-        for line in highlighted.splitlines():
-            _print(line)
-        return True
+        return _emit_highlighted_lines(highlighted, _print)
     except Exception as exc:
         logger.debug("highlight_block failed for %s: %s", header, exc)
         return False
@@ -623,14 +635,10 @@ def render_execute_code_preview(code: str, print_fn=None) -> bool:
         return False
     _print = print_fn or print
     if not _RICH_OUTPUT:
-        for line in code.rstrip("\n").splitlines():
-            _print(line)
-        return True
+        return _emit_highlighted_lines(code, _print)
     try:
         highlighted = _rich_syntax.to_ansi(code, language="python").rstrip("\n")
-        for line in highlighted.splitlines():
-            _print(line)
-        return True
+        return _emit_highlighted_lines(highlighted, _print)
     except Exception as exc:
         logger.debug("execute_code highlight failed: %s", exc)
         return False
@@ -708,6 +716,8 @@ def _extract_file_language_from_command(command: str):
     from pathlib import Path as _Path
     verb = _Path(tokens[0]).name
     if verb in _FILE_EXEC_COMMANDS:
+        return None, None
+    if verb not in _FILE_READ_COMMANDS:
         return None, None
 
     if not _RICH_OUTPUT:

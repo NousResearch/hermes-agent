@@ -7233,6 +7233,17 @@ class HermesCLI:
             # --- Clarify choice mode: confirm the highlighted selection ---
             if self._clarify_state and not self._clarify_freetext:
                 state = self._clarify_state
+                # If the user typed text in the input buffer, treat it as
+                # an "Other" freetext response — don't accidentally submit
+                # the highlighted choice when they intended to type their own answer.
+                typed_text = event.app.current_buffer.text.strip()
+                if typed_text:
+                    state["response_queue"].put(typed_text)
+                    self._clarify_state = None
+                    self._clarify_freetext = False
+                    event.app.current_buffer.reset()
+                    event.app.invalidate()
+                    return
                 selected = state["selected"]
                 choices = state.get("choices") or []
                 if selected < len(choices):

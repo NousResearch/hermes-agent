@@ -160,6 +160,7 @@ class SignalAdapter(BasePlatformAdapter):
         self.http_url = extra.get("http_url", "http://127.0.0.1:8080").rstrip("/")
         self.account = extra.get("account", "")
         self.ignore_stories = extra.get("ignore_stories", True)
+        self.send_read_receipts = extra.get("send_read_receipts", True)
 
         # Parse allowlists — group policy is derived from presence of group allowlist
         group_allowed_str = os.getenv("SIGNAL_GROUP_ALLOWED_USERS", "")
@@ -186,9 +187,10 @@ class SignalAdapter(BasePlatformAdapter):
 
         self._phone_lock_identity: Optional[str] = None
 
-        logger.info("Signal adapter initialized: url=%s account=%s groups=%s",
+        logger.info("Signal adapter initialized: url=%s account=%s groups=%s read_receipts=%s",
                      self.http_url, _redact_phone(self.account),
-                     "enabled" if self.group_allow_from else "disabled")
+                     "enabled" if self.group_allow_from else "disabled",
+                     "on" if self.send_read_receipts else "off")
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -531,6 +533,15 @@ class SignalAdapter(BasePlatformAdapter):
         else:
             timestamp = datetime.now(tz=timezone.utc)
 
+        # Send read receipt (fire-and-forget, DMs only — Signal protocol
+        # restricts read receipts to 1-on-1 conversations)
+        if self.send_read_receipts and ts_ms and sender and not is_group and not is_note_to_self:
+            if not hasattr(self, "_background_tasks"):
+                self._background_tasks = set()
+            task = asyncio.create_task(self._send_read_receipt(sender, ts_ms))
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
+
         # Build and dispatch event
         event = MessageEvent(
             source=source,
@@ -545,6 +556,38 @@ class SignalAdapter(BasePlatformAdapter):
                       _redact_phone(sender), chat_id[:20], (text or "")[:50])
 
         await self.handle_message(event)
+
+    # ------------------------------------------------------------------
+    # Read Receipts
+    # ------------------------------------------------------------------
+
+    async def _send_read_receipt(self, sender: str, timestamp_ms: int) -> None:
+        """Send a read receipt for a message.
+
+        Uses the signal-cli ``sendReceipt`` JSON-RPC method so the sender
+        sees blue ticks (read status) on their message.  Errors are logged
+        and swallowed — read receipts are best-effort and must never block
+        message processing.
+
+        Args:
+            sender:       The sender's phone number or UUID.
+            timestamp_ms: The originating message timestamp (millis since epoch).
+        """
+        try:
+            result = await self._rpc("sendReceipt", {
+                "account": self.account,
+                "recipient": sender,
+                "targetTimestamp": timestamp_ms,
+                "type": "read",
+            }, rpc_id="read_receipt")
+            if result is not None:
+                logger.debug("Signal: sent read receipt to %s for ts=%s",
+                              _redact_phone(sender), timestamp_ms)
+            else:
+                logger.debug("Signal: read receipt for %s may not have been accepted (rpc returned None)",
+                              _redact_phone(sender))
+        except Exception:
+            logger.debug("Signal: failed to send read receipt", exc_info=True)
 
     # ------------------------------------------------------------------
     # Attachment Handling

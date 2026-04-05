@@ -1,4 +1,5 @@
 """Tests for Signal messenger platform adapter."""
+import asyncio
 import base64
 import json
 import pytest
@@ -368,3 +369,199 @@ class TestSignalSendMessage:
         # Just verify the import works and Signal is a valid platform
         from gateway.config import Platform
         assert Platform.SIGNAL.value == "signal"
+
+
+# ---------------------------------------------------------------------------
+# Read Receipts
+# ---------------------------------------------------------------------------
+
+class TestSignalReadReceipts:
+    """Verify that read receipts are sent via JSON-RPC."""
+
+    def test_read_receipts_enabled_by_default(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        assert adapter.send_read_receipts is True
+
+    def test_read_receipts_can_be_disabled(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch, send_read_receipts=False)
+        assert adapter.send_read_receipts is False
+
+    @pytest.mark.asyncio
+    async def test_send_read_receipt_calls_rpc(self, monkeypatch):
+        """_send_read_receipt should call sendReceipt with correct params."""
+        adapter = _make_signal_adapter(monkeypatch)
+        rpc_mock, captured = _stub_rpc(None)
+        adapter._rpc = rpc_mock
+
+        await adapter._send_read_receipt("+15559999999", 1625821234567)
+
+        assert len(captured) == 1
+        call = captured[0]
+        assert call["method"] == "sendReceipt"
+        assert call["params"]["recipient"] == "+15559999999"
+        assert call["params"]["targetTimestamp"] == 1625821234567
+        assert call["params"]["type"] == "read"
+        assert call["params"]["account"] == "+15551234567"
+
+    @pytest.mark.asyncio
+    async def test_send_read_receipt_swallows_errors(self, monkeypatch):
+        """Read receipt failures must not propagate exceptions."""
+        adapter = _make_signal_adapter(monkeypatch)
+
+        async def failing_rpc(method, params, rpc_id=None):
+            raise ConnectionError("daemon down")
+
+        adapter._rpc = failing_rpc
+
+        # Should not raise
+        await adapter._send_read_receipt("+15559999999", 1625821234567)
+
+    @pytest.mark.asyncio
+    async def test_handle_envelope_sends_read_receipt_for_dm(self, monkeypatch):
+        """Processing a DM should fire a read receipt."""
+        adapter = _make_signal_adapter(monkeypatch)
+        rpc_mock, captured = _stub_rpc(None)
+        adapter._rpc = rpc_mock
+        adapter.handle_message = AsyncMock()
+
+        envelope = {
+            "envelope": {
+                "sourceNumber": "+15559999999",
+                "sourceName": "Test User",
+                "sourceUuid": "uuid-abc",
+                "timestamp": 1625821234567,
+                "dataMessage": {
+                    "message": "Hello",
+                    "timestamp": 1625821234567,
+                },
+            }
+        }
+
+        await adapter._handle_envelope(envelope)
+        await asyncio.sleep(0)  # Let fire-and-forget receipt task run
+
+        # Should have called sendReceipt
+        receipt_calls = [c for c in captured if c["method"] == "sendReceipt"]
+        assert len(receipt_calls) == 1
+        assert receipt_calls[0]["params"]["recipient"] == "+15559999999"
+        assert receipt_calls[0]["params"]["targetTimestamp"] == 1625821234567
+
+    @pytest.mark.asyncio
+    async def test_handle_envelope_no_receipt_for_groups(self, monkeypatch):
+        """Group messages should NOT get read receipts."""
+        adapter = _make_signal_adapter(monkeypatch, group_allowed="*")
+        rpc_mock, captured = _stub_rpc(None)
+        adapter._rpc = rpc_mock
+        adapter.handle_message = AsyncMock()
+
+        envelope = {
+            "envelope": {
+                "sourceNumber": "+15559999999",
+                "sourceName": "Test User",
+                "sourceUuid": "uuid-abc",
+                "timestamp": 1625821234567,
+                "dataMessage": {
+                    "message": "Hello group",
+                    "timestamp": 1625821234567,
+                    "groupInfo": {
+                        "groupId": "group123",
+                        "groupName": "Test Group",
+                    },
+                },
+            }
+        }
+
+        await adapter._handle_envelope(envelope)
+        await asyncio.sleep(0)  # Let fire-and-forget receipt task run
+
+        # No sendReceipt calls for group messages
+        receipt_calls = [c for c in captured if c["method"] == "sendReceipt"]
+        assert len(receipt_calls) == 0
+
+    @pytest.mark.asyncio
+    async def test_handle_envelope_no_receipt_when_disabled(self, monkeypatch):
+        """Read receipts should not be sent when disabled."""
+        adapter = _make_signal_adapter(monkeypatch, send_read_receipts=False)
+        rpc_mock, captured = _stub_rpc(None)
+        adapter._rpc = rpc_mock
+        adapter.handle_message = AsyncMock()
+
+        envelope = {
+            "envelope": {
+                "sourceNumber": "+15559999999",
+                "sourceName": "Test User",
+                "sourceUuid": "uuid-abc",
+                "timestamp": 1625821234567,
+                "dataMessage": {
+                    "message": "Hello",
+                    "timestamp": 1625821234567,
+                },
+            }
+        }
+
+        await adapter._handle_envelope(envelope)
+        await asyncio.sleep(0)  # Let fire-and-forget receipt task run
+
+        receipt_calls = [c for c in captured if c["method"] == "sendReceipt"]
+        assert len(receipt_calls) == 0
+
+    @pytest.mark.asyncio
+    async def test_handle_envelope_no_receipt_for_note_to_self(self, monkeypatch):
+        """Note to Self messages should NOT get read receipts."""
+        adapter = _make_signal_adapter(monkeypatch)
+        rpc_mock, captured = _stub_rpc(None)
+        adapter._rpc = rpc_mock
+        adapter.handle_message = AsyncMock()
+
+        # Note to Self: syncMessage.sentMessage with destination == own account
+        envelope = {
+            "envelope": {
+                "sourceNumber": "+15551234567",
+                "sourceName": "Me",
+                "sourceUuid": "uuid-self",
+                "timestamp": 1625821234567,
+                "syncMessage": {
+                    "sentMessage": {
+                        "destinationNumber": "+15551234567",
+                        "message": "Note to self",
+                        "timestamp": 1625821234567,
+                    },
+                },
+            }
+        }
+
+        await adapter._handle_envelope(envelope)
+        await asyncio.sleep(0)
+
+        # Note to Self — no sendReceipt expected
+        receipt_calls = [c for c in captured if c["method"] == "sendReceipt"]
+        assert len(receipt_calls) == 0
+
+        # But the message itself should still be handled
+        assert adapter.handle_message.called
+
+
+class TestSignalReadReceiptConfig:
+    """Verify SIGNAL_READ_RECEIPTS env var is wired into gateway config."""
+
+    def test_env_var_defaults_to_true(self, monkeypatch):
+        monkeypatch.setenv("SIGNAL_HTTP_URL", "http://localhost:8080")
+        monkeypatch.setenv("SIGNAL_ACCOUNT", "+15551234567")
+        monkeypatch.delenv("SIGNAL_READ_RECEIPTS", raising=False)
+
+        from gateway.config import GatewayConfig, _apply_env_overrides
+        config = GatewayConfig()
+        _apply_env_overrides(config)
+
+        assert config.platforms[Platform.SIGNAL].extra["send_read_receipts"] is True
+
+    def test_env_var_can_disable(self, monkeypatch):
+        monkeypatch.setenv("SIGNAL_HTTP_URL", "http://localhost:8080")
+        monkeypatch.setenv("SIGNAL_ACCOUNT", "+15551234567")
+        monkeypatch.setenv("SIGNAL_READ_RECEIPTS", "false")
+
+        from gateway.config import GatewayConfig, _apply_env_overrides
+        config = GatewayConfig()
+        _apply_env_overrides(config)
+
+        assert config.platforms[Platform.SIGNAL].extra["send_read_receipts"] is False

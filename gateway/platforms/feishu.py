@@ -272,6 +272,8 @@ class FeishuAdapterSettings:
     webhook_path: str
     ws_reconnect_nonce: int = 30
     ws_reconnect_interval: int = 120
+    ws_ping_interval: Optional[int] = None
+    ws_ping_timeout: Optional[int] = None
 
 
 @dataclass
@@ -374,6 +376,14 @@ def _coerce_positive_int(value: Any, default: int) -> int:
     except (TypeError, ValueError):
         return default
     return parsed if parsed >= 1 else default
+
+
+def _coerce_optional_positive_int(value: Any) -> Optional[int]:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed >= 1 else None
 
 
 # ---------------------------------------------------------------------------
@@ -939,11 +949,23 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
     asyncio.set_event_loop(loop)
     ws_client_module.loop = loop
     adapter._ws_thread_loop = loop
+
+    original_connect = ws_client_module.websockets.connect
+
+    async def _connect_with_overrides(*args: Any, **kwargs: Any) -> Any:
+        if adapter._ws_ping_interval is not None and "ping_interval" not in kwargs:
+            kwargs["ping_interval"] = adapter._ws_ping_interval
+        if adapter._ws_ping_timeout is not None and "ping_timeout" not in kwargs:
+            kwargs["ping_timeout"] = adapter._ws_ping_timeout
+        return await original_connect(*args, **kwargs)
+
+    ws_client_module.websockets.connect = _connect_with_overrides
     try:
         ws_client.start()
     except Exception:
         pass
     finally:
+        ws_client_module.websockets.connect = original_connect
         pending = [t for t in asyncio.all_tasks(loop) if not t.done()]
         for task in pending:
             task.cancel()
@@ -1060,6 +1082,8 @@ class FeishuAdapter(BasePlatformAdapter):
             ),
             ws_reconnect_nonce=_coerce_non_negative_int(extra.get("ws_reconnect_nonce"), 30),
             ws_reconnect_interval=_coerce_positive_int(extra.get("ws_reconnect_interval"), 120),
+            ws_ping_interval=_coerce_optional_positive_int(extra.get("ws_ping_interval")),
+            ws_ping_timeout=_coerce_optional_positive_int(extra.get("ws_ping_timeout")),
         )
 
     def _apply_settings(self, settings: FeishuAdapterSettings) -> None:
@@ -1084,6 +1108,8 @@ class FeishuAdapter(BasePlatformAdapter):
         self._webhook_path = settings.webhook_path
         self._ws_reconnect_nonce = settings.ws_reconnect_nonce
         self._ws_reconnect_interval = settings.ws_reconnect_interval
+        self._ws_ping_interval = settings.ws_ping_interval
+        self._ws_ping_timeout = settings.ws_ping_timeout
 
     def _build_event_handler(self) -> Any:
         if EventDispatcherHandler is None:

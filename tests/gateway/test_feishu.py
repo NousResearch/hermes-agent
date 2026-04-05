@@ -587,6 +587,32 @@ class TestAdapterModule(unittest.TestCase):
         self.assertEqual(settings.ws_reconnect_nonce, 0)
         self.assertEqual(settings.ws_reconnect_interval, 3)
 
+    def test_load_settings_accepts_custom_ws_ping_values(self):
+        from gateway.platforms.feishu import FeishuAdapter
+
+        settings = FeishuAdapter._load_settings(
+            {
+                "ws_ping_interval": 10,
+                "ws_ping_timeout": 8,
+            }
+        )
+
+        self.assertEqual(settings.ws_ping_interval, 10)
+        self.assertEqual(settings.ws_ping_timeout, 8)
+
+    def test_load_settings_ignores_invalid_ws_ping_values(self):
+        from gateway.platforms.feishu import FeishuAdapter
+
+        settings = FeishuAdapter._load_settings(
+            {
+                "ws_ping_interval": 0,
+                "ws_ping_timeout": -1,
+            }
+        )
+
+        self.assertIsNone(settings.ws_ping_interval)
+        self.assertIsNone(settings.ws_ping_timeout)
+
 
 class TestAdapterBehavior(unittest.TestCase):
     @patch.dict(os.environ, {}, clear=True)

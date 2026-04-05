@@ -652,7 +652,7 @@ BROWSER_TOOL_SCHEMAS = [
     },
     {
         "name": "browser_console",
-        "description": "Get browser console output and JavaScript errors from the current page. Returns console.log/warn/error/info messages and uncaught JS exceptions. Use this to detect silent JavaScript errors, failed API calls, and application warnings. Requires browser_navigate to be called first.",
+        "description": "Get browser console output and JavaScript errors from the current page. Returns console.log/warn/error/info messages and uncaught JS exceptions. Use this to detect silent JavaScript errors, failed API calls, and application warnings. Requires browser_navigate to be called first. When 'expression' is provided, evaluates JavaScript in the page context and returns the result — use this for DOM inspection, reading page state, or extracting data programmatically.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -660,6 +660,10 @@ BROWSER_TOOL_SCHEMAS = [
                     "type": "boolean",
                     "default": False,
                     "description": "If true, clear the message buffers after reading"
+                },
+                "expression": {
+                    "type": "string",
+                    "description": "JavaScript expression to evaluate in the page context. Runs in the browser like DevTools console — full access to DOM, window, document. Return values are serialized to JSON. Example: 'document.title' or 'document.querySelectorAll(\"a\").length'"
                 }
             },
             "required": []
@@ -1486,19 +1490,26 @@ def browser_close(task_id: Optional[str] = None) -> str:
     return json.dumps(response, ensure_ascii=False)
 
 
-def browser_console(clear: bool = False, task_id: Optional[str] = None) -> str:
-    """Get browser console messages and JavaScript errors.
+def browser_console(clear: bool = False, expression: Optional[str] = None, task_id: Optional[str] = None) -> str:
+    """Get browser console messages and JavaScript errors, or evaluate JS in the page.
     
-    Returns both console output (log/warn/error/info from the page's JS)
-    and uncaught exceptions (crashes, unhandled promise rejections).
+    When ``expression`` is provided, evaluates JavaScript in the page context
+    (like the DevTools console) and returns the result.  Otherwise returns
+    console output (log/warn/error/info) and uncaught exceptions.
     
     Args:
         clear: If True, clear the message/error buffers after reading
+        expression: JavaScript expression to evaluate in the page context
         task_id: Task identifier for session isolation
         
     Returns:
-        JSON string with console messages and JS errors
+        JSON string with console messages/errors, or eval result
     """
+    # --- JS evaluation mode ---
+    if expression is not None:
+        return _browser_eval(expression, task_id)
+
+    # --- Console output mode (original behaviour) ---
     if _is_camofox_mode():
         from tools.browser_camofox import camofox_console
         return camofox_console(clear, task_id)
@@ -1535,6 +1546,80 @@ def browser_console(clear: bool = False, task_id: Optional[str] = None) -> str:
         "total_messages": len(messages),
         "total_errors": len(errors),
     }, ensure_ascii=False)
+
+
+def _browser_eval(expression: str, task_id: Optional[str] = None) -> str:
+    """Evaluate a JavaScript expression in the page context and return the result."""
+    if _is_camofox_mode():
+        return _camofox_eval(expression, task_id)
+
+    effective_task_id = task_id or "default"
+    result = _run_browser_command(effective_task_id, "eval", [expression])
+
+    if not result.get("success"):
+        err = result.get("error", "eval failed")
+        # Detect backend capability gaps and give the model a clear signal
+        if any(hint in err.lower() for hint in ("unknown command", "not supported", "not found", "no such command")):
+            return json.dumps({
+                "success": False,
+                "error": f"JavaScript evaluation is not supported by this browser backend. {err}",
+            })
+        return json.dumps({
+            "success": False,
+            "error": err,
+        })
+
+    data = result.get("data", {})
+    raw_result = data.get("result")
+
+    # The eval command returns the JS result as a string.  If the string
+    # is valid JSON, parse it so the model gets structured data.
+    parsed = raw_result
+    if isinstance(raw_result, str):
+        try:
+            parsed = json.loads(raw_result)
+        except (json.JSONDecodeError, ValueError):
+            pass  # keep as string
+
+    return json.dumps({
+        "success": True,
+        "result": parsed,
+        "result_type": type(parsed).__name__,
+    }, ensure_ascii=False, default=str)
+
+
+def _camofox_eval(expression: str, task_id: Optional[str] = None) -> str:
+    """Evaluate JS via Camofox's /tabs/{tab_id}/eval endpoint (if available)."""
+    from tools.browser_camofox import _get_session, _ensure_tab, _post
+    try:
+        session = _get_session(task_id or "default")
+        tab_id = _ensure_tab(session)
+        resp = _post(f"/tabs/{tab_id}/eval", json_data={"expression": expression})
+
+        # Camofox returns the result in a JSON envelope
+        raw_result = resp.get("result") if isinstance(resp, dict) else resp
+        parsed = raw_result
+        if isinstance(raw_result, str):
+            try:
+                parsed = json.loads(raw_result)
+            except (json.JSONDecodeError, ValueError):
+                pass
+
+        return json.dumps({
+            "success": True,
+            "result": parsed,
+            "result_type": type(parsed).__name__,
+        }, ensure_ascii=False, default=str)
+    except Exception as e:
+        error_msg = str(e)
+        # Graceful degradation — server may not support eval
+        if any(code in error_msg for code in ("404", "405", "501")):
+            return json.dumps({
+                "success": False,
+                "error": "JavaScript evaluation is not supported by this Camofox server. "
+                         "Use browser_snapshot or browser_vision to inspect page state.",
+            })
+        return json.dumps({"success": False, "error": error_msg})
 
 
 def _maybe_start_recording(task_id: str):
@@ -2109,7 +2194,7 @@ registry.register(
     name="browser_console",
     toolset="browser",
     schema=_BROWSER_SCHEMA_MAP["browser_console"],
-    handler=lambda args, **kw: browser_console(clear=args.get("clear", False), task_id=kw.get("task_id")),
+    handler=lambda args, **kw: browser_console(clear=args.get("clear", False), expression=args.get("expression"), task_id=kw.get("task_id")),
     check_fn=check_browser_requirements,
     emoji="🖥️",
 )

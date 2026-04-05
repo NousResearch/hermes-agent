@@ -974,6 +974,18 @@ class APIServerAdapter(BasePlatformAdapter):
             resume_job as _cron_resume,
             trigger_job as _cron_trigger,
         )
+        # Wrap as staticmethod to prevent descriptor binding — these are plain
+        # module functions, not instance methods.  Without this, self._cron_*()
+        # injects ``self`` as the first positional argument and every call
+        # raises TypeError.
+        _cron_list = staticmethod(_cron_list)
+        _cron_get = staticmethod(_cron_get)
+        _cron_create = staticmethod(_cron_create)
+        _cron_update = staticmethod(_cron_update)
+        _cron_remove = staticmethod(_cron_remove)
+        _cron_pause = staticmethod(_cron_pause)
+        _cron_resume = staticmethod(_cron_resume)
+        _cron_trigger = staticmethod(_cron_trigger)
         _CRON_AVAILABLE = True
     except ImportError:
         pass

@@ -563,7 +563,7 @@ class CLISessionMixin:
         """Start a fresh session with a new session ID and cleared agent state."""
         from cli import (
             CLI_CONFIG, _parse_service_tier_config,
-            _sync_process_session_id, datetime)
+            _sync_process_session_id, datetime, logger)
         from hermes_cli.cli_model_switch_mixin import _resolve_cli_reasoning
         old_session_id = self.session_id
         _boundary_snapshot = None
@@ -597,6 +597,13 @@ class CLISessionMixin:
         self.session_start = datetime.now()
         # The gateway's new session; getattr: tests drive new_session unbound (main's mint then).
         self.session_id = getattr(self, "_new_session_id", lambda now: new_session_id(now))(self.session_start)
+        try:
+            from tools.next_session_handoff import transfer_next_session_handoff
+            transfer_next_session_handoff(old_session_id or "", self.session_id)
+        except OSError as exc:
+            # Leave the source-keyed pending record intact so a transient filesystem
+            # failure never turns a one-shot handoff into silent data loss.
+            logger.warning("Could not transfer next-session handoff during /new: %s", exc, exc_info=True)
         # getattr: tests drive new_session unbound against a SimpleNamespace stand-in.
         getattr(self, "_write_terminal_breadcrumb", lambda: None)()
         self.conversation_history = []

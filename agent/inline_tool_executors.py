@@ -147,6 +147,7 @@ def _memory(agent, args: dict, ctx: InlineToolContext) -> Any:
             ("old_text", "old_text"), ("new_text", "new_text"), ("operations", "operations"),
         ),
         store=agent._memory_store,
+        session_id=getattr(agent, "session_id", None),
     )
     # Mirror built-in memory writes to external providers; gating lives in
     # MemoryManager.notify_memory_tool_write.

@@ -137,6 +137,23 @@ class TestBuildApiKwargsOpenRouter:
         assert messages[1]["tool_calls"][0]["response_item_id"] == "fc_123"
         assert "codex_reasoning_items" in messages[1]
 
+    def test_should_sanitize_tool_calls_codex_vs_chat(self, monkeypatch):
+        """Codex API should NOT sanitize, all other APIs should sanitize."""
+        # Codex mode should NOT need sanitization
+        codex_agent = _make_agent(monkeypatch, "openrouter")
+        codex_agent.api_mode = "codex_responses"
+        assert codex_agent._should_sanitize_tool_calls() is False
+
+        # Chat completions mode should need sanitization
+        chat_agent = _make_agent(monkeypatch, "openrouter")
+        chat_agent.api_mode = "chat_completions"
+        assert chat_agent._should_sanitize_tool_calls() is True
+
+        # Anthropic mode should need sanitization
+        anthropic_agent = _make_agent(monkeypatch, "openrouter")
+        anthropic_agent.api_mode = "anthropic_messages"
+        assert anthropic_agent._should_sanitize_tool_calls() is True
+
 
 class TestDeveloperRoleSwap:
     """GPT-5 and Codex models should get 'developer' instead of 'system' role."""

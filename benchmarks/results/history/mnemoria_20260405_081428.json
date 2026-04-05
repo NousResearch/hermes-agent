@@ -1,0 +1,106 @@
+{
+  "backend": "mnemoria",
+  "profile": "balanced",
+  "embedding_model": "auto",
+  "timestamp": "2026-04-05T08:14:28.761536Z",
+  "suites": [
+    "M"
+  ],
+  "mean_score": 0.9,
+  "std": 0.0,
+  "ci_95": [
+    0.9,
+    0.9
+  ],
+  "per_category_mean": {
+    "format_sensitivity": 0.9
+  },
+  "per_category_std": {
+    "format_sensitivity": 0.0
+  },
+  "num_runs": 1,
+  "retrieval_metrics": {
+    "recall_at_1": 0.6,
+    "recall_at_3": 0.6,
+    "recall_at_5": 0.6,
+    "recall_at_10": 0.6,
+    "mrr": 0.6,
+    "ndcg_at_5": 0.6,
+    "ndcg_at_10": 0.6,
+    "average_precision": 0.6,
+    "exact_match": 0.0,
+    "token_f1": 0.12933545986177566,
+    "token_precision": 0.07279950441715147,
+    "token_recall": 0.6
+  },
+  "cost_metrics": {
+    "tokens_per_query": 35.0,
+    "tokens_per_correct": 38.888888888888886,
+    "cost_efficiency": 0.17408376325554373,
+    "score": 0.9,
+    "total_tokens": 350.0,
+    "total_queries": 10.0,
+    "correct": 9.0,
+    "total": 10.0
+  },
+  "runs": [
+    {
+      "seed": 42,
+      "overall_score": 0.9,
+      "wall_time_seconds": 60.009366035461426,
+      "token_usage": {
+        "recall_tokens": 350,
+        "recall_chars": 1415,
+        "recall_queries": 10,
+        "avg_recall_tokens_per_query": 35
+      },
+      "retrieval_metrics": {
+        "recall_at_1": 0.6,
+        "recall_at_3": 0.6,
+        "recall_at_5": 0.6,
+        "recall_at_10": 0.6,
+        "mrr": 0.6,
+        "ndcg_at_5": 0.6,
+        "ndcg_at_10": 0.6,
+        "average_precision": 0.6,
+        "exact_match": 0.0,
+        "token_f1": 0.12933545986177566,
+        "token_precision": 0.07279950441715147,
+        "token_recall": 0.6
+      },
+      "cost_metrics": {
+        "tokens_per_query": 35.0,
+        "tokens_per_correct": 38.888888888888886,
+        "cost_efficiency": 0.17408376325554373,
+        "score": 0.9,
+        "total_tokens": 350,
+        "total_queries": 10,
+        "correct": 9,
+        "total": 10
+      },
+      "categories": {
+        "format_sensitivity": {
+          "score": 0.9,
+          "correct": 9,
+          "total": 10,
+          "recall_tokens": 350,
+          "recall_chars": 1415,
+          "retrieval_metrics": {
+            "recall_at_1": 0.6,
+            "recall_at_3": 0.6,
+            "recall_at_5": 0.6,
+            "recall_at_10": 0.6,
+            "mrr": 0.6,
+            "ndcg_at_5": 0.6,
+            "ndcg_at_10": 0.6,
+            "average_precision": 0.6,
+            "exact_match": 0.0,
+            "token_f1": 0.12933545986177566,
+            "token_precision": 0.07279950441715147,
+            "token_recall": 0.6
+          }
+        }
+      }
+    }
+  ]
+}

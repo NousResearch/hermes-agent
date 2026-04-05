@@ -1,0 +1,106 @@
+{
+  "backend": "structured",
+  "profile": "balanced",
+  "embedding_model": "auto",
+  "timestamp": "2026-04-05T07:56:05.906913Z",
+  "suites": [
+    "C"
+  ],
+  "mean_score": 0.8,
+  "std": 0.0,
+  "ci_95": [
+    0.8,
+    0.8
+  ],
+  "per_category_mean": {
+    "scopes": 0.8
+  },
+  "per_category_std": {
+    "scopes": 0.0
+  },
+  "num_runs": 1,
+  "retrieval_metrics": {
+    "recall_at_1": 0.6,
+    "recall_at_3": 0.7,
+    "recall_at_5": 0.7,
+    "recall_at_10": 0.7,
+    "mrr": 0.65,
+    "ndcg_at_5": 0.6630929753571457,
+    "ndcg_at_10": 0.6630929753571457,
+    "average_precision": 0.65,
+    "exact_match": 0.0,
+    "token_f1": 0.37375494388652286,
+    "token_precision": 0.2761309523809524,
+    "token_recall": 0.6812121212121213
+  },
+  "cost_metrics": {
+    "tokens_per_query": 15.9,
+    "tokens_per_correct": 19.875,
+    "cost_efficiency": 0.19612884122477306,
+    "score": 0.8,
+    "total_tokens": 318.0,
+    "total_queries": 20.0,
+    "correct": 16.0,
+    "total": 20.0
+  },
+  "runs": [
+    {
+      "seed": 42,
+      "overall_score": 0.8,
+      "wall_time_seconds": 0.02523350715637207,
+      "token_usage": {
+        "recall_tokens": 318,
+        "recall_chars": 1316,
+        "recall_queries": 20,
+        "avg_recall_tokens_per_query": 15
+      },
+      "retrieval_metrics": {
+        "recall_at_1": 0.6,
+        "recall_at_3": 0.7,
+        "recall_at_5": 0.7,
+        "recall_at_10": 0.7,
+        "mrr": 0.65,
+        "ndcg_at_5": 0.6630929753571457,
+        "ndcg_at_10": 0.6630929753571457,
+        "average_precision": 0.65,
+        "exact_match": 0.0,
+        "token_f1": 0.37375494388652286,
+        "token_precision": 0.2761309523809524,
+        "token_recall": 0.6812121212121213
+      },
+      "cost_metrics": {
+        "tokens_per_query": 15.9,
+        "tokens_per_correct": 19.875,
+        "cost_efficiency": 0.19612884122477306,
+        "score": 0.8,
+        "total_tokens": 318,
+        "total_queries": 20,
+        "correct": 16,
+        "total": 20
+      },
+      "categories": {
+        "scopes": {
+          "score": 0.8,
+          "correct": 16,
+          "total": 20,
+          "recall_tokens": 318,
+          "recall_chars": 1316,
+          "retrieval_metrics": {
+            "recall_at_1": 0.6,
+            "recall_at_3": 0.7,
+            "recall_at_5": 0.7,
+            "recall_at_10": 0.7,
+            "mrr": 0.65,
+            "ndcg_at_5": 0.6630929753571457,
+            "ndcg_at_10": 0.6630929753571457,
+            "average_precision": 0.65,
+            "exact_match": 0.0,
+            "token_f1": 0.37375494388652286,
+            "token_precision": 0.2761309523809524,
+            "token_recall": 0.6812121212121213
+          }
+        }
+      }
+    }
+  ]
+}

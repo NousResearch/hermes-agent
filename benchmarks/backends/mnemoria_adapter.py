@@ -22,9 +22,9 @@ CLI commands used
 ``mnemoria query ranked <q>``    Three-signal ranked retrieval (returns JSON).
 ``mnemoria health``              Validate vault + confirm binary works.
 
-All subcommands accept ``--vault <path>`` to specify which vault to operate on,
-letting each benchmark run use its own isolated temporary directory so runs
-never contaminate each other.
+Mnemoria discovers its vault by looking for a ``.mnemoria`` marker in CWD or
+parents.  Each benchmark run creates its own isolated temp directory and passes
+it as ``cwd`` to subprocess calls, so runs never contaminate each other.
 
 If the binary is absent the adapter raises ``RuntimeError`` at construction
 time with clear installation instructions, so failures surface early rather
@@ -175,10 +175,16 @@ class MnemoriaBenchmarkAdapter(BenchmarkableStore):
         check: bool = True,
         capture: bool = False,
     ) -> subprocess.CompletedProcess:
-        """Run mnemoria with ``--vault`` injected and return CompletedProcess."""
-        cmd = [self._binary, "--vault", str(self._vault)] + args
+        """Run mnemoria with CWD set to vault directory.
+
+        Mnemoria discovers its vault by walking up from CWD looking for
+        a ``.mnemoria`` marker directory, so we run every subprocess with
+        ``cwd=self._vault`` rather than passing a ``--vault`` flag.
+        """
+        cmd = [self._binary] + args
         return subprocess.run(
             cmd,
+            cwd=str(self._vault),
             timeout=timeout,
             check=check,
             capture_output=capture,
@@ -188,8 +194,9 @@ class MnemoriaBenchmarkAdapter(BenchmarkableStore):
     def _init_vault(self) -> None:
         """Initialise the vault by running ``mnemoria init``."""
         try:
-            # ``mnemoria init`` is idempotent — safe to call on existing vaults.
-            self._run(["init", str(self._vault)], timeout=60, check=True)
+            # ``mnemoria init .`` is idempotent — safe to call on existing vaults.
+            # We pass "." because _run already sets cwd to self._vault.
+            self._run(["init", ".", "--json"], timeout=60, check=True, capture=True)
             logger.debug("Mnemoria vault initialised at %s", self._vault)
         except subprocess.CalledProcessError as exc:
             raise RuntimeError(
@@ -207,50 +214,92 @@ class MnemoriaBenchmarkAdapter(BenchmarkableStore):
     def _parse_ranked_output(self, stdout: str, top_k: int) -> List[str]:
         """Parse ``mnemoria query ranked`` stdout into a list of content strings.
 
-        The command returns a JSON array of result objects.  Each object has at
-        least a ``content`` key (the note body) and optionally ``title`` and
-        ``score``.  We return the content strings ranked by the order Mnemoria
-        already provides.
+        The command returns ``{"success": true, "data": {"results": [...]}}``
+        where each result has ``title`` (note slug) and ``score``.  We read
+        the full note body from disk when possible; otherwise fall back to the
+        title (which is the fact content as a slug).
 
-        Falls back to line-splitting when the output is not valid JSON (e.g.
-        older CLI versions that emit plain text).
+        Falls back to line-splitting when the output is not valid JSON.
         """
         text = stdout.strip()
         if not text:
             return []
-        # Try JSON array first
+
+        # Primary path: JSON envelope {"success": ..., "data": {"results": [...]}}
+        if text.startswith("{"):
+            try:
+                envelope = json.loads(text)
+                data = envelope.get("data", {})
+                items = data.get("results") or data.get("items") or []
+                results: List[str] = []
+                for item in items[:top_k]:
+                    if not isinstance(item, dict):
+                        continue
+                    title = item.get("title", "")
+                    # Skip scaffold notes
+                    if title in ("index", "identity", "goals", "methodology",
+                                 "daily", "reminders", "related note", "relevant map"):
+                        continue
+                    # Try to read full note body from vault
+                    content = self._read_note_body(title)
+                    if content:
+                        results.append(content)
+                    elif title:
+                        # Fall back to de-slugifying the title
+                        results.append(title.replace("-", " "))
+                return results
+            except json.JSONDecodeError:
+                pass
+
+        # Fallback: JSON array
         if text.startswith("["):
             try:
                 items = json.loads(text)
-                results: List[str] = []
-                for item in items[:top_k]:
-                    if isinstance(item, dict):
-                        # Prefer explicit content field; fall back to title
-                        content = item.get("content") or item.get("title") or ""
-                        if content:
-                            results.append(str(content).strip())
-                    elif isinstance(item, str):
-                        results.append(item.strip())
-                return results
+                return [
+                    str(item.get("content") or item.get("title") or item)
+                    for item in items[:top_k]
+                    if item
+                ]
             except json.JSONDecodeError:
                 pass
-        # Try JSON object with a results array
-        if text.startswith("{"):
-            try:
-                obj = json.loads(text)
-                items = obj.get("results") or obj.get("items") or []
-                results = []
-                for item in items[:top_k]:
-                    if isinstance(item, dict):
-                        content = item.get("content") or item.get("title") or ""
-                        if content:
-                            results.append(str(content).strip())
-                return results
-            except json.JSONDecodeError:
-                pass
-        # Plain-text fallback: one result per non-empty line
+
+        # Plain-text fallback
         lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
         return lines[:top_k]
+
+    def _read_note_body(self, slug: str) -> str:
+        """Read the body content of a note by its slug.
+
+        Searches notes/ then inbox/ for ``<slug>.md``, strips YAML
+        frontmatter and wiki-link boilerplate, returns the core content.
+        """
+        for subdir in ("notes", "inbox", "self", "ops"):
+            note_path = self._vault / subdir / f"{slug}.md"
+            if note_path.exists():
+                try:
+                    text = note_path.read_text()
+                    # Strip YAML frontmatter
+                    if text.startswith("---"):
+                        end = text.find("---", 3)
+                        if end != -1:
+                            text = text[end + 3:].strip()
+                    # Strip heading (# Title)
+                    lines = text.split("\n")
+                    body_lines = []
+                    for line in lines:
+                        stripped = line.strip()
+                        if stripped.startswith("# "):
+                            continue  # skip title
+                        if stripped == "---":
+                            break  # stop at separator (wiki-links section)
+                        if stripped.startswith("Relevant Notes:") or stripped.startswith("Areas:"):
+                            break
+                        body_lines.append(line)
+                    body = "\n".join(body_lines).strip()
+                    return body if body else ""
+                except OSError:
+                    pass
+        return ""
 
     # ------------------------------------------------------------------
     # BenchmarkableStore interface
@@ -282,11 +331,53 @@ class MnemoriaBenchmarkAdapter(BenchmarkableStore):
         """
         del category, scope, importance  # unused by this backend
         try:
-            self._run(
-                ["add", content],
+            # ``mnemoria add <title>`` creates a note with a template body.
+            # The title must be multi-word prose.  We use the content as the
+            # title (Mnemoria slugifies it) and then overwrite the template
+            # body with the actual content so ranked queries can match it.
+            title = content[:120].strip() if len(content) > 120 else content.strip()
+            # Ensure multi-word (Mnemoria requires prose-as-title)
+            if len(title.split()) < 2:
+                title = f"fact {title}"
+
+            result = self._run(
+                ["add", "--type", "insight", "--", title],
                 timeout=self._timeout_store,
                 check=True,
+                capture=True,
             )
+            # Parse the created file path and overwrite template body with real content
+            slug = ""
+            try:
+                data = json.loads(result.stdout)
+                note_path = data.get("data", {}).get("path", "")
+                if note_path and Path(note_path).exists():
+                    note_file = Path(note_path)
+                    text = note_file.read_text()
+                    # Replace template placeholder with actual content
+                    text = text.replace(
+                        "{Content - your reasoning, evidence, context. "
+                        "Transform the material, don't just summarize.}",
+                        content,
+                    )
+                    note_file.write_text(text)
+                    slug = note_file.stem  # e.g. "the-capital-of-france-is-paris"
+            except (json.JSONDecodeError, OSError) as exc:
+                logger.debug("Could not overwrite note body: %s", exc)
+
+            # Promote from inbox/ to notes/ so ranked queries can find it.
+            # Mnemoria only searches promoted notes, not inbox.
+            if slug:
+                try:
+                    self._run(
+                        ["promote", slug, "--no-auto"],
+                        timeout=self._timeout_store,
+                        check=False,
+                        capture=True,
+                    )
+                except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+                    logger.debug("promote failed for %s, note stays in inbox", slug)
+
             self._store_count += 1
         except subprocess.CalledProcessError as exc:
             logger.warning(

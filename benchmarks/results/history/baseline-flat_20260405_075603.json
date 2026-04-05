@@ -1,0 +1,198 @@
+{
+  "backend": "baseline-flat",
+  "profile": "balanced",
+  "embedding_model": "auto",
+  "timestamp": "2026-04-05T07:56:03.688341Z",
+  "suites": [
+    "A"
+  ],
+  "mean_score": 0.825,
+  "std": 0.0,
+  "ci_95": [
+    0.825,
+    0.825
+  ],
+  "per_category_mean": {
+    "importance_filtering": 0.95,
+    "cross_reference": 0.5333333333333333,
+    "contradictions": 0.65,
+    "temporal_decay": 0.8888888888888888,
+    "semantic_recall": 1.0
+  },
+  "per_category_std": {
+    "importance_filtering": 0.0,
+    "cross_reference": 0.0,
+    "contradictions": 0.0,
+    "temporal_decay": 0.0,
+    "semantic_recall": 0.0
+  },
+  "num_runs": 1,
+  "retrieval_metrics": {
+    "recall_at_1": 0.3021111111111111,
+    "recall_at_3": 0.406,
+    "recall_at_5": 0.406,
+    "recall_at_10": 0.406,
+    "mrr": 0.3507222222222222,
+    "ndcg_at_5": 0.3650391071051612,
+    "ndcg_at_10": 0.3650391071051612,
+    "average_precision": 0.3507222222222222,
+    "exact_match": 0.0,
+    "token_f1": 0.36799837275583974,
+    "token_precision": 0.2904080576830576,
+    "token_recall": 0.6165604699666233
+  },
+  "cost_metrics": {
+    "tokens_per_query": 22.62,
+    "tokens_per_correct": 27.418181818181818,
+    "cost_efficiency": 0.18084423112761683,
+    "score": 0.825,
+    "total_tokens": 4524.0,
+    "total_queries": 200.0,
+    "correct": 165.0,
+    "total": 200.0
+  },
+  "runs": [
+    {
+      "seed": 42,
+      "overall_score": 0.825,
+      "wall_time_seconds": 0.04776287078857422,
+      "token_usage": {
+        "recall_tokens": 4524,
+        "recall_chars": 18687,
+        "recall_queries": 200,
+        "avg_recall_tokens_per_query": 22
+      },
+      "retrieval_metrics": {
+        "recall_at_1": 0.3021111111111111,
+        "recall_at_3": 0.406,
+        "recall_at_5": 0.406,
+        "recall_at_10": 0.406,
+        "mrr": 0.3507222222222222,
+        "ndcg_at_5": 0.3650391071051612,
+        "ndcg_at_10": 0.3650391071051612,
+        "average_precision": 0.3507222222222222,
+        "exact_match": 0.0,
+        "token_f1": 0.36799837275583974,
+        "token_precision": 0.2904080576830576,
+        "token_recall": 0.6165604699666233
+      },
+      "cost_metrics": {
+        "tokens_per_query": 22.62,
+        "tokens_per_correct": 27.418181818181818,
+        "cost_efficiency": 0.18084423112761683,
+        "score": 0.825,
+        "total_tokens": 4524,
+        "total_queries": 200,
+        "correct": 165,
+        "total": 200
+      },
+      "categories": {
+        "contradictions": {
+          "score": 0.65,
+          "correct": 13,
+          "total": 20,
+          "recall_tokens": 539,
+          "recall_chars": 2237,
+          "retrieval_metrics": {
+            "recall_at_1": 0.4,
+            "recall_at_3": 0.65,
+            "recall_at_5": 0.65,
+            "recall_at_10": 0.65,
+            "mrr": 0.5083333333333333,
+            "ndcg_at_5": 0.5446394630357186,
+            "ndcg_at_10": 0.5446394630357186,
+            "average_precision": 0.5083333333333333,
+            "exact_match": 0.0,
+            "token_f1": 0.2932581307581308,
+            "token_precision": 0.21123473748473748,
+            "token_recall": 0.5860119047619048
+          }
+        },
+        "cross_reference": {
+          "score": 0.5333333333333333,
+          "correct": 24,
+          "total": 45,
+          "recall_tokens": 834,
+          "recall_chars": 3478,
+          "retrieval_metrics": {
+            "recall_at_1": 0.044444444444444446,
+            "recall_at_3": 0.2,
+            "recall_at_5": 0.2,
+            "recall_at_10": 0.2,
+            "mrr": 0.12222222222222222,
+            "ndcg_at_5": 0.1425890727777823,
+            "ndcg_at_10": 0.1425890727777823,
+            "average_precision": 0.12222222222222222,
+            "exact_match": 0.0,
+            "token_f1": 0.1593814992500325,
+            "token_precision": 0.16724867724867726,
+            "token_recall": 0.18873015873015872
+          }
+        },
+        "importance_filtering": {
+          "score": 0.95,
+          "correct": 38,
+          "total": 40,
+          "recall_tokens": 1474,
+          "recall_chars": 6067,
+          "retrieval_metrics": {
+            "recall_at_1": 0.275,
+            "recall_at_3": 0.3,
+            "recall_at_5": 0.3,
+            "recall_at_10": 0.3,
+            "mrr": 0.2875,
+            "ndcg_at_5": 0.29077324383928643,
+            "ndcg_at_10": 0.29077324383928643,
+            "average_precision": 0.2875,
+            "exact_match": 0.0,
+            "token_f1": 0.41302070893383486,
+            "token_precision": 0.33862325174825164,
+            "token_recall": 0.6738803921611585
+          }
+        },
+        "semantic_recall": {
+          "score": 1.0,
+          "correct": 50,
+          "total": 50,
+          "recall_tokens": 866,
+          "recall_chars": 3543,
+          "retrieval_metrics": {
+            "recall_at_1": 0.28,
+            "recall_at_3": 0.28,
+            "recall_at_5": 0.28,
+            "recall_at_10": 0.28,
+            "mrr": 0.28,
+            "ndcg_at_5": 0.28,
+            "ndcg_at_10": 0.28,
+            "average_precision": 0.28,
+            "exact_match": 0.0,
+            "token_f1": 0.5842327297745254,
+            "token_precision": 0.4427147297147296,
+            "token_recall": 0.9235714285714286
+          }
+        },
+        "temporal_decay": {
+          "score": 0.8888888888888888,
+          "correct": 40,
+          "total": 45,
+          "recall_tokens": 811,
+          "recall_chars": 3362,
+          "retrieval_metrics": {
+            "recall_at_1": 0.5111111111111111,
+            "recall_at_3": 0.6,
+            "recall_at_5": 0.6,
+            "recall_at_10": 0.6,
+            "mrr": 0.5555555555555556,
+            "ndcg_at_5": 0.5671937558730185,
+            "ndcg_at_10": 0.5671937558730185,
+            "average_precision": 0.5555555555555556,
+            "exact_match": 0.0,
+            "token_f1": 0.3900987950626754,
+            "token_precision": 0.29221889221889213,
+            "token_recall": 0.7106084656084656
+          }
+        }
+      }
+    }
+  ]
+}

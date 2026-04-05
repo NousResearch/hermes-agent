@@ -7618,23 +7618,30 @@ class HermesCLI:
                 self._approval_state["selected"] = min(max_idx, self._approval_state["selected"] + 1)
                 event.app.invalidate()
 
-        # --- History navigation: up/down browse history in normal input mode ---
-        # The TextArea is multiline, so by default up/down only move the cursor.
-        # Buffer.auto_up/auto_down handle both: cursor movement when multi-line,
-        # history browsing when on the first/last line (or single-line input).
+        # --- Up/Down arrow behaviour in normal input mode ---
+        # display.arrow_keys_move_cursor: true  → pure cursor movement (like CC / Pi)
+        # display.arrow_keys_move_cursor: false → auto_up/auto_down (history on
+        #                                          first/last line, default legacy behaviour)
+        _arrow_cursor_only = bool(
+            CLI_CONFIG.get("display", {}).get("arrow_keys_move_cursor", True)
+        )
         _normal_input = Condition(
             lambda: not self._clarify_state and not self._approval_state and not self._sudo_state and not self._secret_state
         )
 
         @kb.add('up', filter=_normal_input)
         def history_up(event):
-            """Up arrow: browse history when on first line, else move cursor up."""
-            event.app.current_buffer.auto_up(count=event.arg)
+            if _arrow_cursor_only:
+                event.app.current_buffer.cursor_up(count=event.arg)
+            else:
+                event.app.current_buffer.auto_up(count=event.arg)
 
         @kb.add('down', filter=_normal_input)
         def history_down(event):
-            """Down arrow: browse history when on last line, else move cursor down."""
-            event.app.current_buffer.auto_down(count=event.arg)
+            if _arrow_cursor_only:
+                event.app.current_buffer.cursor_down(count=event.arg)
+            else:
+                event.app.current_buffer.auto_down(count=event.arg)
 
         @kb.add('c-c')
         def handle_ctrl_c(event):

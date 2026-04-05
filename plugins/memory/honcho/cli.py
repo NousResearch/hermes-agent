@@ -41,9 +41,10 @@ def clone_honcho_for_profile(profile_name: str) -> bool:
 
     # Clone settings from default block, override identity fields
     new_block = {}
-    for key in ("memoryMode", "recallMode", "writeFrequency", "sessionStrategy",
+    for key in ("recallMode", "writeFrequency", "sessionStrategy",
                 "sessionPeerPrefix", "contextTokens", "dialecticReasoningLevel",
-                "dialecticMaxChars", "saveMessages"):
+                "dialecticDynamic", "dialecticMaxChars", "messageMaxChars",
+                "dialecticMaxInputChars", "saveMessages", "observation"):
         val = default_block.get(key)
         if val is not None:
             new_block[key] = val
@@ -106,8 +107,10 @@ def cmd_enable(args) -> None:
     # If this is a new profile host block with no settings, clone from default
     if not block.get("aiPeer"):
         default_block = cfg.get("hosts", {}).get(HOST, {})
-        for key in ("memoryMode", "recallMode", "writeFrequency", "sessionStrategy",
-                    "contextTokens", "dialecticReasoningLevel", "dialecticMaxChars"):
+        for key in ("recallMode", "writeFrequency", "sessionStrategy",
+                    "contextTokens", "dialecticReasoningLevel", "dialecticDynamic",
+                    "dialecticMaxChars", "messageMaxChars", "dialecticMaxInputChars",
+                    "saveMessages", "observation"):
             val = default_block.get(key)
             if val is not None and key not in block:
                 block[key] = val
@@ -337,91 +340,135 @@ def cmd_setup(args) -> None:
     if not _ensure_sdk_installed():
         return
 
-    # All writes go to the active host block — root keys are managed by
-    # the user or the honcho CLI only.
     hosts = cfg.setdefault("hosts", {})
     hermes_host = hosts.setdefault(_host_key(), {})
 
-    # API key — shared credential, lives at root so all hosts can read it
-    current_key = cfg.get("apiKey", "")
-    masked = f"...{current_key[-8:]}" if len(current_key) > 8 else ("set" if current_key else "not set")
-    print(f"  Current API key: {masked}")
-    new_key = _prompt("Honcho API key (leave blank to keep current)", secret=True)
-    if new_key:
-        cfg["apiKey"] = new_key
+    # --- 1. Cloud or local? ---
+    print("  Deployment:")
+    print("    cloud -- Honcho cloud (api.honcho.dev)")
+    print("    local -- self-hosted Honcho server")
+    current_deploy = "local" if any(
+        h in (cfg.get("baseUrl") or cfg.get("base_url") or "")
+        for h in ("localhost", "127.0.0.1", "::1")
+    ) else "cloud"
+    deploy = _prompt("Cloud or local?", default=current_deploy)
+    is_local = deploy.lower() in ("local", "l")
 
-    effective_key = cfg.get("apiKey", "")
-    if not effective_key:
-        print("\n  No API key configured. Get your API key at https://app.honcho.dev")
-        print("  Run 'hermes honcho setup' again once you have a key.\n")
-        return
+    # Clean up legacy snake_case key
+    cfg.pop("base_url", None)
 
-    # Peer name
+    if is_local:
+        # --- Local: ask for base URL, skip or clear API key ---
+        current_url = cfg.get("baseUrl") or ""
+        new_url = _prompt("Base URL", default=current_url or "http://localhost:8000")
+        if new_url:
+            cfg["baseUrl"] = new_url
+
+        # For local no-auth, the SDK must not send an API key.
+        # We keep the key in config (for cloud switching later) but
+        # the client should skip auth when baseUrl is local.
+        current_key = cfg.get("apiKey", "")
+        if current_key:
+            print(f"\n  API key present in config (kept for cloud/hybrid use).")
+            print("  Local connections will skip auth automatically.")
+        else:
+            print("\n  No API key set. Local no-auth ready.")
+    else:
+        # --- Cloud: set default base URL, require API key ---
+        cfg.pop("baseUrl", None)  # cloud uses SDK default
+
+        current_key = cfg.get("apiKey", "")
+        masked = f"...{current_key[-8:]}" if len(current_key) > 8 else ("set" if current_key else "not set")
+        print(f"\n  Current API key: {masked}")
+        new_key = _prompt("Honcho API key (leave blank to keep current)", secret=True)
+        if new_key:
+            cfg["apiKey"] = new_key
+
+        if not cfg.get("apiKey"):
+            print("\n  No API key configured. Get yours at https://app.honcho.dev")
+            print("  Run 'hermes honcho setup' again once you have a key.\n")
+            return
+
+    # --- 3. Identity ---
     current_peer = hermes_host.get("peerName") or cfg.get("peerName", "")
     new_peer = _prompt("Your name (user peer)", default=current_peer or os.getenv("USER", "user"))
     if new_peer:
         hermes_host["peerName"] = new_peer
+
+    current_ai = hermes_host.get("aiPeer") or cfg.get("aiPeer", "hermes")
+    new_ai = _prompt("AI peer name", default=current_ai)
+    if new_ai:
+        hermes_host["aiPeer"] = new_ai
 
     current_workspace = hermes_host.get("workspace") or cfg.get("workspace", "hermes")
     new_workspace = _prompt("Workspace ID", default=current_workspace)
     if new_workspace:
         hermes_host["workspace"] = new_workspace
 
-    hermes_host.setdefault("aiPeer", _host_key())
-
-    # Memory mode
-    current_mode = hermes_host.get("memoryMode") or cfg.get("memoryMode", "hybrid")
-    print("\n  Memory mode options:")
-    print("    hybrid  — write to both Honcho and local MEMORY.md (default)")
-    print("    honcho  — Honcho only, skip MEMORY.md writes")
-    new_mode = _prompt("Memory mode", default=current_mode)
-    if new_mode in ("hybrid", "honcho"):
-        hermes_host["memoryMode"] = new_mode
+    # --- 4. Observation mode ---
+    current_obs = hermes_host.get("observationMode") or cfg.get("observationMode", "directional")
+    print("\n  Observation mode:")
+    print("    directional  -- all observations on, each AI peer builds its own view (default)")
+    print("    unified      -- shared pool, user observes self, AI observes others only")
+    new_obs = _prompt("Observation mode", default=current_obs)
+    if new_obs in ("unified", "directional"):
+        hermes_host["observationMode"] = new_obs
     else:
-        hermes_host["memoryMode"] = "hybrid"
+        hermes_host["observationMode"] = "directional"
 
-    # Write frequency
+    # --- 5. Write frequency ---
     current_wf = str(hermes_host.get("writeFrequency") or cfg.get("writeFrequency", "async"))
-    print("\n  Write frequency options:")
-    print("    async   — background thread, no token cost (recommended)")
-    print("    turn    — sync write after every turn")
-    print("    session — batch write at session end only")
-    print("    N       — write every N turns (e.g. 5)")
+    print("\n  Write frequency:")
+    print("    async   -- background thread, no token cost (recommended)")
+    print("    turn    -- sync write after every turn")
+    print("    session -- batch write at session end only")
+    print("    N       -- write every N turns (e.g. 5)")
     new_wf = _prompt("Write frequency", default=current_wf)
     try:
         hermes_host["writeFrequency"] = int(new_wf)
     except (ValueError, TypeError):
         hermes_host["writeFrequency"] = new_wf if new_wf in ("async", "turn", "session") else "async"
 
-    # Recall mode
+    # --- 6. Recall mode ---
     _raw_recall = hermes_host.get("recallMode") or cfg.get("recallMode", "hybrid")
     current_recall = "hybrid" if _raw_recall not in ("hybrid", "context", "tools") else _raw_recall
-    print("\n  Recall mode options:")
-    print("    hybrid  — auto-injected context + Honcho tools available (default)")
-    print("    context — auto-injected context only, Honcho tools hidden")
-    print("    tools   — Honcho tools only, no auto-injected context")
+    print("\n  Recall mode:")
+    print("    hybrid  -- auto-injected context + Honcho tools available (default)")
+    print("    context -- auto-injected context only, Honcho tools hidden")
+    print("    tools   -- Honcho tools only, no auto-injected context")
     new_recall = _prompt("Recall mode", default=current_recall)
     if new_recall in ("hybrid", "context", "tools"):
         hermes_host["recallMode"] = new_recall
 
-    # Session strategy
+    # --- 7. Session strategy ---
     current_strat = hermes_host.get("sessionStrategy") or cfg.get("sessionStrategy", "per-directory")
-    print("\n  Session strategy options:")
-    print("    per-directory — one session per working directory (default)")
-    print("    per-session   — new Honcho session each run, named by Hermes session ID")
-    print("    per-repo      — one session per git repository (uses repo root name)")
-    print("    global        — single session across all directories")
+    print("\n  Session strategy:")
+    print("    per-directory -- one session per working directory (default)")
+    print("    per-session   -- new Honcho session each run")
+    print("    per-repo      -- one session per git repository")
+    print("    global        -- single session across all directories")
     new_strat = _prompt("Session strategy", default=current_strat)
     if new_strat in ("per-session", "per-repo", "per-directory", "global"):
         hermes_host["sessionStrategy"] = new_strat
 
-    hermes_host.setdefault("enabled", True)
+    hermes_host["enabled"] = True
     hermes_host.setdefault("saveMessages", True)
 
     _write_config(cfg)
     print(f"\n  Config written to {write_path}")
 
-    # Test connection
+    # --- Auto-enable Honcho as memory provider in config.yaml ---
+    try:
+        from hermes_cli.config import load_config, save_config
+        hermes_config = load_config()
+        hermes_config.setdefault("memory", {})["provider"] = "honcho"
+        save_config(hermes_config)
+        print("  Memory provider set to 'honcho' in config.yaml")
+    except Exception as e:
+        print(f"  Could not auto-enable in config.yaml: {e}")
+        print("  Run: hermes config set memory.provider honcho")
+
+    # --- Test connection ---
     print("  Testing connection... ", end="", flush=True)
     try:
         from plugins.memory.honcho.client import HonchoClientConfig, get_honcho_client, reset_honcho_client
@@ -436,24 +483,23 @@ def cmd_setup(args) -> None:
     print("\n  Honcho is ready.")
     print(f"  Session:   {hcfg.resolve_session_name()}")
     print(f"  Workspace: {hcfg.workspace_id}")
-    print(f"  Peer:      {hcfg.peer_name}")
-    _mode_str = hcfg.memory_mode
-    if hcfg.peer_memory_modes:
-        overrides = ", ".join(f"{k}={v}" for k, v in hcfg.peer_memory_modes.items())
-        _mode_str = f"{hcfg.memory_mode}  (peers: {overrides})"
-    print(f"  Mode:      {_mode_str}")
+    print(f"  User:      {hcfg.peer_name}")
+    print(f"  AI peer:   {hcfg.ai_peer}")
+    print(f"  Observe:   {hcfg.observation_mode}")
     print(f"  Frequency: {hcfg.write_frequency}")
+    print(f"  Recall:    {hcfg.recall_mode}")
+    print(f"  Sessions:  {hcfg.session_strategy}")
     print("\n  Honcho tools available in chat:")
-    print("    honcho_context  — ask Honcho a question about you (LLM-synthesized)")
-    print("    honcho_search       — semantic search over your history (no LLM)")
-    print("    honcho_profile      — your peer card, key facts (no LLM)")
-    print("    honcho_conclude     — persist a user fact to Honcho memory (no LLM)")
+    print("    honcho_context   -- ask Honcho about the user (LLM-synthesized)")
+    print("    honcho_search    -- semantic search over history (no LLM)")
+    print("    honcho_profile   -- peer card, key facts (no LLM)")
+    print("    honcho_conclude  -- persist a user fact to memory (no LLM)")
     print("\n  Other commands:")
-    print("    hermes honcho status     — show full config")
-    print("    hermes honcho mode       — show or change memory mode")
-    print("    hermes honcho tokens     — show or set token budgets")
-    print("    hermes honcho identity   — seed or show AI peer identity")
-    print("    hermes honcho map <name> — map this directory to a session name\n")
+    print("    hermes honcho status     -- show full config")
+    print("    hermes honcho mode       -- change recall/observation mode")
+    print("    hermes honcho tokens     -- tune context and dialectic budgets")
+    print("    hermes honcho peer       -- update peer names")
+    print("    hermes honcho map <name> -- map this directory to a session name\n")
 
 
 def _active_profile_name() -> str:
@@ -546,11 +592,7 @@ def cmd_status(args) -> None:
     print(f"  User peer:      {hcfg.peer_name or 'not set'}")
     print(f"  Session key:    {hcfg.resolve_session_name()}")
     print(f"  Recall mode:    {hcfg.recall_mode}")
-    print(f"  Memory mode:    {hcfg.memory_mode}")
-    if hcfg.peer_memory_modes:
-        print("  Per-peer modes:")
-        for peer, mode in hcfg.peer_memory_modes.items():
-            print(f"    {peer}: {mode}")
+    print(f"  Observation:    user(me={hcfg.user_observe_me},others={hcfg.user_observe_others}) ai(me={hcfg.ai_observe_me},others={hcfg.ai_observe_others})")
     print(f"  Write freq:     {hcfg.write_frequency}")
 
     if hcfg.enabled and (hcfg.api_key or hcfg.base_url):
@@ -611,24 +653,22 @@ def _cmd_status_all() -> None:
     cfg = _read_config()
     active = _active_profile_name()
 
-    print(f"\nHoncho profiles ({len(rows)})\n" + "─" * 60)
-    print(f"  {'Profile':<14} {'Host':<22} {'Enabled':<9} {'Mode':<9} {'Recall':<9} {'Write'}")
-    print(f"  {'─' * 14} {'─' * 22} {'─' * 9} {'─' * 9} {'─' * 9} {'─' * 9}")
+    print(f"\nHoncho profiles ({len(rows)})\n" + "─" * 55)
+    print(f"  {'Profile':<14} {'Host':<22} {'Enabled':<9} {'Recall':<9} {'Write'}")
+    print(f"  {'─' * 14} {'─' * 22} {'─' * 9} {'─' * 9} {'─' * 9}")
 
     for name, host, block in rows:
         enabled = block.get("enabled", cfg.get("enabled"))
         if enabled is None:
-            # Auto-enable check: any credentials?
             has_creds = bool(cfg.get("apiKey") or os.environ.get("HONCHO_API_KEY"))
             enabled = has_creds if block else False
         enabled_str = "yes" if enabled else "no"
 
-        mode = block.get("memoryMode") or cfg.get("memoryMode", "hybrid")
         recall = block.get("recallMode") or cfg.get("recallMode", "hybrid")
         write = block.get("writeFrequency") or cfg.get("writeFrequency", "async")
 
         marker = " *" if name == active else ""
-        print(f"  {name + marker:<14} {host:<22} {enabled_str:<9} {mode:<9} {recall:<9} {write}")
+        print(f"  {name + marker:<14} {host:<22} {enabled_str:<9} {recall:<9} {write}")
 
     print(f"\n  * active profile\n")
 
@@ -751,25 +791,26 @@ def cmd_peer(args) -> None:
 
 
 def cmd_mode(args) -> None:
-    """Show or set the memory mode."""
+    """Show or set the recall mode."""
     MODES = {
-        "hybrid": "write to both Honcho and local MEMORY.md (default)",
-        "honcho": "Honcho only — MEMORY.md writes disabled",
+        "hybrid": "auto-injected context + Honcho tools available (default)",
+        "context": "auto-injected context only, Honcho tools hidden",
+        "tools": "Honcho tools only, no auto-injected context",
     }
     cfg = _read_config()
     mode_arg = getattr(args, "mode", None)
 
     if mode_arg is None:
         current = (
-            (cfg.get("hosts") or {}).get(_host_key(), {}).get("memoryMode")
-            or cfg.get("memoryMode")
+            (cfg.get("hosts") or {}).get(_host_key(), {}).get("recallMode")
+            or cfg.get("recallMode")
             or "hybrid"
         )
-        print("\nHoncho memory mode\n" + "─" * 40)
+        print("\nHoncho recall mode\n" + "─" * 40)
         for m, desc in MODES.items():
-            marker = " ←" if m == current else ""
-            print(f"  {m:<8}  {desc}{marker}")
-        print("\n  Set with: hermes honcho mode [hybrid|honcho]\n")
+            marker = " <-" if m == current else ""
+            print(f"  {m:<10}  {desc}{marker}")
+        print(f"\n  Set with: hermes honcho mode [hybrid|context|tools]\n")
         return
 
     if mode_arg not in MODES:
@@ -778,9 +819,9 @@ def cmd_mode(args) -> None:
 
     host = _host_key()
     label = f"[{host}] " if host != "hermes" else ""
-    cfg.setdefault("hosts", {}).setdefault(host, {})["memoryMode"] = mode_arg
+    cfg.setdefault("hosts", {}).setdefault(host, {})["recallMode"] = mode_arg
     _write_config(cfg)
-    print(f"  {label}Memory mode -> {mode_arg}  ({MODES[mode_arg]})\n")
+    print(f"  {label}Recall mode -> {mode_arg}  ({MODES[mode_arg]})\n")
 
 
 def cmd_tokens(args) -> None:

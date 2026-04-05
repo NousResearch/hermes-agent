@@ -257,7 +257,7 @@ class TestCrossPlatformDelivery:
 
         assert result.success is True
         mock_tg_adapter.send.assert_awaited_once_with(
-            "12345", "I've acknowledged the alert."
+            "12345", "I've acknowledged the alert.", metadata=None
         )
         # Delivery info should be cleaned up
         assert chat_id not in adapter._delivery_info

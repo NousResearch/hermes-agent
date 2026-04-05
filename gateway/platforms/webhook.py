@@ -484,6 +484,10 @@ class WebhookAdapter(BasePlatformAdapter):
 
         Supports dot-notation access into nested dicts:
         ``{pull_request.title}`` → ``payload["pull_request"]["title"]``
+
+        Special token ``{__raw__}`` dumps the entire payload as indented
+        JSON (truncated to 4000 chars).  Useful for monitoring alerts or
+        any webhook where the agent needs to see the full payload.
         """
         if not template:
             truncated = json.dumps(payload, indent=2)[:4000]
@@ -494,6 +498,9 @@ class WebhookAdapter(BasePlatformAdapter):
 
         def _resolve(match: re.Match) -> str:
             key = match.group(1)
+            # Special token: dump the entire payload as JSON
+            if key == "__raw__":
+                return json.dumps(payload, indent=2)[:4000]
             value: Any = payload
             for part in key.split("."):
                 if isinstance(value, dict):
@@ -613,4 +620,10 @@ class WebhookAdapter(BasePlatformAdapter):
                     error=f"No chat_id or home channel for {platform_name}",
                 )
 
-        return await adapter.send(chat_id, content)
+        # Pass thread_id from deliver_extra so Telegram forum topics work
+        metadata = None
+        thread_id = extra.get("message_thread_id") or extra.get("thread_id")
+        if thread_id:
+            metadata = {"thread_id": thread_id}
+
+        return await adapter.send(chat_id, content, metadata=metadata)

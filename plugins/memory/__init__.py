@@ -211,3 +211,80 @@ class _ProviderCollector:
 
     def register_hook(self, *args, **kwargs):
         pass
+
+    def register_cli_command(self, *args, **kwargs):
+        pass  # CLI registration happens via discover_plugin_cli_commands()
+
+
+def discover_plugin_cli_commands() -> List[dict]:
+    """Scan memory plugin directories for CLI command registrations.
+
+    Looks for a ``register_cli(subparser)`` function in each plugin's
+    ``cli.py``.  Returns a list of dicts with keys:
+    ``name``, ``help``, ``description``, ``setup_fn``, ``handler_fn``.
+
+    This is a lightweight scan — it only imports ``cli.py``, not the
+    full plugin module.  Safe to call during argparse setup before
+    any provider is loaded.
+    """
+    results: List[dict] = []
+    if not _MEMORY_PLUGINS_DIR.is_dir():
+        return results
+
+    for child in sorted(_MEMORY_PLUGINS_DIR.iterdir()):
+        if not child.is_dir() or child.name.startswith(("_", ".")):
+            continue
+        cli_file = child / "cli.py"
+        if not cli_file.exists():
+            continue
+
+        module_name = f"plugins.memory.{child.name}.cli"
+        try:
+            # Import the CLI module (lightweight — no SDK needed)
+            if module_name in sys.modules:
+                cli_mod = sys.modules[module_name]
+            else:
+                spec = importlib.util.spec_from_file_location(
+                    module_name, str(cli_file)
+                )
+                if not spec or not spec.loader:
+                    continue
+                cli_mod = importlib.util.module_from_spec(spec)
+                sys.modules[module_name] = cli_mod
+                spec.loader.exec_module(cli_mod)
+
+            register_cli = getattr(cli_mod, "register_cli", None)
+            if not callable(register_cli):
+                continue
+
+            # Read metadata from plugin.yaml if available
+            help_text = f"Manage {child.name} memory plugin"
+            description = ""
+            yaml_file = child / "plugin.yaml"
+            if yaml_file.exists():
+                try:
+                    import yaml
+                    with open(yaml_file) as f:
+                        meta = yaml.safe_load(f) or {}
+                    desc = meta.get("description", "")
+                    if desc:
+                        help_text = desc
+                        description = desc
+                except Exception:
+                    pass
+
+            handler_fn = getattr(cli_mod, "honcho_command", None) or \
+                         getattr(cli_mod, f"{child.name}_command", None)
+
+            results.append({
+                "name": child.name,
+                "help": help_text,
+                "description": description,
+                "setup_fn": register_cli,
+                "handler_fn": handler_fn,
+                "plugin": child.name,
+            })
+        except Exception as e:
+            logger.debug("Failed to scan CLI for memory plugin '%s': %s", child.name, e)
+
+    return results

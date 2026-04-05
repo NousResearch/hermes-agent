@@ -182,6 +182,32 @@ class PluginContext:
             cli._pending_input.put(msg)
         return True
 
+    # -- CLI command registration --------------------------------------------
+
+    def register_cli_command(
+        self,
+        name: str,
+        help: str,
+        setup_fn: Callable,
+        handler_fn: Callable | None = None,
+        description: str = "",
+    ) -> None:
+        """Register a CLI subcommand (e.g. ``hermes honcho ...``).
+
+        The *setup_fn* receives an argparse subparser and should add any
+        arguments/sub-subparsers.  If *handler_fn* is provided it is set
+        as the default dispatch function via ``set_defaults(func=...)``.
+        """
+        self._manager._cli_commands[name] = {
+            "name": name,
+            "help": help,
+            "description": description,
+            "setup_fn": setup_fn,
+            "handler_fn": handler_fn,
+            "plugin": self.manifest.name,
+        }
+        logger.debug("Plugin %s registered CLI command: %s", self.manifest.name, name)
+
     # -- hook registration --------------------------------------------------
 
     def register_hook(self, hook_name: str, callback: Callable) -> None:
@@ -213,6 +239,7 @@ class PluginManager:
         self._plugins: Dict[str, LoadedPlugin] = {}
         self._hooks: Dict[str, List[Callable]] = {}
         self._plugin_tool_names: Set[str] = set()
+        self._cli_commands: Dict[str, dict] = {}
         self._discovered: bool = False
         self._cli_ref = None  # Set by CLI after plugin discovery
 
@@ -524,6 +551,15 @@ def invoke_hook(hook_name: str, **kwargs: Any) -> List[Any]:
 def get_plugin_tool_names() -> Set[str]:
     """Return the set of tool names registered by plugins."""
     return get_plugin_manager()._plugin_tool_names
+
+
+def get_plugin_cli_commands() -> Dict[str, dict]:
+    """Return CLI commands registered by general plugins.
+
+    Returns a dict of ``{name: {help, setup_fn, handler_fn, ...}}``
+    suitable for wiring into argparse subparsers.
+    """
+    return dict(get_plugin_manager()._cli_commands)
 
 
 def get_plugin_toolsets() -> List[tuple]:

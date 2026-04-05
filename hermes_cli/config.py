@@ -315,7 +315,7 @@ DEFAULT_CONFIG = {
             "model": "",
             "base_url": "",
             "api_key": "",
-            "timeout": 30,         # seconds — increase for slow local models
+            "timeout": 360,        # seconds (6min) — per-attempt LLM summarization timeout; increase for slow local models
         },
         "compression": {
             "provider": "auto",

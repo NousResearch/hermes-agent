@@ -446,6 +446,7 @@ class GatewayRunner:
         # Track running agents per session for interrupt support
         # Key: session_key, Value: AIAgent instance
         self._running_agents: Dict[str, Any] = {}
+        self._running_agents_ts: Dict[str, float] = {}  # start timestamp per session
         self._pending_messages: Dict[str, str] = {}  # Queued messages during interrupt
 
         # Cache AIAgent instances per session to preserve prompt caching.
@@ -794,10 +795,11 @@ class GatewayRunner:
         result = resolve_turn_route(user_message, getattr(self, "_smart_model_routing", {}), primary)
 
         # Log routing decision for ML training data collection (best-effort)
+        routing_decision_id = None
         try:
             from agent.routing_features import extract_features
             features = extract_features(user_message)
-            self._session_db.log_routing_decision(
+            routing_decision_id = self._session_db.log_routing_decision(
                 routed_model=result.get("model") or "",
                 message_text=user_message[:500],
                 routing_reason=result.get("label") or "primary",
@@ -808,6 +810,20 @@ class GatewayRunner:
             )
         except Exception:
             pass  # Never disrupt the gateway
+
+        # Record routing decision for implicit signal collection
+        try:
+            from agent.implicit_signal_collector import ImplicitSignalCollector
+            if not hasattr(self, "_gateway_signal_collector"):
+                self._gateway_signal_collector = ImplicitSignalCollector(self._session_db)
+            self._gateway_signal_collector.on_routing_decision(
+                routed_model=result.get("model") or "",
+                routing_reason=result.get("label") or "primary",
+                message_text=user_message[:500],
+                routing_decision_id=routing_decision_id,
+            )
+        except Exception:
+            pass
 
         return result
 
@@ -1768,6 +1784,23 @@ class GatewayRunner:
         # simultaneous updates. Do NOT interrupt for photo-only follow-ups here;
         # let the adapter-level batching/queueing logic absorb them.
         _quick_key = self._session_key_for_source(source)
+
+        # Staleness eviction (v0.7.0): if an entry has been in
+        # _running_agents for longer than the agent timeout + grace,
+        # it's a leaked lock from a hung/crashed handler. (#2153)
+        _raw_stale_timeout = float(os.getenv("HERMES_AGENT_TIMEOUT", "600"))
+        _STALE_TTL = (_raw_stale_timeout + 60) if _raw_stale_timeout > 0 else float("inf")
+        _stale_ts = self._running_agents_ts.get(_quick_key, 0)
+        if (_quick_key in self._running_agents
+                and _stale_ts
+                and (time.time() - _stale_ts) > _STALE_TTL):
+            logger.warning(
+                "Evicting stale _running_agents entry for %s (age: %.0fs)",
+                _quick_key[:30], time.time() - _stale_ts,
+            )
+            del self._running_agents[_quick_key]
+            self._running_agents_ts.pop(_quick_key, None)
+
         if _quick_key in self._running_agents:
             if event.get_command() == "status":
                 return await self._handle_status_command(event)
@@ -1817,6 +1850,24 @@ class GatewayRunner:
                 if _quick_key in self._running_agents:
                     del self._running_agents[_quick_key]
                 return await self._handle_reset_command(event)
+
+            # /approve and /deny must bypass the running-agent guard
+            # (v0.7.0) — the agent thread is blocked waiting for approval,
+            # so queueing these commands would deadlock.
+            if _cmd_def_inner and _cmd_def_inner.name in ("approve", "deny"):
+                from tools.approval import resolve_gateway_approval
+                _choice = "once" if _cmd_def_inner.name == "approve" else "deny"
+                _resolve_all = False
+                _raw_text = (event.text or "").strip().lower()
+                if "all" in _raw_text:
+                    _resolve_all = True
+                    _choice = "session"
+                _resolved = resolve_gateway_approval(
+                    _quick_key, _choice, resolve_all=_resolve_all)
+                if _resolved:
+                    _verb = "Approved" if _cmd_def_inner.name == "approve" else "Denied"
+                    return f"{_verb} {_resolved} pending command(s)."
+                return "No pending approval requests."
 
             # /queue <prompt> — queue without interrupting
             if event.get_command() in ("queue", "q"):
@@ -2093,6 +2144,7 @@ class GatewayRunner:
         # "already running" guard and spin up a duplicate agent for the
         # same session — corrupting the transcript.
         self._running_agents[_quick_key] = _AGENT_PENDING_SENTINEL
+        self._running_agents_ts[_quick_key] = time.time()
 
         try:
             return await self._handle_message_with_agent(event, source, _quick_key)
@@ -2103,6 +2155,7 @@ class GatewayRunner:
             # not linger or the session would be permanently locked out.
             if self._running_agents.get(_quick_key) is _AGENT_PENDING_SENTINEL:
                 del self._running_agents[_quick_key]
+            self._running_agents_ts.pop(_quick_key, None)
 
     async def _handle_message_with_agent(self, event, source, _quick_key: str):
         """Inner handler that runs under the _running_agents sentinel guard."""
@@ -5657,6 +5710,16 @@ class GatewayRunner:
             # processes can be mapped back to this gateway session
             os.environ["HERMES_SESSION_KEY"] = session_key or ""
 
+            # Bind contextvars for this thread (v0.7.0) — env var is racy
+            # when gateway runs concurrent sessions in the executor pool.
+            from tools.approval import set_current_session_key, reset_current_session_key
+            _sk_token = set_current_session_key(session_key or "")
+            try:
+                return _run_sync_inner()
+            finally:
+                reset_current_session_key(_sk_token)
+
+        def _run_sync_inner():
             # Read from env var or use default (same as CLI)
             max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
             
@@ -6050,10 +6113,51 @@ class GatewayRunner:
         
         interrupt_monitor = asyncio.create_task(monitor_for_interrupt())
         
+        # Register gateway approval callback (v0.7.0) — bridges sync
+        # agent thread to async gateway for approval request notifications.
+        from tools.approval import register_gateway_notify, unregister_gateway_notify
+        _approval_session = session_key or _quick_key
+        loop = asyncio.get_event_loop()
+
+        def _approval_notify(approval_data):
+            try:
+                loop.call_soon_threadsafe(
+                    asyncio.ensure_future,
+                    status_callback("approval_request", approval_data),
+                )
+            except Exception as _anf:
+                logger.warning("Approval notify failed: %s", _anf)
+
+        register_gateway_notify(_approval_session, _approval_notify)
+
         try:
-            # Run in thread pool to not block
-            loop = asyncio.get_event_loop()
-            response = await loop.run_in_executor(None, run_sync)
+            # Run in thread pool to not block, with timeout (v0.7.0)
+            _agent_timeout_raw = float(os.getenv("HERMES_AGENT_TIMEOUT", "600"))
+            _agent_timeout = _agent_timeout_raw if _agent_timeout_raw > 0 else None
+            try:
+                response = await asyncio.wait_for(
+                    loop.run_in_executor(None, run_sync),
+                    timeout=_agent_timeout,
+                )
+            except asyncio.TimeoutError:
+                logger.error("Agent timed out after %.0fs for session %s",
+                             _agent_timeout, session_key)
+                _timed_out = agent_holder[0]
+                if _timed_out and hasattr(_timed_out, "interrupt"):
+                    _timed_out.interrupt("Execution timed out")
+                _timeout_mins = int(_agent_timeout // 60)
+                response = {
+                    "final_response": (
+                        f"⏱️ Request timed out after {_timeout_mins} minutes. "
+                        "Set HERMES_AGENT_TIMEOUT in .env (seconds, 0 = no limit) "
+                        "and restart the gateway.\nTry again, or use /reset."
+                    ),
+                    "messages": [],
+                    "api_calls": 0,
+                    "tools": tools_holder[0] or [],
+                    "history_offset": 0,
+                    "failed": True,
+                }
 
             # Track fallback model state: if the agent switched to a
             # fallback model during this run, persist it so /model shows
@@ -6148,6 +6252,9 @@ class GatewayRunner:
                     _interrupt_depth=_interrupt_depth + 1,
                 )
         finally:
+            # Unregister approval callback so blocked threads don't hang
+            unregister_gateway_notify(_approval_session)
+
             # Stop progress sender and interrupt monitor
             if progress_task:
                 progress_task.cancel()

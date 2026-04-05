@@ -2759,11 +2759,12 @@ class AIAgent:
                 _inject = any(p in model_lower for p in TOOL_USE_ENFORCEMENT_MODELS)
             if _inject:
                 prompt_parts.append(TOOL_USE_ENFORCEMENT_GUIDANCE)
-                # Google model operational guidance (conciseness, absolute
-                # paths, parallel tool calls, verify-before-edit, etc.)
-                _model_lower = (self.model or "").lower()
-                if "gemini" in _model_lower or "gemma" in _model_lower:
-                    prompt_parts.append(GOOGLE_MODEL_OPERATIONAL_GUIDANCE)
+            # Google model operational guidance (conciseness, absolute
+            # paths, parallel tool calls, verify-before-edit, etc.)
+            # Injected independently of tool-use enforcement.
+            _model_lower = (self.model or "").lower()
+            if "gemini" in _model_lower or "gemma" in _model_lower:
+                prompt_parts.append(GOOGLE_MODEL_OPERATIONAL_GUIDANCE)
 
         # so it can refer the user to them rather than reinventing answers.
 

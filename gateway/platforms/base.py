@@ -377,23 +377,26 @@ class SendResult:
     message_id: Optional[str] = None
     error: Optional[str] = None
     raw_response: Any = None
-    retryable: bool = False  # True for transient errors (network, timeout) — base will retry automatically
+    retryable: bool = False  # True for transient connection errors — base will retry automatically
 
 
-# Error substrings that indicate a transient network failure worth retrying
+# Error substrings that indicate a transient *connection* failure worth retrying.
+# "timeout" / "timed out" / "readtimeout" / "writetimeout" are intentionally
+# excluded: a read/write timeout on a non-idempotent call (e.g. send_message)
+# means the request may have reached the server — retrying risks duplicate
+# delivery.  "connecttimeout" is safe because the connection was never
+# established.  Platforms that know a timeout is safe to retry should set
+# SendResult.retryable = True explicitly.
 _RETRYABLE_ERROR_PATTERNS = (
     "connecterror",
     "connectionerror",
     "connectionreset",
     "connectionrefused",
-    "timeout",
-    "timed out",
+    "connecttimeout",
     "network",
     "broken pipe",
     "remotedisconnected",
     "eoferror",
-    "readtimeout",
-    "writetimeout",
 )
 
 
@@ -927,6 +930,18 @@ class BasePlatformAdapter(ABC):
         lowered = error.lower()
         return any(pat in lowered for pat in _RETRYABLE_ERROR_PATTERNS)
 
+    @staticmethod
+    def _is_timeout_error(error: Optional[str]) -> bool:
+        """Return True if the error string indicates a read/write timeout.
+
+        Timeout errors are NOT retryable and should NOT trigger plain-text
+        fallback — the request may have already been delivered.
+        """
+        if not error:
+            return False
+        lowered = error.lower()
+        return "timed out" in lowered or "readtimeout" in lowered or "writetimeout" in lowered
+
     async def _send_with_retry(
         self,
         chat_id: str,
@@ -957,6 +972,11 @@ class BasePlatformAdapter(ABC):
 
         error_str = result.error or ""
         is_network = result.retryable or self._is_retryable_error(error_str)
+
+        # Timeout errors are not safe to retry (message may have been
+        # delivered) and not formatting errors — return the failure as-is.
+        if not is_network and self._is_timeout_error(error_str):
+            return result
 
         if is_network:
             # Retry with exponential backoff for transient errors

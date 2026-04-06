@@ -155,6 +155,8 @@ Your agent has access to all the same tools and capabilities as when using the C
 
 :::tip Tool Progress
 With streaming enabled (the default), you'll see brief inline indicators as tools run — the tool emoji and its key argument. These appear in the response stream before the agent's final answer, giving you visibility into what's happening behind the scenes.
+
+If your frontend wants the cleaner "final answer only" style, send `"verbose": false` (or the more explicit `"stream_tool_progress": false`) in the chat-completions request body.
 :::
 
 ## Configuration Reference

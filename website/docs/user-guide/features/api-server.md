@@ -87,6 +87,8 @@ Standard OpenAI Chat Completions format. Stateless — the full conversation is 
 
 **Tool progress in streams**: When the agent calls tools during a streaming request, brief progress indicators are injected into the content stream as the tools start executing (e.g. `` `💻 pwd` ``, `` `🔍 Python docs` ``). These appear as inline markdown before the agent's response text, giving frontends like Open WebUI real-time visibility into tool execution.
 
+If a client wants a cleaner stream, it can suppress those inline tool updates per request by sending either `"verbose": false` or `"stream_tool_progress": false`. `"stream_tool_progress"` takes precedence when both are present.
+
 ### POST /v1/responses
 
 OpenAI Responses API format. Supports server-side conversation state via `previous_response_id` — the server stores full conversation history (including tool calls and results) so multi-turn context is preserved without the client managing it.

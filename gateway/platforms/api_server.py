@@ -50,6 +50,19 @@ MAX_STORED_RESPONSES = 100
 MAX_REQUEST_BYTES = 1_000_000  # 1 MB default limit for POST bodies
 
 
+def _coerce_optional_bool(value: Any) -> Optional[bool]:
+    """Parse optional request booleans without rejecting unknown OpenAI fields."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"1", "true", "yes", "on"}:
+            return True
+        if lowered in {"0", "false", "no", "off"}:
+            return False
+    return None
+
+
 def check_api_server_requirements() -> bool:
     """Check if API server dependencies are available."""
     return AIOHTTP_AVAILABLE
@@ -498,6 +511,8 @@ class APIServerAdapter(BasePlatformAdapter):
             )
 
         stream = body.get("stream", False)
+        verbose_requested = _coerce_optional_bool(body.get("verbose"))
+        stream_tool_progress_requested = _coerce_optional_bool(body.get("stream_tool_progress"))
 
         # Extract system message (becomes ephemeral system prompt layered ON TOP of core)
         system_prompt = None
@@ -551,6 +566,11 @@ class APIServerAdapter(BasePlatformAdapter):
         if stream:
             import queue as _q
             _stream_q: _q.Queue = _q.Queue()
+            stream_tool_progress = True
+            if stream_tool_progress_requested is not None:
+                stream_tool_progress = stream_tool_progress_requested
+            elif verbose_requested is not None:
+                stream_tool_progress = verbose_requested
 
             def _on_delta(delta):
                 # Filter out None — the agent fires stream_delta_callback(None)
@@ -581,7 +601,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
                 stream_delta_callback=_on_delta,
-                tool_progress_callback=_on_tool_progress,
+                tool_progress_callback=_on_tool_progress if stream_tool_progress else None,
                 agent_ref=agent_ref,
             ))
 

@@ -93,6 +93,7 @@ from agent.subdirectory_hints import SubdirectoryHintTracker
 from agent.prompt_caching import apply_anthropic_cache_control
 from agent.prompt_builder import build_skills_system_prompt, build_context_files_prompt, load_soul_md, TOOL_USE_ENFORCEMENT_GUIDANCE, TOOL_USE_ENFORCEMENT_MODELS, DEVELOPER_ROLE_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE, OPENAI_MODEL_EXECUTION_GUIDANCE
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
+from agent.provider_cooldown import get_cooldown_tracker
 from agent.display import (
     KawaiiSpinner, build_tool_preview as _build_tool_preview,
     get_cute_tool_message as _get_cute_tool_message_impl,
@@ -1346,6 +1347,11 @@ class AIAgent:
             self.context_compressor._context_probe_persistable = False
             # Iterative summary from previous session must not bleed into new one (#2635)
             self.context_compressor._previous_summary = None
+
+        # Clear provider cooldown for the current provider so a new session
+        # starts with a clean slate (the provider may have recovered).
+        if hasattr(self, "provider") and hasattr(self, "base_url"):
+            get_cooldown_tracker().clear_provider(self.provider, self.base_url)
     
     def switch_model(self, new_model, new_provider, api_key='', base_url='', api_mode=''):
         """Switch the model/provider in-place for a live agent.
@@ -7269,6 +7275,19 @@ class AIAgent:
 
             while retry_count < max_retries:
                 try:
+                    # ── Provider cooldown / circuit breaker check ──
+                    _cooldown = get_cooldown_tracker().is_in_cooldown(self.provider, self.base_url)
+                    if _cooldown:
+                        # Try fallback immediately instead of waiting
+                        if self._try_activate_fallback():
+                            retry_count = 0
+                            continue
+                        # No fallback available — wait out the remaining cooldown
+                        _remaining = _cooldown.cooldown_until - time.time()
+                        if _remaining > 0:
+                            self._emit_status(f'Provider {self.provider} in cooldown ({_remaining:.0f}s remaining)...')
+                            time.sleep(min(_remaining, 10))  # cap wait at 10s chunks
+
                     api_kwargs = self._build_api_kwargs(api_messages)
                     if self.api_mode == "codex_responses":
                         api_kwargs = self._preflight_codex_api_kwargs(api_kwargs, allow_stream=False)
@@ -7699,6 +7718,8 @@ class AIAgent:
                                 self._vprint(f"{self.log_prefix}   💾 Cache: {cached:,}/{prompt:,} tokens ({hit_pct:.0f}% hit, {written:,} written)")
                     
                     has_retried_429 = False  # Reset on success
+                    _api_latency_ms = (time.time() - api_start_time) * 1000
+                    get_cooldown_tracker().record_success(self.provider, self.base_url, latency_ms=_api_latency_ms)
                     self._touch_activity(f"API call #{api_call_count} completed")
                     break  # Success, exit retry loop
 
@@ -7912,6 +7933,27 @@ class AIAgent:
                         or "usage limit" in error_msg
                         or "quota" in error_msg
                     )
+
+                    # ── Record failure in provider cooldown tracker ──
+                    # Classify the error reason for cooldown backoff scheduling.
+                    _cooldown_reason = None
+                    if is_rate_limited:
+                        _cooldown_reason = "rate_limit"
+                    elif status_code == 529 or "overloaded" in error_msg:
+                        _cooldown_reason = "overloaded"
+                    elif status_code == 402 or "billing" in error_msg or "payment" in error_msg or "insufficient" in error_msg:
+                        _cooldown_reason = "billing"
+                    elif status_code in (401, 403) or "unauthorized" in error_msg or "forbidden" in error_msg:
+                        # Distinguish permanent auth (after refresh attempts exhausted) from transient
+                        _auth_refreshed = (
+                            codex_auth_retry_attempted
+                            or anthropic_auth_retry_attempted
+                            or nous_auth_retry_attempted
+                        )
+                        _cooldown_reason = "auth_permanent" if _auth_refreshed else "auth"
+                    if _cooldown_reason:
+                        get_cooldown_tracker().record_failure(self.provider, self.base_url, _cooldown_reason)
+
                     if is_rate_limited and self._fallback_index < len(self._fallback_chain):
                         # Don't eagerly fallback if credential pool rotation may
                         # still recover.  The pool's retry-then-rotate cycle needs

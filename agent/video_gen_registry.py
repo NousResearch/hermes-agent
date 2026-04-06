@@ -11,12 +11,15 @@ Active selection
 The active provider is chosen by ``video_gen.provider`` in ``config.yaml``.
 If unset, :func:`get_active_provider` applies fallback logic:
 
-1. If exactly one provider is registered, use it.
+1. If exactly one *available* provider is registered, use it.
 2. Otherwise return ``None`` (the tool surfaces a helpful error pointing
    the user at ``hermes tools``).
 
 Mirrors ``agent/image_gen_registry.py`` so the two surfaces behave the
-same.
+same: the unconfigured fallback is filtered by ``is_available()`` so a box
+that has credentials for only one backend (e.g. DeepInfra, while the
+``fal``/``xai`` plugins also register unconditionally) auto-selects it
+instead of returning ``None``.
 """
 
 from __future__ import annotations
@@ -104,9 +107,21 @@ def get_active_provider() -> Optional[VideoGenProvider]:
             configured,
         )
 
-    # Fallback: single-provider case
-    if len(snapshot) == 1:
-        return next(iter(snapshot.values()))
+    def _is_available_safe(p: VideoGenProvider) -> bool:
+        """Wrap ``is_available()`` so a buggy provider doesn't kill resolution."""
+        try:
+            return bool(p.is_available())
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("video_gen provider %s.is_available() raised %s", p.name, exc)
+            return False
+
+    # Fallback: single *available* provider — filter by is_available() so a
+    # box with credentials for only one backend auto-selects it even when
+    # other providers (fal/xai) register unconditionally without keys.
+    # Mirrors agent/image_gen_registry.get_active_provider().
+    available = [p for p in snapshot.values() if _is_available_safe(p)]
+    if len(available) == 1:
+        return available[0]
 
     return None
 

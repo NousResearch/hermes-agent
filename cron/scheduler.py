@@ -229,6 +229,87 @@ def _deliver_result(job: dict, content: str) -> None:
         logger.info("Job '%s': delivered to %s:%s", job["id"], platform_name, chat_id)
 
 
+_SCRIPT_TIMEOUT = 120  # seconds
+
+
+def _run_job_script(script_path: str) -> tuple[bool, str]:
+    """Execute a cron job's data-collection script and capture its output.
+
+    Scripts must reside within HERMES_HOME/scripts/.  Both relative and
+    absolute paths are resolved and validated against this directory to
+    prevent arbitrary script execution via path traversal or absolute
+    path injection.
+
+    Args:
+        script_path: Path to a Python script.  Relative paths are resolved
+            against HERMES_HOME/scripts/.  Absolute and ~-prefixed paths
+            are also validated to ensure they stay within the scripts dir.
+
+    Returns:
+        (success, output) — on failure *output* contains the error message so the
+        LLM can report the problem to the user.
+    """
+    from hermes_constants import get_hermes_home
+
+    scripts_dir = get_hermes_home() / "scripts"
+    scripts_dir.mkdir(parents=True, exist_ok=True)
+    scripts_dir_resolved = scripts_dir.resolve()
+
+    raw = Path(script_path).expanduser()
+    if raw.is_absolute():
+        path = raw.resolve()
+    else:
+        path = (scripts_dir / raw).resolve()
+
+    # Guard against path traversal, absolute path injection, and symlink
+    # escape — scripts MUST reside within HERMES_HOME/scripts/.
+    try:
+        path.relative_to(scripts_dir_resolved)
+    except ValueError:
+        return False, (
+            f"Blocked: script path resolves outside the scripts directory "
+            f"({scripts_dir_resolved}): {script_path!r}"
+        )
+
+    if not path.exists():
+        return False, f"Script not found: {path}"
+    if not path.is_file():
+        return False, f"Script path is not a file: {path}"
+
+    try:
+        result = subprocess.run(
+            [sys.executable, str(path)],
+            capture_output=True,
+            text=True,
+            timeout=_SCRIPT_TIMEOUT,
+            cwd=str(path.parent),
+        )
+        stdout = (result.stdout or "").strip()
+        stderr = (result.stderr or "").strip()
+
+        if result.returncode != 0:
+            parts = [f"Script exited with code {result.returncode}"]
+            if stderr:
+                parts.append(f"stderr:\n{stderr}")
+            if stdout:
+                parts.append(f"stdout:\n{stdout}")
+            return False, "\n".join(parts)
+
+        # Redact any secrets that may appear in script output before
+        # they are injected into the LLM prompt context.
+        try:
+            from agent.redact import redact_sensitive_text
+            stdout = redact_sensitive_text(stdout)
+        except Exception:
+            pass
+        return True, stdout
+
+    except subprocess.TimeoutExpired:
+        return False, f"Script timed out after {_SCRIPT_TIMEOUT}s: {path}"
+    except Exception as exc:
+        return False, f"Script execution failed: {exc}"
+
+
 def _build_job_prompt(job: dict) -> str:
     """Build the effective prompt for a cron job, optionally loading one or more skills first."""
     prompt = job.get("prompt", "")
@@ -317,14 +398,14 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     logger.info("Running job '%s' (ID: %s)", job_name, job_id)
     logger.info("Prompt: %s", prompt[:100])
 
-    # Inject origin context so the agent's send_message tool knows the chat
-    if origin:
-        os.environ["HERMES_SESSION_PLATFORM"] = origin["platform"]
-        os.environ["HERMES_SESSION_CHAT_ID"] = str(origin["chat_id"])
-        if origin.get("chat_name"):
-            os.environ["HERMES_SESSION_CHAT_NAME"] = origin["chat_name"]
-
     try:
+        # Inject origin context so the agent's send_message tool knows the chat.
+        # Must be INSIDE the try block so the finally cleanup always runs.
+        if origin:
+            os.environ["HERMES_SESSION_PLATFORM"] = origin["platform"]
+            os.environ["HERMES_SESSION_CHAT_ID"] = str(origin["chat_id"])
+            if origin.get("chat_name"):
+                os.environ["HERMES_SESSION_CHAT_NAME"] = origin["chat_name"]
         # Re-read .env and config.yaml fresh every run so provider/key
         # changes take effect without a gateway restart.
         # Use load_hermes_dotenv for consistency with gateway startup —

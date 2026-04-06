@@ -28,6 +28,7 @@ model:
   #   "xiaomi"       - Xiaomi MiMo (requires: XIAOMI_API_KEY)
   #   "arcee"        - Arcee AI Trinity models (requires: ARCEEAI_API_KEY)
   #   "ollama-cloud" - Ollama Cloud (requires: OLLAMA_API_KEY — https://ollama.com/settings)
+  #   "deepinfra"    - DeepInfra (requires: DEEPINFRA_API_KEY)
   #   "kilocode"     - KiloCode gateway (requires: KILOCODE_API_KEY)
   #   "azure-foundry" - Microsoft Foundry / Azure OpenAI (API key or Entra ID)
   #   "lmstudio"     - LM Studio local server (optional: LM_API_KEY, defaults to http://127.0.0.1:1234/v1)
@@ -1010,6 +1011,34 @@ stt:
     model: "whisper-1"         # whisper-1 | gpt-4o-mini-transcribe | gpt-4o-transcribe
   # mistral:
   #   model: "voxtral-mini-latest"  # voxtral-mini-latest | voxtral-mini-2602
+  # deepinfra:
+  #   # Model id is discovered live from the DeepInfra catalog filtered
+  #   # by the `stt` surface tag — leave `model` blank to take the first
+  #   # live result. Pin only when you need a specific Whisper variant.
+  #   model: ""
+
+# Text-to-speech. Only the deepinfra block is documented here — the
+# remaining providers (edge, openai, xai, minimax, mistral, gemini,
+# elevenlabs, neutts, kittentts, piper) inherit sensible defaults from
+# DEFAULT_CONFIG in hermes_cli/config.py.
+# tts:
+#   provider: "deepinfra"
+#   deepinfra:
+#     # Model id is discovered live from the DeepInfra catalog filtered
+#     # by the `tts` surface tag — leave `model` blank to take the first
+#     # live result.
+#     model: ""
+#     voice: "default"
+
+# Image generation. Each provider plugin reads its own ``image_gen.<name>``
+# block; deepinfra discovers models live from
+# api.deepinfra.com/v1/openai/models filtered by the ``image-gen`` tag —
+# no model id is hardcoded, so retired models disappear automatically.
+# image_gen:
+#   provider: "deepinfra"
+#   deepinfra:
+#     # Leave `model` blank for the first live `image-gen`-tagged result.
+#     model: ""
 
 # =============================================================================
 # Response Pacing (Messaging Platforms)

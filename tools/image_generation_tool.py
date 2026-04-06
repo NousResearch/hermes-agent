@@ -1248,7 +1248,7 @@ def _read_configured_image_model():
 
 
 def _read_configured_image_provider():
-    """Return the value of ``image_gen.provider`` from config.yaml, or None.
+    """Return ``image_gen.provider`` from config.yaml, or None.
 
     We only consult the plugin registry when this is explicitly set — an
     unset value keeps users on the in-tree FAL fallback even when other
@@ -1268,6 +1268,29 @@ def _read_configured_image_provider():
                 return value.strip()
     except Exception as exc:
         logger.debug("Could not read image_gen.provider: %s", exc)
+    return None
+
+
+def _resolve_active_image_provider() -> Optional[str]:
+    """Return the registry's active image-gen provider name, or ``None``.
+
+    Used only when ``image_gen.provider`` is unset. Delegates to
+    :func:`agent.image_gen_registry.get_active_provider`, which selects the
+    single provider that has credentials (else the legacy FAL preference) —
+    the same availability-filtered fallback the video surface uses. So a
+    box whose only image credential is ``DEEPINFRA_API_KEY`` auto-selects
+    DeepInfra, while a box with FAL credentials keeps FAL, without this tool
+    re-implementing provider inference or env auto-detect.
+    """
+    try:
+        from agent.image_gen_registry import get_active_provider
+        from hermes_cli.plugins import _ensure_plugins_discovered
+        _ensure_plugins_discovered()
+        provider = get_active_provider()
+        if provider is not None:
+            return provider.name
+    except Exception as exc:
+        logger.debug("image_gen active-provider resolution skipped: %s", exc)
     return None
 
 
@@ -1293,8 +1316,17 @@ def _dispatch_to_plugin_provider(
     route to its edit endpoint.
     """
     configured = _read_configured_image_provider()
+    if configured == "fal":
+        return None  # explicit opt-in to legacy FAL
     if not configured:
-        return None
+        # Let the registry pick the active backend (single available provider,
+        # else legacy FAL preference). ``fal`` or nothing → fall through to the
+        # in-tree FAL pipeline; any other available backend (e.g. DeepInfra on
+        # a box whose only image credential is DEEPINFRA_API_KEY) dispatches.
+        active = _resolve_active_image_provider()
+        if not active or active == "fal":
+            return None
+        configured = active
 
     # Also read configured model so we can pass it to the plugin
     configured_model = _read_configured_image_model()

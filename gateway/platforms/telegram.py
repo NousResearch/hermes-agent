@@ -909,6 +909,13 @@ class TelegramAdapter(BasePlatformAdapter):
                         raise
                 message_ids.append(str(msg.message_id))
             
+            # Record authorized users for group-chat button security
+            if reply_markup is not None and metadata:
+                auth = metadata.get("authorized_user_id")
+                if auth is not None:
+                    for mid in message_ids:
+                        self._agent_button_auth[(int(chat_id), int(mid))] = {auth}
+            
             return SendResult(
                 success=True,
                 message_id=message_ids[0] if message_ids else None,
@@ -934,13 +941,17 @@ class TelegramAdapter(BasePlatformAdapter):
         """Edit a previously sent Telegram message."""
         if not self._bot:
             return SendResult(success=False, error="Not connected")
-        reply_markup = None
-        if metadata:
-            raw = metadata.get("buttons") or metadata.get("reply_markup")
-            if raw:
-                reply_markup = self._build_keyboard(raw)
         try:
             formatted = self.format_message(content)
+            reply_markup = None
+            if metadata:
+                raw = metadata.get("buttons") or metadata.get("reply_markup")
+                if raw:
+                    reply_markup = self._build_keyboard(raw)
+                    # Register authorized user for group-chat button security
+                    auth = metadata.get("authorized_user_id")
+                    if auth is not None:
+                        self._agent_button_auth[(int(chat_id), int(message_id))] = {auth}
             try:
                 kwargs = {"chat_id": int(chat_id), "message_id": int(message_id), "text": formatted, "parse_mode": ParseMode.MARKDOWN_V2}
                 if reply_markup is not None:
@@ -1038,29 +1049,40 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.warning("[%s] send_update_prompt failed: %s", self.name, e)
             return SendResult(success=False, error=str(e))
 
+    # Per-message authorized-user set for group-chat button security.
+    # key: (chat_id, message_id) -> set of user_ids
+    _agent_button_auth: Dict[tuple, set] = {}
+
     async def _handle_callback_query(
         self, update: "Update", context: "ContextTypes.DEFAULT_TYPE"
     ) -> None:
-        """Handle inline keyboard button clicks (update prompts)."""
+        """Handle inline keyboard button clicks."""
         query = update.callback_query
         if not query or not query.data:
             return
         data = query.data
-        if not data.startswith("update_prompt:"):
-            return
-        answer = data.split(":", 1)[1]  # "y" or "n"
+
+        # Dispatch based on callback prefix
+        if data.startswith("update_prompt:"):
+            await self._handle_update_prompt_callback(query, data)
+        elif data.startswith("hermes_btn:"):
+            await self._handle_agent_button_callback(query, data)
+        # Other prefixes (exec approval, regenerate, etc.) silently ignored
+        # so they can be handled by other extensions without conflict.
+
+    async def _handle_update_prompt_callback(self, query, data: str) -> None:
+        """Handle the built-in update-prompt Yes/No callback."""
+        answer = data.split(":", 1)[1]
         await query.answer(text=f"Sent '{answer}' to the update process.")
-        # Edit the message to show the choice and remove buttons
         label = "Yes" if answer == "y" else "No"
         try:
             await query.edit_message_text(
-                text=f"⚕ Update prompt answered: *{label}*",
+                text=f"Update prompt answered: *{label}*",
                 parse_mode=ParseMode.MARKDOWN,
                 reply_markup=None,
             )
         except Exception:
-            pass  # non-fatal if edit fails
-        # Write the response file
+            pass
         try:
             from hermes_constants import get_hermes_home
             home = get_hermes_home()
@@ -1068,10 +1090,39 @@ class TelegramAdapter(BasePlatformAdapter):
             tmp = response_path.with_suffix(".tmp")
             tmp.write_text(answer)
             tmp.replace(response_path)
-            logger.info("Telegram update prompt answered '%s' by user %s",
-                        answer, getattr(query.from_user, "id", "unknown"))
         except Exception as exc:
             logger.error("Failed to write update response from callback: %s", exc)
+
+    async def _handle_agent_button_callback(self, query, data: str) -> None:
+        """Handle agent-defined inline button presses.
+
+        Group-chat security: only users whose IDs were recorded when the
+        buttons were sent may click.  In DMs anyone can click (there's
+        no other user to protect against).
+        """
+        user = query.from_user
+        msg = query.message
+        if not user or not msg or not msg.chat:
+            return
+
+        chat_type = getattr(msg.chat, "type", "private")
+        is_group = chat_type in ("group", "supergroup")
+
+        if is_group:
+            key = (msg.chat.id, msg.message_id)
+            allowed = self._agent_button_auth.get(key)
+            # If no whitelist was set, fall back to allowing everyone
+            # (buttons sent before this feature was added still work).
+            if allowed is not None and user.id not in allowed:
+                await query.answer(
+                    "Only the session initiator can use these buttons.",
+                    show_alert=True,
+                )
+                return
+            self._agent_button_auth.pop(key, None)
+
+        label = data.split(":", 1)[1] if ":" in data else data
+        await query.answer(text=f"Button: {label}")
 
     async def send_voice(
         self,

@@ -8,6 +8,7 @@ from hermes_cli.auth import PROVIDER_REGISTRY, resolve_provider, resolve_api_key
 from hermes_cli.models import _PROVIDER_MODELS, _PROVIDER_LABELS, _PROVIDER_ALIASES, normalize_provider
 from hermes_cli.model_normalize import normalize_model_for_provider, detect_vendor
 from agent.model_metadata import get_model_context_length
+from agent.models_dev import PROVIDER_TO_MODELS_DEV, list_agentic_models, _NOISE_PATTERNS
 
 
 # ── Provider Registry ──
@@ -131,6 +132,12 @@ class TestGeminiModelCatalog:
         assert "gemini-2.5-flash" in models
         assert "gemma-4-31b-it" in models
 
+    def test_provider_models_has_3x(self):
+        models = _PROVIDER_MODELS["gemini"]
+        assert "gemini-3.1-pro-preview" in models
+        assert "gemini-3-flash-preview" in models
+        assert "gemini-3.1-flash-lite-preview" in models
+
     def test_provider_label(self):
         assert "gemini" in _PROVIDER_LABELS
         assert _PROVIDER_LABELS["gemini"] == "Google AI Studio"
@@ -165,11 +172,15 @@ class TestGeminiModelNormalization:
 class TestGeminiContextLength:
     def test_gemma_4_31b_context(self):
         ctx = get_model_context_length("gemma-4-31b-it", provider="gemini")
-        assert ctx == 262144
+        assert ctx == 256000
 
-    def test_gemma_4_e4b_context(self):
-        ctx = get_model_context_length("gemma-4-e4b-it", provider="gemini")
-        assert ctx == 131072
+    def test_gemma_4_26b_context(self):
+        ctx = get_model_context_length("gemma-4-26b-it", provider="gemini")
+        assert ctx == 256000
+
+    def test_gemini_3_context(self):
+        ctx = get_model_context_length("gemini-3.1-pro-preview", provider="gemini")
+        assert ctx == 1048576
 
 
 # ── Agent Init (no SyntaxError) ──
@@ -195,3 +206,64 @@ class TestGeminiAgentInit:
             )
             assert agent.api_mode == "chat_completions"
             assert agent.provider == "gemini"
+
+
+# ── models.dev Integration ──
+
+class TestGeminiModelsDev:
+    def test_gemini_mapped_to_google(self):
+        assert PROVIDER_TO_MODELS_DEV.get("gemini") == "google"
+
+    def test_noise_filter_excludes_tts(self):
+        assert _NOISE_PATTERNS.search("gemini-2.5-pro-preview-tts")
+
+    def test_noise_filter_excludes_dated_preview(self):
+        assert _NOISE_PATTERNS.search("gemini-2.5-flash-preview-04-17")
+
+    def test_noise_filter_excludes_embedding(self):
+        assert _NOISE_PATTERNS.search("gemini-embedding-001")
+
+    def test_noise_filter_excludes_live(self):
+        assert _NOISE_PATTERNS.search("gemini-live-2.5-flash")
+
+    def test_noise_filter_excludes_image(self):
+        assert _NOISE_PATTERNS.search("gemini-2.5-flash-image")
+
+    def test_noise_filter_excludes_customtools(self):
+        assert _NOISE_PATTERNS.search("gemini-3.1-pro-preview-customtools")
+
+    def test_noise_filter_passes_stable(self):
+        assert not _NOISE_PATTERNS.search("gemini-2.5-flash")
+
+    def test_noise_filter_passes_preview(self):
+        # Non-dated preview (e.g. gemini-3-flash-preview) should pass
+        assert not _NOISE_PATTERNS.search("gemini-3-flash-preview")
+
+    def test_noise_filter_passes_gemma(self):
+        assert not _NOISE_PATTERNS.search("gemma-4-31b-it")
+
+    def test_list_agentic_models_with_mock_data(self):
+        """list_agentic_models filters correctly from mock models.dev data."""
+        mock_data = {
+            "google": {
+                "models": {
+                    "gemini-3-flash-preview": {"tool_call": True},
+                    "gemini-2.5-pro": {"tool_call": True},
+                    "gemini-embedding-001": {"tool_call": False},
+                    "gemini-2.5-flash-preview-tts": {"tool_call": False},
+                    "gemini-live-2.5-flash": {"tool_call": True},
+                    "gemini-2.5-flash-preview-04-17": {"tool_call": True},
+                    "gemma-4-31b-it": {"tool_call": True},
+                }
+            }
+        }
+        with patch("agent.models_dev.fetch_models_dev", return_value=mock_data):
+            result = list_agentic_models("gemini")
+        assert "gemini-3-flash-preview" in result
+        assert "gemini-2.5-pro" in result
+        assert "gemma-4-31b-it" in result
+        # Filtered out:
+        assert "gemini-embedding-001" not in result      # no tool_call
+        assert "gemini-2.5-flash-preview-tts" not in result  # no tool_call
+        assert "gemini-live-2.5-flash" not in result     # noise: live-
+        assert "gemini-2.5-flash-preview-04-17" not in result  # noise: dated preview

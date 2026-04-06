@@ -160,6 +160,7 @@ PROVIDER_TO_MODELS_DEV: Dict[str, str] = {
     "kilocode": "kilo",
     "fireworks": "fireworks-ai",
     "huggingface": "huggingface",
+    "gemini": "google",
     "google": "google",
     "xai": "xai",
     "nvidia": "nvidia",
@@ -420,6 +421,39 @@ def list_provider_models(provider: str) -> List[str]:
     if models is None:
         return []
     return list(models.keys())
+
+
+# Patterns that indicate non-agentic or noise models (TTS, embedding,
+# dated preview snapshots, live/streaming-only, image-only).
+import re
+_NOISE_PATTERNS: re.Pattern = re.compile(
+    r"-tts\b|embedding|live-|-(preview|exp)-\d{2,4}[-_]|"
+    r"-image\b|-image-preview\b|-customtools\b",
+    re.IGNORECASE,
+)
+
+
+def list_agentic_models(provider: str) -> List[str]:
+    """Return model IDs suitable for agentic use from models.dev.
+
+    Filters for tool_call=True and excludes noise (TTS, embedding,
+    dated preview snapshots, live/streaming, image-only models).
+    Returns an empty list on any failure.
+    """
+    models = _get_provider_models(provider)
+    if models is None:
+        return []
+
+    result = []
+    for mid, entry in models.items():
+        if not isinstance(entry, dict):
+            continue
+        if not entry.get("tool_call", False):
+            continue
+        if _NOISE_PATTERNS.search(mid):
+            continue
+        result.append(mid)
+    return result
 
 
 def search_models_dev(

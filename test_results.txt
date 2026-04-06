@@ -1,0 +1,78 @@
+﻿bringing up nodes...
+bringing up nodes...
+
+........................s............                                    [100%]
+============================== warnings summary ===============================
+tests/cron/test_cron_script.py: 20 warnings
+  C:\Users\Simba\Desktop\DEV\Ahermes\ah8\tests\conftest.py:89: DeprecationWarning: There is no current event loop
+    loop = asyncio.get_event_loop_policy().get_event_loop()
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+36 passed, 1 skipped, 20 warnings in 2.46s
+python : Exception ignor
+ed in atexit callback: <
+function cleanup_numbere
+d_dir at 0x000001F6F3599
+BC0>
+At line:1 char:1
++ python -m pytest tests
+/cron/test_cron_script.p
+y --tb=short -q 2>&1 |  
+...
++ ~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo      
+        : NotSpecified: 
+(Exc    eption ignor...0
+001F6F    3599BC0>:Strin
+g) [], R    emoteExcepti
+on
+    + FullyQualifiedErro
+rI    d : NativeCommandE
+rror
+ 
+Traceback (most recent c
+all last):
+  File "C:\Users\Simba\A
+ppData\Local\Programs\Py
+thon\Python312\Lib\site-
+packages\_pytest\pathlib
+.py", line 374, in clean
+up_numbered_dir
+    cleanup_dead_symlink
+s(root)
+  File "C:\Users\Simba\A
+ppData\Local\Programs\Py
+thon\Python312\Lib\site-
+packages\_pytest\pathlib
+.py", line 359, in clean
+up_dead_symlinks
+    if not left_dir.reso
+lve().exists():
+           ^^^^^^^^^^^^^
+^^^^^^^^^^^^^^
+  File "C:\Users\Simba\A
+ppData\Local\Programs\Py
+thon\Python312\Lib\pathl
+ib.py", line 860, in exi
+sts
+    self.stat(follow_sym
+links=follow_symlinks)
+  File "C:\Users\Simba\A
+ppData\Local\Programs\Py
+thon\Python312\Lib\pathl
+ib.py", line 840, in sta
+t
+    return os.stat(self,
+ follow_symlinks=follow_
+symlinks)
+           ^^^^^^^^^^^^^
+^^^^^^^^^^^^^^^^^^^^^^^^
+^^^^^^^^^
+PermissionError: [WinErr
+or 5] Eri■im engellendi:
+ 'C:\\Users\\Simba\\AppD
+ata\\Local\\Temp\\pytest
+-of-Simba\\pytest-curren
+t'

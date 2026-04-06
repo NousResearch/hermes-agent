@@ -3607,6 +3607,7 @@ def cmd_update(args):
             from hermes_cli.gateway import (
                 is_macos, is_linux, _ensure_user_systemd_env,
                 get_systemd_linger_status, find_gateway_pids,
+                _get_service_pids,
             )
             import signal as _signal
 
@@ -3673,8 +3674,11 @@ def cmd_update(args):
                     pass
 
             # --- Manual (non-service) gateways ---
-            # Kill any remaining gateway processes not managed by a service
-            manual_pids = find_gateway_pids()
+            # Kill any remaining gateway processes not managed by a service.
+            # Exclude PIDs that belong to just-restarted services so we don't
+            # immediately kill the process that systemd/launchd just spawned.
+            service_pids = _get_service_pids()
+            manual_pids = find_gateway_pids(exclude_pids=service_pids)
             for pid in manual_pids:
                 try:
                     os.kill(pid, _signal.SIGTERM)

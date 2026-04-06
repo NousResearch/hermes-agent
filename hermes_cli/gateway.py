@@ -32,76 +32,53 @@ def _get_service_pids() -> set:
     """Return PIDs currently managed by systemd or launchd gateway services.
 
     Used to avoid killing freshly-restarted service processes when sweeping
-    for stale manual gateway processes after a service restart.
+    for stale manual gateway processes after a service restart.  Relies on the
+    service manager having committed the new PID before the restart command
+    returns (true for both systemd and launchd in practice).
     """
     pids: set = set()
 
-    # --- systemd (Linux) ---
+    # --- systemd (Linux): user and system scopes ---
     if is_linux():
-        try:
-            result = subprocess.run(
-                ["systemctl", "--user", "list-units", "hermes-gateway*",
-                 "--plain", "--no-legend", "--no-pager"],
-                capture_output=True, text=True, timeout=5,
-            )
-            for line in result.stdout.strip().splitlines():
-                parts = line.split()
-                if not parts or not parts[0].endswith(".service"):
-                    continue
-                svc = parts[0]
-                try:
-                    show = subprocess.run(
-                        ["systemctl", "--user", "show", svc,
-                         "--property=MainPID", "--value"],
-                        capture_output=True, text=True, timeout=5,
-                    )
-                    pid = int(show.stdout.strip())
-                    if pid > 0:
-                        pids.add(pid)
-                except (ValueError, subprocess.TimeoutExpired):
-                    pass
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            pass
-
-        # Also check system scope
-        try:
-            result = subprocess.run(
-                ["systemctl", "list-units", "hermes-gateway*",
-                 "--plain", "--no-legend", "--no-pager"],
-                capture_output=True, text=True, timeout=5,
-            )
-            for line in result.stdout.strip().splitlines():
-                parts = line.split()
-                if not parts or not parts[0].endswith(".service"):
-                    continue
-                svc = parts[0]
-                try:
-                    show = subprocess.run(
-                        ["systemctl", "show", svc,
-                         "--property=MainPID", "--value"],
-                        capture_output=True, text=True, timeout=5,
-                    )
-                    pid = int(show.stdout.strip())
-                    if pid > 0:
-                        pids.add(pid)
-                except (ValueError, subprocess.TimeoutExpired):
-                    pass
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            pass
+        for scope_args in [["systemctl", "--user"], ["systemctl"]]:
+            try:
+                result = subprocess.run(
+                    scope_args + ["list-units", "hermes-gateway*",
+                                  "--plain", "--no-legend", "--no-pager"],
+                    capture_output=True, text=True, timeout=5,
+                )
+                for line in result.stdout.strip().splitlines():
+                    parts = line.split()
+                    if not parts or not parts[0].endswith(".service"):
+                        continue
+                    svc = parts[0]
+                    try:
+                        show = subprocess.run(
+                            scope_args + ["show", svc,
+                                          "--property=MainPID", "--value"],
+                            capture_output=True, text=True, timeout=5,
+                        )
+                        pid = int(show.stdout.strip())
+                        if pid > 0:
+                            pids.add(pid)
+                    except (ValueError, subprocess.TimeoutExpired):
+                        pass
+            except (FileNotFoundError, subprocess.TimeoutExpired):
+                pass
 
     # --- launchd (macOS) ---
     if is_macos():
         try:
-            from hermes_cli.gateway import get_launchd_label
+            label = get_launchd_label()
             result = subprocess.run(
-                ["launchctl", "list", get_launchd_label()],
+                ["launchctl", "list", label],
                 capture_output=True, text=True, timeout=5,
             )
             if result.returncode == 0:
-                # Output format: "PID\tStatus\tLabel" header then data line
+                # Output: "PID\tStatus\tLabel" header, then one data line
                 for line in result.stdout.strip().splitlines():
                     parts = line.split()
-                    if parts:
+                    if len(parts) >= 3 and parts[2] == label:
                         try:
                             pid = int(parts[0])
                             if pid > 0:

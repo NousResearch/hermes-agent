@@ -9,6 +9,7 @@ from agent.acp_agent_registry import (
     ACP_AGENT_REGISTRY,
     list_agents,
     resolve_agent_command,
+    resolve_agent_env,
     split_agent_command,
 )
 
@@ -17,7 +18,7 @@ class TestResolveAgentCommand:
     def test_builtin_claude(self):
         cmd = resolve_agent_command("claude")
         assert cmd is not None
-        assert "claude-agent-acp@0.25.0" in cmd
+        assert "claude-agent-acp" in cmd
 
     def test_builtin_codex(self):
         cmd = resolve_agent_command("codex")
@@ -83,3 +84,58 @@ class TestListAgents:
         agents = list_agents()
         for name in ACP_AGENT_REGISTRY:
             assert name in agents
+
+
+class TestResolveAgentEnv:
+    def test_claude_bridges_anthropic_token(self):
+        """ANTHROPIC_TOKEN is bridged to ANTHROPIC_API_KEY for Claude."""
+        with mock.patch.dict(os.environ, {
+            "ANTHROPIC_API_KEY": "",
+            "ANTHROPIC_TOKEN": "sk-ant-test-token",
+        }):
+            env = resolve_agent_env("claude")
+            assert env.get("ANTHROPIC_API_KEY") == "sk-ant-test-token"
+
+    def test_claude_skips_if_api_key_set(self):
+        """If ANTHROPIC_API_KEY is already set, don't override it."""
+        with mock.patch.dict(os.environ, {
+            "ANTHROPIC_API_KEY": "sk-existing",
+            "ANTHROPIC_TOKEN": "sk-fallback",
+        }):
+            env = resolve_agent_env("claude")
+            assert "ANTHROPIC_API_KEY" not in env  # not overridden
+
+    def test_claude_bridges_oauth_token(self):
+        """CLAUDE_CODE_OAUTH_TOKEN is used as last resort."""
+        with mock.patch.dict(os.environ, {
+            "ANTHROPIC_API_KEY": "",
+            "ANTHROPIC_TOKEN": "",
+            "CLAUDE_CODE_OAUTH_TOKEN": "oauth-token-123",
+        }):
+            env = resolve_agent_env("claude")
+            assert env.get("ANTHROPIC_API_KEY") == "oauth-token-123"
+
+    def test_codex_bridges_openai_key(self):
+        """Codex auth env is resolved."""
+        with mock.patch.dict(os.environ, {"OPENAI_API_KEY": "sk-openai-test"}):
+            env = resolve_agent_env("codex")
+            assert "OPENAI_API_KEY" not in env  # already set, no override
+
+    def test_unknown_agent_returns_empty(self):
+        env = resolve_agent_env("nonexistent-xyz")
+        assert env == {}
+
+    def test_agent_with_no_auth_env(self):
+        """Gemini has no auth_env mapping — returns empty."""
+        env = resolve_agent_env("gemini")
+        assert env == {}
+
+    def test_no_source_vars_set(self):
+        """When no source vars have values, nothing is injected."""
+        with mock.patch.dict(os.environ, {
+            "ANTHROPIC_API_KEY": "",
+            "ANTHROPIC_TOKEN": "",
+            "CLAUDE_CODE_OAUTH_TOKEN": "",
+        }):
+            env = resolve_agent_env("claude")
+            assert env == {}

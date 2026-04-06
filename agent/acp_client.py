@@ -25,7 +25,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, List, Optional
 
-from agent.acp_agent_registry import resolve_agent_command, split_agent_command
+from agent.acp_agent_registry import resolve_agent_command, resolve_agent_env, split_agent_command
 
 logger = logging.getLogger(__name__)
 
@@ -192,6 +192,9 @@ class ACPClient:
 
         self._acp_cwd = str(Path(acp_cwd or os.getcwd()).resolve())
 
+        # Resolve auth env vars to inject into the subprocess
+        self._auth_env = resolve_agent_env(self._agent_name)
+
         self.api_key = api_key or f"{self._agent_name}-acp"
         self.base_url = base_url or f"acp://{self._agent_name}"
         self._default_headers = dict(default_headers or {})
@@ -258,6 +261,11 @@ class ACPClient:
         )
 
     def _run_prompt(self, prompt_text: str, *, timeout_seconds: float) -> tuple[str, str]:
+        # Build subprocess env: inherit parent env + inject auth vars
+        spawn_env: dict[str, str] | None = None
+        if self._auth_env:
+            spawn_env = {**os.environ, **self._auth_env}
+
         try:
             proc = subprocess.Popen(
                 self._acp_argv,
@@ -267,6 +275,7 @@ class ACPClient:
                 text=True,
                 bufsize=1,
                 cwd=self._acp_cwd,
+                env=spawn_env,
             )
         except FileNotFoundError as exc:
             raise RuntimeError(

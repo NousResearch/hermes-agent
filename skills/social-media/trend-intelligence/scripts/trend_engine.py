@@ -9,7 +9,7 @@ Usage:
     python trend_engine.py predict       # Get predictions from latest data
     python trend_engine.py history <topic>  # Show trend history
 
-By ENERGENAI LLC — https://tiamat.live
+By ENERGENAI LLC -- https://tiamat.live
 """
 
 import argparse
@@ -27,7 +27,7 @@ from typing import Any, Dict, List, Optional, Tuple
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger("trend-engine")
 
-# ── Config ──────────────────────────────────────────────────────────────
+# -- Config --
 
 DEFAULT_DB = os.path.expanduser("~/.hermes/trend-history.db")
 RETENTION_DAYS = 30
@@ -38,7 +38,7 @@ DEFAULT_TOPICS = [
     "startups", "open-source", "machine-learning", "web3",
 ]
 
-# ── Database ────────────────────────────────────────────────────────────
+# -- Database --
 
 def init_db(db_path: str = DEFAULT_DB) -> sqlite3.Connection:
     """Initialize SQLite database with FTS5 and trend tables."""
@@ -74,7 +74,7 @@ def prune_old(conn: sqlite3.Connection, days: int = RETENTION_DAYS):
     conn.commit()
 
 
-# ── Sources ─────────────────────────────────────────────────────────────
+# -- Sources --
 
 async def scrape_hackernews(topics: List[str]) -> List[Dict]:
     """Scrape HackerNews top/new stories for topic mentions."""
@@ -185,7 +185,7 @@ async def scrape_bluesky(topics: List[str]) -> List[Dict]:
     return results
 
 
-# ── Velocity Engine ─────────────────────────────────────────────────────
+# -- Velocity Engine --
 
 def compute_velocity(conn: sqlite3.Connection, topic: str, current_volume: float) -> Tuple[float, float, float]:
     """Compute velocity ratios: 24h, 3d, 7d relative to historical baseline."""
@@ -234,7 +234,7 @@ def compute_confidence(sources: List[str], v24h: float, phase: str) -> float:
     return round(min(confidence, 1.0), 2)
 
 
-# ── Scan Pipeline ───────────────────────────────────────────────────────
+# -- Scan Pipeline --
 
 async def full_scan(topics: List[str], db_path: str = DEFAULT_DB) -> Dict:
     """Run full multi-source scan and store results."""
@@ -336,11 +336,11 @@ def get_predictions(db_path: str = DEFAULT_DB, min_confidence: float = 0.5) -> D
 
         # Generate recommendation
         rec = {
-            "early_rise": f"Generate {topic} content NOW — early mover advantage, {len(sources.split(','))} sources confirming acceleration",
-            "accelerating": f"Publish {topic} content soon — wave is building, volume increasing across platforms",
-            "peaking": f"Last window for {topic} — high volume but velocity flattening, ride the tail",
-            "declining": f"Skip {topic} — trend is fading, velocity negative",
-            "dormant": f"No action on {topic} — no significant activity detected",
+            "early_rise": f"Generate {topic} content NOW -- early mover advantage, {len(sources.split(','))} sources confirming acceleration",
+            "accelerating": f"Publish {topic} content soon -- wave is building, volume increasing across platforms",
+            "peaking": f"Last window for {topic} -- high volume but velocity flattening, ride the tail",
+            "declining": f"Skip {topic} -- trend is fading, velocity negative",
+            "dormant": f"No action on {topic} -- no significant activity detected",
         }.get(phase, f"Monitor {topic}")
 
         predictions.append({
@@ -379,10 +379,10 @@ def get_history(topic: str, days: int = 7, db_path: str = DEFAULT_DB) -> List[Di
     } for r in rows]
 
 
-# ── CLI ─────────────────────────────────────────────────────────────────
+# -- CLI --
 
 def main():
-    parser = argparse.ArgumentParser(description="Predictive Trend Intelligence Engine — by ENERGENAI")
+    parser = argparse.ArgumentParser(description="Predictive Trend Intelligence Engine -- by ENERGENAI")
     sub = parser.add_subparsers(dest="command")
 
     scan_p = sub.add_parser("scan", help="Run full multi-source trend scan")

@@ -10,24 +10,24 @@ author_url: https://tiamat.live
 
 ## What This Does
 
-Monitors social platforms in real-time, builds time-series velocity profiles, and predicts which topics are about to blow up — before they peak. Instead of reacting to trends, you front-run them.
+Monitors social platforms in real-time, builds time-series velocity profiles, and predicts which topics are about to blow up -- before they peak. Instead of reacting to trends, you front-run them.
 
 **Core insight:** A topic's 24h velocity relative to its 7d baseline is a stronger signal than raw volume. Early-rise detection (velocity accelerating but volume still low) gives a 6-24 hour lead on trending topics.
 
 ## Architecture
 
 ```
-SCRAPE (multi-source) → SCORE (velocity engine) → PREDICT (phase detection) → RECOMMEND (content brief)
+SCRAPE (multi-source) -> SCORE (velocity engine) -> PREDICT (phase detection) -> RECOMMEND (content brief)
 ```
 
 ### Phase Detection
 
 | Phase | Signal | Action |
 |-------|--------|--------|
-| `early_rise` | 24h velocity > 2x baseline, volume < 50th percentile | **Generate now** — first-mover window |
-| `accelerating` | Velocity increasing, volume growing | **Publish now** — wave is building |
-| `peaking` | Volume high, velocity flattening | **Last chance** — ride the tail |
-| `declining` | Velocity negative | **Skip** — you missed it |
+| `early_rise` | 24h velocity > 2x baseline, volume < 50th percentile | **Generate now** -- first-mover window |
+| `accelerating` | Velocity increasing, volume growing | **Publish now** -- wave is building |
+| `peaking` | Volume high, velocity flattening | **Last chance** -- ride the tail |
+| `declining` | Velocity negative | **Skip** -- you missed it |
 | `dormant` | No significant activity | **Ignore** |
 
 ### Confidence Scoring
@@ -51,12 +51,12 @@ pip install atproto  # Bluesky firehose
 
 ## Usage
 
-### Quick scan — what's trending right now?
+### Quick scan -- what's trending right now?
 ```
 Scan social trends and tell me what's rising
 ```
 
-### Predictive mode — what's about to trend?
+### Predictive mode -- what's about to trend?
 ```
 What topics are in early_rise phase right now? I want to create content before they peak.
 ```
@@ -89,7 +89,7 @@ The engine scrapes from configurable sources. Default set:
 | Google Trends | Search | Mainstream interest |
 | Fediverse relays | Social | Decentralized platform signals |
 
-Sources are modular — add custom scrapers via `scripts/sources/` directory.
+Sources are modular -- add custom scrapers via `scripts/sources/` directory.
 
 ## Data Model
 
@@ -114,7 +114,7 @@ The prediction engine reads the latest scan, computes velocity derivatives, cros
       "velocity24h": 2.4,
       "velocity7d": 1.1,
       "sources": ["bluesky", "danbooru", "reddit"],
-      "recommendation": "Generate creature content NOW — 3 platforms showing acceleration, 6-12hr window before peak"
+      "recommendation": "Generate creature content NOW -- 3 platforms showing acceleration, 6-12hr window before peak"
     }
   ]
 }
@@ -145,9 +145,9 @@ trend_intelligence:
 
 ## Credits
 
-Built by [ENERGENAI LLC](https://tiamat.live) — autonomous AI infrastructure.
+Built by [ENERGENAI LLC](https://tiamat.live) -- autonomous AI infrastructure.
 Extracted from TIAMAT's production trend engine (7,000+ cycles, 46 Bluesky tags, 54 topics, 17 source types).
 
 ## License
 
-MIT — same as hermes-agent.
+MIT -- same as hermes-agent.

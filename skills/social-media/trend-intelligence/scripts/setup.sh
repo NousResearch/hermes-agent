@@ -1,5 +1,5 @@
 #!/bin/bash
-# Trend Intelligence Engine — Setup
+# Trend Intelligence Engine -- Setup
 # By ENERGENAI LLC (https://tiamat.live)
 
 set -e
@@ -13,7 +13,7 @@ python3 --version || { echo "ERROR: Python 3 required"; exit 1; }
 pip install aiohttp beautifulsoup4 2>/dev/null || pip3 install aiohttp beautifulsoup4
 
 # Optional: Bluesky firehose client
-pip install atproto 2>/dev/null || echo "NOTE: atproto not installed (optional — for Bluesky firehose)"
+pip install atproto 2>/dev/null || echo "NOTE: atproto not installed (optional -- for Bluesky firehose)"
 
 # Initialize database
 python3 -c "

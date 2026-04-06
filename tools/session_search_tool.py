@@ -192,34 +192,66 @@ async def _summarize_session(
 _HIDDEN_SESSION_SOURCES = ("tool",)
 
 
+def _get_lineage_ids(db, session_id: str) -> set:
+    """Return the set of all session IDs in a compaction chain (parents + children)."""
+    ids = set()
+    # Walk up to root
+    sid = session_id
+    visited = set()
+    while sid and sid not in visited:
+        visited.add(sid)
+        ids.add(sid)
+        try:
+            s = db.get_session(sid)
+            parent = s.get("parent_session_id") if s else None
+            sid = parent if parent else None
+        except Exception:
+            break
+    return ids
+
+
 def _list_recent_sessions(db, limit: int, current_session_id: str = None) -> str:
     """Return metadata for the most recent sessions (no LLM calls)."""
     try:
-        sessions = db.list_sessions_rich(limit=limit + 5, exclude_sources=list(_HIDDEN_SESSION_SOURCES))  # fetch extra to skip current
+        # Fetch extra to account for skipping current session and compaction
+        # intermediates.  Context compaction creates chains of sessions linked
+        # via parent_session_id.  Intermediate nodes (end_reason='compression',
+        # typically 0 messages) are just handoff points — the real conversation
+        # lives in the leaf.  We skip intermediates but show the leaf even
+        # though it has a parent_session_id.
+        sessions = db.list_sessions_rich(limit=limit + 20, exclude_sources=list(_HIDDEN_SESSION_SOURCES))
 
         # Resolve current session lineage to exclude it
-        current_root = None
+        current_lineage = set()
         if current_session_id:
             try:
-                sid = current_session_id
-                visited = set()
-                while sid and sid not in visited:
-                    visited.add(sid)
-                    s = db.get_session(sid)
-                    parent = s.get("parent_session_id") if s else None
-                    sid = parent if parent else None
-                current_root = max(visited, key=len) if visited else current_session_id
+                current_lineage = _get_lineage_ids(db, current_session_id)
             except Exception:
-                current_root = current_session_id
+                current_lineage = {current_session_id}
+
+        # Track which compaction chains we've already shown a session for,
+        # so we don't show multiple fragments of the same conversation.
+        seen_lineage_roots = set()
 
         results = []
         for s in sessions:
             sid = s.get("id", "")
-            if current_root and (sid == current_root or sid == current_session_id):
+            if sid in current_lineage:
                 continue
-            # Skip child/delegation sessions (they have parent_session_id)
+            # Skip intermediate compaction nodes — they have a parent and
+            # ended due to compression (typically 0 messages).  The leaf
+            # session of the chain will appear later and has the real content.
+            if s.get("parent_session_id") and s.get("end_reason") == "compression":
+                continue
+            # Deduplicate: if this session belongs to a compaction chain
+            # we've already shown, skip it.
             if s.get("parent_session_id"):
-                continue
+                lineage = _get_lineage_ids(db, sid)
+                # Use the earliest ID in the lineage as the chain key
+                chain_key = min(lineage) if lineage else sid
+                if chain_key in seen_lineage_roots:
+                    continue
+                seen_lineage_roots.add(chain_key)
             results.append({
                 "session_id": sid,
                 "title": s.get("title") or None,
@@ -293,10 +325,14 @@ def session_search(
                 "message": "No matching sessions found.",
             }, ensure_ascii=False)
 
-        # Resolve child sessions to their parent — delegation stores detailed
-        # content in child sessions, but the user's conversation is the parent.
-        def _resolve_to_parent(session_id: str) -> str:
-            """Walk delegation chain to find the root parent session ID."""
+        # Resolve child sessions to their lineage root for deduplication.
+        # Context compaction creates chains: root → ... → leaf.  The FTS
+        # match may be in any fragment.  We group by lineage so the same
+        # conversation doesn't appear multiple times, but we load content
+        # from the *matched* session (which actually has the messages),
+        # not the root (which may be empty after compaction).
+        def _resolve_to_root(session_id: str) -> str:
+            """Walk parent chain to find the root session ID."""
             visited = set()
             sid = session_id
             while sid and sid not in visited:
@@ -321,44 +357,52 @@ def session_search(
             return sid
 
         current_lineage_root = (
-            _resolve_to_parent(current_session_id) if current_session_id else None
+            _resolve_to_root(current_session_id) if current_session_id else None
+        )
+        current_lineage = (
+            _get_lineage_ids(db, current_session_id) if current_session_id else set()
         )
 
-        # Group by resolved (parent) session_id, dedup, skip the current
-        # session lineage. Compression and delegation create child sessions
-        # that still belong to the same active conversation.
+        # Group by lineage root for dedup, but keep the *matched* session_id
+        # for loading content (it has the actual messages).
         seen_sessions = {}
         for result in raw_results:
             raw_sid = result["session_id"]
-            resolved_sid = _resolve_to_parent(raw_sid)
             # Skip the current session lineage — the agent already has that
             # context, even if older turns live in parent fragments.
-            if current_lineage_root and resolved_sid == current_lineage_root:
+            if raw_sid in current_lineage:
                 continue
-            if current_session_id and raw_sid == current_session_id:
+            lineage_root = _resolve_to_root(raw_sid)
+            if current_lineage_root and lineage_root == current_lineage_root:
                 continue
-            if resolved_sid not in seen_sessions:
+            if lineage_root not in seen_sessions:
                 result = dict(result)
-                result["session_id"] = resolved_sid
-                seen_sessions[resolved_sid] = result
+                # Keep raw_sid as the content source (where FTS found the match)
+                # but use lineage_root as the dedup key.
+                result["_content_session_id"] = raw_sid
+                seen_sessions[lineage_root] = result
             if len(seen_sessions) >= limit:
                 break
 
         # Prepare all sessions for parallel summarization
         tasks = []
-        for session_id, match_info in seen_sessions.items():
+        for lineage_root, match_info in seen_sessions.items():
             try:
-                messages = db.get_messages_as_conversation(session_id)
+                # Load conversation from the session where FTS found the
+                # match — not the lineage root which may be empty after
+                # context compaction.
+                content_sid = match_info["_content_session_id"]
+                messages = db.get_messages_as_conversation(content_sid)
                 if not messages:
                     continue
-                session_meta = db.get_session(session_id) or {}
+                session_meta = db.get_session(content_sid) or {}
                 conversation_text = _format_conversation(messages)
                 conversation_text = _truncate_around_matches(conversation_text, query)
-                tasks.append((session_id, match_info, conversation_text, session_meta))
+                tasks.append((content_sid, match_info, conversation_text, session_meta))
             except Exception as e:
                 logging.warning(
                     "Failed to prepare session %s: %s",
-                    session_id,
+                    lineage_root,
                     e,
                     exc_info=True,
                 )

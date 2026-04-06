@@ -257,7 +257,7 @@ class TestSessionSearch:
         assert result["sessions_searched"] == 0
 
     def test_current_root_session_excludes_child_lineage(self):
-        """Delegation child hits should be excluded when they resolve to the current root session."""
+        """Compression/delegation parents should be excluded for the active child session."""
         from unittest.mock import MagicMock
         from tools.session_search_tool import session_search
 
@@ -284,3 +284,87 @@ class TestSessionSearch:
         assert result["count"] == 0
         assert result["results"] == []
         assert result["sessions_searched"] == 0
+
+    def test_compaction_chain_search_uses_matched_session(self):
+        """FTS match in a compacted child session should load content from the
+        child (where messages live), not the empty root."""
+        from unittest.mock import MagicMock, AsyncMock, patch as _patch
+        from tools.session_search_tool import session_search
+
+        mock_db = MagicMock()
+        # FTS finds a match in the leaf session of a compaction chain
+        mock_db.search_messages.return_value = [
+            {"session_id": "leaf_sid", "content": "Infomoris migration",
+             "source": "cli", "session_started": 1709500000, "model": "test"},
+        ]
+
+        def _get_session(session_id):
+            # 3-level compaction chain: root -> mid -> leaf
+            if session_id == "root_sid":
+                return {"parent_session_id": None, "end_reason": None}
+            if session_id == "mid_sid":
+                return {"parent_session_id": "root_sid", "end_reason": "compression"}
+            if session_id == "leaf_sid":
+                return {"parent_session_id": "mid_sid", "end_reason": "cli_close"}
+            return None
+
+        mock_db.get_session.side_effect = _get_session
+        mock_db.get_messages_as_conversation.return_value = [
+            {"role": "user", "content": "Let's work on Infomoris"},
+            {"role": "assistant", "content": "Sure, let me help with that."},
+        ]
+
+        with _patch("tools.session_search_tool.async_call_llm",
+                     new_callable=AsyncMock,
+                     side_effect=RuntimeError("no provider")):
+            result = json.loads(session_search(
+                query="Infomoris", db=mock_db, current_session_id="other_session",
+            ))
+
+        assert result["success"] is True
+        assert result["count"] == 1
+        # Verify that get_messages_as_conversation was called with the LEAF
+        # session (where FTS found the match), NOT the root
+        mock_db.get_messages_as_conversation.assert_called_once_with("leaf_sid")
+
+    def test_compaction_chain_deduplicates_same_lineage(self):
+        """Multiple FTS hits in different fragments of the same compaction chain
+        should produce only one result."""
+        from unittest.mock import MagicMock, AsyncMock, patch as _patch
+        from tools.session_search_tool import session_search
+
+        mock_db = MagicMock()
+        # FTS finds matches in TWO different sessions of the same chain
+        mock_db.search_messages.return_value = [
+            {"session_id": "leaf_sid", "content": "Infomoris leaf",
+             "source": "cli", "session_started": 1709500000, "model": "test"},
+            {"session_id": "mid_sid", "content": "Infomoris mid",
+             "source": "cli", "session_started": 1709400000, "model": "test"},
+        ]
+
+        def _get_session(session_id):
+            if session_id == "root_sid":
+                return {"parent_session_id": None, "end_reason": None}
+            if session_id == "mid_sid":
+                return {"parent_session_id": "root_sid", "end_reason": "compression"}
+            if session_id == "leaf_sid":
+                return {"parent_session_id": "mid_sid", "end_reason": "cli_close"}
+            if session_id == "other_session":
+                return {"parent_session_id": None}
+            return None
+
+        mock_db.get_session.side_effect = _get_session
+        mock_db.get_messages_as_conversation.return_value = [
+            {"role": "user", "content": "test"},
+        ]
+
+        with _patch("tools.session_search_tool.async_call_llm",
+                     new_callable=AsyncMock,
+                     side_effect=RuntimeError("no provider")):
+            result = json.loads(session_search(
+                query="Infomoris", db=mock_db, current_session_id="other_session",
+            ))
+
+        assert result["success"] is True
+        # Should deduplicate: only 1 result for the whole chain
+        assert result["sessions_searched"] == 1

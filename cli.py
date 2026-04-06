@@ -6125,6 +6125,19 @@ class HermesCLI:
         for line in reqs["details"].split("\n"):
             _cprint(f"    {line}")
 
+    def _submit_clarify_response(self, response_text, event):
+        """Submit a user response to the active clarify prompt and reset UI state.
+
+        Centralizes the submit logic used by both freetext and choice-mode
+        Enter handlers so the two code paths stay consistent.
+        """
+        if self._clarify_state:
+            self._clarify_state["response_queue"].put(response_text)
+        self._clarify_state = None
+        self._clarify_freetext = False
+        event.app.current_buffer.reset()
+        event.app.invalidate()
+
     def _clarify_callback(self, question, choices):
         """
         Platform callback for the clarify tool. Called from the agent thread.
@@ -7223,11 +7236,7 @@ class HermesCLI:
             if self._clarify_freetext and self._clarify_state:
                 text = event.app.current_buffer.text.strip()
                 if text:
-                    self._clarify_state["response_queue"].put(text)
-                    self._clarify_state = None
-                    self._clarify_freetext = False
-                    event.app.current_buffer.reset()
-                    event.app.invalidate()
+                    self._submit_clarify_response(text, event)
                 return
 
             # --- Clarify choice mode: confirm the highlighted selection ---
@@ -7238,18 +7247,12 @@ class HermesCLI:
                 # the highlighted choice when they intended to type their own answer.
                 typed_text = event.app.current_buffer.text.strip()
                 if typed_text:
-                    state["response_queue"].put(typed_text)
-                    self._clarify_state = None
-                    self._clarify_freetext = False
-                    event.app.current_buffer.reset()
-                    event.app.invalidate()
+                    self._submit_clarify_response(typed_text, event)
                     return
                 selected = state["selected"]
                 choices = state.get("choices") or []
                 if selected < len(choices):
-                    state["response_queue"].put(choices[selected])
-                    self._clarify_state = None
-                    event.app.invalidate()
+                    self._submit_clarify_response(choices[selected], event)
                 else:
                     # "Other" selected → switch to freetext
                     self._clarify_freetext = True

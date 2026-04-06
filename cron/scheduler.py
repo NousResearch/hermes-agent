@@ -297,8 +297,15 @@ _SCRIPT_TIMEOUT = 120  # seconds
 def _run_job_script(script_path: str) -> tuple[bool, str]:
     """Execute a cron job's data-collection script and capture its output.
 
+    Scripts must reside within HERMES_HOME/scripts/.  Both relative and
+    absolute paths are resolved and validated against this directory to
+    prevent arbitrary script execution via path traversal or absolute
+    path injection.
+
     Args:
-        script_path: Path to a Python script (resolved via HERMES_HOME/scripts/ or absolute).
+        script_path: Path to a Python script.  Relative paths are resolved
+            against HERMES_HOME/scripts/.  Absolute and ~-prefixed paths
+            are also validated to ensure they stay within the scripts dir.
 
     Returns:
         (success, output) — on failure *output* contains the error message so the
@@ -306,16 +313,25 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
     """
     from hermes_constants import get_hermes_home
 
-    path = Path(script_path).expanduser()
-    if not path.is_absolute():
-        # Resolve relative paths against HERMES_HOME/scripts/
-        scripts_dir = get_hermes_home() / "scripts"
-        path = (scripts_dir / path).resolve()
-        # Guard against path traversal (e.g. "../../etc/passwd")
-        try:
-            path.relative_to(scripts_dir.resolve())
-        except ValueError:
-            return False, f"Script path escapes the scripts directory: {script_path!r}"
+    scripts_dir = get_hermes_home() / "scripts"
+    scripts_dir.mkdir(parents=True, exist_ok=True)
+    scripts_dir_resolved = scripts_dir.resolve()
+
+    raw = Path(script_path).expanduser()
+    if raw.is_absolute():
+        path = raw.resolve()
+    else:
+        path = (scripts_dir / raw).resolve()
+
+    # Guard against path traversal, absolute path injection, and symlink
+    # escape — scripts MUST reside within HERMES_HOME/scripts/.
+    try:
+        path.relative_to(scripts_dir_resolved)
+    except ValueError:
+        return False, (
+            f"Blocked: script path resolves outside the scripts directory "
+            f"({scripts_dir_resolved}): {script_path!r}"
+        )
 
     if not path.exists():
         return False, f"Script not found: {path}"
@@ -473,14 +489,14 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     logger.info("Running job '%s' (ID: %s)", job_name, job_id)
     logger.info("Prompt: %s", prompt[:100])
 
-    # Inject origin context so the agent's send_message tool knows the chat
-    if origin:
-        os.environ["HERMES_SESSION_PLATFORM"] = origin["platform"]
-        os.environ["HERMES_SESSION_CHAT_ID"] = str(origin["chat_id"])
-        if origin.get("chat_name"):
-            os.environ["HERMES_SESSION_CHAT_NAME"] = origin["chat_name"]
-
     try:
+        # Inject origin context so the agent's send_message tool knows the chat.
+        # Must be INSIDE the try block so the finally cleanup always runs.
+        if origin:
+            os.environ["HERMES_SESSION_PLATFORM"] = origin["platform"]
+            os.environ["HERMES_SESSION_CHAT_ID"] = str(origin["chat_id"])
+            if origin.get("chat_name"):
+                os.environ["HERMES_SESSION_CHAT_NAME"] = origin["chat_name"]
         # Re-read .env and config.yaml fresh every run so provider/key
         # changes take effect without a gateway restart.
         from dotenv import load_dotenv

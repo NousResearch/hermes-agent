@@ -393,6 +393,16 @@ class TestBlockingApprovalE2E:
 
     def setup_method(self):
         _clear_approval_state()
+        self._approval_mode_patch = patch(
+            "tools.approval._get_approval_mode", return_value="manual"
+        )
+        self._approval_mode_patch.start()
+        self._previous_yolo_mode = os.environ.pop("HERMES_YOLO_MODE", None)
+
+    def teardown_method(self):
+        self._approval_mode_patch.stop()
+        if self._previous_yolo_mode is not None:
+            os.environ["HERMES_YOLO_MODE"] = self._previous_yolo_mode
 
     def test_blocking_approval_approve_once(self):
         """check_all_command_guards blocks until resolve_gateway_approval is called."""
@@ -431,13 +441,19 @@ class TestBlockingApprovalE2E:
         t = threading.Thread(target=agent_thread)
         t.start()
 
-        for _ in range(50):
-            if notified:
+        from tools.approval import _gateway_queues
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            if _gateway_queues.get(session_key):
                 break
             time.sleep(0.05)
 
-        assert len(notified) == 1
-        assert "rm -rf /important" in notified[0]["command"]
+        queue = _gateway_queues.get(session_key, [])
+        assert len(queue) == 1
+        if notified:
+            assert "rm -rf /important" in notified[0]["command"]
+        else:
+            assert queue[0].data["command"] == "rm -rf /important"
 
         resolve_gateway_approval(session_key, "once")
         t.join(timeout=5)
@@ -481,10 +497,19 @@ class TestBlockingApprovalE2E:
 
         t = threading.Thread(target=agent_thread)
         t.start()
-        for _ in range(50):
-            if notified:
+        from tools.approval import _gateway_queues
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            if _gateway_queues.get(session_key):
                 break
             time.sleep(0.05)
+
+        queue = _gateway_queues.get(session_key, [])
+        assert len(queue) == 1
+        if notified:
+            assert "rm -rf /important" in notified[0]["command"]
+        else:
+            assert queue[0].data["command"] == "rm -rf /important"
 
         resolve_gateway_approval(session_key, "deny")
         t.join(timeout=5)
@@ -648,6 +673,7 @@ class TestBlockingApprovalE2E:
             if len(_gateway_queues.get(session_key, [])) >= 2:
                 break
             time.sleep(0.05)
+        assert len(_gateway_queues.get(session_key, [])) == 2
 
         # Approve first, deny second
         resolve_gateway_approval(session_key, "once")  # oldest
@@ -656,10 +682,9 @@ class TestBlockingApprovalE2E:
         for t in threads:
             t.join(timeout=5)
 
-        assert len(results) == 2
-        vals = list(results.values())
-        assert sorted(v["approved"] for v in vals) == [False, True]
-        assert sum("BLOCKED" in (v.get("message") or "") for v in vals) == 1
+        assert all(r is not None for r in results)
+        assert sorted(r["approved"] for r in results) == [False, True]
+        assert sum("BLOCKED" in (r.get("message") or "") for r in results) == 1
         unregister_gateway_notify(session_key)
 
 

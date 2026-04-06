@@ -2523,6 +2523,7 @@ class AIAgent:
             entry = {
                 "session_id": self.session_id,
                 "model": self.model,
+                "response_model": getattr(self, "_last_response_model", None),
                 "base_url": self.base_url,
                 "platform": self.platform,
                 "session_start": self.session_start.isoformat(),
@@ -8412,12 +8413,19 @@ class AIAgent:
                 except Exception:
                     pass
 
+                # Track actual response model (e.g. what openrouter/auto routed to)
+                _resp_model = getattr(response, "model", None)
+                self._last_response_model = _resp_model
+
                 # Handle assistant response
                 if assistant_message.content and not self.quiet_mode:
                     if self.verbose_logging:
                         self._vprint(f"{self.log_prefix}🤖 Assistant: {assistant_message.content}")
                     else:
                         self._vprint(f"{self.log_prefix}🤖 Assistant: {assistant_message.content[:100]}{'...' if len(assistant_message.content) > 100 else ''}")
+                    # Show actual routed model when it differs from the configured one
+                    if _resp_model and _resp_model != self.model:
+                        self._safe_print(f"  ↳ {_resp_model}")
 
                 # Notify progress callback of model's thinking (used by subagent
                 # delegation to relay the child's reasoning to the parent display).

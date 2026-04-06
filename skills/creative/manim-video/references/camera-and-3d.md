@@ -74,3 +74,62 @@ helix = ParametricFunction(
 - Surfaces, vector fields, spatial geometry, 3D transforms
 ## When NOT to Use 3D
 - 2D concepts, text-heavy scenes, flat data (bar charts, time series)
+
+## ZoomedScene — Inset Zoom
+
+Show a magnified inset of a detail while keeping the full view visible:
+
+```python
+class ZoomExample(ZoomedScene):
+    def __init__(self, **kwargs):
+        super().__init__(
+            zoom_factor=0.3,           # how much of the scene the zoom box covers
+            zoomed_display_height=3,   # size of the inset
+            zoomed_display_width=3,
+            zoomed_camera_frame_starting_position=ORIGIN,
+            **kwargs
+        )
+
+    def construct(self):
+        self.camera.background_color = BG
+        # ... create your scene content ...
+
+        # Activate the zoom
+        self.activate_zooming()
+
+        # Move the zoom frame to a point of interest
+        self.play(self.zoomed_camera.frame.animate.move_to(detail_point))
+        self.wait(2)
+
+        # Deactivate
+        self.play(self.get_zoomed_display_pop_out_animation(), rate_func=lambda t: smooth(1-t))
+```
+
+Use cases: zooming into a specific term in an equation, showing fine detail in a diagram, magnifying a region of a plot.
+
+## LinearTransformationScene — Linear Algebra
+
+Pre-built scene with basis vectors and grid for visualizing matrix transformations:
+
+```python
+class LinearTransformExample(LinearTransformationScene):
+    def __init__(self, **kwargs):
+        super().__init__(
+            show_coordinates=True,
+            show_basis_vectors=True,
+            **kwargs
+        )
+
+    def construct(self):
+        matrix = [[2, 1], [1, 1]]
+
+        # Add a vector before applying the transform
+        vector = self.get_vector([1, 2], color=YELLOW)
+        self.add_vector(vector)
+
+        # Apply the transformation — grid, basis vectors, and your vector all transform
+        self.apply_matrix(matrix)
+        self.wait(2)
+```
+
+This produces the signature 3Blue1Brown "Essence of Linear Algebra" look — grid lines deforming, basis vectors stretching, determinant visualized through area change.

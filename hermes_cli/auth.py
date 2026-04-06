@@ -2634,10 +2634,10 @@ def _login_nous(args, pconfig: ProviderConfig) -> None:
 
     try:
         auth_state = _nous_device_code_login(
-            portal_base_url=getattr(args, "portal_url", None) or pconfig.portal_base_url,
-            inference_base_url=getattr(args, "inference_url", None) or pconfig.inference_base_url,
-            client_id=getattr(args, "client_id", None) or pconfig.client_id,
-            scope=getattr(args, "scope", None) or pconfig.scope,
+            portal_base_url=getattr(args, "portal_url", None),
+            inference_base_url=getattr(args, "inference_url", None),
+            client_id=getattr(args, "client_id", None),
+            scope=getattr(args, "scope", None),
             open_browser=not getattr(args, "no_browser", False),
             timeout_seconds=timeout_seconds,
             insecure=insecure,

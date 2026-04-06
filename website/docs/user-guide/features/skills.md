@@ -207,6 +207,65 @@ Paths support `~` expansion and `${VAR}` environment variable substitution.
 
 All four skills appear in your skill index. If you create a new skill called `my-custom-workflow` locally, it shadows the external version.
 
+## Sharing Specific Skills Across Profiles
+
+For skills you want to share across **some** (but not all) profiles, use the `skills.shared` shorthand. Place each shared skill under `~/.hermes/shared-skills/`:
+
+```text
+~/.hermes/shared-skills/
+├── team-runbook/
+│   └── SKILL.md
+└── company-style-guide/
+    └── SKILL.md
+```
+
+Then list the names in each profile's `config.yaml`:
+
+```yaml
+# Profile A — includes both
+skills:
+  shared:
+    - team-runbook
+    - company-style-guide
+```
+
+```yaml
+# Profile B — only style guide
+skills:
+  shared:
+    - company-style-guide
+```
+
+```yaml
+# Profile C — neither (no shared entry, no implicit inclusion)
+skills:
+  external_dirs: []
+```
+
+Each profile sees only the shared skills it explicitly opts into. Profiles with no `skills.shared` key see no shared skills at all — sharing is opt-in, not automatic.
+
+### How it relates to `external_dirs`
+
+Internally, `skills.shared: [team-runbook]` is equivalent to `skills.external_dirs: [~/.hermes/shared-skills/team-runbook]`. The `shared` key is just a shorthand that:
+
+- Establishes `~/.hermes/shared-skills/` as the canonical shared location, so users don't have to remember a path
+- Lets you list shared skills by **name** instead of repeating the full path each time
+- Validates names (no slashes, no `..`, no leading dot) to prevent path-traversal mistakes in config
+
+Use `skills.shared` for the common case ("share skills X and Y across these profiles"). Use `skills.external_dirs` when you need full paths, environment-variable substitution, or to share entire directories of skills from outside `~/.hermes/`.
+
+### Precedence
+
+The full skill search order is:
+
+1. **Profile-local** (`HERMES_HOME/skills/`) — highest precedence, read/write
+2. **`skills.shared`** entries from `~/.hermes/shared-skills/`
+3. **`skills.external_dirs`** entries
+
+Duplicates (same resolved path) are filtered: a skill listed in both `shared` and `external_dirs` only appears once. A profile-local skill with the same name as a shared one shadows it.
+
+Shared skills are read-only from the agent's perspective — `skill_edit`, `skill_patch`, `skill_write_file`, and `skill_remove_file` copy-on-write into the profile-local `skills/` directory before applying changes (see [External Skill Directories — How it works](#how-it-works)). The shared source is never mutated by the agent.
+
 ## Agent-Managed Skills (skill_manage tool)
 
 The agent can create, update, and delete its own skills via the `skill_manage` tool. This is the agent's **procedural memory** — when it figures out a non-trivial workflow, it saves the approach as a skill for future reuse.

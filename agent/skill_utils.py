@@ -167,6 +167,67 @@ def _normalize_string_set(values) -> Set[str]:
     return {str(v).strip() for v in values if str(v).strip()}
 
 
+# ── Shared skills directory ──────────────────────────────────────────────
+
+# Conventional directory for skills that are shared across multiple profiles
+# on a single host. Referenced by the ``skills.shared`` config shorthand,
+# which lists skill names (subdirectories under this path) to include in a
+# profile's skill search path. Unlike ``skills.external_dirs`` (which takes
+# arbitrary directory paths), this gives a single rooted convention so users
+# can list shared skills by name and the location is implicit.
+DEFAULT_SHARED_SKILLS = Path.home() / ".hermes" / "shared-skills"
+
+
+def get_shared_skill_dirs() -> List[Path]:
+    """Resolve ``skills.shared`` config entries to directories.
+
+    Reads ``skills.shared`` from the active profile's ``config.yaml`` —
+    a list of skill names — and returns the corresponding subdirectories
+    under ``~/.hermes/shared-skills/`` that actually exist.
+
+    Each name must be a bare directory name (no slashes, no leading dot).
+    Invalid names and missing directories are silently skipped so a typo
+    or a half-provisioned host doesn't break the agent.
+    """
+    config_path = get_hermes_home() / "config.yaml"
+    if not config_path.exists():
+        return []
+    try:
+        parsed = yaml_load(config_path.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    if not isinstance(parsed, dict):
+        return []
+
+    skills_cfg = parsed.get("skills")
+    if not isinstance(skills_cfg, dict):
+        return []
+
+    raw = skills_cfg.get("shared")
+    if not raw:
+        return []
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, list):
+        return []
+
+    result: List[Path] = []
+    for entry in raw:
+        name = str(entry).strip()
+        if not name or "/" in name or "\\" in name or name.startswith("."):
+            # Reject path traversal and hidden directories
+            logger.debug("Skipping invalid skills.shared entry: %r", entry)
+            continue
+        skill_dir = DEFAULT_SHARED_SKILLS / name
+        if skill_dir.is_dir():
+            result.append(skill_dir)
+        else:
+            logger.debug(
+                "Shared skill '%s' not found at %s, skipping", name, skill_dir
+            )
+    return result
+
+
 # ── External skills directories ──────────────────────────────────────────
 
 
@@ -224,13 +285,37 @@ def get_external_skills_dirs() -> List[Path]:
 
 
 def get_all_skills_dirs() -> List[Path]:
-    """Return all skill directories: local ``~/.hermes/skills/`` first, then external.
+    """Return all skill directories in precedence order:
 
-    The local dir is always first (and always included even if it doesn't exist
-    yet — callers handle that).  External dirs follow in config order.
+    1. Profile-local ``HERMES_HOME/skills/`` (read/write, highest precedence)
+    2. Shared skills named in ``skills.shared`` config, resolved to
+       subdirectories of ``~/.hermes/shared-skills/``
+    3. Entries from ``skills.external_dirs`` in ``config.yaml``
+
+    The profile-local dir is always first and always included (even if it
+    doesn't exist yet — callers handle that). Duplicates (same resolved
+    path) are filtered: a path that appears in both ``skills.shared`` and
+    ``skills.external_dirs``, or that resolves to the local skills dir,
+    will appear at most once.
     """
-    dirs = [get_hermes_home() / "skills"]
-    dirs.extend(get_external_skills_dirs())
+    local_skills = (get_hermes_home() / "skills").resolve()
+    dirs: List[Path] = [get_hermes_home() / "skills"]
+    seen: Set[Path] = {local_skills}
+
+    for p in get_shared_skill_dirs():
+        rp = p.resolve()
+        if rp in seen:
+            continue
+        seen.add(rp)
+        dirs.append(p)
+
+    for p in get_external_skills_dirs():
+        rp = p.resolve()
+        if rp in seen:
+            continue
+        seen.add(rp)
+        dirs.append(p)
+
     return dirs
 
 

@@ -1,7 +1,7 @@
 ---
 sidebar_position: 4
 title: "Memory Providers"
-description: "External memory provider plugins — Honcho, OpenViking, Mem0, Hindsight, Holographic, RetainDB, ByteRover"
+description: "External memory provider plugins — Honcho, OpenViking, Mem0 (Platform & OSS), Hindsight, Holographic, RetainDB, ByteRover"
 ---
 
 # Memory Providers
@@ -20,7 +20,7 @@ Or set manually in `~/.hermes/config.yaml`:
 
 ```yaml
 memory:
-  provider: openviking   # or honcho, mem0, hindsight, holographic, retaindb, byterover
+  provider: openviking   # or honcho, mem0, mem0_oss, hindsight, holographic, retaindb, byterover
 ```
 
 ## How It Works
@@ -233,21 +233,25 @@ echo "OPENVIKING_ENDPOINT=http://localhost:1933" >> ~/.hermes/.env
 
 ### Mem0
 
-Server-side LLM fact extraction with semantic search, reranking, and automatic deduplication.
+LLM-powered memory with semantic search, reranking, and automatic deduplication. Available in two modes: **Platform** (cloud API) and **Self-hosted (OSS)** with your own LLM, embedder, and vector store.
+
+```bash
+hermes memory setup    # select "Mem0" → choose Platform or Self-hosted (OSS)
+```
+
+#### Mem0 Platform
 
 | | |
 |---|---|
 | **Best for** | Hands-off memory management — Mem0 handles extraction automatically |
-| **Requires** | `pip install mem0ai` + API key |
+| **Requires** | `pip install mem0ai` + [API key](https://app.mem0.ai) |
 | **Data storage** | Mem0 Cloud |
 | **Cost** | Mem0 pricing |
 
-**Tools:** `mem0_profile` (all stored memories), `mem0_search` (semantic search + reranking), `mem0_conclude` (store verbatim facts)
+**Tools:** `mem0_profile`, `mem0_search`, `mem0_conclude`
 
-**Setup:**
+**Manual setup:**
 ```bash
-hermes memory setup    # select "mem0"
-# Or manually:
 hermes config set memory.provider mem0
 echo "MEM0_API_KEY=your-key" >> ~/.hermes/.env
 ```
@@ -258,6 +262,45 @@ echo "MEM0_API_KEY=your-key" >> ~/.hermes/.env
 |-----|---------|-------------|
 | `user_id` | `hermes-user` | User identifier |
 | `agent_id` | `hermes` | Agent identifier |
+
+#### Mem0 Self-hosted (OSS)
+
+| | |
+|---|---|
+| **Best for** | Full control over LLM, embedder, and vector store — data stays on your infra |
+| **Requires** | `pip install mem0ai` + LLM provider (OpenAI key, or Ollama locally + `pip install ollama`) |
+| **Data storage** | Local vector store (Qdrant) or self-hosted (PGVector, Milvus) |
+| **Cost** | Free (plus LLM API costs if using a cloud LLM) |
+
+**Tools:** `mem0_oss_profile`, `mem0_oss_search`, `mem0_oss_conclude`
+
+**Manual setup:**
+```bash
+hermes config set memory.provider mem0_oss
+echo "OPENAI_API_KEY=your-key" >> ~/.hermes/.env
+```
+
+**Config:** `$HERMES_HOME/mem0_oss.json`
+
+```json
+{
+  "llm": {"provider": "openai", "config": {"model": "gpt-5.4", "temperature": 0.1}},
+  "embedder": {"provider": "openai", "config": {"model": "text-embedding-3-small"}},
+  "vector_store": {"provider": "qdrant", "config": {"path": "/tmp/qdrant", "collection_name": "mem0"}},
+  "user_id": "hermes-user",
+  "agent_id": "hermes"
+}
+```
+
+**Supported providers:**
+
+| Component | Options |
+|-----------|---------|
+| **LLM** | OpenAI, Ollama |
+| **Embedder** | OpenAI, Ollama |
+| **Vector Store** | Qdrant (local), PGVector, Milvus |
+
+A built-in fact extraction prompt filters out conversational noise (greetings, small talk) so only durable facts are stored during automatic turn sync.
 
 ---
 
@@ -388,7 +431,8 @@ hermes config set memory.provider byterover
 |----------|---------|------|-------|-------------|----------------|
 | **Honcho** | Cloud | Paid | 4 | `honcho-ai` | Dialectic user modeling |
 | **OpenViking** | Self-hosted | Free | 5 | `openviking` + server | Filesystem hierarchy + tiered loading |
-| **Mem0** | Cloud | Paid | 3 | `mem0ai` | Server-side LLM extraction |
+| **Mem0 Platform** | Cloud | Paid | 3 | `mem0ai` | Server-side LLM extraction |
+| **Mem0 OSS** | Local/Self-hosted | Free + LLM costs | 3 | `mem0ai` | Configurable LLM, embedder & vector store |
 | **Hindsight** | Cloud/Local | Free/Paid | 3 | `hindsight-client` | Knowledge graph + reflect synthesis |
 | **Holographic** | Local | Free | 2 | None | HRR algebra + trust scoring |
 | **RetainDB** | Cloud | $20/mo | 5 | `requests` | Delta compression |
@@ -399,7 +443,7 @@ hermes config set memory.provider byterover
 Each provider's data is isolated per [profile](/docs/user-guide/profiles):
 
 - **Local storage providers** (Holographic, ByteRover) use `$HERMES_HOME/` paths which differ per profile
-- **Config file providers** (Honcho, Mem0, Hindsight) store config in `$HERMES_HOME/` so each profile has its own credentials
+- **Config file providers** (Honcho, Mem0, Mem0 OSS, Hindsight) store config in `$HERMES_HOME/` so each profile has its own credentials
 - **Cloud providers** (RetainDB) auto-derive profile-scoped project names
 - **Env var providers** (OpenViking) are configured via each profile's `.env` file
 

@@ -121,6 +121,32 @@ def _prompt(label: str, default: str | None = None, secret: bool = False) -> str
     return val or (default or "")
 
 
+def _ensure_env_loaded():
+    """Load .env into os.environ so the wizard can detect existing API keys."""
+    try:
+        from hermes_cli.env_loader import load_hermes_dotenv
+        load_hermes_dotenv()
+    except Exception:
+        pass
+
+
+def _read_env_value(env_path: Path, key: str) -> str:
+    """Read a single value from the .env file (fallback when os.environ misses it)."""
+    if not env_path.exists():
+        return ""
+    try:
+        for line in env_path.read_text().splitlines():
+            stripped = line.strip()
+            if stripped.startswith("#") or "=" not in stripped:
+                continue
+            k, v = stripped.split("=", 1)
+            if k.strip() == key:
+                return v.strip()
+    except Exception:
+        pass
+    return ""
+
+
 # ---------------------------------------------------------------------------
 # Provider discovery
 # ---------------------------------------------------------------------------
@@ -210,6 +236,40 @@ def _install_dependencies(provider_name: str) -> None:
                     print(f"    {install_cmd}")
 
 
+def _install_extra_dependencies(packages: list[str]) -> None:
+    """Install extra pip packages required by the user's provider choices."""
+    if not packages:
+        return
+
+    import shutil
+    import subprocess
+
+    print(f"\n  Installing extra dependencies: {', '.join(packages)}")
+
+    uv_path = shutil.which("uv")
+    if not uv_path:
+        print(f"  ⚠ uv not found — please install manually:")
+        print(f"    pip install {' '.join(packages)}")
+        return
+
+    try:
+        subprocess.run(
+            [uv_path, "pip", "install", "--python", sys.executable, "--quiet"] + packages,
+            check=True, timeout=120,
+            capture_output=True,
+        )
+        print(f"  ✓ Installed {', '.join(packages)}")
+    except subprocess.CalledProcessError as e:
+        print(f"  ⚠ Failed to install {', '.join(packages)}")
+        stderr = (e.stderr or b"").decode()[:200]
+        if stderr:
+            print(f"    {stderr}")
+        print(f"  Run manually: pip install {' '.join(packages)}")
+    except Exception as e:
+        print(f"  ⚠ Install failed: {e}")
+        print(f"  Run manually: pip install {' '.join(packages)}")
+
+
 def _get_available_providers() -> list:
     """Discover memory providers from plugins/memory/.
 
@@ -254,6 +314,7 @@ def cmd_setup_provider(provider_name: str) -> None:
     """Run memory setup for a specific provider, skipping the picker."""
     from hermes_cli.config import load_config, save_config
 
+    _ensure_env_loaded()
     providers = _get_available_providers()
     match = None
     for name, desc, provider in providers:
@@ -286,9 +347,14 @@ def cmd_setup_provider(provider_name: str) -> None:
     print(f"  Activation saved to config.yaml\n")
 
 
+_MEM0_VARIANTS = {"mem0", "mem0_oss"}
+
+
 def cmd_setup(args) -> None:
     """Interactive memory provider setup wizard."""
     from hermes_cli.config import load_config, save_config
+
+    _ensure_env_loaded()
 
     providers = _get_available_providers()
 
@@ -297,10 +363,23 @@ def cmd_setup(args) -> None:
         print("  Install a plugin to ~/.hermes/plugins/ and try again.\n")
         return
 
-    # Build picker items
+    # Group mem0 variants into a single picker entry
+    mem0_map = {p[0]: p for p in providers if p[0] in _MEM0_VARIANTS}
+    has_mem0_group = len(mem0_map) >= 2
+
+    # Build picker: replace mem0 + mem0_oss with a single "Mem0" row
     items = []
-    for name, desc, _ in providers:
-        items.append((name, f"— {desc}"))
+    picker_entries = []  # parallel list of (name, desc, provider) or None for group
+    seen_mem0 = False
+    for entry in providers:
+        if has_mem0_group and entry[0] in _MEM0_VARIANTS:
+            if not seen_mem0:
+                items.append(("Mem0", "— memory for AI"))
+                picker_entries.append(None)  # resolved by sub-picker
+                seen_mem0 = True
+            continue
+        items.append((entry[0], f"— {entry[1]}"))
+        picker_entries.append(entry)
     items.append(("Built-in only", "— MEMORY.md / USER.md (default)"))
 
     builtin_idx = len(items) - 1
@@ -310,21 +389,37 @@ def cmd_setup(args) -> None:
     if not isinstance(config.get("memory"), dict):
         config["memory"] = {}
 
-    # Built-in only
-    if selected >= len(providers) or selected < 0:
+    # Built-in only (or quit)
+    if selected >= len(picker_entries) or selected < 0:
         config["memory"]["provider"] = ""
         save_config(config)
         print("\n  ✓ Memory provider: built-in only")
         print("  Saved to config.yaml\n")
         return
 
-    name, _, provider = providers[selected]
+    entry = picker_entries[selected]
 
+    # Grouped Mem0 — show sub-picker for Platform vs Self-hosted
+    if entry is None and has_mem0_group:
+        mode_items = [
+            ("Platform", "— Cloud API (app.mem0.ai)"),
+            ("Self-hosted (OSS)", "— Local LLM, embedder & vector store"),
+        ]
+        mode_sel = _curses_select("  Mem0 mode", mode_items)
+        chosen_name = "mem0_oss" if mode_sel == 1 else "mem0"
+        entry = mem0_map[chosen_name]
+
+    name, _, provider = entry
+
+    _run_provider_setup(name, provider, config, save_config)
+
+
+def _run_provider_setup(name, provider, config, save_config):
+    """Walk through a provider's config schema and write config + secrets."""
     # Install pip dependencies if declared in plugin.yaml
     _install_dependencies(name)
 
     # If the provider has a post_setup hook, delegate entirely to it.
-    # The hook handles its own config, connection test, and activation.
     if hasattr(provider, "post_setup"):
         hermes_home = str(Path(os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes"))))
         provider.post_setup(hermes_home, config)
@@ -375,8 +470,10 @@ def cmd_setup(args) -> None:
                 sel = _curses_select(f"  {desc}", choice_items, default=current_idx)
                 provider_config[key] = choices[sel]
             elif is_secret:
-                # Prompt for secret
+                # Prompt for secret — check os.environ, then fall back to .env file
                 existing = os.environ.get(env_var, "") if env_var else ""
+                if not existing and env_var:
+                    existing = _read_env_value(env_path, env_var)
                 if existing:
                     masked = f"...{existing[-4:]}" if len(existing) > 4 else "set"
                     val = _prompt(f"{desc} (current: {masked}, blank to keep)", secret=True)
@@ -394,6 +491,9 @@ def cmd_setup(args) -> None:
                 val = _prompt(desc, default=str(effective_default) if effective_default else None)
                 if val:
                     provider_config[key] = val
+
+    if hasattr(provider, "get_extra_dependencies"):
+        _install_extra_dependencies(provider.get_extra_dependencies(provider_config))
 
     # Write activation key to config.yaml
     config["memory"]["provider"] = name

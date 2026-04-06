@@ -1,0 +1,5 @@
+name: mem0_oss
+version: 1.0.0
+description: "Mem0 OSS — self-hosted memory with configurable LLM, embedder, and vector store."
+pip_dependencies:
+  - mem0ai

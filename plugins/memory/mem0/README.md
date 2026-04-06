@@ -10,7 +10,7 @@ Server-side LLM fact extraction with semantic search, reranking, and automatic d
 ## Setup
 
 ```bash
-hermes memory setup    # select "mem0"
+hermes memory setup    # select "Mem0" → "Platform"
 ```
 
 Or manually:

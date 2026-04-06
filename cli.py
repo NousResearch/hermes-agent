@@ -208,6 +208,9 @@ def load_cli_config() -> Dict[str, Any]:
             "busy_input_mode": "interrupt",
 
             "skin": "default",
+            # Master toggle for Rich Markdown rendering of assistant responses.
+            # When False, responses are shown as plain text (ANSI passthrough only).
+            "markdown": True,
         },
         "clarify": {
             "timeout": 120,  # Seconds to wait for a clarify answer before auto-proceeding
@@ -482,6 +485,20 @@ try:
     set_tool_preview_max_len(int(_tpl) if _tpl else 0)
 except Exception:
     pass
+
+# Rich-based response highlighting (syntax highlight fenced code blocks)
+try:
+    import agent.display as _display
+    from agent.rich_output import StreamingBlockBuffer as _BlockBuf
+    from agent.rich_output import StreamingCodeBlockHighlighter as _CodeBlockHL
+    from agent.rich_output import apply_block_line as _apply_block_line
+    from agent.rich_output import apply_inline_markdown as _apply_inline_md
+    from agent.rich_output import format_response as _format_response
+    from agent.rich_output import has_markdown_syntax as _has_markdown_syntax
+    from agent.rich_output import set_code_theme as _set_code_theme
+    _RICH_RESPONSE = True
+except ImportError:
+    _RICH_RESPONSE = False
 
 # Neuter AsyncHttpxClientWrapper.__del__ before any AsyncOpenAI clients are
 # created.  The SDK's __del__ schedules aclose() on asyncio.get_running_loop()
@@ -1193,6 +1210,27 @@ class HermesCLI:
         # Inline diff previews for write actions (display.inline_diffs in config.yaml)
         self._inline_diffs_enabled = CLI_CONFIG["display"].get("inline_diffs", True)
 
+        # Syntax-highlighted code preview for execute_code (display.code_highlight in config.yaml)
+        self._code_highlight_enabled = CLI_CONFIG["display"].get("code_highlight", True)
+        from agent.display import set_code_highlight_active
+        set_code_highlight_active(self._code_highlight_enabled)
+
+        # Rich Markdown rendering of assistant responses (display.markdown in config.yaml).
+        # When disabled, responses fall back to plain ANSI text — useful for minimal terminals.
+        self.markdown_enabled = CLI_CONFIG["display"].get("markdown", True)
+
+        # Apply the active skin's code theme to the syntax highlighter so
+        # fenced code blocks use colours that match the chosen skin palette.
+        if _RICH_RESPONSE:
+            try:
+                from hermes_cli.skin_engine import get_active_skin
+                _skin = get_active_skin()
+                _theme = _skin.get_color("code_theme", "")
+                if _theme:
+                    _set_code_theme(_theme)
+            except Exception:
+                pass
+
         # Streaming display state
         self._stream_buf = ""        # Partial line buffer for line-buffered rendering
         self._stream_started = False  # True once first delta arrives
@@ -1846,9 +1884,14 @@ class HermesCLI:
         # reasoning is visible in real-time even without newlines.
         while "\n" in self._reasoning_buf:
             line, self._reasoning_buf = self._reasoning_buf.split("\n", 1)
+            if _RICH_RESPONSE and self.markdown_enabled:
+                line = _apply_inline_md(_apply_block_line(line, reset_suffix=_DIM), reset_suffix=_DIM)
             _cprint(f"{_DIM}{line}{_RST}")
         if len(self._reasoning_buf) > 80:
-            _cprint(f"{_DIM}{self._reasoning_buf}{_RST}")
+            partial = self._reasoning_buf
+            if _RICH_RESPONSE and self.markdown_enabled:
+                partial = _apply_inline_md(_apply_block_line(partial, reset_suffix=_DIM), reset_suffix=_DIM)
+            _cprint(f"{_DIM}{partial}{_RST}")
             self._reasoning_buf = ""
 
     def _close_reasoning_box(self) -> None:
@@ -1857,6 +1900,8 @@ class HermesCLI:
             # Flush remaining reasoning buffer
             buf = getattr(self, "_reasoning_buf", "")
             if buf:
+                if _RICH_RESPONSE and self.markdown_enabled:
+                    buf = _apply_inline_md(_apply_block_line(buf, reset_suffix=_DIM), reset_suffix=_DIM)
                 _cprint(f"{_DIM}{buf}{_RST}")
                 self._reasoning_buf = ""
             w = shutil.get_terminal_size().columns
@@ -2002,7 +2047,30 @@ class HermesCLI:
         _tc = getattr(self, "_stream_text_ansi", "")
         while "\n" in self._stream_buf:
             line, self._stream_buf = self._stream_buf.split("\n", 1)
-            _cprint(f"{_tc}{line}{_RST}" if _tc else line)
+            if _RICH_RESPONSE and self.markdown_enabled:
+                try:
+                    out = self._stream_block_buf.process_line(line)
+                    if out is None:
+                        continue
+                    out2 = self._stream_code_hl.process_line(out)
+                    if out2 is None:
+                        continue
+                    if out2 is out:
+                        # plain text — apply block + inline markdown (fires whenever
+                        # _code_highlight_active is True, consistent with PR3)
+                        if _display._code_highlight_active:
+                            out = _apply_inline_md(_apply_block_line(out, reset_suffix=_tc), reset_suffix=_tc)
+                        _cprint(f"{_tc}{out}{_RST}" if _tc else out)
+                    else:
+                        # fenced code block — emit as-is (carries its own ANSI)
+                        for hl_line in out2.splitlines():
+                            _cprint(hl_line)
+                except Exception:
+                    # Graceful fallback: if the renderer fails mid-stream,
+                    # emit the raw line so the user still sees content.
+                    _cprint(f"{_tc}{line}{_RST}" if _tc else line)
+            else:
+                _cprint(f"{_tc}{line}{_RST}" if _tc else line)
 
     def _flush_stream(self) -> None:
         """Emit any remaining partial line from the stream buffer and close the box."""
@@ -2011,7 +2079,36 @@ class HermesCLI:
 
         if self._stream_buf:
             _tc = getattr(self, "_stream_text_ansi", "")
-            _cprint(f"{_tc}{self._stream_buf}{_RST}" if _tc else self._stream_buf)
+            if _RICH_RESPONSE and self.markdown_enabled:
+                try:
+                    block_out = self._stream_block_buf.process_line(self._stream_buf)
+                    if block_out is not None:
+                        out2 = self._stream_code_hl.process_line(block_out)
+                        if out2 is not None:
+                            if out2 is block_out:
+                                if _display._code_highlight_active:
+                                    out2 = _apply_inline_md(_apply_block_line(out2, reset_suffix=_tc), reset_suffix=_tc)
+                                _cprint(f"{_tc}{out2}{_RST}" if _tc else out2)
+                            else:
+                                for hl_line in out2.splitlines():
+                                    _cprint(hl_line)
+                    # Flush any buffered block-level state
+                    buf_tail = self._stream_block_buf.flush()
+                    if buf_tail is not None:
+                        for hl_line in buf_tail.splitlines():
+                            if _display._code_highlight_active:
+                                hl_line = _apply_inline_md(_apply_block_line(hl_line, reset_suffix=_tc), reset_suffix=_tc)
+                            _cprint(f"{_tc}{hl_line}{_RST}" if _tc else hl_line)
+                    # Flush any open code block (unclosed fence at end of response)
+                    tail = self._stream_code_hl.flush()
+                    if tail:
+                        _cprint(tail)
+                except Exception:
+                    # Graceful fallback: if flush fails, emit the raw buffer
+                    # so the response box still closes properly.
+                    _cprint(f"{_tc}{self._stream_buf}{_RST}" if _tc else self._stream_buf)
+            else:
+                _cprint(f"{_tc}{self._stream_buf}{_RST}" if _tc else self._stream_buf)
             self._stream_buf = ""
 
         # Close the response box
@@ -2031,6 +2128,15 @@ class HermesCLI:
         self._reasoning_box_opened = False
         self._reasoning_buf = ""
         self._reasoning_preview_buf = ""
+        if _RICH_RESPONSE:
+            if not hasattr(self, "_stream_block_buf"):
+                self._stream_block_buf = _BlockBuf()
+            else:
+                self._stream_block_buf.reset()
+            if not hasattr(self, "_stream_code_hl"):
+                self._stream_code_hl = _CodeBlockHL()
+            else:
+                self._stream_code_hl.reset()
 
     def _slow_command_status(self, command: str) -> str:
         """Return a user-facing status message for slower slash commands."""
@@ -4386,6 +4492,8 @@ class HermesCLI:
             self.console.print(f"  Status bar {state}")
         elif canonical == "verbose":
             self._toggle_verbose()
+        elif canonical in ("code-highlight", "codehighlight", "code_highlight"):
+            self._toggle_code_highlight()
         elif canonical == "yolo":
             self._toggle_yolo()
         elif canonical == "reasoning":
@@ -4446,6 +4554,8 @@ class HermesCLI:
                     _cprint(f"  Queued: {payload[:80]}{'...' if len(payload) > 80 else ''}")
         elif canonical == "skin":
             self._handle_skin_command(cmd_original)
+        elif canonical == "markdown":
+            self._handle_markdown_command(cmd_original)
         elif canonical == "voice":
             self._handle_voice_command(cmd_original)
         else:
@@ -5038,7 +5148,7 @@ class HermesCLI:
     def _handle_skin_command(self, cmd: str):
         """Handle /skin [name] — show or change the display skin."""
         try:
-            from hermes_cli.skin_engine import list_skins, set_active_skin, get_active_skin_name
+            from hermes_cli.skin_engine import list_skins, set_active_skin, get_active_skin, get_active_skin_name
         except ImportError:
             print("Skin engine not available.")
             return
@@ -5070,9 +5180,46 @@ class HermesCLI:
             print(f"  Skin set to: {new_skin} (saved)")
         else:
             print(f"  Skin set to: {new_skin}")
+        # Update the syntax highlighter's colour palette to match the new skin
+        if _RICH_RESPONSE:
+            _set_code_theme(get_active_skin().get_color("code_theme", "") or "default")
         print("  Note: banner colors will update on next session start.")
         if self._apply_tui_skin_style():
             print("  Prompt + TUI colors updated.")
+
+    def _handle_markdown_command(self, cmd: str):
+        """Handle /markdown [on|off] — toggle Rich Markdown rendering of responses.
+
+        With no argument, shows the current state. ``on`` / ``off`` explicitly
+        set the flag and persist it to config.yaml so the choice survives restarts.
+        """
+        from hermes_cli.colors import Colors as _Colors
+
+        parts = cmd.strip().split(maxsplit=1)
+        arg = parts[1].strip().lower() if len(parts) > 1 else ""
+
+        if arg == "on":
+            self.markdown_enabled = True
+        elif arg == "off":
+            self.markdown_enabled = False
+        elif arg == "":
+            # No argument — just show current state
+            state = "ON" if self.markdown_enabled else "OFF"
+            _cprint(f"  Markdown rendering: {state}")
+            _cprint("  Usage: /markdown on | /markdown off")
+            return
+        else:
+            _cprint(f"  Unknown argument: {arg}")
+            _cprint("  Usage: /markdown [on|off]")
+            return
+
+        # Persist the setting so it survives restarts
+        save_config_value("display.markdown", self.markdown_enabled)
+
+        if self.markdown_enabled:
+            _cprint(f"{_Colors.GREEN}  Markdown rendering: ON{_Colors.RESET}")
+        else:
+            _cprint(f"{_Colors.DIM}  Markdown rendering: OFF{_Colors.RESET}")
 
     def _toggle_verbose(self):
         """Cycle tool progress mode: off → new → all → verbose → off."""
@@ -5101,6 +5248,17 @@ class HermesCLI:
             "verbose": f"{_Colors.BOLD}{_Colors.GREEN}Tool progress: VERBOSE{_Colors.RESET} — full args, results, think blocks, and debug logs.",
         }
         _cprint(labels.get(self.tool_progress_mode, ""))
+
+    def _toggle_code_highlight(self):
+        """Toggle syntax-highlighted code preview for execute_code."""
+        self._code_highlight_enabled = not self._code_highlight_enabled
+        from agent.display import set_code_highlight_active
+        set_code_highlight_active(self._code_highlight_enabled)
+        from hermes_cli.colors import Colors as _Colors
+        if self._code_highlight_enabled:
+            _cprint(f"{_Colors.GREEN}Code highlight: ON{_Colors.RESET} — execute_code will show syntax-highlighted Python.")
+        else:
+            _cprint(f"{_Colors.DIM}Code highlight: OFF{_Colors.RESET} — execute_code preview disabled.")
 
     def _toggle_yolo(self):
         """Toggle YOLO mode — skip all dangerous command approval prompts."""
@@ -5542,8 +5700,16 @@ class HermesCLI:
             logger.debug("Edit snapshot capture failed for %s", function_name, exc_info=True)
 
     def _on_tool_complete(self, tool_call_id: str, function_name: str, function_args: dict, function_result: str):
-        """Render file edits with inline diff after write-capable tools complete."""
+        """Render file edits with inline diff / code preview after tools complete.
+
+        Both features are suppressed when tool_progress_mode is "off" — that
+        mode promises "silent, just the final response".
+        """
         snapshot = self._pending_edit_snapshots.pop(tool_call_id, None)
+
+        if self.tool_progress_mode == "off":
+            return
+
         try:
             from agent.display import render_edit_diff_with_delta
 
@@ -5556,6 +5722,24 @@ class HermesCLI:
             )
         except Exception:
             logger.debug("Edit diff preview failed for %s", function_name, exc_info=True)
+
+        if self._code_highlight_enabled:
+            try:
+                from agent.display import (
+                    _result_succeeded,
+                    render_execute_code_preview,
+                    render_read_file_preview,
+                    render_terminal_preview,
+                )
+                if function_name == "execute_code":
+                    if _result_succeeded(function_result):
+                        render_execute_code_preview(function_args.get("code", ""), print_fn=_cprint)
+                elif function_name == "read_file":
+                    render_read_file_preview(function_args.get("path", ""), function_result, print_fn=_cprint)
+                elif function_name == "terminal":
+                    render_terminal_preview(function_args.get("command", ""), function_result, print_fn=_cprint)
+            except Exception:
+                logger.debug("%s highlight failed", function_name, exc_info=True)
 
     # ====================================================================
     # Voice mode methods
@@ -6569,10 +6753,17 @@ class HermesCLI:
                     # Collapse long reasoning: show first 10 lines
                     lines = reasoning.strip().splitlines()
                     if len(lines) > 10:
-                        display_reasoning = "\n".join(lines[:10])
-                        display_reasoning += f"\n{_DIM}  ... ({len(lines) - 10} more lines){_RST}"
+                        visible = lines[:10]
+                        tail = f"\n{_DIM}  ... ({len(lines) - 10} more lines){_RST}"
                     else:
-                        display_reasoning = reasoning.strip()
+                        visible = lines
+                        tail = ""
+                    if _RICH_RESPONSE and self.markdown_enabled:
+                        visible = [
+                            _apply_inline_md(_apply_block_line(l, reset_suffix=_DIM), reset_suffix=_DIM)
+                            for l in visible
+                        ]
+                    display_reasoning = "\n".join(visible) + tail
                     _cprint(f"\n{r_top}\n{_DIM}{display_reasoning}{_RST}\n{r_bot}")
 
             if response and not response_previewed:
@@ -6600,14 +6791,40 @@ class HermesCLI:
                     pass
                 else:
                     _chat_console = ChatConsole()
-                    _chat_console.print(Panel(
-                        _rich_text_from_ansi(response),
+                    # Use Rich Markdown rendering when the library is available,
+                    # the user hasn't disabled it via /markdown off, and the
+                    # response actually contains markdown syntax (fast-path).
+                    _use_md = (
+                        _RICH_RESPONSE
+                        and self.markdown_enabled
+                        and _has_markdown_syntax(response)
+                    )
+                    # Graceful fallback: if the renderer crashes, show plain text
+                    # so the user always sees the response content.
+                    if _use_md:
+                        try:
+                            _rendered_response = _format_response(response)
+                        except Exception:
+                            _rendered_response = response
+                            _use_md = False
+                    else:
+                        _rendered_response = response
+                    # When markdown is off, apply skin text color as Panel style
+                    # so plain-text responses still match the skin palette.
+                    # When markdown is on, omit Panel style to avoid washing out
+                    # element-specific colors (headings, bold, code).
+                    _panel_kw = dict(
                         title=f"[{_resp_color} bold]{label}[/]",
                         title_align="left",
                         border_style=_resp_color,
-                        style=_resp_text,
                         box=rich_box.HORIZONTALS,
                         padding=(1, 2),
+                    )
+                    if not _use_md:
+                        _panel_kw["style"] = _resp_text
+                    _chat_console.print(Panel(
+                        _rich_text_from_ansi(_rendered_response),
+                        **_panel_kw,
                     ))
 
 

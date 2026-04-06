@@ -1,16 +1,26 @@
 """Tests for agent/display.py — build_tool_preview() and inline diff previews."""
 
+import json
 import os
+import re
 import pytest
 from unittest.mock import MagicMock, patch
 
 from agent.display import (
+    _HIGHLIGHT_MAX_LINES,
+    _highlight_block,
+    _result_succeeded,
     build_tool_preview,
     capture_local_edit_snapshot,
     extract_edit_diff,
+    get_cute_tool_message,
     _render_inline_unified_diff,
     _summarize_rendered_diff_sections,
     render_edit_diff_with_delta,
+    render_execute_code_preview,
+    render_read_file_preview,
+    render_terminal_preview,
+    set_code_highlight_active,
 )
 
 
@@ -111,10 +121,13 @@ class TestEditDiffPreview:
             " context\n"
         )
 
-        assert "a/cli.py" in rendered[0]
-        assert "b/cli.py" in rendered[0]
-        assert any("old line" in line for line in rendered)
-        assert any("new line" in line for line in rendered)
+        import re as _re
+        _strip = lambda s: _re.sub(r"\x1b\[[0-9;]*m", "", s)
+        stripped = [_strip(l) for l in rendered]
+        # v2 header shows basename + change summary, not a/x → b/x
+        assert "cli.py" in stripped[0]
+        assert any("old line" in l for l in stripped)
+        assert any("new line" in l for l in stripped)
         assert any("48;2;" in line for line in rendered)
 
     def test_extract_edit_diff_ignores_non_edit_tools(self):
@@ -153,7 +166,8 @@ class TestEditDiffPreview:
         assert rendered is True
         assert printer.call_count >= 2
         calls = [call.args[0] for call in printer.call_args_list]
-        assert any("a/x" in line and "b/x" in line for line in calls)
+        # v2 header shows basename + change summary
+        assert any("x" in line for line in calls)
         assert any("old" in line for line in calls)
         assert any("new" in line for line in calls)
 
@@ -195,8 +209,278 @@ class TestEditDiffPreview:
 
         rendered = _summarize_rendered_diff_sections(diff, max_files=3, max_lines=50)
 
-        assert any("a/file0.py" in line for line in rendered)
-        assert any("a/file1.py" in line for line in rendered)
-        assert any("a/file2.py" in line for line in rendered)
-        assert not any("a/file7.py" in line for line in rendered)
+        # v2 header shows basename only
+        assert any("file0.py" in line for line in rendered)
+        assert any("file1.py" in line for line in rendered)
+        assert any("file2.py" in line for line in rendered)
+        assert not any("file7.py" in line for line in rendered)
         assert "additional file" in rendered[-1]
+
+
+# ---------------------------------------------------------------------------
+# _highlight_block
+# ---------------------------------------------------------------------------
+
+class TestHighlightBlock:
+    def _collect(self, header, content, language="python"):
+        calls = []
+        _highlight_block(header, content, language, calls.append)
+        return calls
+
+    def test_header_uses_pipe_prefix(self):
+        calls = self._collect("📄 foo.py", "x = 1")
+        assert calls[0].startswith("\033[2m  ┊ ")
+
+    def test_header_contains_label(self):
+        calls = self._collect("📄 foo.py", "x = 1")
+        assert "📄 foo.py" in calls[0]
+
+    def test_no_separator_line(self):
+        calls = self._collect("📄 foo.py", "x = 1\ny = 2")
+        stripped = [re.sub(r"\x1b\[[0-9;]*m", "", c).strip() for c in calls]
+        # No line should consist solely of box-drawing dashes
+        assert not any(c and all(ch == "─" for ch in c) for c in stripped)
+
+    def test_returns_true_on_success(self):
+        assert _highlight_block("hdr", "code", "python", MagicMock()) is True
+
+    def test_returns_false_on_empty_content_exception(self):
+        # Simulate to_ansi raising — should return False
+        with patch("agent.display._rich_syntax") as mock_hl, \
+             patch("agent.display._RICH_OUTPUT", True):
+            mock_hl.to_ansi.side_effect = RuntimeError("boom")
+            result = _highlight_block("hdr", "code", "python", MagicMock())
+        assert result is False
+
+    def test_fallback_no_rich_prints_raw_code(self):
+        calls = []
+        with patch("agent.display._RICH_OUTPUT", False):
+            _highlight_block("hdr", "line one\nline two", "python", calls.append)
+        assert any("line one" in c for c in calls)
+        assert any("line two" in c for c in calls)
+
+
+# ---------------------------------------------------------------------------
+# render_execute_code_preview
+# ---------------------------------------------------------------------------
+
+class TestRenderExecuteCodePreview:
+    def test_returns_true_and_emits_code(self):
+        calls = []
+        result = render_execute_code_preview("x = 42", print_fn=calls.append)
+        assert result is True
+        assert any("x" in c for c in calls)
+
+    def test_empty_string_returns_false(self):
+        calls = []
+        assert render_execute_code_preview("", print_fn=calls.append) is False
+        assert calls == []
+
+    def test_whitespace_only_returns_false(self):
+        assert render_execute_code_preview("   \n\t  ", print_fn=MagicMock()) is False
+
+    def test_no_header_emitted(self):
+        """Cute-msg already labels the tool — no header should appear in output."""
+        calls = []
+        render_execute_code_preview("x = 1", print_fn=calls.append)
+        assert not any("execute_code" in c for c in calls)
+
+    def test_fallback_no_rich_prints_raw_lines(self):
+        calls = []
+        with patch("agent.display._RICH_OUTPUT", False):
+            result = render_execute_code_preview("a = 1\nb = 2", print_fn=calls.append)
+        assert result is True
+        assert any("a = 1" in c for c in calls)
+        assert any("b = 2" in c for c in calls)
+
+    def test_fallback_no_header_or_separator(self):
+        calls = []
+        with patch("agent.display._RICH_OUTPUT", False):
+            render_execute_code_preview("a = 1", print_fn=calls.append)
+        stripped = [re.sub(r"\x1b\[[0-9;]*m", "", c).strip() for c in calls]
+        assert not any("execute_code" in c for c in stripped)
+        assert not any(c and all(ch == "─" for ch in c) for c in stripped)
+
+
+# ---------------------------------------------------------------------------
+# render_read_file_preview
+# ---------------------------------------------------------------------------
+
+class TestRenderReadFilePreview:
+    def _result(self, content):
+        return json.dumps({"content": content})
+
+    def test_known_extension_returns_true(self):
+        calls = []
+        result = render_read_file_preview("foo.py", self._result("x = 1"), print_fn=calls.append)
+        assert result is True
+        assert len(calls) >= 1
+
+    def test_header_contains_pipe_and_filename(self):
+        calls = []
+        render_read_file_preview("app.ts", self._result("const x = 1;"), print_fn=calls.append)
+        assert any("┊" in c and "app.ts" in c for c in calls)
+
+    def test_unknown_extension_returns_false(self):
+        calls = []
+        result = render_read_file_preview("notes.log", self._result("some log"), print_fn=calls.append)
+        assert result is False
+        assert calls == []
+
+    def test_empty_content_returns_false(self):
+        assert render_read_file_preview("foo.py", self._result(""), print_fn=MagicMock()) is False
+        assert render_read_file_preview("foo.py", self._result("  \n "), print_fn=MagicMock()) is False
+
+    def test_empty_path_returns_false(self):
+        assert render_read_file_preview("", self._result("x = 1"), print_fn=MagicMock()) is False
+
+    def test_invalid_json_returns_false(self):
+        assert render_read_file_preview("foo.py", "not json", print_fn=MagicMock()) is False
+
+
+# ---------------------------------------------------------------------------
+# render_terminal_preview
+# ---------------------------------------------------------------------------
+
+class TestRenderTerminalPreview:
+    def _result(self, output):
+        return json.dumps({"output": output})
+
+    def test_cat_py_returns_true_and_has_header(self):
+        calls = []
+        result = render_terminal_preview("cat app.py", self._result("x = 1\n"), print_fn=calls.append)
+        assert result is True
+        assert any("┊" in c and "app.py" in c for c in calls)
+
+    def test_no_extension_match_returns_false(self):
+        assert render_terminal_preview("ls -la", self._result("file.txt"), print_fn=MagicMock()) is False
+
+    def test_flag_tokens_skipped_sed(self):
+        calls = []
+        result = render_terminal_preview(
+            "sed -n '1,50p' app.ts", self._result("const x = 1;"), print_fn=calls.append
+        )
+        assert result is True
+        assert any("app.ts" in c for c in calls)
+
+    def test_exec_command_node_suppressed(self):
+        """node script.js executes the file — stdout is not source code."""
+        assert render_terminal_preview(
+            "node script.js", self._result("output text"), print_fn=MagicMock()
+        ) is False
+
+    def test_exec_command_python_suppressed(self):
+        assert render_terminal_preview(
+            "python3 analyse.py", self._result("result: 42"), print_fn=MagicMock()
+        ) is False
+
+    def test_exec_command_bash_suppressed(self):
+        assert render_terminal_preview(
+            "bash run.sh", self._result("done"), print_fn=MagicMock()
+        ) is False
+
+    def test_empty_output_returns_false(self):
+        assert render_terminal_preview("cat foo.py", self._result(""), print_fn=MagicMock()) is False
+
+    def test_invalid_result_json_returns_false(self):
+        assert render_terminal_preview("cat foo.py", "not json", print_fn=MagicMock()) is False
+
+
+# ---------------------------------------------------------------------------
+# Cute-message deduplication (_code_highlight_active)
+# ---------------------------------------------------------------------------
+
+class TestCuteMessageDedup:
+    def teardown_method(self):
+        # Always restore flag to default after each test
+        set_code_highlight_active(False)
+
+    def test_no_snippet_when_active(self):
+        set_code_highlight_active(True)
+        msg = get_cute_tool_message("execute_code", {"code": "x = compute()\nreturn x"}, 1.5)
+        assert "x = compute()" not in msg
+        assert "return x" not in msg
+
+    def test_snippet_present_when_inactive(self):
+        set_code_highlight_active(False)
+        msg = get_cute_tool_message("execute_code", {"code": "x = compute()"}, 1.5)
+        assert "x = compute()" in msg
+
+    def test_duration_always_present(self):
+        for active in (True, False):
+            set_code_highlight_active(active)
+            msg = get_cute_tool_message("execute_code", {"code": "pass"}, 2.3)
+            assert "2.3s" in msg
+
+    def test_other_tools_unaffected_by_flag(self):
+        set_code_highlight_active(True)
+        msg = get_cute_tool_message("terminal", {"command": "ls -la"}, 0.5)
+        assert "ls -la" in msg
+
+
+# ---------------------------------------------------------------------------
+# _result_succeeded gate (guards execute_code preview on error)
+# ---------------------------------------------------------------------------
+
+class TestHighlightTruncation:
+    """_emit_highlighted_lines truncates at _HIGHLIGHT_MAX_LINES."""
+
+    def _collect(self, content: str, language: str = "python") -> list[str]:
+        lines = []
+        _highlight_block("test", content, language, print_fn=lines.append)
+        return lines  # includes the header line
+
+    def test_short_content_not_truncated(self):
+        code = "\n".join(f"x = {i}" for i in range(10))
+        out = self._collect(code)
+        assert not any("omitted" in l for l in out)
+        _ansi = re.compile(r"\x1b\[[0-9;]*m")
+        assert any("x = 9" in _ansi.sub("", l) for l in out)
+
+    def test_long_content_truncated(self):
+        code = "\n".join(f"x = {i}" for i in range(_HIGHLIGHT_MAX_LINES + 20))
+        out = self._collect(code)
+        assert any("omitted" in l for l in out)
+        # Should not contain lines beyond the cap
+        assert not any(f"x = {_HIGHLIGHT_MAX_LINES + 1}" in l for l in out)
+
+    def test_omission_footer_shows_correct_count(self):
+        extra = 15
+        code = "\n".join(f"x = {i}" for i in range(_HIGHLIGHT_MAX_LINES + extra))
+        out = self._collect(code)
+        footer = next(l for l in out if "omitted" in l)
+        assert str(extra) in footer
+
+    def test_exactly_at_limit_not_truncated(self):
+        code = "\n".join(f"x = {i}" for i in range(_HIGHLIGHT_MAX_LINES))
+        out = self._collect(code)
+        assert not any("omitted" in l for l in out)
+
+    def test_execute_code_preview_truncates(self):
+        code = "\n".join(f"x = {i}" for i in range(_HIGHLIGHT_MAX_LINES + 10))
+        lines = []
+        render_execute_code_preview(code, print_fn=lines.append)
+        assert any("omitted" in l for l in lines)
+
+
+class TestResultSucceededGate:
+    def test_error_status_fails(self):
+        assert not _result_succeeded('{"status": "error", "error": "SyntaxError"}')
+
+    def test_ok_status_passes(self):
+        assert _result_succeeded('{"status": "ok", "output": "48\\n"}')
+
+    def test_explicit_error_key_fails(self):
+        assert not _result_succeeded('{"error": "something went wrong"}')
+
+    def test_success_false_fails(self):
+        assert not _result_succeeded('{"success": false}')
+
+    def test_success_true_passes(self):
+        assert _result_succeeded('{"success": true}')
+
+    def test_invalid_json_fails(self):
+        assert not _result_succeeded("not json")
+
+    def test_none_fails(self):
+        assert not _result_succeeded(None)

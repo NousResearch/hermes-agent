@@ -103,6 +103,9 @@ COMMAND_REGISTRY: list[CommandDef] = [
                subcommands=("none", "low", "minimal", "medium", "high", "xhigh", "show", "hide", "on", "off")),
     CommandDef("skin", "Show or change the display skin/theme", "Configuration",
                cli_only=True, args_hint="[name]"),
+    CommandDef("markdown", "Toggle Rich Markdown rendering for responses", "Configuration",
+               cli_only=True, aliases=("md",), args_hint="[on|off]",
+               subcommands=("on", "off")),
     CommandDef("voice", "Toggle voice mode", "Configuration",
                args_hint="[on|off|tts|status]", subcommands=("on", "off", "tts", "status")),
 

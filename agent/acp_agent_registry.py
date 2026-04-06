@@ -1,13 +1,12 @@
 """Registry of known ACP-compatible coding agents.
 
-Maps short agent names to their ACP launch commands and auth environment
-variable requirements.  Each command spawns a process that speaks the Agent
-Client Protocol over stdio (NDJSON / JSON-RPC).
+All agents are spawned via ``acpx`` (the standalone ACP headless client),
+which handles protocol negotiation, authentication (including OAuth gateway
+handshake), session management, and credential resolution.
 
 Resolution order for a given agent name:
   1. Environment variable  HERMES_ACP_{NAME}_COMMAND  (uppercased name)
-  2. User config.yaml      acp_agents.<name>.command
-  3. Built-in registry      ACP_AGENT_REGISTRY[name]
+  2. Built-in registry      ACP_AGENT_REGISTRY[name]
 
 The command string is split with shlex — shell features are NOT supported.
 """
@@ -17,14 +16,14 @@ from __future__ import annotations
 import logging
 import os
 import shlex
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Agent entry with auth env mapping
+# Agent entry
 # ---------------------------------------------------------------------------
 
 @dataclass(frozen=True)
@@ -39,49 +38,44 @@ class ACPAgentEntry:
 
     For each pair, if *target_var* is not set in the environment, search
     *source_vars* in order and use the first non-empty value.  This bridges
-    Hermes's credential names to what the ACP adapter expects.
-
-    Example: (("ANTHROPIC_API_KEY", ("ANTHROPIC_TOKEN", "ANTHROPIC_API_KEY")),)
-    means: if ANTHROPIC_API_KEY is empty, try ANTHROPIC_TOKEN.
+    Hermes's credential names to what acpx/the ACP adapter expects.
     """
 
 
 # ---------------------------------------------------------------------------
-# Built-in agent registry
+# Built-in agent registry — all routed through acpx
 # ---------------------------------------------------------------------------
 
 ACP_AGENT_REGISTRY: Dict[str, ACPAgentEntry] = {
     "claude": ACPAgentEntry(
-        command="npx -y @agentclientprotocol/claude-agent-acp@0.25.0",
+        command="npx -y acpx claude",
         auth_env=(
-            # API key (sk-ant-api03-...) → X-Api-Key header
             ("ANTHROPIC_API_KEY", ("ANTHROPIC_API_KEY",)),
-            # OAuth token (sk-ant-oat01-...) → Authorization: Bearer header
             ("ANTHROPIC_AUTH_TOKEN", ("ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN")),
         ),
     ),
     "codex": ACPAgentEntry(
-        command="npx -y @zed-industries/codex-acp@0.9.5",
+        command="npx -y acpx codex",
         auth_env=(
             ("OPENAI_API_KEY", ("OPENAI_API_KEY",)),
         ),
     ),
     "gemini": ACPAgentEntry(
-        command="gemini --acp",
+        command="npx -y acpx gemini",
     ),
     "copilot": ACPAgentEntry(
-        command="copilot --acp --stdio",
+        command="npx -y acpx copilot",
     ),
-    "cursor": ACPAgentEntry(command="cursor-agent acp"),
-    "kiro": ACPAgentEntry(command="kiro-cli acp"),
-    "kilocode": ACPAgentEntry(command="npx -y @kilocode/cli acp"),
-    "opencode": ACPAgentEntry(command="npx -y opencode-ai acp"),
-    "kimi": ACPAgentEntry(command="kimi acp"),
-    "qwen": ACPAgentEntry(command="qwen --acp"),
-    "droid": ACPAgentEntry(command="droid exec --output-format acp"),
-    "iflow": ACPAgentEntry(command="iflow --experimental-acp"),
-    "cline": ACPAgentEntry(command="npx -y cline --acp"),
-    "amp": ACPAgentEntry(command="amp --acp"),
+    "cursor": ACPAgentEntry(command="npx -y acpx cursor"),
+    "kiro": ACPAgentEntry(command="npx -y acpx kiro"),
+    "kilocode": ACPAgentEntry(command="npx -y acpx kilocode"),
+    "opencode": ACPAgentEntry(command="npx -y acpx opencode"),
+    "kimi": ACPAgentEntry(command="npx -y acpx kimi"),
+    "qwen": ACPAgentEntry(command="npx -y acpx qwen"),
+    "droid": ACPAgentEntry(command="npx -y acpx droid"),
+    "iflow": ACPAgentEntry(command="npx -y acpx iflow"),
+    "cline": ACPAgentEntry(command="npx -y acpx cline"),
+    "amp": ACPAgentEntry(command="npx -y acpx amp"),
 }
 
 

@@ -20,20 +20,22 @@ This means you get the full capabilities of these agents — their tool use, fil
 
 | Provider ID | Agent | ACP Adapter |
 |-------------|-------|-------------|
-| `claude-acp` | Claude (Agent SDK) | `@agentclientprotocol/claude-agent-acp` (requires `ANTHROPIC_API_KEY`) |
-| `codex-acp` | Codex CLI | `@zed-industries/codex-acp` |
-| `gemini-acp` | Gemini CLI | `gemini --acp` |
-| `copilot-acp` | GitHub Copilot | `copilot --acp --stdio` |
-| `cursor-acp` | Cursor | `cursor-agent acp` |
-| `kiro-acp` | Kiro | `kiro-cli acp` |
-| `kilocode-acp` | KiloCode | `@kilocode/cli acp` |
-| `opencode-acp` | OpenCode | `opencode-ai acp` |
-| `kimi-acp` | Kimi | `kimi acp` |
-| `qwen-acp` | Qwen | `qwen --acp` |
-| `cline-acp` | Cline | `cline --acp` |
-| `amp-acp` | Amp | `amp --acp` |
-| `droid-acp` | Droid | `droid exec --output-format acp` |
-| `iflow-acp` | iFlow | `iflow --experimental-acp` |
+| `claude-acp` | Claude Code | `acpx claude` |
+| `codex-acp` | Codex CLI | `acpx codex` |
+| `gemini-acp` | Gemini CLI | `acpx gemini` |
+| `copilot-acp` | GitHub Copilot | `acpx copilot` |
+| `cursor-acp` | Cursor | `acpx cursor` |
+| `kiro-acp` | Kiro | `acpx kiro` |
+| `kilocode-acp` | KiloCode | `acpx kilocode` |
+| `opencode-acp` | OpenCode | `acpx opencode` |
+| `kimi-acp` | Kimi | `acpx kimi` |
+| `qwen-acp` | Qwen | `acpx qwen` |
+| `cline-acp` | Cline | `acpx cline` |
+| `amp-acp` | Amp | `acpx amp` |
+| `droid-acp` | Droid | `acpx droid` |
+| `iflow-acp` | iFlow | `acpx iflow` |
+
+All agents are spawned via `acpx`, the standalone ACP headless client. It handles protocol negotiation, authentication (including OAuth), and session management.
 
 ## How to Switch
 
@@ -69,7 +71,7 @@ Each ACP agent has its own auth requirements. **ACP adapters use API keys, not C
 | **Gemini** | Google Cloud API key or `gcloud auth` | `gemini auth login` |
 | **Copilot** | GitHub Copilot subscription | `copilot auth` |
 
-**Important:** The Claude ACP adapter uses the Anthropic API directly via the Claude Agent SDK. It does **not** use Claude Code CLI's OAuth tokens (Pro/Max subscription). You need a separate API key from the Anthropic console. This is an Anthropic policy — OAuth auth is restricted to Claude Code and claude.ai only.
+Authentication is handled by `acpx`, which supports both API keys and OAuth tokens. If you have a Claude Pro/Max subscription with an OAuth token, `acpx` will handle the gateway authentication automatically. A separate API key from the Anthropic console also works.
 
 Agents distributed via npx (Claude, Codex, KiloCode, OpenCode, Cline) are auto-installed on first use. Node.js is required for npx-based agents. Agents like Gemini, Cursor, Copilot, Kiro, Kimi, and Qwen must be installed globally.
 

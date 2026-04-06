@@ -18,21 +18,22 @@ class TestResolveAgentCommand:
     def test_builtin_claude(self):
         cmd = resolve_agent_command("claude")
         assert cmd is not None
-        assert "claude-agent-acp" in cmd
+        assert "acpx claude" in cmd
 
     def test_builtin_codex(self):
         cmd = resolve_agent_command("codex")
         assert cmd is not None
-        assert "codex-acp" in cmd
+        assert "acpx codex" in cmd
 
     def test_builtin_gemini(self):
         cmd = resolve_agent_command("gemini")
-        assert cmd == "gemini --acp"
+        assert cmd is not None
+        assert "acpx gemini" in cmd
 
     def test_builtin_copilot(self):
         cmd = resolve_agent_command("copilot")
         assert cmd is not None
-        assert "--acp" in cmd
+        assert "acpx copilot" in cmd
 
     def test_unknown_agent_returns_none(self):
         assert resolve_agent_command("nonexistent-agent-xyz") is None
@@ -56,7 +57,7 @@ class TestResolveAgentCommand:
         with mock.patch.dict(os.environ, {"HERMES_ACP_CLAUDE_COMMAND": "  "}):
             cmd = resolve_agent_command("claude")
             # Should fall through to built-in
-            assert "claude-agent-acp" in cmd
+            assert "acpx claude" in cmd
 
 
 class TestSplitAgentCommand:

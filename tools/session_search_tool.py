@@ -192,21 +192,54 @@ async def _summarize_session(
 _HIDDEN_SESSION_SOURCES = ("tool",)
 
 
-def _get_lineage_ids(db, session_id: str) -> set:
-    """Return the set of all session IDs in a compaction chain (parents + children)."""
-    ids = set()
-    # Walk up to root
+def _resolve_to_lineage_root(db, session_id: str) -> str:
+    """Walk parent_session_id chain to the root and return the root ID."""
     sid = session_id
     visited = set()
     while sid and sid not in visited:
         visited.add(sid)
-        ids.add(sid)
         try:
             s = db.get_session(sid)
             parent = s.get("parent_session_id") if s else None
-            sid = parent if parent else None
+            if parent:
+                sid = parent
+            else:
+                break
         except Exception:
             break
+    return sid
+
+
+def _get_lineage_ids(db, session_id: str) -> set:
+    """Return all session IDs in a compaction chain — ancestors AND descendants.
+
+    Walks *up* from ``session_id`` to the root, then walks *down* from the
+    root collecting every descendant.  This is necessary for current-session
+    exclusion: regardless of whether the active session is a root or a leaf,
+    all fragments of the same conversation must be excluded.
+    """
+    # Walk up to root, collecting ancestors
+    root = _resolve_to_lineage_root(db, session_id)
+    ids = set()
+
+    # Walk down from the root using BFS to collect all descendants
+    queue = [root]
+    while queue:
+        current = queue.pop(0)
+        if current in ids:
+            continue
+        ids.add(current)
+        try:
+            # Find direct children via the DB connection
+            with db._lock:
+                cursor = db._conn.execute(
+                    "SELECT id FROM sessions WHERE parent_session_id = ?",
+                    (current,),
+                )
+                children = [row[0] for row in cursor.fetchall()]
+            queue.extend(children)
+        except Exception:
+            pass
     return ids
 
 
@@ -219,7 +252,7 @@ def _list_recent_sessions(db, limit: int, current_session_id: str = None) -> str
         # typically 0 messages) are just handoff points — the real conversation
         # lives in the leaf.  We skip intermediates but show the leaf even
         # though it has a parent_session_id.
-        sessions = db.list_sessions_rich(limit=limit + 20, exclude_sources=list(_HIDDEN_SESSION_SOURCES))
+        sessions = db.list_sessions_rich(limit=limit + 20, exclude_sources=list(_HIDDEN_SESSION_SOURCES), include_children=True)
 
         # Resolve current session lineage to exclude it
         current_lineage = set()
@@ -238,20 +271,20 @@ def _list_recent_sessions(db, limit: int, current_session_id: str = None) -> str
             sid = s.get("id", "")
             if sid in current_lineage:
                 continue
-            # Skip intermediate compaction nodes — they have a parent and
-            # ended due to compression (typically 0 messages).  The leaf
-            # session of the chain will appear later and has the real content.
-            if s.get("parent_session_id") and s.get("end_reason") == "compression":
+            # Skip compaction nodes — sessions that ended due to compression
+            # are handoff points with typically 0 messages.  This includes
+            # both intermediate nodes (which have parent_session_id) AND root
+            # fragments whose end_reason is 'compression' (the root can also
+            # be empty after its content was compressed into a summary).
+            if s.get("end_reason") == "compression":
                 continue
             # Deduplicate: if this session belongs to a compaction chain
             # we've already shown, skip it.
             if s.get("parent_session_id"):
-                lineage = _get_lineage_ids(db, sid)
-                # Use the earliest ID in the lineage as the chain key
-                chain_key = min(lineage) if lineage else sid
-                if chain_key in seen_lineage_roots:
+                chain_root = _resolve_to_lineage_root(db, sid)
+                if chain_root in seen_lineage_roots:
                     continue
-                seen_lineage_roots.add(chain_key)
+                seen_lineage_roots.add(chain_root)
             results.append({
                 "session_id": sid,
                 "title": s.get("title") or None,
@@ -331,33 +364,9 @@ def session_search(
         # conversation doesn't appear multiple times, but we load content
         # from the *matched* session (which actually has the messages),
         # not the root (which may be empty after compaction).
-        def _resolve_to_root(session_id: str) -> str:
-            """Walk parent chain to find the root session ID."""
-            visited = set()
-            sid = session_id
-            while sid and sid not in visited:
-                visited.add(sid)
-                try:
-                    session = db.get_session(sid)
-                    if not session:
-                        break
-                    parent = session.get("parent_session_id")
-                    if parent:
-                        sid = parent
-                    else:
-                        break
-                except Exception as e:
-                    logging.debug(
-                        "Error resolving parent for session %s: %s",
-                        sid,
-                        e,
-                        exc_info=True,
-                    )
-                    break
-            return sid
 
         current_lineage_root = (
-            _resolve_to_root(current_session_id) if current_session_id else None
+            _resolve_to_lineage_root(db, current_session_id) if current_session_id else None
         )
         current_lineage = (
             _get_lineage_ids(db, current_session_id) if current_session_id else set()
@@ -372,7 +381,7 @@ def session_search(
             # context, even if older turns live in parent fragments.
             if raw_sid in current_lineage:
                 continue
-            lineage_root = _resolve_to_root(raw_sid)
+            lineage_root = _resolve_to_lineage_root(db, raw_sid)
             if current_lineage_root and lineage_root == current_lineage_root:
                 continue
             if lineage_root not in seen_sessions:

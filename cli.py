@@ -1621,6 +1621,14 @@ class HermesCLI:
         # Inline diff previews for write actions (display.inline_diffs in config.yaml)
         self._inline_diffs_enabled = CLI_CONFIG["display"].get("inline_diffs", True)
 
+        # ── Paste collapse thresholds ──
+        # Bracketed paste (Cmd+V): appends a file reference after cursor,
+        # preserving existing prompt text.  Safe.
+        self._paste_collapse_threshold = CLI_CONFIG["display"].get("paste_collapse_threshold", 5)
+        # Fallback heuristic (terminals without bracketed paste): REPLACES the
+        # entire buffer with a file reference.  Destructive — disabled by default.
+        self._paste_collapse_threshold_fallback = CLI_CONFIG["display"].get("paste_collapse_threshold_fallback", 0)
+
         # Streaming display state
         self._stream_buf = ""        # Partial line buffer for line-buffered rendering
         self._stream_started = False  # True once first delta arrives

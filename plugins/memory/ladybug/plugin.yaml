@@ -1,0 +1,7 @@
+name: ladybug
+version: 1.0.0
+description: "Ladybug — local columnar graph database (*.lbdb) with BM25 search, importance scoring, graph edges, and optional GLiNER2 entity extraction."
+pip_dependencies:
+  - ladybug-memory
+optional_dependencies:
+  - gliner   # for entity KG features (ladybug_entity tool)

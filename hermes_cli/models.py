@@ -60,7 +60,6 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     "nous": [
         "anthropic/claude-opus-4.6",
         "anthropic/claude-sonnet-4.6",
-        "qwen/qwen3.6-plus:free",
         "anthropic/claude-sonnet-4.5",
         "anthropic/claude-haiku-4.5",
         "openai/gpt-5.4",

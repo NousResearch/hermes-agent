@@ -1454,7 +1454,7 @@ class TestRunConversation:
         assert mock_handle_function_call.call_args.kwargs["tool_call_id"] == "c1"
         assert mock_handle_function_call.call_args.kwargs["session_id"] == agent.session_id
 
-    def test_request_scoped_llm_hooks_fire_for_each_api_call(self, agent):
+    def test_request_scoped_api_hooks_fire_for_each_api_call(self, agent):
         self._setup_agent(agent)
         tc = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
         resp1 = _mock_response(content="", finish_reason="tool_calls", tool_calls=[tc])
@@ -1477,13 +1477,15 @@ class TestRunConversation:
             result = agent.run_conversation("search something")
 
         assert result["final_response"] == "Done searching"
-        pre_request_calls = [kw for name, kw in hook_calls if name == "pre_llm_request"]
-        post_request_calls = [kw for name, kw in hook_calls if name == "post_llm_request"]
+        pre_request_calls = [kw for name, kw in hook_calls if name == "pre_api_request"]
+        post_request_calls = [kw for name, kw in hook_calls if name == "post_api_request"]
         assert len(pre_request_calls) == 2
         assert len(post_request_calls) == 2
         assert [call["api_call_count"] for call in pre_request_calls] == [1, 2]
         assert [call["api_call_count"] for call in post_request_calls] == [1, 2]
         assert all(call["session_id"] == agent.session_id for call in pre_request_calls)
+        assert all("message_count" in c and "messages" not in c for c in pre_request_calls)
+        assert all("usage" in c and "response" not in c for c in post_request_calls)
 
     def test_interrupt_breaks_loop(self, agent):
         self._setup_agent(agent)

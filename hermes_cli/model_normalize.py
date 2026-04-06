@@ -41,6 +41,7 @@ _VENDOR_PREFIXES: dict[str, str] = {
     "o3": "openai",
     "o4": "openai",
     "gemini": "google",
+    "gemma": "google",
     "deepseek": "deepseek",
     "glm": "z-ai",
     "kimi": "moonshotai",
@@ -77,6 +78,7 @@ _STRIP_VENDOR_ONLY_PROVIDERS: frozenset[str] = frozenset({
 
 # Providers whose own naming is authoritative -- pass through unchanged.
 _PASSTHROUGH_PROVIDERS: frozenset[str] = frozenset({
+    "gemini",
     "zai",
     "kimi-coding",
     "minimax",

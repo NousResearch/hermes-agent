@@ -1709,6 +1709,11 @@ class DiscordAdapter(BasePlatformAdapter):
                 pass
 
             skill_cmds = scan_skill_commands()
+            # Only surface repo built-in skills (skills/ dir), matching Telegram behaviour
+            # from PR #3934. User-installed and hub skills remain callable via text but
+            # are not registered in the slash command tree.
+            from pathlib import Path as _Path
+            _repo_skills_dir = str((_Path(__file__).parents[2] / "skills").resolve())
             _skills_dir = str(SKILLS_DIR.resolve())
             _hub_dir = str((SKILLS_DIR / ".hub").resolve())
 
@@ -1724,9 +1729,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 info = skill_cmds[cmd_key]
 
                 skill_path = info.get("skill_md_path", "")
-                if not skill_path.startswith(_skills_dir):
-                    continue
-                if skill_path.startswith(_hub_dir):
+                if not skill_path.startswith(_repo_skills_dir):
                     continue
 
                 skill_name = info.get("name", "")

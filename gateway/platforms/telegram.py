@@ -1711,6 +1711,7 @@ class TelegramAdapter(BasePlatformAdapter):
         return build_session_key(
             event.source,
             group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
+            thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
         )
 
     def _enqueue_text_event(self, event: MessageEvent) -> None:
@@ -1769,6 +1770,7 @@ class TelegramAdapter(BasePlatformAdapter):
         session_key = build_session_key(
             event.source,
             group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
+            thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
         )
         media_group_id = getattr(msg, "media_group_id", None)
         if media_group_id:

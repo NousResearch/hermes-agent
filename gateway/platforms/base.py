@@ -1038,6 +1038,7 @@ class BasePlatformAdapter(ABC):
         session_key = build_session_key(
             event.source,
             group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
+            thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
         )
         
         # Check if there's already an active handler for this session

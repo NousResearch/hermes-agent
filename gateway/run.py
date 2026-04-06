@@ -770,6 +770,7 @@ class GatewayRunner:
         return build_session_key(
             source,
             group_sessions_per_user=getattr(config, "group_sessions_per_user", True),
+            thread_sessions_per_user=getattr(config, "thread_sessions_per_user", False),
         )
 
     def _resolve_turn_agent_config(self, user_message: str, model: str, runtime_kwargs: dict) -> dict:
@@ -1497,6 +1498,10 @@ class GatewayRunner:
             config.extra.setdefault(
                 "group_sessions_per_user",
                 self.config.group_sessions_per_user,
+            )
+            config.extra.setdefault(
+                "thread_sessions_per_user",
+                getattr(self.config, "thread_sessions_per_user", False),
             )
 
         if platform == Platform.TELEGRAM:
@@ -2662,6 +2667,23 @@ class GatewayRunner:
         # tool even when they appear in the same message.
         # -----------------------------------------------------------------
         message_text = event.text or ""
+
+        # -----------------------------------------------------------------
+        # Sender attribution for shared thread sessions.
+        #
+        # When multiple users share a single thread session (the default for
+        # threads), prefix each message with [sender name] so the agent can
+        # tell participants apart.  Skip for DMs (single-user by nature) and
+        # when per-user thread isolation is explicitly enabled.
+        # -----------------------------------------------------------------
+        _is_shared_thread = (
+            source.chat_type != "dm"
+            and source.thread_id
+            and not getattr(self.config, "thread_sessions_per_user", False)
+        )
+        if _is_shared_thread and source.user_name:
+            message_text = f"[{source.user_name}] {message_text}"
+
         if event.media_urls:
             image_paths = []
             for i, path in enumerate(event.media_urls):

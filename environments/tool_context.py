@@ -26,6 +26,7 @@ Example usage in a compute_reward():
 import json
 import logging
 import os
+import shlex
 from typing import Any, Dict, List, Optional
 
 import asyncio
@@ -39,6 +40,11 @@ logger = logging.getLogger(__name__)
 
 # Thread pool for running sync tool calls that internally use asyncio.run()
 _tool_executor = concurrent.futures.ThreadPoolExecutor(max_workers=4)
+
+
+def _shell_quote(value: str) -> str:
+    """Quote a shell operand for the sandbox's POSIX shell."""
+    return shlex.quote(str(value))
 
 
 def _run_tool_in_thread(tool_name: str, arguments: Dict[str, Any], task_id: str) -> str:
@@ -169,7 +175,7 @@ class ToolContext:
             Dict with 'exit_code' and 'output'
         """
         import base64
-        from pathlib import Path as _Path
+        from pathlib import Path as _Path, PurePosixPath
 
         local = _Path(local_path)
         if not local.exists():
@@ -179,26 +185,31 @@ class ToolContext:
         b64 = base64.b64encode(raw).decode("ascii")
 
         # Ensure parent directory exists in the sandbox
-        parent = str(_Path(remote_path).parent)
+        parent = str(PurePosixPath(remote_path).parent)
         if parent not in (".", "/"):
-            self.terminal(f"mkdir -p {parent}", timeout=10)
+            self.terminal(f"mkdir -p -- {_shell_quote(parent)}", timeout=10)
 
         # For small files, single command is fine
         chunk_size = 60_000  # ~60KB per chunk (well within shell limits)
         if len(b64) <= chunk_size:
             result = self.terminal(
-                f"printf '%s' '{b64}' | base64 -d > {remote_path}",
+                f"printf '%s' {_shell_quote(b64)} | base64 -d > {_shell_quote(remote_path)}",
                 timeout=30,
             )
         else:
             # For larger files, write base64 in chunks then decode
             tmp_b64 = "/tmp/_hermes_upload.b64"
-            self.terminal(f": > {tmp_b64}", timeout=5)  # truncate
+            tmp_b64_q = _shell_quote(tmp_b64)
+            remote_path_q = _shell_quote(remote_path)
+            self.terminal(f": > {tmp_b64_q}", timeout=5)  # truncate
             for i in range(0, len(b64), chunk_size):
                 chunk = b64[i : i + chunk_size]
-                self.terminal(f"printf '%s' '{chunk}' >> {tmp_b64}", timeout=15)
+                self.terminal(
+                    f"printf '%s' {_shell_quote(chunk)} >> {tmp_b64_q}",
+                    timeout=15,
+                )
             result = self.terminal(
-                f"base64 -d {tmp_b64} > {remote_path} && rm -f {tmp_b64}",
+                f"base64 -d {tmp_b64_q} > {remote_path_q} && rm -f -- {tmp_b64_q}",
                 timeout=30,
             )
 
@@ -217,7 +228,7 @@ class ToolContext:
         Returns:
             List of results, one per file uploaded
         """
-        from pathlib import Path as _Path
+        from pathlib import Path as _Path, PurePosixPath
 
         local = _Path(local_dir)
         if not local.exists() or not local.is_dir():
@@ -226,8 +237,8 @@ class ToolContext:
         results = []
         for file_path in sorted(local.rglob("*")):
             if file_path.is_file():
-                relative = file_path.relative_to(local)
-                target = f"{remote_dir}/{relative}"
+                relative = file_path.relative_to(local).as_posix()
+                target = str(PurePosixPath(remote_dir) / PurePosixPath(relative))
                 results.append(self.upload_file(str(file_path), target))
         return results
 
@@ -251,7 +262,7 @@ class ToolContext:
 
         # Base64-encode the file inside the sandbox and capture output
         result = self.terminal(
-            f"base64 {remote_path} 2>/dev/null",
+            f"base64 < {_shell_quote(remote_path)} 2>/dev/null",
             timeout=30,
         )
 
@@ -291,11 +302,11 @@ class ToolContext:
         Returns:
             List of results, one per file downloaded
         """
-        from pathlib import Path as _Path
+        from pathlib import Path as _Path, PurePosixPath
 
         # List files in the remote directory
         ls_result = self.terminal(
-            f"find {remote_dir} -type f 2>/dev/null",
+            f"find {_shell_quote(remote_dir)} -type f 2>/dev/null",
             timeout=15,
         )
 
@@ -312,10 +323,12 @@ class ToolContext:
             if not remote_file:
                 continue
             # Compute the relative path to preserve directory structure
-            if remote_file.startswith(remote_dir):
-                relative = remote_file[len(remote_dir):].lstrip("/")
-            else:
-                relative = _Path(remote_file).name
+            try:
+                relative = str(
+                    PurePosixPath(remote_file).relative_to(PurePosixPath(remote_dir))
+                )
+            except ValueError:
+                relative = PurePosixPath(remote_file).name
             local_file = str(_Path(local_dir) / relative)
             results.append(self.download_file(remote_file, local_file))
 

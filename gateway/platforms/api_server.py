@@ -563,13 +563,20 @@ class APIServerAdapter(BasePlatformAdapter):
                 if delta is not None:
                     _stream_q.put(delta)
 
-            def _on_tool_progress(name, preview, args):
-                """Inject tool progress into the SSE stream for Open WebUI."""
-                if name.startswith("_"):
-                    return  # Skip internal events (_thinking)
+            def _on_tool_progress(event_type, tool_name=None, preview=None, args=None, **kwargs):
+                """Inject tool progress into the SSE stream for Open WebUI.
+
+                The agent calls this as tool_progress_callback(event_type, tool_name, preview, args).
+                We only surface "tool.started" events to avoid spamming the stream with
+                tool.completed, reasoning.available, and other lifecycle events.
+                """
+                if event_type != "tool.started":
+                    return  # Skip tool.completed, reasoning.available, _thinking, etc.
+                if not tool_name:
+                    return
                 from agent.display import get_tool_emoji
-                emoji = get_tool_emoji(name)
-                label = preview or name
+                emoji = get_tool_emoji(tool_name)
+                label = preview or tool_name
                 _stream_q.put(f"\n`{emoji} {label}`\n")
 
             # Start agent in background.  agent_ref is a mutable container

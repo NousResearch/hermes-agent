@@ -439,7 +439,7 @@ class TestChatCompletionsEndpoint:
                 tp_cb = kwargs.get("tool_progress_callback")
                 # Simulate tool progress before streaming content
                 if tp_cb:
-                    tp_cb("terminal", "ls -la", {"command": "ls -la"})
+                    tp_cb("tool.started", "terminal", "ls -la", {"command": "ls -la"})
                 if cb:
                     await asyncio.sleep(0.05)
                     cb("Here are the files.")
@@ -467,7 +467,7 @@ class TestChatCompletionsEndpoint:
 
     @pytest.mark.asyncio
     async def test_stream_tool_progress_skips_internal_events(self, adapter):
-        """Internal events (name starting with _) are not streamed."""
+        """Non-tool.started events (e.g. _thinking, tool.completed) are not streamed."""
         import asyncio
 
         app = _create_app(adapter)
@@ -476,8 +476,8 @@ class TestChatCompletionsEndpoint:
                 cb = kwargs.get("stream_delta_callback")
                 tp_cb = kwargs.get("tool_progress_callback")
                 if tp_cb:
-                    tp_cb("_thinking", "some internal state", {})
-                    tp_cb("web_search", "Python docs", {"query": "Python docs"})
+                    tp_cb("_thinking", "some internal state")
+                    tp_cb("tool.started", "web_search", "Python docs", {"query": "Python docs"})
                 if cb:
                     await asyncio.sleep(0.05)
                     cb("Found it.")

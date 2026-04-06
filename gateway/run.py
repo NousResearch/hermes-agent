@@ -75,6 +75,41 @@ _ensure_ssl_certs()
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+
+def _extract_buttons(text: str):
+    """Extract button definitions from agent response text.
+
+    Supports two syntaxes:
+    1. ```buttons [...]``` JSON block
+    2. [button:Label|url] inline markers
+    """
+    if not text:
+        return None
+    # 1. JSON block
+    m = re.search(r'```buttons\s*\n(.*?)\n```', text, re.DOTALL)
+    if m:
+        try:
+            parsed = json.loads(m.group(1))
+            if isinstance(parsed, list) and parsed:
+                return parsed
+        except Exception:
+            pass
+    # 2. Inline markers
+    matches = re.findall(r'\[button:\s*([^\]|]+)(?:\|([^\]]+))?\s*\]', text)
+    if matches:
+        buttons = []
+        for label, url in matches:
+            label, url = label.strip(), (url.strip() if url else None)
+            entry = {"text": label}
+            if url:
+                entry["url"] = url
+            else:
+                entry["callback_data"] = f"hermes_btn:{label}"
+            buttons.append(entry)
+        return buttons
+    return None
+
+
 # Resolve Hermes home directory (respects HERMES_HOME override)
 from hermes_constants import get_hermes_home
 from utils import atomic_yaml_write
@@ -6662,9 +6697,11 @@ class GatewayRunner:
                 reset_current_session_key(_approval_session_token)
             result_holder[0] = result
 
-            # Signal the stream consumer that the agent is done
+            # Signal the stream consumer that the agent is done, passing
+            # any extracted inline buttons for the final message edit.
             if _stream_consumer is not None:
-                _stream_consumer.finish()
+                buttons = _extract_buttons(result.get("final_response", ""))
+                _stream_consumer.finish(buttons)
             
             # Return final response, or a message if something went wrong
             final_response = result.get("final_response")

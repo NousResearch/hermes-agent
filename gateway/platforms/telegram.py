@@ -743,6 +743,27 @@ class TelegramAdapter(BasePlatformAdapter):
         else:  # "first" (default)
             return chunk_index == 0
 
+    @staticmethod
+    def _build_keyboard(buttons):
+        """Convert a list-of-dicts button spec into an InlineKeyboardMarkup.
+
+        Each entry: {"text": "Label", "url": "..."} or {"text": "Label", "callback_data": "..."}.
+        """
+        if not buttons or InlineKeyboardButton is None:
+            return None
+        try:
+            if isinstance(buttons, InlineKeyboardMarkup):
+                return buttons
+            rows = buttons if buttons and isinstance(buttons[0], list) else [buttons]
+            keyboard = []
+            for row in rows:
+                kb_row = [InlineKeyboardButton(b["text"], callback_data=b.get("callback_data", ""), url=b.get("url")) for b in row if isinstance(b, dict)]
+                if kb_row:
+                    keyboard.append(kb_row)
+            return InlineKeyboardMarkup(keyboard) if keyboard else None
+        except Exception:
+            return None
+
     async def send(
         self,
         chat_id: str,
@@ -771,6 +792,13 @@ class TelegramAdapter(BasePlatformAdapter):
                     for chunk in chunks
                 ]
             
+            # Extract keyboard from metadata for attaching on final chunk
+            reply_markup = None
+            if metadata:
+                raw = metadata.get("buttons") or metadata.get("reply_markup")
+                if raw and InlineKeyboardButton is not None:
+                    reply_markup = self._build_keyboard(raw)
+
             message_ids = []
             thread_id = metadata.get("thread_id") if metadata else None
             
@@ -789,7 +817,9 @@ class TelegramAdapter(BasePlatformAdapter):
             except (ImportError, AttributeError):
                 _TimedOut = None  # type: ignore[assignment,misc]
 
+            last_i = len(chunks) - 1
             for i, chunk in enumerate(chunks):
+                markup = reply_markup if i == last_i else None
                 should_thread = self._should_thread_reply(reply_to, i)
                 reply_to_id = int(reply_to) if should_thread else None
                 effective_thread_id = int(thread_id) if thread_id else None
@@ -797,7 +827,6 @@ class TelegramAdapter(BasePlatformAdapter):
                 msg = None
                 for _send_attempt in range(3):
                     try:
-                        # Try Markdown first, fall back to plain text if it fails
                         try:
                             msg = await self._bot.send_message(
                                 chat_id=int(chat_id),
@@ -805,9 +834,9 @@ class TelegramAdapter(BasePlatformAdapter):
                                 parse_mode=ParseMode.MARKDOWN_V2,
                                 reply_to_message_id=reply_to_id,
                                 message_thread_id=effective_thread_id,
+                                reply_markup=markup,
                             )
                         except Exception as md_error:
-                            # Markdown parsing failed, try plain text
                             if "parse" in str(md_error).lower() or "markdown" in str(md_error).lower():
                                 logger.warning("[%s] MarkdownV2 parse failed, falling back to plain text: %s", self.name, md_error)
                                 plain_chunk = _strip_mdv2(chunk)
@@ -817,6 +846,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                     parse_mode=None,
                                     reply_to_message_id=reply_to_id,
                                     message_thread_id=effective_thread_id,
+                                    reply_markup=markup,
                                 )
                             else:
                                 raise
@@ -899,29 +929,30 @@ class TelegramAdapter(BasePlatformAdapter):
         chat_id: str,
         message_id: str,
         content: str,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Edit a previously sent Telegram message."""
         if not self._bot:
             return SendResult(success=False, error="Not connected")
+        reply_markup = None
+        if metadata:
+            raw = metadata.get("buttons") or metadata.get("reply_markup")
+            if raw:
+                reply_markup = self._build_keyboard(raw)
         try:
             formatted = self.format_message(content)
             try:
-                await self._bot.edit_message_text(
-                    chat_id=int(chat_id),
-                    message_id=int(message_id),
-                    text=formatted,
-                    parse_mode=ParseMode.MARKDOWN_V2,
-                )
+                kwargs = {"chat_id": int(chat_id), "message_id": int(message_id), "text": formatted, "parse_mode": ParseMode.MARKDOWN_V2}
+                if reply_markup is not None:
+                    kwargs["reply_markup"] = reply_markup
+                await self._bot.edit_message_text(**kwargs)
             except Exception as fmt_err:
-                # "Message is not modified" is a no-op, not an error
                 if "not modified" in str(fmt_err).lower():
                     return SendResult(success=True, message_id=message_id)
-                # Fallback: retry without markdown formatting
-                await self._bot.edit_message_text(
-                    chat_id=int(chat_id),
-                    message_id=int(message_id),
-                    text=content,
-                )
+                fb = {"chat_id": int(chat_id), "message_id": int(message_id), "text": content}
+                if reply_markup is not None:
+                    fb["reply_markup"] = reply_markup
+                await self._bot.edit_message_text(**fb)
             return SendResult(success=True, message_id=message_id)
         except Exception as e:
             err_str = str(e).lower()
@@ -956,11 +987,10 @@ class TelegramAdapter(BasePlatformAdapter):
                     return SendResult(success=False, error=f"flood_control:{wait}")
                 await asyncio.sleep(wait)
                 try:
-                    await self._bot.edit_message_text(
-                        chat_id=int(chat_id),
-                        message_id=int(message_id),
-                        text=content,
-                    )
+                    fc = {"chat_id": int(chat_id), "message_id": int(message_id), "text": content}
+                    if reply_markup is not None:
+                        fc["reply_markup"] = reply_markup
+                    await self._bot.edit_message_text(**fc)
                     return SendResult(success=True, message_id=message_id)
                 except Exception as retry_err:
                     logger.error(

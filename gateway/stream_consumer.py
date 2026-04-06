@@ -70,6 +70,7 @@ class GatewayStreamConsumer:
         self._edit_supported = True  # Disabled on first edit failure (Signal/Email/HA)
         self._last_edit_time = 0.0
         self._last_sent_text = ""   # Track last-sent text to skip redundant edits
+        self._pending_buttons = None  # Inline keyboard for final edit
 
     @property
     def already_sent(self) -> bool:
@@ -82,8 +83,9 @@ class GatewayStreamConsumer:
         if text:
             self._queue.put(text)
 
-    def finish(self) -> None:
-        """Signal that the stream is complete."""
+    def finish(self, buttons=None):
+        """Signal that the stream is complete, optionally with buttons to attach."""
+        self._pending_buttons = buttons
         self._queue.put(_DONE)
 
     async def run(self) -> None:
@@ -140,9 +142,9 @@ class GatewayStreamConsumer:
                     self._last_edit_time = time.monotonic()
 
                 if got_done:
-                    # Final edit without cursor
+                    # Final edit — attach buttons if stored
                     if self._accumulated and self._message_id:
-                        await self._send_or_edit(self._accumulated)
+                        await self._send_or_edit(self._accumulated, final=True)
                     return
 
                 await asyncio.sleep(0.05)  # Small yield to not busy-loop
@@ -182,25 +184,27 @@ class GatewayStreamConsumer:
         # Strip trailing whitespace/newlines but preserve leading content
         return cleaned.rstrip()
 
-    async def _send_or_edit(self, text: str) -> None:
+    async def _send_or_edit(self, text: str, final: bool = False) -> None:
         """Send or edit the streaming message."""
-        # Strip MEDIA: directives so they don't appear as visible text.
-        # Media files are delivered as native attachments after the stream
-        # finishes (via _deliver_media_from_response in gateway/run.py).
         text = self._clean_for_display(text)
         if not text.strip():
             return
         try:
             if self._message_id is not None:
                 if self._edit_supported:
-                    # Skip if text is identical to what we last sent
-                    if text == self._last_sent_text:
+                    # Skip redundant edits (unless buttons are pending)
+                    if text == self._last_sent_text and not (final and self._pending_buttons):
                         return
-                    # Edit existing message
+                    # Attach buttons on final edit via metadata
+                    meta = None
+                    if final and self._pending_buttons is not None:
+                        meta = dict(self.metadata or {})
+                        meta["buttons"] = self._pending_buttons
                     result = await self.adapter.edit_message(
                         chat_id=self.chat_id,
                         message_id=self._message_id,
                         content=text,
+                        metadata=meta,
                     )
                     if result.success:
                         self._already_sent = True

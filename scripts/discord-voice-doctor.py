@@ -249,8 +249,12 @@ def check_config(groq_key, eleven_key):
 
             if stt_provider == "groq" and not groq_key:
                 warn("STT config says groq but GROQ_API_KEY is missing")
+            if stt_provider == "mistral" and not os.getenv("MISTRAL_API_KEY"):
+                warn("STT config says mistral but MISTRAL_API_KEY is missing")
             if tts_provider == "elevenlabs" and not eleven_key:
                 warn("TTS config says elevenlabs but ELEVENLABS_API_KEY is missing")
+            if tts_provider == "mistral" and not os.getenv("MISTRAL_API_KEY"):
+                warn("TTS config says mistral but MISTRAL_API_KEY is missing")
         except Exception as e:
             warn("config.yaml", f"parse error: {e}")
     else:

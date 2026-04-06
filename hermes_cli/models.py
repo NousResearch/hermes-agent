@@ -60,7 +60,6 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     "nous": [
         "anthropic/claude-opus-4.6",
         "anthropic/claude-sonnet-4.6",
-        "qwen/qwen3.6-plus:free",
         "anthropic/claude-sonnet-4.5",
         "anthropic/claude-haiku-4.5",
         "openai/gpt-5.4",
@@ -111,6 +110,17 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "claude-haiku-4.5",
         "gemini-2.5-pro",
         "grok-code-fast-1",
+    ],
+    "gemini": [
+        "gemini-3.1-pro-preview",
+        "gemini-3-flash-preview",
+        "gemini-3.1-flash-lite-preview",
+        "gemini-2.5-pro",
+        "gemini-2.5-flash",
+        "gemini-2.5-flash-lite",
+        # Gemma open models (also served via AI Studio)
+        "gemma-4-31b-it",
+        "gemma-4-26b-it",
     ],
     "zai": [
         "glm-5",
@@ -261,6 +271,7 @@ _PROVIDER_LABELS = {
     "copilot-acp": "GitHub Copilot ACP",
     "nous": "Nous Portal",
     "copilot": "GitHub Copilot",
+    "gemini": "Google AI Studio",
     "zai": "Z.AI / GLM",
     "kimi-coding": "Kimi / Moonshot",
     "minimax": "MiniMax",
@@ -287,6 +298,9 @@ _PROVIDER_ALIASES = {
     "github-model": "copilot",
     "github-copilot-acp": "copilot-acp",
     "copilot-acp-agent": "copilot-acp",
+    "google": "gemini",
+    "google-gemini": "gemini",
+    "google-ai-studio": "gemini",
     "kimi": "kimi-coding",
     "moonshot": "kimi-coding",
     "minimax-china": "minimax-cn",
@@ -327,6 +341,213 @@ def menu_labels() -> list[str]:
     return labels
 
 
+# ---------------------------------------------------------------------------
+# Pricing helpers — fetch live pricing from OpenRouter-compatible /v1/models
+# ---------------------------------------------------------------------------
+
+# Cache: maps model_id → {"prompt": str, "completion": str} per endpoint
+_pricing_cache: dict[str, dict[str, dict[str, str]]] = {}
+
+
+def _format_price_per_mtok(per_token_str: str) -> str:
+    """Convert a per-token price string to a human-friendly $/Mtok string.
+
+    Always uses 2 decimal places so that prices align vertically when
+    right-justified in a column (the decimal point stays in the same position).
+
+    Examples:
+        "0.000003"   → "$3.00"      (per million tokens)
+        "0.00003"    → "$30.00"
+        "0.00000015" → "$0.15"
+        "0.0000001"  → "$0.10"
+        "0.00018"    → "$180.00"
+        "0"          → "free"
+    """
+    try:
+        val = float(per_token_str)
+    except (TypeError, ValueError):
+        return "?"
+    if val == 0:
+        return "free"
+    per_m = val * 1_000_000
+    return f"${per_m:.2f}"
+
+
+def format_pricing_label(pricing: dict[str, str] | None) -> str:
+    """Build a compact pricing label like 'in $3 · out $15 · cache $0.30/Mtok'.
+
+    Returns empty string when pricing is unavailable.
+    """
+    if not pricing:
+        return ""
+    prompt_price = pricing.get("prompt", "")
+    completion_price = pricing.get("completion", "")
+    if not prompt_price and not completion_price:
+        return ""
+    inp = _format_price_per_mtok(prompt_price)
+    out = _format_price_per_mtok(completion_price)
+    if inp == "free" and out == "free":
+        return "free"
+    cache_read = pricing.get("input_cache_read", "")
+    cache_str = _format_price_per_mtok(cache_read) if cache_read else ""
+    if inp == out and not cache_str:
+        return f"{inp}/Mtok"
+    parts = [f"in {inp}", f"out {out}"]
+    if cache_str and cache_str != "?" and cache_str != inp:
+        parts.append(f"cache {cache_str}")
+    return " · ".join(parts) + "/Mtok"
+
+
+def format_model_pricing_table(
+    models: list[tuple[str, str]],
+    pricing_map: dict[str, dict[str, str]],
+    current_model: str = "",
+    indent: str = "      ",
+) -> list[str]:
+    """Build a column-aligned model+pricing table for terminal display.
+
+    Returns a list of pre-formatted lines ready to print.
+    *models* is ``[(model_id, description), ...]``.
+    """
+    if not models:
+        return []
+
+    # Build rows: (model_id, input_price, output_price, cache_price, is_current)
+    rows: list[tuple[str, str, str, str, bool]] = []
+    has_cache = False
+    for mid, _desc in models:
+        is_cur = mid == current_model
+        p = pricing_map.get(mid)
+        if p:
+            inp = _format_price_per_mtok(p.get("prompt", ""))
+            out = _format_price_per_mtok(p.get("completion", ""))
+            cache_read = p.get("input_cache_read", "")
+            cache = _format_price_per_mtok(cache_read) if cache_read else ""
+            if cache:
+                has_cache = True
+        else:
+            inp, out, cache = "", "", ""
+        rows.append((mid, inp, out, cache, is_cur))
+
+    name_col = max(len(r[0]) for r in rows) + 2
+    # Compute price column widths from the actual data so decimals align
+    price_col = max(
+        max((len(r[1]) for r in rows if r[1]), default=4),
+        max((len(r[2]) for r in rows if r[2]), default=4),
+        3,  # minimum: "In" / "Out" header
+    )
+    cache_col = max(
+        max((len(r[3]) for r in rows if r[3]), default=4),
+        5,  # minimum: "Cache" header
+    ) if has_cache else 0
+    lines: list[str] = []
+
+    # Header
+    if has_cache:
+        lines.append(f"{indent}{'Model':<{name_col}} {'In':>{price_col}}  {'Out':>{price_col}}  {'Cache':>{cache_col}}  /Mtok")
+        lines.append(f"{indent}{'-' * name_col} {'-' * price_col}  {'-' * price_col}  {'-' * cache_col}")
+    else:
+        lines.append(f"{indent}{'Model':<{name_col}} {'In':>{price_col}}  {'Out':>{price_col}}  /Mtok")
+        lines.append(f"{indent}{'-' * name_col} {'-' * price_col}  {'-' * price_col}")
+
+    for mid, inp, out, cache, is_cur in rows:
+        marker = "  ← current" if is_cur else ""
+        if has_cache:
+            lines.append(f"{indent}{mid:<{name_col}} {inp:>{price_col}}  {out:>{price_col}}  {cache:>{cache_col}}{marker}")
+        else:
+            lines.append(f"{indent}{mid:<{name_col}} {inp:>{price_col}}  {out:>{price_col}}{marker}")
+
+    return lines
+
+
+def fetch_models_with_pricing(
+    api_key: str | None = None,
+    base_url: str = "https://openrouter.ai/api",
+    timeout: float = 8.0,
+    *,
+    force_refresh: bool = False,
+) -> dict[str, dict[str, str]]:
+    """Fetch ``/v1/models`` and return ``{model_id: {prompt, completion}}`` pricing.
+
+    Results are cached per *base_url* so repeated calls are free.
+    Works with any OpenRouter-compatible endpoint (OpenRouter, Nous Portal).
+    """
+    cache_key = (base_url or "").rstrip("/")
+    if not force_refresh and cache_key in _pricing_cache:
+        return _pricing_cache[cache_key]
+
+    url = cache_key.rstrip("/") + "/v1/models"
+    headers: dict[str, str] = {"Accept": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    try:
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            payload = json.loads(resp.read().decode())
+    except Exception:
+        _pricing_cache[cache_key] = {}
+        return {}
+
+    result: dict[str, dict[str, str]] = {}
+    for item in payload.get("data", []):
+        mid = item.get("id")
+        pricing = item.get("pricing")
+        if mid and isinstance(pricing, dict):
+            entry: dict[str, str] = {
+                "prompt": str(pricing.get("prompt", "")),
+                "completion": str(pricing.get("completion", "")),
+            }
+            if pricing.get("input_cache_read"):
+                entry["input_cache_read"] = str(pricing["input_cache_read"])
+            if pricing.get("input_cache_write"):
+                entry["input_cache_write"] = str(pricing["input_cache_write"])
+            result[mid] = entry
+
+    _pricing_cache[cache_key] = result
+    return result
+
+
+def _resolve_openrouter_api_key() -> str:
+    """Best-effort OpenRouter API key for pricing fetch."""
+    return os.getenv("OPENROUTER_API_KEY", "").strip()
+
+
+def _resolve_nous_pricing_credentials() -> tuple[str, str]:
+    """Return ``(api_key, base_url)`` for Nous Portal pricing, or empty strings."""
+    try:
+        from hermes_cli.auth import resolve_nous_runtime_credentials
+        creds = resolve_nous_runtime_credentials()
+        if creds:
+            return (creds.get("api_key", ""), creds.get("base_url", ""))
+    except Exception:
+        pass
+    return ("", "")
+
+
+def get_pricing_for_provider(provider: str) -> dict[str, dict[str, str]]:
+    """Return live pricing for providers that support it (openrouter, nous)."""
+    normalized = normalize_provider(provider)
+    if normalized == "openrouter":
+        return fetch_models_with_pricing(
+            api_key=_resolve_openrouter_api_key(),
+            base_url="https://openrouter.ai/api",
+        )
+    if normalized == "nous":
+        api_key, base_url = _resolve_nous_pricing_credentials()
+        if base_url:
+            # Nous base_url typically looks like https://inference-api.nousresearch.com/v1
+            # We need the part before /v1 for our fetch function
+            stripped = base_url.rstrip("/")
+            if stripped.endswith("/v1"):
+                stripped = stripped[:-3]
+            return fetch_models_with_pricing(
+                api_key=api_key,
+                base_url=stripped,
+            )
+    return {}
+
+
 # All provider IDs and aliases that are valid for the provider:model syntax.
 _KNOWN_PROVIDER_NAMES: set[str] = (
     set(_PROVIDER_LABELS.keys())
@@ -344,7 +565,8 @@ def list_available_providers() -> list[dict[str, str]]:
     # Canonical providers in display order
     _PROVIDER_ORDER = [
         "openrouter", "nous", "openai-codex", "copilot", "copilot-acp",
-        "huggingface", "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode", "anthropic", "alibaba",
+        "gemini", "huggingface",
+        "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode", "anthropic", "alibaba",
         "opencode-zen", "opencode-go",
         "ai-gateway", "deepseek", "custom",
     ]

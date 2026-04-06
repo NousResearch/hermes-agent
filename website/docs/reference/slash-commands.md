@@ -89,9 +89,22 @@ Type `/` in the CLI to open the autocomplete menu. Built-in commands are case-in
 | `/<skill-name>` | Load any installed skill as an on-demand command. Example: `/gif-search`, `/github-pr-workflow`, `/excalidraw`. |
 | `/skills ...` | Search, browse, inspect, install, audit, publish, and configure skills from registries and the official optional-skills catalog. |
 
-### Quick commands
+### Quick Commands
 
-User-defined quick commands from `quick_commands` in `~/.hermes/config.yaml` are also available as slash commands. These are resolved at dispatch time, not shown in the built-in autocomplete/help tables.
+User-defined quick commands map a short alias to a longer prompt. Configure them in `~/.hermes/config.yaml`:
+
+```yaml
+quick_commands:
+  review: "Review my latest git diff and suggest improvements"
+  deploy: "Run the deployment script at scripts/deploy.sh and verify the output"
+  morning: "Check my calendar, unread emails, and summarize today's priorities"
+```
+
+Then type `/review`, `/deploy`, or `/morning` in the CLI. Quick commands are resolved at dispatch time and are not shown in the built-in autocomplete/help tables.
+
+### Alias Resolution
+
+Commands support prefix matching: typing `/h` resolves to `/help`, `/mod` resolves to `/model`. When a prefix is ambiguous (matches multiple commands), the first match in registry order wins. Full command names and registered aliases always take priority over prefix matches.
 
 ## Messaging slash commands
 

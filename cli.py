@@ -453,6 +453,21 @@ def load_cli_config() -> Dict[str, Any]:
 # Load configuration at module startup
 CLI_CONFIG = load_cli_config()
 
+# Initialize centralized logging early — agent.log + errors.log in ~/.hermes/logs/.
+# This ensures CLI sessions produce a log trail even before AIAgent is instantiated.
+try:
+    from hermes_logging import setup_logging
+    setup_logging(mode="cli")
+except Exception:
+    pass  # Logging setup is best-effort — don't crash the CLI
+
+# Validate config structure early — print warnings before user hits cryptic errors
+try:
+    from hermes_cli.config import print_config_warnings
+    print_config_warnings()
+except Exception:
+    pass
+
 # Initialize the skin engine from config
 try:
     from hermes_cli.skin_engine import init_skin_from_config
@@ -2358,6 +2373,22 @@ class HermesCLI:
                     "[dim]   Fix: Set model.context_length in config.yaml, or increase your server's context setting[/]"
                 )
 
+        # Warn if the configured model is a Nous Hermes LLM (not agentic)
+        model_name = getattr(self, "model", "") or ""
+        if "hermes" in model_name.lower():
+            self.console.print()
+            self.console.print(
+                "[bold yellow]⚠  Nous Research Hermes 3 & 4 models are NOT agentic and are not "
+                "designed for use with Hermes Agent.[/]"
+            )
+            self.console.print(
+                "[dim]   They lack tool-calling capabilities required for agent workflows. "
+                "Consider using an agentic model (Claude, GPT, Gemini, DeepSeek, etc.).[/]"
+            )
+            self.console.print(
+                "[dim]   Switch with: /model sonnet  or  /model gpt5[/]"
+            )
+
         self.console.print()
 
     def _preload_resumed_session(self) -> bool:
@@ -3690,7 +3721,7 @@ class HermesCLI:
 
         # Persistence
         if persist_global:
-            save_config_value("model.name", result.new_model)
+            save_config_value("model.default", result.new_model)
             if result.provider_changed:
                 save_config_value("model.provider", result.target_provider)
             _cprint("    Saved to config.yaml (--global)")
@@ -3706,6 +3737,7 @@ class HermesCLI:
         from hermes_cli.models import (
             curated_models_for_provider, list_available_providers,
             normalize_provider, _PROVIDER_LABELS,
+            get_pricing_for_provider, format_model_pricing_table,
         )
         from hermes_cli.auth import resolve_provider as _resolve_provider
 
@@ -3739,7 +3771,13 @@ class HermesCLI:
                 marker = " ← active" if is_active else ""
                 print(f"    [{p['id']}]{marker}")
                 curated = curated_models_for_provider(p["id"])
-                if curated:
+                # Fetch pricing for providers that support it (openrouter, nous)
+                pricing_map = get_pricing_for_provider(p["id"]) if p["id"] in ("openrouter", "nous") else {}
+                if curated and pricing_map:
+                    cur_model = self.model if is_active else ""
+                    for line in format_model_pricing_table(curated, pricing_map, current_model=cur_model):
+                        print(line)
+                elif curated:
                     for mid, desc in curated:
                         current_marker = " ← current" if (is_active and mid == self.model) else ""
                         print(f"      {mid}{current_marker}")

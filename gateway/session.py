@@ -254,8 +254,22 @@ def build_session_context_prompt(
     if context.source.chat_topic:
         lines.append(f"**Channel Topic:** {context.source.chat_topic}")
 
-    # User identity (especially useful for WhatsApp where multiple people DM)
-    if context.source.user_name:
+    # User identity.
+    # In shared thread sessions (non-DM with thread_id), multiple users
+    # contribute to the same conversation.  Don't pin a single user name
+    # in the system prompt — it changes per-turn and would bust the prompt
+    # cache.  Instead, note that this is a multi-user thread; individual
+    # sender names are prefixed on each user message by the gateway.
+    _is_shared_thread = (
+        context.source.chat_type != "dm"
+        and context.source.thread_id
+    )
+    if _is_shared_thread:
+        lines.append(
+            "**Session type:** Multi-user thread — messages are prefixed "
+            "with [sender name]. Multiple users may participate."
+        )
+    elif context.source.user_name:
         lines.append(f"**User:** {context.source.user_name}")
     elif context.source.user_id:
         uid = context.source.user_id
@@ -427,7 +441,11 @@ class SessionEntry:
         )
 
 
-def build_session_key(source: SessionSource, group_sessions_per_user: bool = True) -> str:
+def build_session_key(
+    source: SessionSource,
+    group_sessions_per_user: bool = True,
+    thread_sessions_per_user: bool = False,
+) -> str:
     """Build a deterministic session key from a message source.
 
     This is the single source of truth for session key construction.
@@ -442,7 +460,11 @@ def build_session_key(source: SessionSource, group_sessions_per_user: bool = Tru
       - chat_id identifies the parent group/channel.
       - user_id/user_id_alt isolates participants within that parent chat when available when
         ``group_sessions_per_user`` is enabled.
-      - thread_id differentiates threads within that parent chat.
+      - thread_id differentiates threads within that parent chat.  When
+        ``thread_sessions_per_user`` is False (default), threads are *shared* across all
+        participants — user_id is NOT appended, so every user in the thread
+        shares a single session.  This is the expected UX for threaded
+        conversations (Telegram forum topics, Discord threads, Slack threads).
       - Without participant identifiers, or when isolation is disabled, messages fall back to one
         shared session per chat.
       - Without identifiers, messages fall back to one session per platform/chat_type.
@@ -464,7 +486,15 @@ def build_session_key(source: SessionSource, group_sessions_per_user: bool = Tru
         key_parts.append(source.chat_id)
     if source.thread_id:
         key_parts.append(source.thread_id)
-    if group_sessions_per_user and participant_id:
+
+    # In threads, default to shared sessions (all participants see the same
+    # conversation).  Per-user isolation only applies when explicitly enabled
+    # via thread_sessions_per_user, or when there is no thread (regular group).
+    isolate_user = group_sessions_per_user
+    if source.thread_id and not thread_sessions_per_user:
+        isolate_user = False
+
+    if isolate_user and participant_id:
         key_parts.append(str(participant_id))
 
     return ":".join(key_parts)
@@ -552,6 +582,7 @@ class SessionStore:
         return build_session_key(
             source,
             group_sessions_per_user=getattr(self.config, "group_sessions_per_user", True),
+            thread_sessions_per_user=getattr(self.config, "thread_sessions_per_user", False),
         )
     
     def _is_session_expired(self, entry: SessionEntry) -> bool:

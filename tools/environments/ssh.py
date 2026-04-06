@@ -1,6 +1,7 @@
 """SSH remote execution environment with ControlMaster connection persistence."""
 
 import logging
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -228,7 +229,13 @@ class SSHEnvironment(PersistentShellMixin, BaseEnvironment):
                          stdin_data: str | None = None) -> dict:
         work_dir = cwd or self.cwd
         exec_command, sudo_stdin = self._prepare_command(command)
-        wrapped = f'cd {work_dir} && {exec_command}'
+        # Keep ~ unquoted (for shell expansion) and quote only the subpath.
+        if work_dir == "~":
+            wrapped = f'cd ~ && {exec_command}'
+        elif work_dir.startswith("~/"):
+            wrapped = f'cd ~/{shlex.quote(work_dir[2:])} && {exec_command}'
+        else:
+            wrapped = f'cd {shlex.quote(work_dir)} && {exec_command}'
         effective_timeout = timeout or self.timeout
 
         if sudo_stdin is not None and stdin_data is not None:

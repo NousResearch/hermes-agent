@@ -185,12 +185,28 @@ def _build_child_agent(
 
     # When no explicit toolsets given, inherit from parent's enabled toolsets
     # so disabled tools (e.g. web) don't leak to subagents.
-    parent_toolsets = set(getattr(parent_agent, "enabled_toolsets", None) or DEFAULT_TOOLSETS)
+    # Note: enabled_toolsets=None means "all tools enabled" (the default),
+    # so we must derive effective toolsets from the parent's loaded tools.
+    parent_enabled = getattr(parent_agent, "enabled_toolsets", None)
+    if parent_enabled is not None:
+        parent_toolsets = set(parent_enabled)
+    elif parent_agent and hasattr(parent_agent, "valid_tool_names"):
+        # enabled_toolsets is None (all tools) — derive from loaded tool names
+        import model_tools
+        parent_toolsets = {
+            ts for name in parent_agent.valid_tool_names
+            if (ts := model_tools.get_toolset_for_tool(name)) is not None
+        }
+    else:
+        parent_toolsets = set(DEFAULT_TOOLSETS)
+
     if toolsets:
         # Intersect with parent — subagent must not gain tools the parent lacks
         child_toolsets = _strip_blocked_tools([t for t in toolsets if t in parent_toolsets])
-    elif parent_agent and getattr(parent_agent, "enabled_toolsets", None):
-        child_toolsets = _strip_blocked_tools(parent_agent.enabled_toolsets)
+    elif parent_agent and parent_enabled is not None:
+        child_toolsets = _strip_blocked_tools(parent_enabled)
+    elif parent_toolsets:
+        child_toolsets = _strip_blocked_tools(sorted(parent_toolsets))
     else:
         child_toolsets = _strip_blocked_tools(DEFAULT_TOOLSETS)
 

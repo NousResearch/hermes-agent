@@ -114,7 +114,7 @@ class TestRunJobScript:
     def test_script_not_found(self, cron_env):
         from cron.scheduler import _run_job_script
 
-        success, output = _run_job_script("/nonexistent/script.py")
+        success, output = _run_job_script("nonexistent_script.py")
         assert success is False
         assert "not found" in output.lower()
 
@@ -198,7 +198,7 @@ class TestBuildJobPromptWithScript:
 
         job = {
             "prompt": "Report status.",
-            "script": "/nonexistent/script.py",
+            "script": "nonexistent_monitor.py",
         }
         prompt = _build_job_prompt(job)
         assert "## Script Error" in prompt
@@ -239,10 +239,10 @@ class TestCronjobToolScript:
             action="create",
             schedule="every 1h",
             prompt="Monitor things",
-            script="/home/user/monitor.py",
+            script="monitor.py",
         ))
         assert result["success"] is True
-        assert result["job"]["script"] == "/home/user/monitor.py"
+        assert result["job"]["script"] == "monitor.py"
 
     def test_update_script(self, cron_env, monkeypatch):
         monkeypatch.setenv("HERMES_INTERACTIVE", "1")
@@ -258,10 +258,10 @@ class TestCronjobToolScript:
         update_result = json.loads(cronjob(
             action="update",
             job_id=job_id,
-            script="/new/script.py",
+            script="new_script.py",
         ))
         assert update_result["success"] is True
-        assert update_result["job"]["script"] == "/new/script.py"
+        assert update_result["job"]["script"] == "new_script.py"
 
     def test_clear_script(self, cron_env, monkeypatch):
         monkeypatch.setenv("HERMES_INTERACTIVE", "1")
@@ -271,7 +271,7 @@ class TestCronjobToolScript:
             action="create",
             schedule="every 1h",
             prompt="Monitor things",
-            script="/some/script.py",
+            script="some_script.py",
         ))
         job_id = create_result["job_id"]
 
@@ -291,10 +291,267 @@ class TestCronjobToolScript:
             action="create",
             schedule="every 1h",
             prompt="Monitor things",
-            script="/path/to/script.py",
+            script="data_collector.py",
         )
 
         list_result = json.loads(cronjob(action="list"))
         assert list_result["success"] is True
         assert len(list_result["jobs"]) == 1
-        assert list_result["jobs"][0]["script"] == "/path/to/script.py"
+        assert list_result["jobs"][0]["script"] == "data_collector.py"
+
+
+class TestScriptPathContainment:
+    """Regression tests for path containment bypass in _run_job_script().
+
+    Prior to the fix, absolute paths and ~-prefixed paths bypassed the
+    scripts_dir containment check entirely, allowing arbitrary script
+    execution through the cron system.
+    """
+
+    def test_absolute_path_outside_scripts_dir_blocked(self, cron_env):
+        """Absolute paths outside ~/.hermes/scripts/ must be rejected."""
+        from cron.scheduler import _run_job_script
+
+        # Create a script outside the scripts dir
+        outside_script = cron_env / "outside.py"
+        outside_script.write_text('print("should not run")\n')
+
+        success, output = _run_job_script(str(outside_script))
+        assert success is False
+        assert "blocked" in output.lower() or "outside" in output.lower()
+
+    def test_absolute_path_tmp_blocked(self, cron_env):
+        """Absolute paths to /tmp must be rejected."""
+        from cron.scheduler import _run_job_script
+
+        success, output = _run_job_script("/tmp/evil.py")
+        assert success is False
+        assert "blocked" in output.lower() or "outside" in output.lower()
+
+    def test_tilde_path_blocked(self, cron_env):
+        """~ prefixed paths must be rejected (expanduser bypasses check)."""
+        from cron.scheduler import _run_job_script
+
+        success, output = _run_job_script("~/evil.py")
+        assert success is False
+        assert "blocked" in output.lower() or "outside" in output.lower()
+
+    def test_tilde_traversal_blocked(self, cron_env):
+        """~/../../../tmp/evil.py must be rejected."""
+        from cron.scheduler import _run_job_script
+
+        success, output = _run_job_script("~/../../../tmp/evil.py")
+        assert success is False
+        assert "blocked" in output.lower() or "outside" in output.lower()
+
+    def test_relative_traversal_still_blocked(self, cron_env):
+        """../../etc/passwd style traversal must still be blocked."""
+        from cron.scheduler import _run_job_script
+
+        success, output = _run_job_script("../../etc/passwd")
+        assert success is False
+        assert "blocked" in output.lower() or "outside" in output.lower()
+
+    def test_relative_path_inside_scripts_dir_allowed(self, cron_env):
+        """Relative paths within the scripts dir should still work."""
+        from cron.scheduler import _run_job_script
+
+        script = cron_env / "scripts" / "good.py"
+        script.write_text('print("ok")\n')
+
+        success, output = _run_job_script("good.py")
+        assert success is True
+        assert output == "ok"
+
+    def test_subdirectory_inside_scripts_dir_allowed(self, cron_env):
+        """Relative paths to subdirectories within scripts/ should work."""
+        from cron.scheduler import _run_job_script
+
+        subdir = cron_env / "scripts" / "monitors"
+        subdir.mkdir()
+        script = subdir / "check.py"
+        script.write_text('print("sub ok")\n')
+
+        success, output = _run_job_script("monitors/check.py")
+        assert success is True
+        assert output == "sub ok"
+
+    def test_absolute_path_inside_scripts_dir_allowed(self, cron_env):
+        """Absolute paths that resolve WITHIN scripts/ should work."""
+        from cron.scheduler import _run_job_script
+
+        script = cron_env / "scripts" / "abs_ok.py"
+        script.write_text('print("abs ok")\n')
+
+        success, output = _run_job_script(str(script))
+        assert success is True
+        assert output == "abs ok"
+
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="Symlinks require elevated privileges on Windows",
+    )
+    def test_symlink_escape_blocked(self, cron_env, tmp_path):
+        """Symlinks pointing outside scripts/ must be rejected."""
+        from cron.scheduler import _run_job_script
+
+        # Create a script outside the scripts dir
+        outside = tmp_path / "outside_evil.py"
+        outside.write_text('print("escaped")\n')
+
+        # Create a symlink inside scripts/ pointing outside
+        link = cron_env / "scripts" / "sneaky.py"
+        link.symlink_to(outside)
+
+        success, output = _run_job_script("sneaky.py")
+        assert success is False
+        assert "blocked" in output.lower() or "outside" in output.lower()
+
+
+class TestCronjobToolScriptValidation:
+    """Test API-boundary validation of cron script paths in cronjob_tools."""
+
+    def test_create_with_absolute_script_rejected(self, cron_env, monkeypatch):
+        monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+        from tools.cronjob_tools import cronjob
+
+        result = json.loads(cronjob(
+            action="create",
+            schedule="every 1h",
+            prompt="Monitor things",
+            script="/home/user/evil.py",
+        ))
+        assert result["success"] is False
+        assert "relative" in result["error"].lower() or "absolute" in result["error"].lower()
+
+    def test_create_with_tilde_script_rejected(self, cron_env, monkeypatch):
+        monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+        from tools.cronjob_tools import cronjob
+
+        result = json.loads(cronjob(
+            action="create",
+            schedule="every 1h",
+            prompt="Monitor things",
+            script="~/monitor.py",
+        ))
+        assert result["success"] is False
+        assert "relative" in result["error"].lower() or "absolute" in result["error"].lower()
+
+    def test_create_with_traversal_script_rejected(self, cron_env, monkeypatch):
+        monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+        from tools.cronjob_tools import cronjob
+
+        result = json.loads(cronjob(
+            action="create",
+            schedule="every 1h",
+            prompt="Monitor things",
+            script="../../etc/passwd",
+        ))
+        assert result["success"] is False
+        assert "escapes" in result["error"].lower() or "traversal" in result["error"].lower()
+
+    def test_create_with_relative_script_allowed(self, cron_env, monkeypatch):
+        monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+        from tools.cronjob_tools import cronjob
+
+        result = json.loads(cronjob(
+            action="create",
+            schedule="every 1h",
+            prompt="Monitor things",
+            script="monitor.py",
+        ))
+        assert result["success"] is True
+        assert result["job"]["script"] == "monitor.py"
+
+    def test_update_with_absolute_script_rejected(self, cron_env, monkeypatch):
+        monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+        from tools.cronjob_tools import cronjob
+
+        create_result = json.loads(cronjob(
+            action="create",
+            schedule="every 1h",
+            prompt="Monitor things",
+        ))
+        job_id = create_result["job_id"]
+
+        update_result = json.loads(cronjob(
+            action="update",
+            job_id=job_id,
+            script="/tmp/evil.py",
+        ))
+        assert update_result["success"] is False
+        assert "relative" in update_result["error"].lower() or "absolute" in update_result["error"].lower()
+
+    def test_update_clear_script_allowed(self, cron_env, monkeypatch):
+        """Clearing a script (empty string) should always be permitted."""
+        monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+        from tools.cronjob_tools import cronjob
+
+        create_result = json.loads(cronjob(
+            action="create",
+            schedule="every 1h",
+            prompt="Monitor things",
+            script="monitor.py",
+        ))
+        job_id = create_result["job_id"]
+
+        update_result = json.loads(cronjob(
+            action="update",
+            job_id=job_id,
+            script="",
+        ))
+        assert update_result["success"] is True
+        assert "script" not in update_result["job"]
+
+    def test_windows_absolute_path_rejected(self, cron_env, monkeypatch):
+        monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+        from tools.cronjob_tools import cronjob
+
+        result = json.loads(cronjob(
+            action="create",
+            schedule="every 1h",
+            prompt="Monitor things",
+            script="C:\\Users\\evil\\script.py",
+        ))
+        assert result["success"] is False
+
+
+class TestRunJobEnvVarCleanup:
+    """Test that run_job() env vars are cleaned up even on early failure."""
+
+    def test_env_vars_cleaned_on_early_error(self, cron_env, monkeypatch):
+        """Origin env vars must be cleaned up even if run_job fails early."""
+        # Ensure env vars are clean before test
+        for key in (
+            "HERMES_SESSION_PLATFORM",
+            "HERMES_SESSION_CHAT_ID",
+            "HERMES_SESSION_CHAT_NAME",
+        ):
+            monkeypatch.delenv(key, raising=False)
+
+        # Build a job with origin info that will fail during execution
+        # (no valid model, no API key — will raise inside try block)
+        job = {
+            "id": "test-envleak",
+            "name": "env-leak-test",
+            "prompt": "test",
+            "schedule_display": "every 1h",
+            "origin": {
+                "platform": "telegram",
+                "chat_id": "12345",
+                "chat_name": "Test Chat",
+            },
+        }
+
+        from cron.scheduler import run_job
+
+        # Expect it to fail (no model/API key), but env vars must be cleaned
+        try:
+            run_job(job)
+        except Exception:
+            pass
+
+        # Verify env vars were cleaned up by the finally block
+        assert os.environ.get("HERMES_SESSION_PLATFORM") is None
+        assert os.environ.get("HERMES_SESSION_CHAT_ID") is None
+        assert os.environ.get("HERMES_SESSION_CHAT_NAME") is None

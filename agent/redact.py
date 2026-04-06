@@ -48,6 +48,12 @@ _PREFIX_PATTERNS = [
     r"sk_[A-Za-z0-9_]{10,}",            # ElevenLabs TTS key (sk_ underscore, not sk- dash)
     r"tvly-[A-Za-z0-9]{10,}",           # Tavily search API key
     r"exa_[A-Za-z0-9]{10,}",            # Exa search API key
+    r"gsk_[A-Za-z0-9]{10,}",            # Groq Cloud API key
+    r"syt_[A-Za-z0-9]{10,}",            # Matrix access token
+    r"retaindb_[A-Za-z0-9]{10,}",       # RetainDB API key
+    r"hsk-[A-Za-z0-9]{10,}",            # Hindsight API key
+    r"mem0_[A-Za-z0-9]{10,}",           # Mem0 Platform API key
+    r"brv_[A-Za-z0-9]{10,}",            # ByteRover API key
 ]
 
 # ENV assignment patterns: KEY=value where KEY contains a secret-like name

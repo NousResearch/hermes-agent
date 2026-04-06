@@ -316,6 +316,15 @@ TOOL_CATEGORIES = {
                 "post_setup": "browserbase",
             },
             {
+                "name": "Firecrawl",
+                "tag": "Cloud browser with remote execution",
+                "env_vars": [
+                    {"key": "FIRECRAWL_API_KEY", "prompt": "Firecrawl API key", "url": "https://firecrawl.dev"},
+                ],
+                "browser_provider": "firecrawl",
+                "post_setup": "browserbase",
+            },
+            {
                 "name": "Camofox",
                 "tag": "Local anti-detection browser (Firefox/Camoufox)",
                 "env_vars": [

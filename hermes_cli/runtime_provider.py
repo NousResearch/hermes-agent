@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 from typing import Any, Dict, Optional
+
+logger = logging.getLogger(__name__)
 
 from hermes_cli import auth as auth_mod
 from agent.credential_pool import CredentialPool, PooledCredential, get_custom_provider_pool_key, load_pool
@@ -258,6 +261,12 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
     config = load_config()
     custom_providers = config.get("custom_providers")
     if not isinstance(custom_providers, list):
+        if isinstance(custom_providers, dict):
+            logger.warning(
+                "custom_providers in config.yaml is a dict, not a list. "
+                "Each entry must be prefixed with '-' in YAML. "
+                "Run 'hermes doctor' for details."
+            )
         return None
 
     for entry in custom_providers:
@@ -486,7 +495,11 @@ def _resolve_explicit_runtime(
             explicit_base_url
             or str(state.get("inference_base_url") or auth_mod.DEFAULT_NOUS_INFERENCE_URL).strip().rstrip("/")
         )
-        api_key = explicit_api_key or str(state.get("agent_key") or state.get("access_token") or "").strip()
+        # Only use agent_key for inference — access_token is an OAuth token for the
+        # portal API (minting keys, refreshing tokens), not for the inference API.
+        # Falling back to access_token sends an OAuth bearer token to the inference
+        # endpoint, which returns 404 because it is not a valid inference credential.
+        api_key = explicit_api_key or str(state.get("agent_key") or "").strip()
         expires_at = state.get("agent_key_expires_at") or state.get("expires_at")
         if not api_key:
             creds = resolve_nous_runtime_credentials(

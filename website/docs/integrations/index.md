@@ -22,7 +22,7 @@ Hermes supports multiple AI inference providers out of the box. Use `hermes mode
 
 ## Web Search Backends
 
-The `web_search`, `web_extract`, and `web_crawl` tools support four backend providers, configured via `config.yaml` or `hermes tools`:
+The `web_search` and `web_extract` tools support four backend providers, configured via `config.yaml` or `hermes tools`:
 
 | Backend | Env Var | Search | Extract | Crawl |
 |---------|---------|--------|---------|-------|
@@ -56,13 +56,14 @@ See [Browser Automation](/docs/user-guide/features/browser) for setup and usage.
 Text-to-speech and speech-to-text across all messaging platforms:
 
 | Provider | Quality | Cost | API Key |
-|----------|---------|------|---------|
-| **Edge TTS** (default) | Good | Free | None needed |
-| **ElevenLabs** | Excellent | Paid | `ELEVENLABS_API_KEY` |
-| **OpenAI TTS** | Good | Paid | `VOICE_TOOLS_OPENAI_KEY` |
-| **NeuTTS** | Good | Free | None needed |
+||----------|---------|------|---------|
+|| **Edge TTS** (default) | Good | Free | None needed |
+|| **ElevenLabs** | Excellent | Paid | `ELEVENLABS_API_KEY` |
+|| **OpenAI TTS** | Good | Paid | `VOICE_TOOLS_OPENAI_KEY` |
+|| **MiniMax** | Good | Paid | `MINIMAX_API_KEY` |
+|| **NeuTTS** | Good | Free | None needed |
 
-Speech-to-text uses Whisper for voice message transcription on Telegram, Discord, and WhatsApp. See [Voice & TTS](/docs/user-guide/features/tts) and [Voice Mode](/docs/user-guide/features/voice-mode) for details.
+Speech-to-text supports three providers: local Whisper (free, runs on-device), Groq (fast cloud), and OpenAI Whisper API. Voice message transcription works across Telegram, Discord, WhatsApp, and other messaging platforms. See [Voice & TTS](/docs/user-guide/features/tts) and [Voice Mode](/docs/user-guide/features/voice-mode) for details.
 
 ## IDE & Editor Integration
 
@@ -74,9 +75,27 @@ Speech-to-text uses Whisper for voice message transcription on Telegram, Discord
 
 ## Memory & Personalization
 
-- **[Honcho Memory](/docs/user-guide/features/honcho)** — AI-native persistent memory for cross-session user modeling and personalization. Honcho adds deep user modeling via dialectic reasoning on top of Hermes's built-in memory system.
+- **[Built-in Memory](/docs/user-guide/features/memory)** — Persistent, curated memory via `MEMORY.md` and `USER.md` files. The agent maintains bounded stores of personal notes and user profile data that survive across sessions.
+- **[Memory Providers](/docs/user-guide/features/memory-providers)** — Plug in external memory backends for deeper personalization. Seven providers are supported: Honcho (dialectic reasoning), OpenViking (tiered retrieval), Mem0 (cloud extraction), Hindsight (knowledge graphs), Holographic (local SQLite), RetainDB (hybrid search), and ByteRover (CLI-based).
+
+## Messaging Platforms
+
+Hermes runs as a gateway bot on 14+ messaging platforms, all configured through the same `gateway` subsystem:
+
+- **[Telegram](/docs/user-guide/messaging/telegram)**, **[Discord](/docs/user-guide/messaging/discord)**, **[Slack](/docs/user-guide/messaging/slack)**, **[WhatsApp](/docs/user-guide/messaging/whatsapp)**, **[Signal](/docs/user-guide/messaging/signal)**, **[Matrix](/docs/user-guide/messaging/matrix)**, **[Mattermost](/docs/user-guide/messaging/mattermost)**, **[Email](/docs/user-guide/messaging/email)**, **[SMS](/docs/user-guide/messaging/sms)**, **[DingTalk](/docs/user-guide/messaging/dingtalk)**, **[Feishu/Lark](/docs/user-guide/messaging/feishu)**, **[WeCom](/docs/user-guide/messaging/wecom)**, **[Home Assistant](/docs/user-guide/messaging/homeassistant)**, **[Webhooks](/docs/user-guide/messaging/webhooks)**
+
+See the [Messaging Gateway overview](/docs/user-guide/messaging) for the platform comparison table and setup guide.
+
+## Home Automation
+
+- **[Home Assistant](/docs/user-guide/messaging/homeassistant)** — Control smart home devices via four dedicated tools (`ha_list_entities`, `ha_get_state`, `ha_list_services`, `ha_call_service`). The Home Assistant toolset activates automatically when `HASS_TOKEN` is configured.
+
+## Plugins
+
+- **[Plugin System](/docs/user-guide/features/plugins)** — Extend Hermes with custom tools, lifecycle hooks, and CLI commands without modifying core code. Plugins are discovered from `~/.hermes/plugins/`, project-local `.hermes/plugins/`, and pip-installed entry points.
+- **[Build a Plugin](/docs/guides/build-a-hermes-plugin)** — Step-by-step guide for creating Hermes plugins with tools, hooks, and CLI commands.
 
 ## Training & Evaluation
 
-- **[RL Training](/docs/user-guide/features/rl-training)** — Generate trajectory data from agent sessions for reinforcement learning and model fine-tuning.
+- **[RL Training](/docs/user-guide/features/rl-training)** — Generate trajectory data from agent sessions for reinforcement learning and model fine-tuning. Supports Atropos environments with customizable reward functions.
 - **[Batch Processing](/docs/user-guide/features/batch-processing)** — Run the agent across hundreds of prompts in parallel, generating structured ShareGPT-format trajectory data for training data generation or evaluation.

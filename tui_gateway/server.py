@@ -397,6 +397,40 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 5011, str(e))
 
 
+@method("session.branch")
+def _(rid, params: dict) -> dict:
+    session, err = _sess(params, rid)
+    if err:
+        return err
+    db = _get_db()
+    old_key = session["session_key"]
+    history = session.get("history", [])
+    if not history:
+        return _err(rid, 4008, "nothing to branch — send a message first")
+    new_key = f"tui-{uuid.uuid4().hex[:8]}"
+    branch_name = params.get("name", "")
+    try:
+        if branch_name:
+            title = branch_name
+        else:
+            current = db.get_session_title(old_key) or "branch"
+            title = db.get_next_title_in_lineage(current) if hasattr(db, "get_next_title_in_lineage") else f"{current} (branch)"
+        db.create_session(new_key, source="tui", model=_resolve_model(), parent_session_id=old_key)
+        for msg in history:
+            db.append_message(session_id=new_key, role=msg.get("role", "user"), content=msg.get("content"))
+        db.set_session_title(new_key, title)
+    except Exception as e:
+        return _err(rid, 5008, f"branch failed: {e}")
+    new_sid = uuid.uuid4().hex[:8]
+    os.environ["HERMES_SESSION_KEY"] = new_key
+    try:
+        agent = _make_agent(new_sid, new_key, session_id=new_key)
+        _init_session(new_sid, new_key, agent, list(history), cols=session.get("cols", 80))
+    except Exception as e:
+        return _err(rid, 5000, f"agent init failed on branch: {e}")
+    return _ok(rid, {"session_id": new_sid, "title": title, "parent": old_key})
+
+
 @method("session.interrupt")
 def _(rid, params: dict) -> dict:
     session, err = _sess(params, rid)
@@ -776,9 +810,21 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 5012, str(e))
 
 
+def _resolve_name(name: str) -> str:
+    try:
+        from hermes_cli.commands import resolve_command
+        r = resolve_command(name)
+        return r.name if r else name
+    except Exception:
+        return name
+
+
 @method("command.dispatch")
 def _(rid, params: dict) -> dict:
     name, arg = params.get("name", "").lstrip("/"), params.get("arg", "")
+    resolved = _resolve_name(name)
+    if resolved != name:
+        name = resolved
     session = _sessions.get(params.get("session_id", ""))
 
     qcmds = _load_cfg().get("quick_commands", {})

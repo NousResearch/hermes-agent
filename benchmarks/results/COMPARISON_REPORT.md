@@ -82,8 +82,8 @@ All values are accuracy percentages (seed=42). `sk` = capability-skipped (fair),
 | **E** | scale | 8 | **100** | **100** | **100** | **100**~ | **100** |
 | **F** | integration | 11 | sk | sk | sk | sk | sk |
 | **G** | qlearning | var | sk | sk | sk | sk | sk |
-| **H** | dedup (only) | 8 | **100** | 87.5 | **87.5** | 87.5~ | -- |
-| **I** | conv+stress | 15 | **86.7** | 80.0 | 73.3 | --~ | -- |
+| **H** | dedup (only) | 8 | **100** | 87.5 | **87.5** | 87.5~ | 62.5 |
+| **I** | conv+stress | 15 | **86.7** | 80.0 | 73.3 | --~ | 66.7 |
 | **J** | topic_shift | 8 | **100** | **100** | **100** | **100**~ | **100** |
 | **K** | compress_survival | 8 | **100** | **100** | 75.0 | **100**~ | **100** |
 | **L** | delegation | 8 | **75.0** | 62.5 | 50.0 | **75.0**~ | **75.0** |
@@ -110,10 +110,8 @@ These suites have no required capabilities and all tested backends can run them.
 | 1 | **baseline-flat** | **90.4%** | reference | Word overlap -- surprisingly strong |
 | 2 | honcho | 87.6%~ | local Docker | Degraded: no semantic search~ |
 | 3 | holographic | 86.2% | local | Existing plugin |
-| 4 | hindsight | 84.6%* | local | *J/K/L only; H/I not yet run |
+| 4 | hindsight | 84.6% | local | Embeddings only, no LLM extraction |
 | 5 | mem0 | 82.2% | cloud | After reset fix (+8.6% vs broken reset) |
-
-*Hindsight aggregate uses all 8 comparable suites where data is available.
 
 ### Observations
 

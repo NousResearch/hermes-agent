@@ -14,8 +14,12 @@ from agent.auxiliary_client import (
     resolve_vision_provider_client,
     resolve_provider_client,
     auxiliary_max_tokens_param,
+    call_llm,
     _read_codex_access_token,
     _get_auxiliary_provider,
+    _get_provider_chain,
+    _is_payment_error,
+    _try_payment_fallback,
     _resolve_forced_provider,
     _resolve_auto,
 )
@@ -1106,3 +1110,183 @@ class TestAuxiliaryMaxTokensParam:
              patch("agent.auxiliary_client._read_codex_access_token", return_value=None):
             result = auxiliary_max_tokens_param(1024)
         assert result == {"max_tokens": 1024}
+
+
+# ── Payment / credit exhaustion fallback ─────────────────────────────────
+
+
+class TestIsPaymentError:
+    """_is_payment_error detects 402 and credit-related errors."""
+
+    def test_402_status_code(self):
+        exc = Exception("Payment Required")
+        exc.status_code = 402
+        assert _is_payment_error(exc) is True
+
+    def test_402_with_credits_message(self):
+        exc = Exception("You requested up to 65535 tokens, but can only afford 8029")
+        exc.status_code = 402
+        assert _is_payment_error(exc) is True
+
+    def test_429_with_credits_message(self):
+        exc = Exception("insufficient credits remaining")
+        exc.status_code = 429
+        assert _is_payment_error(exc) is True
+
+    def test_429_without_credits_message_is_not_payment(self):
+        """Normal rate limits should NOT be treated as payment errors."""
+        exc = Exception("Rate limit exceeded, try again in 2 seconds")
+        exc.status_code = 429
+        assert _is_payment_error(exc) is False
+
+    def test_generic_500_is_not_payment(self):
+        exc = Exception("Internal server error")
+        exc.status_code = 500
+        assert _is_payment_error(exc) is False
+
+    def test_no_status_code_with_billing_message(self):
+        exc = Exception("billing: payment required for this request")
+        assert _is_payment_error(exc) is True
+
+    def test_no_status_code_no_message(self):
+        exc = Exception("connection reset")
+        assert _is_payment_error(exc) is False
+
+
+class TestGetProviderChain:
+    """_get_provider_chain() resolves functions at call time (testable)."""
+
+    def test_returns_five_entries(self):
+        chain = _get_provider_chain()
+        assert len(chain) == 5
+        labels = [label for label, _ in chain]
+        assert labels == ["openrouter", "nous", "local/custom", "openai-codex", "api-key"]
+
+    def test_picks_up_patched_functions(self):
+        """Patches on _try_* functions must be visible in the chain."""
+        sentinel = lambda: ("patched", "model")
+        with patch("agent.auxiliary_client._try_openrouter", sentinel):
+            chain = _get_provider_chain()
+        assert chain[0] == ("openrouter", sentinel)
+
+
+class TestTryPaymentFallback:
+    """_try_payment_fallback skips the failed provider and tries alternatives."""
+
+    def test_skips_failed_provider(self):
+        mock_client = MagicMock()
+        with patch("agent.auxiliary_client._try_openrouter", return_value=(None, None)), \
+             patch("agent.auxiliary_client._try_nous", return_value=(mock_client, "nous-model")), \
+             patch("agent.auxiliary_client._read_main_provider", return_value="openrouter"):
+            client, model, label = _try_payment_fallback("openrouter", task="compression")
+        assert client is mock_client
+        assert model == "nous-model"
+        assert label == "nous"
+
+    def test_returns_none_when_no_fallback(self):
+        with patch("agent.auxiliary_client._try_openrouter", return_value=(None, None)), \
+             patch("agent.auxiliary_client._try_nous", return_value=(None, None)), \
+             patch("agent.auxiliary_client._try_custom_endpoint", return_value=(None, None)), \
+             patch("agent.auxiliary_client._try_codex", return_value=(None, None)), \
+             patch("agent.auxiliary_client._resolve_api_key_provider", return_value=(None, None)), \
+             patch("agent.auxiliary_client._read_main_provider", return_value="openrouter"):
+            client, model, label = _try_payment_fallback("openrouter")
+        assert client is None
+        assert label == ""
+
+    def test_codex_alias_maps_to_chain_label(self):
+        """'codex' should map to 'openai-codex' in the skip set."""
+        mock_client = MagicMock()
+        with patch("agent.auxiliary_client._try_openrouter", return_value=(mock_client, "or-model")), \
+             patch("agent.auxiliary_client._try_codex", return_value=(None, None)), \
+             patch("agent.auxiliary_client._read_main_provider", return_value="openai-codex"):
+            client, model, label = _try_payment_fallback("openai-codex", task="vision")
+        assert client is mock_client
+        assert label == "openrouter"
+
+    def test_skips_to_codex_when_or_and_nous_fail(self):
+        mock_codex = MagicMock()
+        with patch("agent.auxiliary_client._try_openrouter", return_value=(None, None)), \
+             patch("agent.auxiliary_client._try_nous", return_value=(None, None)), \
+             patch("agent.auxiliary_client._try_custom_endpoint", return_value=(None, None)), \
+             patch("agent.auxiliary_client._try_codex", return_value=(mock_codex, "gpt-5.2-codex")), \
+             patch("agent.auxiliary_client._read_main_provider", return_value="openrouter"):
+            client, model, label = _try_payment_fallback("openrouter")
+        assert client is mock_codex
+        assert model == "gpt-5.2-codex"
+        assert label == "openai-codex"
+
+
+class TestCallLlmPaymentFallback:
+    """call_llm() retries with a different provider on 402 / payment errors."""
+
+    def _make_402_error(self, msg="Payment Required: insufficient credits"):
+        exc = Exception(msg)
+        exc.status_code = 402
+        return exc
+
+    def test_402_triggers_fallback(self, monkeypatch):
+        """When the primary provider returns 402, call_llm tries the next one."""
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+
+        primary_client = MagicMock()
+        primary_client.chat.completions.create.side_effect = self._make_402_error()
+
+        fallback_client = MagicMock()
+        fallback_response = MagicMock()
+        fallback_client.chat.completions.create.return_value = fallback_response
+
+        with patch("agent.auxiliary_client._get_cached_client",
+                    return_value=(primary_client, "google/gemini-3-flash-preview")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                    return_value=("openrouter", "google/gemini-3-flash-preview", None, None)), \
+             patch("agent.auxiliary_client._try_payment_fallback",
+                    return_value=(fallback_client, "gpt-5.2-codex", "openai-codex")) as mock_fb:
+            result = call_llm(
+                task="compression",
+                messages=[{"role": "user", "content": "hello"}],
+            )
+
+        assert result is fallback_response
+        mock_fb.assert_called_once_with("openrouter", "compression")
+        # Fallback call should use the fallback model
+        fb_kwargs = fallback_client.chat.completions.create.call_args.kwargs
+        assert fb_kwargs["model"] == "gpt-5.2-codex"
+
+    def test_non_payment_error_not_caught(self, monkeypatch):
+        """Non-payment errors (500, connection, etc.) should NOT trigger fallback."""
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+
+        primary_client = MagicMock()
+        server_err = Exception("Internal Server Error")
+        server_err.status_code = 500
+        primary_client.chat.completions.create.side_effect = server_err
+
+        with patch("agent.auxiliary_client._get_cached_client",
+                    return_value=(primary_client, "google/gemini-3-flash-preview")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                    return_value=("openrouter", "google/gemini-3-flash-preview", None, None)):
+            with pytest.raises(Exception, match="Internal Server Error"):
+                call_llm(
+                    task="compression",
+                    messages=[{"role": "user", "content": "hello"}],
+                )
+
+    def test_402_with_no_fallback_reraises(self, monkeypatch):
+        """When 402 hits and no fallback is available, the original error propagates."""
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+
+        primary_client = MagicMock()
+        primary_client.chat.completions.create.side_effect = self._make_402_error()
+
+        with patch("agent.auxiliary_client._get_cached_client",
+                    return_value=(primary_client, "google/gemini-3-flash-preview")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                    return_value=("openrouter", "google/gemini-3-flash-preview", None, None)), \
+             patch("agent.auxiliary_client._try_payment_fallback",
+                    return_value=(None, None, "")):
+            with pytest.raises(Exception, match="insufficient credits"):
+                call_llm(
+                    task="compression",
+                    messages=[{"role": "user", "content": "hello"}],
+                )

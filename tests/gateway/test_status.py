@@ -2,6 +2,8 @@
 
 import json
 import os
+import threading
+import time
 
 from gateway import status
 
@@ -102,6 +104,58 @@ class TestGatewayRuntimeStatus:
         assert payload["platforms"]["telegram"]["state"] == "fatal"
         assert payload["platforms"]["telegram"]["error_code"] == "telegram_polling_conflict"
         assert payload["platforms"]["telegram"]["error_message"] == "another poller is active"
+
+    def test_write_runtime_status_preserves_concurrent_platform_updates(self, tmp_path, monkeypatch):
+        """Concurrent platform updates must merge instead of clobbering each other."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        state_path = tmp_path / "gateway_state.json"
+        status.write_runtime_status(gateway_state="starting")
+
+        original_write = status._write_json_file
+        write_call_count = {"value": 0}
+        discord_done = threading.Event()
+        discord_errors = []
+        spawned_threads = []
+
+        def update_discord():
+            try:
+                status.write_runtime_status(platform="discord", platform_state="connected")
+            except Exception as exc:  # pragma: no cover - surfaced via assertion below
+                discord_errors.append(exc)
+            finally:
+                discord_done.set()
+
+        def blocking_write(path, payload):
+            write_call_count["value"] += 1
+            is_first_platform_write = path == state_path and write_call_count["value"] == 1
+            if is_first_platform_write:
+                discord_thread = threading.Thread(target=update_discord)
+                spawned_threads.append(discord_thread)
+                discord_thread.start()
+                time.sleep(0.2)
+                original_write(path, payload)
+                return
+            original_write(path, payload)
+
+        monkeypatch.setattr(status, "_write_json_file", blocking_write)
+
+        def update_telegram():
+            status.write_runtime_status(platform="telegram", platform_state="connected")
+
+        t1 = threading.Thread(target=update_telegram)
+        t1.start()
+        t1.join(timeout=2)
+        assert not t1.is_alive()
+        assert spawned_threads, "discord update thread was never started"
+        spawned_threads[0].join(timeout=2)
+        assert not spawned_threads[0].is_alive()
+        assert discord_done.wait(timeout=2), "discord update never completed"
+        assert not discord_errors
+
+        payload = status.read_runtime_status()
+        assert payload["platforms"]["telegram"]["state"] == "connected"
+        assert payload["platforms"]["discord"]["state"] == "connected"
 
 
 class TestScopedLocks:

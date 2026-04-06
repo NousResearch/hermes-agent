@@ -15,14 +15,17 @@ import hashlib
 import json
 import os
 import sys
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from hermes_constants import get_hermes_home
 from typing import Any, Optional
+from utils import atomic_json_write
 
 _GATEWAY_KIND = "hermes-gateway"
 _RUNTIME_STATUS_FILE = "gateway_state.json"
 _LOCKS_DIRNAME = "gateway-locks"
+_RUNTIME_STATUS_LOCK = threading.Lock()
 
 
 def _get_pid_path() -> Path:
@@ -138,7 +141,7 @@ def _read_json_file(path: Path) -> Optional[dict[str, Any]]:
     if not path.exists():
         return None
     try:
-        raw = path.read_text().strip()
+        raw = path.read_text(encoding="utf-8").strip()
     except OSError:
         return None
     if not raw:
@@ -151,8 +154,7 @@ def _read_json_file(path: Path) -> Optional[dict[str, Any]]:
 
 
 def _write_json_file(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload))
+    atomic_json_write(path, payload, indent=None, separators=(",", ":"))
 
 
 def _read_pid_record() -> Optional[dict]:
@@ -160,7 +162,7 @@ def _read_pid_record() -> Optional[dict]:
     if not pid_path.exists():
         return None
 
-    raw = pid_path.read_text().strip()
+    raw = pid_path.read_text(encoding="utf-8").strip()
     if not raw:
         return None
 
@@ -195,30 +197,31 @@ def write_runtime_status(
 ) -> None:
     """Persist gateway runtime health information for diagnostics/status."""
     path = _get_runtime_status_path()
-    payload = _read_json_file(path) or _build_runtime_status_record()
-    payload.setdefault("platforms", {})
-    payload.setdefault("kind", _GATEWAY_KIND)
-    payload["pid"] = os.getpid()
-    payload["start_time"] = _get_process_start_time(os.getpid())
-    payload["updated_at"] = _utc_now_iso()
+    with _RUNTIME_STATUS_LOCK:
+        payload = _read_json_file(path) or _build_runtime_status_record()
+        payload.setdefault("platforms", {})
+        payload.setdefault("kind", _GATEWAY_KIND)
+        payload["pid"] = os.getpid()
+        payload["start_time"] = _get_process_start_time(os.getpid())
+        payload["updated_at"] = _utc_now_iso()
 
-    if gateway_state is not None:
-        payload["gateway_state"] = gateway_state
-    if exit_reason is not None:
-        payload["exit_reason"] = exit_reason
+        if gateway_state is not None:
+            payload["gateway_state"] = gateway_state
+        if exit_reason is not None:
+            payload["exit_reason"] = exit_reason
 
-    if platform is not None:
-        platform_payload = payload["platforms"].get(platform, {})
-        if platform_state is not None:
-            platform_payload["state"] = platform_state
-        if error_code is not None:
-            platform_payload["error_code"] = error_code
-        if error_message is not None:
-            platform_payload["error_message"] = error_message
-        platform_payload["updated_at"] = _utc_now_iso()
-        payload["platforms"][platform] = platform_payload
+        if platform is not None:
+            platform_payload = payload["platforms"].get(platform, {})
+            if platform_state is not None:
+                platform_payload["state"] = platform_state
+            if error_code is not None:
+                platform_payload["error_code"] = error_code
+            if error_message is not None:
+                platform_payload["error_message"] = error_message
+            platform_payload["updated_at"] = _utc_now_iso()
+            payload["platforms"][platform] = platform_payload
 
-    _write_json_file(path, payload)
+        _write_json_file(path, payload)
 
 
 def read_runtime_status() -> Optional[dict[str, Any]]:

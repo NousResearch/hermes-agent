@@ -707,6 +707,15 @@ class AIAgent:
         # status_callback for gateway platforms.  Does NOT inject into messages.
         self._context_pressure_warned = False
 
+        # Activity tracking — updated on each API call, tool execution, and
+        # stream chunk.  Used by the gateway timeout handler to report what the
+        # agent was doing when it was killed, and by the "still working"
+        # notifications to show progress.
+        self._last_activity_ts: float = time.time()
+        self._last_activity_desc: str = "initializing"
+        self._current_tool: str | None = None
+        self._api_call_count: int = 0
+
         # Persistent error log -- always writes WARNING+ to ~/.hermes/logs/errors.log
         # so tool failures, API errors, etc. are inspectable after the fact.
         # In gateway mode, each incoming message creates a new AIAgent instance,
@@ -2617,6 +2626,29 @@ class AIAgent:
         self._interrupt_message = None
         _set_interrupt(False)
 
+    def _touch_activity(self, desc: str) -> None:
+        """Update the last-activity timestamp and description (thread-safe)."""
+        self._last_activity_ts = time.time()
+        self._last_activity_desc = desc
+
+    def get_activity_summary(self) -> dict:
+        """Return a snapshot of the agent's current activity for diagnostics.
+
+        Called by the gateway timeout handler to report what the agent was doing
+        when it was killed, and by the periodic "still working" notifications.
+        """
+        elapsed = time.time() - self._last_activity_ts
+        return {
+            "last_activity_ts": self._last_activity_ts,
+            "last_activity_desc": self._last_activity_desc,
+            "seconds_since_activity": round(elapsed, 1),
+            "current_tool": self._current_tool,
+            "api_call_count": self._api_call_count,
+            "max_iterations": self.max_iterations,
+            "budget_used": self.iteration_budget.used,
+            "budget_max": self.iteration_budget.max_total,
+        }
+
     def shutdown_memory_provider(self, messages: list = None) -> None:
         """Shut down the memory provider — call at actual session boundaries.
 
@@ -4354,6 +4386,7 @@ class AIAgent:
             # Reset stale-stream timer so the detector measures from this
             # attempt's start, not a previous attempt's last chunk.
             last_chunk_time["t"] = time.time()
+            self._touch_activity("waiting for provider response (streaming)")
             stream = request_client_holder["client"].chat.completions.create(**stream_kwargs)
 
             content_parts: list = []
@@ -4374,8 +4407,12 @@ class AIAgent:
             # knows whether reasoning was already displayed during streaming.
             self._reasoning_deltas_fired = False
 
+            _first_chunk_seen = False
             for chunk in stream:
                 last_chunk_time["t"] = time.time()
+                if not _first_chunk_seen:
+                    _first_chunk_seen = True
+                    self._touch_activity("receiving stream response")
 
                 if self._interrupt_requested:
                     break
@@ -4726,10 +4763,20 @@ class AIAgent:
             # Detect stale streams: connections kept alive by SSE pings
             # but delivering no real chunks.  Kill the client so the
             # inner retry loop can start a fresh connection.
-            if time.time() - last_chunk_time["t"] > _stream_stale_timeout:
+            _stale_elapsed = time.time() - last_chunk_time["t"]
+            if _stale_elapsed > _stream_stale_timeout:
+                _est_ctx = sum(len(str(v)) for v in api_kwargs.get("messages", [])) // 4
                 logger.warning(
-                    "Stream stale for %.0fs — no chunks received. Killing connection.",
-                    _stream_stale_timeout,
+                    "Stream stale for %.0fs (threshold %.0fs) — no chunks received. "
+                    "model=%s context=~%s tokens. Killing connection.",
+                    _stale_elapsed, _stream_stale_timeout,
+                    api_kwargs.get("model", "unknown"), f"{_est_ctx:,}",
+                )
+                self._emit_status(
+                    f"⚠️ No response from provider for {int(_stale_elapsed)}s "
+                    f"(model: {api_kwargs.get('model', 'unknown')}, "
+                    f"context: ~{_est_ctx:,} tokens). "
+                    f"Reconnecting..."
                 )
                 try:
                     rc = request_client_holder.get("client")
@@ -6153,6 +6200,9 @@ class AIAgent:
                     response_preview = function_result[:self.log_prefix_chars] + "..." if len(function_result) > self.log_prefix_chars else function_result
                     print(f"  ✅ Tool {i+1} completed in {tool_duration:.2f}s - {response_preview}")
 
+            self._current_tool = None
+            self._touch_activity(f"tool completed: {name} ({tool_duration:.1f}s)")
+
             if self.tool_complete_callback:
                 try:
                     self.tool_complete_callback(tc.id, name, args, function_result)
@@ -6237,6 +6287,9 @@ class AIAgent:
                 else:
                     args_preview = args_str[:self.log_prefix_chars] + "..." if len(args_str) > self.log_prefix_chars else args_str
                     print(f"  📞 Tool {i}: {function_name}({list(function_args.keys())}) - {args_preview}")
+
+            self._current_tool = function_name
+            self._touch_activity(f"executing tool: {function_name}")
 
             if self.tool_progress_callback:
                 try:
@@ -6436,6 +6489,9 @@ class AIAgent:
                     )
                 except Exception as cb_err:
                     logging.debug(f"Tool progress callback error: {cb_err}")
+
+            self._current_tool = None
+            self._touch_activity(f"tool completed: {function_name} ({tool_duration:.1f}s)")
 
             if self.verbose_logging:
                 logging.debug(f"Tool {function_name} completed in {tool_duration:.2f}s")
@@ -7033,6 +7089,8 @@ class AIAgent:
                 break
             
             api_call_count += 1
+            self._api_call_count = api_call_count
+            self._touch_activity(f"starting API call #{api_call_count}")
             if not self.iteration_budget.consume():
                 if not self.quiet_mode:
                     self._safe_print(f"\n⚠️  Iteration budget exhausted ({self.iteration_budget.used}/{self.iteration_budget.max_total} iterations used)")
@@ -7634,6 +7692,7 @@ class AIAgent:
                                 self._vprint(f"{self.log_prefix}   💾 Cache: {cached:,}/{prompt:,} tokens ({hit_pct:.0f}% hit, {written:,} written)")
                     
                     has_retried_429 = False  # Reset on success
+                    self._touch_activity(f"API call #{api_call_count} completed")
                     break  # Success, exit retry loop
 
                 except InterruptedError:
@@ -8008,7 +8067,7 @@ class AIAgent:
                                 "error": f"Context length exceeded: max compression attempts ({max_compression_attempts}) reached.",
                                 "partial": True
                             }
-                        self._vprint(f"{self.log_prefix}   🗜️  Context compression attempt {compression_attempts}/{max_compression_attempts}...")
+                        self._emit_status(f"🗜️ Context too large (~{approx_tokens:,} tokens) — compressing ({compression_attempts}/{max_compression_attempts})...")
 
                         original_len = len(messages)
                         messages, active_system_prompt = self._compress_context(
@@ -8076,6 +8135,10 @@ class AIAgent:
                         self._dump_api_request_debug(
                             api_kwargs, reason="non_retryable_client_error", error=api_error,
                         )
+                        self._emit_status(
+                            f"❌ Non-retryable error (HTTP {status_code}): "
+                            f"{self._summarize_api_error(api_error)}"
+                        )
                         self._vprint(f"{self.log_prefix}❌ Non-retryable client error (HTTP {status_code}). Aborting.", force=True)
                         self._vprint(f"{self.log_prefix}   🔌 Provider: {_provider}  Model: {_model}", force=True)
                         self._vprint(f"{self.log_prefix}   🌐 Endpoint: {_base}", force=True)
@@ -8129,9 +8192,9 @@ class AIAgent:
                             continue
                         _final_summary = self._summarize_api_error(api_error)
                         if is_rate_limited:
-                            self._vprint(f"{self.log_prefix}❌ Rate limit persisted after {max_retries} retries. Please try again later.", force=True)
+                            self._emit_status(f"❌ Rate limited after {max_retries} retries — {_final_summary}")
                         else:
-                            self._vprint(f"{self.log_prefix}❌ Max retries ({max_retries}) exceeded. Giving up.", force=True)
+                            self._emit_status(f"❌ API failed after {max_retries} retries — {_final_summary}")
                         self._vprint(f"{self.log_prefix}   💀 Final error: {_final_summary}", force=True)
 
                         # Detect SSE stream-drop pattern (e.g. "Network

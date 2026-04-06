@@ -1807,9 +1807,22 @@ class GatewayRunner:
         _STALE_TTL = (_raw_stale_timeout + 60) if _raw_stale_timeout > 0 else float("inf")
         _stale_ts = self._running_agents_ts.get(_quick_key, 0)
         if _quick_key in self._running_agents and _stale_ts and (time.time() - _stale_ts) > _STALE_TTL:
+            _stale_age = time.time() - _stale_ts
+            _stale_agent = self._running_agents.get(_quick_key)
+            _stale_detail = ""
+            if _stale_agent and hasattr(_stale_agent, "get_activity_summary"):
+                try:
+                    _sa = _stale_agent.get_activity_summary()
+                    _stale_detail = (
+                        f" | last_activity={_sa.get('last_activity_desc', 'unknown')} "
+                        f"({_sa.get('seconds_since_activity', 0):.0f}s ago) "
+                        f"| iteration={_sa.get('api_call_count', 0)}/{_sa.get('max_iterations', 0)}"
+                    )
+                except Exception:
+                    pass
             logger.warning(
-                "Evicting stale _running_agents entry for %s (age: %.0fs)",
-                _quick_key[:30], time.time() - _stale_ts,
+                "Evicting stale _running_agents entry for %s (age: %.0fs, TTL: %.0fs)%s",
+                _quick_key[:30], _stale_age, _STALE_TTL, _stale_detail,
             )
             del self._running_agents[_quick_key]
             self._running_agents_ts.pop(_quick_key, None)
@@ -6727,10 +6740,24 @@ class GatewayRunner:
             while True:
                 await asyncio.sleep(_NOTIFY_INTERVAL)
                 _elapsed_mins = int((time.time() - _notify_start) // 60)
+                # Include agent activity context if available.
+                _agent_ref = agent_holder[0]
+                _status_detail = ""
+                if _agent_ref and hasattr(_agent_ref, "get_activity_summary"):
+                    try:
+                        _a = _agent_ref.get_activity_summary()
+                        _parts = [f"iteration {_a['api_call_count']}/{_a['max_iterations']}"]
+                        if _a.get("current_tool"):
+                            _parts.append(f"running: {_a['current_tool']}")
+                        else:
+                            _parts.append(_a.get("last_activity_desc", ""))
+                        _status_detail = " — " + ", ".join(_parts)
+                    except Exception:
+                        pass
                 try:
                     await _notify_adapter.send(
                         source.chat_id,
-                        f"⏳ Still working... ({_elapsed_mins} minutes elapsed)",
+                        f"⏳ Still working... ({_elapsed_mins} min elapsed{_status_detail})",
                         metadata=_status_thread_metadata,
                     )
                 except Exception as _ne:
@@ -6752,26 +6779,66 @@ class GatewayRunner:
                     timeout=_agent_timeout,
                 )
             except asyncio.TimeoutError:
+                # Build a diagnostic summary from the agent's activity tracker.
+                _timed_out_agent = agent_holder[0]
+                _activity = {}
+                if _timed_out_agent and hasattr(_timed_out_agent, "get_activity_summary"):
+                    try:
+                        _activity = _timed_out_agent.get_activity_summary()
+                    except Exception:
+                        pass
+
+                _last_desc = _activity.get("last_activity_desc", "unknown")
+                _secs_ago = _activity.get("seconds_since_activity", 0)
+                _cur_tool = _activity.get("current_tool")
+                _iter_n = _activity.get("api_call_count", 0)
+                _iter_max = _activity.get("max_iterations", 0)
+
                 logger.error(
-                    "Agent execution timed out after %.0fs for session %s",
+                    "Agent execution timed out after %.0fs for session %s "
+                    "| last_activity=%.0fs ago (%s) | iteration=%s/%s | tool=%s",
                     _agent_timeout, session_key,
+                    _secs_ago, _last_desc, _iter_n, _iter_max,
+                    _cur_tool or "none",
                 )
+
                 # Interrupt the agent if it's still running so the thread
                 # pool worker is freed.
-                _timed_out_agent = agent_holder[0]
                 if _timed_out_agent and hasattr(_timed_out_agent, "interrupt"):
                     _timed_out_agent.interrupt("Execution timed out")
+
                 _timeout_mins = int(_agent_timeout // 60)
+
+                # Construct a user-facing message with diagnostic context.
+                _diag_lines = [f"⏱️ Request timed out after {_timeout_mins} minutes."]
+                if _secs_ago < 30:
+                    _diag_lines.append(
+                        f"The agent was actively working when the timeout fired "
+                        f"(last activity: {_last_desc}, {_secs_ago:.0f}s ago, "
+                        f"iteration {_iter_n}/{_iter_max})."
+                    )
+                elif _cur_tool:
+                    _diag_lines.append(
+                        f"The agent appears stuck on tool `{_cur_tool}` "
+                        f"({_secs_ago:.0f}s since last activity, "
+                        f"iteration {_iter_n}/{_iter_max})."
+                    )
+                else:
+                    _diag_lines.append(
+                        f"Last activity: {_last_desc} ({_secs_ago:.0f}s ago, "
+                        f"iteration {_iter_n}/{_iter_max}). "
+                        "The agent may have been waiting on an API response."
+                    )
+                _diag_lines.append(
+                    "To increase the limit, set HERMES_AGENT_TIMEOUT in your .env "
+                    "(value in seconds, 0 = no limit) and restart the gateway.\n"
+                    "Try again, or use /reset to start fresh."
+                )
+
                 response = {
-                    "final_response": (
-                        f"⏱️ Request timed out after {_timeout_mins} minutes. "
-                        "The agent may have been stuck on a tool or API call.\n"
-                        "To increase the limit, set HERMES_AGENT_TIMEOUT in your .env "
-                        "(value in seconds, 0 = no limit) and restart the gateway.\n"
-                        "Try again, or use /reset to start fresh."
-                    ),
+                    "final_response": "\n".join(_diag_lines),
                     "messages": result_holder[0].get("messages", []) if result_holder[0] else [],
-                    "api_calls": 0,
+                    "api_calls": _iter_n,
                     "tools": tools_holder[0] or [],
                     "history_offset": 0,
                     "failed": True,

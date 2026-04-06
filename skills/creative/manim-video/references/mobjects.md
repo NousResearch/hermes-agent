@@ -104,3 +104,161 @@ class NetworkNode(Group):
 Directions: `UP, DOWN, LEFT, RIGHT, ORIGIN, UL, UR, DL, DR`
 Colors: `RED, BLUE, GREEN, YELLOW, WHITE, GRAY, ORANGE, PINK, PURPLE, TEAL, GOLD`
 Frame: `config.frame_width = 14.222, config.frame_height = 8.0`
+
+## SVGMobject — Import SVG Files
+
+```python
+logo = SVGMobject("path/to/logo.svg")
+logo.set_color(WHITE).scale(0.5).to_corner(UR)
+self.play(FadeIn(logo))
+
+# SVG submobjects are individually animatable
+for part in logo.submobjects:
+    self.play(part.animate.set_color(random_color()))
+```
+
+## ImageMobject — Display Images
+
+```python
+img = ImageMobject("screenshot.png")
+img.set_height(3).to_edge(RIGHT)
+self.play(FadeIn(img))
+```
+
+Note: images cannot be animated with `.animate` (they're raster, not vector). Use `FadeIn`/`FadeOut` and `shift`/`scale` only.
+
+## Variable — Auto-Updating Display
+
+```python
+var = Variable(0, Text("x"), num_decimal_places=2)
+var.move_to(ORIGIN)
+self.add(var)
+
+# Animate the value
+self.play(var.tracker.animate.set_value(5), run_time=2)
+# Display auto-updates: "x = 5.00"
+```
+
+Cleaner than manual `DecimalNumber` + `add_updater` for simple labeled-value displays.
+
+## BulletedList
+
+```python
+bullets = BulletedList(
+    "First key point",
+    "Second important fact",
+    "Third conclusion",
+    font_size=28
+)
+bullets.to_edge(LEFT, buff=1.0)
+self.play(Write(bullets))
+
+# Highlight individual items
+self.play(bullets[1].animate.set_color(YELLOW))
+```
+
+## DashedLine and Angle Markers
+
+```python
+# Dashed line (asymptotes, construction lines)
+dashed = DashedLine(LEFT * 3, RIGHT * 3, color=SUBTLE, dash_length=0.15)
+
+# Angle marker between two lines
+line1 = Line(ORIGIN, RIGHT * 2)
+line2 = Line(ORIGIN, UP * 2 + RIGHT)
+angle = Angle(line1, line2, radius=0.5, color=YELLOW)
+angle_label = angle.get_value()  # returns the angle in radians
+
+# Right angle marker
+right_angle = RightAngle(line1, Line(ORIGIN, UP * 2), length=0.3, color=WHITE)
+```
+
+## Boolean Operations (CSG)
+
+Combine, subtract, or intersect 2D shapes:
+
+```python
+circle = Circle(radius=1.5, color=BLUE, fill_opacity=0.5).shift(LEFT * 0.5)
+square = Square(side_length=2, color=RED, fill_opacity=0.5).shift(RIGHT * 0.5)
+
+# Union, Intersection, Difference, Exclusion
+union = Union(circle, square, color=GREEN, fill_opacity=0.5)
+intersect = Intersection(circle, square, color=YELLOW, fill_opacity=0.5)
+diff = Difference(circle, square, color=PURPLE, fill_opacity=0.5)
+exclude = Exclusion(circle, square, color=ORANGE, fill_opacity=0.5)
+```
+
+Use cases: Venn diagrams, set theory, geometric proofs, area calculations.
+
+## LabeledArrow / LabeledLine
+
+```python
+# Arrow with built-in label (auto-positioned)
+arr = LabeledArrow(Text("force", font_size=18), start=LEFT, end=RIGHT, color=RED)
+
+# Line with label
+line = LabeledLine(Text("d = 5m", font_size=18), start=LEFT * 2, end=RIGHT * 2)
+```
+
+Auto-handles label positioning — cleaner than manual `Arrow` + `Text().next_to()`.
+
+## Text Color/Font/Style Per-Substring (t2c, t2f, t2s, t2w)
+
+```python
+# Color specific words (t2c = text-to-color)
+text = Text(
+    "Gradient descent minimizes the loss function",
+    t2c={"Gradient descent": BLUE, "loss function": RED}
+)
+
+# Different fonts per word (t2f = text-to-font)
+text = Text(
+    "Use Menlo for code and Inter for prose",
+    t2f={"Menlo": "Menlo", "Inter": "Inter"}
+)
+
+# Italic/slant per word (t2s = text-to-slant)
+text = Text("Normal and italic text", t2s={"italic": ITALIC})
+
+# Bold per word (t2w = text-to-weight)
+text = Text("Normal and bold text", t2w={"bold": BOLD})
+```
+
+These are much cleaner than creating separate Text objects and grouping them.
+
+## Backstroke for Readability Over Backgrounds
+
+When text overlaps other content (graphs, diagrams, images), add a dark stroke behind it:
+
+```python
+# CE syntax:
+label.set_stroke(BLACK, width=5, background=True)
+
+# Apply to a group
+for mob in labels:
+    mob.set_stroke(BLACK, width=4, background=True)
+```
+
+This is how 3Blue1Brown keeps text readable over complex backgrounds without using BackgroundRectangle.
+
+## Complex Function Transforms
+
+Apply complex functions to entire mobjects — transforms the plane:
+
+```python
+c_grid = ComplexPlane()
+moving_grid = c_grid.copy()
+moving_grid.prepare_for_nonlinear_transform()  # adds more sample points for smooth deformation
+
+self.play(
+    moving_grid.animate.apply_complex_function(lambda z: z**2),
+    run_time=5,
+)
+
+# Also works with R3->R3 functions:
+self.play(grid.animate.apply_function(
+    lambda p: [p[0] + 0.5 * math.sin(p[1]), p[1] + 0.5 * math.sin(p[0]), p[2]]
+), run_time=5)
+```
+
+**Critical:** Call `prepare_for_nonlinear_transform()` before applying nonlinear functions — without it, the grid has too few sample points and the deformation looks jagged.

@@ -662,6 +662,7 @@ class TestGetServicePids:
     def test_returns_launchd_pid(self, monkeypatch):
         monkeypatch.setattr(gateway_cli, "is_linux", lambda: False)
         monkeypatch.setattr(gateway_cli, "is_macos", lambda: True)
+        monkeypatch.setattr(gateway_cli, "get_launchd_label", lambda: "ai.hermes.gateway")
 
         def fake_run(cmd, **kwargs):
             joined = " ".join(str(c) for c in cmd)

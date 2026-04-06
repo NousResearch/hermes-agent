@@ -43,7 +43,7 @@ def find_gateway_pids() -> list:
             # Windows: use wmic to search command lines
             result = subprocess.run(
                 ["wmic", "process", "get", "ProcessId,CommandLine", "/FORMAT:LIST"],
-                capture_output=True, text=True
+                capture_output=True, text=True, timeout=10
             )
             # Parse WMIC LIST output: blocks of "CommandLine=...\nProcessId=...\n"
             current_cmd = ""
@@ -65,7 +65,8 @@ def find_gateway_pids() -> list:
             result = subprocess.run(
                 ["ps", "aux"],
                 capture_output=True,
-                text=True
+                text=True,
+                timeout=10,
             )
             for line in result.stdout.split('\n'):
                 # Skip grep and current process
@@ -402,6 +403,7 @@ def get_systemd_linger_status() -> tuple[bool | None, str]:
             capture_output=True,
             text=True,
             check=False,
+            timeout=10,
         )
     except Exception as e:
         return None, str(e)
@@ -636,7 +638,7 @@ def refresh_systemd_unit_if_needed(system: bool = False) -> bool:
 
     expected_user = _read_systemd_user_from_unit(unit_path) if system else None
     unit_path.write_text(generate_systemd_unit(system=system, run_as_user=expected_user), encoding="utf-8")
-    subprocess.run(_systemctl_cmd(system) + ["daemon-reload"], check=True)
+    subprocess.run(_systemctl_cmd(system) + ["daemon-reload"], check=True, timeout=30)
     print(f"↻ Updated gateway {_service_scope_label(system)} service definition to match the current Hermes install")
     return True
 
@@ -687,6 +689,7 @@ def _ensure_linger_enabled() -> None:
             capture_output=True,
             text=True,
             check=False,
+            timeout=30,
         )
     except Exception as e:
         _print_linger_enable_warning(username, str(e))
@@ -717,7 +720,7 @@ def systemd_install(force: bool = False, system: bool = False, run_as_user: str 
         if not systemd_unit_is_current(system=system):
             print(f"↻ Repairing outdated {_service_scope_label(system)} systemd service at: {unit_path}")
             refresh_systemd_unit_if_needed(system=system)
-            subprocess.run(_systemctl_cmd(system) + ["enable", get_service_name()], check=True)
+            subprocess.run(_systemctl_cmd(system) + ["enable", get_service_name()], check=True, timeout=30)
             print(f"✓ {_service_scope_label(system).capitalize()} service definition updated")
             return
         print(f"Service already installed at: {unit_path}")
@@ -728,8 +731,8 @@ def systemd_install(force: bool = False, system: bool = False, run_as_user: str 
     print(f"Installing {_service_scope_label(system)} systemd service to: {unit_path}")
     unit_path.write_text(generate_systemd_unit(system=system, run_as_user=run_as_user), encoding="utf-8")
 
-    subprocess.run(_systemctl_cmd(system) + ["daemon-reload"], check=True)
-    subprocess.run(_systemctl_cmd(system) + ["enable", get_service_name()], check=True)
+    subprocess.run(_systemctl_cmd(system) + ["daemon-reload"], check=True, timeout=30)
+    subprocess.run(_systemctl_cmd(system) + ["enable", get_service_name()], check=True, timeout=30)
 
     print()
     print(f"✓ {_service_scope_label(system).capitalize()} service installed and enabled!")
@@ -755,15 +758,15 @@ def systemd_uninstall(system: bool = False):
     if system:
         _require_root_for_system_service("uninstall")
 
-    subprocess.run(_systemctl_cmd(system) + ["stop", get_service_name()], check=False)
-    subprocess.run(_systemctl_cmd(system) + ["disable", get_service_name()], check=False)
+    subprocess.run(_systemctl_cmd(system) + ["stop", get_service_name()], check=False, timeout=90)
+    subprocess.run(_systemctl_cmd(system) + ["disable", get_service_name()], check=False, timeout=30)
 
     unit_path = get_systemd_unit_path(system=system)
     if unit_path.exists():
         unit_path.unlink()
         print(f"✓ Removed {unit_path}")
 
-    subprocess.run(_systemctl_cmd(system) + ["daemon-reload"], check=True)
+    subprocess.run(_systemctl_cmd(system) + ["daemon-reload"], check=True, timeout=30)
     print(f"✓ {_service_scope_label(system).capitalize()} service uninstalled")
 
 
@@ -772,7 +775,7 @@ def systemd_start(system: bool = False):
     if system:
         _require_root_for_system_service("start")
     refresh_systemd_unit_if_needed(system=system)
-    subprocess.run(_systemctl_cmd(system) + ["start", get_service_name()], check=True)
+    subprocess.run(_systemctl_cmd(system) + ["start", get_service_name()], check=True, timeout=30)
     print(f"✓ {_service_scope_label(system).capitalize()} service started")
 
 
@@ -781,7 +784,7 @@ def systemd_stop(system: bool = False):
     system = _select_systemd_scope(system)
     if system:
         _require_root_for_system_service("stop")
-    subprocess.run(_systemctl_cmd(system) + ["stop", get_service_name()], check=True)
+    subprocess.run(_systemctl_cmd(system) + ["stop", get_service_name()], check=True, timeout=90)
     print(f"✓ {_service_scope_label(system).capitalize()} service stopped")
 
 
@@ -791,7 +794,7 @@ def systemd_restart(system: bool = False):
     if system:
         _require_root_for_system_service("restart")
     refresh_systemd_unit_if_needed(system=system)
-    subprocess.run(_systemctl_cmd(system) + ["restart", get_service_name()], check=True)
+    subprocess.run(_systemctl_cmd(system) + ["restart", get_service_name()], check=True, timeout=90)
     print(f"✓ {_service_scope_label(system).capitalize()} service restarted")
 
 
@@ -818,12 +821,14 @@ def systemd_status(deep: bool = False, system: bool = False):
     subprocess.run(
         _systemctl_cmd(system) + ["status", get_service_name(), "--no-pager"],
         capture_output=False,
+        timeout=10,
     )
 
     result = subprocess.run(
         _systemctl_cmd(system) + ["is-active", get_service_name()],
         capture_output=True,
         text=True,
+        timeout=10,
     )
 
     status = result.stdout.strip()
@@ -860,7 +865,7 @@ def systemd_status(deep: bool = False, system: bool = False):
     if deep:
         print()
         print("Recent logs:")
-        subprocess.run(_journalctl_cmd(system) + ["-u", get_service_name(), "-n", "20", "--no-pager"])
+        subprocess.run(_journalctl_cmd(system) + ["-u", get_service_name(), "-n", "20", "--no-pager"], timeout=10)
 
 
 # =============================================================================
@@ -979,8 +984,8 @@ def refresh_launchd_plist_if_needed() -> bool:
     plist_path.write_text(generate_launchd_plist(), encoding="utf-8")
     label = get_launchd_label()
     # Bootout/bootstrap so launchd picks up the new definition
-    subprocess.run(["launchctl", "bootout", f"{_launchd_domain()}/{label}"], check=False)
-    subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=False)
+    subprocess.run(["launchctl", "bootout", f"{_launchd_domain()}/{label}"], check=False, timeout=90)
+    subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=False, timeout=30)
     print("↻ Updated gateway launchd service definition to match the current Hermes install")
     return True
 
@@ -1002,7 +1007,7 @@ def launchd_install(force: bool = False):
     print(f"Installing launchd service to: {plist_path}")
     plist_path.write_text(generate_launchd_plist())
     
-    subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=True)
+    subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=True, timeout=30)
     
     print()
     print("✓ Service installed and loaded!")
@@ -1015,7 +1020,7 @@ def launchd_install(force: bool = False):
 def launchd_uninstall():
     plist_path = get_launchd_plist_path()
     label = get_launchd_label()
-    subprocess.run(["launchctl", "bootout", f"{_launchd_domain()}/{label}"], check=False)
+    subprocess.run(["launchctl", "bootout", f"{_launchd_domain()}/{label}"], check=False, timeout=90)
     
     if plist_path.exists():
         plist_path.unlink()
@@ -1032,25 +1037,25 @@ def launchd_start():
         print("↻ launchd plist missing; regenerating service definition")
         plist_path.parent.mkdir(parents=True, exist_ok=True)
         plist_path.write_text(generate_launchd_plist(), encoding="utf-8")
-        subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=True)
-        subprocess.run(["launchctl", "kickstart", f"{_launchd_domain()}/{label}"], check=True)
+        subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=True, timeout=30)
+        subprocess.run(["launchctl", "kickstart", f"{_launchd_domain()}/{label}"], check=True, timeout=30)
         print("✓ Service started")
         return
 
     refresh_launchd_plist_if_needed()
     try:
-        subprocess.run(["launchctl", "kickstart", f"{_launchd_domain()}/{label}"], check=True)
+        subprocess.run(["launchctl", "kickstart", f"{_launchd_domain()}/{label}"], check=True, timeout=30)
     except subprocess.CalledProcessError as e:
         if e.returncode != 3:
             raise
         print("↻ launchd job was unloaded; reloading service definition")
-        subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=True)
-        subprocess.run(["launchctl", "kickstart", f"{_launchd_domain()}/{label}"], check=True)
+        subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=True, timeout=30)
+        subprocess.run(["launchctl", "kickstart", f"{_launchd_domain()}/{label}"], check=True, timeout=30)
     print("✓ Service started")
 
 def launchd_stop():
     label = get_launchd_label()
-    subprocess.run(["launchctl", "kill", "SIGTERM", f"{_launchd_domain()}/{label}"], check=True)
+    subprocess.run(["launchctl", "kill", "SIGTERM", f"{_launchd_domain()}/{label}"], check=True, timeout=30)
     print("✓ Service stopped")
 
 def _wait_for_gateway_exit(timeout: float = 10.0, force_after: float = 5.0):
@@ -1100,7 +1105,7 @@ def launchd_restart():
     # A two-step stop/start from inside the gateway's own process tree
     # would kill the shell before the start command is reached.
     try:
-        subprocess.run(["launchctl", "kickstart", "-k", target], check=True)
+        subprocess.run(["launchctl", "kickstart", "-k", target], check=True, timeout=90)
         print("✓ Service restarted")
     except subprocess.CalledProcessError as e:
         if e.returncode != 3:
@@ -1108,18 +1113,25 @@ def launchd_restart():
         # Job not loaded — bootstrap and start fresh
         print("↻ launchd job was unloaded; reloading")
         plist_path = get_launchd_plist_path()
-        subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=True)
-        subprocess.run(["launchctl", "kickstart", target], check=True)
+        subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=True, timeout=30)
+        subprocess.run(["launchctl", "kickstart", target], check=True, timeout=30)
         print("✓ Service restarted")
 
 def launchd_status(deep: bool = False):
     plist_path = get_launchd_plist_path()
     label = get_launchd_label()
-    result = subprocess.run(
-        ["launchctl", "list", label],
-        capture_output=True,
-        text=True
-    )
+    try:
+        result = subprocess.run(
+            ["launchctl", "list", label],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        loaded = result.returncode == 0
+        loaded_output = result.stdout
+    except subprocess.TimeoutExpired:
+        loaded = False
+        loaded_output = ""
 
     print(f"Launchd plist: {plist_path}")
     if launchd_plist_is_current():
@@ -1127,10 +1139,10 @@ def launchd_status(deep: bool = False):
     else:
         print("⚠ Service definition is stale relative to the current Hermes install")
         print("  Run: hermes gateway start")
-    
-    if result.returncode == 0:
+
+    if loaded:
         print("✓ Gateway service is loaded")
-        print(result.stdout)
+        print(loaded_output)
     else:
         print("✗ Gateway service is not loaded")
         print("  Service definition exists locally but launchd has not loaded it.")
@@ -1141,7 +1153,7 @@ def launchd_status(deep: bool = False):
         if log_file.exists():
             print()
             print("Recent logs:")
-            subprocess.run(["tail", "-20", str(log_file)])
+            subprocess.run(["tail", "-20", str(log_file)], timeout=10)
 
 
 # =============================================================================
@@ -1658,28 +1670,37 @@ def _is_service_running() -> bool:
         system_unit_exists = get_systemd_unit_path(system=True).exists()
 
         if user_unit_exists:
-            result = subprocess.run(
-                _systemctl_cmd(False) + ["is-active", get_service_name()],
-                capture_output=True, text=True
-            )
-            if result.stdout.strip() == "active":
-                return True
+            try:
+                result = subprocess.run(
+                    _systemctl_cmd(False) + ["is-active", get_service_name()],
+                    capture_output=True, text=True, timeout=10,
+                )
+                if result.stdout.strip() == "active":
+                    return True
+            except subprocess.TimeoutExpired:
+                pass
 
         if system_unit_exists:
-            result = subprocess.run(
-                _systemctl_cmd(True) + ["is-active", get_service_name()],
-                capture_output=True, text=True
-            )
-            if result.stdout.strip() == "active":
-                return True
+            try:
+                result = subprocess.run(
+                    _systemctl_cmd(True) + ["is-active", get_service_name()],
+                    capture_output=True, text=True, timeout=10,
+                )
+                if result.stdout.strip() == "active":
+                    return True
+            except subprocess.TimeoutExpired:
+                pass
 
         return False
     elif is_macos() and get_launchd_plist_path().exists():
-        result = subprocess.run(
-            ["launchctl", "list", get_launchd_label()],
-            capture_output=True, text=True
-        )
-        return result.returncode == 0
+        try:
+            result = subprocess.run(
+                ["launchctl", "list", get_launchd_label()],
+                capture_output=True, text=True, timeout=10,
+            )
+            return result.returncode == 0
+        except subprocess.TimeoutExpired:
+            return False
     # Check for manual processes
     return len(find_gateway_pids()) > 0
 

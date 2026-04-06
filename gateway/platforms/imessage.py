@@ -187,7 +187,6 @@ class IMessageAdapter(BasePlatformAdapter):
         # Per-chat watch tasks, keyed by chat rowid
         self._watch_tasks: Dict[int, asyncio.Task] = {}
         self._stream_chats: set = set()
-        self._last_sent_content: dict = {}
         self._running = False
 
     # ── Lifecycle ────────────────────────────────────────────────────────────
@@ -246,63 +245,33 @@ class IMessageAdapter(BasePlatformAdapter):
     # ── Send ─────────────────────────────────────────────────────────────────
 
     async def send(self, chat_id, content, *, reply_to=None, metadata=None, **kwargs) -> SendResult:
-        # iMessage cannot edit messages so streaming is handled by sending
-        # delta content as separate bubbles.
+        # Suppress all stream consumer sends (cursor and final got_done send).
+        # iMessage cannot edit messages so streaming produces mid-sentence splits.
+        # The normal response path delivers one clean complete message.
         #
-        # Cursor-bearing sends (intermediate streaming): strip cursor, send
-        # the new delta since last send, return a fake message_id so the
-        # stream consumer tracks a session (already_sent=True prevents
-        # the normal response path from double-sending).
-        #
-        # Non-cursor sends while in a stream session: this is the got_done
-        # final send -- also send as delta, also return fake message_id.
-        #
-        # Non-cursor sends outside any stream session: normal send.
+        # Cursor send: mark chat in-stream, suppress.
+        # No-cursor send while in-stream: final got_done send, suppress and clear.
+        # No-cursor send not in-stream: genuine send, deliver normally.
         has_cursor = any(content.endswith(c) for c in _STREAMING_CURSORS)
         if has_cursor:
-            for cursor in _STREAMING_CURSORS:
-                if content.endswith(cursor):
-                    content = content[:-len(cursor)]
-            content = content.rstrip()
-
-        content = content.lstrip("\n").rstrip()
-        if not content:
-            if has_cursor:
-                return SendResult(success=True, message_id=f"imsg-{chat_id}")
-            return SendResult(success=True)
-
-        # Delta: only send text that is new since the last send for this chat
-        last = self._last_sent_content.get(str(chat_id), "")
-        if last and content.startswith(last):
-            delta = content[len(last):].lstrip("\n").strip()
-        else:
-            delta = content
-
-        if not delta:
-            if has_cursor or str(chat_id) in self._stream_chats:
-                return SendResult(success=True, message_id=f"imsg-{chat_id}")
-            return SendResult(success=True)
-
-        if has_cursor or str(chat_id) in self._stream_chats:
             self._stream_chats.add(str(chat_id))
+            return SendResult(success=True)
 
-        chunks = self._split_message(delta)
+        if str(chat_id) in self._stream_chats:
+            self._stream_chats.discard(str(chat_id))
+            return SendResult(success=True)
+
+        content = content.lstrip(chr(10)).rstrip()
+        if not content:
+            return SendResult(success=True)
+
+        chunks = self._split_message(content)
         last_result = SendResult(success=False, error="no chunks")
         for chunk in chunks:
             last_result = await self._send_chunk(chat_id, chunk)
             if not last_result.success:
                 break
-
-        if last_result.success:
-            self._last_sent_content[str(chat_id)] = content
-            if str(chat_id) in self._stream_chats:
-                return SendResult(success=True, message_id=f"imsg-{chat_id}")
-
         return last_result
-
-    async def edit_message(self, chat_id, message_id, content, metadata=None, **kwargs) -> SendResult:
-        """Stream consumer edits -- deliver as delta send."""
-        return await self.send(chat_id, content, metadata=metadata)
 
     async def _send_chunk(self, chat_id: str, text: str) -> SendResult:
         if chat_id.isdigit():

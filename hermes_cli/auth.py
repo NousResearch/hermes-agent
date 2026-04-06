@@ -2167,24 +2167,35 @@ def _prompt_model_selection(
     has_pricing = bool(pricing and any(pricing.get(m) for m in ordered))
     name_col = max((len(m) for m in ordered), default=0) + 2 if has_pricing else 0
 
-    # Pre-compute formatted prices and dynamic column width
-    _price_cache: dict[str, tuple[str, str]] = {}
+    # Pre-compute formatted prices and dynamic column widths
+    _price_cache: dict[str, tuple[str, str, str]] = {}
     price_col = 3  # minimum width
+    cache_col = 0  # only set if any model has cache pricing
+    has_cache = False
     if has_pricing:
         for mid in ordered:
             p = pricing.get(mid)  # type: ignore[union-attr]
             if p:
                 inp = _format_price_per_mtok(p.get("prompt", ""))
                 out = _format_price_per_mtok(p.get("completion", ""))
+                cache_read = p.get("input_cache_read", "")
+                cache = _format_price_per_mtok(cache_read) if cache_read else ""
+                if cache:
+                    has_cache = True
             else:
-                inp, out = "", ""
-            _price_cache[mid] = (inp, out)
+                inp, out, cache = "", "", ""
+            _price_cache[mid] = (inp, out, cache)
             price_col = max(price_col, len(inp), len(out))
+            cache_col = max(cache_col, len(cache))
+        if has_cache:
+            cache_col = max(cache_col, 5)  # minimum: "Cache" header
 
     def _label(mid):
         if has_pricing:
-            inp, out = _price_cache.get(mid, ("", ""))
+            inp, out, cache = _price_cache.get(mid, ("", "", ""))
             price_part = f" {inp:>{price_col}}  {out:>{price_col}}"
+            if has_cache:
+                price_part += f"  {cache:>{cache_col}}"
             base = f"{mid:<{name_col}}{price_part}"
         else:
             base = mid
@@ -2198,8 +2209,14 @@ def _prompt_model_selection(
     # Build a pricing header hint for the menu title
     menu_title = "Select default model:"
     if has_pricing:
-        # Align the header with the model column
-        menu_title += f"\n  {'':>{name_col}}  {'In':>{price_col}}  {'Out':>{price_col}}  /Mtok"
+        # Align the header with the model column.
+        # Each choice is "  {label}" (2 spaces) and simple_term_menu prepends
+        # a 3-char cursor region ("-> " or "   "), so content starts at col 5.
+        pad = " " * 5
+        header = f"\n{pad}{'':>{name_col}} {'In':>{price_col}}  {'Out':>{price_col}}"
+        if has_cache:
+            header += f"  {'Cache':>{cache_col}}"
+        menu_title += header + "  /Mtok"
 
     # Try arrow-key menu first, fall back to number input
     try:

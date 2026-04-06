@@ -419,14 +419,25 @@ def switch_model(
         # Resolve the provider
         pdef = resolve_provider_full(explicit_provider, user_providers)
         if pdef is None:
+            _switch_err = (
+                f"Unknown provider '{explicit_provider}'. "
+                f"Check 'hermes model' for available providers, or define it "
+                f"in config.yaml under 'providers:'."
+            )
+            # Check for common config issues that cause provider resolution failures
+            try:
+                from hermes_cli.config import validate_config_structure
+                _cfg_issues = validate_config_structure()
+                if _cfg_issues:
+                    _switch_err += "\n\nRun 'hermes doctor' — config issues detected:"
+                    for _ci in _cfg_issues[:3]:
+                        _switch_err += f"\n  • {_ci.message}"
+            except Exception:
+                pass
             return ModelSwitchResult(
                 success=False,
                 is_global=is_global,
-                error_message=(
-                    f"Unknown provider '{explicit_provider}'. "
-                    f"Check 'hermes model' for available providers, or define it "
-                    f"in config.yaml under 'providers:'."
-                ),
+                error_message=_switch_err,
             )
 
         target_provider = pdef.id

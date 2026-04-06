@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 from typing import Any, Dict, Optional
+
+logger = logging.getLogger(__name__)
 
 from hermes_cli import auth as auth_mod
 from agent.credential_pool import CredentialPool, PooledCredential, get_custom_provider_pool_key, load_pool
@@ -258,6 +261,12 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
     config = load_config()
     custom_providers = config.get("custom_providers")
     if not isinstance(custom_providers, list):
+        if isinstance(custom_providers, dict):
+            logger.warning(
+                "custom_providers in config.yaml is a dict, not a list. "
+                "Each entry must be prefixed with '-' in YAML. "
+                "Run 'hermes doctor' for details."
+            )
         return None
 
     for entry in custom_providers:

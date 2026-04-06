@@ -453,6 +453,13 @@ def load_cli_config() -> Dict[str, Any]:
 # Load configuration at module startup
 CLI_CONFIG = load_cli_config()
 
+# Validate config structure early — print warnings before user hits cryptic errors
+try:
+    from hermes_cli.config import print_config_warnings
+    print_config_warnings()
+except Exception:
+    pass
+
 # Initialize the skin engine from config
 try:
     from hermes_cli.skin_engine import init_skin_from_config

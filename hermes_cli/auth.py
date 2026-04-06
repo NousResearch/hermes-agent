@@ -711,6 +711,32 @@ def deactivate_provider() -> None:
 # Provider Resolution — picks which provider to use
 # =============================================================================
 
+
+def _get_config_hint_for_unknown_provider(provider_name: str) -> str:
+    """Return a helpful hint string when provider resolution fails.
+
+    Checks for common config.yaml mistakes (malformed custom_providers, etc.)
+    and returns a human-readable diagnostic, or empty string if nothing found.
+    """
+    try:
+        from hermes_cli.config import validate_config_structure
+        issues = validate_config_structure()
+        if not issues:
+            return ""
+
+        lines = ["Config issue detected — run 'hermes doctor' for full diagnostics:"]
+        for ci in issues:
+            prefix = "ERROR" if ci.severity == "error" else "WARNING"
+            lines.append(f"  [{prefix}] {ci.message}")
+            # Show first line of hint
+            first_hint = ci.hint.splitlines()[0] if ci.hint else ""
+            if first_hint:
+                lines.append(f"    → {first_hint}")
+        return "\n".join(lines)
+    except Exception:
+        return ""
+
+
 def resolve_provider(
     requested: Optional[str] = None,
     *,
@@ -757,10 +783,14 @@ def resolve_provider(
     if normalized in PROVIDER_REGISTRY:
         return normalized
     if normalized != "auto":
-        raise AuthError(
-            f"Unknown provider '{normalized}'.",
-            code="invalid_provider",
-        )
+        # Check for common config.yaml issues that cause this error
+        _config_hint = _get_config_hint_for_unknown_provider(normalized)
+        msg = f"Unknown provider '{normalized}'."
+        if _config_hint:
+            msg += f"\n\n{_config_hint}"
+        else:
+            msg += " Check 'hermes model' for available providers, or run 'hermes doctor' to diagnose config issues."
+        raise AuthError(msg, code="invalid_provider")
 
     # Explicit one-off CLI creds always mean openrouter/custom
     if explicit_api_key or explicit_base_url:

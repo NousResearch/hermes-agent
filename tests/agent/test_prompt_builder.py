@@ -23,6 +23,7 @@ from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY,
     TOOL_USE_ENFORCEMENT_GUIDANCE,
     TOOL_USE_ENFORCEMENT_MODELS,
+    OPENAI_MODEL_EXECUTION_GUIDANCE,
     MEMORY_GUIDANCE,
     SESSION_SEARCH_GUIDANCE,
     PLATFORM_HINTS,
@@ -1019,6 +1020,41 @@ class TestToolUseEnforcementGuidance:
 
     def test_enforcement_models_is_tuple(self):
         assert isinstance(TOOL_USE_ENFORCEMENT_MODELS, tuple)
+
+
+class TestOpenAIModelExecutionGuidance:
+    """Tests for GPT/Codex-specific execution discipline guidance."""
+
+    def test_guidance_covers_tool_persistence(self):
+        text = OPENAI_MODEL_EXECUTION_GUIDANCE.lower()
+        assert "tool_persistence" in text
+        assert "retry" in text
+        assert "empty" in text or "partial" in text
+
+    def test_guidance_covers_prerequisite_checks(self):
+        text = OPENAI_MODEL_EXECUTION_GUIDANCE.lower()
+        assert "prerequisite" in text
+        assert "dependency" in text
+
+    def test_guidance_covers_verification(self):
+        text = OPENAI_MODEL_EXECUTION_GUIDANCE.lower()
+        assert "verification" in text or "verify" in text
+        assert "correctness" in text
+
+    def test_guidance_covers_missing_context(self):
+        text = OPENAI_MODEL_EXECUTION_GUIDANCE.lower()
+        assert "missing_context" in text or "missing context" in text
+        assert "hallucinate" in text or "guess" in text
+
+    def test_guidance_uses_xml_tags(self):
+        assert "<tool_persistence>" in OPENAI_MODEL_EXECUTION_GUIDANCE
+        assert "</tool_persistence>" in OPENAI_MODEL_EXECUTION_GUIDANCE
+        assert "<verification>" in OPENAI_MODEL_EXECUTION_GUIDANCE
+        assert "</verification>" in OPENAI_MODEL_EXECUTION_GUIDANCE
+
+    def test_guidance_is_string(self):
+        assert isinstance(OPENAI_MODEL_EXECUTION_GUIDANCE, str)
+        assert len(OPENAI_MODEL_EXECUTION_GUIDANCE) > 100
 
 
 # =========================================================================

@@ -3,6 +3,7 @@ that only manifest at runtime (not in mocked unit tests)."""
 
 import os
 import sys
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -158,6 +159,48 @@ class TestSingleQueryState:
         assert cli._voice_tts_done.is_set()
         assert hasattr(cli, "_interrupt_queue")
         assert hasattr(cli, "_pending_input")
+
+    def test_chat_accepts_voice_input_origin_without_name_error(self):
+        cli = _make_cli()
+        captured = {}
+
+        def fake_run_conversation(**kwargs):
+            captured.update(kwargs)
+            return {
+                "final_response": "",
+                "messages": [{"role": "user", "content": kwargs["persist_user_message"]}],
+                "completed": True,
+            }
+
+        cli._voice_tts = True
+        cli._voice_mode = True
+        cli._get_voice_message_reply_mode = lambda: "voice_only"
+        cli._ensure_runtime_credentials = lambda: True
+        cli._resolve_turn_agent_config = lambda message: {
+            "signature": "sig",
+            "model": None,
+            "runtime": None,
+            "label": "test",
+        }
+        cli._active_agent_route_signature = "sig"
+        cli._reset_stream_state = lambda: None
+        cli._flush_stream = lambda: None
+        cli._invalidate = lambda *args, **kwargs: None
+        cli.agent = SimpleNamespace(
+            run_conversation=fake_run_conversation,
+            interrupt=lambda _msg=None: None,
+            _active_children=[],
+            _interrupt_requested=False,
+        )
+
+        with patch("tools.tts_tool._load_tts_config", return_value={"provider": "openai"}), patch(
+            "tools.tts_tool._get_provider", return_value="openai"
+        ):
+            response = cli.chat("Hello there", input_origin="voice")
+
+        assert response == ""
+        assert captured["user_message"].startswith("[Voice input — respond concisely")
+        assert captured["persist_user_message"] == "Hello there"
 
 
 class TestHistoryDisplay:

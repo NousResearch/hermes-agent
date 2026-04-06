@@ -6352,10 +6352,12 @@ class HermesCLI:
 
             if result.get("success") and result.get("transcript", "").strip():
                 transcript = result["transcript"].strip()
-                self._attached_images.clear()
+                attached_images = getattr(self, '_attached_images', None)
+                if attached_images is not None:
+                    attached_images.clear()
                 if hasattr(self, '_app') and self._app:
                     self._app.invalidate()
-                self._pending_input.put(transcript)
+                self._pending_input.put((transcript, [], "voice"))
                 submitted = True
             elif result.get("success"):
                 _cprint(f"{_DIM}No speech detected.{_RST}")
@@ -6477,6 +6479,19 @@ class HermesCLI:
         else:
             _cprint(f"Unknown voice subcommand: {subcommand}")
             _cprint("Usage: /voice [on|off|tts|status]")
+
+    def _get_voice_message_reply_mode(self) -> str:
+        """Return normalized CLI voice reply mode from config."""
+        try:
+            from hermes_cli.config import load_config
+
+            voice_config = load_config().get("voice", {})
+            reply_mode = str(voice_config.get("message_reply_mode", "all")).strip().lower()
+            if reply_mode in ("voice_only", "all"):
+                return reply_mode
+        except Exception:
+            pass
+        return "all"
 
     def _enable_voice_mode(self):
         """Enable voice mode after checking requirements."""
@@ -6932,7 +6947,15 @@ class HermesCLI:
             except Exception:
                 pass
 
-    def chat(self, message, images: list = None) -> Optional[str]:
+    def _clear_current_input(self) -> None:
+        if getattr(self, "_app", None):
+            try:
+                self._app.current_buffer.text = ""
+            except Exception:
+                pass
+
+
+    def chat(self, message, images: list = None, input_origin: str = "text") -> Optional[str]:
         """
         Send a message to the agent and get a response.
         
@@ -6947,6 +6970,7 @@ class HermesCLI:
         Args:
             message: The user's message (str or multimodal content list)
             images: Optional list of Path objects for attached images
+            input_origin: Where the turn came from ("text" or "voice")
             
         Returns:
             The agent's response, or None on error
@@ -7039,7 +7063,12 @@ class HermesCLI:
             stream_callback = None
             stop_event = None
 
-            if self._voice_tts:
+            voice_reply_mode = self._get_voice_message_reply_mode()
+            should_speak_response = self._voice_tts and (
+                input_origin == "voice" or voice_reply_mode == "all"
+            )
+
+            if should_speak_response:
                 try:
                     from tools.tts_tool import (
                         _load_tts_config as _load_tts_cfg,
@@ -7090,7 +7119,7 @@ class HermesCLI:
             # model responds concisely. The prefix is API-call-local only —
             # run_conversation persists the original clean user message.
             _voice_prefix = ""
-            if self._voice_mode and isinstance(message, str):
+            if self._voice_mode and input_origin == "voice" and isinstance(message, str):
                 _voice_prefix = (
                     "[Voice input — respond concisely and conversationally, "
                     "2-3 sentences max. No code blocks or markdown.] "
@@ -7311,9 +7340,9 @@ class HermesCLI:
                 sys.stdout.write("\a")
                 sys.stdout.flush()
 
-            # Speak response aloud if voice TTS is enabled
-            # Skip batch TTS when streaming TTS already handled it
-            if self._voice_tts and response and not use_streaming_tts:
+            # Speak response aloud only when this turn qualifies for voice output.
+            # Skip batch TTS when streaming TTS already handled it.
+            if should_speak_response and response and not use_streaming_tts:
                 threading.Thread(
                     target=self._voice_speak_response,
                     args=(response,),
@@ -8803,10 +8832,16 @@ class HermesCLI:
                     if not user_input:
                         continue
 
-                    # Unpack image payload: (text, [Path, ...]) or plain str
+                    # Unpack queued payload: plain str, (text, [Path, ...]), or
+                    # (text, [Path, ...], input_origin) where input_origin is
+                    # "text" or "voice".
                     submit_images = []
+                    input_origin = "text"
                     if isinstance(user_input, tuple):
-                        user_input, submit_images = user_input
+                        if len(user_input) == 3:
+                            user_input, submit_images, input_origin = user_input
+                        else:
+                            user_input, submit_images = user_input
                     
                     # Check for commands — but detect dragged/pasted file paths first.
                     # See _detect_file_drop() for details.
@@ -8889,7 +8924,11 @@ class HermesCLI:
                     app.invalidate()  # Refresh status line
 
                     try:
-                        self.chat(user_input, images=submit_images or None)
+                        self.chat(
+                            user_input,
+                            images=submit_images or None,
+                            input_origin=input_origin,
+                        )
                     finally:
                         self._agent_running = False
                         self._spinner_text = ""

@@ -661,8 +661,6 @@ class MattermostAdapter(BasePlatformAdapter):
         msg_type = MessageType.TEXT
         if message_text.startswith("/"):
             msg_type = MessageType.COMMAND
-        elif file_ids:
-            msg_type = MessageType.DOCUMENT
 
         # Download file attachments immediately (URLs require auth headers
         # that downstream tools won't have).
@@ -702,6 +700,15 @@ class MattermostAdapter(BasePlatformAdapter):
                         logger.warning("Mattermost: failed to download file %s: HTTP %s", fid, resp.status)
             except Exception as exc:
                 logger.warning("Mattermost: error downloading file %s: %s", fid, exc)
+
+        # Set message type based on downloaded media types.
+        if media_types and msg_type == MessageType.TEXT:
+            if any(m.startswith("image/") for m in media_types):
+                msg_type = MessageType.PHOTO
+            elif any(m.startswith("audio/") for m in media_types):
+                msg_type = MessageType.VOICE
+            elif media_types:
+                msg_type = MessageType.DOCUMENT
 
         source = self.build_source(
             chat_id=channel_id,

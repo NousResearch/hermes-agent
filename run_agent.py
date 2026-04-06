@@ -7848,13 +7848,15 @@ class AIAgent:
                     
                     error_type = type(api_error).__name__
                     error_msg = str(api_error).lower()
+                    failure_category = self._classify_api_failure(api_error, status_code)
                     _error_summary = self._summarize_api_error(api_error)
                     logger.warning(
-                        "API call failed (attempt %s/%s) error_type=%s %s summary=%s",
+                        "API call failed (attempt %s/%s) error_type=%s %s category=%s summary=%s",
                         retry_count,
                         max_retries,
                         error_type,
                         self._client_log_context(),
+                        failure_category,
                         _error_summary,
                     )
 
@@ -7865,6 +7867,7 @@ class AIAgent:
                     self._vprint(f"{self.log_prefix}⚠️  API call failed (attempt {retry_count}/{max_retries}): {error_type}{_status_code_str}", force=True)
                     self._vprint(f"{self.log_prefix}   🔌 Provider: {_provider}  Model: {_model}", force=True)
                     self._vprint(f"{self.log_prefix}   🌐 Endpoint: {_base}", force=True)
+                    self._vprint(f"{self.log_prefix}   🧭 Category: {failure_category}", force=True)
                     self._vprint(f"{self.log_prefix}   📝 Error: {_error_summary}", force=True)
                     if status_code and status_code < 500:
                         _err_body = getattr(api_error, "body", None)
@@ -7950,14 +7953,7 @@ class AIAgent:
                     # When a fallback model is configured, switch immediately instead
                     # of burning through retries with exponential backoff -- the
                     # primary provider won't recover within the retry window.
-                    is_rate_limited = (
-                        status_code == 429
-                        or "rate limit" in error_msg
-                        or "too many requests" in error_msg
-                        or "rate_limit" in error_msg
-                        or "usage limit" in error_msg
-                        or "quota" in error_msg
-                    )
+                    is_rate_limited = failure_category in {"transient_rate_limit", "quota_exhausted"}
                     if is_rate_limited and self._fallback_index < len(self._fallback_chain):
                         # Don't eagerly fallback if credential pool rotation may
                         # still recover.  The pool's retry-then-rotate cycle needs

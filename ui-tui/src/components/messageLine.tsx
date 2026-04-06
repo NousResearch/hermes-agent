@@ -1,4 +1,5 @@
 import { Box, Text } from 'ink'
+import { memo } from 'react'
 
 import { LONG_MSG, ROLE } from '../constants.js'
 import { hasAnsi, userDisplay } from '../lib/text.js'
@@ -7,7 +8,7 @@ import type { Msg } from '../types.js'
 
 import { Md } from './markdown.js'
 
-export function MessageLine({ compact, msg, t }: { compact?: boolean; msg: Msg; t: Theme }) {
+export const MessageLine = memo(function MessageLine({ compact, msg, t }: { compact?: boolean; msg: Msg; t: Theme }) {
   const { body, glyph, prefix } = ROLE[msg.role](t)
 
   const content = (() => {
@@ -47,4 +48,4 @@ export function MessageLine({ compact, msg, t }: { compact?: boolean; msg: Msg; 
       {content}
     </Box>
   )
-}
+})

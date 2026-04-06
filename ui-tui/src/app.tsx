@@ -185,29 +185,38 @@ export function App({ gw }: { gw: GatewayClient }) {
 
   const sys = useCallback((text: string) => setMessages(prev => [...prev, { role: 'system' as const, text }]), [])
 
-  const rpc = (method: string, params: Record<string, unknown> = {}) =>
-    gw.request(method, params).catch((e: Error) => {
-      sys(`error: ${e.message}`)
-    })
+  const colsRef = useRef(cols)
+  colsRef.current = cols
 
-  const newSession = (msg?: string) =>
-    rpc('session.create', { cols }).then((r: any) => {
-      if (!r) {
-        return
-      }
+  const rpc = useCallback(
+    (method: string, params: Record<string, unknown> = {}) =>
+      gw.request(method, params).catch((e: Error) => {
+        sys(`error: ${e.message}`)
+      }),
+    [gw, sys]
+  )
 
-      setSid(r.session_id)
-      setMessages([])
-      setUsage(ZERO)
-      setStatus('ready')
-      lastStatusNoteRef.current = ''
-      protocolWarnedRef.current = false
-      stderrWarnedRef.current = false
+  const newSession = useCallback(
+    (msg?: string) =>
+      rpc('session.create', { cols: colsRef.current }).then((r: any) => {
+        if (!r) {
+          return
+        }
 
-      if (msg) {
-        sys(msg)
-      }
-    })
+        setSid(r.session_id)
+        setMessages([])
+        setUsage(ZERO)
+        setStatus('ready')
+        lastStatusNoteRef.current = ''
+        protocolWarnedRef.current = false
+        stderrWarnedRef.current = false
+
+        if (msg) {
+          sys(msg)
+        }
+      }),
+    [rpc, sys]
+  )
 
   const idle = () => {
     setThinking(false)

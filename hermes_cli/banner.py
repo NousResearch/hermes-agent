@@ -147,13 +147,35 @@ def check_for_updates() -> Optional[int]:
     if not (repo_dir / ".git").exists():
         return None
 
+    def _rev_parse(ref: str) -> Optional[str]:
+        try:
+            result = subprocess.run(
+                ["git", "rev-parse", ref],
+                capture_output=True, text=True, timeout=5,
+                cwd=str(repo_dir),
+            )
+            if result.returncode == 0:
+                value = result.stdout.strip()
+                return value or None
+        except Exception:
+            pass
+        return None
+
+    current_head = _rev_parse("HEAD")
+    current_origin_main = _rev_parse("origin/main")
+
     # Read cache
     now = time.time()
     try:
         if cache_file.exists():
             cached = json.loads(cache_file.read_text())
             if now - cached.get("ts", 0) < _UPDATE_CHECK_CACHE_SECONDS:
-                return cached.get("behind")
+                cached_head = cached.get("head")
+                cached_origin_main = cached.get("origin_main")
+                if current_head is None and current_origin_main is None:
+                    return cached.get("behind")
+                if cached_head == current_head and cached_origin_main == current_origin_main:
+                    return cached.get("behind")
     except Exception:
         pass
 
@@ -181,9 +203,17 @@ def check_for_updates() -> Optional[int]:
     except Exception:
         behind = None
 
+    current_head = _rev_parse("HEAD") or current_head
+    current_origin_main = _rev_parse("origin/main") or current_origin_main
+
     # Write cache
     try:
-        cache_file.write_text(json.dumps({"ts": now, "behind": behind}))
+        cache_file.write_text(json.dumps({
+            "ts": now,
+            "behind": behind,
+            "head": current_head,
+            "origin_main": current_origin_main,
+        }))
     except Exception:
         pass
 

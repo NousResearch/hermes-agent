@@ -32,7 +32,7 @@ def test_check_for_updates_uses_cache(tmp_path):
             result = check_for_updates()
 
     assert result == 3
-    mock_run.assert_not_called()
+    assert mock_run.call_count == 2  # rev-parse HEAD + rev-parse origin/main to validate cache freshness
 
 
 def test_check_for_updates_expired_cache(tmp_path):
@@ -54,7 +54,42 @@ def test_check_for_updates_expired_cache(tmp_path):
             result = check_for_updates()
 
     assert result == 5
-    assert mock_run.call_count == 2  # git fetch + git rev-list
+    assert mock_run.call_count == 6  # initial rev-parse pair + fetch + rev-list + cache write rev-parse pair
+
+
+def test_check_for_updates_ignores_fresh_cache_when_repo_refs_changed(tmp_path):
+    """Fresh cache must be invalidated when HEAD/origin-main changed via manual git commands."""
+    from hermes_cli.banner import check_for_updates
+
+    repo_dir = tmp_path / "hermes-agent"
+    repo_dir.mkdir()
+    (repo_dir / ".git").mkdir()
+
+    cache_file = tmp_path / ".update_check"
+    cache_file.write_text(json.dumps({
+        "ts": time.time(),
+        "behind": 74,
+        "head": "old-head",
+        "origin_main": "old-origin-main",
+    }))
+
+    def fake_run(cmd, *args, **kwargs):
+        if cmd[:3] == ["git", "rev-parse", "HEAD"]:
+            return MagicMock(returncode=0, stdout="new-head\n")
+        if cmd[:3] == ["git", "rev-parse", "origin/main"]:
+            return MagicMock(returncode=0, stdout="new-origin-main\n")
+        if cmd[:3] == ["git", "fetch", "origin"]:
+            return MagicMock(returncode=0, stdout="")
+        if cmd[:3] == ["git", "rev-list", "--count"]:
+            return MagicMock(returncode=0, stdout="0\n")
+        raise AssertionError(f"unexpected git command: {cmd}")
+
+    with patch("hermes_cli.banner.os.getenv", return_value=str(tmp_path)):
+        with patch("hermes_cli.banner.subprocess.run", side_effect=fake_run) as mock_run:
+            result = check_for_updates()
+
+    assert result == 0
+    assert mock_run.call_count == 6  # initial rev-parse pair + fetch + rev-list + cache write rev-parse pair
 
 
 def test_check_for_updates_no_git_dir(tmp_path):

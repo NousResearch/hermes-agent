@@ -3264,12 +3264,12 @@ class GatewayRunner:
         except Exception:
             pass
 
+        # Reset the session
+        new_entry = self.session_store.reset_session(session_key)
+
         # Clear any session-scoped model override so the next agent picks up
         # the configured default instead of the previously switched model.
         self._session_model_overrides.pop(session_key, None)
-
-        # Reset the session
-        new_entry = self.session_store.reset_session(session_key)
 
         # Emit session:end hook (session is ending)
         await self.hooks.emit("session:end", {

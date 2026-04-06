@@ -2433,8 +2433,6 @@ class AIAgent:
             return None
         from dataclasses import asdict
 
-        from agent.usage_pricing import normalize_usage
-
         cu = normalize_usage(raw_usage, provider=self.provider, api_mode=self.api_mode)
         summary = asdict(cu)
         summary.pop("raw_usage", None)

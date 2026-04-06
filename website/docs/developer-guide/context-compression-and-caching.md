@@ -4,7 +4,7 @@ Hermes Agent uses a dual compression system and Anthropic prompt caching to
 manage context window usage efficiently across long conversations.
 
 Source files: `agent/context_compressor.py`, `agent/prompt_caching.py`,
-`gateway/run.py` (session hygiene), `run_agent.py` (lines 1146-1204)
+`gateway/run.py` (session hygiene), `run_agent.py` (search for `_compress_context`)
 
 
 ## Dual Compression System
@@ -26,7 +26,7 @@ Hermes has two separate compression layers that operate independently:
 
 ### 1. Gateway Session Hygiene (85% threshold)
 
-Located in `gateway/run.py` (around line 2220). This is a **safety net** that
+Located in `gateway/run.py` (search for `_maybe_compress_session`). This is a **safety net** that
 runs before the agent processes a message. It prevents API failures when sessions
 grow too large between turns (e.g., overnight accumulation in Telegram/Discord).
 

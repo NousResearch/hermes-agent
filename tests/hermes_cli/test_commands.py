@@ -12,8 +12,12 @@ from hermes_cli.commands import (
     SUBCOMMANDS,
     SlashCommandAutoSuggest,
     SlashCommandCompleter,
+    _CMD_NAME_LIMIT,
     _TG_NAME_LIMIT,
+    _clamp_command_names,
     _clamp_telegram_names,
+    _sanitize_telegram_name,
+    discord_skill_commands,
     gateway_help_lines,
     resolve_command,
     slack_subcommand_map,
@@ -197,6 +201,13 @@ class TestTelegramBotCommands:
         """Telegram does not support hyphens in command names."""
         for name, _ in telegram_bot_commands():
             assert "-" not in name, f"Telegram command '{name}' contains a hyphen"
+
+    def test_all_names_valid_telegram_chars(self):
+        """Telegram requires: lowercase a-z, 0-9, underscores only."""
+        import re
+        tg_valid = re.compile(r"^[a-z0-9_]+$")
+        for name, _ in telegram_bot_commands():
+            assert tg_valid.match(name), f"Invalid Telegram command name: {name!r}"
 
     def test_excludes_cli_only_without_config_gate(self):
         names = {name for name, _ in telegram_bot_commands()}
@@ -510,6 +521,53 @@ class TestGhostText:
 
 
 # ---------------------------------------------------------------------------
+# Telegram command name sanitization
+# ---------------------------------------------------------------------------
+
+
+class TestSanitizeTelegramName:
+    """Tests for _sanitize_telegram_name() — Telegram requires [a-z0-9_] only."""
+
+    def test_hyphens_replaced_with_underscores(self):
+        assert _sanitize_telegram_name("my-skill-name") == "my_skill_name"
+
+    def test_plus_sign_stripped(self):
+        """Regression: skill name 'Jellyfin + Jellystat 24h Summary'."""
+        assert _sanitize_telegram_name("jellyfin-+-jellystat-24h-summary") == "jellyfin_jellystat_24h_summary"
+
+    def test_slash_stripped(self):
+        """Regression: skill name 'Sonarr v3/v4 API Integration'."""
+        assert _sanitize_telegram_name("sonarr-v3/v4-api-integration") == "sonarr_v3v4_api_integration"
+
+    def test_uppercase_lowercased(self):
+        assert _sanitize_telegram_name("MyCommand") == "mycommand"
+
+    def test_dots_and_special_chars_stripped(self):
+        assert _sanitize_telegram_name("skill.v2@beta!") == "skillv2beta"
+
+    def test_consecutive_underscores_collapsed(self):
+        assert _sanitize_telegram_name("a---b") == "a_b"
+        assert _sanitize_telegram_name("a-+-b") == "a_b"
+
+    def test_leading_trailing_underscores_stripped(self):
+        assert _sanitize_telegram_name("-leading") == "leading"
+        assert _sanitize_telegram_name("trailing-") == "trailing"
+        assert _sanitize_telegram_name("-both-") == "both"
+
+    def test_digits_preserved(self):
+        assert _sanitize_telegram_name("skill-24h") == "skill_24h"
+
+    def test_empty_after_sanitization(self):
+        assert _sanitize_telegram_name("+++") == ""
+
+    def test_spaces_only_becomes_empty(self):
+        assert _sanitize_telegram_name("   ") == ""
+
+    def test_already_valid(self):
+        assert _sanitize_telegram_name("valid_name_123") == "valid_name_123"
+
+
+# ---------------------------------------------------------------------------
 # Telegram command name clamping (32-char limit)
 # ---------------------------------------------------------------------------
 
@@ -628,3 +686,306 @@ class TestTelegramMenuCommands:
         menu_names = {n for n, _ in menu}
         assert "my_enabled_skill" in menu_names
         assert "my_disabled_skill" not in menu_names
+
+    def test_special_chars_in_skill_names_sanitized(self, tmp_path, monkeypatch):
+        """Skills with +, /, or other special chars produce valid Telegram names."""
+        from unittest.mock import patch
+        import re
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        fake_skills_dir = str(tmp_path / "skills")
+        fake_cmds = {
+            "/jellyfin-+-jellystat-24h-summary": {
+                "name": "Jellyfin + Jellystat 24h Summary",
+                "description": "Test",
+                "skill_md_path": f"{fake_skills_dir}/jellyfin/SKILL.md",
+                "skill_dir": f"{fake_skills_dir}/jellyfin",
+            },
+            "/sonarr-v3/v4-api": {
+                "name": "Sonarr v3/v4 API",
+                "description": "Test",
+                "skill_md_path": f"{fake_skills_dir}/sonarr/SKILL.md",
+                "skill_dir": f"{fake_skills_dir}/sonarr",
+            },
+        }
+        with (
+            patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path / "skills"),
+        ):
+            (tmp_path / "skills").mkdir(exist_ok=True)
+            menu, _ = telegram_menu_commands(max_commands=100)
+
+        # Every name must match Telegram's [a-z0-9_] requirement
+        tg_valid = re.compile(r"^[a-z0-9_]+$")
+        for name, _ in menu:
+            assert tg_valid.match(name), f"Invalid Telegram command name: {name!r}"
+
+    def test_empty_sanitized_names_excluded(self, tmp_path, monkeypatch):
+        """Skills whose names sanitize to empty string are silently dropped."""
+        from unittest.mock import patch
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        fake_skills_dir = str(tmp_path / "skills")
+        fake_cmds = {
+            "/+++": {
+                "name": "+++",
+                "description": "All special chars",
+                "skill_md_path": f"{fake_skills_dir}/bad/SKILL.md",
+                "skill_dir": f"{fake_skills_dir}/bad",
+            },
+            "/valid-skill": {
+                "name": "valid-skill",
+                "description": "Normal skill",
+                "skill_md_path": f"{fake_skills_dir}/valid/SKILL.md",
+                "skill_dir": f"{fake_skills_dir}/valid",
+            },
+        }
+        with (
+            patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path / "skills"),
+        ):
+            (tmp_path / "skills").mkdir(exist_ok=True)
+            menu, _ = telegram_menu_commands(max_commands=100)
+
+        menu_names = {n for n, _ in menu}
+        # The valid skill should be present, the empty one should not
+        assert "valid_skill" in menu_names
+        # No empty string in menu names
+        assert "" not in menu_names
+
+
+# ---------------------------------------------------------------------------
+# Backward-compat aliases
+# ---------------------------------------------------------------------------
+
+class TestBackwardCompatAliases:
+    """The renamed constants/functions still exist under the old names."""
+
+    def test_tg_name_limit_alias(self):
+        assert _TG_NAME_LIMIT == _CMD_NAME_LIMIT == 32
+
+    def test_clamp_telegram_names_is_clamp_command_names(self):
+        assert _clamp_telegram_names is _clamp_command_names
+
+
+# ---------------------------------------------------------------------------
+# Discord skill command registration
+# ---------------------------------------------------------------------------
+
+class TestDiscordSkillCommands:
+    """Tests for discord_skill_commands() — centralized skill registration."""
+
+    def test_returns_skill_entries(self, tmp_path, monkeypatch):
+        """Skills under SKILLS_DIR (not .hub) should be returned."""
+        from unittest.mock import patch
+
+        fake_skills_dir = str(tmp_path / "skills")
+        fake_cmds = {
+            "/gif-search": {
+                "name": "gif-search",
+                "description": "Search for GIFs",
+                "skill_md_path": f"{fake_skills_dir}/gif-search/SKILL.md",
+                "skill_dir": f"{fake_skills_dir}/gif-search",
+            },
+            "/code-review": {
+                "name": "code-review",
+                "description": "Review code changes",
+                "skill_md_path": f"{fake_skills_dir}/code-review/SKILL.md",
+                "skill_dir": f"{fake_skills_dir}/code-review",
+            },
+        }
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "skills").mkdir(exist_ok=True)
+        with (
+            patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path / "skills"),
+        ):
+            entries, hidden = discord_skill_commands(
+                max_slots=50, reserved_names=set(),
+            )
+
+        names = {n for n, _d, _k in entries}
+        assert "gif-search" in names
+        assert "code-review" in names
+        assert hidden == 0
+        # Verify cmd_key is preserved for handler callbacks
+        keys = {k for _n, _d, k in entries}
+        assert "/gif-search" in keys
+        assert "/code-review" in keys
+
+    def test_names_allow_hyphens(self, tmp_path, monkeypatch):
+        """Discord names should keep hyphens (unlike Telegram's _ sanitization)."""
+        from unittest.mock import patch
+
+        fake_skills_dir = str(tmp_path / "skills")
+        fake_cmds = {
+            "/my-cool-skill": {
+                "name": "my-cool-skill",
+                "description": "A cool skill",
+                "skill_md_path": f"{fake_skills_dir}/my-cool-skill/SKILL.md",
+                "skill_dir": f"{fake_skills_dir}/my-cool-skill",
+            },
+        }
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "skills").mkdir(exist_ok=True)
+        with (
+            patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path / "skills"),
+        ):
+            entries, _ = discord_skill_commands(
+                max_slots=50, reserved_names=set(),
+            )
+
+        assert entries[0][0] == "my-cool-skill"  # hyphens preserved
+
+    def test_cap_enforcement(self, tmp_path, monkeypatch):
+        """Entries beyond max_slots should be hidden."""
+        from unittest.mock import patch
+
+        fake_skills_dir = str(tmp_path / "skills")
+        fake_cmds = {
+            f"/skill-{i:03d}": {
+                "name": f"skill-{i:03d}",
+                "description": f"Skill {i}",
+                "skill_md_path": f"{fake_skills_dir}/skill-{i:03d}/SKILL.md",
+                "skill_dir": f"{fake_skills_dir}/skill-{i:03d}",
+            }
+            for i in range(20)
+        }
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "skills").mkdir(exist_ok=True)
+        with (
+            patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path / "skills"),
+        ):
+            entries, hidden = discord_skill_commands(
+                max_slots=5, reserved_names=set(),
+            )
+
+        assert len(entries) == 5
+        assert hidden == 15
+
+    def test_excludes_discord_disabled_skills(self, tmp_path, monkeypatch):
+        """Skills disabled for discord should not appear."""
+        from unittest.mock import patch
+
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            "skills:\n"
+            "  platform_disabled:\n"
+            "    discord:\n"
+            "      - secret-skill\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        fake_skills_dir = str(tmp_path / "skills")
+        fake_cmds = {
+            "/secret-skill": {
+                "name": "secret-skill",
+                "description": "Should not appear",
+                "skill_md_path": f"{fake_skills_dir}/secret-skill/SKILL.md",
+                "skill_dir": f"{fake_skills_dir}/secret-skill",
+            },
+            "/public-skill": {
+                "name": "public-skill",
+                "description": "Should appear",
+                "skill_md_path": f"{fake_skills_dir}/public-skill/SKILL.md",
+                "skill_dir": f"{fake_skills_dir}/public-skill",
+            },
+        }
+        (tmp_path / "skills").mkdir(exist_ok=True)
+        with (
+            patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path / "skills"),
+        ):
+            entries, _ = discord_skill_commands(
+                max_slots=50, reserved_names=set(),
+            )
+
+        names = {n for n, _d, _k in entries}
+        assert "secret-skill" not in names
+        assert "public-skill" in names
+
+    def test_reserved_names_not_overwritten(self, tmp_path, monkeypatch):
+        """Skills whose names collide with built-in commands should be skipped."""
+        from unittest.mock import patch
+
+        fake_skills_dir = str(tmp_path / "skills")
+        fake_cmds = {
+            "/status": {
+                "name": "status",
+                "description": "Skill that collides with built-in",
+                "skill_md_path": f"{fake_skills_dir}/status/SKILL.md",
+                "skill_dir": f"{fake_skills_dir}/status",
+            },
+        }
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "skills").mkdir(exist_ok=True)
+        with (
+            patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path / "skills"),
+        ):
+            entries, _ = discord_skill_commands(
+                max_slots=50, reserved_names={"status"},
+            )
+
+        names = {n for n, _d, _k in entries}
+        assert "status" not in names
+
+    def test_description_truncated_at_100_chars(self, tmp_path, monkeypatch):
+        """Descriptions exceeding 100 chars should be truncated."""
+        from unittest.mock import patch
+
+        fake_skills_dir = str(tmp_path / "skills")
+        long_desc = "x" * 150
+        fake_cmds = {
+            "/verbose-skill": {
+                "name": "verbose-skill",
+                "description": long_desc,
+                "skill_md_path": f"{fake_skills_dir}/verbose-skill/SKILL.md",
+                "skill_dir": f"{fake_skills_dir}/verbose-skill",
+            },
+        }
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "skills").mkdir(exist_ok=True)
+        with (
+            patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path / "skills"),
+        ):
+            entries, _ = discord_skill_commands(
+                max_slots=50, reserved_names=set(),
+            )
+
+        assert len(entries[0][1]) == 100
+        assert entries[0][1].endswith("...")
+
+    def test_all_names_within_32_chars(self, tmp_path, monkeypatch):
+        """All returned names must respect the 32-char Discord limit."""
+        from unittest.mock import patch
+
+        fake_skills_dir = str(tmp_path / "skills")
+        long_name = "a" * 50
+        fake_cmds = {
+            f"/{long_name}": {
+                "name": long_name,
+                "description": "Long name skill",
+                "skill_md_path": f"{fake_skills_dir}/{long_name}/SKILL.md",
+                "skill_dir": f"{fake_skills_dir}/{long_name}",
+            },
+        }
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "skills").mkdir(exist_ok=True)
+        with (
+            patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path / "skills"),
+        ):
+            entries, _ = discord_skill_commands(
+                max_slots=50, reserved_names=set(),
+            )
+
+        for name, _d, _k in entries:
+            assert len(name) <= _CMD_NAME_LIMIT, (
+                f"Name '{name}' is {len(name)} chars (limit {_CMD_NAME_LIMIT})"
+            )

@@ -330,7 +330,7 @@ def test_model_flow_nous_prints_subscription_guidance_without_mutating_explicit_
         "hermes_cli.auth.fetch_nous_models",
         lambda *args, **kwargs: ["claude-opus-4-6"],
     )
-    monkeypatch.setattr("hermes_cli.auth._prompt_model_selection", lambda model_ids, current_model="": "claude-opus-4-6")
+    monkeypatch.setattr("hermes_cli.auth._prompt_model_selection", lambda model_ids, current_model="", pricing=None: "claude-opus-4-6")
     monkeypatch.setattr("hermes_cli.auth._save_model_choice", lambda model: None)
     monkeypatch.setattr("hermes_cli.auth._update_config_for_provider", lambda provider, url: None)
     monkeypatch.setattr(
@@ -368,7 +368,7 @@ def test_model_flow_nous_applies_managed_tts_default_when_unconfigured(monkeypat
         "hermes_cli.auth.fetch_nous_models",
         lambda *args, **kwargs: ["claude-opus-4-6"],
     )
-    monkeypatch.setattr("hermes_cli.auth._prompt_model_selection", lambda model_ids, current_model="": "claude-opus-4-6")
+    monkeypatch.setattr("hermes_cli.auth._prompt_model_selection", lambda model_ids, current_model="", pricing=None: "claude-opus-4-6")
     monkeypatch.setattr("hermes_cli.auth._save_model_choice", lambda model: None)
     monkeypatch.setattr("hermes_cli.auth._update_config_for_provider", lambda provider, url: None)
     monkeypatch.setattr(

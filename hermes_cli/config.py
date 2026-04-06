@@ -19,6 +19,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple
 
@@ -205,6 +206,11 @@ DEFAULT_CONFIG = {
     "toolsets": ["hermes-cli"],
     "agent": {
         "max_turns": 90,
+        # Inactivity timeout for gateway agent execution (seconds).
+        # The agent can run indefinitely as long as it's actively calling
+        # tools or receiving API responses.  Only fires when the agent has
+        # been completely idle for this duration.  0 = unlimited.
+        "gateway_timeout": 1800,
         # Tool-use enforcement: injects system prompt guidance that tells the
         # model to actually call tools instead of describing intended actions.
         # Values: "auto" (default — applies to gpt/codex models), true/false
@@ -531,6 +537,14 @@ DEFAULT_CONFIG = {
         "wrap_response": True,
     },
 
+    # Logging — controls file logging to ~/.hermes/logs/.
+    # agent.log captures INFO+ (all agent activity); errors.log captures WARNING+.
+    "logging": {
+        "level": "INFO",       # Minimum level for agent.log: DEBUG, INFO, WARNING
+        "max_size_mb": 5,      # Max size per log file before rotation
+        "backup_count": 3,     # Number of rotated backup files to keep
+    },
+
     # Config schema version - bump this when adding new required fields
     "_config_version": 12,
 }
@@ -573,6 +587,30 @@ OPTIONAL_ENV_VARS = {
         "url": "https://openrouter.ai/keys",
         "password": True,
         "tools": ["vision_analyze", "mixture_of_agents"],
+        "category": "provider",
+        "advanced": True,
+    },
+    "GOOGLE_API_KEY": {
+        "description": "Google AI Studio API key (also recognized as GEMINI_API_KEY)",
+        "prompt": "Google AI Studio API key",
+        "url": "https://aistudio.google.com/app/apikey",
+        "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
+    "GEMINI_API_KEY": {
+        "description": "Google AI Studio API key (alias for GOOGLE_API_KEY)",
+        "prompt": "Gemini API key",
+        "url": "https://aistudio.google.com/app/apikey",
+        "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
+    "GEMINI_BASE_URL": {
+        "description": "Google AI Studio base URL override",
+        "prompt": "Gemini base URL (leave empty for default)",
+        "url": None,
+        "password": False,
         "category": "provider",
         "advanced": True,
     },
@@ -828,6 +866,13 @@ OPTIONAL_ENV_VARS = {
         "url": "https://browser-use.com/",
         "tools": ["browser_navigate", "browser_click"],
         "password": True,
+        "category": "tool",
+    },
+    "FIRECRAWL_BROWSER_TTL": {
+        "description": "Firecrawl browser session TTL in seconds (optional, default 300)",
+        "prompt": "Browser session TTL (seconds)",
+        "tools": ["browser_navigate", "browser_click"],
+        "password": False,
         "category": "tool",
     },
     "CAMOFOX_URL": {
@@ -1226,6 +1271,43 @@ def get_missing_config_fields() -> List[Dict[str, Any]]:
     return missing
 
 
+def get_missing_skill_config_vars() -> List[Dict[str, Any]]:
+    """Return skill-declared config vars that are missing or empty in config.yaml.
+
+    Scans all enabled skills for ``metadata.hermes.config`` entries, then checks
+    which ones are absent or empty under ``skills.config.<key>`` in the user's
+    config.yaml.  Returns a list of dicts suitable for prompting.
+    """
+    try:
+        from agent.skill_utils import discover_all_skill_config_vars, SKILL_CONFIG_PREFIX
+    except Exception:
+        return []
+
+    all_vars = discover_all_skill_config_vars()
+    if not all_vars:
+        return []
+
+    config = load_config()
+    missing: List[Dict[str, Any]] = []
+    for var in all_vars:
+        # Skill config is stored under skills.config.<logical_key>
+        storage_key = f"{SKILL_CONFIG_PREFIX}.{var['key']}"
+        parts = storage_key.split(".")
+        current = config
+        value = None
+        for part in parts:
+            if isinstance(current, dict) and part in current:
+                current = current[part]
+                value = current
+            else:
+                value = None
+                break
+        # Missing = key doesn't exist or is empty string
+        if value is None or (isinstance(value, str) and not value.strip()):
+            missing.append(var)
+    return missing
+
+
 def check_config_version() -> Tuple[int, int]:
     """
     Check config version.
@@ -1236,6 +1318,182 @@ def check_config_version() -> Tuple[int, int]:
     current = config.get("_config_version", 0)
     latest = DEFAULT_CONFIG.get("_config_version", 1)
     return current, latest
+
+
+# =============================================================================
+# Config structure validation
+# =============================================================================
+
+# Fields that are valid at root level of config.yaml
+_KNOWN_ROOT_KEYS = {
+    "_config_version", "model", "providers", "fallback_model",
+    "fallback_providers", "credential_pool_strategies", "toolsets",
+    "agent", "terminal", "display", "compression", "delegation",
+    "auxiliary", "custom_providers", "memory", "gateway",
+}
+
+# Valid fields inside a custom_providers list entry
+_VALID_CUSTOM_PROVIDER_FIELDS = {
+    "name", "base_url", "api_key", "api_mode", "models",
+    "context_length", "rate_limit_delay",
+}
+
+# Fields that look like they should be inside custom_providers, not at root
+_CUSTOM_PROVIDER_LIKE_FIELDS = {"base_url", "api_key", "rate_limit_delay", "api_mode"}
+
+
+@dataclass
+class ConfigIssue:
+    """A detected config structure problem."""
+
+    severity: str  # "error", "warning"
+    message: str
+    hint: str
+
+
+def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["ConfigIssue"]:
+    """Validate config.yaml structure and return a list of detected issues.
+
+    Catches common YAML formatting mistakes that produce confusing runtime
+    errors (like "Unknown provider") instead of clear diagnostics.
+
+    Can be called with a pre-loaded config dict, or will load from disk.
+    """
+    if config is None:
+        try:
+            config = load_config()
+        except Exception:
+            return [ConfigIssue("error", "Could not load config.yaml", "Run 'hermes setup' to create a valid config")]
+
+    issues: List[ConfigIssue] = []
+
+    # ── custom_providers must be a list, not a dict ──────────────────────
+    cp = config.get("custom_providers")
+    if cp is not None:
+        if isinstance(cp, dict):
+            issues.append(ConfigIssue(
+                "error",
+                "custom_providers is a dict — it must be a YAML list (items prefixed with '-')",
+                "Change to:\n"
+                "  custom_providers:\n"
+                "    - name: my-provider\n"
+                "      base_url: https://...\n"
+                "      api_key: ...",
+            ))
+            # Check if dict keys look like they should be list-entry fields
+            cp_keys = set(cp.keys()) if isinstance(cp, dict) else set()
+            suspicious = cp_keys & _CUSTOM_PROVIDER_LIKE_FIELDS
+            if suspicious:
+                issues.append(ConfigIssue(
+                    "warning",
+                    f"Root-level keys {sorted(suspicious)} look like custom_providers entry fields",
+                    "These should be indented under a '- name: ...' list entry, not at root level",
+                ))
+        elif isinstance(cp, list):
+            # Validate each entry in the list
+            for i, entry in enumerate(cp):
+                if not isinstance(entry, dict):
+                    issues.append(ConfigIssue(
+                        "warning",
+                        f"custom_providers[{i}] is not a dict (got {type(entry).__name__})",
+                        "Each entry should have at minimum: name, base_url",
+                    ))
+                    continue
+                if not entry.get("name"):
+                    issues.append(ConfigIssue(
+                        "warning",
+                        f"custom_providers[{i}] is missing 'name' field",
+                        "Add a name, e.g.: name: my-provider",
+                    ))
+                if not entry.get("base_url"):
+                    issues.append(ConfigIssue(
+                        "warning",
+                        f"custom_providers[{i}] is missing 'base_url' field",
+                        "Add the API endpoint URL, e.g.: base_url: https://api.example.com/v1",
+                    ))
+
+    # ── fallback_model must be a top-level dict with provider + model ────
+    fb = config.get("fallback_model")
+    if fb is not None:
+        if not isinstance(fb, dict):
+            issues.append(ConfigIssue(
+                "error",
+                f"fallback_model should be a dict with 'provider' and 'model', got {type(fb).__name__}",
+                "Change to:\n"
+                "  fallback_model:\n"
+                "    provider: openrouter\n"
+                "    model: anthropic/claude-sonnet-4",
+            ))
+        elif fb:
+            if not fb.get("provider"):
+                issues.append(ConfigIssue(
+                    "warning",
+                    "fallback_model is missing 'provider' field — fallback will be disabled",
+                    "Add: provider: openrouter (or another provider)",
+                ))
+            if not fb.get("model"):
+                issues.append(ConfigIssue(
+                    "warning",
+                    "fallback_model is missing 'model' field — fallback will be disabled",
+                    "Add: model: anthropic/claude-sonnet-4 (or another model)",
+                ))
+
+    # ── Check for fallback_model accidentally nested inside custom_providers ──
+    if isinstance(cp, dict) and "fallback_model" not in config and "fallback_model" in (cp or {}):
+        issues.append(ConfigIssue(
+            "error",
+            "fallback_model appears inside custom_providers instead of at root level",
+            "Move fallback_model to the top level of config.yaml (no indentation)",
+        ))
+
+    # ── model section: should exist when custom_providers is configured ──
+    model_cfg = config.get("model")
+    if cp and not model_cfg:
+        issues.append(ConfigIssue(
+            "warning",
+            "custom_providers defined but no 'model' section — Hermes won't know which provider to use",
+            "Add a model section:\n"
+            "  model:\n"
+            "    provider: custom\n"
+            "    default: your-model-name\n"
+            "    base_url: https://...",
+        ))
+
+    # ── Root-level keys that look misplaced ──────────────────────────────
+    for key in config:
+        if key.startswith("_"):
+            continue
+        if key not in _KNOWN_ROOT_KEYS and key in _CUSTOM_PROVIDER_LIKE_FIELDS:
+            issues.append(ConfigIssue(
+                "warning",
+                f"Root-level key '{key}' looks misplaced — should it be under 'model:' or inside a 'custom_providers' entry?",
+                f"Move '{key}' under the appropriate section",
+            ))
+
+    return issues
+
+
+def print_config_warnings(config: Optional[Dict[str, Any]] = None) -> None:
+    """Print config structure warnings to stderr at startup.
+
+    Called early in CLI and gateway init so users see problems before
+    they hit cryptic "Unknown provider" errors.  Prints nothing if
+    config is healthy.
+    """
+    try:
+        issues = validate_config_structure(config)
+    except Exception:
+        return
+    if not issues:
+        return
+
+    import sys
+    lines = ["\033[33m⚠ Config issues detected in config.yaml:\033[0m"]
+    for ci in issues:
+        marker = "\033[31m✗\033[0m" if ci.severity == "error" else "\033[33m⚠\033[0m"
+        lines.append(f"  {marker} {ci.message}")
+    lines.append("  \033[2mRun 'hermes doctor' for fix suggestions.\033[0m")
+    sys.stderr.write("\n".join(lines) + "\n\n")
 
 
 def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, Any]:
@@ -1481,7 +1739,50 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
         config = load_config()
         config["_config_version"] = latest_ver
         save_config(config)
-    
+
+    # ── Skill-declared config vars ──────────────────────────────────────
+    # Skills can declare config.yaml settings they need via
+    # metadata.hermes.config in their SKILL.md frontmatter.
+    # Prompt for any that are missing/empty.
+    missing_skill_config = get_missing_skill_config_vars()
+    if missing_skill_config and interactive and not quiet:
+        print(f"\n  {len(missing_skill_config)} skill setting(s) not configured:")
+        for var in missing_skill_config:
+            skill_name = var.get("skill", "unknown")
+            print(f"    • {var['key']} — {var['description']} (from skill: {skill_name})")
+        print()
+        try:
+            answer = input("  Configure skill settings? [y/N]: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            answer = "n"
+
+        if answer in ("y", "yes"):
+            print()
+            config = load_config()
+            try:
+                from agent.skill_utils import SKILL_CONFIG_PREFIX
+            except Exception:
+                SKILL_CONFIG_PREFIX = "skills.config"
+            for var in missing_skill_config:
+                default = var.get("default", "")
+                default_hint = f" (default: {default})" if default else ""
+                value = input(f"  {var['prompt']}{default_hint}: ").strip()
+                if not value and default:
+                    value = str(default)
+                if value:
+                    storage_key = f"{SKILL_CONFIG_PREFIX}.{var['key']}"
+                    _set_nested(config, storage_key, value)
+                    results["config_added"].append(var["key"])
+                    print(f"  ✓ Saved {var['key']} = {value}")
+                else:
+                    results["warnings"].append(
+                        f"Skipped {var['key']} — skill '{var.get('skill', '?')}' may ask for it later"
+                    )
+                print()
+            save_config(config)
+        else:
+            print("  Set later with: hermes config set <key> <value>")
+
     return results
 
 
@@ -2135,6 +2436,23 @@ def show_config():
     print(f"  Telegram:     {'configured' if telegram_token else color('not configured', Colors.DIM)}")
     print(f"  Discord:      {'configured' if discord_token else color('not configured', Colors.DIM)}")
     
+    # Skill config
+    try:
+        from agent.skill_utils import discover_all_skill_config_vars, resolve_skill_config_values
+        skill_vars = discover_all_skill_config_vars()
+        if skill_vars:
+            resolved = resolve_skill_config_values(skill_vars)
+            print()
+            print(color("◆ Skill Settings", Colors.CYAN, Colors.BOLD))
+            for var in skill_vars:
+                key = var["key"]
+                value = resolved.get(key, "")
+                skill_name = var.get("skill", "")
+                display_val = str(value) if value else color("(not set)", Colors.DIM)
+                print(f"  {key:<20s} {display_val}  {color(f'[{skill_name}]', Colors.DIM)}")
+    except Exception:
+        pass
+
     print()
     print(color("─" * 60, Colors.DIM))
     print(color("  hermes config edit     # Edit config file", Colors.DIM))

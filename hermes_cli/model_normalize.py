@@ -8,8 +8,9 @@ Different LLM providers expect model identifiers in different formats:
   hyphens: ``claude-sonnet-4-6``.
 - **Copilot** expects bare names *with* dots preserved:
   ``claude-sonnet-4.6``.
-- **OpenCode** (Zen & Go) follows the same dot-to-hyphen convention as
+- **OpenCode Zen** follows the same dot-to-hyphen convention as
   Anthropic: ``claude-sonnet-4-6``.
+- **OpenCode Go** preserves dots in model names: ``minimax-m2.7``.
 - **DeepSeek** only accepts two model identifiers:
   ``deepseek-chat`` and ``deepseek-reasoner``.
 - **Custom** and remaining providers pass the name through as-is.
@@ -41,6 +42,7 @@ _VENDOR_PREFIXES: dict[str, str] = {
     "o3": "openai",
     "o4": "openai",
     "gemini": "google",
+    "gemma": "google",
     "deepseek": "deepseek",
     "glm": "z-ai",
     "kimi": "moonshotai",
@@ -66,7 +68,6 @@ _AGGREGATOR_PROVIDERS: frozenset[str] = frozenset({
 _DOT_TO_HYPHEN_PROVIDERS: frozenset[str] = frozenset({
     "anthropic",
     "opencode-zen",
-    "opencode-go",
 })
 
 # Providers that want bare names with dots preserved.
@@ -77,6 +78,7 @@ _STRIP_VENDOR_ONLY_PROVIDERS: frozenset[str] = frozenset({
 
 # Providers whose own naming is authoritative -- pass through unchanged.
 _PASSTHROUGH_PROVIDERS: frozenset[str] = frozenset({
+    "gemini",
     "zai",
     "kimi-coding",
     "minimax",

@@ -69,6 +69,7 @@ DEVICE_AUTH_POLL_INTERVAL_CAP_SECONDS = 1     # poll at most every 1s
 DEFAULT_CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex"
 DEFAULT_GITHUB_MODELS_BASE_URL = "https://api.githubcopilot.com"
 DEFAULT_COPILOT_ACP_BASE_URL = "acp://copilot"
+DEFAULT_GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai"
 CODEX_OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 CODEX_OAUTH_TOKEN_URL = "https://auth.openai.com/oauth/token"
 CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120
@@ -124,6 +125,14 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         auth_type="external_process",
         inference_base_url=DEFAULT_COPILOT_ACP_BASE_URL,
         base_url_env_var="COPILOT_ACP_BASE_URL",
+    ),
+    "gemini": ProviderConfig(
+        id="gemini",
+        name="Google AI Studio",
+        auth_type="api_key",
+        inference_base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+        api_key_env_vars=("GOOGLE_API_KEY", "GEMINI_API_KEY"),
+        base_url_env_var="GEMINI_BASE_URL",
     ),
     "zai": ProviderConfig(
         id="zai",
@@ -711,6 +720,32 @@ def deactivate_provider() -> None:
 # Provider Resolution — picks which provider to use
 # =============================================================================
 
+
+def _get_config_hint_for_unknown_provider(provider_name: str) -> str:
+    """Return a helpful hint string when provider resolution fails.
+
+    Checks for common config.yaml mistakes (malformed custom_providers, etc.)
+    and returns a human-readable diagnostic, or empty string if nothing found.
+    """
+    try:
+        from hermes_cli.config import validate_config_structure
+        issues = validate_config_structure()
+        if not issues:
+            return ""
+
+        lines = ["Config issue detected — run 'hermes doctor' for full diagnostics:"]
+        for ci in issues:
+            prefix = "ERROR" if ci.severity == "error" else "WARNING"
+            lines.append(f"  [{prefix}] {ci.message}")
+            # Show first line of hint
+            first_hint = ci.hint.splitlines()[0] if ci.hint else ""
+            if first_hint:
+                lines.append(f"    → {first_hint}")
+        return "\n".join(lines)
+    except Exception:
+        return ""
+
+
 def resolve_provider(
     requested: Optional[str] = None,
     *,
@@ -732,6 +767,7 @@ def resolve_provider(
     # Normalize provider aliases
     _PROVIDER_ALIASES = {
         "glm": "zai", "z-ai": "zai", "z.ai": "zai", "zhipu": "zai",
+        "google": "gemini", "google-gemini": "gemini", "google-ai-studio": "gemini",
         "kimi": "kimi-coding", "moonshot": "kimi-coding",
         "minimax-china": "minimax-cn", "minimax_cn": "minimax-cn",
         "claude": "anthropic", "claude-code": "anthropic",
@@ -757,10 +793,14 @@ def resolve_provider(
     if normalized in PROVIDER_REGISTRY:
         return normalized
     if normalized != "auto":
-        raise AuthError(
-            f"Unknown provider '{normalized}'.",
-            code="invalid_provider",
-        )
+        # Check for common config.yaml issues that cause this error
+        _config_hint = _get_config_hint_for_unknown_provider(normalized)
+        msg = f"Unknown provider '{normalized}'."
+        if _config_hint:
+            msg += f"\n\n{_config_hint}"
+        else:
+            msg += " Check 'hermes model' for available providers, or run 'hermes doctor' to diagnose config issues."
+        raise AuthError(msg, code="invalid_provider")
 
     # Explicit one-off CLI creds always mean openrouter/custom
     if explicit_api_key or explicit_base_url:
@@ -2143,8 +2183,18 @@ def _reset_config_provider() -> Path:
     return config_path
 
 
-def _prompt_model_selection(model_ids: List[str], current_model: str = "") -> Optional[str]:
-    """Interactive model selection. Puts current_model first with a marker. Returns chosen model ID or None."""
+def _prompt_model_selection(
+    model_ids: List[str],
+    current_model: str = "",
+    pricing: Optional[Dict[str, Dict[str, str]]] = None,
+) -> Optional[str]:
+    """Interactive model selection. Puts current_model first with a marker. Returns chosen model ID or None.
+
+    If *pricing* is provided (``{model_id: {prompt, completion}}``), a compact
+    price indicator is shown next to each model in aligned columns.
+    """
+    from hermes_cli.models import _format_price_per_mtok
+
     # Reorder: current model first, then the rest (deduplicated)
     ordered = []
     if current_model and current_model in model_ids:
@@ -2153,14 +2203,60 @@ def _prompt_model_selection(model_ids: List[str], current_model: str = "") -> Op
         if mid not in ordered:
             ordered.append(mid)
 
-    # Build display labels with marker on current
+    # Column-aligned labels when pricing is available
+    has_pricing = bool(pricing and any(pricing.get(m) for m in ordered))
+    name_col = max((len(m) for m in ordered), default=0) + 2 if has_pricing else 0
+
+    # Pre-compute formatted prices and dynamic column widths
+    _price_cache: dict[str, tuple[str, str, str]] = {}
+    price_col = 3  # minimum width
+    cache_col = 0  # only set if any model has cache pricing
+    has_cache = False
+    if has_pricing:
+        for mid in ordered:
+            p = pricing.get(mid)  # type: ignore[union-attr]
+            if p:
+                inp = _format_price_per_mtok(p.get("prompt", ""))
+                out = _format_price_per_mtok(p.get("completion", ""))
+                cache_read = p.get("input_cache_read", "")
+                cache = _format_price_per_mtok(cache_read) if cache_read else ""
+                if cache:
+                    has_cache = True
+            else:
+                inp, out, cache = "", "", ""
+            _price_cache[mid] = (inp, out, cache)
+            price_col = max(price_col, len(inp), len(out))
+            cache_col = max(cache_col, len(cache))
+        if has_cache:
+            cache_col = max(cache_col, 5)  # minimum: "Cache" header
+
     def _label(mid):
+        if has_pricing:
+            inp, out, cache = _price_cache.get(mid, ("", "", ""))
+            price_part = f" {inp:>{price_col}}  {out:>{price_col}}"
+            if has_cache:
+                price_part += f"  {cache:>{cache_col}}"
+            base = f"{mid:<{name_col}}{price_part}"
+        else:
+            base = mid
         if mid == current_model:
-            return f"{mid}  ← currently in use"
-        return mid
+            base += "  ← currently in use"
+        return base
 
     # Default cursor on the current model (index 0 if it was reordered to top)
     default_idx = 0
+
+    # Build a pricing header hint for the menu title
+    menu_title = "Select default model:"
+    if has_pricing:
+        # Align the header with the model column.
+        # Each choice is "  {label}" (2 spaces) and simple_term_menu prepends
+        # a 3-char cursor region ("-> " or "   "), so content starts at col 5.
+        pad = " " * 5
+        header = f"\n{pad}{'':>{name_col}} {'In':>{price_col}}  {'Out':>{price_col}}"
+        if has_cache:
+            header += f"  {'Cache':>{cache_col}}"
+        menu_title += header + "  /Mtok"
 
     # Try arrow-key menu first, fall back to number input
     try:
@@ -2176,7 +2272,7 @@ def _prompt_model_selection(model_ids: List[str], current_model: str = "") -> Op
             menu_highlight_style=("fg_green",),
             cycle_cursor=True,
             clear_screen=False,
-            title="Select default model:",
+            title=menu_title,
         )
         idx = menu.show()
         if idx is None:
@@ -2192,12 +2288,13 @@ def _prompt_model_selection(model_ids: List[str], current_model: str = "") -> Op
         pass
 
     # Fallback: numbered list
-    print("Select default model:")
+    print(menu_title)
+    num_width = len(str(len(ordered) + 2))
     for i, mid in enumerate(ordered, 1):
-        print(f"  {i}. {_label(mid)}")
+        print(f"  {i:>{num_width}}. {_label(mid)}")
     n = len(ordered)
-    print(f"  {n + 1}. Enter custom model name")
-    print(f"  {n + 2}. Skip (keep current)")
+    print(f"  {n + 1:>{num_width}}. Enter custom model name")
+    print(f"  {n + 2:>{num_width}}. Skip (keep current)")
     print()
 
     while True:
@@ -2556,13 +2653,26 @@ def _nous_device_code_login(
         "agent_key_reused": None,
         "agent_key_obtained_at": None,
     }
-    return refresh_nous_oauth_from_state(
-        auth_state,
-        min_key_ttl_seconds=min_key_ttl_seconds,
-        timeout_seconds=timeout_seconds,
-        force_refresh=False,
-        force_mint=True,
-    )
+    try:
+        return refresh_nous_oauth_from_state(
+            auth_state,
+            min_key_ttl_seconds=min_key_ttl_seconds,
+            timeout_seconds=timeout_seconds,
+            force_refresh=False,
+            force_mint=True,
+        )
+    except AuthError as exc:
+        if exc.code == "subscription_required":
+            portal_url = auth_state.get(
+                "portal_base_url", DEFAULT_NOUS_PORTAL_URL
+            ).rstrip("/")
+            print()
+            print("Your Nous Portal account does not have an active subscription.")
+            print(f"  Subscribe here: {portal_url}/billing")
+            print()
+            print("After subscribing, run `hermes model` again to finish setup.")
+            raise SystemExit(1)
+        raise
 
 
 def _login_nous(args, pconfig: ProviderConfig) -> None:
@@ -2577,8 +2687,8 @@ def _login_nous(args, pconfig: ProviderConfig) -> None:
 
     try:
         auth_state = _nous_device_code_login(
-            portal_base_url=getattr(args, "portal_url", None) or pconfig.portal_base_url,
-            inference_base_url=getattr(args, "inference_url", None) or pconfig.inference_base_url,
+            portal_base_url=getattr(args, "portal_url", None),
+            inference_base_url=getattr(args, "inference_url", None),
             client_id=getattr(args, "client_id", None) or pconfig.client_id,
             scope=getattr(args, "scope", None) or pconfig.scope,
             open_browser=not getattr(args, "no_browser", False),
@@ -2587,6 +2697,7 @@ def _login_nous(args, pconfig: ProviderConfig) -> None:
             ca_bundle=ca_bundle,
             min_key_ttl_seconds=5 * 60,
         )
+
         inference_base_url = auth_state["inference_base_url"]
         verify: bool | str = False if insecure else (ca_bundle if ca_bundle else True)
 
@@ -2610,8 +2721,6 @@ def _login_nous(args, pconfig: ProviderConfig) -> None:
                     code="invalid_token",
                 )
 
-            # Use curated model list (same as OpenRouter defaults) instead
-            # of the full /models dump which returns hundreds of models.
             from hermes_cli.models import _PROVIDER_MODELS
             model_ids = _PROVIDER_MODELS.get("nous", [])
 

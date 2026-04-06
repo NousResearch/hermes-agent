@@ -40,8 +40,12 @@ class TestSanitizePluginName:
             _sanitize_plugin_name("../../etc/passwd", tmp_path)
 
     def test_rejects_single_dot_dot(self, tmp_path):
-        with pytest.raises(ValueError, match="must not contain"):
+        with pytest.raises(ValueError, match="must not reference the plugins directory itself"):
             _sanitize_plugin_name("..", tmp_path)
+
+    def test_rejects_single_dot(self, tmp_path):
+        with pytest.raises(ValueError, match="must not reference the plugins directory itself"):
+            _sanitize_plugin_name(".", tmp_path)
 
     def test_rejects_forward_slash(self, tmp_path):
         with pytest.raises(ValueError, match="must not contain"):
@@ -227,6 +231,38 @@ class TestCmdInstall:
         with pytest.raises(SystemExit) as exc_info:
             cmd_install("invalid")
         assert exc_info.value.code == 1
+
+    @patch("hermes_cli.plugins_cmd._display_after_install")
+    @patch("hermes_cli.plugins_cmd.shutil.move")
+    @patch("hermes_cli.plugins_cmd.shutil.rmtree")
+    @patch("hermes_cli.plugins_cmd._plugins_dir")
+    @patch("hermes_cli.plugins_cmd._read_manifest")
+    @patch("hermes_cli.plugins_cmd.subprocess.run")
+    def test_install_rejects_manifest_name_pointing_at_plugins_root(
+        self,
+        mock_run,
+        mock_read_manifest,
+        mock_plugins_dir,
+        mock_rmtree,
+        mock_move,
+        mock_display_after_install,
+        tmp_path,
+    ):
+        from hermes_cli.plugins_cmd import cmd_install
+
+        plugins_dir = tmp_path / "plugins"
+        plugins_dir.mkdir()
+        mock_plugins_dir.return_value = plugins_dir
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        mock_read_manifest.return_value = {"name": "."}
+
+        with pytest.raises(SystemExit) as exc_info:
+            cmd_install("owner/repo", force=True)
+
+        assert exc_info.value.code == 1
+        assert plugins_dir not in [call.args[0] for call in mock_rmtree.call_args_list]
+        mock_move.assert_not_called()
+        mock_display_after_install.assert_not_called()
 
 
 # ── cmd_update tests ─────────────────────────────────────────────────────────

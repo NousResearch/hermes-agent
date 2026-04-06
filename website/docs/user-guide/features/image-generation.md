@@ -141,10 +141,25 @@ Debug logs are saved to `./logs/image_tools_debug_<session_id>.json` with detail
 
 The image generation tool runs with safety checks disabled by default (`safety_tolerance: 5`, the most permissive setting). This is configured at the code level and is not user-adjustable.
 
+## Platform Delivery
+
+Generated images are delivered differently depending on the platform:
+
+| Platform | Delivery method |
+|----------|----------------|
+| **CLI** | Image URL printed as markdown `![description](url)` — click to open in browser |
+| **Telegram** | Image sent as a photo message with the prompt as caption |
+| **Discord** | Image embedded in a message |
+| **Slack** | Image URL in message (Slack unfurls it) |
+| **WhatsApp** | Image sent as a media message |
+| **Other platforms** | Image URL in plain text |
+
+The agent uses `MEDIA:<url>` syntax in its response, which the platform adapter converts to the appropriate format.
+
 ## Limitations
 
 - **Requires FAL API key** — image generation incurs API costs on your FAL.ai account
 - **No image editing** — this is text-to-image only, no inpainting or img2img
-- **URL-based delivery** — images are returned as temporary FAL.ai URLs, not saved locally
+- **URL-based delivery** — images are returned as temporary FAL.ai URLs, not saved locally. URLs expire after a period (typically hours)
 - **Upscaling adds latency** — the automatic 2x upscale step adds processing time
 - **Max 4 images per request** — `num_images` is capped at 4

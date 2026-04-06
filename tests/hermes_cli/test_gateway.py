@@ -40,7 +40,7 @@ def test_systemd_status_warns_when_linger_disabled(monkeypatch, tmp_path, capsys
     monkeypatch.setattr(gateway, "get_systemd_unit_path", lambda system=False: unit_path)
     monkeypatch.setattr(gateway, "get_systemd_linger_status", lambda: (False, ""))
 
-    def fake_run(cmd, capture_output=False, text=False, check=False):
+    def fake_run(cmd, capture_output=False, text=False, check=False, **kwargs):
         if cmd[:4] == ["systemctl", "--user", "status", gateway.get_service_name()]:
             return SimpleNamespace(returncode=0, stdout="", stderr="")
         if cmd[:3] == ["systemctl", "--user", "is-active"]:

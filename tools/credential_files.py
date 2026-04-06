@@ -22,14 +22,26 @@ from __future__ import annotations
 
 import logging
 import os
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Dict, List
 
 logger = logging.getLogger(__name__)
 
 # Session-scoped list of credential files to mount.
-# Key: container_path (deduplicated), Value: host_path
-_registered_files: Dict[str, str] = {}
+# Backed by ContextVar to prevent cross-session data bleed in the gateway pipeline.
+_registered_files_var: ContextVar[Dict[str, str]] = ContextVar("_registered_files")
+
+
+def _get_registered() -> Dict[str, str]:
+    """Get or create the registered credential files dict for the current context/session."""
+    try:
+        return _registered_files_var.get()
+    except LookupError:
+        val: Dict[str, str] = {}
+        _registered_files_var.set(val)
+        return val
+
 
 # Cache for config-based file list (loaded once per process).
 _config_files: List[Dict[str, str]] | None = None
@@ -86,7 +98,7 @@ def register_credential_file(
         return False
 
     container_path = f"{container_base.rstrip('/')}/{relative_path}"
-    _registered_files[container_path] = str(resolved)
+    _get_registered()[container_path] = str(resolved)
     logger.debug("credential_files: registered %s -> %s", resolved, container_path)
     return True
 
@@ -174,7 +186,7 @@ def get_credential_file_mounts() -> List[Dict[str, str]]:
     mounts: Dict[str, str] = {}
 
     # Skill-registered files
-    for container_path, host_path in _registered_files.items():
+    for container_path, host_path in _get_registered().items():
         # Re-check existence (file may have been deleted since registration)
         if Path(host_path).is_file():
             mounts[container_path] = host_path
@@ -395,7 +407,7 @@ def iter_cache_files(
 
 def clear_credential_files() -> None:
     """Reset the skill-scoped registry (e.g. on session reset)."""
-    _registered_files.clear()
+    _get_registered().clear()
 
 
 def reset_config_cache() -> None:

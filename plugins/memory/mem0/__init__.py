@@ -207,6 +207,23 @@ class Mem0MemoryProvider(MemoryProvider):
         self._agent_id = self._config.get("agent_id", "hermes")
         self._rerank = self._config.get("rerank", True)
 
+    def _read_filters(self) -> Dict[str, Any]:
+        """Filters for search/get_all — scoped to user only for cross-session recall."""
+        return {"user_id": self._user_id}
+
+    def _write_filters(self) -> Dict[str, Any]:
+        """Filters for add — scoped to user + agent for attribution."""
+        return {"user_id": self._user_id, "agent_id": self._agent_id}
+
+    @staticmethod
+    def _unwrap_results(response: Any) -> list:
+        """Normalize Mem0 API response — v2 wraps results in {"results": [...]}."""
+        if isinstance(response, dict):
+            return response.get("results", [])
+        if isinstance(response, list):
+            return response
+        return []
+
     def system_prompt_block(self) -> str:
         return (
             "# Mem0 Memory\n"
@@ -232,12 +249,12 @@ class Mem0MemoryProvider(MemoryProvider):
         def _run():
             try:
                 client = self._get_client()
-                results = client.search(
+                results = self._unwrap_results(client.search(
                     query=query,
-                    user_id=self._user_id,
+                    filters=self._read_filters(),
                     rerank=self._rerank,
                     top_k=5,
-                )
+                ))
                 if results:
                     lines = [r.get("memory", "") for r in results if r.get("memory")]
                     with self._prefetch_lock:
@@ -262,7 +279,7 @@ class Mem0MemoryProvider(MemoryProvider):
                     {"role": "user", "content": user_content},
                     {"role": "assistant", "content": assistant_content},
                 ]
-                client.add(messages, user_id=self._user_id, agent_id=self._agent_id)
+                client.add(messages, **self._write_filters())
                 self._record_success()
             except Exception as e:
                 self._record_failure()
@@ -291,7 +308,7 @@ class Mem0MemoryProvider(MemoryProvider):
 
         if tool_name == "mem0_profile":
             try:
-                memories = client.get_all(user_id=self._user_id)
+                memories = self._unwrap_results(client.get_all(filters=self._read_filters()))
                 self._record_success()
                 if not memories:
                     return json.dumps({"result": "No memories stored yet."})
@@ -308,10 +325,12 @@ class Mem0MemoryProvider(MemoryProvider):
             rerank = args.get("rerank", False)
             top_k = min(int(args.get("top_k", 10)), 50)
             try:
-                results = client.search(
-                    query=query, user_id=self._user_id,
-                    rerank=rerank, top_k=top_k,
-                )
+                results = self._unwrap_results(client.search(
+                    query=query,
+                    filters=self._read_filters(),
+                    rerank=rerank,
+                    top_k=top_k,
+                ))
                 self._record_success()
                 if not results:
                     return json.dumps({"result": "No relevant memories found."})
@@ -328,8 +347,7 @@ class Mem0MemoryProvider(MemoryProvider):
             try:
                 client.add(
                     [{"role": "user", "content": conclusion}],
-                    user_id=self._user_id,
-                    agent_id=self._agent_id,
+                    **self._write_filters(),
                     infer=False,
                 )
                 self._record_success()

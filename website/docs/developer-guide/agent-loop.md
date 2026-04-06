@@ -6,107 +6,231 @@ description: "Detailed walkthrough of AIAgent execution, API modes, tools, callb
 
 # Agent Loop Internals
 
-The core orchestration engine is `run_agent.py`'s `AIAgent`.
+The core orchestration engine is `run_agent.py`'s `AIAgent` class — roughly 9,200 lines that handle everything from prompt assembly to tool dispatch to provider failover.
 
-## Core responsibilities
+## Core Responsibilities
 
 `AIAgent` is responsible for:
 
-- assembling the effective prompt and tool schemas
-- selecting the correct provider/API mode
-- making interruptible model calls
-- executing tool calls (sequentially or concurrently)
-- maintaining session history
-- handling compression, retries, and fallback models
+- Assembling the effective system prompt and tool schemas via `prompt_builder.py`
+- Selecting the correct provider/API mode (chat_completions, codex_responses, anthropic_messages)
+- Making interruptible model calls with cancellation support
+- Executing tool calls (sequentially or concurrently via thread pool)
+- Maintaining conversation history in OpenAI message format
+- Handling compression, retries, and fallback model switching
+- Tracking iteration budgets across parent and child agents
+- Flushing persistent memory before context is lost
 
-## API modes
+## Two Entry Points
 
-Hermes currently supports three API execution modes:
+```python
+# Simple interface — returns final response string
+response = agent.chat("Fix the bug in main.py")
 
-| API mode | Used for |
-|----------|----------|
-| `chat_completions` | OpenAI-compatible chat endpoints, including OpenRouter and most custom endpoints |
-| `codex_responses` | OpenAI Codex / Responses API path |
-| `anthropic_messages` | Native Anthropic Messages API |
+# Full interface — returns dict with messages, metadata, usage stats
+result = agent.run_conversation(
+    user_message="Fix the bug in main.py",
+    system_message=None,           # auto-built if omitted
+    conversation_history=None,      # auto-loaded from session if omitted
+    task_id="task_abc123"
+)
+```
 
-The mode is resolved from explicit args, provider selection, and base URL heuristics.
+`chat()` is a thin wrapper around `run_conversation()` that extracts the `final_response` field from the result dict.
 
-## Turn lifecycle
+## API Modes
+
+Hermes supports three API execution modes, resolved from provider selection, explicit args, and base URL heuristics:
+
+| API mode | Used for | Client type |
+|----------|----------|-------------|
+| `chat_completions` | OpenAI-compatible endpoints (OpenRouter, custom, most providers) | `openai.OpenAI` |
+| `codex_responses` | OpenAI Codex / Responses API | `openai.OpenAI` with Responses format |
+| `anthropic_messages` | Native Anthropic Messages API | `anthropic.Anthropic` via adapter |
+
+The mode determines how messages are formatted, how tool calls are structured, how responses are parsed, and how caching/streaming works. All three converge on the same internal message format (OpenAI-style `role`/`content`/`tool_calls` dicts) before and after API calls.
+
+**Mode resolution order:**
+1. Explicit `api_mode` constructor arg (highest priority)
+2. Provider-specific detection (e.g., `anthropic` provider → `anthropic_messages`)
+3. Base URL heuristics (e.g., `api.anthropic.com` → `anthropic_messages`)
+4. Default: `chat_completions`
+
+## Turn Lifecycle
+
+Each iteration of the agent loop follows this sequence:
 
 ```text
 run_conversation()
-  -> generate effective task_id
-  -> append current user message
-  -> load or build cached system prompt
-  -> maybe preflight-compress
-  -> build api_messages
-  -> inject ephemeral prompt layers
-  -> apply prompt caching if appropriate
-  -> make interruptible API call
-  -> if tool calls: execute them, append tool results, loop
-  -> if final text: persist, cleanup, return response
+  1. Generate task_id if not provided
+  2. Append user message to conversation history
+  3. Build or reuse cached system prompt (prompt_builder.py)
+  4. Check if preflight compression is needed (>50% context)
+  5. Build API messages from conversation history
+     - chat_completions: OpenAI format as-is
+     - codex_responses: convert to Responses API input items
+     - anthropic_messages: convert via anthropic_adapter.py
+  6. Inject ephemeral prompt layers (budget warnings, context pressure)
+  7. Apply prompt caching markers if on Anthropic
+  8. Make interruptible API call (_api_call_with_interrupt)
+  9. Parse response:
+     - If tool_calls: execute them, append results, loop back to step 5
+     - If text response: persist session, flush memory if needed, return
 ```
 
-## Interruptible API calls
+### Message Format
 
-Hermes wraps API requests so they can be interrupted from the CLI or gateway.
+All messages use OpenAI-compatible format internally:
 
-This matters because:
+```python
+{"role": "system", "content": "..."}
+{"role": "user", "content": "..."}
+{"role": "assistant", "content": "...", "tool_calls": [...]}
+{"role": "tool", "tool_call_id": "...", "content": "..."}
+```
 
-- the agent may be in a long LLM call
-- the user may send a new message mid-flight
-- background systems may need cancellation semantics
+Reasoning content (from models that support extended thinking) is stored in `assistant_msg["reasoning"]` and optionally displayed via the `reasoning_callback`.
 
-## Tool execution modes
+### Message Alternation Rules
 
-Hermes uses two execution strategies:
+The agent loop enforces strict message role alternation:
 
-- sequential execution for single or interactive tools
-- concurrent execution for multiple non-interactive tools
+- After the system message: `User → Assistant → User → Assistant → ...`
+- During tool calling: `Assistant (with tool_calls) → Tool → Tool → ... → Assistant`
+- **Never** two assistant messages in a row
+- **Never** two user messages in a row
+- **Only** `tool` role can have consecutive entries (parallel tool results)
 
-Concurrent tool execution preserves message/result ordering when reinserting tool responses into conversation history.
+Providers validate these sequences and will reject malformed histories.
 
-## Callback surfaces
+## Interruptible API Calls
 
-`AIAgent` supports platform/integration callbacks such as:
+API requests are wrapped in `_api_call_with_interrupt()` which runs the actual HTTP call in a background thread while monitoring an interrupt event:
 
-- `tool_progress_callback`
-- `thinking_callback`
-- `reasoning_callback`
-- `clarify_callback`
-- `step_callback`
-- `stream_delta_callback`
-- `tool_gen_callback`
-- `status_callback`
+```text
+┌──────────────────────┐     ┌──────────────┐
+│  Main thread         │     │  API thread   │
+│  wait on:            │────▶│  HTTP POST    │
+│  - response ready    │     │  to provider  │
+│  - interrupt event   │     └──────────────┘
+│  - timeout           │
+└──────────────────────┘
+```
 
-These are how the CLI, gateway, and ACP integrations stream intermediate progress and interactive approval/clarification flows.
+When interrupted (user sends new message, `/stop` command, or signal):
+- The API thread is abandoned (response discarded)
+- The agent can process the new input or shut down cleanly
+- No partial response is injected into conversation history
 
-## Budget and fallback behavior
+## Tool Execution
 
-Hermes tracks a shared iteration budget across parent and subagents. It also injects budget pressure hints near the end of the available iteration window.
+### Sequential vs Concurrent
 
-Fallback model support allows the agent to switch providers/models when the primary route fails in supported failure paths.
+When the model returns tool calls:
 
-## Compression and persistence
+- **Single tool call** → executed directly in the main thread
+- **Multiple tool calls** → executed concurrently via `ThreadPoolExecutor`
+  - Exception: tools marked as interactive (e.g., `clarify`) force sequential execution
+  - Results are reinserted in the original tool call order regardless of completion order
 
-Before and during long runs, Hermes may:
+### Execution Flow
 
-- flush memory before context loss
-- compress middle conversation turns
-- split the session lineage into a new session ID after compression
-- preserve recent context and structural tool-call/result consistency
+```text
+for each tool_call in response.tool_calls:
+    1. Resolve handler from tools/registry.py
+    2. Fire pre_tool_call plugin hook
+    3. Check if dangerous command (tools/approval.py)
+       - If dangerous: invoke approval_callback, wait for user
+    4. Execute handler with args + task_id
+    5. Fire post_tool_call plugin hook
+    6. Append {"role": "tool", "content": result} to history
+```
 
-## Key files to read next
+### Agent-Level Tools
 
-- `run_agent.py`
-- `agent/prompt_builder.py`
-- `agent/context_compressor.py`
-- `agent/prompt_caching.py`
-- `model_tools.py`
+Some tools are intercepted by `run_agent.py` *before* reaching `handle_function_call()`:
 
-## Related docs
+| Tool | Why intercepted |
+|------|-----------------|
+| `todo` | Reads/writes agent-local task state |
+| `memory` | Writes to persistent memory files with character limits |
+
+These tools modify agent state directly and return synthetic tool results without going through the registry.
+
+## Callback Surfaces
+
+`AIAgent` supports platform-specific callbacks that enable real-time progress in the CLI, gateway, and ACP integrations:
+
+| Callback | When fired | Used by |
+|----------|-----------|---------|
+| `tool_progress_callback` | Before/after each tool execution | CLI spinner, gateway progress messages |
+| `thinking_callback` | When model starts/stops thinking | CLI "thinking..." indicator |
+| `reasoning_callback` | When model returns reasoning content | CLI reasoning display, gateway reasoning blocks |
+| `clarify_callback` | When `clarify` tool is called | CLI input prompt, gateway interactive message |
+| `step_callback` | After each complete agent turn | Gateway step tracking, ACP progress |
+| `stream_delta_callback` | Each streaming token (when enabled) | CLI streaming display |
+| `tool_gen_callback` | When tool call is parsed from stream | CLI tool preview in spinner |
+| `status_callback` | State changes (thinking, executing, etc.) | ACP status updates |
+
+## Budget and Fallback Behavior
+
+### Iteration Budget
+
+The agent tracks iterations via `IterationBudget`:
+
+- Default: 90 iterations (configurable via `agent.max_turns`)
+- Shared across parent and child agents — a subagent consumes from the parent's budget
+- At 70%+ usage, `_get_budget_warning()` appends a `[BUDGET WARNING: ...]` to the last tool result
+- At 100%, the agent stops and returns a summary of work done
+
+### Fallback Model
+
+When the primary model fails (429 rate limit, 5xx server error, 401/403 auth error):
+
+1. Check `fallback_providers` list in config
+2. Try each fallback in order
+3. On success, continue the conversation with the new provider
+4. On 401/403, attempt credential refresh before failing over
+
+The fallback system also covers auxiliary tasks independently — vision, compression, web extraction, and session search each have their own fallback chain configurable via the `auxiliary.*` config section.
+
+## Compression and Persistence
+
+### When Compression Triggers
+
+- **Preflight** (before API call): If conversation exceeds 50% of model's context window
+- **Gateway auto-compression**: If conversation exceeds 85% (more aggressive, runs between turns)
+
+### What Happens During Compression
+
+1. Memory is flushed to disk first (preventing data loss)
+2. Middle conversation turns are summarized into a compact summary
+3. The last N messages are preserved intact (`compression.protect_last_n`, default: 20)
+4. Tool call/result message pairs are kept together (never split)
+5. A new session lineage ID is generated (compression creates a "child" session)
+
+### Session Persistence
+
+After each turn:
+- Messages are saved to the session store (SQLite via `hermes_state.py`)
+- Memory changes are flushed to `MEMORY.md` / `USER.md`
+- The session can be resumed later via `/resume` or `hermes chat --resume`
+
+## Key Source Files
+
+| File | Purpose |
+|------|---------|
+| `run_agent.py` | AIAgent class — the complete agent loop (~9,200 lines) |
+| `agent/prompt_builder.py` | System prompt assembly from memory, skills, context files, personality |
+| `agent/context_compressor.py` | Conversation compression algorithm |
+| `agent/prompt_caching.py` | Anthropic prompt caching markers and cache metrics |
+| `agent/auxiliary_client.py` | Auxiliary LLM client for side tasks (vision, summarization) |
+| `model_tools.py` | Tool schema collection, `handle_function_call()` dispatch |
+
+## Related Docs
 
 - [Provider Runtime Resolution](./provider-runtime.md)
 - [Prompt Assembly](./prompt-assembly.md)
 - [Context Compression & Prompt Caching](./context-compression-and-caching.md)
 - [Tools Runtime](./tools-runtime.md)
+- [Architecture Overview](./architecture.md)

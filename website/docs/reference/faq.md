@@ -90,7 +90,7 @@ Both persist across sessions. See [Memory](../user-guide/features/memory.md) and
 Yes. Import the `AIAgent` class and use Hermes programmatically:
 
 ```python
-from hermes.agent import AIAgent
+from run_agent import AIAgent
 
 agent = AIAgent(model="openrouter/nous/hermes-3-llama-3.1-70b")
 response = agent.chat("Explain quantum computing briefly")
@@ -227,7 +227,7 @@ hermes chat --model openrouter/meta-llama/llama-3.1-70b-instruct
 hermes chat
 
 # Use a model with a larger context window
-hermes chat --model openrouter/google/gemini-2.0-flash-001
+hermes chat --model openrouter/google/gemini-3-flash-preview
 ```
 
 If this happens on the first long conversation, Hermes may have the wrong context length for your model. Check what it detected:

@@ -291,6 +291,69 @@ class TestBuildSessionContextPrompt:
 
         assert "WhatsApp" in prompt or "whatsapp" in prompt.lower()
 
+    def test_multi_user_thread_prompt(self):
+        """Shared thread sessions show multi-user note instead of single user."""
+        config = GatewayConfig(
+            platforms={
+                Platform.TELEGRAM: PlatformConfig(enabled=True, token="fake"),
+            },
+        )
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-1002285219667",
+            chat_name="Test Group",
+            chat_type="group",
+            thread_id="17585",
+            user_name="Alice",
+        )
+        ctx = build_session_context(source, config)
+        prompt = build_session_context_prompt(ctx)
+
+        assert "Multi-user thread" in prompt
+        assert "[sender name]" in prompt
+        # Should NOT show a specific **User:** line (would bust cache)
+        assert "**User:** Alice" not in prompt
+
+    def test_non_thread_group_shows_user(self):
+        """Regular group messages (no thread) still show the user name."""
+        config = GatewayConfig(
+            platforms={
+                Platform.TELEGRAM: PlatformConfig(enabled=True, token="fake"),
+            },
+        )
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-1002285219667",
+            chat_name="Test Group",
+            chat_type="group",
+            user_name="Alice",
+        )
+        ctx = build_session_context(source, config)
+        prompt = build_session_context_prompt(ctx)
+
+        assert "**User:** Alice" in prompt
+        assert "Multi-user thread" not in prompt
+
+    def test_dm_thread_shows_user_not_multi(self):
+        """DM threads are single-user and should show User, not multi-user note."""
+        config = GatewayConfig(
+            platforms={
+                Platform.TELEGRAM: PlatformConfig(enabled=True, token="fake"),
+            },
+        )
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="99",
+            chat_type="dm",
+            thread_id="topic-1",
+            user_name="Alice",
+        )
+        ctx = build_session_context(source, config)
+        prompt = build_session_context_prompt(ctx)
+
+        assert "**User:** Alice" in prompt
+        assert "Multi-user thread" not in prompt
+
 
 class TestSessionStoreRewriteTranscript:
     """Regression: /retry and /undo must persist truncated history to disk."""
@@ -636,7 +699,28 @@ class TestWhatsAppDMSessionKeyConsistency:
         key = build_session_key(source)
         assert key == "agent:main:telegram:group:-1002285219667:17585"
 
-    def test_group_thread_sessions_are_isolated_per_user(self):
+    def test_group_thread_sessions_are_shared_by_default(self):
+        """Threads default to shared sessions — user_id is NOT appended."""
+        alice = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-1002285219667",
+            chat_type="group",
+            thread_id="17585",
+            user_id="alice",
+        )
+        bob = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-1002285219667",
+            chat_type="group",
+            thread_id="17585",
+            user_id="bob",
+        )
+        assert build_session_key(alice) == "agent:main:telegram:group:-1002285219667:17585"
+        assert build_session_key(bob) == "agent:main:telegram:group:-1002285219667:17585"
+        assert build_session_key(alice) == build_session_key(bob)
+
+    def test_group_thread_sessions_can_be_isolated_per_user(self):
+        """thread_sessions_per_user=True restores per-user isolation in threads."""
         source = SessionSource(
             platform=Platform.TELEGRAM,
             chat_id="-1002285219667",
@@ -644,8 +728,59 @@ class TestWhatsAppDMSessionKeyConsistency:
             thread_id="17585",
             user_id="42",
         )
-        key = build_session_key(source)
+        key = build_session_key(source, thread_sessions_per_user=True)
         assert key == "agent:main:telegram:group:-1002285219667:17585:42"
+
+    def test_non_thread_group_sessions_still_isolated_per_user(self):
+        """Regular group messages (no thread_id) remain per-user by default."""
+        alice = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-1002285219667",
+            chat_type="group",
+            user_id="alice",
+        )
+        bob = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-1002285219667",
+            chat_type="group",
+            user_id="bob",
+        )
+        assert build_session_key(alice) == "agent:main:telegram:group:-1002285219667:alice"
+        assert build_session_key(bob) == "agent:main:telegram:group:-1002285219667:bob"
+        assert build_session_key(alice) != build_session_key(bob)
+
+    def test_discord_thread_sessions_shared_by_default(self):
+        """Discord threads are shared across participants by default."""
+        alice = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="guild-123",
+            chat_type="thread",
+            thread_id="thread-456",
+            user_id="alice",
+        )
+        bob = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="guild-123",
+            chat_type="thread",
+            thread_id="thread-456",
+            user_id="bob",
+        )
+        assert build_session_key(alice) == build_session_key(bob)
+        assert "alice" not in build_session_key(alice)
+        assert "bob" not in build_session_key(bob)
+
+    def test_dm_thread_sessions_not_affected(self):
+        """DM threads use their own keying logic and are not affected."""
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="99",
+            chat_type="dm",
+            thread_id="topic-1",
+            user_id="42",
+        )
+        key = build_session_key(source)
+        # DM logic: chat_id + thread_id, user_id never included
+        assert key == "agent:main:telegram:dm:99:topic-1"
 
 
 class TestSessionStoreEntriesAttribute:

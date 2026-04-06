@@ -187,9 +187,21 @@ When scheduling jobs, you specify where the output goes:
 | `"origin"` | Back to where the job was created | Default on messaging platforms |
 | `"local"` | Save to local files only (`~/.hermes/cron/output/`) | Default on CLI |
 | `"telegram"` | Telegram home channel | Uses `TELEGRAM_HOME_CHANNEL` |
-| `"discord"` | Discord home channel | Uses `DISCORD_HOME_CHANNEL` |
 | `"telegram:123456"` | Specific Telegram chat by ID | Direct delivery |
-| `"discord:987654"` | Specific Discord channel by ID | Direct delivery |
+| `"telegram:-100123:17585"` | Specific Telegram topic | `chat_id:thread_id` format |
+| `"discord"` | Discord home channel | Uses `DISCORD_HOME_CHANNEL` |
+| `"discord:#engineering"` | Specific Discord channel | By channel name |
+| `"slack"` | Slack home channel | |
+| `"whatsapp"` | WhatsApp home | |
+| `"signal"` | Signal | |
+| `"matrix"` | Matrix home room | |
+| `"mattermost"` | Mattermost home channel | |
+| `"email"` | Email | |
+| `"sms"` | SMS via Twilio | |
+| `"homeassistant"` | Home Assistant | |
+| `"dingtalk"` | DingTalk | |
+| `"feishu"` | Feishu/Lark | |
+| `"wecom"` | WeCom | |
 
 The agent's final response is automatically delivered. You do not need to call `send_message` in the cron prompt.
 

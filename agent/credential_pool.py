@@ -660,6 +660,7 @@ class CredentialPool:
         available = self._available_entries(clear_expired=True, refresh=True)
         if not available:
             self._current_id = None
+            logger.info("credential pool: no available entries (all exhausted or empty)")
             return None
 
         if self._strategy == STRATEGY_RANDOM:
@@ -702,9 +703,18 @@ class CredentialPool:
             entry = self.current() or self._select_unlocked()
             if entry is None:
                 return None
+            _label = entry.label or entry.id[:8]
+            logger.info(
+                "credential pool: marking %s exhausted (status=%s), rotating",
+                _label, status_code,
+            )
             self._mark_exhausted(entry, status_code, error_context)
             self._current_id = None
-            return self._select_unlocked()
+            next_entry = self._select_unlocked()
+            if next_entry:
+                _next_label = next_entry.label or next_entry.id[:8]
+                logger.info("credential pool: rotated to %s", _next_label)
+            return next_entry
 
     def try_refresh_current(self) -> Optional[PooledCredential]:
         with self._lock:

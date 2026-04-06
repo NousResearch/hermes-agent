@@ -6986,8 +6986,12 @@ class GatewayRunner:
                 if isinstance(self.config, dict):
                     _inject_ts = self.config.get("display", {}).get("gateway_timestamp", True)
                 else:
-                    _inject_ts = getattr(getattr(self.config, "display", None), "gateway_timestamp", True)
-                logger.info("[timestamp-inject] config type=%s, gateway_timestamp=%s", type(self.config).__name__, _inject_ts)
+                    # GatewayConfig doesn't carry display settings — read from YAML directly
+                    try:
+                        _raw_cfg = _load_gateway_config()
+                        _inject_ts = _raw_cfg.get("display", {}).get("gateway_timestamp", True)
+                    except Exception:
+                        pass
                 if _inject_ts:
                     _now = datetime.now()
                     import locale as _locale

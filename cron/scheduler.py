@@ -25,11 +25,17 @@ except ImportError:
         import msvcrt
     except ImportError:
         msvcrt = None
+import time
 from pathlib import Path
-from hermes_constants import get_hermes_home
-from hermes_cli.config import load_config
 from typing import Optional
 
+# Add parent directory to path for imports BEFORE repo-level imports.
+# Without this, standalone invocations (e.g. after `hermes update` reloads
+# the module) fail with ModuleNotFoundError for hermes_time et al.
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from hermes_constants import get_hermes_home
+from hermes_cli.config import load_config
 from hermes_time import now as _hermes_now
 
 logger = logging.getLogger(__name__)
@@ -41,9 +47,6 @@ _KNOWN_DELIVERY_PLATFORMS = frozenset({
     "matrix", "mattermost", "homeassistant", "dingtalk", "feishu",
     "wecom", "sms", "email", "webhook",
 })
-
-# Add parent directory to path for imports
-sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_run
 
@@ -590,29 +593,78 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             session_db=_session_db,
         )
         
-        # Run the agent with a timeout so a hung API call or tool doesn't
-        # block the cron ticker thread indefinitely.  Default 10 minutes;
-        # override via env var.  Uses a separate thread because
-        # run_conversation is synchronous.
+        # Run the agent with an *inactivity*-based timeout: the job can run
+        # for hours if it's actively calling tools / receiving stream tokens,
+        # but a hung API call or stuck tool with no activity for the configured
+        # duration is caught and killed.  Default 600s (10 min inactivity);
+        # override via HERMES_CRON_TIMEOUT env var.  0 = unlimited.
+        #
+        # Uses the agent's built-in activity tracker (updated by
+        # _touch_activity() on every tool call, API call, and stream delta).
         _cron_timeout = float(os.getenv("HERMES_CRON_TIMEOUT", 600))
+        _cron_inactivity_limit = _cron_timeout if _cron_timeout > 0 else None
+        _POLL_INTERVAL = 5.0
         _cron_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         _cron_future = _cron_pool.submit(agent.run_conversation, prompt)
+        _inactivity_timeout = False
         try:
-            result = _cron_future.result(timeout=_cron_timeout)
-        except concurrent.futures.TimeoutError:
-            logger.error(
-                "Job '%s' timed out after %.0fs — interrupting agent",
-                job_name, _cron_timeout,
-            )
-            if hasattr(agent, "interrupt"):
-                agent.interrupt("Cron job timed out")
+            if _cron_inactivity_limit is None:
+                # Unlimited — just wait for the result.
+                result = _cron_future.result()
+            else:
+                result = None
+                while True:
+                    done, _ = concurrent.futures.wait(
+                        {_cron_future}, timeout=_POLL_INTERVAL,
+                    )
+                    if done:
+                        result = _cron_future.result()
+                        break
+                    # Agent still running — check inactivity.
+                    _idle_secs = 0.0
+                    if hasattr(agent, "get_activity_summary"):
+                        try:
+                            _act = agent.get_activity_summary()
+                            _idle_secs = _act.get("seconds_since_activity", 0.0)
+                        except Exception:
+                            pass
+                    if _idle_secs >= _cron_inactivity_limit:
+                        _inactivity_timeout = True
+                        break
+        except Exception:
             _cron_pool.shutdown(wait=False, cancel_futures=True)
-            raise TimeoutError(
-                f"Cron job '{job_name}' timed out after "
-                f"{int(_cron_timeout // 60)} minutes"
-            )
+            raise
         finally:
             _cron_pool.shutdown(wait=False)
+
+        if _inactivity_timeout:
+            # Build diagnostic summary from the agent's activity tracker.
+            _activity = {}
+            if hasattr(agent, "get_activity_summary"):
+                try:
+                    _activity = agent.get_activity_summary()
+                except Exception:
+                    pass
+            _last_desc = _activity.get("last_activity_desc", "unknown")
+            _secs_ago = _activity.get("seconds_since_activity", 0)
+            _cur_tool = _activity.get("current_tool")
+            _iter_n = _activity.get("api_call_count", 0)
+            _iter_max = _activity.get("max_iterations", 0)
+
+            logger.error(
+                "Job '%s' idle for %.0fs (inactivity limit %.0fs) "
+                "| last_activity=%s | iteration=%s/%s | tool=%s",
+                job_name, _secs_ago, _cron_inactivity_limit,
+                _last_desc, _iter_n, _iter_max,
+                _cur_tool or "none",
+            )
+            if hasattr(agent, "interrupt"):
+                agent.interrupt("Cron job timed out (inactivity)")
+            raise TimeoutError(
+                f"Cron job '{job_name}' idle for "
+                f"{int(_secs_ago)}s (limit {int(_cron_inactivity_limit)}s) "
+                f"— last activity: {_last_desc}"
+            )
 
         final_response = result.get("final_response", "") or ""
         # Use a separate variable for log display; keep final_response clean

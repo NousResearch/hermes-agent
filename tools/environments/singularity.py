@@ -8,6 +8,7 @@ via writable overlay directories that survive across sessions.
 import json
 import logging
 import os
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -311,9 +312,13 @@ class SingularityEnvironment(BaseEnvironment):
         else:
             effective_stdin = stdin_data
 
-        # apptainer exec --pwd doesn't expand ~, so prepend a cd into the command
-        if work_dir == "~" or work_dir.startswith("~/"):
-            exec_command = f"cd {work_dir} && {exec_command}"
+        # apptainer exec --pwd doesn't expand ~, so prepend a cd into the command.
+        # Keep ~ unquoted (for shell expansion) and quote only the subpath.
+        if work_dir == "~":
+            exec_command = f"cd ~ && {exec_command}"
+            work_dir = "/tmp"
+        elif work_dir.startswith("~/"):
+            exec_command = f"cd ~/{shlex.quote(work_dir[2:])} && {exec_command}"
             work_dir = "/tmp"
 
         cmd = [self.executable, "exec", "--pwd", work_dir,

@@ -4606,6 +4606,10 @@ class AIAgent:
                 payload_messages = api_messages[1:]
             if not instructions:
                 instructions = DEFAULT_AGENT_IDENTITY
+            # Some provider resolutions set codex mode before model is persisted.
+            # Responses API requires a non-empty model, so use the documented
+            # codex default when self.model is blank.
+            codex_model = (self.model or "").strip() or "gpt-5.3-codex"
 
             is_github_responses = (
                 "models.github.ai" in self.base_url.lower()
@@ -4622,7 +4626,7 @@ class AIAgent:
                     reasoning_effort = self.reasoning_config["effort"]
 
             kwargs = {
-                "model": self.model,
+                "model": codex_model,
                 "instructions": instructions,
                 "input": self._chat_messages_to_responses_input(payload_messages),
                 "tools": self._responses_tools(),

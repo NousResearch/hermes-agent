@@ -169,8 +169,6 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Fork PR tokens may not have permission to comment (addComment).
-          # Don't fail the workflow for permission-only failures.
           set +e
           SEVERITY="⚠️ Supply Chain Risk Detected"
           if [ "${{ steps.scan.outputs.critical }}" = "true" ]; then
@@ -189,7 +187,7 @@ jobs:
           gh pr comment "${{ github.event.pull_request.number }}" --body "$BODY"
           COMMENT_EXIT=$?
           if [ "$COMMENT_EXIT" -ne 0 ]; then
-            echo "::warning::Unable to post PR comment (likely restricted token permissions)."
+            echo "::warning::Unable to post PR comment (likely fork token permissions). Continuing without comment."
           fi
           exit 0
 

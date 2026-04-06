@@ -530,7 +530,7 @@ def do_list(source_filter: str = "all", console: Optional[Console] = None) -> No
             source_display = hub_entry.get("source", "hub")
             trust = hub_entry.get("trust_level", "community")
             hub_count += 1
-        elif name in builtin_names:
+        elif name in builtin_names or skill.get("dir_name") in builtin_names:
             source_type = "builtin"
             source_display = "builtin"
             trust = "builtin"

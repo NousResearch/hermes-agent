@@ -580,6 +580,7 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
                 seen_names.add(name)
                 skills.append({
                     "name": name,
+                    "dir_name": skill_dir.name,
                     "description": description,
                     "category": category,
                 })

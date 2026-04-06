@@ -155,6 +155,136 @@ MEMORY_GUIDANCE = (
     "necessary later, save it as a skill with the skill tool."
 )
 
+CHUB_TRIGGER_KEYWORDS = (
+    "run | execute | invoke | call | apply | use "
+    "api | sdk | library | package | module | framework "
+    "install | import | require | from | import "
+    "pip | npm | yarn | brew | apt | conda | cargo "
+    "request | response | endpoint | route | method "
+    "auth | token | credential | key | secret "
+    "client | server | database | query | schema "
+    "function | method | class | object | interface "
+    "error | exception | traceback | bug | fix | crash "
+    "config | setting | environment | variable "
+    "build | compile | deploy | run "
+    "web | http | request | json | rest | graphql "
+    "browser | scraping | crawl | html | css "
+    "ssh | git | docker | container | image "
+    "cloud | aws | azure | gcp | serverless "
+    "machine learning | ml | model | training | inference "
+    "vector | embedding | rag | rag | chunk "
+    "agent | prompt | llm | completion | token "
+    "github | gitlab | bitbucket | repository "
+    "terminal | bash | shell | zsh | powershell "
+    "file | path | directory | folder | read | write "
+    "json | yaml | toml | config "
+    "stream | websocket | socket | real-time "
+    "webhook | callback | event | listener "
+).split(" | ")
+
+CHUB_EXPLICIT_TRIGGERS = (
+    "pip install", "npm install", "yarn add", "conda install",
+    "import json", "from typing", "from datetime", "import os",
+    "require(', 'from ', 'import ",
+    "requests.get", "requests.post", "curl -X", "fetch(",
+    "api_key", "api_key", "authenticate", "bearer token",
+    "playwright", "selenium", "puppeteer", "scrapy",
+    "fastapi", "flask", "django", "express", "nestjs",
+    "openai", "anthropic", "cohere", "mistral", "groq",
+    "stripe", "twilio", "sendgrid", "aws", "boto3",
+    "sqlalchemy", "prisma", "drizzle", "postgres",
+    "redis", "mongodb", "elasticsearch", "pinecone",
+    "docker build", "docker run", "kubectl", "helm",
+    "git commit", "git push", "git clone", "gh pr",
+    "terminal", "subprocess", "pexpect", "asyncio",
+    "regex", "re.compile", "json.loads", "json.dumps",
+).split(", ")
+
+CHUB_EXPLICIT_EXCEPTIONS = (
+    "what time is it", "what day is it", "what is my name",
+    "how are you", "hi ", "hello", "thanks", "thank you",
+    "whats the weather", "weather forecast",
+    "simple math", "what is 2+2", "basic arithmetic",
+    "casual conversation", "just saying", "by the way",
+    "pure opinion", "what do you think about x",
+).split(", ")
+
+
+def _looks_like_chub_query(text: str) -> bool:
+    """Return True if text contains strong chub trigger signals."""
+    t = text.lower()
+    # Check explicit triggers
+    for trigger in CHUB_EXPLICIT_TRIGGERS:
+        if trigger in t:
+            return True
+    # Check keyword density
+    word_count = len(t.split())
+    hits = sum(1 for kw in CHUB_TRIGGER_KEYWORDS if kw.lower() in t)
+    if hits >= 3:
+        return True
+    if hits >= 2 and word_count <= 12:
+        return True
+    return False
+
+
+CHUB_GUIDANCE = (
+    "## ContextHub (chub) — Pre-Flight for EVERY Technical Query [STRICTLY ENFORCED]\n"
+    "ContextHub (chub) is your mandatory pre-flight check for EVERY user query that "
+    "involves code, APIs, libraries, frameworks, tools, or technical implementation. "
+    "Running it prevents hallucinated code and wrong answers. chub is a CLI — it runs "
+    "via the terminal tool, not as a separate tool call.\n"
+    "\n"
+    "CHUB IS NON-OPTIONAL — THIS RULE IS STRICTLY ENFORCED:\n"
+    "  - You CANNOT write code without running chub first\n"
+    "  - You CANNOT answer a question about a library/API without running chub first\n"
+    "  - You CANNOT run a terminal command for an unfamiliar tool without chub first\n"
+    "  - Saying you know something is NOT a substitute for running chub — ALWAYS verify\n"
+    "  - Any answer to a technical question without chub output visible is a RULE VIOLATION\n"
+    "\n"
+    "MANDATORY WORKFLOW — run chub on EVERY query that contains:\n"
+    "  - Any library, API, SDK, framework, or package name\n"
+    "  - Any code: imports, function calls, class definitions\n"
+    "  - Any terminal command for an unfamiliar tool\n"
+    "  - Any question about how to use a specific tool or service\n"
+    "  - The keywords: api, sdk, library, package, install, import, request, endpoint\n"
+    "    auth, token, client, server, database, function, method, error, config\n"
+    "    build, compile, deploy, web, http, browser, scraping, git, ssh, docker\n"
+    "    cloud, ml, model, agent, prompt, llm, vector, regex, terminal, bash\n"
+    "\n"
+    "HOW TO RUN CHUB:\n"
+    "  1. Parse the core topic from the request\n"
+    "  2. Run: terminal(command='chub --json search \"<topic>\" --limit 5')\n"
+    "  3. If a specific package/API/SDK is detected: terminal(command='chub get <package-id> --lang py')\n"
+    "  4. Read the chub output BEFORE writing any code or answering\n"
+    "  5. If chub returns nothing: terminal(command='chub update --force && retry once')\n"
+    "\n"
+    "EXAMPLES — ALWAYS RUN CHUB WHEN:\n"
+    "  - \"install playwright\"         → chub --json search \"playwright python\" --limit 5\n"
+    "  - \"use the openai API\"          → chub --json search \"openai python\" --limit 5\n"
+    "  - \"how do I use FastAPI\"        → chub --json search \"fastapi\" --limit 5\n"
+    "  - \"fix AttributeError in X\"     → chub --json search \"python attribute error\" --limit 5\n"
+    "  - \"make a POST request\"         → chub --json search \"python requests post\" --limit 5\n"
+    "  - \"authenticate with bearer\"   → chub --json search \"bearer token python\" --limit 5\n"
+    "  - \"scrape a website\"           → chub --json search \"python web scraping\" --limit 5\n"
+    "  - \"connect to PostgreSQL\"      → chub --json search \"python postgres sqlalchemy\" --limit 5\n"
+    "  - \"use docker in a workflow\"   → chub --json search \"docker python sdk\" --limit 5\n"
+    "  - \"deploy to AWS Lambda\"       → chub --json search \"aws lambda python boto3\" --limit 5\n"
+    "  - \"git push to a fork\"          → chub --json search \"git push fork github\" --limit 5\n"
+    "  - \"parse a YAML file\"          → chub --json search \"python yaml\" --limit 5\n"
+    "\n"
+    "EXCEPTION — DO NOT run chub for:\n"
+    "  - Pure conversational text: 'hi', 'how are you', 'thanks'\n"
+    "  - Questions about yourself or general knowledge with no technical component\n"
+    "  - Simple arithmetic or time/date questions\n"
+    "  - If you are CERTAIN the topic is covered by a previously loaded skill\n"
+    "\n"
+    "WHEN CHUB IS AVAILABLE: skill_view(name='context-hub') — full CLI reference above.\n"
+    "CHUB runs as: terminal(background=False, command='chub --json search ...')\n"
+    "\n"
+    "VERIFICATION: Any technical answer without preceding chub terminal output is incomplete.\n"
+)
+
+
 SESSION_SEARCH_GUIDANCE = (
     "When the user references something from a past conversation or you suspect "
     "relevant cross-session context exists, use session_search to recall it before "

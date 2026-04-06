@@ -49,11 +49,11 @@ SEND_MESSAGE_SCHEMA = {
     "name": "send_message",
     "description": (
         "Send a message to a connected messaging platform, or list available targets.\n\n"
-        "IMPORTANT: When the user asks to send to a specific channel or person "
-        "(not just a bare platform name), call send_message(action='list') FIRST to see "
-        "available targets, then send to the correct one.\n"
-        "If the user just says a platform name like 'send to telegram', send directly "
-        "to the home channel without listing first."
+        "IMPORTANT — WhatsApp: NEVER use action='list' for WhatsApp (returns empty). "
+        "Send directly with target='whatsapp:NUMBER@s.whatsapp.net' (number without +) "
+        "or 'whatsapp:JID@g.us' for groups.\n"
+        "For other platforms: call send_message(action='list') FIRST to see "
+        "available targets, then send."
     ),
     "parameters": {
         "type": "object",

@@ -246,22 +246,54 @@ class IMessageAdapter(BasePlatformAdapter):
     async def send(self, chat_id, content, *, reply_to=None, metadata=None, **kwargs) -> SendResult:
         # Detect intermediate streaming updates: GatewayStreamConsumer appends
         # a cursor character while the agent is still generating.  iMessage has
-        # no edit-message API, so sending these partial fragments would leave a
-        # stray incomplete message in the conversation.  Suppress them silently;
-        # the final complete response is delivered without a cursor by the
-        # normal send path.
+        # no edit-message API so we suppress partial fragments.
+        # Returning a fake message_id lets the stream consumer establish an
+        # "edit session" -- subsequent streaming deltas go via edit_message()
+        # which we also suppress, and the final cursor-free edit is the only
+        # real send that reaches AppleScript.
         for cursor in _STREAMING_CURSORS:
             if content.endswith(cursor):
-                # Return success=True but no message_id so the stream consumer
-                # knows the send "worked" but cannot set up an edit session.
-                # This causes it to disable streaming for this adapter and fall
-                # back to the normal final-response send path.
-                return SendResult(success=True)
+                return SendResult(success=True, message_id=f"imsg-stream-{chat_id}")
 
-        # Strip any stray cursor characters that survived (defensive).
+        # Strip leading newlines (streaming artifacts) and trailing cursor chars.
+        content = content.lstrip(chr(10))
         for cursor in _STREAMING_CURSORS:
             if content.endswith(cursor):
                 content = content[: -len(cursor)].rstrip()
+
+        if not content.strip():
+            return SendResult(success=True)
+
+        chunks = self._split_message(content)
+        last_result = SendResult(success=False, error="no chunks")
+        for chunk in chunks:
+            last_result = await self._send_chunk(chat_id, chunk)
+            if not last_result.success:
+                break
+        return last_result
+
+    async def edit_message(
+        self,
+        chat_id: str,
+        message_id: str,
+        content: str,
+        metadata=None,
+        **kwargs,
+    ) -> SendResult:
+        """Handle streaming edit calls from GatewayStreamConsumer.
+
+        Intermediate edits (content ends with cursor) are suppressed.
+        The final cursor-free edit is the one real send we deliver.
+        """
+        # Suppress all intermediate streaming edits (have cursor appended).
+        for cursor in _STREAMING_CURSORS:
+            if content.endswith(cursor):
+                return SendResult(success=True)
+
+        # Final edit: strip leading newlines and send the clean text.
+        content = content.lstrip(chr(10)).rstrip()
+        if not content:
+            return SendResult(success=True)
 
         chunks = self._split_message(content)
         last_result = SendResult(success=False, error="no chunks")

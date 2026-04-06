@@ -19,6 +19,7 @@ from hermes_cli.auth import (
     ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
     CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
     DEFAULT_AGENT_KEY_MIN_TTL_SECONDS,
+    KIMI_CODE_BASE_URL,
     PROVIDER_REGISTRY,
     _agent_key_is_usable,
     _codex_access_token_is_expiring,
@@ -26,6 +27,7 @@ from hermes_cli.auth import (
     _is_expiring,
     _load_auth_store,
     _load_provider_state,
+    _resolve_kimi_base_url,
     read_credential_pool,
     write_credential_pool,
 )
@@ -992,6 +994,8 @@ def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool
         active_sources.add(source)
         auth_type = AUTH_TYPE_OAUTH if provider == "anthropic" and not token.startswith("sk-ant-api") else AUTH_TYPE_API_KEY
         base_url = env_url or pconfig.inference_base_url
+        if provider == "kimi-coding":
+            base_url = _resolve_kimi_base_url(token, pconfig.inference_base_url, env_url)
         changed |= _upsert_entry(
             entries,
             provider,

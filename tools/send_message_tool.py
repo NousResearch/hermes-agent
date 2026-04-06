@@ -133,6 +133,7 @@ def _handle_send(args):
         "wecom": Platform.WECOM,
         "email": Platform.EMAIL,
         "sms": Platform.SMS,
+        "irc": Platform.IRC,
     }
     platform = platform_map.get(platform_name)
     if not platform:
@@ -371,6 +372,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             result = await _send_feishu(pconfig, chat_id, chunk, thread_id=thread_id)
         elif platform == Platform.WECOM:
             result = await _send_wecom(pconfig.extra, chat_id, chunk)
+        elif platform == Platform.IRC:
+            result = {"error": "IRC direct sending not yet implemented"}
         else:
             result = {"error": f"Direct sending not yet implemented for {platform.value}"}
 

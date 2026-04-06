@@ -1459,6 +1459,37 @@ _PLATFORMS = [
              "help": "Chat ID for scheduled results and notifications."},
         ],
     },
+    {
+        "key": "irc",
+        "label": "IRC",
+        "emoji": "💬",
+        "token_var": "IRC_NICK",
+        "setup_instructions": [
+            "1. Choose an IRC server (e.g., irc.libera.chat, irc.oftc.net)",
+            "2. Pick a nickname for your bot",
+            "3. If the server requires SASL auth, get your password",
+            "4. List channels to join (comma-separated, e.g., #hermes,#bots)",
+        ],
+        "vars": [
+            {"name": "IRC_SERVER", "prompt": "IRC server hostname (e.g., irc.libera.chat)", "password": False,
+             "help": "The IRC server to connect to."},
+            {"name": "IRC_PORT", "prompt": "Port (default: 6667, TLS: 6697)", "password": False,
+             "help": "Server port. Use 6697 with TLS enabled."},
+            {"name": "IRC_NICK", "prompt": "Nickname", "password": False,
+             "help": "The bot's nickname on the server."},
+            {"name": "IRC_PASSWORD", "prompt": "Password (or SASL password, optional)", "password": True,
+             "help": "Leave empty if no authentication required."},
+            {"name": "IRC_CHANNELS", "prompt": "Channels to join (comma-separated, e.g., #bots,#test)", "password": False,
+             "help": "Channels the bot will join on connect."},
+            {"name": "IRC_USE_TLS", "prompt": "Use TLS? (true/false, default: false)", "password": False,
+             "help": "Enable for secure connections (port 6697)."},
+            {"name": "IRC_ALLOWED_USERS", "prompt": "Allowed nicks (comma-separated, or empty to allow all)", "password": False,
+             "is_allowlist": True,
+             "help": "Restrict which users can command the bot."},
+            {"name": "IRC_HOME_CHANNEL", "prompt": "Home channel (for cron/notification delivery)", "password": False,
+             "help": "Channel for scheduled results and notifications."},
+        ],
+    },
 ]
 
 

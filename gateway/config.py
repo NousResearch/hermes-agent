@@ -63,6 +63,7 @@ class Platform(Enum):
     WEBHOOK = "webhook"
     FEISHU = "feishu"
     WECOM = "wecom"
+    IRC = "irc"
 
 
 @dataclass
@@ -286,6 +287,9 @@ class GatewayConfig:
                 connected.append(platform)
             # WeCom uses extra dict for bot credentials
             elif platform == Platform.WECOM and config.extra.get("bot_id"):
+                connected.append(platform)
+            # IRC uses extra dict for server/nick
+            elif platform == Platform.IRC and config.extra.get("server"):
                 connected.append(platform)
         return connected
     
@@ -924,6 +928,32 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 name=os.getenv("WECOM_HOME_CHANNEL_NAME", "Home"),
             )
 
+    # IRC
+    irc_server = os.getenv("IRC_SERVER")
+    irc_nick = os.getenv("IRC_NICK")
+    if irc_server and irc_nick:
+        if Platform.IRC not in config.platforms:
+            config.platforms[Platform.IRC] = PlatformConfig()
+        config.platforms[Platform.IRC].enabled = True
+        config.platforms[Platform.IRC].extra.update({
+            "server": irc_server,
+            "port": os.getenv("IRC_PORT", "6667"),
+            "nick": irc_nick,
+            "password": os.getenv("IRC_PASSWORD", ""),
+            "use_tls": os.getenv("IRC_USE_TLS", "").lower() in ("true", "1", "yes"),
+            "channels": os.getenv("IRC_CHANNELS", ""),
+            "message_chunk_limit": int(os.getenv("IRC_MESSAGE_CHUNK_LIMIT", "350")),
+            "require_multiline": os.getenv("IRC_REQUIRE_MULTILINE", "").lower() in ("true", "1", "yes"),
+            "nickserv_password": os.getenv("IRC_NICKSERV_PASSWORD", ""),
+            "nickserv_service": os.getenv("IRC_NICKSERV_SERVICE", "NickServ"),
+        })
+        irc_home = os.getenv("IRC_HOME_CHANNEL")
+        if irc_home:
+            config.platforms[Platform.IRC].home_channel = HomeChannel(
+                platform=Platform.IRC,
+                chat_id=irc_home,
+                name=os.getenv("IRC_HOME_CHANNEL_NAME", "Home"),
+            )
     # Session settings
     idle_minutes = os.getenv("SESSION_IDLE_MINUTES")
     if idle_minutes:

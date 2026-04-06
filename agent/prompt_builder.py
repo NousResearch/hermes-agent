@@ -285,6 +285,12 @@ PLATFORM_HINTS = {
         "only — no markdown, no formatting. SMS messages are limited to ~1600 "
         "characters, so be brief and direct."
     ),
+    "irc": (
+        "You are on IRC (Internet Relay Chat). "
+        "Markdown is supported and will be rendered. "
+        "IRC has no native file transfer — include MEDIA:/path for files and they will be uploaded to a configured host. "
+        "Individual messages are limited to ~512 bytes per line."
+    ),
 }
 
 CONTEXT_FILE_MAX_CHARS = 20_000

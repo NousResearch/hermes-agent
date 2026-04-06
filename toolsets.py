@@ -194,6 +194,19 @@ TOOLSETS = {
         "includes": []
     },
 
+    "async_delegation": {
+        "description": "Non-blocking background agent execution — spawn tasks, check progress, collect results, steer or cancel running agents",
+        "tools": [
+            "delegate_task_async",
+            "check_task",
+            "collect_task",
+            "steer_task",
+            "cancel_task",
+            "list_tasks",
+        ],
+        "includes": []
+    },
+
     # "honcho" toolset removed — Honcho is now a memory provider plugin.
     # Tools are injected via MemoryManager, not the toolset system.
 

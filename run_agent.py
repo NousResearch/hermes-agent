@@ -4180,7 +4180,13 @@ class AIAgent:
                             entry["id"] = tc_delta.id
                         if tc_delta.function:
                             if tc_delta.function.name:
-                                entry["function"]["name"] += tc_delta.function.name
+                                # Only append if this is a new fragment (streaming builds name char by char).
+                                # Guard against duplicate full-name delivery (seen with reasoning enabled +
+                                # tool_visibility "new") which causes write_file → write_filewrite_file.
+                                current = entry["function"]["name"]
+                                fragment = tc_delta.function.name
+                                if not current.endswith(fragment):
+                                    entry["function"]["name"] += fragment
                             if tc_delta.function.arguments:
                                 entry["function"]["arguments"] += tc_delta.function.arguments
                         extra = getattr(tc_delta, "extra_content", None)

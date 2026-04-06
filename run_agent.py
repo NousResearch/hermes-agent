@@ -4494,7 +4494,7 @@ class AIAgent:
                             entry["id"] = tc_delta.id
                         if tc_delta.function:
                             if tc_delta.function.name:
-                                entry["function"]["name"] += tc_delta.function.name
+                                entry["function"]["name"] = tc_delta.function.name
                             if tc_delta.function.arguments:
                                 entry["function"]["arguments"] += tc_delta.function.arguments
                         extra = getattr(tc_delta, "extra_content", None)

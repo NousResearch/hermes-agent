@@ -5438,6 +5438,12 @@ class AIAgent:
         if extra_body:
             api_kwargs["extra_body"] = extra_body
 
+        # xAI prompt caching: send x-grok-conv-id header to route requests
+        # to the same server, maximizing automatic cache hits.
+        # https://docs.x.ai/developers/advanced-api-usage/prompt-caching
+        if "x.ai" in self._base_url_lower and hasattr(self, "session_id") and self.session_id:
+            api_kwargs["extra_headers"] = {"x-grok-conv-id": self.session_id}
+
         return api_kwargs
 
     def _supports_reasoning_extra_body(self) -> bool:

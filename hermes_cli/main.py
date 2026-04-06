@@ -4626,12 +4626,21 @@ For more help on a command:
     skills_install.add_argument("--category", default="", help="Category folder to install into")
     skills_install.add_argument("--force", action="store_true", help="Install despite blocked scan verdict")
     skills_install.add_argument("--yes", "-y", action="store_true", help="Skip confirmation prompt (needed in TUI mode)")
+    _install_scope = skills_install.add_mutually_exclusive_group()
+    _install_scope.add_argument(
+        "--shared", action="store_true", default=False,
+        help="Install to ~/.hermes/shared-skills/ (shared across profiles on this host)",
+    )
+    _install_scope.add_argument(
+        "--local", action="store_true", default=False,
+        help="Install to this profile's skills directory only (default when --yes is set)",
+    )
 
     skills_inspect = skills_subparsers.add_parser("inspect", help="Preview a skill without installing")
     skills_inspect.add_argument("identifier", help="Skill identifier")
 
     skills_list = skills_subparsers.add_parser("list", help="List installed skills")
-    skills_list.add_argument("--source", default="all", choices=["all", "hub", "builtin", "local"])
+    skills_list.add_argument("--source", default="all", choices=["all", "hub", "builtin", "local", "shared"])
 
     skills_check = skills_subparsers.add_parser("check", help="Check installed hub skills for updates")
     skills_check.add_argument("name", nargs="?", help="Specific skill to check (default: all)")

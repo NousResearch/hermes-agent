@@ -306,10 +306,14 @@ hermes skills search react --source skills-sh     # Search the skills.sh directo
 hermes skills search https://mintlify.com/docs --source well-known
 hermes skills inspect openai/skills/k8s           # Preview before installing
 hermes skills install openai/skills/k8s           # Install with security scan
+hermes skills install openai/skills/k8s --shared  # Install to ~/.hermes/shared-skills/ (opt-in from other profiles)
+hermes skills install openai/skills/k8s --local   # Install to this profile only (default)
 hermes skills install official/security/1password
 hermes skills install skills-sh/vercel-labs/json-render/json-render-react --force
 hermes skills install well-known:https://mintlify.com/docs/.well-known/skills/mintlify
+hermes skills list                                 # List all skills with source and scope
 hermes skills list --source hub                   # List hub-installed skills
+hermes skills list --source shared                # List only shared-scope skills
 hermes skills check                               # Check installed hub skills for upstream updates
 hermes skills update                              # Reinstall hub skills with upstream changes when needed
 hermes skills audit                               # Re-scan all hub skills for security
@@ -318,6 +322,41 @@ hermes skills publish skills/my-skill --to github --repo owner/repo
 hermes skills snapshot export setup.json          # Export skill config
 hermes skills tap add myorg/skills-repo           # Add a custom GitHub source
 ```
+
+### Install scope: profile-local vs shared
+
+By default, `hermes skills install` copies the skill into the **active profile's** `~/.hermes/skills/` directory — it is visible only to that profile. If you want the skill available across multiple profiles on the same host, use `--shared`:
+
+```bash
+hermes skills install openai/skills/k8s --shared
+```
+
+This installs the skill to `~/.hermes/shared-skills/k8s/` and adds `k8s` to the current profile's `skills.shared` config. Other profiles can opt in by adding `k8s` to their own `skills.shared` list (see [Sharing Specific Skills Across Profiles](#sharing-specific-skills-across-profiles)).
+
+Without a flag, the install command prompts you interactively:
+
+```
+Install location
+  local   — installs into this profile's skills directory only.
+  shared  — installs into ~/.hermes/shared-skills/ so any profile
+            can opt in by adding the name to skills.shared in its config.
+
+Where should 'k8s' be installed?
+  [local/shared] (default: local):
+```
+
+Pass `--local` to suppress the prompt and default to profile-local, or `--yes` (`-y`) which also defaults to local.
+
+**Uninstalling shared skills**: `hermes skills uninstall <name>` detects which lockfile the skill is in and removes it from the correct location. For shared skills, it also removes the name from the current profile's `skills.shared` config. Other profiles that reference the skill will silently skip it on their next load (no error).
+
+**Scope column in `hermes skills list`**: The table now includes a **Scope** column:
+
+| Scope | Meaning |
+|-------|---------|
+| `profile` | Installed in this profile's `~/.hermes/skills/` via hub |
+| `shared` | Installed in `~/.hermes/shared-skills/` and opted in via `skills.shared` |
+| `builtin` | Bundled with Hermes (not hub-installed) |
+| `local` | Created manually or by the agent — not from the hub |
 
 ### Supported hub sources
 

@@ -27,6 +27,107 @@ _console = Console()
 
 
 # ---------------------------------------------------------------------------
+# Shared-skills helpers
+# ---------------------------------------------------------------------------
+
+
+def _prompt_install_scope(skill_name: str, console: Console) -> str:
+    """Interactively ask whether to install to the profile or to the shared root.
+
+    Returns ``'local'`` or ``'shared'``.
+    """
+    console.print()
+    console.print(Panel(
+        "[bold]Install scope[/]\n\n"
+        "  [cyan]local[/]   — installs into this profile's skills directory only.\n"
+        "  [cyan]shared[/]  — installs into [dim]~/.hermes/shared-skills/[/] so any profile\n"
+        "            can opt in by adding the name to [dim]skills.shared[/] in its config.",
+        title="Install location",
+        border_style="bright_cyan",
+    ))
+    console.print(f"[bold]Where should '{skill_name}' be installed?[/]")
+    try:
+        answer = input("  [local/shared] (default: local): ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        answer = "local"
+    return "shared" if answer in ("shared", "s") else "local"
+
+
+def _add_skill_to_profile_shared_config(skill_name: str) -> None:
+    """Append *skill_name* to ``skills.shared`` in the active profile's config.yaml."""
+    from hermes_constants import get_hermes_home
+    import yaml
+
+    config_path = get_hermes_home() / "config.yaml"
+    if config_path.exists():
+        try:
+            parsed = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+        except Exception:
+            parsed = {}
+    else:
+        parsed = {}
+
+    if not isinstance(parsed, dict):
+        parsed = {}
+
+    skills_cfg = parsed.setdefault("skills", {})
+    if not isinstance(skills_cfg, dict):
+        skills_cfg = {}
+        parsed["skills"] = skills_cfg
+
+    shared_list = skills_cfg.get("shared", [])
+    if isinstance(shared_list, str):
+        shared_list = [shared_list]
+    elif not isinstance(shared_list, list):
+        shared_list = []
+
+    if skill_name not in shared_list:
+        shared_list.append(skill_name)
+
+    skills_cfg["shared"] = shared_list
+    config_path.write_text(
+        yaml.dump(parsed, default_flow_style=False, allow_unicode=True),
+        encoding="utf-8",
+    )
+
+
+def _remove_skill_from_profile_shared_config(skill_name: str) -> None:
+    """Remove *skill_name* from ``skills.shared`` in the active profile's config.yaml."""
+    from hermes_constants import get_hermes_home
+    import yaml
+
+    config_path = get_hermes_home() / "config.yaml"
+    if not config_path.exists():
+        return
+    try:
+        parsed = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return
+    if not isinstance(parsed, dict):
+        return
+
+    skills_cfg = parsed.get("skills")
+    if not isinstance(skills_cfg, dict):
+        return
+
+    shared_list = skills_cfg.get("shared", [])
+    if isinstance(shared_list, str):
+        shared_list = [shared_list]
+    elif not isinstance(shared_list, list):
+        return
+
+    updated = [n for n in shared_list if n != skill_name]
+    if updated == shared_list:
+        return  # nothing to remove
+
+    skills_cfg["shared"] = updated
+    config_path.write_text(
+        yaml.dump(parsed, default_flow_style=False, allow_unicode=True),
+        encoding="utf-8",
+    )
+
+
+# ---------------------------------------------------------------------------
 # Shared do_* functions
 # ---------------------------------------------------------------------------
 
@@ -306,11 +407,20 @@ def do_browse(page: int = 1, page_size: int = 20, source: str = "all",
 
 def do_install(identifier: str, category: str = "", force: bool = False,
                console: Optional[Console] = None, skip_confirm: bool = False,
-               invalidate_cache: bool = True) -> None:
-    """Fetch, quarantine, scan, confirm, and install a skill."""
+               invalidate_cache: bool = True,
+               shared: Optional[bool] = None) -> None:
+    """Fetch, quarantine, scan, confirm, and install a skill.
+
+    Args:
+        shared: ``True`` → install to ``~/.hermes/shared-skills/``.
+                ``False`` → install to the profile-local skills directory.
+                ``None``  → prompt interactively (unless *skip_confirm* is set,
+                            in which case it defaults to ``False``).
+    """
     from tools.skills_hub import (
         GitHubAuth, create_source_router, ensure_hub_dirs,
         quarantine_bundle, install_from_quarantine, HubLockFile,
+        DEFAULT_SHARED_SKILLS, SHARED_HUB_LOCKFILE,
     )
     from tools.skills_guard import scan_skill, should_allow_install, format_scan_report
 
@@ -341,9 +451,17 @@ def do_install(identifier: str, category: str = "", force: bool = False,
         if len(id_parts) >= 3:
             category = id_parts[1]
 
-    # Check if already installed
+    # Determine install scope (prompt if not specified)
+    if shared is None:
+        if skip_confirm:
+            shared = False  # non-interactive: default to local
+        else:
+            shared = (_prompt_install_scope(bundle.name, c) == "shared")
+
+    # Check if already installed (check both lockfiles)
     lock = HubLockFile()
-    existing = lock.get_installed(bundle.name)
+    shared_lock = HubLockFile(path=SHARED_HUB_LOCKFILE)
+    existing = lock.get_installed(bundle.name) or shared_lock.get_installed(bundle.name)
     if existing:
         c.print(f"[yellow]Warning:[/] '{bundle.name}' is already installed at {existing['install_path']}")
         if not force:
@@ -391,12 +509,22 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     # skip_confirm bypasses the prompt (needed in TUI mode where input() hangs)
     if not force and not skip_confirm:
         c.print()
+        if shared:
+            install_path_display = f"~/.hermes/shared-skills/{bundle.name}/"
+            scope_note = "\nThis profile's [dim]skills.shared[/] config will be updated automatically."
+        elif bundle.source == "official":
+            install_path_display = f"{display_hermes_home()}/skills/{category + '/' if category else ''}{bundle.name}/"
+            scope_note = ""
+        else:
+            install_path_display = f"{display_hermes_home()}/skills/{category + '/' if category else ''}{bundle.name}/"
+            scope_note = ""
+
         if bundle.source == "official":
             c.print(Panel(
                 "[bold bright_cyan]This is an official optional skill maintained by Nous Research.[/]\n\n"
                 "It ships with hermes-agent but is not activated by default.\n"
                 "Installing will copy it to your skills directory where the agent can use it.\n\n"
-                f"Files will be at: [cyan]{display_hermes_home()}/skills/{category + '/' if category else ''}{bundle.name}/[/]",
+                f"Files will be at: [cyan]{install_path_display}[/]{scope_note}",
                 title="Official Skill",
                 border_style="bright_cyan",
             ))
@@ -406,7 +534,7 @@ def do_install(identifier: str, category: str = "", force: bool = False,
                 "External skills can contain instructions that influence agent behavior,\n"
                 "shell commands, and scripts. Even after automated scanning, you should\n"
                 "review the installed files before use.\n\n"
-                f"Files will be at: [cyan]{display_hermes_home()}/skills/{category + '/' if category else ''}{bundle.name}/[/]",
+                f"Files will be at: [cyan]{install_path_display}[/]{scope_note}",
                 title="Disclaimer",
                 border_style="yellow",
             ))
@@ -422,7 +550,11 @@ def do_install(identifier: str, category: str = "", force: bool = False,
 
     # Install
     try:
-        install_dir = install_from_quarantine(q_path, bundle.name, category, bundle, result)
+        install_kwargs = {}
+        if shared:
+            install_kwargs["target_root"] = DEFAULT_SHARED_SKILLS
+            install_kwargs["lockfile"] = SHARED_HUB_LOCKFILE
+        install_dir = install_from_quarantine(q_path, bundle.name, category, bundle, result, **install_kwargs)
     except ValueError as exc:
         c.print(f"[bold red]Installation blocked:[/] {exc}\n")
         shutil.rmtree(q_path, ignore_errors=True)
@@ -430,9 +562,19 @@ def do_install(identifier: str, category: str = "", force: bool = False,
         append_audit_log("BLOCKED", bundle.name, bundle.source,
                          bundle.trust_level, "invalid_path", str(exc))
         return
+
     from tools.skills_hub import SKILLS_DIR
-    c.print(f"[bold green]Installed:[/] {install_dir.relative_to(SKILLS_DIR)}")
-    c.print(f"[dim]Files: {', '.join(bundle.files.keys())}[/]\n")
+    install_root = DEFAULT_SHARED_SKILLS if shared else SKILLS_DIR
+    c.print(f"[bold green]Installed:[/] {install_dir.relative_to(install_root)}")
+    c.print(f"[dim]Files: {', '.join(bundle.files.keys())}[/]")
+
+    if shared:
+        _add_skill_to_profile_shared_config(bundle.name)
+        c.print(
+            f"[dim]Added '{bundle.name}' to this profile's [bold]skills.shared[/] config. "
+            f"Other profiles can opt in by adding it to their own skills.shared list.[/]"
+        )
+    c.print()
 
     if invalidate_cache:
         # Invalidate the skills prompt cache so the new skill appears immediately
@@ -497,8 +639,8 @@ def do_inspect(identifier: str, console: Optional[Console] = None) -> None:
 
 
 def do_list(source_filter: str = "all", console: Optional[Console] = None) -> None:
-    """List installed skills, distinguishing hub, builtin, and local skills."""
-    from tools.skills_hub import HubLockFile, ensure_hub_dirs
+    """List installed skills, distinguishing hub, builtin, local, and shared skills."""
+    from tools.skills_hub import HubLockFile, ensure_hub_dirs, SHARED_HUB_LOCKFILE
     from tools.skills_sync import _read_manifest
     from tools.skills_tool import _find_all_skills
 
@@ -506,6 +648,8 @@ def do_list(source_filter: str = "all", console: Optional[Console] = None) -> No
     ensure_hub_dirs()
     lock = HubLockFile()
     hub_installed = {e["name"]: e for e in lock.list_installed()}
+    shared_lock = HubLockFile(path=SHARED_HUB_LOCKFILE)
+    shared_hub_installed = {e["name"]: e for e in shared_lock.list_installed()}
     builtin_names = set(_read_manifest())
 
     all_skills = _find_all_skills()
@@ -514,9 +658,11 @@ def do_list(source_filter: str = "all", console: Optional[Console] = None) -> No
     table.add_column("Name", style="bold cyan")
     table.add_column("Category", style="dim")
     table.add_column("Source", style="dim")
+    table.add_column("Scope", style="dim")
     table.add_column("Trust", style="dim")
 
     hub_count = 0
+    shared_count = 0
     builtin_count = 0
     local_count = 0
 
@@ -524,34 +670,49 @@ def do_list(source_filter: str = "all", console: Optional[Console] = None) -> No
         name = skill["name"]
         category = skill.get("category", "")
         hub_entry = hub_installed.get(name)
+        shared_entry = shared_hub_installed.get(name)
 
         if hub_entry:
             source_type = "hub"
             source_display = hub_entry.get("source", "hub")
             trust = hub_entry.get("trust_level", "community")
+            scope = "profile"
             hub_count += 1
+        elif shared_entry:
+            source_type = "hub"
+            source_display = shared_entry.get("source", "hub")
+            trust = shared_entry.get("trust_level", "community")
+            scope = "shared"
+            shared_count += 1
         elif name in builtin_names:
             source_type = "builtin"
             source_display = "builtin"
             trust = "builtin"
+            scope = "builtin"
             builtin_count += 1
         else:
             source_type = "local"
             source_display = "local"
             trust = "local"
+            scope = "local"
             local_count += 1
 
-        if source_filter != "all" and source_filter != source_type:
+        # "shared" filter matches skills in the shared lockfile
+        effective_filter_type = scope if source_filter == "shared" else source_type
+        if source_filter != "all" and source_filter != effective_filter_type:
             continue
 
         trust_style = {"builtin": "bright_cyan", "trusted": "green", "community": "yellow", "local": "dim"}.get(trust, "dim")
         trust_label = "official" if source_display == "official" else trust
-        table.add_row(name, category, source_display, f"[{trust_style}]{trust_label}[/]")
+        scope_style = {"profile": "cyan", "shared": "magenta", "builtin": "bright_cyan", "local": "dim"}.get(scope, "dim")
+        table.add_row(name, category, source_display, f"[{scope_style}]{scope}[/]", f"[{trust_style}]{trust_label}[/]")
 
     c.print(table)
-    c.print(
-        f"[dim]{hub_count} hub-installed, {builtin_count} builtin, {local_count} local[/]\n"
-    )
+    summary_parts = [f"{hub_count} hub-installed"]
+    if shared_count:
+        summary_parts.append(f"{shared_count} shared")
+    summary_parts += [f"{builtin_count} builtin", f"{local_count} local"]
+    c.print(f"[dim]{', '.join(summary_parts)}[/]\n")
 
 
 def do_check(name: Optional[str] = None, console: Optional[Console] = None) -> None:
@@ -633,14 +794,27 @@ def do_audit(name: Optional[str] = None, console: Optional[Console] = None) -> N
 def do_uninstall(name: str, console: Optional[Console] = None,
                  skip_confirm: bool = False,
                  invalidate_cache: bool = True) -> None:
-    """Remove a hub-installed skill with confirmation."""
-    from tools.skills_hub import uninstall_skill
+    """Remove a hub-installed skill with confirmation.
+
+    Checks both the profile-local lockfile and the shared lockfile.  When the
+    skill is found in the shared lockfile it is removed from the shared
+    directory and from this profile's ``skills.shared`` config entry.
+    """
+    from tools.skills_hub import (
+        uninstall_skill, HubLockFile,
+        DEFAULT_SHARED_SKILLS, SHARED_HUB_LOCKFILE,
+    )
 
     c = console or _console
 
+    # Determine whether this is a shared or profile-local hub-installed skill.
+    shared_lock = HubLockFile(path=SHARED_HUB_LOCKFILE)
+    is_shared = shared_lock.is_hub_installed(name)
+
     # skip_confirm bypasses the prompt (needed in TUI mode where input() hangs)
     if not skip_confirm:
-        c.print(f"\n[bold]Uninstall '{name}'?[/]")
+        scope_label = " [dim](shared)[/]" if is_shared else ""
+        c.print(f"\n[bold]Uninstall '{name}'?[/]{scope_label}")
         try:
             answer = input("Confirm [y/N]: ").strip().lower()
         except (EOFError, KeyboardInterrupt):
@@ -649,7 +823,17 @@ def do_uninstall(name: str, console: Optional[Console] = None,
             c.print("[dim]Cancelled.[/]\n")
             return
 
-    success, msg = uninstall_skill(name)
+    if is_shared:
+        success, msg = uninstall_skill(
+            name,
+            lockfile=SHARED_HUB_LOCKFILE,
+            target_root=DEFAULT_SHARED_SKILLS,
+        )
+        if success:
+            _remove_skill_from_profile_shared_config(name)
+    else:
+        success, msg = uninstall_skill(name)
+
     if success:
         c.print(f"[bold green]{msg}[/]\n")
         if invalidate_cache:
@@ -974,8 +1158,12 @@ def skills_command(args) -> None:
     elif action == "search":
         do_search(args.query, source=args.source, limit=args.limit)
     elif action == "install":
+        # Resolve --shared / --local flags to a ternary: True / False / None (ask)
+        _shared_flag = getattr(args, "shared", False)
+        _local_flag = getattr(args, "local", False)
+        _shared_arg = True if _shared_flag else (False if _local_flag else None)
         do_install(args.identifier, category=args.category, force=args.force,
-                   skip_confirm=getattr(args, "yes", False))
+                   skip_confirm=getattr(args, "yes", False), shared=_shared_arg)
     elif action == "inspect":
         do_inspect(args.identifier)
     elif action == "list":

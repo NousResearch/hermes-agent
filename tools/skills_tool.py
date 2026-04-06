@@ -430,10 +430,11 @@ def _get_category_from_path(skill_path: Path) -> Optional[str]:
     Also works for external skill dirs configured via skills.external_dirs.
     """
     # Try the module-level SKILLS_DIR first (respects monkeypatching in tests),
-    # then fall back to external dirs from config.
+    # then shared and external dirs from config.
     dirs_to_check = [SKILLS_DIR]
     try:
-        from agent.skill_utils import get_external_skills_dirs
+        from agent.skill_utils import get_external_skills_dirs, get_shared_skill_dirs
+        dirs_to_check.extend(get_shared_skill_dirs())
         dirs_to_check.extend(get_external_skills_dirs())
     except Exception:
         pass
@@ -530,7 +531,7 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
     Returns:
         List of skill metadata dicts (name, description, category).
     """
-    from agent.skill_utils import get_external_skills_dirs
+    from agent.skill_utils import get_external_skills_dirs, get_shared_skill_dirs
 
     skills = []
     seen_names: set = set()
@@ -538,10 +539,11 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
     # Load disabled set once (not per-skill)
     disabled = set() if skip_disabled else _get_disabled_skill_names()
 
-    # Scan local dir first, then external dirs (local takes precedence)
+    # Scan in precedence order: local → shared → external_dirs
     dirs_to_scan = []
     if SKILLS_DIR.exists():
         dirs_to_scan.append(SKILLS_DIR)
+    dirs_to_scan.extend(get_shared_skill_dirs())
     dirs_to_scan.extend(get_external_skills_dirs())
 
     for scan_dir in dirs_to_scan:
@@ -655,10 +657,11 @@ def skills_categories(verbose: bool = False, task_id: str = None) -> str:
         JSON string with list of categories and their descriptions
     """
     try:
-        # Use module-level SKILLS_DIR (respects monkeypatching) + external dirs
+        # Use module-level SKILLS_DIR (respects monkeypatching) + shared + external dirs
         all_dirs = [SKILLS_DIR] if SKILLS_DIR.exists() else []
         try:
-            from agent.skill_utils import get_external_skills_dirs
+            from agent.skill_utils import get_external_skills_dirs, get_shared_skill_dirs
+            all_dirs.extend(d for d in get_shared_skill_dirs() if d.exists())
             all_dirs.extend(d for d in get_external_skills_dirs() if d.exists())
         except Exception:
             pass
@@ -799,12 +802,13 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
         JSON string with skill content or error message
     """
     try:
-        from agent.skill_utils import get_external_skills_dirs
+        from agent.skill_utils import get_external_skills_dirs, get_shared_skill_dirs
 
-        # Build list of all skill directories to search
+        # Build list of all skill directories to search: local → shared → external
         all_dirs = []
         if SKILLS_DIR.exists():
             all_dirs.append(SKILLS_DIR)
+        all_dirs.extend(get_shared_skill_dirs())
         all_dirs.extend(get_external_skills_dirs())
 
         if not all_dirs:

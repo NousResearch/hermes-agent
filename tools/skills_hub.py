@@ -52,6 +52,11 @@ AUDIT_LOG = HUB_DIR / "audit.log"
 TAPS_FILE = HUB_DIR / "taps.json"
 INDEX_CACHE_DIR = HUB_DIR / "index-cache"
 
+# Shared skills — installed across profiles under a single host-level root.
+# Each profile opts in via ``skills.shared`` in its config.yaml.
+DEFAULT_SHARED_SKILLS = Path.home() / ".hermes" / "shared-skills"
+SHARED_HUB_LOCKFILE = DEFAULT_SHARED_SKILLS / ".hub-lock.json"
+
 # Cache duration for remote index fetches
 INDEX_CACHE_TTL = 3600  # 1 hour
 
@@ -2508,8 +2513,25 @@ def install_from_quarantine(
     category: str,
     bundle: SkillBundle,
     scan_result: ScanResult,
+    *,
+    target_root: Optional[Path] = None,
+    lockfile: Optional[Path] = None,
 ) -> Path:
-    """Move a scanned skill from quarantine into the skills directory."""
+    """Move a scanned skill from quarantine into the skills directory.
+
+    Args:
+        quarantine_path: Path to the quarantined skill directory.
+        skill_name: Name of the skill to install.
+        category: Optional sub-category folder (ignored when target_root is set).
+        bundle: Skill bundle metadata.
+        scan_result: Security scan result.
+        target_root: Override install root. Defaults to ``SKILLS_DIR``
+            (profile-local). Pass ``DEFAULT_SHARED_SKILLS`` to install into
+            the shared skills directory.
+        lockfile: Override lock file path. Defaults to ``LOCK_FILE``
+            (profile-local). Pass ``SHARED_HUB_LOCKFILE`` when installing
+            to the shared root.
+    """
     safe_skill_name = _validate_skill_name(skill_name)
     safe_category = _validate_category_name(category) if category else ""
     quarantine_resolved = quarantine_path.resolve()
@@ -2517,10 +2539,16 @@ def install_from_quarantine(
     if not quarantine_resolved.is_relative_to(quarantine_root):
         raise ValueError(f"Unsafe quarantine path: {quarantine_path}")
 
-    if safe_category:
-        install_dir = SKILLS_DIR / safe_category / safe_skill_name
+    install_root = target_root if target_root is not None else SKILLS_DIR
+    lock_path = lockfile if lockfile is not None else LOCK_FILE
+
+    # Shared root: skills live directly under target_root/{name}/ (no category nesting)
+    if target_root is not None:
+        install_dir = install_root / safe_skill_name
+    elif safe_category:
+        install_dir = install_root / safe_category / safe_skill_name
     else:
-        install_dir = SKILLS_DIR / safe_skill_name
+        install_dir = install_root / safe_skill_name
 
     if install_dir.exists():
         shutil.rmtree(install_dir)
@@ -2545,7 +2573,7 @@ def install_from_quarantine(
     shutil.move(str(quarantine_path), str(install_dir))
 
     # Record in lock file
-    lock = HubLockFile()
+    lock = HubLockFile(path=lock_path)
     lock.record_install(
         name=safe_skill_name,
         source=bundle.source,
@@ -2553,7 +2581,7 @@ def install_from_quarantine(
         trust_level=bundle.trust_level,
         scan_verdict=scan_result.verdict,
         skill_hash=content_hash(install_dir),
-        install_path=str(install_dir.relative_to(SKILLS_DIR)),
+        install_path=str(install_dir.relative_to(install_root)),
         files=list(bundle.files.keys()),
         metadata=bundle.metadata,
     )
@@ -2567,14 +2595,30 @@ def install_from_quarantine(
     return install_dir
 
 
-def uninstall_skill(skill_name: str) -> Tuple[bool, str]:
-    """Remove a hub-installed skill. Refuses to remove builtins."""
-    lock = HubLockFile()
+def uninstall_skill(
+    skill_name: str,
+    *,
+    lockfile: Optional[Path] = None,
+    target_root: Optional[Path] = None,
+) -> Tuple[bool, str]:
+    """Remove a hub-installed skill. Refuses to remove builtins.
+
+    Args:
+        skill_name: Name of the skill to remove.
+        lockfile: Lock file to update. Defaults to ``LOCK_FILE`` (profile-local).
+            Pass ``SHARED_HUB_LOCKFILE`` when removing a shared skill.
+        target_root: Root directory the skill was installed under. Defaults to
+            ``SKILLS_DIR``. Pass ``DEFAULT_SHARED_SKILLS`` for shared skills.
+    """
+    lock_path = lockfile if lockfile is not None else LOCK_FILE
+    install_root = target_root if target_root is not None else SKILLS_DIR
+
+    lock = HubLockFile(path=lock_path)
     entry = lock.get_installed(skill_name)
     if not entry:
         return False, f"'{skill_name}' is not a hub-installed skill (may be a builtin)"
 
-    install_path = SKILLS_DIR / entry["install_path"]
+    install_path = install_root / entry["install_path"]
     if install_path.exists():
         shutil.rmtree(install_path)
 

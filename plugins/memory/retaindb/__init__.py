@@ -15,7 +15,7 @@ Features:
 Config (env vars or hermes config.yaml under retaindb:):
   RETAINDB_API_KEY     — API key (required)
   RETAINDB_BASE_URL    — API endpoint (default: https://api.retaindb.com)
-  RETAINDB_PROJECT     — Project identifier
+  RETAINDB_PROJECT     — Project identifier (optional — defaults to "default")
 """
 
 from __future__ import annotations
@@ -472,7 +472,7 @@ class RetainDBMemoryProvider(MemoryProvider):
         return [
             {"key": "api_key", "description": "RetainDB API key", "secret": True, "required": True, "env_var": "RETAINDB_API_KEY", "url": "https://retaindb.com"},
             {"key": "base_url", "description": "API endpoint", "default": _DEFAULT_BASE_URL},
-            {"key": "project", "description": "Project identifier", "default": "hermes"},
+            {"key": "project", "description": "Project identifier (optional — uses 'default' project if not set)", "default": ""},
         ]
 
     # ── Lifecycle ──────────────────────────────────────────────────────────
@@ -481,14 +481,15 @@ class RetainDBMemoryProvider(MemoryProvider):
         api_key = os.environ.get("RETAINDB_API_KEY", "")
         base_url = re.sub(r"/+$", "", os.environ.get("RETAINDB_BASE_URL", _DEFAULT_BASE_URL))
 
-        # Profile-isolated project: RETAINDB_PROJECT > hermes-<profile> > hermes
+        # Project resolution: RETAINDB_PROJECT > hermes-<profile> > "default"
+        # If unset, the API auto-creates and uses the "default" project — no config required.
         explicit = os.environ.get("RETAINDB_PROJECT")
         if explicit:
             project = explicit
         else:
             hermes_home = str(kwargs.get("hermes_home", ""))
             profile_name = os.path.basename(hermes_home) if hermes_home else ""
-            project = f"hermes-{profile_name}" if (profile_name and profile_name != ".hermes") else "hermes"
+            project = f"hermes-{profile_name}" if (profile_name and profile_name not in {"", ".hermes"}) else "default"
 
         self._client = _Client(api_key, base_url, project)
         self._session_id = session_id

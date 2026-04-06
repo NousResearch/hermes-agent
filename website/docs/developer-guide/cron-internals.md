@@ -6,85 +6,195 @@ description: "How Hermes stores, schedules, edits, pauses, skill-loads, and deli
 
 # Cron Internals
 
-Hermes cron support is implemented primarily in:
+The cron subsystem provides scheduled task execution — from simple one-shot delays to recurring cron-expression jobs with skill injection and cross-platform delivery.
 
-- `cron/jobs.py`
-- `cron/scheduler.py`
-- `tools/cronjob_tools.py`
-- `gateway/run.py`
-- `hermes_cli/cron.py`
+## Key Files
 
-## Scheduling model
+| File | Purpose |
+|------|---------|
+| `cron/jobs.py` | Job model, storage, atomic read/write to `jobs.json` |
+| `cron/scheduler.py` | Scheduler loop — due-job detection, execution, repeat tracking |
+| `tools/cronjob_tools.py` | Model-facing `cronjob` tool registration and handler |
+| `gateway/run.py` | Gateway integration — cron ticking in the long-running loop |
+| `hermes_cli/cron.py` | CLI `hermes cron` subcommands |
 
-Hermes supports:
+## Scheduling Model
 
-- one-shot delays
-- intervals
-- cron expressions
-- explicit timestamps
+Four schedule formats are supported:
 
-The model-facing surface is a single `cronjob` tool with action-style operations:
+| Format | Example | Behavior |
+|--------|---------|----------|
+| **Relative delay** | `30m`, `2h`, `1d` | One-shot, fires after the specified duration |
+| **Interval** | `every 2h`, `every 30m` | Recurring, fires at regular intervals |
+| **Cron expression** | `0 9 * * *` | Standard 5-field cron syntax (minute, hour, day, month, weekday) |
+| **ISO timestamp** | `2025-01-15T09:00:00` | One-shot, fires at the exact time |
 
-- `create`
-- `list`
-- `update`
-- `pause`
-- `resume`
-- `run`
-- `remove`
+The model-facing surface is a single `cronjob` tool with action-style operations: `create`, `list`, `update`, `pause`, `resume`, `run`, `remove`.
 
-## Job storage
+## Job Storage
 
-Cron jobs are stored in Hermes-managed local state (`~/.hermes/cron/jobs.json`) with atomic write semantics.
+Jobs are stored in `~/.hermes/cron/jobs.json` with atomic write semantics (write to temp file, then rename). Each job record contains:
 
-Each job can carry:
+```json
+{
+  "id": "job_abc123",
+  "name": "Daily briefing",
+  "prompt": "Summarize today's AI news and funding rounds",
+  "schedule": "0 9 * * *",
+  "skills": ["ai-funding-daily-report"],
+  "deliver": "telegram:-1001234567890",
+  "repeat": null,
+  "state": "scheduled",
+  "next_run": "2025-01-16T09:00:00Z",
+  "run_count": 42,
+  "created_at": "2025-01-01T00:00:00Z",
+  "model": null,
+  "provider": null,
+  "script": null
+}
+```
 
-- prompt
-- schedule metadata
-- repeat counters
-- delivery target
-- lifecycle state (`scheduled`, `paused`, `completed`, etc.)
-- zero, one, or multiple attached skills
+### Job Lifecycle States
 
-Backward compatibility is preserved for older jobs that only stored a legacy single `skill` field or none of the newer lifecycle fields.
+| State | Meaning |
+|-------|---------|
+| `scheduled` | Active, will fire at next scheduled time |
+| `paused` | Suspended — won't fire until resumed |
+| `completed` | Repeat count exhausted or one-shot that has fired |
+| `running` | Currently executing (transient state) |
 
-## Runtime behavior
+### Backward Compatibility
 
-The scheduler:
+Older jobs may have a single `skill` field instead of the `skills` array. The scheduler normalizes this at load time — single `skill` is promoted to `skills: [skill]`.
 
-- loads jobs
-- computes due work
-- executes jobs in fresh agent sessions
-- optionally injects one or more skills before the prompt
-- handles repeat counters
-- updates next-run metadata and state
+## Scheduler Runtime
 
-In gateway mode, cron ticking is integrated into the long-running gateway loop.
+### Tick Cycle
 
-## Skill-backed jobs
+The scheduler runs on a periodic tick (default: every 60 seconds):
 
-A cron job may attach multiple skills. At runtime, Hermes loads those skills in order and then appends the job prompt as the task instruction.
+```text
+tick()
+  1. Acquire scheduler lock (prevents overlapping ticks)
+  2. Load all jobs from jobs.json
+  3. Filter to due jobs (next_run <= now AND state == "scheduled")
+  4. For each due job:
+     a. Set state to "running"
+     b. Create fresh AIAgent session (no conversation history)
+     c. Load attached skills in order (injected as user messages)
+     d. Run the job prompt through the agent
+     e. Deliver the response to the configured target
+     f. Update run_count, compute next_run
+     g. If repeat count exhausted → state = "completed"
+     h. Otherwise → state = "scheduled"
+  5. Write updated jobs back to jobs.json
+  6. Release scheduler lock
+```
 
-This gives scheduled jobs reusable guidance without requiring the user to paste full skill bodies into the cron prompt.
+### Gateway Integration
 
-## Recursion guard
+In gateway mode, the scheduler tick is integrated into the gateway's main event loop. The gateway calls `scheduler.tick()` on its periodic maintenance cycle, which runs alongside message handling.
 
-Cron-run sessions disable the `cronjob` toolset. This prevents a scheduled job from recursively creating or mutating more cron jobs and accidentally exploding token usage or scheduler load.
+In CLI mode, cron jobs only fire when `hermes cron` commands are run or during active CLI sessions.
 
-## Delivery model
+### Fresh Session Isolation
 
-Cron jobs can deliver to:
+Each cron job runs in a completely fresh agent session:
 
-- origin chat
-- local files
-- platform home channels
-- explicit platform/chat IDs
+- No conversation history from previous runs
+- No memory of previous cron executions (unless persisted to memory/files)
+- The prompt must be self-contained — cron jobs cannot ask clarifying questions
+- The `cronjob` toolset is disabled (recursion guard)
+
+## Skill-Backed Jobs
+
+A cron job can attach one or more skills via the `skills` field. At execution time:
+
+1. Skills are loaded in the specified order
+2. Each skill's SKILL.md content is injected as context
+3. The job's prompt is appended as the task instruction
+4. The agent processes the combined skill context + prompt
+
+This enables reusable, tested workflows without pasting full instructions into cron prompts. For example:
+
+```
+Create a daily funding report → attach "ai-funding-daily-report" skill
+```
+
+### Script-Backed Jobs
+
+Jobs can also attach a Python script via the `script` field. The script runs *before* each agent turn, and its stdout is injected into the prompt as context. This enables data collection and change detection patterns:
+
+```python
+# ~/.hermes/scripts/check_competitors.py
+import requests, json
+# Fetch competitor release notes, diff against last run
+# Print summary to stdout — agent analyzes and reports
+```
+
+## Delivery Model
+
+Cron job results can be delivered to any supported platform:
+
+| Target | Syntax | Example |
+|--------|--------|---------|
+| Origin chat | `origin` | Deliver to the chat where the job was created |
+| Local file | `local` | Save to `~/.hermes/cron/output/` |
+| Telegram | `telegram` or `telegram:<chat_id>` | `telegram:-1001234567890` |
+| Discord | `discord` or `discord:#channel` | `discord:#engineering` |
+| Slack | `slack` | Deliver to Slack home channel |
+| WhatsApp | `whatsapp` | Deliver to WhatsApp home |
+| Signal | `signal` | Deliver to Signal |
+| Matrix | `matrix` | Deliver to Matrix home room |
+| Mattermost | `mattermost` | Deliver to Mattermost home |
+| Email | `email` | Deliver via email |
+| SMS | `sms` | Deliver via SMS |
+| Home Assistant | `homeassistant` | Deliver to HA conversation |
+| DingTalk | `dingtalk` | Deliver to DingTalk |
+| Feishu | `feishu` | Deliver to Feishu |
+| WeCom | `wecom` | Deliver to WeCom |
+
+For Telegram topics, use the format `telegram:<chat_id>:<thread_id>` (e.g., `telegram:-1001234567890:17585`).
+
+### Response Wrapping
+
+By default (`cron.wrap_response: true`), cron deliveries are wrapped with:
+- A header identifying the cron job name and task
+- A footer noting the agent cannot see the delivered message in conversation
+
+The `[SILENT]` prefix in a cron response suppresses delivery entirely — useful for jobs that only need to write to files or perform side effects.
+
+### Session Isolation
+
+Cron deliveries are NOT mirrored into gateway session conversation history. They exist only in the cron job's own session. This prevents message alternation violations in the target chat's conversation.
+
+## Recursion Guard
+
+Cron-run sessions have the `cronjob` toolset disabled. This prevents:
+- A scheduled job from creating new cron jobs
+- Recursive scheduling that could explode token usage
+- Accidental mutation of the job schedule from within a job
 
 ## Locking
 
-Hermes uses lock-based protections so overlapping scheduler ticks do not execute the same due-job batch twice.
+The scheduler uses file-based locking to prevent overlapping ticks from executing the same due-job batch twice. This is important in gateway mode where multiple maintenance cycles could overlap if a previous tick takes longer than the tick interval.
 
-## Related docs
+## CLI Interface
 
-- [Cron feature guide](../user-guide/features/cron.md)
+The `hermes cron` CLI provides direct job management:
+
+```bash
+hermes cron list                    # Show all jobs
+hermes cron add                     # Interactive job creation
+hermes cron edit <job_id>           # Edit job configuration
+hermes cron pause <job_id>          # Pause a running job
+hermes cron resume <job_id>         # Resume a paused job
+hermes cron run <job_id>            # Trigger immediate execution
+hermes cron remove <job_id>         # Delete a job
+```
+
+## Related Docs
+
+- [Cron Feature Guide](/docs/user-guide/features/cron)
 - [Gateway Internals](./gateway-internals.md)
+- [Agent Loop Internals](./agent-loop.md)

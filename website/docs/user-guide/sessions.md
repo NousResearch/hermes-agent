@@ -10,7 +10,7 @@ Hermes Agent automatically saves every conversation as a session. Sessions enabl
 
 ## How Sessions Work
 
-Every conversation — whether from the CLI, Telegram, Discord, WhatsApp, or Slack — is stored as a session with full message history. Sessions are tracked in two complementary systems:
+Every conversation — whether from the CLI, Telegram, Discord, Slack, WhatsApp, Signal, Matrix, or any other messaging platform — is stored as a session with full message history. Sessions are tracked in two complementary systems:
 
 1. **SQLite database** (`~/.hermes/state.db`) — structured session metadata with FTS5 full-text search
 2. **JSONL transcripts** (`~/.hermes/sessions/`) — raw conversation transcripts including tool calls (gateway)
@@ -34,8 +34,22 @@ Each session is tagged with its source platform:
 | `cli` | Interactive CLI (`hermes` or `hermes chat`) |
 | `telegram` | Telegram messenger |
 | `discord` | Discord server/DM |
-| `whatsapp` | WhatsApp messenger |
 | `slack` | Slack workspace |
+| `whatsapp` | WhatsApp messenger |
+| `signal` | Signal messenger |
+| `matrix` | Matrix rooms and DMs |
+| `mattermost` | Mattermost channels |
+| `email` | Email (IMAP/SMTP) |
+| `sms` | SMS via Twilio |
+| `dingtalk` | DingTalk messenger |
+| `feishu` | Feishu/Lark messenger |
+| `wecom` | WeCom (WeChat Work) |
+| `homeassistant` | Home Assistant conversation |
+| `webhook` | Incoming webhooks |
+| `api-server` | API server requests |
+| `acp` | ACP editor integration |
+| `cron` | Scheduled cron jobs |
+| `batch` | Batch processing runs |
 
 ## CLI Session Resume
 

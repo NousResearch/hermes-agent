@@ -3,6 +3,27 @@ import { Box, Text } from 'ink'
 import { compactPreview } from '../lib/text.js'
 import type { Theme } from '../theme.js'
 
+export const QUEUE_WINDOW = 3
+
+export function getQueueWindow(queueLen: number, queueEditIdx: number | null) {
+  const start =
+    queueEditIdx === null ? 0 : Math.max(0, Math.min(queueEditIdx - 1, Math.max(0, queueLen - QUEUE_WINDOW)))
+
+  const end = Math.min(queueLen, start + QUEUE_WINDOW)
+
+  return { end, showLead: start > 0, showTail: end < queueLen, start }
+}
+
+export function estimateQueuedRows(queueLen: number, queueEditIdx: number | null): number {
+  if (!queueLen) {
+    return 0
+  }
+
+  const win = getQueueWindow(queueLen, queueEditIdx)
+
+  return 1 + (win.showLead ? 1 : 0) + (win.end - win.start) + (win.showTail ? 1 : 0)
+}
+
 export function QueuedMessages({
   cols,
   queueEditIdx,
@@ -18,23 +39,21 @@ export function QueuedMessages({
     return null
   }
 
-  const qWindow = 3
-  const qStart = queueEditIdx === null ? 0 : Math.max(0, Math.min(queueEditIdx - 1, queued.length - qWindow))
-  const qEnd = Math.min(queued.length, qStart + qWindow)
+  const q = getQueueWindow(queued.length, queueEditIdx)
 
   return (
     <Box flexDirection="column">
       <Text color={t.color.dim} dimColor>
         queued ({queued.length}){queueEditIdx !== null ? ` · editing ${queueEditIdx + 1}` : ''}
       </Text>
-      {qStart > 0 && (
+      {q.showLead && (
         <Text color={t.color.dim} dimColor>
           {' '}
           …
         </Text>
       )}
-      {queued.slice(qStart, qEnd).map((item, i) => {
-        const idx = qStart + i
+      {queued.slice(q.start, q.end).map((item, i) => {
+        const idx = q.start + i
         const active = queueEditIdx === idx
 
         return (
@@ -43,9 +62,9 @@ export function QueuedMessages({
           </Text>
         )
       })}
-      {qEnd < queued.length && (
+      {q.showTail && (
         <Text color={t.color.dim} dimColor>
-          {'  '}…and {queued.length - qEnd} more
+          {'  '}…and {queued.length - q.end} more
         </Text>
       )}
     </Box>

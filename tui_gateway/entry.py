@@ -2,25 +2,17 @@ import json
 import signal
 import sys
 
-from tui_gateway.server import handle_request, resolve_skin
+from tui_gateway.server import handle_request, resolve_skin, write_json
 
 signal.signal(signal.SIGPIPE, signal.SIG_DFL)
 
-
-def _write(obj: dict):
-    try:
-        sys.stdout.write(json.dumps(obj) + "\n")
-        sys.stdout.flush()
-    except BrokenPipeError:
-        sys.exit(0)
-
-
 def main():
-    _write({
+    if not write_json({
         "jsonrpc": "2.0",
         "method": "event",
         "params": {"type": "gateway.ready", "payload": {"skin": resolve_skin()}},
-    })
+    }):
+        sys.exit(0)
 
     for raw in sys.stdin:
         line = raw.strip()
@@ -30,12 +22,14 @@ def main():
         try:
             req = json.loads(line)
         except json.JSONDecodeError:
-            _write({"jsonrpc": "2.0", "error": {"code": -32700, "message": "parse error"}, "id": None})
+            if not write_json({"jsonrpc": "2.0", "error": {"code": -32700, "message": "parse error"}, "id": None}):
+                sys.exit(0)
             continue
 
         resp = handle_request(req)
         if resp is not None:
-            _write(resp)
+            if not write_json(resp):
+                sys.exit(0)
 
 
 if __name__ == "__main__":

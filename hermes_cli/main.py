@@ -45,6 +45,7 @@ Usage:
 
 import argparse
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -562,7 +563,16 @@ def _launch_tui():
         print(f"  cd {tui_dir} && npm install")
         sys.exit(1)
 
-    sys.exit(subprocess.call(["npm", "start"], cwd=str(tui_dir)))
+    tsx = tui_dir / "node_modules" / ".bin" / "tsx"
+    if tsx.exists():
+        sys.exit(subprocess.call([str(tsx), "src/entry.tsx"], cwd=str(tui_dir)))
+
+    npm = shutil.which("npm")
+    if not npm:
+        print("npm not found in PATH. Source your nvm/node setup or set PATH.")
+        sys.exit(1)
+
+    sys.exit(subprocess.call([npm, "start"], cwd=str(tui_dir)))
 
 
 def cmd_chat(args):
@@ -5529,27 +5539,20 @@ Examples:
     # Handle top-level --resume / --continue as shortcut to chat
     if (args.resume or args.continue_last) and args.command is None:
         args.command = "chat"
-        args.query = None
-        args.model = None
-        args.provider = None
-        args.toolsets = None
-        args.verbose = False
-        if not hasattr(args, "worktree"):
-            args.worktree = False
+        for attr, default in [("query", None), ("model", None), ("provider", None),
+                              ("toolsets", None), ("verbose", False), ("worktree", False)]:
+            if not hasattr(args, attr):
+                setattr(args, attr, default)
         cmd_chat(args)
         return
     
     # Default to chat if no command specified
     if args.command is None:
-        args.query = None
-        args.model = None
-        args.provider = None
-        args.toolsets = None
-        args.verbose = False
-        args.resume = None
-        args.continue_last = None
-        if not hasattr(args, "worktree"):
-            args.worktree = False
+        for attr, default in [("query", None), ("model", None), ("provider", None),
+                              ("toolsets", None), ("verbose", False), ("resume", None),
+                              ("continue_last", None), ("worktree", False)]:
+            if not hasattr(args, attr):
+                setattr(args, attr, default)
         cmd_chat(args)
         return
     

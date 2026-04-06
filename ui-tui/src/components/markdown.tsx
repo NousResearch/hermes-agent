@@ -90,11 +90,17 @@ export function Md({ compact, t, text }: { compact?: boolean; t: Theme; text: st
       }
 
       i++
+      const isDiff = lang === 'diff'
+
       nodes.push(
         <Box flexDirection="column" key={key} paddingLeft={2}>
-          {lang && <Text color={t.color.dim}>{'─ ' + lang}</Text>}
+          {lang && !isDiff && <Text color={t.color.dim}>{'─ ' + lang}</Text>}
           {block.map((l, j) => (
-            <Text color={t.color.cornsilk} key={j}>
+            <Text
+              color={isDiff && l.startsWith('+') ? '#a6e3a1' : isDiff && l.startsWith('-') ? '#f38ba8' : t.color.cornsilk}
+              dimColor={isDiff && !l.startsWith('+') && !l.startsWith('-') && l.startsWith(' ')}
+              key={j}
+            >
               {l}
             </Text>
           ))}

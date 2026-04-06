@@ -72,6 +72,7 @@ rl = [
   "wandb>=0.15.0,<1",
 ]
 yc-bench = ["yc-bench @ git+https://github.com/collinear-ai/yc-bench.git ; python_version >= '3.12'"]
+mnemoria = ["mnemoria>=0.1.0"]
 all = [
   "hermes-agent[modal]",
   "hermes-agent[daytona]",
@@ -94,6 +95,7 @@ all = [
   "hermes-agent[voice]",
   "hermes-agent[dingtalk]",
   "hermes-agent[feishu]",
+  "hermes-agent[mnemoria]",
 ]
 
 [project.scripts]

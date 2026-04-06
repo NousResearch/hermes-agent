@@ -1,0 +1,24 @@
+name: mnemoria
+version: 0.1.0
+description: |
+  Mnemoria cognitive memory system — combines ACT-R activation scoring, Hebbian link formation,
+  RL Q-value reranking with structured memory (typed facts, scopes, supersession, gauge pressure).
+  Benchmarks: 97.2% on cognitive memory suite vs 87.5% flat-baseline.
+provider: mnemoria
+memory_provider: true
+
+config:
+  HERMES_MEMORY_MNEMORIA_ENABLED:
+    type: bool
+    default: false
+    description: Enable the Mnemoria memory provider.
+  HERMES_MEMORY_MNEMORIA_MODE:
+    type: string
+    default: balanced
+    description: Memory profile — balanced (default).
+    choices:
+      - balanced
+  HERMES_MNEMORIA_DB:
+    type: path
+    default: ~/.hermes/mnemoria.db
+    description: SQLite database path for the Mnemoria memory store.

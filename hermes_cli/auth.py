@@ -2643,13 +2643,26 @@ def _nous_device_code_login(
         "agent_key_reused": None,
         "agent_key_obtained_at": None,
     }
-    return refresh_nous_oauth_from_state(
-        auth_state,
-        min_key_ttl_seconds=min_key_ttl_seconds,
-        timeout_seconds=timeout_seconds,
-        force_refresh=False,
-        force_mint=True,
-    )
+    try:
+        return refresh_nous_oauth_from_state(
+            auth_state,
+            min_key_ttl_seconds=min_key_ttl_seconds,
+            timeout_seconds=timeout_seconds,
+            force_refresh=False,
+            force_mint=True,
+        )
+    except AuthError as exc:
+        if exc.code == "subscription_required":
+            portal_url = auth_state.get(
+                "portal_base_url", DEFAULT_NOUS_PORTAL_URL
+            ).rstrip("/")
+            print()
+            print("Your Nous Portal account does not have an active subscription.")
+            print(f"  Subscribe here: {portal_url}/billing")
+            print()
+            print("After subscribing, run `hermes model` again to finish setup.")
+            raise SystemExit(1)
+        raise
 
 
 def _login_nous(args, pconfig: ProviderConfig) -> None:
@@ -2666,14 +2679,15 @@ def _login_nous(args, pconfig: ProviderConfig) -> None:
         auth_state = _nous_device_code_login(
             portal_base_url=getattr(args, "portal_url", None),
             inference_base_url=getattr(args, "inference_url", None),
-            client_id=getattr(args, "client_id", None),
-            scope=getattr(args, "scope", None),
+            client_id=getattr(args, "client_id", None) or pconfig.client_id,
+            scope=getattr(args, "scope", None) or pconfig.scope,
             open_browser=not getattr(args, "no_browser", False),
             timeout_seconds=timeout_seconds,
             insecure=insecure,
             ca_bundle=ca_bundle,
             min_key_ttl_seconds=5 * 60,
         )
+
         inference_base_url = auth_state["inference_base_url"]
         verify: bool | str = False if insecure else (ca_bundle if ca_bundle else True)
 
@@ -2697,8 +2711,6 @@ def _login_nous(args, pconfig: ProviderConfig) -> None:
                     code="invalid_token",
                 )
 
-            # Use curated model list (same as OpenRouter defaults) instead
-            # of the full /models dump which returns hundreds of models.
             from hermes_cli.models import _PROVIDER_MODELS
             model_ids = _PROVIDER_MODELS.get("nous", [])
 

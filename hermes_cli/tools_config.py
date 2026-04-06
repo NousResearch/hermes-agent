@@ -181,6 +181,14 @@ TOOL_CATEGORIES = {
                 ],
                 "tts_provider": "elevenlabs",
             },
+            {
+                "name": "Mistral (Voxtral TTS)",
+                "tag": "Multilingual, native Opus, needs MISTRAL_API_KEY",
+                "env_vars": [
+                    {"key": "MISTRAL_API_KEY", "prompt": "Mistral API key", "url": "https://console.mistral.ai/"},
+                ],
+                "tts_provider": "mistral",
+            },
         ],
     },
     "web": {

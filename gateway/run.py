@@ -182,6 +182,10 @@ if _config_path.exists():
         if _agent_cfg and isinstance(_agent_cfg, dict):
             if "max_turns" in _agent_cfg:
                 os.environ["HERMES_MAX_ITERATIONS"] = str(_agent_cfg["max_turns"])
+            # Bridge agent.gateway_timeout → HERMES_AGENT_TIMEOUT env var.
+            # Env var from .env takes precedence (already in os.environ).
+            if "gateway_timeout" in _agent_cfg and "HERMES_AGENT_TIMEOUT" not in os.environ:
+                os.environ["HERMES_AGENT_TIMEOUT"] = str(_agent_cfg["gateway_timeout"])
         # Timezone: bridge config.yaml → HERMES_TIMEZONE env var.
         # HERMES_TIMEZONE from .env takes precedence (already in os.environ).
         _tz_cfg = _cfg.get("timezone", "")
@@ -1788,19 +1792,48 @@ class GatewayRunner:
         # let the adapter-level batching/queueing logic absorb them.
         _quick_key = self._session_key_for_source(source)
 
-        # Staleness eviction: if an entry has been in _running_agents for
-        # longer than the agent timeout, it's a leaked lock from a hung or
-        # crashed handler.  Evict it so the session isn't permanently stuck.
-        _STALE_TTL = float(os.getenv("HERMES_AGENT_TIMEOUT", 600)) + 60  # timeout + 1 min grace
-        _ts_dict = getattr(self, "_running_agents_ts", {})
-        _stale_ts = _ts_dict.get(_quick_key, 0)
-        if _quick_key in self._running_agents and _stale_ts and (time.time() - _stale_ts) > _STALE_TTL:
-            logger.warning(
-                "Evicting stale _running_agents entry for %s (age: %.0fs)",
-                _quick_key[:30], time.time() - _stale_ts,
+
+
+        # Staleness eviction: detect leaked locks from hung/crashed handlers.
+        # With inactivity-based timeout, active tasks can run for hours, so
+        # wall-clock age alone isn't sufficient.  Evict only when the agent
+        # has been *idle* beyond the inactivity threshold (or when the agent
+        # object has no activity tracker and wall-clock age is extreme).
+        _raw_stale_timeout = float(os.getenv("HERMES_AGENT_TIMEOUT", 1800))
+        _stale_ts = self._running_agents_ts.get(_quick_key, 0)
+        if _quick_key in self._running_agents and _stale_ts:
+            _stale_age = time.time() - _stale_ts
+            _stale_agent = self._running_agents.get(_quick_key)
+            _stale_idle = float("inf")  # assume idle if we can't check
+            _stale_detail = ""
+            if _stale_agent and hasattr(_stale_agent, "get_activity_summary"):
+                try:
+                    _sa = _stale_agent.get_activity_summary()
+                    _stale_idle = _sa.get("seconds_since_activity", float("inf"))
+                    _stale_detail = (
+                        f" | last_activity={_sa.get('last_activity_desc', 'unknown')} "
+                        f"({_stale_idle:.0f}s ago) "
+                        f"| iteration={_sa.get('api_call_count', 0)}/{_sa.get('max_iterations', 0)}"
+                    )
+                except Exception:
+                    pass
+            # Evict if: agent is idle beyond timeout, OR wall-clock age is
+            # extreme (10x timeout or 2h, whichever is larger — catches
+            # cases where the agent object was garbage-collected).
+            _wall_ttl = max(_raw_stale_timeout * 10, 7200) if _raw_stale_timeout > 0 else float("inf")
+            _should_evict = (
+                (_raw_stale_timeout > 0 and _stale_idle >= _raw_stale_timeout)
+                or _stale_age > _wall_ttl
             )
-            del self._running_agents[_quick_key]
-            _ts_dict.pop(_quick_key, None)
+            if _should_evict:
+                logger.warning(
+                    "Evicting stale _running_agents entry for %s "
+                    "(age: %.0fs, idle: %.0fs, timeout: %.0fs)%s",
+                    _quick_key[:30], _stale_age, _stale_idle,
+                    _raw_stale_timeout, _stale_detail,
+                )
+                del self._running_agents[_quick_key]
+                self._running_agents_ts.pop(_quick_key, None)
 
         if _quick_key in self._running_agents:
             if event.get_command() == "status":
@@ -6193,32 +6226,108 @@ class GatewayRunner:
         register_gateway_notify(_approval_session, _approval_notify)
 
         try:
-            # Run in thread pool to not block.  Cap total execution time
-            # so a hung API call or runaway tool doesn't permanently lock
-            # the session.  Default 10 minutes; override with env var.
-            _agent_timeout = float(os.getenv("HERMES_AGENT_TIMEOUT", 600))
+            # Run in thread pool to not block.  Use an *inactivity*-based
+            # timeout instead of a wall-clock limit: the agent can run for
+            # hours if it's actively calling tools / receiving stream tokens,
+            # but a hung API call or stuck tool with no activity for the
+            # configured duration is caught and killed.  (#4815)
+            #
+            # Config: agent.gateway_timeout in config.yaml, or
+            # HERMES_AGENT_TIMEOUT env var (env var takes precedence).
+            # Default 1800s (30 min inactivity).  0 = unlimited.
+            _agent_timeout_raw = float(os.getenv("HERMES_AGENT_TIMEOUT", 1800))
+            _agent_timeout = _agent_timeout_raw if _agent_timeout_raw > 0 else None
             loop = asyncio.get_event_loop()
-            try:
-                response = await asyncio.wait_for(
-                    loop.run_in_executor(None, run_sync),
-                    timeout=_agent_timeout,
-                )
-            except asyncio.TimeoutError:
+            _executor_task = asyncio.ensure_future(
+                loop.run_in_executor(None, run_sync)
+            )
+
+            _inactivity_timeout = False
+            _POLL_INTERVAL = 5.0
+
+            if _agent_timeout is None:
+                # Unlimited — just await the result.
+                response = await _executor_task
+            else:
+                # Poll loop: check the agent's built-in activity tracker
+                # (updated by _touch_activity() on every tool call, API
+                # call, and stream delta) every few seconds.
+                response = None
+                while True:
+                    done, _ = await asyncio.wait(
+                        {_executor_task}, timeout=_POLL_INTERVAL
+                    )
+                    if done:
+                        response = _executor_task.result()
+                        break
+                    # Agent still running — check inactivity.
+                    _agent_ref = agent_holder[0]
+                    _idle_secs = 0.0
+                    if _agent_ref and hasattr(_agent_ref, "get_activity_summary"):
+                        try:
+                            _act = _agent_ref.get_activity_summary()
+                            _idle_secs = _act.get("seconds_since_activity", 0.0)
+                        except Exception:
+                            pass
+                    if _idle_secs >= _agent_timeout:
+                        _inactivity_timeout = True
+                        break
+
+            if _inactivity_timeout:
+                # Build a diagnostic summary from the agent's activity tracker.
+                _timed_out_agent = agent_holder[0]
+                _activity = {}
+                if _timed_out_agent and hasattr(_timed_out_agent, "get_activity_summary"):
+                    try:
+                        _activity = _timed_out_agent.get_activity_summary()
+                    except Exception:
+                        pass
+
+                _last_desc = _activity.get("last_activity_desc", "unknown")
+                _secs_ago = _activity.get("seconds_since_activity", 0)
+                _cur_tool = _activity.get("current_tool")
+                _iter_n = _activity.get("api_call_count", 0)
+                _iter_max = _activity.get("max_iterations", 0)
+
                 logger.error(
-                    "Agent execution timed out after %.0fs for session %s",
-                    _agent_timeout, session_key,
+                    "Agent idle for %.0fs (timeout %.0fs) in session %s "
+                    "| last_activity=%s | iteration=%s/%s | tool=%s",
+                    _secs_ago, _agent_timeout, session_key,
+                    _last_desc, _iter_n, _iter_max,
+                    _cur_tool or "none",
                 )
                 # Interrupt the agent if it's still running so the thread
                 # pool worker is freed.
-                _timed_out_agent = agent_holder[0]
                 if _timed_out_agent and hasattr(_timed_out_agent, "interrupt"):
-                    _timed_out_agent.interrupt("Execution timed out")
+                    _timed_out_agent.interrupt("Execution timed out (inactivity)")
+
+                _timeout_mins = int(_agent_timeout // 60) or 1
+
+                # Construct a user-facing message with diagnostic context.
+                _diag_lines = [
+                    f"⏱️ Agent inactive for {_timeout_mins} min — no tool calls "
+                    f"or API responses."
+                ]
+                if _cur_tool:
+                    _diag_lines.append(
+                        f"The agent appears stuck on tool `{_cur_tool}` "
+                        f"({_secs_ago:.0f}s since last activity, "
+                        f"iteration {_iter_n}/{_iter_max})."
+                    )
+                else:
+                    _diag_lines.append(
+                        f"Last activity: {_last_desc} ({_secs_ago:.0f}s ago, "
+                        f"iteration {_iter_n}/{_iter_max}). "
+                        "The agent may have been waiting on an API response."
+                    )
+                _diag_lines.append(
+                    "To increase the limit, set agent.gateway_timeout in config.yaml "
+                    "(value in seconds, 0 = no limit) and restart the gateway.\n"
+                    "Try again, or use /reset to start fresh."
+                )
+
                 response = {
-                    "final_response": (
-                        f"⏱️ Request timed out after {int(_agent_timeout // 60)} minutes. "
-                        "The agent may have been stuck on a tool or API call.\n"
-                        "Try again, or use /reset to start fresh."
-                    ),
+                    "final_response": "\n".join(_diag_lines),
                     "messages": result_holder[0].get("messages", []) if result_holder[0] else [],
                     "api_calls": 0,
                     "tools": tools_holder[0] or [],

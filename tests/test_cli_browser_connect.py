@@ -1,5 +1,6 @@
 """Tests for CLI browser CDP auto-launch helpers."""
 
+import os
 from unittest.mock import patch
 
 from cli import HermesCLI
@@ -24,14 +25,16 @@ class TestChromeDebugLaunch:
 
     def test_windows_launch_falls_back_to_common_install_dirs(self, monkeypatch):
         captured = {}
-        installed = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
+        program_files = r"C:\Program Files"
+        # Use os.path.join so path separators match cross-platform
+        installed = os.path.join(program_files, "Google", "Chrome", "Application", "chrome.exe")
 
         def fake_popen(cmd, **kwargs):
             captured["cmd"] = cmd
             captured["kwargs"] = kwargs
             return object()
 
-        monkeypatch.setenv("ProgramFiles", r"C:\Program Files")
+        monkeypatch.setenv("ProgramFiles", program_files)
         monkeypatch.delenv("ProgramFiles(x86)", raising=False)
         monkeypatch.delenv("LOCALAPPDATA", raising=False)
 

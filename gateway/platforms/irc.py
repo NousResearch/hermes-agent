@@ -12,6 +12,7 @@ Environment variables:
     IRC_PASSWORD         Server password (optional)
     IRC_CHANNELS         Comma-separated list of channels to join (e.g. #bots,#help)
     IRC_USE_TLS          Set "true" to enable TLS (default: false)
+    IRC_TLS_CA_CERT      Path to PEM-encoded certificate file to trust for TLS (optional)
     IRC_MESSAGE_CHUNK_LIMIT  Max characters per message when BATCH unavailable (default: 350)
     IRC_REQUIRE_MULTILINE Set "true" to fail connection if server doesn't support draft/multiline (default: false)
     IRC_NICKSERV_PASSWORD NickServ password for authentication (optional)
@@ -219,6 +220,17 @@ class IRCAdapter(BasePlatformAdapter):
             # Open connection
             if self._use_tls:
                 ssl_context = ssl.create_default_context()
+
+                # Load custom certificate if provided
+                custom_cert_path = os.getenv("IRC_TLS_CA_CERT", "")
+                if custom_cert_path:
+                    if os.path.exists(custom_cert_path):
+                        ssl_context.load_verify_locations(cafile=custom_cert_path)
+                        logger.info("IRC: Loaded custom TLS certificate from %s", custom_cert_path)
+                    else:
+                        logger.error("IRC: TLS certificate file not found: %s", custom_cert_path)
+                        return False
+
                 self._reader, self._writer = await asyncio.open_connection(
                     self._server, self._port or 6697, ssl=ssl_context
                 )

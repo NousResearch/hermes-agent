@@ -366,12 +366,32 @@ def telegram_bot_commands() -> list[tuple[str, str]]:
     for cmd in COMMAND_REGISTRY:
         if not _is_gateway_available(cmd, overrides):
             continue
-        tg_name = cmd.name.replace("-", "_")
-        result.append((tg_name, cmd.description))
+        tg_name = _sanitize_telegram_name(cmd.name)
+        if tg_name:
+            result.append((tg_name, cmd.description))
     return result
 
 
 _TG_NAME_LIMIT = 32
+
+# Telegram Bot API allows only lowercase a-z, 0-9, and underscores in
+# command names.  This regex strips everything else after initial conversion.
+_TG_INVALID_CHARS = re.compile(r"[^a-z0-9_]")
+_TG_MULTI_UNDERSCORE = re.compile(r"_{2,}")
+
+
+def _sanitize_telegram_name(raw: str) -> str:
+    """Convert a command/skill/plugin name to a valid Telegram command name.
+
+    Telegram requires: 1-32 chars, lowercase a-z, digits 0-9, underscores only.
+    Steps: lowercase → replace hyphens with underscores → strip all other
+    invalid characters → collapse consecutive underscores → strip leading/
+    trailing underscores.
+    """
+    name = raw.lower().replace("-", "_")
+    name = _TG_INVALID_CHARS.sub("", name)
+    name = _TG_MULTI_UNDERSCORE.sub("_", name)
+    return name.strip("_")
 
 
 def _clamp_telegram_names(
@@ -436,7 +456,9 @@ def telegram_menu_commands(max_commands: int = 100) -> tuple[list[tuple[str, str
         pm = get_plugin_manager()
         plugin_cmds = getattr(pm, "_plugin_commands", {})
         for cmd_name in sorted(plugin_cmds):
-            tg_name = cmd_name.replace("-", "_")
+            tg_name = _sanitize_telegram_name(cmd_name)
+            if not tg_name:
+                continue
             desc = "Plugin command"
             if len(desc) > 40:
                 desc = desc[:37] + "..."
@@ -479,7 +501,9 @@ def telegram_menu_commands(max_commands: int = 100) -> tuple[list[tuple[str, str
             skill_name = info.get("name", "")
             if skill_name in _platform_disabled:
                 continue
-            name = cmd_key.lstrip("/").replace("-", "_")
+            name = _sanitize_telegram_name(cmd_key.lstrip("/"))
+            if not name:
+                continue
             desc = info.get("description", "")
             # Keep descriptions short — setMyCommands has an undocumented
             # total payload limit.  40 chars fits 100 commands safely.

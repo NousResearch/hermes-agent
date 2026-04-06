@@ -16,6 +16,9 @@ logger = logging.getLogger(__name__)
 
 _skill_commands: Dict[str, Dict[str, Any]] = {}
 _PLAN_SLUG_RE = re.compile(r"[^a-z0-9]+")
+# Patterns for sanitizing skill names into clean hyphen-separated slugs.
+_SKILL_INVALID_CHARS = re.compile(r"[^a-z0-9-]")
+_SKILL_MULTI_HYPHEN = re.compile(r"-{2,}")
 
 
 def build_plan_path(
@@ -196,7 +199,14 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
                                 description = line[:80]
                                 break
                     seen_names.add(name)
+                    # Normalize to hyphen-separated slug, stripping
+                    # non-alnum chars (e.g. +, /) to avoid invalid
+                    # Telegram command names downstream.
                     cmd_name = name.lower().replace(' ', '-').replace('_', '-')
+                    cmd_name = _SKILL_INVALID_CHARS.sub('', cmd_name)
+                    cmd_name = _SKILL_MULTI_HYPHEN.sub('-', cmd_name).strip('-')
+                    if not cmd_name:
+                        continue
                     _skill_commands[f"/{cmd_name}"] = {
                         "name": name,
                         "description": description or f"Invoke the {name} skill",

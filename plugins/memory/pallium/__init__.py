@@ -117,7 +117,7 @@ REMEMBER_SCHEMA = {
 # HTTP helpers
 # ---------------------------------------------------------------------------
 
-def _http_post(url: str, payload: dict, timeout: float = 8.0) -> dict:
+def _http_post(url: str, payload: dict | list, timeout: float = 8.0) -> dict:
     """POST JSON to Pallium. Returns parsed response or raises."""
     try:
         import httpx
@@ -126,19 +126,6 @@ def _http_post(url: str, payload: dict, timeout: float = 8.0) -> dict:
 
     with httpx.Client(timeout=timeout) as client:
         response = client.post(url, json=payload)
-        response.raise_for_status()
-        return response.json()
-
-
-def _http_get(url: str, timeout: float = 4.0) -> dict:
-    """GET from Pallium. Returns parsed response or raises."""
-    try:
-        import httpx
-    except ImportError:
-        raise RuntimeError("httpx not installed. Run: pip install httpx")
-
-    with httpx.Client(timeout=timeout) as client:
-        response = client.get(url)
         response.raise_for_status()
         return response.json()
 
@@ -260,7 +247,7 @@ class PalliumMemoryProvider(MemoryProvider):
                 data = _http_post(
                     f"{self._base_url}/query",
                     {
-                        "query": query,
+                        "text": query,
                         "container_ref": self._container_ref,
                         "actor_ref": self._actor_ref,
                         "visibility": "private",
@@ -268,13 +255,21 @@ class PalliumMemoryProvider(MemoryProvider):
                     timeout=6.0,
                 )
                 blocks = data.get("injectable_blocks", [])
+                results = data.get("results", [])
+                lines = []
                 if blocks:
-                    lines = []
                     for block in blocks:
                         title = block.get("title", "")
                         text = block.get("text", "")
                         if text:
                             lines.append(f"[{title}] {text}" if title else text)
+                elif results:
+                    # Fall back to source excerpts when no blocks yet
+                    for r in results[:5]:
+                        excerpt = r.get("excerpt", "")
+                        if excerpt:
+                            lines.append(excerpt)
+                if lines:
                     with self._prefetch_lock:
                         self._prefetch_result = "\n".join(lines)
                 self._record_success()
@@ -298,22 +293,21 @@ class PalliumMemoryProvider(MemoryProvider):
 
         def _sync():
             try:
+                items = []
                 for role, content in (("user", user_content), ("assistant", assistant_content)):
-                    _http_post(
-                        f"{self._base_url}/items",
-                        {
-                            "source_type": "hermes_turn",
-                            "source_id": f"{sid}:{turn}:{role}",
-                            "content_type": "text/plain",
-                            "content": content,
-                            "role": role,
-                            "artifact_kind": "message",
-                            "container_ref": self._container_ref,
-                            "actor_ref": self._actor_ref,
-                            "visibility": "private",
-                        },
-                        timeout=10.0,
-                    )
+                    items.append({
+                        "source_type": "hermes_turn",
+                        "source_id": f"{sid}:{turn}:{role}",
+                        "content_type": "text/plain",
+                        "content": content,
+                        "role": role,
+                        "artifact_kind": "message",
+                        "container_ref": self._container_ref,
+                        "thread_ref": sid,
+                        "actor_ref": self._actor_ref,
+                        "visibility": "private",
+                    })
+                _http_post(f"{self._base_url}/items", items, timeout=10.0)
                 self._record_success()
             except Exception as e:
                 self._record_failure()
@@ -336,7 +330,7 @@ class PalliumMemoryProvider(MemoryProvider):
             try:
                 _http_post(
                     f"{self._base_url}/items",
-                    {
+                    [{
                         "source_type": f"hermes_{label}",
                         "source_id": f"{self._container_ref}:{label}:{hash(content) & 0xFFFFFFFF}",
                         "content_type": "text/plain",
@@ -345,7 +339,7 @@ class PalliumMemoryProvider(MemoryProvider):
                         "container_ref": self._container_ref,
                         "actor_ref": self._actor_ref,
                         "visibility": "private",
-                    },
+                    }],
                     timeout=10.0,
                 )
             except Exception as e:
@@ -372,7 +366,7 @@ class PalliumMemoryProvider(MemoryProvider):
                         continue
                     _http_post(
                         f"{self._base_url}/items",
-                        {
+                        [{
                             "source_type": "hermes_compression_flush",
                             "source_id": f"{sid}:compress:{i}:{role}",
                             "content_type": "text/plain",
@@ -382,7 +376,7 @@ class PalliumMemoryProvider(MemoryProvider):
                             "container_ref": self._container_ref,
                             "actor_ref": self._actor_ref,
                             "visibility": "private",
-                        },
+                        }],
                         timeout=10.0,
                     )
             except Exception as e:
@@ -419,7 +413,7 @@ class PalliumMemoryProvider(MemoryProvider):
             data = _http_post(
                 f"{self._base_url}/query",
                 {
-                    "query": query,
+                    "text": query,
                     "container_ref": self._container_ref,
                     "actor_ref": self._actor_ref,
                     "visibility": "private",
@@ -431,14 +425,25 @@ class PalliumMemoryProvider(MemoryProvider):
             return json.dumps({"error": f"Pallium query failed: {e}"})
 
         blocks = data.get("injectable_blocks", [])
-        if not blocks:
-            return json.dumps({"result": "No relevant memories found."})
+        results = data.get("results", [])
 
-        items = [
-            {"type": b.get("memory_type", b.get("block_type", "")), "text": b.get("text", "")}
-            for b in blocks if b.get("text")
-        ]
-        return json.dumps({"results": items, "count": len(items)})
+        if blocks:
+            items = [
+                {"type": b.get("memory_type", b.get("block_type", "")), "text": b.get("text", "")}
+                for b in blocks if b.get("text")
+            ]
+            return json.dumps({"results": items, "count": len(items)})
+
+        if results:
+            # Fall back to source excerpts when memory objects not yet extracted
+            items = [
+                {"type": r.get("result_kind", "source_hit"), "text": r.get("excerpt", "")}
+                for r in results[:5] if r.get("excerpt")
+            ]
+            if items:
+                return json.dumps({"results": items, "count": len(items)})
+
+        return json.dumps({"result": "No relevant memories found."})
 
     def _tool_remember(self, args: dict) -> str:
         content = args.get("content", "")
@@ -452,7 +457,7 @@ class PalliumMemoryProvider(MemoryProvider):
         try:
             _http_post(
                 f"{self._base_url}/items",
-                {
+                [{
                     "source_type": "hermes_explicit_memory",
                     "source_id": f"{self._container_ref}:explicit:{hash(content) & 0xFFFFFFFF}",
                     "content_type": "text/plain",
@@ -461,7 +466,7 @@ class PalliumMemoryProvider(MemoryProvider):
                     "container_ref": self._container_ref,
                     "actor_ref": self._actor_ref,
                     "visibility": "private",
-                },
+                }],
             )
             self._record_success()
             return json.dumps({"result": "Stored."})

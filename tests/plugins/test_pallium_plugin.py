@@ -205,7 +205,7 @@ class TestTools:
 
         mock_post.assert_called_once()
         _, payload = mock_post.call_args[0]
-        assert payload["query"] == "why postgresql?"
+        assert payload["text"] == "why postgresql?"
         assert payload["container_ref"] == "hermes"
         assert "results" in result
         assert result["results"][0]["text"] == "We chose PostgreSQL."
@@ -218,9 +218,11 @@ class TestTools:
 
         mock_post.assert_called_once()
         _, payload = mock_post.call_args[0]
-        assert payload["content"] == "Use UTC for all timestamps"
-        assert payload["role"] == "assistant"  # decision → assistant
-        assert payload["container_ref"] == "hermes"
+        # /items receives a list; the item is the first element
+        item = payload[0]
+        assert item["content"] == "Use UTC for all timestamps"
+        assert item["role"] == "assistant"  # decision → assistant
+        assert item["container_ref"] == "hermes"
         assert result["result"] == "Stored."
 
     def test_remember_note_uses_user_role(self, initialized_provider):
@@ -229,7 +231,7 @@ class TestTools:
                 "pallium_remember", {"content": "Just a note", "kind": "note"}
             )
         _, payload = mock_post.call_args[0]
-        assert payload["role"] == "user"
+        assert payload[0]["role"] == "user"
 
     def test_query_no_blocks_returns_no_results_message(self, initialized_provider):
         with patch("plugins.memory.pallium._http_post", return_value={"injectable_blocks": []}):
@@ -258,10 +260,13 @@ class TestSyncTurn:
             if initialized_provider._sync_thread:
                 initialized_provider._sync_thread.join(timeout=5.0)
 
-        assert len(posted) == 2
-        roles = {p["role"] for p in posted}
+        # One call to /items with a list of 2 items
+        assert len(posted) == 1
+        items = posted[0]
+        assert len(items) == 2
+        roles = {p["role"] for p in items}
         assert roles == {"user", "assistant"}
-        contents = {p["content"] for p in posted}
+        contents = {p["content"] for p in items}
         assert "Hello" in contents
         assert "Hi there" in contents
 
@@ -277,7 +282,8 @@ class TestSyncTurn:
             if initialized_provider._sync_thread:
                 initialized_provider._sync_thread.join(timeout=5.0)
 
-        source_ids = {p["source_id"] for p in posted}
+        items = posted[0]
+        source_ids = {p["source_id"] for p in items}
         # All source_ids contain session id and turn count
         for sid in source_ids:
             assert "test-session-1" in sid
@@ -333,8 +339,9 @@ class TestOnMemoryWrite:
                 t.join(timeout=5.0)
 
         assert len(posted) == 1
-        assert posted[0]["content"] == "Important fact"
-        assert posted[0]["source_type"] == "hermes_agent-memory"
+        item = posted[0][0]  # /items receives a list; unwrap
+        assert item["content"] == "Important fact"
+        assert item["source_type"] == "hermes_agent-memory"
 
     def test_mirrors_user_profile_writes(self, initialized_provider):
         posted = []
@@ -349,8 +356,9 @@ class TestOnMemoryWrite:
             for t in threads:
                 t.join(timeout=5.0)
 
-        assert posted[0]["source_type"] == "hermes_user-profile"
-        assert posted[0]["role"] == "user"
+        item = posted[0][0]
+        assert item["source_type"] == "hermes_user-profile"
+        assert item["role"] == "user"
 
     def test_ignores_remove_action(self, initialized_provider):
         with patch("plugins.memory.pallium._http_post") as mock_post:
@@ -487,7 +495,8 @@ class TestOnPreCompress:
             for t in threads:
                 t.join(timeout=5.0)
 
-        roles = {p["role"] for p in posted}
+        # Each accepted message is posted as a single-item list
+        roles = {p[0]["role"] for p in posted}
         assert "user" in roles
         assert "assistant" in roles
         assert "tool" not in roles

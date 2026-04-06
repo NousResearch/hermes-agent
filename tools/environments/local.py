@@ -341,7 +341,7 @@ class LocalEnvironment(PersistentShellMixin, BaseEnvironment):
         user_shell = _find_bash()
         run_env = _make_run_env(self.env)
         return subprocess.Popen(
-            [user_shell, "-l"],
+            [user_shell, "--noprofile", "--norc"],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
@@ -406,7 +406,7 @@ class LocalEnvironment(PersistentShellMixin, BaseEnvironment):
         run_env = _make_run_env(self.env)
 
         proc = subprocess.Popen(
-            [user_shell, "-lic", fenced_cmd],
+            [user_shell, "--noprofile", "--norc", "-c", fenced_cmd],
             text=True,
             cwd=work_dir,
             env=run_env,

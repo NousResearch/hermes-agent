@@ -75,6 +75,19 @@ class TestLocalOneShotRegression:
         assert "printf '" not in r["output"]
         assert "exit $" not in r["output"]
 
+    def test_oneshot_does_not_source_login_or_logout_files(self, tmp_path):
+        home = tmp_path / "fake-home"
+        home.mkdir()
+        (home / ".bash_profile").write_text("echo sourced-profile\n")
+        (home / ".bash_logout").write_text("echo sourced-logout\nsleep 30\n")
+        env = LocalEnvironment(persistent=False, env={"HOME": str(home)})
+        r = env.execute("printf ok", timeout=2)
+        env.cleanup()
+        assert r["returncode"] == 0
+        assert r["output"] == "ok"
+        assert "sourced-profile" not in r["output"]
+        assert "sourced-logout" not in r["output"]
+
 
 class TestLocalPersistent:
     @pytest.fixture
@@ -158,6 +171,22 @@ class TestLocalPersistent:
     def test_pipe_command(self, env):
         r = env.execute("echo hello | tr 'h' 'H'")
         assert r["output"].strip() == "Hello"
+
+
+    def test_persistent_shell_does_not_source_login_or_logout_files(self, tmp_path):
+        home = tmp_path / "fake-home"
+        home.mkdir()
+        (home / ".bash_profile").write_text("echo sourced-profile\n")
+        (home / ".bash_logout").write_text("echo sourced-logout\nsleep 30\n")
+        env = LocalEnvironment(persistent=True, env={"HOME": str(home)})
+        try:
+            r = env.execute("printf ok", timeout=2)
+            assert r["returncode"] == 0
+            assert r["output"] == "ok"
+            assert "sourced-profile" not in r["output"]
+            assert "sourced-logout" not in r["output"]
+        finally:
+            env.cleanup()
 
     def test_multiple_commands_semicolon(self, env):
         r = env.execute("X=42; echo $X")

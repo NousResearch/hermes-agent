@@ -40,6 +40,7 @@ _PROVIDER_DEFAULT_MODELS = {
     "minimax": "MiniMax-M2.7",
     "ollama": "gemma3:12b",
     "lmstudio": "local-model",
+    "openai_compatible": "your-model-name",
 }
 
 
@@ -237,10 +238,10 @@ class HindsightMemoryProvider(MemoryProvider):
             {"key": "api_url", "description": "Hindsight API URL", "default": _DEFAULT_LOCAL_URL, "when": {"mode": "local_external"}},
             {"key": "api_key", "description": "API key (optional)", "secret": True, "env_var": "HINDSIGHT_API_KEY", "when": {"mode": "local_external"}},
             # Local embedded mode — run the daemon locally
-            {"key": "llm_provider", "description": "LLM provider", "default": "openai", "choices": ["openai", "anthropic", "gemini", "groq", "minimax", "ollama", "lmstudio"], "when": {"mode": "local_embedded"}},
-            {"key": "llm_api_key", "description": "LLM API key", "secret": True, "env_var": "HINDSIGHT_LLM_API_KEY", "when": {"mode": "local_embedded"}},
+            {"key": "llm_provider", "description": "LLM provider", "default": "openai", "choices": ["openai", "anthropic", "gemini", "groq", "minimax", "ollama", "lmstudio", "openai_compatible"], "when": {"mode": "local_embedded"}},
+            {"key": "llm_base_url", "description": "Endpoint URL (e.g. http://192.168.1.10:8080/v1)", "default": "", "when": {"mode": "local_embedded", "llm_provider": "openai_compatible"}},
+            {"key": "llm_api_key", "description": "LLM API key (optional for openai_compatible)", "secret": True, "env_var": "HINDSIGHT_LLM_API_KEY", "when": {"mode": "local_embedded"}},
             {"key": "llm_model", "description": "LLM model", "default": "gpt-4o-mini", "default_from": {"field": "llm_provider", "map": _PROVIDER_DEFAULT_MODELS}, "when": {"mode": "local_embedded"}},
-            {"key": "llm_base_url", "description": "Custom endpoint URL (e.g. http://192.168.1.10:8080/v1)", "default": "", "when": {"mode": "local_embedded"}},
             # Common
             {"key": "bank_id", "description": "Memory bank name", "default": "hermes"},
             {"key": "budget", "description": "Recall thoroughness", "default": "mid", "choices": ["low", "mid", "high"]},
@@ -257,9 +258,12 @@ class HindsightMemoryProvider(MemoryProvider):
                 # different loop" errors during GC — we handle cleanup in
                 # shutdown() instead.
                 HindsightEmbedded.__del__ = lambda self: None
+                llm_provider = self._config.get("llm_provider", "")
+                if llm_provider == "openai_compatible":
+                    llm_provider = "openai"
                 kwargs = dict(
                     profile=self._config.get("profile", "hermes"),
-                    llm_provider=self._config.get("llm_provider", ""),
+                    llm_provider=llm_provider,
                     llm_api_key=self._config.get("llmApiKey") or os.environ.get("HINDSIGHT_LLM_API_KEY", ""),
                     llm_model=self._config.get("llm_model", ""),
                 )
@@ -329,6 +333,8 @@ class HindsightMemoryProvider(MemoryProvider):
                     current_provider = self._config.get("llm_provider", "")
                     current_model = self._config.get("llm_model", "")
                     current_base_url = self._config.get("llm_base_url", "")
+                    # Map openai_compatible → openai for the daemon (OpenAI wire format)
+                    daemon_provider = "openai" if current_provider == "openai_compatible" else current_provider
 
                     # Read saved profile config
                     saved = {}
@@ -339,7 +345,7 @@ class HindsightMemoryProvider(MemoryProvider):
                                 saved[k.strip()] = v.strip()
 
                     config_changed = (
-                        saved.get("HINDSIGHT_API_LLM_PROVIDER") != current_provider or
+                        saved.get("HINDSIGHT_API_LLM_PROVIDER") != daemon_provider or
                         saved.get("HINDSIGHT_API_LLM_MODEL") != current_model or
                         saved.get("HINDSIGHT_API_LLM_API_KEY") != current_key or
                         saved.get("HINDSIGHT_API_LLM_BASE_URL", "") != current_base_url
@@ -349,7 +355,7 @@ class HindsightMemoryProvider(MemoryProvider):
                         # Write updated profile .env
                         profile_env.parent.mkdir(parents=True, exist_ok=True)
                         env_lines = (
-                            f"HINDSIGHT_API_LLM_PROVIDER={current_provider}\n"
+                            f"HINDSIGHT_API_LLM_PROVIDER={daemon_provider}\n"
                             f"HINDSIGHT_API_LLM_API_KEY={current_key}\n"
                             f"HINDSIGHT_API_LLM_MODEL={current_model}\n"
                             f"HINDSIGHT_API_LOG_LEVEL=info\n"

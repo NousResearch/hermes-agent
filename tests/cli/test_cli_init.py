@@ -325,6 +325,95 @@ class TestSingleQueryState:
         assert hasattr(cli, "_interrupt_queue")
         assert hasattr(cli, "_pending_input")
 
+    def test_voice_reply_policy_covers_text_voice_and_tts_disabled(self):
+        from cli import _CLIInputOrigin
+
+        cli = _make_cli()
+        cli._voice_tts = True
+        cli._get_voice_message_reply_mode = lambda: "voice_only"
+        assert cli._should_speak_voice_response(_CLIInputOrigin.TEXT) is False
+        assert cli._should_speak_voice_response(_CLIInputOrigin.VOICE) is True
+
+        cli._get_voice_message_reply_mode = lambda: "all"
+        assert cli._should_speak_voice_response(_CLIInputOrigin.TEXT) is True
+
+        cli._voice_tts = False
+        assert cli._should_speak_voice_response(_CLIInputOrigin.VOICE) is False
+
+    def test_invalid_voice_reply_mode_falls_back_to_all(self):
+        cli = _make_cli()
+
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={"voice": {"message_reply_mode": "invalid"}},
+        ):
+            assert cli._get_voice_message_reply_mode() == "all"
+
+    @staticmethod
+    def _make_voice_routing_cli():
+        cli = _make_cli()
+        captured = {}
+
+        def fake_run_conversation(**kwargs):
+            captured.update(kwargs)
+            return {
+                "final_response": "Spoken reply",
+                "messages": [{"role": "assistant", "content": "Spoken reply"}],
+                "completed": True,
+            }
+
+        cli._voice_tts = True
+        cli._voice_mode = True
+        cli._get_voice_message_reply_mode = lambda: "voice_only"
+        cli._ensure_runtime_credentials = lambda: True
+        cli._resolve_turn_agent_config = lambda message: {
+            "signature": "sig",
+            "model": None,
+            "runtime": None,
+            "label": "test",
+        }
+        cli._active_agent_route_signature = "sig"
+        cli._reset_stream_state = lambda: None
+        cli._flush_stream = lambda: None
+        cli._invalidate = lambda *args, **kwargs: None
+        cli._voice_speak_response_async = MagicMock()
+        cli.agent = SimpleNamespace(
+            run_conversation=fake_run_conversation,
+            interrupt=lambda _msg=None: None,
+            _active_children=[],
+            _interrupt_requested=False,
+        )
+
+        return cli, captured
+
+    def test_voice_origin_gets_voice_prompt_and_spoken_reply(self):
+        cli, captured = self._make_voice_routing_cli()
+
+        with patch("tools.tts_tool._load_tts_config", return_value={"provider": "openai"}), patch(
+            "tools.tts_tool._get_provider", return_value="openai"
+        ):
+            response = cli.chat("Hello there", input_origin="voice")
+
+        assert response == "Spoken reply"
+        assert captured["user_message"].startswith("[Voice input — respond concisely")
+        assert captured["persist_user_message"] == "Hello there"
+        cli._voice_speak_response_async.assert_called_once_with("Spoken reply")
+
+    def test_typed_origin_stays_plain_and_silent_in_voice_only_mode(self):
+        cli, captured = self._make_voice_routing_cli()
+
+        with patch("tools.tts_tool._load_tts_config") as load_tts_config, patch(
+            "tools.tts_tool._get_provider"
+        ) as get_tts_provider:
+            response = cli.chat("Hello there", input_origin="text")
+
+        assert response == "Spoken reply"
+        assert captured["user_message"] == "Hello there"
+        assert captured["persist_user_message"] is None
+        load_tts_config.assert_not_called()
+        get_tts_provider.assert_not_called()
+        cli._voice_speak_response_async.assert_not_called()
+
 
 class TestHistoryDisplay:
     def test_history_numbers_only_visible_messages_and_summarizes_tools(self, capsys):

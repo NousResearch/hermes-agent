@@ -302,14 +302,14 @@ class TestVoiceMessagePrefix:
     """Voice mode should inject instruction via user message prefix,
     not by modifying the system prompt (which breaks prompt cache)."""
 
-    def test_prefix_added_when_voice_mode_active(self):
-        """When voice mode is active and message is str, agent_message
-        should have the voice instruction prefix."""
+    def test_prefix_added_only_for_voice_origin(self):
+        """Only STT-originated prompts should get the voice instruction prefix."""
         voice_mode = True
+        input_origin = "voice"
         message = "What's the weather like?"
 
         agent_message = message
-        if voice_mode and isinstance(message, str):
+        if voice_mode and input_origin == "voice" and isinstance(message, str):
             agent_message = (
                 "[Voice input — respond concisely and conversationally, "
                 "2-3 sentences max. No code blocks or markdown.] "
@@ -319,13 +319,30 @@ class TestVoiceMessagePrefix:
         assert agent_message.startswith("[Voice input")
         assert "What's the weather like?" in agent_message
 
-    def test_no_prefix_when_voice_mode_inactive(self):
-        """When voice mode is off, message passes through unchanged."""
-        voice_mode = False
+    def test_no_prefix_for_typed_input_while_voice_mode_active(self):
+        """Typed prompts should remain plain text even when voice mode is on."""
+        voice_mode = True
+        input_origin = "text"
         message = "What's the weather like?"
 
         agent_message = message
-        if voice_mode and isinstance(message, str):
+        if voice_mode and input_origin == "voice" and isinstance(message, str):
+            agent_message = (
+                "[Voice input — respond concisely and conversationally, "
+                "2-3 sentences max. No code blocks or markdown.] "
+                + message
+            )
+
+        assert agent_message == message
+
+    def test_no_prefix_when_voice_mode_inactive(self):
+        """When voice mode is off, message passes through unchanged."""
+        voice_mode = False
+        input_origin = "voice"
+        message = "What's the weather like?"
+
+        agent_message = message
+        if voice_mode and input_origin == "voice" and isinstance(message, str):
             agent_message = (
                 "[Voice input — respond concisely and conversationally, "
                 "2-3 sentences max. No code blocks or markdown.] "
@@ -337,10 +354,11 @@ class TestVoiceMessagePrefix:
     def test_no_prefix_for_multimodal_content(self):
         """When message is a list (multimodal), no prefix is added."""
         voice_mode = True
+        input_origin = "voice"
         message = [{"type": "text", "text": "describe this"}, {"type": "image_url"}]
 
         agent_message = message
-        if voice_mode and isinstance(message, str):
+        if voice_mode and input_origin == "voice" and isinstance(message, str):
             agent_message = (
                 "[Voice input — respond concisely and conversationally, "
                 "2-3 sentences max. No code blocks or markdown.] "
@@ -353,13 +371,14 @@ class TestVoiceMessagePrefix:
         """conversation_history should contain the original message,
         not the prefixed version."""
         voice_mode = True
+        input_origin = "voice"
         message = "Hello there"
         conversation_history = []
 
         conversation_history.append({"role": "user", "content": message})
 
         agent_message = message
-        if voice_mode and isinstance(message, str):
+        if voice_mode and input_origin == "voice" and isinstance(message, str):
             agent_message = (
                 "[Voice input — respond concisely and conversationally, "
                 "2-3 sentences max. No code blocks or markdown.] "
@@ -1184,7 +1203,11 @@ class TestVoiceStopAndTranscribeReal:
         recorder.stop.return_value = "/tmp/test.wav"
         cli = _make_voice_cli(_voice_recording=True, _voice_recorder=recorder)
         cli._voice_stop_and_transcribe()
-        assert cli._pending_input.get_nowait() == "hello world"
+        from cli import _CLIInputOrigin, _CLIQueuedInput
+
+        assert cli._pending_input.get_nowait() == _CLIQueuedInput(
+            "hello world", origin=_CLIInputOrigin.VOICE
+        )
 
     @patch("cli._cprint")
     @patch("cli.os.unlink")

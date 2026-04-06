@@ -142,6 +142,12 @@ Then use these commands inside the CLI:
 
 This loop continues until you press **Ctrl+B** during recording (exits continuous mode) or 3 consecutive recordings detect no speech.
 
+By default, enabling TTS speaks replies to both microphone and typed input. Set
+`voice.message_reply_mode: "voice_only"` in `~/.hermes/config.yaml` to keep
+typed turns text-only while still speaking replies to microphone input. Accepted
+values are `"all"` (the default) and `"voice_only"`; the setting has no effect
+while TTS is disabled.
+
 :::tip
 The record key is configurable via `voice.record_key` in `~/.hermes/config.yaml` (default: `ctrl+b`).
 :::

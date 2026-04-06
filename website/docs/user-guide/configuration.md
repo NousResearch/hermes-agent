@@ -1576,11 +1576,12 @@ voice:
   max_recording_seconds: 120    # Hard stop for long recordings
   auto_tts: false               # Enable spoken replies automatically when /voice on
   beep_enabled: true            # Play record start/stop beeps in CLI voice mode
+  message_reply_mode: "all"     # "all" speaks typed + voice turns; "voice_only" speaks voice turns only
   silence_threshold: 200        # RMS threshold for speech detection
   silence_duration: 3.0         # Seconds of silence before auto-stop
 ```
 
-Use `/voice on` in the CLI to enable microphone mode, `record_key` to start/stop recording, and `/voice tts` to toggle spoken replies. See [Voice Mode](/user-guide/features/voice-mode) for end-to-end setup and platform-specific behavior.
+Use `/voice on` in the CLI to enable microphone mode, `record_key` to start/stop recording, and `/voice tts` to toggle spoken replies. With `message_reply_mode: "voice_only"`, typed turns remain text-only while replies to microphone input are spoken; the default `"all"` preserves spoken replies for both input types. See [Voice Mode](/user-guide/features/voice-mode) for end-to-end setup and platform-specific behavior.
 
 ## Streaming
 

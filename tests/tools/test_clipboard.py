@@ -1079,7 +1079,11 @@ class TestVoiceSubmission:
                         cli._voice_stop_and_transcribe()
 
         assert cli._attached_images == []
-        assert cli._pending_input.get_nowait() == "hello"
+        from cli import _CLIInputOrigin, _CLIQueuedInput
+
+        assert cli._pending_input.get_nowait() == _CLIQueuedInput(
+            "hello", origin=_CLIInputOrigin.VOICE
+        )
 
 
 # ═════════════════════════════════════════════════════════════════════════
@@ -1087,29 +1091,41 @@ class TestVoiceSubmission:
 # ═════════════════════════════════════════════════════════════════════════
 
 class TestQueueRouting:
-    """Test that (text, images) tuples are correctly unpacked and routed."""
+    """Test production normalization of structured and legacy queue payloads."""
 
     def test_plain_string_stays_string(self):
         """Regular text input has no images."""
-        user_input = "hello world"
-        submit_images = []
-        if isinstance(user_input, tuple):
-            user_input, submit_images = user_input
+        from cli import _CLIInputOrigin, _normalize_cli_queued_input
+
+        user_input, submit_images, origin = _normalize_cli_queued_input("hello world")
         assert user_input == "hello world"
         assert submit_images == []
+        assert origin == _CLIInputOrigin.TEXT
 
     def test_tuple_unpacks_text_and_images(self, tmp_path):
         """(text, images) tuple is correctly split."""
         img = tmp_path / "test.png"
         img.write_bytes(FAKE_PNG)
-        user_input = ("describe this", [img])
+        from cli import _CLIInputOrigin, _normalize_cli_queued_input
 
-        submit_images = []
-        if isinstance(user_input, tuple):
-            user_input, submit_images = user_input
+        user_input, submit_images, origin = _normalize_cli_queued_input(
+            ("describe this", [img])
+        )
         assert user_input == "describe this"
         assert len(submit_images) == 1
         assert submit_images[0] == img
+        assert origin == _CLIInputOrigin.TEXT
+
+    def test_structured_voice_input_preserves_origin(self):
+        from cli import _CLIInputOrigin, _CLIQueuedInput, _normalize_cli_queued_input
+
+        user_input, submit_images, origin = _normalize_cli_queued_input(
+            _CLIQueuedInput("hello", origin=_CLIInputOrigin.VOICE)
+        )
+
+        assert user_input == "hello"
+        assert submit_images == []
+        assert origin == _CLIInputOrigin.VOICE
 
     def test_empty_text_with_images(self, tmp_path):
         """Images without text — text should be empty string."""

@@ -38,6 +38,8 @@ import time
 import uuid
 import textwrap
 from collections import deque
+from dataclasses import dataclass
+from enum import Enum
 from urllib.parse import unquote, urlparse
 from contextlib import contextmanager
 from pathlib import Path
@@ -89,6 +91,30 @@ except Exception:
     pass
 import threading
 import queue
+
+
+class _CLIInputOrigin(str, Enum):
+    TEXT = "text"
+    VOICE = "voice"
+
+
+@dataclass(frozen=True)
+class _CLIQueuedInput:
+    """Structured queue payload for turns that carry origin metadata."""
+
+    text: str
+    images: tuple[Path, ...] = ()
+    origin: _CLIInputOrigin = _CLIInputOrigin.TEXT
+
+
+def _normalize_cli_queued_input(payload):
+    """Normalize structured and legacy CLI queue payloads at one boundary."""
+    if isinstance(payload, _CLIQueuedInput):
+        return payload.text, list(payload.images), payload.origin
+    if isinstance(payload, tuple):
+        text, images = payload
+        return text, images, _CLIInputOrigin.TEXT
+    return payload, [], _CLIInputOrigin.TEXT
 
 def CanonicalUsage(*args, **kwargs):
     from agent.usage_pricing import CanonicalUsage as _CanonicalUsage
@@ -11298,7 +11324,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 self._attached_images.clear()
                 if hasattr(self, '_app') and self._app:
                     self._app.invalidate()
-                self._pending_input.put(transcript)
+                self._pending_input.put(
+                    _CLIQueuedInput(transcript, origin=_CLIInputOrigin.VOICE)
+                )
                 submitted = True
             elif result.get("success"):
                 _cprint(f"{_DIM}No speech detected.{_RST}")
@@ -11425,6 +11453,30 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         except Exception:
             pass
         return True
+
+    def _get_voice_message_reply_mode(self) -> str:
+        """Return normalized CLI voice reply mode from config."""
+        try:
+            from hermes_cli.config import load_config
+
+            voice_config = load_config().get("voice", {})
+            reply_mode = str(voice_config.get("message_reply_mode", "all")).strip().lower()
+            if reply_mode in ("voice_only", "all"):
+                return reply_mode
+        except Exception:
+            pass
+        return "all"
+
+    def _should_speak_voice_response(self, input_origin: _CLIInputOrigin | str) -> bool:
+        """Return whether TTS output is enabled for this input origin."""
+        try:
+            origin = _CLIInputOrigin(input_origin)
+        except (TypeError, ValueError):
+            origin = _CLIInputOrigin.TEXT
+        return self._voice_tts and (
+            origin == _CLIInputOrigin.VOICE
+            or self._get_voice_message_reply_mode() == "all"
+        )
 
     def _enable_voice_mode(self):
         """Enable voice mode after checking requirements."""
@@ -12073,7 +12125,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             except Exception:
                 pass
 
-    def chat(self, message, images: list = None) -> Optional[str]:
+    def chat(
+        self,
+        message,
+        images: list = None,
+        input_origin: _CLIInputOrigin | str = _CLIInputOrigin.TEXT,
+    ) -> Optional[str]:
         """
         Send a message to the agent and get a response.
         
@@ -12088,6 +12145,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         Args:
             message: The user's message (str or multimodal content list)
             images: Optional list of Path objects for attached images
+            input_origin: Where the turn came from ("text" or "voice")
             
         Returns:
             The agent's response, or None on error
@@ -12095,6 +12153,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # Single-query and direct chat callers do not go through run(), so
         # register secure secret capture here as well.
         set_secret_capture_callback(self._secret_capture_callback)
+
+        try:
+            input_origin = _CLIInputOrigin(input_origin)
+        except (TypeError, ValueError):
+            input_origin = _CLIInputOrigin.TEXT
 
         # Reset the per-turn interrupt flag. Any subsequent path that
         # discovers an interrupt (below, after run_conversation) will flip
@@ -12235,7 +12298,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             stream_callback = None
             stop_event = None
 
-            if self._voice_tts:
+            should_speak_response = self._should_speak_voice_response(input_origin)
+
+            if should_speak_response:
                 try:
                     from tools.tts_tool import (
                         _load_tts_config as _load_tts_cfg,
@@ -12288,7 +12353,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             # model responds concisely. The prefix is API-call-local only —
             # run_conversation persists the original clean user message.
             _voice_prefix = ""
-            if self._voice_mode and isinstance(message, str):
+            if (
+                self._voice_mode
+                and input_origin == _CLIInputOrigin.VOICE
+                and isinstance(message, str)
+            ):
                 _voice_prefix = (
                     "[Voice input — respond concisely and conversationally, "
                     "2-3 sentences max. No code blocks or markdown.] "
@@ -12710,9 +12779,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         f"response may be incomplete{_RST}"
                     )
 
-            # Speak response aloud if voice TTS is enabled
-            # Skip batch TTS when streaming TTS already handled it
-            if self._voice_tts and response and not use_streaming_tts:
+            # Speak response aloud only when this turn qualifies for voice output.
+            # Skip batch TTS when streaming TTS already handled it.
+            if should_speak_response and response and not use_streaming_tts:
                 self._voice_speak_response_async(response)
 
 
@@ -15191,10 +15260,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     # post-resize transient suppression should end here.
                     self._status_bar_suppressed_after_resize = False
 
-                    # Unpack image payload: (text, [Path, ...]) or plain str
-                    submit_images = []
-                    if isinstance(user_input, tuple):
-                        user_input, submit_images = user_input
+                    # Normalize plain strings, legacy (text, images) tuples, and
+                    # structured turns carrying input-origin metadata.
+                    user_input, submit_images, input_origin = _normalize_cli_queued_input(
+                        user_input
+                    )
 
                     if isinstance(user_input, str):
                         user_input = _strip_leaked_bracketed_paste_wrappers(user_input)
@@ -15277,7 +15347,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     app.invalidate()  # Refresh status line
 
                     try:
-                        self.chat(user_input, images=submit_images or None)
+                        self.chat(
+                            user_input,
+                            images=submit_images or None,
+                            input_origin=input_origin,
+                        )
                     finally:
                         self._agent_running = False
                         self._spinner_text = ""

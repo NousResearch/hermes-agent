@@ -217,6 +217,9 @@ DEFAULT_CONFIG = {
         # (force on/off for all models), or a list of model-name substrings
         # to match (e.g. ["gpt", "codex", "gemini", "qwen"]).
         "tool_use_enforcement": "auto",
+        # Tool registry nudge — fuzzy-match user message against available
+        # tools and soft-recommend relevant ones. Values: "disabled" (default), "nudge".
+        "tool_registry_injection": "disabled",
     },
     
     "terminal": {
@@ -546,7 +549,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 12,
+    "_config_version": 13,
 }
 
 # =============================================================================

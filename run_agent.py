@@ -1135,6 +1135,10 @@ class AIAgent:
             _agent_section = {}
         self._tool_use_enforcement = _agent_section.get("tool_use_enforcement", "auto")
 
+        # Tool registry nudge — fuzzy-match user message against available tools
+        # and soft-recommend relevant ones. Values: "disabled" (default), "nudge".
+        self._tool_registry_injection = _agent_section.get("tool_registry_injection", "disabled")
+
         # Initialize context compressor for automatic context management
         # Compresses conversation when approaching model's context limit
         # Configuration via config.yaml (compression section)
@@ -7152,6 +7156,30 @@ class AIAgent:
                             _injections.append(_fenced)
                     if _plugin_user_context:
                         _injections.append(_plugin_user_context)
+
+                    # Tool registry nudge: fuzzy-match user message -> soft-recommend relevant tools.
+                    # Ephemeral, not persisted. Uses difflib.SequenceMatcher (stdlib, no new deps).
+                    if self._tool_registry_injection == "nudge" and self.tools:
+                        _user_text = api_msg.get("content", "") if isinstance(api_msg.get("content"), str) else ""
+                        if _user_text:
+                            _threshold = 0.40
+                            _top_k = 5
+                            _scored = []
+                            for _tool in self.tools:
+                                _name = _tool.get("function", {}).get("name", "")
+                                _desc = _tool.get("function", {}).get("description", "")
+                                _match_text = f"{_name} {_desc}"
+                                _score = difflib.SequenceMatcher(None, _user_text.lower(), _match_text.lower()).ratio()
+                                _scored.append((_score, _name))
+                            _scored.sort(reverse=True)
+                            _top_score = _scored[0][0] if _scored else 0
+                            _top_tools = [n for _, n in _scored[:_top_k] if _top_score >= _threshold]
+                            if _top_tools:
+                                _injections.append(
+                                    f"Tool registry nudge -- relevant tools may include: {', '.join(sorted(_top_tools))}. "
+                                    "You may wish to use one of these tools to assist the user."
+                                )
+
                     if _injections:
                         _base = api_msg.get("content", "")
                         if isinstance(_base, str):

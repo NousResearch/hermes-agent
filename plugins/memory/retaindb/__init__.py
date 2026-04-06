@@ -146,6 +146,17 @@ class RetainDBMemoryProvider(MemoryProvider):
     def initialize(self, session_id: str, **kwargs) -> None:
         self._api_key = os.environ.get("RETAINDB_API_KEY", "")
         self._base_url = os.environ.get("RETAINDB_BASE_URL", _DEFAULT_BASE_URL)
+      try:
+            from tools.url_safety import is_safe_url
+            if not is_safe_url(self._base_url):
+                logger.warning(
+                    "RETAINDB_BASE_URL '%s' resolves to a private/internal address "
+                    "and has been reset to the default endpoint.",
+                    self._base_url,
+                )
+                self._base_url = _DEFAULT_BASE_URL
+        except ImportError:
+            pass
         self._user_id = kwargs.get("user_id", "default")
         self._session_id = session_id
 

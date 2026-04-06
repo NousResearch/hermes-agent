@@ -103,7 +103,9 @@ class TestGeneratedSystemdUnits:
 
 
 class TestGatewayStopCleanup:
-    def test_stop_sweeps_manual_gateway_processes_after_service_stop(self, tmp_path, monkeypatch):
+    def test_stop_only_kills_current_profile_by_default(self, tmp_path, monkeypatch):
+        """Without --all, stop uses systemd (if available) and does NOT call
+        the global kill_gateway_processes()."""
         unit_path = tmp_path / "hermes-gateway.service"
         unit_path.write_text("unit\n", encoding="utf-8")
 
@@ -122,6 +124,31 @@ class TestGatewayStopCleanup:
         )
 
         gateway_cli.gateway_command(SimpleNamespace(gateway_command="stop"))
+
+        assert service_calls == ["stop"]
+        # Global kill should NOT be called without --all
+        assert kill_calls == []
+
+    def test_stop_all_sweeps_all_gateway_processes(self, tmp_path, monkeypatch):
+        """With --all, stop uses systemd AND calls the global kill_gateway_processes()."""
+        unit_path = tmp_path / "hermes-gateway.service"
+        unit_path.write_text("unit\n", encoding="utf-8")
+
+        monkeypatch.setattr(gateway_cli, "is_linux", lambda: True)
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
+        monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda system=False: unit_path)
+
+        service_calls = []
+        kill_calls = []
+
+        monkeypatch.setattr(gateway_cli, "systemd_stop", lambda system=False: service_calls.append("stop"))
+        monkeypatch.setattr(
+            gateway_cli,
+            "kill_gateway_processes",
+            lambda force=False: kill_calls.append(force) or 2,
+        )
+
+        gateway_cli.gateway_command(SimpleNamespace(gateway_command="stop", **{"all": True}))
 
         assert service_calls == ["stop"]
         assert kill_calls == [False]
@@ -144,10 +171,12 @@ class TestLaunchdServiceRecovery:
 
         gateway_cli.launchd_install()
 
+        label = gateway_cli.get_launchd_label()
+        domain = gateway_cli._launchd_domain()
         assert "--replace" in plist_path.read_text(encoding="utf-8")
         assert calls[:2] == [
-            ["launchctl", "unload", str(plist_path)],
-            ["launchctl", "load", str(plist_path)],
+            ["launchctl", "bootout", f"{domain}/{label}"],
+            ["launchctl", "bootstrap", domain, str(plist_path)],
         ]
 
     def test_launchd_start_reloads_unloaded_job_and_retries(self, tmp_path, monkeypatch):
@@ -156,10 +185,12 @@ class TestLaunchdServiceRecovery:
         label = gateway_cli.get_launchd_label()
 
         calls = []
+        domain = gateway_cli._launchd_domain()
+        target = f"{domain}/{label}"
 
         def fake_run(cmd, check=False, **kwargs):
             calls.append(cmd)
-            if cmd == ["launchctl", "start", label] and calls.count(cmd) == 1:
+            if cmd == ["launchctl", "kickstart", target] and calls.count(cmd) == 1:
                 raise gateway_cli.subprocess.CalledProcessError(3, cmd, stderr="Could not find service")
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
@@ -169,9 +200,9 @@ class TestLaunchdServiceRecovery:
         gateway_cli.launchd_start()
 
         assert calls == [
-            ["launchctl", "start", label],
-            ["launchctl", "load", str(plist_path)],
-            ["launchctl", "start", label],
+            ["launchctl", "kickstart", target],
+            ["launchctl", "bootstrap", domain, str(plist_path)],
+            ["launchctl", "kickstart", target],
         ]
 
     def test_launchd_status_reports_local_stale_plist_when_unloaded(self, tmp_path, monkeypatch, capsys):
@@ -266,7 +297,7 @@ class TestGatewaySystemServiceRouting:
             gateway_cli,
             "launchd_restart",
             lambda: (_ for _ in ()).throw(
-                gateway_cli.subprocess.CalledProcessError(5, ["launchctl", "start", "ai.hermes.gateway"])
+                gateway_cli.subprocess.CalledProcessError(5, ["launchctl", "kickstart", "-k", "gui/501/ai.hermes.gateway"])
             ),
         )
 

@@ -452,6 +452,11 @@ class DiscordAdapter(BasePlatformAdapter):
         self._bot_task: Optional[asyncio.Task] = None
         # Cap to prevent unbounded growth (Discord threads get archived).
         self._MAX_TRACKED_THREADS = 500
+        # Dedup cache: message_id → timestamp.  Prevents duplicate bot
+        # responses when Discord RESUME replays events after reconnects.
+        self._seen_messages: Dict[str, float] = {}
+        self._SEEN_TTL = 300   # 5 minutes
+        self._SEEN_MAX = 2000  # prune threshold
 
     async def connect(self) -> bool:
         """Connect to Discord and start receiving events."""
@@ -500,19 +505,6 @@ class DiscordAdapter(BasePlatformAdapter):
                 self._set_fatal_error('discord_token_lock', message, retryable=False)
                 return False
 
-            # Set up intents -- members intent needed for username-to-ID resolution
-            intents = Intents.default()
-            intents.message_content = True
-            intents.dm_messages = True
-            intents.guild_messages = True
-            intents.members = True
-            intents.voice_states = True
-
-            # Create bot
-            self._client = commands.Bot(
-                command_prefix="!",  # Not really used, we handle raw messages
-                intents=intents,
-            )
 
             # Parse allowed user entries (may contain usernames or IDs)
             allowed_env = os.getenv("DISCORD_ALLOWED_USERS", "")
@@ -522,6 +514,25 @@ class DiscordAdapter(BasePlatformAdapter):
                     if uid.strip()
                 }
 
+            # Set up intents.
+            # Message Content is required for normal text replies.
+            # Server Members is only needed when the allowlist contains usernames
+            # that must be resolved to numeric IDs. Requesting privileged intents
+            # that aren't enabled in the Discord Developer Portal can prevent the
+            # bot from coming online at all, so avoid requesting members intent
+            # unless it is actually necessary.
+            intents = Intents.default()
+            intents.message_content = True
+            intents.dm_messages = True
+            intents.guild_messages = True
+            intents.members = any(not entry.isdigit() for entry in self._allowed_user_ids)
+            intents.voice_states = True
+
+            # Create bot
+            self._client = commands.Bot(
+                command_prefix="!",  # Not really used, we handle raw messages
+                intents=intents,
+            )
             adapter_self = self  # capture for closure
 
             # Register event handlers
@@ -542,6 +553,19 @@ class DiscordAdapter(BasePlatformAdapter):
 
             @self._client.event
             async def on_message(message: DiscordMessage):
+                # Dedup: Discord RESUME replays events after reconnects (#4777)
+                msg_id = str(message.id)
+                now = time.time()
+                if msg_id in adapter_self._seen_messages:
+                    return
+                adapter_self._seen_messages[msg_id] = now
+                if len(adapter_self._seen_messages) > adapter_self._SEEN_MAX:
+                    cutoff = now - adapter_self._SEEN_TTL
+                    adapter_self._seen_messages = {
+                        k: v for k, v in adapter_self._seen_messages.items()
+                        if v > cutoff
+                    }
+
                 # Always ignore our own messages
                 if message.author == self._client.user:
                     return
@@ -633,9 +657,23 @@ class DiscordAdapter(BasePlatformAdapter):
 
         except asyncio.TimeoutError:
             logger.error("[%s] Timeout waiting for connection to Discord", self.name, exc_info=True)
+            try:
+                from gateway.status import release_scoped_lock
+                if getattr(self, '_token_lock_identity', None):
+                    release_scoped_lock('discord-bot-token', self._token_lock_identity)
+                    self._token_lock_identity = None
+            except Exception:
+                pass
             return False
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error("[%s] Failed to connect to Discord: %s", self.name, e, exc_info=True)
+            try:
+                from gateway.status import release_scoped_lock
+                if getattr(self, '_token_lock_identity', None):
+                    release_scoped_lock('discord-bot-token', self._token_lock_identity)
+                    self._token_lock_identity = None
+            except Exception:
+                pass
             return False
 
     async def disconnect(self) -> None:
@@ -1645,6 +1683,21 @@ class DiscordAdapter(BasePlatformAdapter):
             await interaction.response.defer(ephemeral=True)
             await self._handle_thread_create_slash(interaction, name, message, auto_archive_duration)
 
+        @tree.command(name="queue", description="Queue a prompt for the next turn (doesn't interrupt)")
+        @discord.app_commands.describe(prompt="The prompt to queue")
+        async def slash_queue(interaction: discord.Interaction, prompt: str):
+            await self._run_simple_slash(interaction, f"/queue {prompt}", "Queued for the next turn.")
+
+        @tree.command(name="background", description="Run a prompt in the background")
+        @discord.app_commands.describe(prompt="The prompt to run in the background")
+        async def slash_background(interaction: discord.Interaction, prompt: str):
+            await self._run_simple_slash(interaction, f"/background {prompt}", "Background task started~")
+
+        @tree.command(name="btw", description="Ephemeral side question using session context")
+        @discord.app_commands.describe(question="Your side question (no tools, not persisted)")
+        async def slash_btw(interaction: discord.Interaction, question: str):
+            await self._run_simple_slash(interaction, f"/btw {question}")
+
     def _build_slash_event(self, interaction: discord.Interaction, text: str) -> MessageEvent:
         """Build a MessageEvent from a Discord slash command interaction."""
         is_dm = isinstance(interaction.channel, discord.DMChannel)
@@ -1931,6 +1984,37 @@ class DiscordAdapter(BasePlatformAdapter):
             msg = await channel.send(embed=embed, view=view)
             return SendResult(success=True, message_id=str(msg.id))
 
+        except Exception as e:
+            return SendResult(success=False, error=str(e))
+
+    async def send_update_prompt(
+        self, chat_id: str, prompt: str, default: str = "",
+        session_key: str = "",
+    ) -> SendResult:
+        """Send an interactive button-based update prompt (Yes / No).
+
+        Used by the gateway ``/update`` watcher when ``hermes update --gateway``
+        needs user input (stash restore, config migration).
+        """
+        if not self._client or not DISCORD_AVAILABLE:
+            return SendResult(success=False, error="Not connected")
+        try:
+            channel = self._client.get_channel(int(chat_id))
+            if not channel:
+                channel = await self._client.fetch_channel(int(chat_id))
+
+            default_hint = f" (default: {default})" if default else ""
+            embed = discord.Embed(
+                title="⚕ Update Needs Your Input",
+                description=f"{prompt}{default_hint}",
+                color=discord.Color.gold(),
+            )
+            view = UpdatePromptView(
+                session_key=session_key,
+                allowed_user_ids=self._allowed_user_ids,
+            )
+            msg = await channel.send(embed=embed, view=view)
+            return SendResult(success=True, message_id=str(msg.id))
         except Exception as e:
             return SendResult(success=False, error=str(e))
 
@@ -2344,6 +2428,85 @@ if DISCORD_AVAILABLE:
 
         async def on_timeout(self):
             """Handle view timeout -- disable buttons and mark as expired."""
+            self.resolved = True
+            for child in self.children:
+                child.disabled = True
+
+    class UpdatePromptView(discord.ui.View):
+        """Interactive Yes/No buttons for ``hermes update`` prompts.
+
+        Clicking a button writes the answer to ``.update_response`` so the
+        detached update process can pick it up.  Only authorized users can
+        click.  Times out after 5 minutes (the update process also has a
+        5-minute timeout on its side).
+        """
+
+        def __init__(self, session_key: str, allowed_user_ids: set):
+            super().__init__(timeout=300)
+            self.session_key = session_key
+            self.allowed_user_ids = allowed_user_ids
+            self.resolved = False
+
+        def _check_auth(self, interaction: discord.Interaction) -> bool:
+            if not self.allowed_user_ids:
+                return True
+            return str(interaction.user.id) in self.allowed_user_ids
+
+        async def _respond(
+            self, interaction: discord.Interaction, answer: str,
+            color: discord.Color, label: str,
+        ):
+            if self.resolved:
+                await interaction.response.send_message(
+                    "Already answered~", ephemeral=True
+                )
+                return
+            if not self._check_auth(interaction):
+                await interaction.response.send_message(
+                    "You're not authorized~", ephemeral=True
+                )
+                return
+
+            self.resolved = True
+
+            # Update embed
+            embed = interaction.message.embeds[0] if interaction.message.embeds else None
+            if embed:
+                embed.color = color
+                embed.set_footer(text=f"{label} by {interaction.user.display_name}")
+
+            for child in self.children:
+                child.disabled = True
+            await interaction.response.edit_message(embed=embed, view=self)
+
+            # Write response file
+            try:
+                from hermes_constants import get_hermes_home
+                home = get_hermes_home()
+                response_path = home / ".update_response"
+                tmp = response_path.with_suffix(".tmp")
+                tmp.write_text(answer)
+                tmp.replace(response_path)
+                logger.info(
+                    "Discord update prompt answered '%s' by %s",
+                    answer, interaction.user.display_name,
+                )
+            except Exception as exc:
+                logger.error("Failed to write update response: %s", exc)
+
+        @discord.ui.button(label="Yes", style=discord.ButtonStyle.green, emoji="✓")
+        async def yes_btn(
+            self, interaction: discord.Interaction, button: discord.ui.Button
+        ):
+            await self._respond(interaction, "y", discord.Color.green(), "Yes")
+
+        @discord.ui.button(label="No", style=discord.ButtonStyle.red, emoji="✗")
+        async def no_btn(
+            self, interaction: discord.Interaction, button: discord.ui.Button
+        ):
+            await self._respond(interaction, "n", discord.Color.red(), "No")
+
+        async def on_timeout(self):
             self.resolved = True
             for child in self.children:
                 child.disabled = True

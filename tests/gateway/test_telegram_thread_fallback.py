@@ -33,11 +33,22 @@ class FakeBadRequest(FakeNetworkError):
     pass
 
 
+class FakeTimedOut(FakeNetworkError):
+    pass
+
+
+class FakeRetryAfter(Exception):
+    def __init__(self, seconds):
+        super().__init__(f"Retry after {seconds}")
+        self.retry_after = seconds
+
+
 # Build a fake telegram module tree so the adapter's internal imports work
 _fake_telegram = types.ModuleType("telegram")
 _fake_telegram_error = types.ModuleType("telegram.error")
 _fake_telegram_error.NetworkError = FakeNetworkError
 _fake_telegram_error.BadRequest = FakeBadRequest
+_fake_telegram_error.TimedOut = FakeTimedOut
 _fake_telegram.error = _fake_telegram_error
 _fake_telegram_constants = types.ModuleType("telegram.constants")
 _fake_telegram_constants.ParseMode = SimpleNamespace(MARKDOWN_V2="MarkdownV2")
@@ -169,6 +180,34 @@ async def test_send_retries_network_errors_normally():
 
 
 @pytest.mark.asyncio
+async def test_send_does_not_retry_timeout():
+    """TimedOut (subclass of NetworkError) should NOT be retried in send().
+
+    The request may have already been delivered to the user — retrying
+    would send duplicate messages.
+    """
+    adapter = _make_adapter()
+
+    attempt = [0]
+
+    async def mock_send_message(**kwargs):
+        attempt[0] += 1
+        raise FakeTimedOut("Timed out waiting for Telegram response")
+
+    adapter._bot = SimpleNamespace(send_message=mock_send_message)
+
+    result = await adapter.send(
+        chat_id="123",
+        content="test message",
+    )
+
+    assert result.success is False
+    assert "Timed out" in result.error
+    # CRITICAL: only 1 attempt — no retry for TimedOut
+    assert attempt[0] == 1
+
+
+@pytest.mark.asyncio
 async def test_thread_fallback_only_fires_once():
     """After clearing thread_id, subsequent chunks should also use None."""
     adapter = _make_adapter()
@@ -197,3 +236,25 @@ async def test_thread_fallback_only_fires_once():
     # Second chunk: should use thread_id=None directly (effective_thread_id
     # was cleared per-chunk but the metadata doesn't change between chunks)
     # The key point: the message was delivered despite the invalid thread
+
+
+@pytest.mark.asyncio
+async def test_send_retries_retry_after_errors():
+    """Telegram flood control should back off and retry instead of failing fast."""
+    adapter = _make_adapter()
+
+    attempt = [0]
+
+    async def mock_send_message(**kwargs):
+        attempt[0] += 1
+        if attempt[0] == 1:
+            raise FakeRetryAfter(2)
+        return SimpleNamespace(message_id=300)
+
+    adapter._bot = SimpleNamespace(send_message=mock_send_message)
+
+    result = await adapter.send(chat_id="123", content="test message")
+
+    assert result.success is True
+    assert result.message_id == "300"
+    assert attempt[0] == 2

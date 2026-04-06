@@ -19,6 +19,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple
 
@@ -42,6 +43,7 @@ _EXTRA_ENV_KEYS = frozenset({
     "WHATSAPP_MODE", "WHATSAPP_ENABLED",
     "MATTERMOST_HOME_CHANNEL", "MATTERMOST_REPLY_MODE",
     "MATRIX_PASSWORD", "MATRIX_ENCRYPTION", "MATRIX_HOME_ROOM",
+    "MATRIX_REQUIRE_MENTION", "MATRIX_FREE_RESPONSE_ROOMS", "MATRIX_AUTO_THREAD",
 })
 import yaml
 
@@ -198,11 +200,17 @@ def ensure_hermes_home():
 
 DEFAULT_CONFIG = {
     "model": "",
+    "providers": {},
     "fallback_providers": [],
     "credential_pool_strategies": {},
     "toolsets": ["hermes-cli"],
     "agent": {
         "max_turns": 90,
+        # Inactivity timeout for gateway agent execution (seconds).
+        # The agent can run indefinitely as long as it's actively calling
+        # tools or receiving API responses.  Only fires when the agent has
+        # been completely idle for this duration.  0 = unlimited.
+        "gateway_timeout": 1800,
         # Tool-use enforcement: injects system prompt guidance that tells the
         # model to actually call tools instead of describing intended actions.
         # Values: "auto" (default — applies to gpt/codex models), true/false
@@ -222,6 +230,12 @@ DEFAULT_CONFIG = {
         "env_passthrough": [],
         "docker_image": "nikolaik/python-nodejs:python3.11-nodejs20",
         "docker_forward_env": [],
+        # Explicit environment variables to set inside Docker containers.
+        # Unlike docker_forward_env (which reads values from the host process),
+        # docker_env lets you specify exact key-value pairs — useful when Hermes
+        # runs as a systemd service without access to the user's shell environment.
+        # Example: {"SSH_AUTH_SOCK": "/run/user/1000/ssh-agent.sock"}
+        "docker_env": {},
         "singularity_image": "docker://nikolaik/python-nodejs:python3.11-nodejs20",
         "modal_image": "nikolaik/python-nodejs:python3.11-nodejs20",
         "daytona_image": "nikolaik/python-nodejs:python3.11-nodejs20",
@@ -307,7 +321,7 @@ DEFAULT_CONFIG = {
             "model": "",
             "base_url": "",
             "api_key": "",
-            "timeout": 30,         # seconds — increase for slow local models
+            "timeout": 360,        # seconds (6min) — per-attempt LLM summarization timeout; increase for slow local models
         },
         "compression": {
             "provider": "auto",
@@ -524,8 +538,16 @@ DEFAULT_CONFIG = {
         "wrap_response": True,
     },
 
+    # Logging — controls file logging to ~/.hermes/logs/.
+    # agent.log captures INFO+ (all agent activity); errors.log captures WARNING+.
+    "logging": {
+        "level": "INFO",       # Minimum level for agent.log: DEBUG, INFO, WARNING
+        "max_size_mb": 5,      # Max size per log file before rotation
+        "backup_count": 3,     # Number of rotated backup files to keep
+    },
+
     # Config schema version - bump this when adding new required fields
-    "_config_version": 11,
+    "_config_version": 12,
 }
 
 # =============================================================================
@@ -566,6 +588,30 @@ OPTIONAL_ENV_VARS = {
         "url": "https://openrouter.ai/keys",
         "password": True,
         "tools": ["vision_analyze", "mixture_of_agents"],
+        "category": "provider",
+        "advanced": True,
+    },
+    "GOOGLE_API_KEY": {
+        "description": "Google AI Studio API key (also recognized as GEMINI_API_KEY)",
+        "prompt": "Google AI Studio API key",
+        "url": "https://aistudio.google.com/app/apikey",
+        "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
+    "GEMINI_API_KEY": {
+        "description": "Google AI Studio API key (alias for GOOGLE_API_KEY)",
+        "prompt": "Gemini API key",
+        "url": "https://aistudio.google.com/app/apikey",
+        "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
+    "GEMINI_BASE_URL": {
+        "description": "Google AI Studio base URL override",
+        "prompt": "Gemini base URL (leave empty for default)",
+        "url": None,
+        "password": False,
         "category": "provider",
         "advanced": True,
     },
@@ -1003,6 +1049,30 @@ OPTIONAL_ENV_VARS = {
         "password": False,
         "category": "messaging",
     },
+    "MATRIX_REQUIRE_MENTION": {
+        "description": "Require @mention in Matrix rooms (default: true). Set to false to respond to all messages.",
+        "prompt": "Require @mention in rooms (true/false)",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+        "advanced": True,
+    },
+    "MATRIX_FREE_RESPONSE_ROOMS": {
+        "description": "Comma-separated Matrix room IDs where bot responds without @mention",
+        "prompt": "Free-response room IDs (comma-separated)",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+        "advanced": True,
+    },
+    "MATRIX_AUTO_THREAD": {
+        "description": "Auto-create threads for messages in Matrix rooms (default: true)",
+        "prompt": "Auto-create threads in rooms (true/false)",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+        "advanced": True,
+    },
     "GATEWAY_ALLOW_ALL_USERS": {
         "description": "Allow all users to interact with messaging bots (true/false). Default: false.",
         "prompt": "Allow all users (true/false)",
@@ -1207,6 +1277,182 @@ def check_config_version() -> Tuple[int, int]:
     return current, latest
 
 
+# =============================================================================
+# Config structure validation
+# =============================================================================
+
+# Fields that are valid at root level of config.yaml
+_KNOWN_ROOT_KEYS = {
+    "_config_version", "model", "providers", "fallback_model",
+    "fallback_providers", "credential_pool_strategies", "toolsets",
+    "agent", "terminal", "display", "compression", "delegation",
+    "auxiliary", "custom_providers", "memory", "gateway",
+}
+
+# Valid fields inside a custom_providers list entry
+_VALID_CUSTOM_PROVIDER_FIELDS = {
+    "name", "base_url", "api_key", "api_mode", "models",
+    "context_length", "rate_limit_delay",
+}
+
+# Fields that look like they should be inside custom_providers, not at root
+_CUSTOM_PROVIDER_LIKE_FIELDS = {"base_url", "api_key", "rate_limit_delay", "api_mode"}
+
+
+@dataclass
+class ConfigIssue:
+    """A detected config structure problem."""
+
+    severity: str  # "error", "warning"
+    message: str
+    hint: str
+
+
+def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["ConfigIssue"]:
+    """Validate config.yaml structure and return a list of detected issues.
+
+    Catches common YAML formatting mistakes that produce confusing runtime
+    errors (like "Unknown provider") instead of clear diagnostics.
+
+    Can be called with a pre-loaded config dict, or will load from disk.
+    """
+    if config is None:
+        try:
+            config = load_config()
+        except Exception:
+            return [ConfigIssue("error", "Could not load config.yaml", "Run 'hermes setup' to create a valid config")]
+
+    issues: List[ConfigIssue] = []
+
+    # ── custom_providers must be a list, not a dict ──────────────────────
+    cp = config.get("custom_providers")
+    if cp is not None:
+        if isinstance(cp, dict):
+            issues.append(ConfigIssue(
+                "error",
+                "custom_providers is a dict — it must be a YAML list (items prefixed with '-')",
+                "Change to:\n"
+                "  custom_providers:\n"
+                "    - name: my-provider\n"
+                "      base_url: https://...\n"
+                "      api_key: ...",
+            ))
+            # Check if dict keys look like they should be list-entry fields
+            cp_keys = set(cp.keys()) if isinstance(cp, dict) else set()
+            suspicious = cp_keys & _CUSTOM_PROVIDER_LIKE_FIELDS
+            if suspicious:
+                issues.append(ConfigIssue(
+                    "warning",
+                    f"Root-level keys {sorted(suspicious)} look like custom_providers entry fields",
+                    "These should be indented under a '- name: ...' list entry, not at root level",
+                ))
+        elif isinstance(cp, list):
+            # Validate each entry in the list
+            for i, entry in enumerate(cp):
+                if not isinstance(entry, dict):
+                    issues.append(ConfigIssue(
+                        "warning",
+                        f"custom_providers[{i}] is not a dict (got {type(entry).__name__})",
+                        "Each entry should have at minimum: name, base_url",
+                    ))
+                    continue
+                if not entry.get("name"):
+                    issues.append(ConfigIssue(
+                        "warning",
+                        f"custom_providers[{i}] is missing 'name' field",
+                        "Add a name, e.g.: name: my-provider",
+                    ))
+                if not entry.get("base_url"):
+                    issues.append(ConfigIssue(
+                        "warning",
+                        f"custom_providers[{i}] is missing 'base_url' field",
+                        "Add the API endpoint URL, e.g.: base_url: https://api.example.com/v1",
+                    ))
+
+    # ── fallback_model must be a top-level dict with provider + model ────
+    fb = config.get("fallback_model")
+    if fb is not None:
+        if not isinstance(fb, dict):
+            issues.append(ConfigIssue(
+                "error",
+                f"fallback_model should be a dict with 'provider' and 'model', got {type(fb).__name__}",
+                "Change to:\n"
+                "  fallback_model:\n"
+                "    provider: openrouter\n"
+                "    model: anthropic/claude-sonnet-4",
+            ))
+        elif fb:
+            if not fb.get("provider"):
+                issues.append(ConfigIssue(
+                    "warning",
+                    "fallback_model is missing 'provider' field — fallback will be disabled",
+                    "Add: provider: openrouter (or another provider)",
+                ))
+            if not fb.get("model"):
+                issues.append(ConfigIssue(
+                    "warning",
+                    "fallback_model is missing 'model' field — fallback will be disabled",
+                    "Add: model: anthropic/claude-sonnet-4 (or another model)",
+                ))
+
+    # ── Check for fallback_model accidentally nested inside custom_providers ──
+    if isinstance(cp, dict) and "fallback_model" not in config and "fallback_model" in (cp or {}):
+        issues.append(ConfigIssue(
+            "error",
+            "fallback_model appears inside custom_providers instead of at root level",
+            "Move fallback_model to the top level of config.yaml (no indentation)",
+        ))
+
+    # ── model section: should exist when custom_providers is configured ──
+    model_cfg = config.get("model")
+    if cp and not model_cfg:
+        issues.append(ConfigIssue(
+            "warning",
+            "custom_providers defined but no 'model' section — Hermes won't know which provider to use",
+            "Add a model section:\n"
+            "  model:\n"
+            "    provider: custom\n"
+            "    default: your-model-name\n"
+            "    base_url: https://...",
+        ))
+
+    # ── Root-level keys that look misplaced ──────────────────────────────
+    for key in config:
+        if key.startswith("_"):
+            continue
+        if key not in _KNOWN_ROOT_KEYS and key in _CUSTOM_PROVIDER_LIKE_FIELDS:
+            issues.append(ConfigIssue(
+                "warning",
+                f"Root-level key '{key}' looks misplaced — should it be under 'model:' or inside a 'custom_providers' entry?",
+                f"Move '{key}' under the appropriate section",
+            ))
+
+    return issues
+
+
+def print_config_warnings(config: Optional[Dict[str, Any]] = None) -> None:
+    """Print config structure warnings to stderr at startup.
+
+    Called early in CLI and gateway init so users see problems before
+    they hit cryptic "Unknown provider" errors.  Prints nothing if
+    config is healthy.
+    """
+    try:
+        issues = validate_config_structure(config)
+    except Exception:
+        return
+    if not issues:
+        return
+
+    import sys
+    lines = ["\033[33m⚠ Config issues detected in config.yaml:\033[0m"]
+    for ci in issues:
+        marker = "\033[31m✗\033[0m" if ci.severity == "error" else "\033[33m⚠\033[0m"
+        lines.append(f"  {marker} {ci.message}")
+    lines.append("  \033[2mRun 'hermes doctor' for fix suggestions.\033[0m")
+    sys.stderr.write("\n".join(lines) + "\n\n")
+
+
 def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, Any]:
     """
     Migrate config to latest version, prompting for new required fields.
@@ -1281,6 +1527,69 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                     print("  ✓ Cleared ANTHROPIC_TOKEN from .env (no longer used)")
         except Exception:
             pass
+
+    # ── Version 11 → 12: migrate custom_providers list → providers dict ──
+    if current_ver < 12:
+        config = load_config()
+        custom_list = config.get("custom_providers")
+        if isinstance(custom_list, list) and custom_list:
+            providers_dict = config.get("providers", {})
+            if not isinstance(providers_dict, dict):
+                providers_dict = {}
+            migrated_count = 0
+            for entry in custom_list:
+                if not isinstance(entry, dict):
+                    continue
+                old_name = entry.get("name", "")
+                old_url = entry.get("base_url", "") or entry.get("url", "") or ""
+                old_key = entry.get("api_key", "")
+                if not old_url:
+                    continue  # skip entries with no URL
+
+                # Generate a kebab-case key from the display name
+                key = old_name.strip().lower().replace(" ", "-").replace("(", "").replace(")", "")
+                # Remove consecutive hyphens and trailing hyphens
+                while "--" in key:
+                    key = key.replace("--", "-")
+                key = key.strip("-")
+                if not key:
+                    # Fallback: derive from URL hostname
+                    try:
+                        from urllib.parse import urlparse
+                        parsed = urlparse(old_url)
+                        key = (parsed.hostname or "endpoint").replace(".", "-")
+                    except Exception:
+                        key = f"endpoint-{migrated_count}"
+
+                # Don't overwrite existing entries
+                if key in providers_dict:
+                    key = f"{key}-{migrated_count}"
+
+                new_entry = {"api": old_url}
+                if old_name:
+                    new_entry["name"] = old_name
+                if old_key and old_key not in ("no-key", "no-key-required", ""):
+                    new_entry["api_key"] = old_key
+
+                # Carry over model and api_mode if present
+                if entry.get("model"):
+                    new_entry["default_model"] = entry["model"]
+                if entry.get("api_mode"):
+                    new_entry["transport"] = entry["api_mode"]
+
+                providers_dict[key] = new_entry
+                migrated_count += 1
+
+            if migrated_count > 0:
+                config["providers"] = providers_dict
+                # Remove the old list
+                del config["custom_providers"]
+                save_config(config)
+                if not quiet:
+                    print(f"  ✓ Migrated {migrated_count} custom provider(s) to providers: section")
+                    for key in list(providers_dict.keys())[-migrated_count:]:
+                        ep = providers_dict[key]
+                        print(f"    → {key}: {ep.get('api', '')}")
 
     if current_ver < latest_ver and not quiet:
         print(f"Config version: {current_ver} → {latest_ver}")
@@ -1804,6 +2113,51 @@ def save_env_value(key: str, value: str):
             os.chmod(env_path, stat.S_IRUSR | stat.S_IWUSR)
         except OSError:
             pass
+
+
+def remove_env_value(key: str) -> bool:
+    """Remove a key from ~/.hermes/.env and os.environ.
+
+    Returns True if the key was found and removed, False otherwise.
+    """
+    if is_managed():
+        managed_error(f"remove {key}")
+        return False
+    if not _ENV_VAR_NAME_RE.match(key):
+        raise ValueError(f"Invalid environment variable name: {key!r}")
+    env_path = get_env_path()
+    if not env_path.exists():
+        os.environ.pop(key, None)
+        return False
+
+    read_kw = {"encoding": "utf-8", "errors": "replace"} if _IS_WINDOWS else {}
+    write_kw = {"encoding": "utf-8"} if _IS_WINDOWS else {}
+
+    with open(env_path, **read_kw) as f:
+        lines = f.readlines()
+    lines = _sanitize_env_lines(lines)
+
+    new_lines = [line for line in lines if not line.strip().startswith(f"{key}=")]
+    found = len(new_lines) < len(lines)
+
+    if found:
+        fd, tmp_path = tempfile.mkstemp(dir=str(env_path.parent), suffix='.tmp', prefix='.env_')
+        try:
+            with os.fdopen(fd, 'w', **write_kw) as f:
+                f.writelines(new_lines)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, env_path)
+        except BaseException:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+        _secure_file(env_path)
+
+    os.environ.pop(key, None)
+    return found
 
 
 def save_anthropic_oauth_token(value: str, save_fn=None):

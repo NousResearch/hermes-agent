@@ -2,10 +2,11 @@
 """
 Text-to-Speech Tool Module
 
-Supports four TTS providers:
+Supports five TTS providers:
 - Edge TTS (default, free, no API key): Microsoft Edge neural voices
 - ElevenLabs (premium): High-quality voices, needs ELEVENLABS_API_KEY
 - OpenAI TTS: Good quality, needs OPENAI_API_KEY
+- MiniMax TTS: High-quality with voice cloning, needs MINIMAX_API_KEY
 - NeuTTS (local, free, no API key): On-device TTS via neutts_cli, needs neutts installed
 
 Output formats:
@@ -78,6 +79,9 @@ DEFAULT_ELEVENLABS_STREAMING_MODEL_ID = "eleven_flash_v2_5"
 DEFAULT_OPENAI_MODEL = "gpt-4o-mini-tts"
 DEFAULT_OPENAI_VOICE = "alloy"
 DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
+DEFAULT_MINIMAX_MODEL = "speech-2.8-hd"
+DEFAULT_MINIMAX_VOICE_ID = "English_Graceful_Lady"
+DEFAULT_MINIMAX_BASE_URL = "https://api.minimax.io/v1/t2a_v2"
 
 def _get_default_output_dir() -> str:
     from hermes_constants import get_hermes_dir
@@ -275,6 +279,93 @@ def _generate_openai_tts(text: str, output_path: str, tts_config: Dict[str, Any]
 
 
 # ===========================================================================
+# Provider: MiniMax TTS
+# ===========================================================================
+def _generate_minimax_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
+    """
+    Generate audio using MiniMax TTS API.
+
+    MiniMax returns hex-encoded audio data. Supports streaming (SSE) and
+    non-streaming modes. This implementation uses non-streaming for simplicity.
+
+    Args:
+        text: Text to convert (max 10,000 characters).
+        output_path: Where to save the audio file.
+        tts_config: TTS config dict.
+
+    Returns:
+        Path to the saved audio file.
+    """
+    import requests
+
+    api_key = os.getenv("MINIMAX_API_KEY", "")
+    if not api_key:
+        raise ValueError("MINIMAX_API_KEY not set. Get one at https://platform.minimax.io/")
+
+    mm_config = tts_config.get("minimax", {})
+    model = mm_config.get("model", DEFAULT_MINIMAX_MODEL)
+    voice_id = mm_config.get("voice_id", DEFAULT_MINIMAX_VOICE_ID)
+    speed = mm_config.get("speed", 1)
+    vol = mm_config.get("vol", 1)
+    pitch = mm_config.get("pitch", 0)
+    base_url = mm_config.get("base_url", DEFAULT_MINIMAX_BASE_URL)
+
+    # Determine audio format from output extension
+    if output_path.endswith(".wav"):
+        audio_format = "wav"
+    elif output_path.endswith(".flac"):
+        audio_format = "flac"
+    else:
+        audio_format = "mp3"
+
+    payload = {
+        "model": model,
+        "text": text,
+        "stream": False,
+        "voice_setting": {
+            "voice_id": voice_id,
+            "speed": speed,
+            "vol": vol,
+            "pitch": pitch,
+        },
+        "audio_setting": {
+            "sample_rate": 32000,
+            "bitrate": 128000,
+            "format": audio_format,
+            "channel": 1,
+        },
+    }
+
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}",
+    }
+
+    response = requests.post(base_url, json=payload, headers=headers, timeout=60)
+    response.raise_for_status()
+
+    result = response.json()
+    base_resp = result.get("base_resp", {})
+    status_code = base_resp.get("status_code", -1)
+
+    if status_code != 0:
+        status_msg = base_resp.get("status_msg", "unknown error")
+        raise RuntimeError(f"MiniMax TTS API error (code {status_code}): {status_msg}")
+
+    hex_audio = result.get("data", {}).get("audio", "")
+    if not hex_audio:
+        raise RuntimeError("MiniMax TTS returned empty audio data")
+
+    # MiniMax returns hex-encoded audio (not base64)
+    audio_bytes = bytes.fromhex(hex_audio)
+
+    with open(output_path, "wb") as f:
+        f.write(audio_bytes)
+
+    return output_path
+
+
+# ===========================================================================
 # NeuTTS (local, on-device TTS via neutts_cli)
 # ===========================================================================
 
@@ -434,6 +525,10 @@ def text_to_speech_tool(
             logger.info("Generating speech with OpenAI TTS...")
             _generate_openai_tts(text, file_str, tts_config)
 
+        elif provider == "minimax":
+            logger.info("Generating speech with MiniMax TTS...")
+            _generate_minimax_tts(text, file_str, tts_config)
+
         elif provider == "neutts":
             if not _check_neutts_available():
                 return json.dumps({
@@ -484,7 +579,7 @@ def text_to_speech_tool(
         # Try Opus conversion for Telegram compatibility
         # Edge TTS outputs MP3, NeuTTS outputs WAV — both need ffmpeg conversion
         voice_compatible = False
-        if provider in ("edge", "neutts") and not file_str.endswith(".ogg"):
+        if provider in ("edge", "neutts", "minimax") and not file_str.endswith(".ogg"):
             opus_path = _convert_to_opus(file_str)
             if opus_path:
                 file_str = opus_path
@@ -556,6 +651,8 @@ def check_tts_requirements() -> bool:
             return True
     except ImportError:
         pass
+    if os.getenv("MINIMAX_API_KEY"):
+        return True
     if _check_neutts_available():
         return True
     return False
@@ -842,6 +939,7 @@ if __name__ == "__main__":
         "    API Key:  "
         f"{'set' if resolve_openai_audio_api_key() else 'not set (VOICE_TOOLS_OPENAI_KEY or OPENAI_API_KEY)'}"
     )
+    print(f"  MiniMax:    {'API key set' if os.getenv('MINIMAX_API_KEY') else 'not set (MINIMAX_API_KEY)'}")
     print(f"  ffmpeg:     {'✅ found' if _has_ffmpeg() else '❌ not found (needed for Telegram Opus)'}")
     print(f"\n  Output dir: {DEFAULT_OUTPUT_DIR}")
 

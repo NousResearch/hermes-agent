@@ -83,6 +83,7 @@ Project-local plugins under `./.hermes/plugins/` are disabled by default. Enable
 |-----------|-----|
 | Add tools | `ctx.register_tool(name, schema, handler)` |
 | Add hooks | `ctx.register_hook("post_tool_call", callback)` |
+| Add CLI commands | `ctx.register_cli_command(name, help, setup_fn, handler_fn)` — adds `hermes <plugin> <subcommand>` |
 | Inject messages | `ctx.inject_message(content, role="user")` — see [Injecting Messages](#injecting-messages) |
 | Ship data files | `Path(__file__).parent / "data" / "file.yaml"` |
 | Bundle skills | Copy `skill.md` to `~/.hermes/skills/` at load time |
@@ -103,12 +104,12 @@ Plugins can register callbacks for these lifecycle events. See the **[Event Hook
 
 | Hook | Fires when |
 |------|-----------|
-| `pre_tool_call` | Before any tool executes |
-| `post_tool_call` | After any tool returns |
-| `pre_llm_call` | Once per turn, before the LLM loop — can return `{"context": "..."}` to inject into the system prompt |
-| `post_llm_call` | Once per turn, after the LLM loop completes |
-| `on_session_start` | New session created (first turn only) |
-| `on_session_end` | End of every `run_conversation` call |
+| [`pre_tool_call`](/docs/user-guide/features/hooks#pre_tool_call) | Before any tool executes |
+| [`post_tool_call`](/docs/user-guide/features/hooks#post_tool_call) | After any tool returns |
+| [`pre_llm_call`](/docs/user-guide/features/hooks#pre_llm_call) | Once per turn, before the LLM loop — can return `{"context": "..."}` to [inject context into the user message](/docs/user-guide/features/hooks#pre_llm_call) |
+| [`post_llm_call`](/docs/user-guide/features/hooks#post_llm_call) | Once per turn, after the LLM loop (successful turns only) |
+| [`on_session_start`](/docs/user-guide/features/hooks#on_session_start) | New session created (first turn only) |
+| [`on_session_end`](/docs/user-guide/features/hooks#on_session_end) | End of every `run_conversation` call + CLI exit handler |
 
 ## Managing plugins
 

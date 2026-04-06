@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 import os
+import re
 from typing import Any, Dict, Optional
+
+logger = logging.getLogger(__name__)
 
 from hermes_cli import auth as auth_mod
 from agent.credential_pool import CredentialPool, PooledCredential, get_custom_provider_pool_key, load_pool
@@ -168,6 +172,13 @@ def _resolve_runtime_from_pool_entry(
         elif base_url.rstrip("/").endswith("/anthropic"):
             api_mode = "anthropic_messages"
 
+    # OpenCode base URLs end with /v1 for OpenAI-compatible models, but the
+    # Anthropic SDK prepends its own /v1/messages to the base_url.  Strip the
+    # trailing /v1 so the SDK constructs the correct path (e.g.
+    # https://opencode.ai/zen/go/v1/messages instead of .../v1/v1/messages).
+    if api_mode == "anthropic_messages" and provider in ("opencode-zen", "opencode-go"):
+        base_url = re.sub(r"/v1/?$", "", base_url)
+
     return {
         "provider": provider,
         "api_mode": api_mode,
@@ -250,6 +261,12 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
     config = load_config()
     custom_providers = config.get("custom_providers")
     if not isinstance(custom_providers, list):
+        if isinstance(custom_providers, dict):
+            logger.warning(
+                "custom_providers in config.yaml is a dict, not a list. "
+                "Each entry must be prefixed with '-' in YAML. "
+                "Run 'hermes doctor' for details."
+            )
         return None
 
     for entry in custom_providers:
@@ -369,9 +386,13 @@ def _resolve_openrouter_runtime(
         ]
     else:
         # Custom endpoint: use api_key from config when using config base_url (#1760).
+        # When the endpoint is Ollama Cloud, check OLLAMA_API_KEY — it's
+        # the canonical env var for ollama.com authentication.
+        _is_ollama_url = "ollama.com" in base_url.lower()
         api_key_candidates = [
             explicit_api_key,
             (cfg_api_key if use_config_base_url else ""),
+            (os.getenv("OLLAMA_API_KEY") if _is_ollama_url else ""),
             os.getenv("OPENAI_API_KEY"),
             os.getenv("OPENROUTER_API_KEY"),
         ]
@@ -474,7 +495,11 @@ def _resolve_explicit_runtime(
             explicit_base_url
             or str(state.get("inference_base_url") or auth_mod.DEFAULT_NOUS_INFERENCE_URL).strip().rstrip("/")
         )
-        api_key = explicit_api_key or str(state.get("agent_key") or state.get("access_token") or "").strip()
+        # Only use agent_key for inference — access_token is an OAuth token for the
+        # portal API (minting keys, refreshing tokens), not for the inference API.
+        # Falling back to access_token sends an OAuth bearer token to the inference
+        # endpoint, which returns 404 because it is not a valid inference credential.
+        api_key = explicit_api_key or str(state.get("agent_key") or "").strip()
         expires_at = state.get("agent_key_expires_at") or state.get("expires_at")
         if not api_key:
             creds = resolve_nous_runtime_credentials(
@@ -700,6 +725,9 @@ def resolve_runtime_provider(
             # (e.g. https://api.minimax.io/anthropic, https://dashscope.../anthropic)
             elif base_url.rstrip("/").endswith("/anthropic"):
                 api_mode = "anthropic_messages"
+        # Strip trailing /v1 for OpenCode Anthropic models (see comment above).
+        if api_mode == "anthropic_messages" and provider in ("opencode-zen", "opencode-go"):
+            base_url = re.sub(r"/v1/?$", "", base_url)
         return {
             "provider": provider,
             "api_mode": api_mode,

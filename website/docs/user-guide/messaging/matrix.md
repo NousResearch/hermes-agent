@@ -17,8 +17,9 @@ Before setup, here's the part most people want to know: how Hermes behaves once 
 | Context | Behavior |
 |---------|----------|
 | **DMs** | Hermes responds to every message. No `@mention` needed. Each DM has its own session. |
-| **Rooms** | Hermes responds to all messages in rooms it has joined. Room invites are auto-accepted. |
-| **Threads** | Hermes supports Matrix threads (MSC3440). If you reply in a thread, Hermes keeps the thread context isolated from the main room timeline. |
+| **Rooms** | By default, Hermes requires an `@mention` to respond. Set `MATRIX_REQUIRE_MENTION=false` or add room IDs to `MATRIX_FREE_RESPONSE_ROOMS` for free-response rooms. Room invites are auto-accepted. |
+| **Threads** | Hermes supports Matrix threads (MSC3440). If you reply in a thread, Hermes keeps the thread context isolated from the main room timeline. Threads where the bot has already participated do not require a mention. |
+| **Auto-threading** | By default, Hermes auto-creates a thread for each message it responds to in a room. This keeps conversations isolated. Set `MATRIX_AUTO_THREAD=false` to disable. |
 | **Shared rooms with multiple users** | By default, Hermes isolates session history per user inside the room. Two people talking in the same room do not share one transcript unless you explicitly disable that. |
 
 :::tip
@@ -50,6 +51,30 @@ Shared sessions can be useful for a collaborative room, but they also mean:
 - users share context growth and token costs
 - one person's long tool-heavy task can bloat everyone else's context
 - one person's in-flight run can interrupt another person's follow-up in the same room
+
+### Mention and Threading Configuration
+
+You can configure mention and auto-threading behavior via environment variables or `config.yaml`:
+
+```yaml
+matrix:
+  require_mention: true           # Require @mention in rooms (default: true)
+  free_response_rooms:            # Rooms exempt from mention requirement
+    - "!abc123:matrix.org"
+  auto_thread: true               # Auto-create threads for responses (default: true)
+```
+
+Or via environment variables:
+
+```bash
+MATRIX_REQUIRE_MENTION=true
+MATRIX_FREE_RESPONSE_ROOMS=!abc123:matrix.org,!def456:matrix.org
+MATRIX_AUTO_THREAD=true
+```
+
+:::note
+If you are upgrading from a version that did not have `MATRIX_REQUIRE_MENTION`, the bot previously responded to all messages in rooms. To preserve that behavior, set `MATRIX_REQUIRE_MENTION=false`.
+:::
 
 This guide walks you through the full setup process — from creating your bot account to sending your first message.
 

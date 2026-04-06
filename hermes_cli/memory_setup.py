@@ -151,6 +151,7 @@ def _install_dependencies(provider_name: str) -> None:
         "honcho-ai": "honcho",
         "mem0ai": "mem0",
         "hindsight-client": "hindsight_client",
+        "hindsight-all": "hindsight",
     }
 
     # Check which packages are missing
@@ -166,9 +167,18 @@ def _install_dependencies(provider_name: str) -> None:
         return
 
     print(f"\n  Installing dependencies: {', '.join(missing)}")
+
+    import shutil
+    uv_path = shutil.which("uv")
+    if not uv_path:
+        print(f"  ⚠ uv not found — cannot install dependencies")
+        print(f"  Install uv: curl -LsSf https://astral.sh/uv/install.sh | sh")
+        print(f"  Then re-run: hermes memory setup")
+        return
+
     try:
         subprocess.run(
-            [sys.executable, "-m", "pip", "install", "--quiet"] + missing,
+            [uv_path, "pip", "install", "--python", sys.executable, "--quiet"] + missing,
             check=True, timeout=120,
             capture_output=True,
         )
@@ -178,10 +188,10 @@ def _install_dependencies(provider_name: str) -> None:
         stderr = (e.stderr or b"").decode()[:200]
         if stderr:
             print(f"    {stderr}")
-        print(f"  Run manually: pip install {' '.join(missing)}")
+        print(f"  Run manually: uv pip install --python {sys.executable} {' '.join(missing)}")
     except Exception as e:
         print(f"  ⚠ Install failed: {e}")
-        print(f"  Run manually: pip install {' '.join(missing)}")
+        print(f"  Run manually: uv pip install --python {sys.executable} {' '.join(missing)}")
 
     # Also show external dependencies (non-pip) if any
     ext_deps = meta.get("external_dependencies", [])
@@ -219,15 +229,19 @@ def _get_available_providers() -> list:
                 continue
         except Exception:
             continue
-        # Override description with setup hint
+
         schema = provider.get_config_schema() if hasattr(provider, "get_config_schema") else []
         has_secrets = any(f.get("secret") for f in schema)
-        if has_secrets:
+        has_non_secrets = any(not f.get("secret") for f in schema)
+        if has_secrets and has_non_secrets:
+            setup_hint = "API key / local"
+        elif has_secrets:
             setup_hint = "requires API key"
         elif not schema:
             setup_hint = "no setup needed"
         else:
             setup_hint = "local"
+
         results.append((name, setup_hint, provider))
     return results
 
@@ -235,6 +249,42 @@ def _get_available_providers() -> list:
 # ---------------------------------------------------------------------------
 # Setup wizard
 # ---------------------------------------------------------------------------
+
+def cmd_setup_provider(provider_name: str) -> None:
+    """Run memory setup for a specific provider, skipping the picker."""
+    from hermes_cli.config import load_config, save_config
+
+    providers = _get_available_providers()
+    match = None
+    for name, desc, provider in providers:
+        if name == provider_name:
+            match = (name, desc, provider)
+            break
+
+    if not match:
+        print(f"\n  Memory provider '{provider_name}' not found.")
+        print("  Run 'hermes memory setup' to see available providers.\n")
+        return
+
+    name, _, provider = match
+
+    _install_dependencies(name)
+
+    config = load_config()
+    if not isinstance(config.get("memory"), dict):
+        config["memory"] = {}
+
+    if hasattr(provider, "post_setup"):
+        hermes_home = str(Path(os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes"))))
+        provider.post_setup(hermes_home, config)
+        return
+
+    # Fallback: generic schema-based setup (same as cmd_setup)
+    config["memory"]["provider"] = name
+    save_config(config)
+    print(f"\n  Memory provider: {name}")
+    print(f"  Activation saved to config.yaml\n")
+
 
 def cmd_setup(args) -> None:
     """Interactive memory provider setup wizard."""
@@ -273,9 +323,15 @@ def cmd_setup(args) -> None:
     # Install pip dependencies if declared in plugin.yaml
     _install_dependencies(name)
 
+    # If the provider has a post_setup hook, delegate entirely to it.
+    # The hook handles its own config, connection test, and activation.
+    if hasattr(provider, "post_setup"):
+        hermes_home = str(Path(os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes"))))
+        provider.post_setup(hermes_home, config)
+        return
+
     schema = provider.get_config_schema() if hasattr(provider, "get_config_schema") else []
 
-    # Provider config section
     provider_config = config["memory"].get(name, {})
     if not isinstance(provider_config, dict):
         provider_config = {}
@@ -290,10 +346,24 @@ def cmd_setup(args) -> None:
             key = field["key"]
             desc = field.get("description", key)
             default = field.get("default")
+            # Dynamic default: look up default from another field's value
+            default_from = field.get("default_from")
+            if default_from and isinstance(default_from, dict):
+                ref_field = default_from.get("field", "")
+                ref_map = default_from.get("map", {})
+                ref_value = provider_config.get(ref_field, "")
+                if ref_value and ref_value in ref_map:
+                    default = ref_map[ref_value]
             is_secret = field.get("secret", False)
             choices = field.get("choices")
             env_var = field.get("env_var")
             url = field.get("url")
+
+            # Skip fields whose "when" condition doesn't match
+            when = field.get("when")
+            if when and isinstance(when, dict):
+                if not all(provider_config.get(k) == v for k, v in when.items()):
+                    continue
 
             if choices and not is_secret:
                 # Use curses picker for choice fields
@@ -335,18 +405,18 @@ def cmd_setup(args) -> None:
         try:
             provider.save_config(provider_config, hermes_home)
         except Exception as e:
-            print(f"  ⚠ Failed to write provider config: {e}")
+            print(f"  Failed to write provider config: {e}")
 
     # Write secrets to .env
     if env_writes:
         _write_env_vars(env_path, env_writes)
 
-    print(f"\n  ✓ Memory provider: {name}")
-    print(f"  ✓ Activation saved to config.yaml")
+    print(f"\n  Memory provider: {name}")
+    print(f"  Activation saved to config.yaml")
     if provider_config:
-        print(f"  ✓ Provider config saved")
+        print(f"  Provider config saved")
     if env_writes:
-        print(f"  ✓ API keys saved to .env")
+        print(f"  API keys saved to .env")
     print(f"\n  Start a new session to activate.\n")
 
 

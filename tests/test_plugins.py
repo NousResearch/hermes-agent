@@ -196,6 +196,10 @@ class TestPluginLoading:
 class TestPluginHooks:
     """Tests for lifecycle hook registration and invocation."""
 
+    def test_valid_hooks_include_request_scoped_api_hooks(self):
+        assert "pre_api_request" in VALID_HOOKS
+        assert "post_api_request" in VALID_HOOKS
+
     def test_register_and_invoke_hook(self, tmp_path, monkeypatch):
         """Registered hooks are called on invoke_hook()."""
         plugins_dir = tmp_path / "hermes_test" / "plugins"
@@ -261,6 +265,35 @@ class TestPluginHooks:
         results = mgr.invoke_hook("post_llm_call", session_id="s1",
                                   user_message="hi", assistant_response="bye", model="test")
         assert results == []
+
+    def test_request_hooks_are_invokeable(self, tmp_path, monkeypatch):
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        _make_plugin_dir(
+            plugins_dir, "request_hook",
+            register_body=(
+                'ctx.register_hook("pre_api_request", '
+                'lambda **kw: {"seen": kw.get("api_call_count"), '
+                '"mc": kw.get("message_count"), "tc": kw.get("tool_count")})'
+            ),
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        results = mgr.invoke_hook(
+            "pre_api_request",
+            session_id="s1",
+            task_id="t1",
+            model="test",
+            api_call_count=2,
+            message_count=5,
+            tool_count=3,
+            approx_input_tokens=100,
+            request_char_count=400,
+            max_tokens=8192,
+        )
+        assert results == [{"seen": 2, "mc": 5, "tc": 3}]
 
     def test_invalid_hook_name_warns(self, tmp_path, monkeypatch, caplog):
         """Registering an unknown hook name logs a warning."""
@@ -401,6 +434,131 @@ class TestPluginManagerList:
             assert "tools" in p
             assert "hooks" in p
 
+
+
+class TestPreLlmCallTargetRouting:
+    """Tests for pre_llm_call hook return format with target-aware routing.
+
+    The routing logic lives in run_agent.py, but the return format is collected
+    by invoke_hook(). These tests verify the return format works correctly and
+    that downstream code can route based on the 'target' key.
+    """
+
+    def _make_pre_llm_plugin(self, plugins_dir, name, return_expr):
+        """Create a plugin that returns a specific value from pre_llm_call."""
+        _make_plugin_dir(
+            plugins_dir, name,
+            register_body=(
+                f'ctx.register_hook("pre_llm_call", lambda **kw: {return_expr})'
+            ),
+        )
+
+    def test_context_dict_returned(self, tmp_path, monkeypatch):
+        """Plugin returning a context dict is collected by invoke_hook."""
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        self._make_pre_llm_plugin(
+            plugins_dir, "basic_plugin",
+            '{"context": "basic context"}',
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        results = mgr.invoke_hook(
+            "pre_llm_call", session_id="s1", user_message="hi",
+            conversation_history=[], is_first_turn=True, model="test",
+        )
+        assert len(results) == 1
+        assert results[0]["context"] == "basic context"
+        assert "target" not in results[0]
+
+    def test_plain_string_return(self, tmp_path, monkeypatch):
+        """Plain string returns are collected as-is (routing treats them as user_message)."""
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        self._make_pre_llm_plugin(
+            plugins_dir, "str_plugin",
+            '"plain string context"',
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        results = mgr.invoke_hook(
+            "pre_llm_call", session_id="s1", user_message="hi",
+            conversation_history=[], is_first_turn=True, model="test",
+        )
+        assert len(results) == 1
+        assert results[0] == "plain string context"
+
+    def test_multiple_plugins_context_collected(self, tmp_path, monkeypatch):
+        """Multiple plugins returning context are all collected."""
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        self._make_pre_llm_plugin(
+            plugins_dir, "aaa_memory",
+            '{"context": "memory context"}',
+        )
+        self._make_pre_llm_plugin(
+            plugins_dir, "bbb_guardrail",
+            '{"context": "guardrail text"}',
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        results = mgr.invoke_hook(
+            "pre_llm_call", session_id="s1", user_message="hi",
+            conversation_history=[], is_first_turn=True, model="test",
+        )
+        assert len(results) == 2
+        contexts = [r["context"] for r in results]
+        assert "memory context" in contexts
+        assert "guardrail text" in contexts
+
+    def test_routing_logic_all_to_user_message(self, tmp_path, monkeypatch):
+        """Simulate the routing logic from run_agent.py.
+
+        All plugin context — dicts and plain strings — ends up in a single
+        user message context string. There is no system_prompt target.
+        """
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        self._make_pre_llm_plugin(
+            plugins_dir, "aaa_mem",
+            '{"context": "memory A"}',
+        )
+        self._make_pre_llm_plugin(
+            plugins_dir, "bbb_guard",
+            '{"context": "rule B"}',
+        )
+        self._make_pre_llm_plugin(
+            plugins_dir, "ccc_plain",
+            '"plain text C"',
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        results = mgr.invoke_hook(
+            "pre_llm_call", session_id="s1", user_message="hi",
+            conversation_history=[], is_first_turn=True, model="test",
+        )
+
+        # Replicate run_agent.py routing logic — everything goes to user msg
+        _ctx_parts = []
+        for r in results:
+            if isinstance(r, dict) and r.get("context"):
+                _ctx_parts.append(str(r["context"]))
+            elif isinstance(r, str) and r.strip():
+                _ctx_parts.append(r)
+
+        assert _ctx_parts == ["memory A", "rule B", "plain text C"]
+        _plugin_user_context = "\n\n".join(_ctx_parts)
+        assert "memory A" in _plugin_user_context
+        assert "rule B" in _plugin_user_context
+        assert "plain text C" in _plugin_user_context
 
 
 # NOTE: TestPluginCommands removed – register_command() was never implemented

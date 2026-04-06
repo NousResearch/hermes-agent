@@ -192,6 +192,59 @@ mgr.on_session_end([])
 mgr.shutdown_all()
 ```
 
+## Adding CLI Commands
+
+Memory provider plugins can register their own CLI subcommand tree (e.g. `hermes my-provider status`, `hermes my-provider config`). This uses a convention-based discovery system — no changes to core files needed.
+
+### How it works
+
+1. Add a `cli.py` file to your plugin directory
+2. Define a `register_cli(subparser)` function that builds the argparse tree
+3. The memory plugin system discovers it at startup via `discover_plugin_cli_commands()`
+4. Your commands appear under `hermes <provider-name> <subcommand>`
+
+**Active-provider gating:** Your CLI commands only appear when your provider is the active `memory.provider` in config. If a user hasn't configured your provider, your commands won't show in `hermes --help`.
+
+### Example
+
+```python
+# plugins/memory/my-provider/cli.py
+
+def my_command(args):
+    """Handler dispatched by argparse."""
+    sub = getattr(args, "my_command", None)
+    if sub == "status":
+        print("Provider is active and connected.")
+    elif sub == "config":
+        print("Showing config...")
+    else:
+        print("Usage: hermes my-provider <status|config>")
+
+def register_cli(subparser) -> None:
+    """Build the hermes my-provider argparse tree.
+
+    Called by discover_plugin_cli_commands() at argparse setup time.
+    """
+    subs = subparser.add_subparsers(dest="my_command")
+    subs.add_parser("status", help="Show provider status")
+    subs.add_parser("config", help="Show provider config")
+    subparser.set_defaults(func=my_command)
+```
+
+### Reference implementation
+
+See `plugins/memory/honcho/cli.py` for a full example with 13 subcommands, cross-profile management (`--target-profile`), and config read/write.
+
+### Directory structure with CLI
+
+```
+plugins/memory/my-provider/
+├── __init__.py      # MemoryProvider implementation + register()
+├── plugin.yaml      # Metadata
+├── cli.py           # register_cli(subparser) — CLI commands
+└── README.md        # Setup instructions
+```
+
 ## Single Provider Rule
 
 Only **one** external memory provider can be active at a time. If a user tries to register a second, the MemoryManager rejects it with a warning. This prevents tool schema bloat and conflicting backends.

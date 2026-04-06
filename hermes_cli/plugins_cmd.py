@@ -165,13 +165,14 @@ def _prompt_plugin_env_vars(manifest: dict, console) -> None:
             url: "https://acme.com/keys"
             secret: true
 
-    Already-set variables are skipped.  Values are saved to ``~/.hermes/.env``.
+    Already-set variables are skipped.  Values are saved to the user's ``.env``.
     """
     requires_env = manifest.get("requires_env") or []
     if not requires_env:
         return
 
     from hermes_cli.config import get_env_value, save_env_value  # noqa: F811
+    from hermes_constants import display_hermes_home
 
     # Normalise to list-of-dicts
     env_specs: list[dict] = []
@@ -209,15 +210,15 @@ def _prompt_plugin_env_vars(manifest: dict, console) -> None:
             else:
                 value = input(f"  {name}: ").strip()
         except (EOFError, KeyboardInterrupt):
-            console.print("\n[dim]  Skipped (you can set these later in ~/.hermes/.env)[/dim]")
+            console.print(f"\n[dim]  Skipped (you can set these later in {display_hermes_home()}/.env)[/dim]")
             return
 
         if value:
             save_env_value(name, value)
             os.environ[name] = value
-            console.print(f"  [green]✓[/green] Saved to ~/.hermes/.env")
+            console.print(f"  [green]✓[/green] Saved to {display_hermes_home()}/.env")
         else:
-            console.print(f"  [dim]  Skipped (set {name} in ~/.hermes/.env later)[/dim]")
+            console.print(f"  [dim]  Skipped (set {name} in {display_hermes_home()}/.env later)[/dim]")
 
     console.print()
 

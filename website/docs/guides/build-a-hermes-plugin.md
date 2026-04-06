@@ -44,8 +44,12 @@ This tells Hermes: "I'm a plugin called calculator, I provide tools and hooks." 
 Optional fields you could add:
 ```yaml
 author: Your Name
-requires_env:          # gate loading on env vars
-  - SOME_API_KEY       # plugin disabled if missing
+requires_env:          # gate loading on env vars; prompted during install
+  - SOME_API_KEY       # simple format — plugin disabled if missing
+  - name: OTHER_KEY    # rich format — shows description/url during install
+    description: "Key for the Other service"
+    url: "https://other.com/keys"
+    secret: true
 ```
 
 ## Step 3: Write the tool schemas
@@ -336,12 +340,34 @@ def register(ctx):
 If your plugin needs an API key:
 
 ```yaml
-# plugin.yaml
+# plugin.yaml — simple format (backwards-compatible)
 requires_env:
   - WEATHER_API_KEY
 ```
 
 If `WEATHER_API_KEY` isn't set, the plugin is disabled with a clear message. No crash, no error in the agent — just "Plugin weather disabled (missing: WEATHER_API_KEY)".
+
+When users run `hermes plugins install`, they're **prompted interactively** for any missing `requires_env` variables. Values are saved to `.env` automatically.
+
+For a better install experience, use the rich format with descriptions and signup URLs:
+
+```yaml
+# plugin.yaml — rich format
+requires_env:
+  - name: WEATHER_API_KEY
+    description: "API key for OpenWeather"
+    url: "https://openweathermap.org/api"
+    secret: true
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `name` | Yes | Environment variable name |
+| `description` | No | Shown to user during install prompt |
+| `url` | No | Where to get the credential |
+| `secret` | No | If `true`, input is hidden (like a password field) |
+
+Both formats can be mixed in the same list. Already-set variables are skipped silently.
 
 ### Conditional tool availability
 

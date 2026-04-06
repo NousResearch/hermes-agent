@@ -284,10 +284,28 @@ def _resolve_runtime_agent_kwargs() -> dict:
         resolve_runtime_provider,
         format_runtime_provider_error,
     )
+    from hermes_cli.config import load_config
+
+    config = load_config()
+    model_cfg = config.get("model") if isinstance(config.get("model"), dict) else {}
+
+    # HERMES_INFERENCE_PROVIDER env var takes explicit precedence.
+    # Otherwise fall back to config so model.provider / model.base_url are respected
+    # and don't silently fall through to OpenRouter when OPENROUTER_API_KEY is present.
+    env_provider = os.getenv("HERMES_INFERENCE_PROVIDER")
+    if env_provider:
+        requested = env_provider
+        explicit_base_url = None
+    else:
+        requested = model_cfg.get("provider") or None
+        # Pass config base_url explicitly so _resolve_explicit_runtime honours it
+        # for all provider types, not just "auto"/"custom".
+        explicit_base_url = model_cfg.get("base_url") or None
 
     try:
         runtime = resolve_runtime_provider(
-            requested=os.getenv("HERMES_INFERENCE_PROVIDER"),
+            requested=requested,
+            explicit_base_url=explicit_base_url,
         )
     except Exception as exc:
         raise RuntimeError(format_runtime_provider_error(exc)) from exc

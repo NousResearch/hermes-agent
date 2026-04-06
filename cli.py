@@ -1214,7 +1214,10 @@ class HermesCLI:
         )
 
         self._explicit_api_key = api_key
-        self._explicit_base_url = base_url
+        # Include config base_url as an explicit override so _ensure_runtime_credentials()
+        # passes it to resolve_runtime_provider and _resolve_explicit_runtime honours it
+        # for all provider types (not just "auto"/"custom"). CLI arg takes precedence.
+        self._explicit_base_url = base_url or CLI_CONFIG["model"].get("base_url") or None
 
         # Provider selection is resolved lazily at use-time via _ensure_runtime_credentials().
         self.requested_provider = (

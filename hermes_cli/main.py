@@ -964,8 +964,14 @@ def select_provider_and_model(args=None):
     ]
 
     # Add user-defined custom providers from config.yaml
+    # Hermes historically stored named custom endpoints in `custom_providers` (list).
+    # Newer config versions migrate them into `providers` (dict). Support both.
     custom_providers_cfg = config.get("custom_providers") or []
-    _custom_provider_map = {}  # key → {name, base_url, api_key}
+    providers_cfg = config.get("providers") or {}
+
+    _custom_provider_map = {}  # key → {name, base_url, api_key, model}
+
+    # Legacy list format
     if isinstance(custom_providers_cfg, list):
         for entry in custom_providers_cfg:
             if not isinstance(entry, dict):
@@ -977,6 +983,32 @@ def select_provider_and_model(args=None):
             key = "custom:" + name.lower().replace(" ", "-")
             short_url = base_url.replace("https://", "").replace("http://", "").rstrip("/")
             saved_model = entry.get("model", "")
+            model_hint = f" — {saved_model}" if saved_model else ""
+            top_providers.append((key, f"{name} ({short_url}){model_hint}"))
+            _custom_provider_map[key] = {
+                "name": name,
+                "base_url": base_url,
+                "api_key": entry.get("api_key", ""),
+                "model": saved_model,
+            }
+
+    # New dict format (migrated from custom_providers)
+    if isinstance(providers_cfg, dict):
+        for pkey, entry in providers_cfg.items():
+            if not isinstance(entry, dict):
+                continue
+            base_url = (entry.get("api") or "").strip()
+            if not base_url:
+                continue
+            name = (entry.get("name") or pkey or "").strip()
+            if not name:
+                continue
+            key = "custom:" + name.lower().replace(" ", "-")
+            # Avoid duplicates if both sections exist
+            if key in _custom_provider_map:
+                continue
+            short_url = base_url.replace("https://", "").replace("http://", "").rstrip("/")
+            saved_model = entry.get("default_model", "")
             model_hint = f" — {saved_model}" if saved_model else ""
             top_providers.append((key, f"{name} ({short_url}){model_hint}"))
             _custom_provider_map[key] = {
@@ -1519,27 +1551,50 @@ def _save_custom_provider(base_url, api_key="", model="", context_length=None):
 
 
 def _remove_custom_provider(config):
-    """Let the user remove a saved custom provider from config.yaml."""
+    """Let the user remove a saved custom provider from config.yaml.
+
+    Supports both legacy `custom_providers` list and migrated `providers` dict.
+    """
     from hermes_cli.config import load_config, save_config
 
     cfg = load_config()
-    providers = cfg.get("custom_providers") or []
-    if not isinstance(providers, list) or not providers:
+
+    legacy = cfg.get("custom_providers") or []
+    if not isinstance(legacy, list):
+        legacy = []
+
+    migrated = cfg.get("providers") or {}
+    if not isinstance(migrated, dict):
+        migrated = {}
+
+    # Entries: (source, key/index, display)
+    entries = []
+
+    for i, entry in enumerate(legacy):
+        if not isinstance(entry, dict):
+            continue
+        name = entry.get("name", "unnamed")
+        url = entry.get("base_url", "")
+        short_url = str(url).replace("https://", "").replace("http://", "").rstrip("/")
+        entries.append(("custom_providers", i, f"{name} ({short_url})"))
+
+    for key, entry in migrated.items():
+        if not isinstance(entry, dict):
+            continue
+        url = entry.get("api", "")
+        if not url:
+            continue
+        name = entry.get("name") or key or "unnamed"
+        short_url = str(url).replace("https://", "").replace("http://", "").rstrip("/")
+        entries.append(("providers", key, f"{name} ({short_url})"))
+
+    if not entries:
         print("No custom providers configured.")
         return
 
     print("Remove a custom provider:\n")
 
-    choices = []
-    for entry in providers:
-        if isinstance(entry, dict):
-            name = entry.get("name", "unnamed")
-            url = entry.get("base_url", "")
-            short_url = url.replace("https://", "").replace("http://", "").rstrip("/")
-            choices.append(f"{name} ({short_url})")
-        else:
-            choices.append(str(entry))
-    choices.append("Cancel")
+    choices = [d for _, _, d in entries] + ["Cancel"]
 
     try:
         from simple_term_menu import TerminalMenu
@@ -1552,7 +1607,7 @@ def _remove_custom_provider(config):
         )
         idx = menu.show()
         print()
-    except (ImportError, NotImplementedError):
+    except (ImportError, NotImplementedError, OSError):
         for i, c in enumerate(choices, 1):
             print(f"  {i}. {c}")
         print()
@@ -1562,15 +1617,43 @@ def _remove_custom_provider(config):
         except (ValueError, KeyboardInterrupt, EOFError):
             idx = None
 
-    if idx is None or idx >= len(providers):
+    if idx is None or idx >= len(entries):
         print("No change.")
         return
 
-    removed = providers.pop(idx)
-    cfg["custom_providers"] = providers
-    save_config(cfg)
-    removed_name = removed.get("name", "unnamed") if isinstance(removed, dict) else str(removed)
-    print(f"✅ Removed \"{removed_name}\" from custom providers.")
+    source, key, display = entries[idx]
+
+    if source == "custom_providers":
+        legacy = cfg.get("custom_providers") or []
+        if not isinstance(legacy, list):
+            legacy = []
+        try:
+            removed = legacy.pop(int(key))
+            cfg["custom_providers"] = legacy
+        except Exception:
+            print("No change.")
+            return
+        removed_name = removed.get("name", "unnamed") if isinstance(removed, dict) else str(removed)
+        save_config(cfg)
+        print(f"✅ Removed \"{removed_name}\" from custom providers.")
+        return
+
+    if source == "providers":
+        migrated = cfg.get("providers") or {}
+        if not isinstance(migrated, dict):
+            migrated = {}
+        if key not in migrated:
+            print("No change.")
+            return
+        removed = migrated.pop(key)
+        cfg["providers"] = migrated
+        save_config(cfg)
+        removed_name = removed.get("name") if isinstance(removed, dict) and removed.get("name") else str(key)
+        print(f"✅ Removed \"{removed_name}\" from providers.")
+        return
+
+    print("No change.")
+    return
 
 
 def _model_flow_named_custom(config, provider_info):
@@ -1751,7 +1834,7 @@ def _prompt_reasoning_effort_selection(efforts, current_effort=""):
         if idx == len(ordered):
             return "none"
         return None
-    except (ImportError, NotImplementedError):
+    except (ImportError, NotImplementedError, OSError):
         pass
 
     print("Select reasoning effort:")

@@ -147,6 +147,7 @@ export function App({ gw }: { gw: GatewayClient }) {
     () => estimateQueuedRows(queuedDisplay.length, queueEditIdx),
     [queueEditIdx, queuedDisplay.length]
   )
+
   const thinkingRows = thinking ? Math.max(1, tools.length || 1) + (reasoning || thinkingText ? 1 : 0) : 0
   const paletteRows = paletteMatches.length ? paletteMatches.length + 1 : 0
   const footerRows = statusBar ? 1 : 0
@@ -750,6 +751,22 @@ export function App({ gw }: { gw: GatewayClient }) {
 
           return true
 
+        case 'branch': // falls through
+
+        case 'fork':
+          if (!sid) {
+            return true
+          }
+
+          rpc('session.branch', { session_id: sid, name: arg }).then((r: any) => {
+            setSid(r.session_id)
+            setUsage(ZERO)
+            sys(`branched → ${r.title}`)
+            setStatus('ready')
+          })
+
+          return true
+
         case 'undo':
           if (!sid) {
             return true
@@ -1109,7 +1126,9 @@ export function App({ gw }: { gw: GatewayClient }) {
 
           return true
 
-        case 'queue':
+        case 'queue': // falls through
+
+        case 'q':
           if (!arg) {
             sys(`${queueRef.current.length} queued message(s)`)
 
@@ -1409,11 +1428,12 @@ export function App({ gw }: { gw: GatewayClient }) {
             .catch(() => {
               gw.request('command.resolve', { name: name ?? '' })
                 .then((r: any) => {
-                  if (r.canonical && r.canonical !== name) {
-                    sys(`/${name} → /${r.canonical}`)
-                    slash(`/${r.canonical}${arg ? ' ' + arg : ''}`)
-                  } else {
+                  if (!r.canonical || r.canonical === name) {
                     sys(`unknown command: /${name}`)
+                  } else if (r.category === 'cli-only') {
+                    sys(`/${name} is CLI-only — run it in a terminal`)
+                  } else {
+                    send(`/${r.canonical}${arg ? ' ' + arg : ''}`)
                   }
                 })
                 .catch(() => sys(`unknown command: /${name}`))

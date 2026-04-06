@@ -383,17 +383,20 @@ def _build_job_prompt(job: dict) -> str:
                 f"{prompt}"
             )
 
-    # Always prepend [SILENT] guidance so the cron agent can suppress
-    # delivery when it has nothing new or noteworthy to report.
-    silent_hint = (
-        "[SYSTEM: If you have a meaningful status report or findings, "
-        "send them — that is the whole point of this job. Only respond "
-        "with exactly \"[SILENT]\" (nothing else) when there is genuinely "
-        "nothing new to report. [SILENT] suppresses delivery to the user. "
+    # Always prepend cron execution guidance so the agent knows how
+    # delivery works and can suppress delivery when appropriate.
+    cron_hint = (
+        "[SYSTEM: You are running as a scheduled cron job. "
+        "DELIVERY: Your final response will be automatically delivered "
+        "to the user — do NOT use send_message or try to deliver "
+        "the output yourself. Just produce your report/output as your "
+        "final response and the system handles the rest. "
+        "SILENT: If there is genuinely nothing new to report, respond "
+        "with exactly \"[SILENT]\" (nothing else) to suppress delivery. "
         "Never combine [SILENT] with content — either report your "
         "findings normally, or say [SILENT] and nothing more.]\n\n"
     )
-    prompt = silent_hint + prompt
+    prompt = cron_hint + prompt
     if skills is None:
         legacy = job.get("skill")
         skills = [legacy] if legacy else []

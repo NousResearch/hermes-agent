@@ -3124,6 +3124,18 @@ class GatewayRunner:
         self._shutdown_gateway_honcho(session_key)
         self._evict_cached_agent(session_key)
 
+        try:
+            from tools.env_passthrough import clear_env_passthrough
+            clear_env_passthrough()
+        except Exception:
+            pass
+
+        try:
+            from tools.credential_files import clear_credential_files
+            clear_credential_files()
+        except Exception:
+            pass
+
         # Reset the session
         new_entry = self.session_store.reset_session(session_key)
 

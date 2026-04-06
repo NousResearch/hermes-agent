@@ -352,6 +352,31 @@ Commands that require `stdin_data` or sudo automatically fall back to one-shot m
 
 See [Code Execution](features/code-execution.md) and the [Terminal section of the README](features/tools.md) for details on each backend.
 
+## Skill Settings
+
+Skills can declare their own configuration settings via their SKILL.md frontmatter. These are non-secret values (paths, preferences, domain settings) stored under the `skills.config` namespace in `config.yaml`.
+
+```yaml
+skills:
+  config:
+    wiki:
+      path: ~/wiki          # Used by the llm-wiki skill
+```
+
+**How skill settings work:**
+
+- `hermes config migrate` scans all enabled skills, finds unconfigured settings, and offers to prompt you
+- `hermes config show` displays all skill settings under "Skill Settings" with the skill they belong to
+- When a skill loads, its resolved config values are injected into the skill context automatically
+
+**Setting values manually:**
+
+```bash
+hermes config set skills.config.wiki.path ~/my-research-wiki
+```
+
+For details on declaring config settings in your own skills, see [Creating Skills — Config Settings](/docs/developer-guide/creating-skills#config-settings-configyaml).
+
 ## Memory Configuration
 
 ```yaml

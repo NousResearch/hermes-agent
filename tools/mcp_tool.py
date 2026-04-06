@@ -892,7 +892,9 @@ class MCPServerTask:
         if self._auth_type == "oauth":
             try:
                 from tools.mcp_oauth import build_oauth_auth
-                _oauth_auth = build_oauth_auth(self.name, url)
+                _oauth_auth = build_oauth_auth(
+                    self.name, url, config.get("oauth")
+                )
             except Exception as exc:
                 logger.warning("MCP OAuth setup failed for '%s': %s", self.name, exc)
                 raise

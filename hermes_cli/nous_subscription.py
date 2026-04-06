@@ -131,6 +131,7 @@ def _browser_label(current_provider: str) -> str:
     mapping = {
         "browserbase": "Browserbase",
         "browser-use": "Browser Use",
+        "firecrawl": "Firecrawl",
         "camofox": "Camofox",
         "local": "Local browser",
     }
@@ -156,6 +157,7 @@ def _resolve_browser_feature_state(
     direct_camofox: bool,
     direct_browserbase: bool,
     direct_browser_use: bool,
+    direct_firecrawl: bool,
     managed_browser_available: bool,
 ) -> tuple[str, bool, bool, bool]:
     """Resolve browser availability using the same precedence as runtime."""
@@ -177,6 +179,10 @@ def _resolve_browser_feature_state(
             return current_provider, available, active, managed
         if current_provider == "browser-use":
             available = bool(browser_local_available and direct_browser_use)
+            active = bool(browser_tool_enabled and available)
+            return current_provider, available, active, False
+        if current_provider == "firecrawl":
+            available = bool(browser_local_available and direct_firecrawl)
             active = bool(browser_tool_enabled and available)
             return current_provider, available, active, False
         if current_provider == "camofox":
@@ -315,6 +321,7 @@ def get_nous_subscription_features(
         direct_camofox=direct_camofox,
         direct_browserbase=direct_browserbase,
         direct_browser_use=direct_browser_use,
+        direct_firecrawl=direct_firecrawl,
         managed_browser_available=managed_browser_available,
     )
 

@@ -154,6 +154,34 @@ def _check_all_guards(command: str, env_type: str) -> dict:
                                   approval_callback=_approval_callback)
 
 
+# Allowlist: characters that can legitimately appear in directory paths.
+# Covers alphanumeric, path separators, tilde, dot, hyphen, underscore, space,
+# plus, at, equals, and comma.  Everything else is rejected.
+_WORKDIR_SAFE_RE = re.compile(r'^[A-Za-z0-9/_\-.~ +@=,]+$')
+
+
+def _validate_workdir(workdir: str) -> str | None:
+    """Reject workdir values that don't look like a filesystem path.
+
+    Uses an allowlist of safe characters rather than a deny-list, so novel
+    shell metacharacters can't slip through.
+
+    Returns None if safe, or an error message string if dangerous.
+    """
+    if not workdir:
+        return None
+    if not _WORKDIR_SAFE_RE.match(workdir):
+        # Find the first offending character for a helpful message.
+        for ch in workdir:
+            if not _WORKDIR_SAFE_RE.match(ch):
+                return (
+                    f"Blocked: workdir contains disallowed character {repr(ch)}. "
+                    "Use a simple filesystem path without shell metacharacters."
+                )
+        return "Blocked: workdir contains disallowed characters."
+    return None
+
+
 def _handle_sudo_failure(output: str, env_type: str) -> str:
     """
     Check for sudo failure and add helpful message for messaging contexts.
@@ -1165,6 +1193,19 @@ def terminal_tool(
             elif approval.get("smart_approved"):
                 desc = approval.get("description", "flagged as dangerous")
                 approval_note = f"Command was flagged ({desc}) and auto-approved by smart approval."
+
+        # Validate workdir against shell injection
+        if workdir:
+            workdir_error = _validate_workdir(workdir)
+            if workdir_error:
+                logger.warning("Blocked dangerous workdir: %s (command: %s)",
+                               workdir[:200], command[:200])
+                return json.dumps({
+                    "output": "",
+                    "exit_code": -1,
+                    "error": workdir_error,
+                    "status": "blocked"
+                }, ensure_ascii=False)
 
         # Prepare command for execution
         if background:

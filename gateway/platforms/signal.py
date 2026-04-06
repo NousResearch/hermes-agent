@@ -717,19 +717,27 @@ class SignalAdapter(BasePlatformAdapter):
             return SendResult(success=True)
         return SendResult(success=False, error="RPC send with attachment failed")
 
-    async def send_document(
+    async def _send_attachment(
         self,
         chat_id: str,
         file_path: str,
+        media_label: str,
         caption: Optional[str] = None,
-        filename: Optional[str] = None,
-        **kwargs,
     ) -> SendResult:
-        """Send a document/file attachment."""
+        """Send any file as a Signal attachment via RPC.
+
+        Shared implementation for send_document, send_image_file, send_voice,
+        and send_video — avoids duplicating the validation/routing/RPC logic.
+        """
         await self._stop_typing_indicator(chat_id)
 
-        if not Path(file_path).exists():
-            return SendResult(success=False, error="File not found")
+        try:
+            file_size = Path(file_path).stat().st_size
+        except FileNotFoundError:
+            return SendResult(success=False, error=f"{media_label} file not found: {file_path}")
+
+        if file_size > SIGNAL_MAX_ATTACHMENT_SIZE:
+            return SendResult(success=False, error=f"{media_label} too large ({file_size} bytes)")
 
         params: Dict[str, Any] = {
             "account": self.account,
@@ -746,7 +754,59 @@ class SignalAdapter(BasePlatformAdapter):
         if result is not None:
             self._track_sent_timestamp(result)
             return SendResult(success=True)
-        return SendResult(success=False, error="RPC send document failed")
+        return SendResult(success=False, error=f"RPC send {media_label.lower()} failed")
+
+    async def send_document(
+        self,
+        chat_id: str,
+        file_path: str,
+        caption: Optional[str] = None,
+        filename: Optional[str] = None,
+        **kwargs,
+    ) -> SendResult:
+        """Send a document/file attachment."""
+        return await self._send_attachment(chat_id, file_path, "File", caption)
+
+    async def send_image_file(
+        self,
+        chat_id: str,
+        image_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        **kwargs,
+    ) -> SendResult:
+        """Send a local image file as a native Signal attachment.
+
+        Called by the gateway media delivery flow when MEDIA: tags containing
+        image paths are extracted from agent responses.
+        """
+        return await self._send_attachment(chat_id, image_path, "Image", caption)
+
+    async def send_voice(
+        self,
+        chat_id: str,
+        audio_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        **kwargs,
+    ) -> SendResult:
+        """Send an audio file as a Signal attachment.
+
+        Signal does not distinguish voice messages from file attachments at
+        the API level, so this routes through the same RPC send path.
+        """
+        return await self._send_attachment(chat_id, audio_path, "Audio", caption)
+
+    async def send_video(
+        self,
+        chat_id: str,
+        video_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        **kwargs,
+    ) -> SendResult:
+        """Send a video file as a Signal attachment."""
+        return await self._send_attachment(chat_id, video_path, "Video", caption)
 
     # ------------------------------------------------------------------
     # Typing Indicators

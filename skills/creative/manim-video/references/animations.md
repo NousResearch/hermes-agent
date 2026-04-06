@@ -120,3 +120,138 @@ self.play(old_content.animate.set_opacity(0.3), FadeIn(new_content))
 self.play(FadeOut(Group(*self.mobjects)), run_time=0.5)
 self.wait(0.3)
 ```
+
+## Reactive Mobjects: always_redraw()
+
+Rebuild a mobject from scratch every frame — essential when its geometry depends on other animated objects:
+
+```python
+# Brace that follows a resizing square
+brace = always_redraw(Brace, square, UP)
+self.add(brace)
+self.play(square.animate.scale(2))  # brace auto-adjusts
+
+# Horizontal line that tracks a moving dot
+h_line = always_redraw(lambda: axes.get_h_line(dot.get_left()))
+
+# Label that always stays next to another mobject
+label = always_redraw(lambda: Text("here", font_size=20).next_to(dot, UP, buff=0.2))
+```
+
+Note: `always_redraw` recreates the mobject every frame. For simple property tracking, use `add_updater` instead (cheaper):
+```python
+label.add_updater(lambda m: m.next_to(dot, UP))
+```
+
+## TracedPath — Trajectory Tracing
+
+Draw the path a point has traveled:
+
+```python
+dot = Dot(color=YELLOW)
+path = TracedPath(dot.get_center, stroke_color=YELLOW, stroke_width=2)
+self.add(dot, path)
+self.play(dot.animate.shift(RIGHT * 3 + UP * 2), run_time=2)
+# path shows the trail the dot left behind
+
+# Fading trail (dissipates over time):
+path = TracedPath(dot.get_center, dissipating_time=0.5, stroke_opacity=[0, 1])
+```
+
+Use cases: gradient descent paths, planetary orbits, function tracing, particle trajectories.
+
+## FadeTransform — Smoother Cross-Fades
+
+`Transform` morphs shapes through ugly intermediate warping. `FadeTransform` cross-fades with position matching — use it when source and target look different:
+
+```python
+# UGLY: Transform warps circle into square through a blob
+self.play(Transform(circle, square))
+
+# SMOOTH: FadeTransform cross-fades cleanly
+self.play(FadeTransform(circle, square))
+
+# FadeTransformPieces: per-submobject FadeTransform
+self.play(FadeTransformPieces(group1, group2))
+
+# TransformFromCopy: animate a COPY while keeping the original visible
+self.play(TransformFromCopy(source, target))
+# source stays on screen, a copy morphs into target
+```
+
+**Recommendation:** Use `FadeTransform` as default for dissimilar shapes. Use `Transform`/`ReplacementTransform` only for similar shapes (circle→ellipse, equation→equation).
+
+## ApplyMatrix — Linear Transformation Visualization
+
+Animate a matrix transformation on mobjects:
+
+```python
+# Apply a 2x2 matrix to a grid
+matrix = [[2, 1], [1, 1]]
+self.play(ApplyMatrix(matrix, number_plane), run_time=2)
+
+# Also works on individual mobjects
+self.play(ApplyMatrix([[0, -1], [1, 0]], square))  # 90-degree rotation
+```
+
+Pairs with `LinearTransformationScene` — see `camera-and-3d.md`.
+
+## squish_rate_func — Time-Window Staggering
+
+Compress any rate function into a time window within an animation. Enables overlapping stagger without `LaggedStart`:
+
+```python
+self.play(
+    FadeIn(a, rate_func=squish_rate_func(smooth, 0, 0.5)),    # 0% to 50%
+    FadeIn(b, rate_func=squish_rate_func(smooth, 0.25, 0.75)), # 25% to 75%
+    FadeIn(c, rate_func=squish_rate_func(smooth, 0.5, 1.0)),  # 50% to 100%
+    run_time=2
+)
+```
+
+More precise than `LaggedStart` when you need exact overlap control.
+
+## Additional Rate Functions
+
+```python
+from manim import (
+    smooth, linear, rush_into, rush_from,
+    there_and_back, there_and_back_with_pause,
+    running_start, double_smooth, wiggle,
+    lingering, exponential_decay, not_quite_there,
+    squish_rate_func
+)
+
+# running_start: pulls back before going forward (anticipation)
+self.play(FadeIn(mob, rate_func=running_start))
+
+# there_and_back_with_pause: goes there, holds, comes back
+self.play(mob.animate.shift(UP), rate_func=there_and_back_with_pause)
+
+# not_quite_there: stops at a fraction of the full animation
+self.play(FadeIn(mob, rate_func=not_quite_there(0.7)))
+```
+
+## ShowIncreasingSubsets / ShowSubmobjectsOneByOne
+
+Reveal group members progressively — ideal for algorithm visualization:
+
+```python
+# Reveal array elements one at a time
+array = Group(*[Square() for _ in range(8)]).arrange(RIGHT)
+self.play(ShowIncreasingSubsets(array), run_time=3)
+
+# Show submobjects with staggered appearance
+self.play(ShowSubmobjectsOneByOne(code_lines), run_time=4)
+```
+
+## ShowPassingFlash
+
+A flash of light travels along a path:
+
+```python
+# Flash traveling along a curve
+self.play(ShowPassingFlash(curve.copy().set_color(YELLOW), time_width=0.3))
+
+# Great for: data flow, electrical signals, network traffic
+```

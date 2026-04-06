@@ -1,6 +1,8 @@
 """Tests for model_tools.py — function call dispatch, agent-loop interception, legacy toolsets."""
 
 import json
+from unittest.mock import call, patch
+
 import pytest
 
 from model_tools import (
@@ -37,6 +39,40 @@ class TestHandleFunctionCall:
         assert "error" in parsed
         assert len(parsed["error"]) > 0
         assert "error" in parsed["error"].lower() or "failed" in parsed["error"].lower()
+
+    def test_tool_hooks_receive_session_and_tool_call_ids(self):
+        with (
+            patch("model_tools.registry.dispatch", return_value='{"ok":true}'),
+            patch("hermes_cli.plugins.invoke_hook") as mock_invoke_hook,
+        ):
+            result = handle_function_call(
+                "web_search",
+                {"q": "test"},
+                task_id="task-1",
+                tool_call_id="call-1",
+                session_id="session-1",
+            )
+
+        assert result == '{"ok":true}'
+        assert mock_invoke_hook.call_args_list == [
+            call(
+                "pre_tool_call",
+                tool_name="web_search",
+                args={"q": "test"},
+                task_id="task-1",
+                session_id="session-1",
+                tool_call_id="call-1",
+            ),
+            call(
+                "post_tool_call",
+                tool_name="web_search",
+                args={"q": "test"},
+                result='{"ok":true}',
+                task_id="task-1",
+                session_id="session-1",
+                tool_call_id="call-1",
+            ),
+        ]
 
 
 # =========================================================================

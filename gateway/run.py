@@ -6987,6 +6987,7 @@ class GatewayRunner:
                     _inject_ts = self.config.get("display", {}).get("gateway_timestamp", True)
                 else:
                     _inject_ts = getattr(getattr(self.config, "display", None), "gateway_timestamp", True)
+                logger.debug("[timestamp-inject] config type=%s, gateway_timestamp=%s", type(self.config).__name__, _inject_ts)
                 if _inject_ts:
                     _now = datetime.now()
                     import locale as _locale

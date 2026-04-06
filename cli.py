@@ -2358,6 +2358,22 @@ class HermesCLI:
                     "[dim]   Fix: Set model.context_length in config.yaml, or increase your server's context setting[/]"
                 )
 
+        # Warn if the configured model is a Nous Hermes LLM (not agentic)
+        model_name = getattr(self, "model", "") or ""
+        if "hermes" in model_name.lower():
+            self.console.print()
+            self.console.print(
+                "[bold yellow]⚠  Nous Research Hermes 3 & 4 models are NOT agentic and are not "
+                "designed for use with Hermes Agent.[/]"
+            )
+            self.console.print(
+                "[dim]   They lack tool-calling capabilities required for agent workflows. "
+                "Consider using an agentic model (Claude, GPT, Gemini, DeepSeek, etc.).[/]"
+            )
+            self.console.print(
+                "[dim]   Switch with: /model sonnet  or  /model gpt5[/]"
+            )
+
         self.console.print()
 
     def _preload_resumed_session(self) -> bool:

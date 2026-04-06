@@ -827,6 +827,12 @@ def check_dangerous_command(command: str, env_type: str,
                 }
         return {"approved": True, "message": None}
 
+    # approvals.gateway_mode=never: bypass approval prompts in gateway sessions
+    if is_gateway:
+        gateway_mode = _get_approval_config().get("gateway_mode", "")
+        if isinstance(gateway_mode, str) and gateway_mode.strip().lower() in ("never", "off"):
+            return {"approved": True, "message": None}
+
     if is_gateway or os.getenv("HERMES_EXEC_ASK"):
         submit_pending(session_key, {
             "command": command,
@@ -928,6 +934,14 @@ def check_all_command_guards(command: str, env_type: str,
     is_cli = os.getenv("HERMES_INTERACTIVE")
     is_gateway = os.getenv("HERMES_GATEWAY_SESSION")
     is_ask = os.getenv("HERMES_EXEC_ASK")
+
+    # approvals.gateway_mode=never: bypass all approval prompts in gateway
+    # sessions (e.g. Telegram, Discord).  Mirrors the effect of mode=off but
+    # scoped only to gateway — CLI sessions still use the configured mode.
+    if is_gateway:
+        gateway_mode = _get_approval_config().get("gateway_mode", "")
+        if isinstance(gateway_mode, str) and gateway_mode.strip().lower() in ("never", "off"):
+            return {"approved": True, "message": None}
 
     # Preserve the existing non-interactive behavior: outside CLI/gateway/ask
     # flows, we do not block on approvals and we skip external guard work.

@@ -157,3 +157,29 @@ This document lists all authoritative sources used to build this skill, organize
 
 ### For Reviewer Expectations
 → Start with: Venue reviewer guidelines, reviewer-guidelines.md
+
+### For Human Evaluation
+→ Start with: human-evaluation.md, Prolific/MTurk documentation
+
+### For Non-Empirical Papers (Theory, Survey, Benchmark, Position)
+→ Start with: paper-types.md
+
+---
+
+## Human Evaluation & Annotation
+
+| Source | URL | Key Contribution |
+|--------|-----|------------------|
+| **Datasheets for Datasets** | Gebru et al., 2021 ([arXiv](https://arxiv.org/abs/1803.09010)) | Structured dataset documentation framework |
+| **Model Cards for Model Reporting** | Mitchell et al., 2019 ([arXiv](https://arxiv.org/abs/1810.03993)) | Structured model documentation framework |
+| **Crowdsourcing and Human Computation** | [Survey](https://arxiv.org/abs/2202.06516) | Best practices for crowdsourced annotation |
+| **Krippendorff's Alpha** | [Wikipedia](https://en.wikipedia.org/wiki/Krippendorff%27s_alpha) | Inter-annotator agreement metric reference |
+| **Prolific** | [prolific.co](https://www.prolific.co/) | Recommended crowdsourcing platform for research |
+
+## Ethics & Broader Impact
+
+| Source | URL | Key Contribution |
+|--------|-----|------------------|
+| **ML CO2 Impact** | [mlco2.github.io](https://mlco2.github.io/impact/) | Compute carbon footprint calculator |
+| **NeurIPS Broader Impact Guide** | [NeurIPS](https://neurips.cc/public/guides/PaperChecklist) | Official guidance on impact statements |
+| **ACL Ethics Policy** | [ACL](https://www.aclweb.org/portal/content/acl-code-ethics) | Ethics requirements for NLP research |

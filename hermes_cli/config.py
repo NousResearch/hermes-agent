@@ -537,6 +537,14 @@ DEFAULT_CONFIG = {
         "wrap_response": True,
     },
 
+    # Logging — controls file logging to ~/.hermes/logs/.
+    # agent.log captures INFO+ (all agent activity); errors.log captures WARNING+.
+    "logging": {
+        "level": "INFO",       # Minimum level for agent.log: DEBUG, INFO, WARNING
+        "max_size_mb": 5,      # Max size per log file before rotation
+        "backup_count": 3,     # Number of rotated backup files to keep
+    },
+
     # Config schema version - bump this when adding new required fields
     "_config_version": 12,
 }

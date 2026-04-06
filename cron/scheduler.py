@@ -237,6 +237,10 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> None:
     else:
         delivery_content = content
 
+    # Extract MEDIA: tags so attachments are forwarded as files, not raw text
+    from gateway.platforms.base import BasePlatformAdapter
+    media_files, cleaned_delivery_content = BasePlatformAdapter.extract_media(delivery_content)
+
     # Prefer the live adapter when the gateway is running — this supports E2EE
     # rooms (e.g. Matrix) where the standalone HTTP path cannot encrypt.
     runtime_adapter = (adapters or {}).get(platform)
@@ -264,7 +268,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> None:
             )
 
     # Standalone path: run the async send in a fresh event loop (safe from any thread)
-    coro = _send_to_platform(platform, pconfig, chat_id, delivery_content, thread_id=thread_id)
+    coro = _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files)
     try:
         result = asyncio.run(coro)
     except RuntimeError:
@@ -275,7 +279,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> None:
         coro.close()
         import concurrent.futures
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            future = pool.submit(asyncio.run, _send_to_platform(platform, pconfig, chat_id, delivery_content, thread_id=thread_id))
+            future = pool.submit(asyncio.run, _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files))
             result = future.result(timeout=30)
     except Exception as e:
         logger.error("Job '%s': delivery to %s:%s failed: %s", job["id"], platform_name, chat_id, e)

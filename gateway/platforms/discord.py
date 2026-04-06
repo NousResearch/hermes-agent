@@ -781,7 +781,11 @@ class DiscordAdapter(BasePlatformAdapter):
                     logger.debug("Could not fetch reply-to message: %s", e)
 
             for i, chunk in enumerate(chunks):
-                chunk_reference = reference if i == 0 else None
+                # DISCORD_REPLY_QUOTE: when "false", suppress the quote-reply
+                # embed above the bot's response.  Useful in shared channels
+                # where repeated quote blocks add visual noise.
+                _reply_quote = os.getenv("DISCORD_REPLY_QUOTE", "true").lower() in ("true", "1", "yes")
+                chunk_reference = (reference if i == 0 else None) if _reply_quote else None
                 try:
                     msg = await channel.send(
                         content=chunk,
@@ -2079,6 +2083,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
         thread_id = None
         parent_channel_id = None
+        _observe_only = False  # set True for observe-channel messages without @mention
         is_thread = isinstance(message.channel, discord.Thread)
         if is_thread:
             thread_id = str(message.channel.id)
@@ -2094,17 +2099,48 @@ class DiscordAdapter(BasePlatformAdapter):
             require_mention = os.getenv("DISCORD_REQUIRE_MENTION", "true").lower() not in ("false", "0", "no")
             is_free_channel = bool(channel_ids & free_channels)
 
-            # Skip the mention check if the message is in a thread where
-            # the bot has previously participated (auto-created or replied in).
             in_bot_thread = is_thread and thread_id in self._bot_participated_threads
 
-            if require_mention and not is_free_channel and not in_bot_thread:
-                if self._client.user not in message.mentions:
-                    return
+            # --- Mention detection ---
+            # Compute was_mentioned once, checking all signals:
+            #   1. Explicit: bot user object in message.mentions list
+            #   2. Snowflake: bot ID in raw mention strings in content
+            #   3. @everyone/@here
+            #   4. Implicit: message is a reply to the bot
+            bot_id = str(self._client.user.id) if self._client.user else None
+            explicitly_mentioned = self._client.user is not None and self._client.user in message.mentions
+            snowflake_mentioned = bot_id is not None and (f"<@{bot_id}>" in message.content or f"<@!{bot_id}>" in message.content)
+            implicit_mention = (
+                bot_id is not None
+                and message.reference is not None
+                and getattr(message.reference, "resolved", None) is not None
+                and getattr(message.reference.resolved, "author", None) is not None
+                and str(message.reference.resolved.author.id) == bot_id
+            )
+            was_mentioned = explicitly_mentioned or snowflake_mentioned or getattr(message, "mention_everyone", False) or implicit_mention
 
-            if self._client.user and self._client.user in message.mentions:
-                message.content = message.content.replace(f"<@{self._client.user.id}>", "").strip()
-                message.content = message.content.replace(f"<@!{self._client.user.id}>", "").strip()
+            # --- Observe channels ---
+            # DISCORD_OBSERVE_CHANNELS: channels where messages are added to
+            # session context (so the agent can see them) but no LLM response
+            # is generated unless the bot is @mentioned.  Useful in shared
+            # multi-bot or ops channels where the agent needs passive awareness
+            # of channel activity without responding to every message.
+            observe_channels_raw = os.getenv("DISCORD_OBSERVE_CHANNELS", "")
+            observe_channels = {ch.strip() for ch in observe_channels_raw.split(",") if ch.strip()}
+            is_observe_channel = bool(channel_ids & observe_channels)
+
+            # --- Mention gate ---
+            if require_mention and not is_free_channel and not in_bot_thread:
+                if not was_mentioned:
+                    if is_observe_channel:
+                        _observe_only = True
+                    else:
+                        return
+
+            # Strip bot mention from content so the agent sees clean text
+            if bot_id and was_mentioned:
+                message.content = message.content.replace(f"<@{bot_id}>", "").strip()
+                message.content = message.content.replace(f"<@!{bot_id}>", "").strip()
 
         # Auto-thread: when enabled, automatically create a thread for every
         # @mention in a text channel so each conversation is isolated (like Slack).
@@ -2286,6 +2322,7 @@ class DiscordAdapter(BasePlatformAdapter):
             media_types=media_types,
             reply_to_message_id=str(message.reference.message_id) if message.reference else None,
             timestamp=message.created_at,
+            observe_only=_observe_only,
         )
 
         # Track thread participation so the bot won't require @mention for

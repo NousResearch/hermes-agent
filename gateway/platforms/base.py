@@ -343,7 +343,11 @@ class MessageEvent:
     
     # Auto-loaded skill for topic/channel bindings (e.g., Telegram DM Topics)
     auto_skill: Optional[str] = None
-    
+
+    # Observe-only: message is added to session context but no LLM response is generated.
+    # Used by DISCORD_OBSERVE_CHANNELS to let the agent passively see channel activity.
+    observe_only: bool = False
+
     # Timestamps
     timestamp: datetime = field(default_factory=datetime.now)
     
@@ -1176,7 +1180,7 @@ class BasePlatformAdapter(ABC):
         
         # Start continuous typing indicator (refreshes every 2 seconds)
         _thread_metadata = {"thread_id": event.source.thread_id} if event.source.thread_id else None
-        typing_task = asyncio.create_task(self._keep_typing(event.source.chat_id, metadata=_thread_metadata))
+        typing_task = None if event.observe_only else asyncio.create_task(self._keep_typing(event.source.chat_id, metadata=_thread_metadata))
         
         try:
             await self._run_processing_hook("on_processing_start", event)
@@ -1364,11 +1368,12 @@ class BasePlatformAdapter(ABC):
                 # Clean up current session before processing pending
                 if session_key in self._active_sessions:
                     del self._active_sessions[session_key]
-                typing_task.cancel()
-                try:
-                    await typing_task
-                except asyncio.CancelledError:
-                    pass
+                if typing_task:
+                    typing_task.cancel()
+                    try:
+                        await typing_task
+                    except asyncio.CancelledError:
+                        pass
                 # Process pending message in new background task
                 await self._process_message_background(pending_event, session_key)
                 return  # Already cleaned up
@@ -1397,11 +1402,12 @@ class BasePlatformAdapter(ABC):
                 pass  # Last resort — don't let error reporting crash the handler
         finally:
             # Stop typing indicator
-            typing_task.cancel()
-            try:
-                await typing_task
-            except asyncio.CancelledError:
-                pass
+            if typing_task:
+                typing_task.cancel()
+                try:
+                    await typing_task
+                except asyncio.CancelledError:
+                    pass
             # Also cancel any platform-level persistent typing tasks (e.g. Discord)
             # that may have been recreated by _keep_typing after the last stop_typing()
             try:

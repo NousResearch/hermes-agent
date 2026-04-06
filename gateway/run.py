@@ -1796,6 +1796,24 @@ class GatewayRunner:
                 label = response_text if len(response_text) <= 20 else response_text[:20] + "…"
                 return f"✓ Sent `{label}` to the update process."
 
+        # Observe-only: add message to session transcript without calling the LLM.
+        # Used by DISCORD_OBSERVE_CHANNELS to let the agent see channel activity
+        # without responding to every message.  The message is recorded as a
+        # "[Channel message from ...]" user turn so the agent has context on its
+        # next real @mention, but no typing indicator or API call is triggered.
+        if getattr(event, "observe_only", False):
+            try:
+                session_entry = self.session_store.get_or_create_session(source)
+                user_label = source.user_name or source.user_id
+                self.session_store.append_to_transcript(session_entry.session_id, {
+                    "role": "user",
+                    "content": f"[Channel message from {user_label}]: {event.text}",
+                })
+                logger.info("[observe] Recorded message from %s in session %s", user_label, session_entry.session_id[:20])
+            except Exception as e:
+                logger.warning("[observe] Failed to record observe-only message: %s", e)
+            return None
+
         # PRIORITY handling when an agent is already running for this session.
         # Default behavior is to interrupt immediately so user text/stop messages
         # are handled with minimal latency.

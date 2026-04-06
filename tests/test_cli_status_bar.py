@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta
 from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 from cli import HermesCLI
 
@@ -77,6 +78,92 @@ class TestCLIStatusBar:
         assert "6%" in text
         assert "$0.06" not in text  # cost hidden by default
         assert "15m" in text
+
+    def test_input_height_counts_wide_characters_using_cell_width(self):
+        cli_obj = _make_cli()
+
+        class _Doc:
+            lines = ["你" * 10]
+
+        class _Buffer:
+            document = _Doc()
+
+        input_area = SimpleNamespace(buffer=_Buffer())
+
+        def _input_height():
+            try:
+                from prompt_toolkit.application import get_app
+                from prompt_toolkit.utils import get_cwidth
+
+                doc = input_area.buffer.document
+                prompt_width = max(2, get_cwidth(cli_obj._get_tui_prompt_text()))
+                try:
+                    available_width = get_app().output.get_size().columns - prompt_width
+                except Exception:
+                    import shutil
+                    available_width = shutil.get_terminal_size((80, 24)).columns - prompt_width
+                if available_width < 10:
+                    available_width = 40
+                visual_lines = 0
+                for line in doc.lines:
+                    line_width = get_cwidth(line)
+                    if line_width <= 0:
+                        visual_lines += 1
+                    else:
+                        visual_lines += max(1, -(-line_width // available_width))
+                return min(max(visual_lines, 1), 8)
+            except Exception:
+                return 1
+
+        mock_app = MagicMock()
+        mock_app.output.get_size.return_value = MagicMock(columns=14)
+        with patch.object(HermesCLI, "_get_tui_prompt_text", return_value="❯ "), \
+             patch("prompt_toolkit.application.get_app", return_value=mock_app):
+            assert _input_height() == 2
+
+    def test_input_height_uses_prompt_toolkit_width_over_shutil(self):
+        cli_obj = _make_cli()
+
+        class _Doc:
+            lines = ["你" * 10]
+
+        class _Buffer:
+            document = _Doc()
+
+        input_area = SimpleNamespace(buffer=_Buffer())
+
+        def _input_height():
+            try:
+                from prompt_toolkit.application import get_app
+                from prompt_toolkit.utils import get_cwidth
+
+                doc = input_area.buffer.document
+                prompt_width = max(2, get_cwidth(cli_obj._get_tui_prompt_text()))
+                try:
+                    available_width = get_app().output.get_size().columns - prompt_width
+                except Exception:
+                    import shutil
+                    available_width = shutil.get_terminal_size((80, 24)).columns - prompt_width
+                if available_width < 10:
+                    available_width = 40
+                visual_lines = 0
+                for line in doc.lines:
+                    line_width = get_cwidth(line)
+                    if line_width <= 0:
+                        visual_lines += 1
+                    else:
+                        visual_lines += max(1, -(-line_width // available_width))
+                return min(max(visual_lines, 1), 8)
+            except Exception:
+                return 1
+
+        mock_app = MagicMock()
+        mock_app.output.get_size.return_value = MagicMock(columns=14)
+        with patch.object(HermesCLI, "_get_tui_prompt_text", return_value="❯ "), \
+             patch("prompt_toolkit.application.get_app", return_value=mock_app), \
+             patch("shutil.get_terminal_size") as mock_shutil:
+            assert _input_height() == 2
+        mock_shutil.assert_not_called()
 
     def test_build_status_bar_text_no_cost_in_status_bar(self):
         cli_obj = _attach_agent(

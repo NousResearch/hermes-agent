@@ -47,7 +47,7 @@ def _resolve_requests_verify() -> bool | str:
 # are preserved so the full model name reaches cache lookups and server queries.
 _PROVIDER_PREFIXES: frozenset[str] = frozenset({
     "openrouter", "nous", "openai-codex", "copilot", "copilot-acp",
-    "gemini", "ollama-cloud", "zai", "kimi-coding", "kimi-coding-cn", "stepfun", "minimax", "minimax-oauth", "minimax-cn", "anthropic", "deepseek",
+    "gemini", "ollama-cloud", "zai", "kimi-coding", "kimi-coding-cn", "stepfun", "minimax", "minimax-oauth", "minimax-cn", "anthropic", "deepseek", "deepinfra",
     "opencode-zen", "opencode-go", "kilocode", "alibaba", "novita",
     "qwen-oauth",
     "xiaomi",
@@ -58,7 +58,7 @@ _PROVIDER_PREFIXES: frozenset[str] = frozenset({
     # Common aliases
     "google", "google-gemini", "google-ai-studio",
     "glm", "z-ai", "z.ai", "zhipu", "github", "github-copilot",
-    "github-models", "kimi", "moonshot", "kimi-cn", "moonshot-cn", "claude", "deep-seek",
+    "github-models", "kimi", "moonshot", "kimi-cn", "moonshot-cn", "claude", "deep-seek", "deep-infra",
     "ollama",
     "stepfun", "opencode", "zen", "go", "kilo", "dashscope", "aliyun", "qwen",
     "mimo", "xiaomi-mimo",
@@ -437,6 +437,7 @@ _URL_TO_PROVIDER: Dict[str, str] = {
     "generativelanguage.googleapis.com": "gemini",
     "inference-api.nousresearch.com": "nous",
     "api.deepseek.com": "deepseek",
+    "api.deepinfra.com": "deepinfra",
     "api.githubcopilot.com": "copilot",
     # Enterprise Copilot endpoints look like api.enterprise.githubcopilot.com,
     # api.business.githubcopilot.com, etc.  Match the suffix so context-window
@@ -739,6 +740,24 @@ def _extract_pricing(payload: Dict[str, Any]) -> Dict[str, Any]:
         if novita_output is not None:
             pricing["completion"] = str(float(novita_output) / 10_000 / 1_000_000)
         return pricing
+
+    # DeepInfra ships pricing under ``metadata.pricing`` with $/MTok values:
+    # ``input_tokens``, ``output_tokens``, ``cache_read_tokens``. Convert to
+    # per-token strings so the generic cost machinery (usage_pricing.py)
+    # consumes them through the same path as OpenRouter / OpenAI.
+    metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else None
+    deepinfra_pricing = metadata.get("pricing") if metadata else None
+    if isinstance(deepinfra_pricing, dict) and any(
+        k in deepinfra_pricing for k in ("input_tokens", "output_tokens", "cache_read_tokens")
+    ):
+        result: Dict[str, Any] = {}
+        if deepinfra_pricing.get("input_tokens") is not None:
+            result["prompt"] = str(float(deepinfra_pricing["input_tokens"]) / 1_000_000)
+        if deepinfra_pricing.get("output_tokens") is not None:
+            result["completion"] = str(float(deepinfra_pricing["output_tokens"]) / 1_000_000)
+        if deepinfra_pricing.get("cache_read_tokens") is not None:
+            result["cache_read"] = str(float(deepinfra_pricing["cache_read_tokens"]) / 1_000_000)
+        return result
 
     alias_map = {
         "prompt": ("prompt", "input", "input_cost_per_token", "prompt_token_cost"),

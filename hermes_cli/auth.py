@@ -442,6 +442,14 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=("AZURE_FOUNDRY_API_KEY",),
         base_url_env_var="AZURE_FOUNDRY_BASE_URL",
     ),
+    "deepinfra": ProviderConfig(
+        id="deepinfra",
+        name="DeepInfra",
+        auth_type="api_key",
+        inference_base_url="https://api.deepinfra.com/v1/openai",
+        api_key_env_vars=("DEEPINFRA_API_KEY",),
+        base_url_env_var="DEEPINFRA_BASE_URL",
+    ),
 }
 
 # Auto-extend PROVIDER_REGISTRY with any api-key provider registered in
@@ -1629,6 +1637,7 @@ def resolve_provider(
         "tencent": "tencent-tokenhub", "tokenhub": "tencent-tokenhub",
         "tencent-cloud": "tencent-tokenhub", "tencentmaas": "tencent-tokenhub",
         "aws": "bedrock", "aws-bedrock": "bedrock", "amazon-bedrock": "bedrock", "amazon": "bedrock",
+        "deep-infra": "deepinfra",
         "go": "opencode-go", "opencode-go-sub": "opencode-go",
         "kilo": "kilocode", "kilo-code": "kilocode", "kilo-gateway": "kilocode",
         "lmstudio": "lmstudio", "lm-studio": "lmstudio", "lm_studio": "lmstudio",

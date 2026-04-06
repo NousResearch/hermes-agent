@@ -80,13 +80,26 @@ class TestGetActiveProvider:
 
     def test_multi_without_config_returns_none(self, tmp_path, monkeypatch):
         """Unlike image_gen (which falls back to 'fal'), video_gen has no
-        legacy default — when there are multiple providers and no config,
-        the registry returns None and the tool surfaces a helpful error.
+        legacy default — when there are multiple *available* providers and no
+        config, the registry returns None and the tool surfaces a helpful error.
         """
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         video_gen_registry.register_provider(_FakeProvider("xai"))
         video_gen_registry.register_provider(_FakeProvider("fal"))
         assert video_gen_registry.get_active_provider() is None
+
+    def test_single_available_among_many_autoresolves(self, tmp_path, monkeypatch):
+        """When several providers are registered but only one has credentials
+        (is_available()), that one is auto-selected without config. This is the
+        DeepInfra-only-box case: fal/xai register unconditionally but lack keys.
+        Mirrors agent/image_gen_registry's availability-filtered fallback.
+        """
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        video_gen_registry.register_provider(_FakeProvider("fal", available=False))
+        video_gen_registry.register_provider(_FakeProvider("xai", available=False))
+        video_gen_registry.register_provider(_FakeProvider("deepinfra", available=True))
+        active = video_gen_registry.get_active_provider()
+        assert active is not None and active.name == "deepinfra"
 
     def test_config_selects_provider(self, tmp_path, monkeypatch):
         import yaml

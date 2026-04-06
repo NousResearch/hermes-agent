@@ -304,10 +304,25 @@ Jobs are stored in `~/.hermes/cron/jobs.json`. Output from job runs is saved to 
 
 The storage uses atomic file writes so interrupted writes do not leave a partially written job file behind.
 
+## Memory access
+
+By default, cron jobs have **read-only** access to the agent's memory (`MEMORY.md` and `USER.md`). This means cron jobs can see your preferences, environment notes, and other stored context — but they cannot modify it.
+
+This is controlled by `cron.memory_read` in `config.yaml` (default: `true`). Set it to `false` to disable memory injection entirely (restoring the previous behavior where cron jobs had no memory access).
+
+```yaml
+cron:
+  memory_read: true   # inject MEMORY.md + USER.md (read-only)
+```
+
+:::tip
+Memory access is especially useful for self-audit, maintenance, and reporting cron jobs that need awareness of what has been done in previous sessions.
+:::
+
 ## Self-contained prompts still matter
 
 :::warning Important
-Cron jobs run in a completely fresh agent session. The prompt must contain everything the agent needs that is not already provided by attached skills.
+Cron jobs run in a completely fresh agent session. The prompt must contain everything the agent needs that is not already provided by attached skills or memory.
 :::
 
 **BAD:** `"Check on that server issue"`

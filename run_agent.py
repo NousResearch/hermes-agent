@@ -466,6 +466,7 @@ class AIAgent:
         platform: str = None,
         skip_context_files: bool = False,
         skip_memory: bool = False,
+        memory_read_only: bool = False,
         session_db=None,
         iteration_budget: "IterationBudget" = None,
         fallback_model: Dict[str, Any] = None,
@@ -1006,6 +1007,7 @@ class AIAgent:
         self._memory_flush_min_turns = 6
         self._turns_since_memory = 0
         self._iters_since_skill = 0
+        self._memory_read_only = memory_read_only
         if not skip_memory:
             try:
                 mem_config = _agent_cfg.get("memory", {})
@@ -2636,7 +2638,7 @@ class AIAgent:
 
         # Tool-aware behavioral guidance: only inject when the tools are loaded
         tool_guidance = []
-        if "memory" in self.valid_tool_names:
+        if "memory" in self.valid_tool_names and not self._memory_read_only:
             tool_guidance.append(MEMORY_GUIDANCE)
         if "session_search" in self.valid_tool_names:
             tool_guidance.append(SESSION_SEARCH_GUIDANCE)
@@ -5568,6 +5570,8 @@ class AIAgent:
             return
         if "memory" not in self.valid_tool_names or not self._memory_store:
             return
+        if self._memory_read_only:
+            return  # Read-only memory mode (cron) — skip flush to avoid wasted API call
         effective_min = min_turns if min_turns is not None else self._memory_flush_min_turns
         if self._user_turn_count < effective_min:
             return
@@ -5848,6 +5852,7 @@ class AIAgent:
                 content=function_args.get("content"),
                 old_text=function_args.get("old_text"),
                 store=self._memory_store,
+                read_only=self._memory_read_only,
             )
             # Bridge: notify external memory provider of built-in memory writes
             if self._memory_manager and function_args.get("action") in ("add", "replace"):
@@ -6726,7 +6731,8 @@ class AIAgent:
         _should_review_memory = False
         if (self._memory_nudge_interval > 0
                 and "memory" in self.valid_tool_names
-                and self._memory_store):
+                and self._memory_store
+                and not self._memory_read_only):
             self._turns_since_memory += 1
             if self._turns_since_memory >= self._memory_nudge_interval:
                 _should_review_memory = True

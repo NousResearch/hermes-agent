@@ -442,6 +442,7 @@ def memory_tool(
     content: str = None,
     old_text: str = None,
     store: Optional[MemoryStore] = None,
+    read_only: bool = False,
 ) -> str:
     """
     Single entry point for the memory tool. Dispatches to MemoryStore methods.
@@ -453,6 +454,9 @@ def memory_tool(
 
     if target not in ("memory", "user"):
         return json.dumps({"success": False, "error": f"Invalid target '{target}'. Use 'memory' or 'user'."}, ensure_ascii=False)
+
+    if read_only and action in ("add", "replace", "remove"):
+        return json.dumps({"success": False, "error": "Memory is read-only in this context (cron job). Writes are not allowed to prevent corruption of user memory."}, ensure_ascii=False)
 
     if action == "add":
         if not content:

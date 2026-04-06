@@ -529,6 +529,10 @@ DEFAULT_CONFIG = {
         # Wrap delivered cron responses with a header (task name) and footer
         # ("The agent cannot see this message").  Set to false for clean output.
         "wrap_response": True,
+        # Inject the user's MEMORY.md and USER.md into the cron agent's system
+        # prompt (read-only — writes are blocked).  Gives cron jobs awareness
+        # of user preferences and past context without risk of corrupting memory.
+        "memory_read": True,
     },
 
     # Config schema version - bump this when adding new required fields

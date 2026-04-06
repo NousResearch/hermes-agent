@@ -1695,6 +1695,47 @@ class DiscordAdapter(BasePlatformAdapter):
         async def slash_btw(interaction: discord.Interaction, question: str):
             await self._run_simple_slash(interaction, f"/btw {question}")
 
+        # Register installed skills as native slash commands (parity with
+        # Telegram, which uses telegram_menu_commands() in commands.py).
+        # Discord allows up to 100 application commands globally.
+        _DISCORD_CMD_LIMIT = 100
+        try:
+            from hermes_cli.commands import discord_skill_commands
+
+            existing_names = {cmd.name for cmd in tree.get_commands()}
+            remaining_slots = max(0, _DISCORD_CMD_LIMIT - len(existing_names))
+
+            skill_entries, skipped = discord_skill_commands(
+                max_slots=remaining_slots,
+                reserved_names=existing_names,
+            )
+
+            for discord_name, description, cmd_key in skill_entries:
+                # Closure factory to capture cmd_key per iteration
+                def _make_skill_handler(_key: str):
+                    async def _skill_slash(interaction: discord.Interaction, args: str = ""):
+                        await self._run_simple_slash(interaction, f"{_key} {args}".strip())
+                    return _skill_slash
+
+                handler = _make_skill_handler(cmd_key)
+                handler.__name__ = f"skill_{discord_name.replace('-', '_')}"
+
+                cmd = discord.app_commands.Command(
+                    name=discord_name,
+                    description=description,
+                    callback=handler,
+                )
+                discord.app_commands.describe(args="Optional arguments for the skill")(cmd)
+                tree.add_command(cmd)
+
+            if skipped:
+                logger.warning(
+                    "[%s] Discord slash command limit reached (%d): %d skill(s) not registered",
+                    self.name, _DISCORD_CMD_LIMIT, skipped,
+                )
+        except Exception as exc:
+            logger.warning("[%s] Failed to register skill slash commands: %s", self.name, exc)
+
     def _build_slash_event(self, interaction: discord.Interaction, text: str) -> MessageEvent:
         """Build a MessageEvent from a Discord slash command interaction."""
         is_dm = isinstance(interaction.channel, discord.DMChannel)

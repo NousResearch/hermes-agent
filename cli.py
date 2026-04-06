@@ -6159,17 +6159,13 @@ class HermesCLI:
 
         # Play terminal bell to alert the user that input is needed.
         # Propagates over SSH, tmux, screen, and web terminals.
-        if self.bell_on_prompt:
+        if getattr(self, "bell_on_prompt", True):
             try:
                 sys.stdout.write("\a")
                 sys.stdout.flush()
             except Exception:
                 pass
 
-        # Poll for the user's response.  The countdown in the hint line
-        # updates on each invalidate — but frequent repaints cause visible
-        # flicker in some terminals (Kitty, ghostty).  We only refresh the
-        # countdown every 5 s; selection changes (↑/↓) trigger instant
         # Poll for the user's response.  The countdown in the hint line
         # updates on each invalidate — but frequent repaints cause visible
         # flicker in some terminals (Kitty, ghostty).  We only refresh the
@@ -6187,9 +6183,6 @@ class HermesCLI:
                     break
                 # Only repaint every 5 s for the countdown — avoids flicker
                 now = _time.monotonic()
-                if now - _last_countdown_refresh >= 5.0:
-                    _last_countdown_refresh = now
-                    self._invalidate()
                 if now - _last_countdown_refresh >= 5.0:
                     _last_countdown_refresh = now
                     self._invalidate()
@@ -6226,7 +6219,7 @@ class HermesCLI:
         self._invalidate()
 
         # Play terminal bell to alert the user that sudo password is needed.
-        if self.bell_on_prompt:
+        if getattr(self, "bell_on_prompt", True):
             try:
                 sys.stdout.write("\a")
                 sys.stdout.flush()
@@ -6289,7 +6282,7 @@ class HermesCLI:
             self._invalidate()
 
             # Play terminal bell to alert the user that command approval is needed.
-            if self.bell_on_prompt:
+            if getattr(self, "bell_on_prompt", True):
                 try:
                     sys.stdout.write("\a")
                     sys.stdout.flush()

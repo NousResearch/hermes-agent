@@ -149,6 +149,16 @@ class TestBusyInputMode:
         assert cli._pending_input.empty()
 
 
+class TestBellOnPrompt:
+    def test_default_bell_on_prompt_is_true(self):
+        cli = _make_cli()
+        assert cli.bell_on_prompt is True
+
+    def test_bell_on_prompt_false_override(self):
+        cli = _make_cli(config_overrides={"display": {"bell_on_prompt": False}})
+        assert cli.bell_on_prompt is False
+
+
 class TestSingleQueryState:
     def test_voice_and_interrupt_state_initialized_before_run(self):
         """Single-query mode calls chat() without going through run()."""

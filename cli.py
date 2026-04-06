@@ -1634,6 +1634,8 @@ class HermesCLI:
             if self._steering_queue:
                 frags.append(("class:status-bar-dim", " │ "))
                 frags.append(("class:status-bar-warn", f"🎯 {len(self._steering_queue)}"))
+            # Combined workload indicator: A:N (agents), P:N (processes), or both
+            n_agents = 0
             if self._subagent_panel:
                 n_running = sum(1 for r in self._subagent_panel.values() if r.status == "running")
                 if n_running:

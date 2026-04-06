@@ -717,77 +717,23 @@ class AIAgent:
         self._current_tool: str | None = None
         self._api_call_count: int = 0
 
-        # Persistent error log -- always writes WARNING+ to ~/.hermes/logs/errors.log
-        # so tool failures, API errors, etc. are inspectable after the fact.
-        # In gateway mode, each incoming message creates a new AIAgent instance,
-        # while the root logger is process-global. Re-adding the same errors.log
-        # handler would cause each warning/error line to be written multiple times.
-        from logging.handlers import RotatingFileHandler
-        root_logger = logging.getLogger()
-        error_log_dir = _hermes_home / "logs"
-        error_log_path = error_log_dir / "errors.log"
-        resolved_error_log_path = error_log_path.resolve()
-        has_errors_log_handler = any(
-            isinstance(handler, RotatingFileHandler)
-            and Path(getattr(handler, "baseFilename", "")).resolve() == resolved_error_log_path
-            for handler in root_logger.handlers
-        )
-        from agent.redact import RedactingFormatter
-        if not has_errors_log_handler:
-            error_log_dir.mkdir(parents=True, exist_ok=True)
-            error_file_handler = RotatingFileHandler(
-                error_log_path, maxBytes=2 * 1024 * 1024, backupCount=2,
-            )
-            error_file_handler.setLevel(logging.WARNING)
-            error_file_handler.setFormatter(RedactingFormatter(
-                '%(asctime)s %(levelname)s %(name)s: %(message)s',
-            ))
-            root_logger.addHandler(error_file_handler)
+        # Centralized logging — agent.log (INFO+) and errors.log (WARNING+)
+        # both live under ~/.hermes/logs/.  Idempotent, so gateway mode
+        # (which creates a new AIAgent per message) won't duplicate handlers.
+        from hermes_logging import setup_logging, setup_verbose_logging
+        setup_logging(hermes_home=_hermes_home)
 
         if self.verbose_logging:
-            logging.basicConfig(
-                level=logging.DEBUG,
-                format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-                datefmt='%H:%M:%S'
-            )
-            for handler in logging.getLogger().handlers:
-                handler.setFormatter(RedactingFormatter(
-                    '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-                    datefmt='%H:%M:%S',
-                ))
-            # Keep third-party libraries at WARNING level to reduce noise
-            # We have our own retry and error logging that's more informative
-            logging.getLogger('openai').setLevel(logging.WARNING)
-            logging.getLogger('openai._base_client').setLevel(logging.WARNING)
-            logging.getLogger('httpx').setLevel(logging.WARNING)
-            logging.getLogger('httpcore').setLevel(logging.WARNING)
-            logging.getLogger('asyncio').setLevel(logging.WARNING)
-            # Suppress Modal/gRPC related debug spam
-            logging.getLogger('hpack').setLevel(logging.WARNING)
-            logging.getLogger('hpack.hpack').setLevel(logging.WARNING)
-            logging.getLogger('grpc').setLevel(logging.WARNING)
-            logging.getLogger('modal').setLevel(logging.WARNING)
-            logging.getLogger('rex-deploy').setLevel(logging.INFO)  # Keep INFO for sandbox status
+            setup_verbose_logging()
             logger.info("Verbose logging enabled (third-party library logs suppressed)")
         else:
-            # Set logging to INFO level for important messages only
-            logging.basicConfig(
-                level=logging.INFO,
-                format='%(asctime)s - %(levelname)s - %(message)s',
-                datefmt='%H:%M:%S'
-            )
-            # Suppress noisy library logging
-            logging.getLogger('openai').setLevel(logging.ERROR)
-            logging.getLogger('openai._base_client').setLevel(logging.ERROR)
-            logging.getLogger('httpx').setLevel(logging.ERROR)
-            logging.getLogger('httpcore').setLevel(logging.ERROR)
             if self.quiet_mode:
                 # In quiet mode (CLI default), suppress all tool/infra log
-                # noise. The TUI has its own rich display for status; logger
-                # INFO/WARNING messages just clutter it.
+                # noise on the *console*. The TUI has its own rich display
+                # for status; logger INFO/WARNING messages just clutter it.
+                # File handlers (agent.log, errors.log) still capture everything.
                 for quiet_logger in [
                     'tools',               # all tools.* (terminal, browser, web, file, etc.)
-                    
                     'run_agent',            # agent runner internals
                     'trajectory_compressor',
                     'cron',                 # scheduler (only relevant in daemon mode)
@@ -5880,6 +5826,12 @@ class AIAgent:
         Returns:
             (compressed_messages, new_system_prompt) tuple
         """
+        _pre_msg_count = len(messages)
+        logger.info(
+            "context compression started: session=%s messages=%d tokens=~%s model=%s",
+            self.session_id or "none", _pre_msg_count,
+            f"{approx_tokens:,}" if approx_tokens else "unknown", self.model,
+        )
         # Pre-compression memory flush: let the model save memories before they're lost
         self.flush_memories(messages, min_turns=0)
 
@@ -5956,6 +5908,11 @@ class AIAgent:
         except Exception:
             pass
 
+        logger.info(
+            "context compression done: session=%s messages=%d->%d tokens=~%s",
+            self.session_id or "none", _pre_msg_count, len(compressed),
+            f"{_compressed_est:,}",
+        )
         return compressed, new_system_prompt
 
     def _execute_tool_calls(self, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
@@ -6159,6 +6116,10 @@ class AIAgent:
                 logger.error("_invoke_tool raised for %s: %s", function_name, tool_error, exc_info=True)
             duration = time.time() - start
             is_error, _ = _detect_tool_failure(function_name, result)
+            if is_error:
+                logger.info("tool %s failed (%.2fs): %s", function_name, duration, result[:200])
+            else:
+                logger.info("tool %s completed (%.2fs, %d chars)", function_name, duration, len(result))
             results[index] = (function_name, function_args, result, duration, is_error)
 
         # Start spinner for CLI mode (skip when TUI handles tool progress)
@@ -6508,6 +6469,8 @@ class AIAgent:
             _is_error_result, _ = _detect_tool_failure(function_name, function_result)
             if _is_error_result:
                 logger.warning("Tool %s returned error (%.2fs): %s", function_name, tool_duration, result_preview)
+            else:
+                logger.info("tool %s completed (%.2fs, %d chars)", function_name, tool_duration, len(function_result))
 
             if self.tool_progress_callback:
                 try:
@@ -6885,7 +6848,17 @@ class AIAgent:
         # They are initialized in __init__ and must persist across run_conversation
         # calls so that nudge logic accumulates correctly in CLI mode.
         self.iteration_budget = IterationBudget(self.max_iterations)
-        
+
+        # Log conversation turn start for debugging/observability
+        _msg_preview = (user_message[:80] + "...") if len(user_message) > 80 else user_message
+        _msg_preview = _msg_preview.replace("\n", " ")
+        logger.info(
+            "conversation turn: session=%s model=%s provider=%s platform=%s history=%d msg=%r",
+            self.session_id or "none", self.model, self.provider or "unknown",
+            self.platform or "unknown", len(conversation_history or []),
+            _msg_preview,
+        )
+
         # Initialize conversation (copy to avoid mutating the caller's list)
         messages = list(conversation_history) if conversation_history else []
 
@@ -7681,6 +7654,17 @@ class AIAgent:
                         self.session_cache_read_tokens += canonical_usage.cache_read_tokens
                         self.session_cache_write_tokens += canonical_usage.cache_write_tokens
                         self.session_reasoning_tokens += canonical_usage.reasoning_tokens
+
+                        # Log API call details for debugging/observability
+                        _cache_pct = ""
+                        if canonical_usage.cache_read_tokens and prompt_tokens:
+                            _cache_pct = f" cache={canonical_usage.cache_read_tokens}/{prompt_tokens} ({100*canonical_usage.cache_read_tokens/prompt_tokens:.0f}%)"
+                        logger.info(
+                            "API call #%d: model=%s provider=%s in=%d out=%d total=%d latency=%.1fs%s",
+                            self.session_api_calls, self.model, self.provider or "unknown",
+                            prompt_tokens, completion_tokens, total_tokens,
+                            api_duration, _cache_pct,
+                        )
 
                         cost_result = estimate_usage_cost(
                             self.model,

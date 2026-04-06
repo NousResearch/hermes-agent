@@ -52,6 +52,25 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# Non-agentic model warning
+# ---------------------------------------------------------------------------
+
+_HERMES_MODEL_WARNING = (
+    "Nous Research Hermes 3 & 4 models are NOT agentic and are not designed "
+    "for use with Hermes Agent. They lack the tool-calling capabilities "
+    "required for agent workflows. Consider using an agentic model instead "
+    "(Claude, GPT, Gemini, DeepSeek, etc.)."
+)
+
+
+def _check_hermes_model_warning(model_name: str) -> str:
+    """Return a warning string if *model_name* looks like a Hermes LLM model."""
+    if "hermes" in model_name.lower():
+        return _HERMES_MODEL_WARNING
+    return ""
+
+
+# ---------------------------------------------------------------------------
 # Model aliases -- short names -> (vendor, family) with NO version numbers.
 # Resolved dynamically against the live models.dev catalog.
 # ---------------------------------------------------------------------------
@@ -619,6 +638,14 @@ def switch_model(
     # --- Get full model info from models.dev ---
     model_info = get_model_info(target_provider, new_model)
 
+    # --- Collect warnings ---
+    warnings: list[str] = []
+    if validation.get("message"):
+        warnings.append(validation["message"])
+    hermes_warn = _check_hermes_model_warning(new_model)
+    if hermes_warn:
+        warnings.append(hermes_warn)
+
     # --- Build result ---
     return ModelSwitchResult(
         success=True,
@@ -628,7 +655,7 @@ def switch_model(
         api_key=api_key,
         base_url=base_url,
         api_mode=api_mode,
-        warning_message=validation.get("message") or "",
+        warning_message=" | ".join(warnings) if warnings else "",
         provider_label=provider_label,
         resolved_via_alias=resolved_alias,
         capabilities=capabilities,

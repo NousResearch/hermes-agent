@@ -546,7 +546,7 @@ def _transcribe_mistral(file_path: str, model_name: str) -> Dict[str, Any]:
         return {"success": False, "transcript": "", "error": "MISTRAL_API_KEY not set"}
 
     try:
-        from mistralai import Mistral
+        from mistralai.client import Mistral
 
         with Mistral(api_key=api_key) as client:
             with open(file_path, "rb") as audio_file:

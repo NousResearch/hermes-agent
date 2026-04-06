@@ -875,7 +875,7 @@ def mock_mistral_module():
     mock_mistral_cls = MagicMock(return_value=mock_client)
     fake_module = MagicMock()
     fake_module.Mistral = mock_mistral_cls
-    with patch.dict("sys.modules", {"mistralai": fake_module}):
+    with patch.dict("sys.modules", {"mistralai": fake_module, "mistralai.client": fake_module}):
         yield mock_client
 
 

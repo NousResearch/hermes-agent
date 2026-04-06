@@ -495,7 +495,11 @@ def _resolve_explicit_runtime(
             explicit_base_url
             or str(state.get("inference_base_url") or auth_mod.DEFAULT_NOUS_INFERENCE_URL).strip().rstrip("/")
         )
-        api_key = explicit_api_key or str(state.get("agent_key") or state.get("access_token") or "").strip()
+        # Only use agent_key for inference — access_token is an OAuth token for the
+        # portal API (minting keys, refreshing tokens), not for the inference API.
+        # Falling back to access_token sends an OAuth bearer token to the inference
+        # endpoint, which returns 404 because it is not a valid inference credential.
+        api_key = explicit_api_key or str(state.get("agent_key") or "").strip()
         expires_at = state.get("agent_key_expires_at") or state.get("expires_at")
         if not api_key:
             creds = resolve_nous_runtime_credentials(

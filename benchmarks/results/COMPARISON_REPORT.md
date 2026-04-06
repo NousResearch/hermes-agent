@@ -19,8 +19,8 @@ All values are accuracy percentages (seed=42). `sk` = capability-skipped (fair),
 | **E** | scale | 8 | **100** | **100** | **100** | **100** | **100**~ | **100** |
 | **F** | integration | 11 | sk | sk | sk | sk | sk | sk |
 | **G** | qlearning | var | sk | sk | sk | sk | sk | sk |
-| **H** | dedup (only) | 8 | **100** | 87.5 | 75.0 | — | 87.5~ | — |
-| **I** | conv+stress | 15 | 86.7 | 80.0 | **86.7** | — | —~ | — |
+| **H** | dedup (only) | 8 | **100** | 87.5 | 75.0 | **87.5** | 87.5~ | — |
+| **I** | conv+stress | 15 | **86.7** | 80.0 | **86.7** | 73.3 | —~ | — |
 | **J** | topic_shift | 8 | **100** | **100** | **100** | **100** | **100**~ | **100** |
 | **K** | compress_survival | 8 | **100** | **100** | 75.0 | 75.0 | **100**~ | **100** |
 | **L** | delegation | 8 | **75.0** | 62.5 | 50.0 | 50.0 | **75.0**~ | **75.0** |

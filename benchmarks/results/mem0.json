@@ -2,17 +2,16 @@
   "backend": "mem0",
   "profile": "balanced",
   "embedding_model": "auto",
-  "timestamp": "2026-04-05T16:13:25.902329Z",
+  "timestamp": "2026-04-05T17:20:56.785862Z",
   "suites": [
-    "j",
-    "k",
-    "l"
+    "h",
+    "i"
   ],
-  "mean_score": 0.75,
+  "mean_score": 0.7391304347826086,
   "std": 0.0,
   "ci_95": [
-    0.75,
-    0.75
+    0.7391304347826086,
+    0.7391304347826086
   ],
   "per_category_mean": {
     "adversarial": 1.0,
@@ -25,7 +24,10 @@
     "retrieval_ablation": 0.6666666666666666,
     "compression_survival": 0.75,
     "topic_shift_recall": 1.0,
-    "delegation_memory": 0.5
+    "delegation_memory": 0.5,
+    "capacity_stress": 0.4,
+    "deduplication": 0.875,
+    "conversation_memory": 0.8
   },
   "per_category_std": {
     "adversarial": 0.0,
@@ -38,130 +40,133 @@
     "retrieval_ablation": 0.0,
     "compression_survival": 0.0,
     "topic_shift_recall": 0.0,
-    "delegation_memory": 0.0
+    "delegation_memory": 0.0,
+    "capacity_stress": 0.0,
+    "deduplication": 0.0,
+    "conversation_memory": 0.0
   },
   "num_runs": 1,
   "retrieval_metrics": {
-    "recall_at_1": 0.75,
-    "recall_at_3": 0.9166666666666666,
-    "recall_at_5": 0.9166666666666666,
-    "recall_at_10": 0.9166666666666666,
-    "mrr": 0.8333333333333334,
-    "ndcg_at_5": 0.8551549589285763,
-    "ndcg_at_10": 0.8551549589285763,
-    "average_precision": 0.8333333333333334,
+    "recall_at_1": 0.5916666666666667,
+    "recall_at_3": 0.6666666666666666,
+    "recall_at_5": 0.6666666666666666,
+    "recall_at_10": 0.6666666666666666,
+    "mrr": 0.6291666666666667,
+    "ndcg_at_5": 0.6281948304148719,
+    "ndcg_at_10": 0.6281948304148719,
+    "average_precision": 1.0569444444444445,
     "exact_match": 0.0,
-    "token_f1": 0.21516239570991222,
-    "token_precision": 0.13666181384834636,
-    "token_recall": 0.6666666666666666
+    "token_f1": 0.21516455766455767,
+    "token_precision": 0.13537157287157287,
+    "token_recall": 0.5916666666666667
   },
   "cost_metrics": {
-    "tokens_per_query": 48.625,
-    "tokens_per_correct": 64.83333333333333,
-    "cost_efficiency": 0.13314408653861418,
-    "score": 0.75,
-    "total_tokens": 1167.0,
-    "total_queries": 24.0,
-    "correct": 18.0,
-    "total": 24.0
+    "tokens_per_query": 37.17391304347826,
+    "tokens_per_correct": 50.294117647058826,
+    "cost_efficiency": 0.14066577227016067,
+    "score": 0.7391304347826086,
+    "total_tokens": 855.0,
+    "total_queries": 23.0,
+    "correct": 17.0,
+    "total": 23.0
   },
   "runs": [
     {
       "seed": 42,
-      "overall_score": 0.75,
-      "wall_time_seconds": 205.79686188697815,
+      "overall_score": 0.7391304347826086,
+      "wall_time_seconds": 3980.061583995819,
       "token_usage": {
-        "recall_tokens": 1167,
-        "recall_chars": 4803,
-        "recall_queries": 24,
-        "avg_recall_tokens_per_query": 48
+        "recall_tokens": 855,
+        "recall_chars": 3549,
+        "recall_queries": 23,
+        "avg_recall_tokens_per_query": 37
       },
       "retrieval_metrics": {
-        "recall_at_1": 0.75,
-        "recall_at_3": 0.9166666666666666,
-        "recall_at_5": 0.9166666666666666,
-        "recall_at_10": 0.9166666666666666,
-        "mrr": 0.8333333333333334,
-        "ndcg_at_5": 0.8551549589285763,
-        "ndcg_at_10": 0.8551549589285763,
-        "average_precision": 0.8333333333333334,
+        "recall_at_1": 0.5916666666666667,
+        "recall_at_3": 0.6666666666666666,
+        "recall_at_5": 0.6666666666666666,
+        "recall_at_10": 0.6666666666666666,
+        "mrr": 0.6291666666666667,
+        "ndcg_at_5": 0.6281948304148719,
+        "ndcg_at_10": 0.6281948304148719,
+        "average_precision": 1.0569444444444445,
         "exact_match": 0.0,
-        "token_f1": 0.21516239570991222,
-        "token_precision": 0.13666181384834636,
-        "token_recall": 0.6666666666666666
+        "token_f1": 0.21516455766455767,
+        "token_precision": 0.13537157287157287,
+        "token_recall": 0.5916666666666667
       },
       "cost_metrics": {
-        "tokens_per_query": 48.625,
-        "tokens_per_correct": 64.83333333333333,
-        "cost_efficiency": 0.13314408653861418,
-        "score": 0.75,
-        "total_tokens": 1167,
-        "total_queries": 24,
-        "correct": 18,
-        "total": 24
+        "tokens_per_query": 37.17391304347826,
+        "tokens_per_correct": 50.294117647058826,
+        "cost_efficiency": 0.14066577227016067,
+        "score": 0.7391304347826086,
+        "total_tokens": 855,
+        "total_queries": 23,
+        "correct": 17,
+        "total": 23
       },
       "categories": {
-        "topic_shift_recall": {
-          "score": 1.0,
-          "correct": 8,
+        "deduplication": {
+          "score": 0.875,
+          "correct": 7,
           "total": 8,
-          "recall_tokens": 253,
-          "recall_chars": 1061,
+          "recall_tokens": 391,
+          "recall_chars": 1618,
           "retrieval_metrics": {
-            "recall_at_1": 1.0,
+            "recall_at_1": 0.875,
             "recall_at_3": 1.0,
             "recall_at_5": 1.0,
             "recall_at_10": 1.0,
-            "mrr": 1.0,
-            "ndcg_at_5": 1.0,
-            "ndcg_at_10": 1.0,
-            "average_precision": 1.0,
+            "mrr": 0.9375,
+            "ndcg_at_5": 0.929519436972651,
+            "ndcg_at_10": 0.929519436972651,
+            "average_precision": 2.0541666666666667,
             "exact_match": 0.0,
-            "token_f1": 0.4236111111111111,
-            "token_precision": 0.2839285714285714,
+            "token_f1": 0.37797619047619047,
+            "token_precision": 0.24583333333333332,
             "token_recall": 0.875
           }
         },
-        "compression_survival": {
-          "score": 0.75,
-          "correct": 6,
-          "total": 8,
-          "recall_tokens": 387,
-          "recall_chars": 1572,
+        "capacity_stress": {
+          "score": 0.4,
+          "correct": 2,
+          "total": 5,
+          "recall_tokens": 299,
+          "recall_chars": 1246,
           "retrieval_metrics": {
-            "recall_at_1": 0.75,
-            "recall_at_3": 0.75,
-            "recall_at_5": 0.75,
-            "recall_at_10": 0.75,
-            "mrr": 0.75,
-            "ndcg_at_5": 0.75,
-            "ndcg_at_10": 0.75,
-            "average_precision": 0.75,
+            "recall_at_1": 0.2,
+            "recall_at_3": 0.2,
+            "recall_at_5": 0.2,
+            "recall_at_10": 0.2,
+            "mrr": 0.2,
+            "ndcg_at_5": 0.2,
+            "ndcg_at_10": 0.2,
+            "average_precision": 0.2,
             "exact_match": 0.0,
-            "token_f1": 0.11971187025534852,
-            "token_precision": 0.06756965944272446,
-            "token_recall": 0.625
+            "token_f1": 0.05,
+            "token_precision": 0.02857142857142857,
+            "token_recall": 0.2
           }
         },
-        "delegation_memory": {
-          "score": 0.5,
-          "correct": 4,
-          "total": 8,
-          "recall_tokens": 527,
-          "recall_chars": 2170,
+        "conversation_memory": {
+          "score": 0.8,
+          "correct": 8,
+          "total": 10,
+          "recall_tokens": 165,
+          "recall_chars": 685,
           "retrieval_metrics": {
-            "recall_at_1": 0.5,
-            "recall_at_3": 1.0,
-            "recall_at_5": 1.0,
-            "recall_at_10": 1.0,
+            "recall_at_1": 0.7,
+            "recall_at_3": 0.8,
+            "recall_at_5": 0.8,
+            "recall_at_10": 0.8,
             "mrr": 0.75,
-            "ndcg_at_5": 0.8154648767857288,
-            "ndcg_at_10": 0.8154648767857288,
-            "average_precision": 0.75,
+            "ndcg_at_5": 0.7550650542719646,
+            "ndcg_at_10": 0.7550650542719646,
+            "average_precision": 0.9166666666666666,
             "exact_match": 0.0,
-            "token_f1": 0.10216420576327698,
-            "token_precision": 0.05848721067374318,
-            "token_recall": 0.5
+            "token_f1": 0.2175174825174825,
+            "token_precision": 0.13170995670995672,
+            "token_recall": 0.7
           }
         }
       }

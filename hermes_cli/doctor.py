@@ -88,6 +88,36 @@ def _has_provider_env_config(content: str) -> bool:
     return any(key in content for key in _PROVIDER_ENV_HINTS)
 
 
+def _normalize_base_url(url: str) -> str:
+    """Normalize a base URL for comparison.
+
+    Handles:
+      - Trailing slashes
+      - Default ports (:443 for https, :80 for http)
+      - Case normalization for scheme/host
+
+    This prevents false-positive conflict warnings when URLs are semantically
+    identical but differ in representation (e.g., https://api.example.com:443/
+    vs https://api.example.com).
+    """
+    import re
+    if not url:
+        return ""
+    url = url.strip().rstrip("/")
+    # Normalize scheme and host to lowercase (path case is preserved)
+    if "://" in url:
+        scheme_host, _, path = url.partition("/")
+        if "/" in path:
+            # Has path after host
+            url = scheme_host.lower() + "/" + path
+        else:
+            url = url.lower()
+    # Remove default ports
+    url = re.sub(r"^(https://[^/:]+):443(/|$)", r"\1\2", url)
+    url = re.sub(r"^(http://[^/:]+):80(/|$)", r"\1\2", url)
+    return url
+
+
 def _honcho_is_configured_for_doctor() -> bool:
     """Return True when Honcho is configured, even if this process has no active session."""
     try:
@@ -373,22 +403,26 @@ def run_doctor(args):
     print(color("◆ Provider Endpoint Configuration", Colors.CYAN, Colors.BOLD))
 
     # Check for OPENAI_BASE_URL vs config.yaml base_url conflict (#5161)
-    env_base_url = os.environ.get("OPENAI_BASE_URL", "").rstrip("/")
+    env_base_url_raw = os.environ.get("OPENAI_BASE_URL", "")
+    env_base_url = _normalize_base_url(env_base_url_raw)
     config_base_url = ""
+    config_base_url_raw = ""
     try:
         config_path = HERMES_HOME / "config.yaml"
         if config_path.exists():
             with open(config_path) as f:
                 raw_config = yaml.safe_load(f) or {}
-            config_base_url = (raw_config.get("model", {}).get("base_url") or "").rstrip("/")
+            config_base_url_raw = raw_config.get("model", {}).get("base_url") or ""
+            config_base_url = _normalize_base_url(config_base_url_raw)
     except Exception:
         pass
 
     if env_base_url and config_base_url:
         if env_base_url != config_base_url:
+            # Show raw values in output so users can see what they configured
             check_warn(
                 "OPENAI_BASE_URL conflicts with config.yaml base_url",
-                f"(env: {env_base_url[:40]}... vs config: {config_base_url[:40]}...)"
+                f"(env: {env_base_url_raw[:40]}... vs config: {config_base_url_raw[:40]}...)"
             )
             check_info("Auxiliary clients (compression, vision, subagents) may route to wrong endpoint")
             check_info(f"Fix: comment out OPENAI_BASE_URL in {_DHH}/.env or align endpoints")

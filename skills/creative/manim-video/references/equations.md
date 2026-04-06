@@ -78,3 +78,88 @@ class DerivationScene(Scene):
         s2.next_to(s1, DOWN, buff=0.8)
         self.play(s1.animate.set_opacity(0.4), TransformMatchingTex(s1.copy(), s2))
 ```
+
+## substrings_to_isolate for Complex Equations
+
+For dense equations where manually splitting into parts is impractical, use `substrings_to_isolate` to tell Manim which substrings to track as individual elements:
+
+```python
+# Without isolation — the whole expression is one blob
+lagrangian = MathTex(
+    r"\mathcal{L} = \bar{\psi}(i \gamma^\mu D_\mu - m)\psi - \tfrac{1}{4}F_{\mu\nu}F^{\mu\nu}"
+)
+
+# With isolation — each named substring is a separate submobject
+lagrangian = MathTex(
+    r"\mathcal{L} = \bar{\psi}(i \gamma^\mu D_\mu - m)\psi - \tfrac{1}{4}F_{\mu\nu}F^{\mu\nu}",
+    substrings_to_isolate=[r"\psi", r"D_\mu", r"\gamma^\mu", r"F_{\mu\nu}"]
+)
+# Now you can color individual terms
+lagrangian.set_color_by_tex(r"\psi", BLUE)
+lagrangian.set_color_by_tex(r"F_{\mu\nu}", YELLOW)
+```
+
+Essential for `TransformMatchingTex` on complex equations — without isolation, matching fails on dense expressions.
+
+## Multi-Line Complex Equations
+
+For equations with multiple related lines, pass each line as a separate argument:
+
+```python
+maxwell = MathTex(
+    r"\nabla \cdot \mathbf{E} = \frac{\rho}{\epsilon_0}",
+    r"\nabla \times \mathbf{B} = \mu_0\mathbf{J} + \mu_0\epsilon_0\frac{\partial \mathbf{E}}{\partial t}"
+).arrange(DOWN)
+
+# Each line is a separate submobject — animate independently
+self.play(Write(maxwell[0]))
+self.wait(1)
+self.play(Write(maxwell[1]))
+```
+
+## TransformMatchingTex with key_map
+
+Map specific substrings between source and target equations during transformation:
+
+```python
+eq1 = MathTex(r"A^2 + B^2 = C^2")
+eq2 = MathTex(r"A^2 = C^2 - B^2")
+
+self.play(TransformMatchingTex(
+    eq1, eq2,
+    key_map={"+": "-"},   # map "+" in source to "-" in target
+    path_arc=PI / 2,      # arc the pieces into position
+))
+```
+
+## set_color_by_tex — Color by Substring
+
+```python
+eq = MathTex(r"E = mc^2")
+eq.set_color_by_tex("E", BLUE)
+eq.set_color_by_tex("m", RED)
+eq.set_color_by_tex("c", GREEN)
+```
+
+## TransformMatchingTex with matched_keys
+
+When matching substrings are ambiguous, specify which to align explicitly:
+
+```python
+kw = dict(font_size=72, t2c={"A": BLUE, "B": TEAL, "C": GREEN})
+lines = [
+    MathTex(r"A^2 + B^2 = C^2", **kw),
+    MathTex(r"A^2 = C^2 - B^2", **kw),
+    MathTex(r"A^2 = (C + B)(C - B)", **kw),
+    MathTex(r"A = \sqrt{(C + B)(C - B)}", **kw),
+]
+
+self.play(TransformMatchingTex(
+    lines[0].copy(), lines[1],
+    matched_keys=["A^2", "B^2", "C^2"],  # explicitly match these
+    key_map={"+": "-"},                    # map + to -
+    path_arc=PI / 2,                       # arc pieces into position
+))
+```
+
+Without `matched_keys`, the animation matches the longest common substrings, which can produce unexpected results on complex equations (e.g., "^2 = C^2" matching across terms).

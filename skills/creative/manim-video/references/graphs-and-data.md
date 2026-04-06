@@ -89,3 +89,75 @@ arrow = Arrow(before.get_right(), after.get_left(), color=YELLOW)
 label = Text("+167%", font_size=36, color=YELLOW).next_to(arrow, UP)
 self.play(GrowArrow(arrow), Write(label))
 ```
+
+## Graph / DiGraph — Graph Theory Visualization
+
+Built-in graph mobjects with automatic layout:
+
+```python
+# Undirected graph
+g = Graph(
+    vertices=[1, 2, 3, 4, 5],
+    edges=[(1, 2), (2, 3), (3, 4), (4, 5), (5, 1), (1, 3)],
+    layout="spring",  # or "circular", "kamada_kawai", "planar", "tree"
+    labels=True,
+    vertex_config={"fill_color": PRIMARY},
+    edge_config={"stroke_color": SUBTLE},
+)
+self.play(Create(g))
+
+# Directed graph
+dg = DiGraph(
+    vertices=["A", "B", "C"],
+    edges=[("A", "B"), ("B", "C"), ("C", "A")],
+    layout="circular",
+    labels=True,
+    edge_config={("A", "B"): {"stroke_color": RED}},
+)
+
+# Add/remove vertices and edges dynamically
+self.play(g.animate.add_vertices(6, positions={6: RIGHT * 2}))
+self.play(g.animate.add_edges((1, 6)))
+self.play(g.animate.remove_vertices(3))
+```
+
+Layout algorithms: `"spring"`, `"circular"`, `"kamada_kawai"`, `"planar"`, `"spectral"`, `"tree"` (for rooted trees, specify `root=`).
+
+## ArrowVectorField / StreamLines — Vector Fields
+
+```python
+# Arrow field: arrows showing direction at each point
+field = ArrowVectorField(
+    lambda pos: np.array([-pos[1], pos[0], 0]),  # rotation field
+    x_range=[-3, 3], y_range=[-3, 3],
+    colors=[BLUE, GREEN, YELLOW, RED]
+)
+self.play(Create(field))
+
+# StreamLines: flowing particle traces through the field
+stream = StreamLines(
+    lambda pos: np.array([-pos[1], pos[0], 0]),
+    stroke_width=2, max_anchors_per_line=30
+)
+self.add(stream)
+stream.start_animation(warm_up=True, flow_speed=1.5)
+self.wait(3)
+stream.end_animation()
+```
+
+Use cases: electromagnetic fields, fluid flow, gradient fields, ODE phase portraits.
+
+## ComplexPlane / PolarPlane
+
+```python
+# Complex plane with Re/Im labels
+cplane = ComplexPlane().add_coordinates()
+dot = Dot(cplane.n2p(2 + 1j), color=YELLOW)
+label = Text("2+i", font_size=20).next_to(dot, UR, buff=0.1)
+
+# Apply complex function to the plane
+self.play(cplane.animate.apply_complex_function(lambda z: z**2), run_time=3)
+
+# Polar plane
+polar = PolarPlane(radius_max=3).add_coordinates()
+```

@@ -274,6 +274,18 @@ class FeishuAdapterSettings:
     ws_reconnect_interval: int = 120
     ws_ping_interval: Optional[int] = None
     ws_ping_timeout: Optional[int] = None
+    admins: frozenset[str] = frozenset()
+    default_group_policy: str = ""
+    group_rules: Dict[str, FeishuGroupRule] = field(default_factory=dict)
+
+
+@dataclass
+class FeishuGroupRule:
+    """Per-group policy rule for controlling which users may interact with the bot."""
+
+    policy: str  # "open" | "allowlist" | "blacklist" | "admin_only" | "disabled"
+    allowlist: set[str] = field(default_factory=set)
+    blacklist: set[str] = field(default_factory=set)
 
 
 @dataclass
@@ -1049,6 +1061,26 @@ class FeishuAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _load_settings(extra: Dict[str, Any]) -> FeishuAdapterSettings:
+        # Parse per-group rules from config
+        raw_group_rules = extra.get("group_rules", {})
+        group_rules: Dict[str, FeishuGroupRule] = {}
+        if isinstance(raw_group_rules, dict):
+            for chat_id, rule_cfg in raw_group_rules.items():
+                if not isinstance(rule_cfg, dict):
+                    continue
+                group_rules[str(chat_id)] = FeishuGroupRule(
+                    policy=str(rule_cfg.get("policy", "open")).strip().lower(),
+                    allowlist=set(str(u).strip() for u in rule_cfg.get("allowlist", []) if str(u).strip()),
+                    blacklist=set(str(u).strip() for u in rule_cfg.get("blacklist", []) if str(u).strip()),
+                )
+
+        # Bot-level admins
+        raw_admins = extra.get("admins", [])
+        admins = frozenset(str(u).strip() for u in raw_admins if str(u).strip())
+
+        # Default group policy (for groups not in group_rules)
+        default_group_policy = str(extra.get("default_group_policy", "")).strip().lower()
+
         return FeishuAdapterSettings(
             app_id=str(extra.get("app_id") or os.getenv("FEISHU_APP_ID", "")).strip(),
             app_secret=str(extra.get("app_secret") or os.getenv("FEISHU_APP_SECRET", "")).strip(),
@@ -1099,6 +1131,9 @@ class FeishuAdapter(BasePlatformAdapter):
             ws_reconnect_interval=_coerce_required_int(extra.get("ws_reconnect_interval"), default=120, min_value=1),
             ws_ping_interval=_coerce_int(extra.get("ws_ping_interval"), default=None, min_value=1),
             ws_ping_timeout=_coerce_int(extra.get("ws_ping_timeout"), default=None, min_value=1),
+            admins=admins,
+            default_group_policy=default_group_policy,
+            group_rules=group_rules,
         )
 
     def _apply_settings(self, settings: FeishuAdapterSettings) -> None:
@@ -1110,6 +1145,9 @@ class FeishuAdapter(BasePlatformAdapter):
         self._verification_token = settings.verification_token
         self._group_policy = settings.group_policy
         self._allowed_group_users = set(settings.allowed_group_users)
+        self._admins = set(settings.admins)
+        self._default_group_policy = settings.default_group_policy or settings.group_policy
+        self._group_rules = settings.group_rules
         self._bot_open_id = settings.bot_open_id
         self._bot_user_id = settings.bot_user_id
         self._bot_name = settings.bot_name
@@ -1617,7 +1655,8 @@ class FeishuAdapter(BasePlatformAdapter):
             return
 
         chat_type = getattr(message, "chat_type", "p2p")
-        if chat_type != "p2p" and not self._should_accept_group_message(message, sender_id):
+        chat_id = getattr(message, "chat_id", "") or ""
+        if chat_type != "p2p" and not self._should_accept_group_message(message, sender_id, chat_id):
             logger.debug("[Feishu] Dropping group message that failed mention/policy gate: %s", message_id)
             return
         await self._process_inbound_message(
@@ -2773,18 +2812,41 @@ class FeishuAdapter(BasePlatformAdapter):
     # Group policy and mention gating
     # =========================================================================
 
-    def _allow_group_message(self, sender_id: Any) -> bool:
-        """Current group policy gate for non-DM traffic."""
-        if self._group_policy == "disabled":
-            return False
-        sender_open_id = getattr(sender_id, "open_id", None) or getattr(sender_id, "user_id", None)
-        if self._group_policy == "open":
-            return True
-        return bool(sender_open_id and sender_open_id in self._allowed_group_users)
+    def _allow_group_message(self, sender_id: Any, chat_id: str = "") -> bool:
+        """Per-group policy gate for non-DM traffic."""
+        sender_open_id = getattr(sender_id, "open_id", None)
+        sender_user_id = getattr(sender_id, "user_id", None)
+        sender_ids = {sender_open_id, sender_user_id} - {None}
 
-    def _should_accept_group_message(self, message: Any, sender_id: Any) -> bool:
+        if sender_ids and self._admins and (sender_ids & self._admins):
+            return True
+
+        rule = self._group_rules.get(chat_id) if chat_id else None
+        if rule:
+            policy = rule.policy
+            allowlist = rule.allowlist
+            blacklist = rule.blacklist
+        else:
+            policy = self._default_group_policy or self._group_policy
+            allowlist = self._allowed_group_users
+            blacklist = set()
+
+        if policy == "disabled":
+            return False
+        if policy == "open":
+            return True
+        if policy == "admin_only":
+            return False
+        if policy == "allowlist":
+            return bool(sender_ids and (sender_ids & allowlist))
+        if policy == "blacklist":
+            return bool(sender_ids and not (sender_ids & blacklist))
+
+        return bool(sender_ids and (sender_ids & self._allowed_group_users))
+
+    def _should_accept_group_message(self, message: Any, sender_id: Any, chat_id: str = "") -> bool:
         """Require an explicit @mention before group messages enter the agent."""
-        if not self._allow_group_message(sender_id):
+        if not self._allow_group_message(sender_id, chat_id):
             return False
         # @_all is Feishu's @everyone placeholder — always route to the bot.
         raw_content = getattr(message, "content", "") or ""

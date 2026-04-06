@@ -336,52 +336,58 @@ class _WriteQueue:
         self._q: queue.Queue = queue.Queue()
         self._thread = threading.Thread(target=self._loop, name="retaindb-writer", daemon=True)
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
+        # Thread-local connection cache — one connection per thread, reused.
+        self._local = threading.local()
         self._init_db()
         self._thread.start()
         # Replay any rows left from a previous crash
         for row_id, user_id, session_id, msgs_json in self._pending_rows():
             self._q.put((row_id, user_id, session_id, json.loads(msgs_json)))
 
-    def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(str(self._db_path), timeout=30)
-        conn.row_factory = sqlite3.Row
+    def _get_conn(self) -> sqlite3.Connection:
+        """Return a cached connection for the current thread."""
+        conn = getattr(self._local, "conn", None)
+        if conn is None:
+            conn = sqlite3.connect(str(self._db_path), timeout=30)
+            conn.row_factory = sqlite3.Row
+            self._local.conn = conn
         return conn
 
     def _init_db(self) -> None:
-        with self._connect() as conn:
-            conn.execute("""CREATE TABLE IF NOT EXISTS pending (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id TEXT, session_id TEXT, messages_json TEXT,
-                created_at TEXT, last_error TEXT
-            )""")
-            conn.commit()
+        conn = self._get_conn()
+        conn.execute("""CREATE TABLE IF NOT EXISTS pending (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT, session_id TEXT, messages_json TEXT,
+            created_at TEXT, last_error TEXT
+        )""")
+        conn.commit()
 
     def _pending_rows(self) -> list:
-        with self._connect() as conn:
-            return conn.execute("SELECT id, user_id, session_id, messages_json FROM pending ORDER BY id ASC LIMIT 200").fetchall()
+        conn = self._get_conn()
+        return conn.execute("SELECT id, user_id, session_id, messages_json FROM pending ORDER BY id ASC LIMIT 200").fetchall()
 
     def enqueue(self, user_id: str, session_id: str, messages: list) -> None:
         now = datetime.now(timezone.utc).isoformat()
-        with self._connect() as conn:
-            cur = conn.execute(
-                "INSERT INTO pending (user_id, session_id, messages_json, created_at) VALUES (?,?,?,?)",
-                (user_id, session_id, json.dumps(messages, ensure_ascii=False), now),
-            )
-            row_id = cur.lastrowid
-            conn.commit()
+        conn = self._get_conn()
+        cur = conn.execute(
+            "INSERT INTO pending (user_id, session_id, messages_json, created_at) VALUES (?,?,?,?)",
+            (user_id, session_id, json.dumps(messages, ensure_ascii=False), now),
+        )
+        row_id = cur.lastrowid
+        conn.commit()
         self._q.put((row_id, user_id, session_id, messages))
 
     def _flush_row(self, row_id: int, user_id: str, session_id: str, messages: list) -> None:
         try:
             self._client.ingest_session(user_id, session_id, messages)
-            with self._connect() as conn:
-                conn.execute("DELETE FROM pending WHERE id = ?", (row_id,))
-                conn.commit()
+            conn = self._get_conn()
+            conn.execute("DELETE FROM pending WHERE id = ?", (row_id,))
+            conn.commit()
         except Exception as exc:
             logger.warning("RetainDB ingest failed (will retry): %s", exc)
-            with self._connect() as conn:
-                conn.execute("UPDATE pending SET last_error = ? WHERE id = ?", (str(exc), row_id))
-                conn.commit()
+            conn = self._get_conn()
+            conn.execute("UPDATE pending SET last_error = ? WHERE id = ?", (str(exc), row_id))
+            conn.commit()
             time.sleep(2)
 
     def _loop(self) -> None:
@@ -459,6 +465,9 @@ class RetainDBMemoryProvider(MemoryProvider):
         self._dialectic_result = ""
         self._agent_model: dict = {}
 
+        # Prefetch thread tracking — prevents accumulation on rapid calls
+        self._prefetch_threads: list[threading.Thread] = []
+
     # ── Core identity ──────────────────────────────────────────────────────
 
     @property
@@ -533,9 +542,18 @@ class RetainDBMemoryProvider(MemoryProvider):
         """Fire context + dialectic + agent model prefetches in background."""
         if not self._client:
             return
-        threading.Thread(target=self._prefetch_context, args=(query,), name="retaindb-ctx", daemon=True).start()
-        threading.Thread(target=self._prefetch_dialectic, args=(query,), name="retaindb-dialectic", daemon=True).start()
-        threading.Thread(target=self._prefetch_agent_model, name="retaindb-agent-model", daemon=True).start()
+        # Wait for any still-running prefetch threads before spawning new ones.
+        # Prevents thread accumulation if turns fire faster than prefetches complete.
+        for t in self._prefetch_threads:
+            t.join(timeout=2.0)
+        threads = [
+            threading.Thread(target=self._prefetch_context, args=(query,), name="retaindb-ctx", daemon=True),
+            threading.Thread(target=self._prefetch_dialectic, args=(query,), name="retaindb-dialectic", daemon=True),
+            threading.Thread(target=self._prefetch_agent_model, name="retaindb-agent-model", daemon=True),
+        ]
+        self._prefetch_threads = threads
+        for t in threads:
+            t.start()
 
     def _prefetch_context(self, query: str) -> None:
         try:
@@ -736,6 +754,8 @@ class RetainDBMemoryProvider(MemoryProvider):
             logger.debug("RetainDB memory mirror failed: %s", exc)
 
     def shutdown(self) -> None:
+        for t in self._prefetch_threads:
+            t.join(timeout=3.0)
         if self._queue:
             self._queue.shutdown()
 

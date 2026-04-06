@@ -34,6 +34,12 @@ than the provider's default.
 Per-task direct endpoint overrides (e.g. AUXILIARY_VISION_BASE_URL,
 AUXILIARY_VISION_API_KEY) let callers route a specific auxiliary task to a
 custom OpenAI-compatible endpoint without touching the main model settings.
+
+Payment / credit exhaustion fallback:
+  When a resolved provider returns HTTP 402 or a credit-related error,
+  call_llm() automatically retries with the next available provider in the
+  auto-detection chain.  This handles the common case where a user depletes
+  their OpenRouter balance but has Codex OAuth or another provider available.
 """
 
 import json
@@ -874,8 +880,88 @@ _AUTO_PROVIDER_LABELS = {
     "_resolve_api_key_provider": "api-key",
 }
 
-
 _AGGREGATOR_PROVIDERS = frozenset({"openrouter", "nous"})
+
+
+def _get_provider_chain() -> List[tuple]:
+    """Return the ordered provider detection chain.
+
+    Built at call time (not module level) so that test patches
+    on the ``_try_*`` functions are picked up correctly.
+    """
+    return [
+        ("openrouter", _try_openrouter),
+        ("nous", _try_nous),
+        ("local/custom", _try_custom_endpoint),
+        ("openai-codex", _try_codex),
+        ("api-key", _resolve_api_key_provider),
+    ]
+
+
+def _is_payment_error(exc: Exception) -> bool:
+    """Detect payment/credit/quota exhaustion errors.
+
+    Returns True for HTTP 402 (Payment Required) and for 429/other errors
+    whose message indicates billing exhaustion rather than rate limiting.
+    """
+    status = getattr(exc, "status_code", None)
+    if status == 402:
+        return True
+    err_lower = str(exc).lower()
+    # OpenRouter and other providers include "credits" or "afford" in 402 bodies,
+    # but sometimes wrap them in 429 or other codes.
+    if status in (402, 429, None):
+        if any(kw in err_lower for kw in ("credits", "insufficient funds",
+                                           "can only afford", "billing",
+                                           "payment required")):
+            return True
+    return False
+
+
+def _try_payment_fallback(
+    failed_provider: str,
+    task: str = None,
+) -> Tuple[Optional[Any], Optional[str], str]:
+    """Try alternative providers after a payment/credit error.
+
+    Iterates the standard auto-detection chain, skipping the provider that
+    returned a payment error.
+
+    Returns:
+        (client, model, provider_label) or (None, None, "") if no fallback.
+    """
+    # Normalise the failed provider label for matching.
+    skip = failed_provider.lower().strip()
+    # Also skip Step-1 main-provider path if it maps to the same backend.
+    # (e.g. main_provider="openrouter" → skip "openrouter" in chain)
+    main_provider = _read_main_provider()
+    skip_labels = {skip}
+    if main_provider and main_provider.lower() in skip:
+        skip_labels.add(main_provider.lower())
+    # Map common resolved_provider values back to chain labels.
+    _alias_to_label = {"openrouter": "openrouter", "nous": "nous",
+                       "openai-codex": "openai-codex", "codex": "openai-codex",
+                       "custom": "local/custom", "local/custom": "local/custom"}
+    skip_chain_labels = {_alias_to_label.get(s, s) for s in skip_labels}
+
+    tried = []
+    for label, try_fn in _get_provider_chain():
+        if label in skip_chain_labels:
+            continue
+        client, model = try_fn()
+        if client is not None:
+            logger.info(
+                "Auxiliary %s: payment error on %s — falling back to %s (%s)",
+                task or "call", failed_provider, label, model or "default",
+            )
+            return client, model, label
+        tried.append(label)
+
+    logger.warning(
+        "Auxiliary %s: payment error on %s and no fallback available (tried: %s)",
+        task or "call", failed_provider, ", ".join(tried),
+    )
+    return None, None, ""
 
 
 def _resolve_auto() -> Tuple[Optional[OpenAI], Optional[str]]:
@@ -905,10 +991,7 @@ def _resolve_auto() -> Tuple[Optional[OpenAI], Optional[str]]:
 
     # ── Step 2: aggregator / fallback chain ──────────────────────────────
     tried = []
-    for try_fn in (_try_openrouter, _try_nous, _try_custom_endpoint,
-                   _try_codex, _resolve_api_key_provider):
-        fn_name = getattr(try_fn, "__name__", "unknown")
-        label = _AUTO_PROVIDER_LABELS.get(fn_name, fn_name)
+    for label, try_fn in _get_provider_chain():
         client, model = try_fn()
         if client is not None:
             if tried:
@@ -1786,12 +1869,15 @@ def call_llm(
                     f"was found. Set the {_explicit.upper()}_API_KEY environment "
                     f"variable, or switch to a different provider with `hermes model`."
                 )
-            # For auto/custom, fall back to OpenRouter
+            # For auto/custom with no credentials, try the full auto chain
+            # rather than hardcoding OpenRouter (which may be depleted).
+            # Pass model=None so each provider uses its own default —
+            # resolved_model may be an OpenRouter-format slug that doesn't
+            # work on other providers.
             if not resolved_base_url:
-                logger.info("Auxiliary %s: provider %s unavailable, falling back to openrouter",
+                logger.info("Auxiliary %s: provider %s unavailable, trying auto-detection chain",
                             task or "call", resolved_provider)
-                client, final_model = _get_cached_client(
-                    "openrouter", resolved_model or _OPENROUTER_MODEL)
+                client, final_model = _get_cached_client("auto")
         if client is None:
             raise RuntimeError(
                 f"No LLM provider configured for task={task} provider={resolved_provider}. "
@@ -1812,7 +1898,7 @@ def call_llm(
         tools=tools, timeout=effective_timeout, extra_body=extra_body,
         base_url=resolved_base_url)
 
-    # Handle max_tokens vs max_completion_tokens retry
+    # Handle max_tokens vs max_completion_tokens retry, then payment fallback.
     try:
         return client.chat.completions.create(**kwargs)
     except Exception as first_err:
@@ -1820,7 +1906,30 @@ def call_llm(
         if "max_tokens" in err_str or "unsupported_parameter" in err_str:
             kwargs.pop("max_tokens", None)
             kwargs["max_completion_tokens"] = max_tokens
-            return client.chat.completions.create(**kwargs)
+            try:
+                return client.chat.completions.create(**kwargs)
+            except Exception as retry_err:
+                # If the max_tokens retry also hits a payment error,
+                # fall through to the payment fallback below.
+                if not _is_payment_error(retry_err):
+                    raise
+                first_err = retry_err
+
+        # ── Payment / credit exhaustion fallback ──────────────────────
+        # When the resolved provider returns 402 or a credit-related error,
+        # try alternative providers instead of giving up.  This handles the
+        # common case where a user runs out of OpenRouter credits but has
+        # Codex OAuth or another provider available.
+        if _is_payment_error(first_err):
+            fb_client, fb_model, fb_label = _try_payment_fallback(
+                resolved_provider, task)
+            if fb_client is not None:
+                fb_kwargs = _build_call_kwargs(
+                    fb_label, fb_model, messages,
+                    temperature=temperature, max_tokens=max_tokens,
+                    tools=tools, timeout=effective_timeout,
+                    extra_body=extra_body)
+                return fb_client.chat.completions.create(**fb_kwargs)
         raise
 
 

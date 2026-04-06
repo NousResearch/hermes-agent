@@ -1872,3 +1872,92 @@ class TestWeChatTransport:
         assert _aes_ecb_padded_size(16) == 32
         assert _aes_ecb_padded_size(31) == 32
         assert _aes_ecb_padded_size(32) == 48
+
+
+class TestIssueVerification:
+    """Tests to verify the two issues raised in PR #5230 review."""
+
+    # --- Issue 1: context_token stale after reconnect ---
+
+    @pytest.mark.asyncio
+    async def test_context_token_survives_session_expiry(self, monkeypatch, tmp_path):
+        """Verify that context_token cache is NOT cleared on session expiry (reproduces the bug)."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        from gateway.platforms.wechat import WeChatAdapter
+        from gateway.platforms.wechat_state import WeChatAccount
+        from gateway.platforms.wechat_transport import WeChatSessionExpiredError
+
+        adapter = WeChatAdapter(PlatformConfig(enabled=True))
+        account = WeChatAccount(
+            account_id="acct-1",
+            token="old-token",
+            base_url="https://ilinkai.weixin.qq.com",
+            user_id="owner@im.wechat",
+            enabled=True,
+        )
+        adapter._state.save_account(account)
+        # Simulate a context_token saved during a previous session
+        adapter._state.set_context_token("acct-1", "user-42", "stale-ctx-token")
+
+        # Trigger session expiry path
+        adapter._transport.get_updates = AsyncMock(side_effect=[WeChatSessionExpiredError("expired")])
+
+        async def _stop_after_pause(_seconds):
+            adapter._running = False
+
+        adapter._sleep = AsyncMock(side_effect=_stop_after_pause)
+        adapter._running = True
+        await adapter._poll_account_loop("acct-1")
+
+        stale = adapter._state.get_context_token("acct-1", "user-42")
+        # This assertion FAILS if the bug exists (stale token is still present after session expiry)
+        assert stale is None, (
+            f"BUG: context_token '{stale}' was not cleared after WeChatSessionExpiredError. "
+            "Reconnected account will use a stale token."
+        )
+
+    # --- Issue 2: no rate-limit backoff on 429/503 ---
+
+    @pytest.mark.asyncio
+    async def test_poll_loop_backoff_respects_rate_limit_errors(self, monkeypatch, tmp_path):
+        """Verify that 429/503-like errors trigger a longer backoff than ordinary failures."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        from gateway.platforms.wechat import WeChatAdapter
+        from gateway.platforms.wechat_state import WeChatAccount
+
+        adapter = WeChatAdapter(PlatformConfig(enabled=True))
+        adapter._state.save_account(
+            WeChatAccount(
+                account_id="acct-1",
+                token="secret-token",
+                base_url="https://ilinkai.weixin.qq.com",
+                user_id="owner@im.wechat",
+                enabled=True,
+            )
+        )
+
+        from gateway.platforms.wechat_transport import WeChatRateLimitError
+
+        sleep_durations: list[float] = []
+
+        async def _capture_sleep(seconds):
+            sleep_durations.append(seconds)
+            if len(sleep_durations) >= 3:
+                adapter._running = False
+
+        adapter._transport.get_updates = AsyncMock(side_effect=WeChatRateLimitError("rate limited: HTTP 429"))
+        adapter._sleep = AsyncMock(side_effect=_capture_sleep)
+        adapter._running = True
+
+        await adapter._poll_account_loop("acct-1")
+
+        # With current code: min(consecutive_failures, 5) → [1, 2, 3]
+        # Expected: backoff should grow beyond 5s for rate-limit errors
+        max_backoff = max(sleep_durations)
+        assert max_backoff > 5, (
+            f"BUG: max backoff for rate-limit errors is only {max_backoff}s. "
+            "The polling loop uses min(consecutive_failures, 5) with no distinction for 429/503, "
+            "which will sustain excessive retry pressure under rate limiting."
+        )

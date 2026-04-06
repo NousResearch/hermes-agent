@@ -116,6 +116,11 @@ class WeChatStateStore:
         token = entry.get("token")
         return str(token) if token else None
 
+    def clear_context_tokens(self, account_id: str) -> None:
+        path = self._context_path(account_id)
+        if path.exists():
+            path.unlink()
+
     def find_account_ids_by_context_token(self, user_id: str) -> list[str]:
         matches: list[str] = []
         for account_id in self.list_account_ids():

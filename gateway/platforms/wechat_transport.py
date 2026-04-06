@@ -108,6 +108,10 @@ class WeChatSessionExpiredError(RuntimeError):
     pass
 
 
+class WeChatRateLimitError(RuntimeError):
+    pass
+
+
 class OfficialWeChatTransport:
     def __init__(self, base_url: str = DEFAULT_BASE_URL, timeout: float = 30.0,
                  cdn_base_url: str = DEFAULT_CDN_BASE_URL):
@@ -286,6 +290,8 @@ class OfficialWeChatTransport:
         session = await self._get_session()
         async with session.get(url, headers=self._build_common_headers()) as response:
             body = await response.json(content_type=None)
+            if response.status in (429, 503):
+                raise WeChatRateLimitError(f"wechat GET {endpoint} rate limited: HTTP {response.status}")
             if response.status >= 400:
                 raise RuntimeError(f"wechat GET {endpoint} failed: HTTP {response.status} {body}")
             return body
@@ -299,6 +305,8 @@ class OfficialWeChatTransport:
         session = await self._get_session()
         async with session.post(url, data=json.dumps(json_body), headers=headers) as response:
             body = await response.json(content_type=None)
+            if response.status in (429, 503):
+                raise WeChatRateLimitError(f"wechat POST {endpoint} rate limited: HTTP {response.status}")
             if response.status >= 400:
                 raise RuntimeError(f"wechat POST {endpoint} failed: HTTP {response.status} {body}")
             return body

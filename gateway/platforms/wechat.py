@@ -19,6 +19,7 @@ from .wechat_transport import (
     AIOHTTP_AVAILABLE,
     DEFAULT_BASE_URL,
     DEFAULT_CDN_BASE_URL,
+    WeChatRateLimitError,
     WeChatSessionExpiredError,
 )
 
@@ -388,8 +389,13 @@ class WeChatAdapter(BasePlatformAdapter):
             except asyncio.CancelledError:
                 raise
             except WeChatSessionExpiredError:
+                self._state.clear_context_tokens(account_id)
                 self.pause_account(account_id)
                 await self._sleep(SESSION_PAUSE_SECONDS)
+            except WeChatRateLimitError as exc:
+                consecutive_failures += 1
+                logger.warning("[%s] WeChat poll rate limited for %s (%d): %s", self.name, account_id, consecutive_failures, exc)
+                await self._sleep(min(2 ** consecutive_failures, 60))
             except Exception as exc:
                 consecutive_failures += 1
                 logger.warning("[%s] WeChat poll failed for %s (%d): %s", self.name, account_id, consecutive_failures, exc)

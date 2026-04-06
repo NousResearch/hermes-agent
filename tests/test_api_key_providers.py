@@ -350,6 +350,7 @@ class TestResolveApiKeyProviderCredentials:
 
     def test_resolve_zai_with_key(self, monkeypatch):
         monkeypatch.setenv("GLM_API_KEY", "glm-secret-key")
+        monkeypatch.setattr("hermes_cli.auth.detect_zai_endpoint", lambda *a, **kw: None)
         creds = resolve_api_key_provider_credentials("zai")
         assert creds["provider"] == "zai"
         assert creds["api_key"] == "glm-secret-key"
@@ -471,6 +472,7 @@ class TestResolveApiKeyProviderCredentials:
         """GLM_API_KEY takes priority over ZAI_API_KEY."""
         monkeypatch.setenv("GLM_API_KEY", "primary")
         monkeypatch.setenv("ZAI_API_KEY", "secondary")
+        monkeypatch.setattr("hermes_cli.auth.detect_zai_endpoint", lambda *a, **kw: None)
         creds = resolve_api_key_provider_credentials("zai")
         assert creds["api_key"] == "primary"
         assert creds["source"] == "GLM_API_KEY"
@@ -478,6 +480,7 @@ class TestResolveApiKeyProviderCredentials:
     def test_zai_key_fallback(self, monkeypatch):
         """ZAI_API_KEY used when GLM_API_KEY not set."""
         monkeypatch.setenv("ZAI_API_KEY", "secondary")
+        monkeypatch.setattr("hermes_cli.auth.detect_zai_endpoint", lambda *a, **kw: None)
         creds = resolve_api_key_provider_credentials("zai")
         assert creds["api_key"] == "secondary"
         assert creds["source"] == "ZAI_API_KEY"
@@ -830,9 +833,56 @@ class TestKimiCodeCredentialAutoDetect:
 
     def test_non_kimi_providers_unaffected(self, monkeypatch):
         """Ensure the auto-detect logic doesn't leak to other providers."""
-        monkeypatch.setenv("GLM_API_KEY", "sk-kimi-looks-like-kimi-but-isnt")
+        monkeypatch.setenv("GLM_API_KEY", "sk-kim...isnt")
+        monkeypatch.setattr("hermes_cli.auth.detect_zai_endpoint", lambda *a, **kw: None)
         creds = resolve_api_key_provider_credentials("zai")
         assert creds["base_url"] == "https://api.z.ai/api/paas/v4"
+
+
+class TestZaiEndpointAutoDetect:
+    """Test that resolve_api_key_provider_credentials auto-detects Z.AI endpoints."""
+
+    def test_probe_success_returns_detected_url(self, monkeypatch):
+        monkeypatch.setenv("GLM_API_KEY", "glm-coding-key")
+        monkeypatch.setattr(
+            "hermes_cli.auth.detect_zai_endpoint",
+            lambda *a, **kw: {
+                "id": "coding-global",
+                "base_url": "https://api.z.ai/api/coding/paas/v4",
+                "model": "glm-4.7",
+                "label": "Global (Coding Plan)",
+            },
+        )
+        creds = resolve_api_key_provider_credentials("zai")
+        assert creds["base_url"] == "https://api.z.ai/api/coding/paas/v4"
+
+    def test_probe_failure_falls_back_to_default(self, monkeypatch):
+        monkeypatch.setenv("GLM_API_KEY", "glm-key")
+        monkeypatch.setattr("hermes_cli.auth.detect_zai_endpoint", lambda *a, **kw: None)
+        creds = resolve_api_key_provider_credentials("zai")
+        assert creds["base_url"] == "https://api.z.ai/api/paas/v4"
+
+    def test_env_override_skips_probe(self, monkeypatch):
+        """GLM_BASE_URL should always win without probing."""
+        monkeypatch.setenv("GLM_API_KEY", "glm-key")
+        monkeypatch.setenv("GLM_BASE_URL", "https://custom.example/v4")
+        probe_called = False
+
+        def _never_called(*a, **kw):
+            nonlocal probe_called
+            probe_called = True
+            return None
+
+        monkeypatch.setattr("hermes_cli.auth.detect_zai_endpoint", _never_called)
+        creds = resolve_api_key_provider_credentials("zai")
+        assert creds["base_url"] == "https://custom.example/v4"
+        assert not probe_called
+
+    def test_no_key_skips_probe(self, monkeypatch):
+        """Without an API key, no probe should occur."""
+        monkeypatch.setattr("hermes_cli.auth.detect_zai_endpoint", lambda *a, **kw: None)
+        creds = resolve_api_key_provider_credentials("zai")
+        assert creds["api_key"] == ""
 
 
 # =============================================================================

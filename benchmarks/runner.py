@@ -60,8 +60,13 @@ try:
                 if hasattr(_mod, "BACKEND_NAME") and hasattr(_mod, "BACKEND_CLASS"):
                     _caps = getattr(_mod, "BACKEND_CAPABILITIES", None)
                     register_backend(_mod.BACKEND_NAME, _mod.BACKEND_CLASS, _caps)
-            except Exception:
-                pass
+                else:
+                    print(f"  [warn] benchmarks/backends/{_plugin_file.name}: "
+                          f"missing BACKEND_NAME or BACKEND_CLASS export, skipped",
+                          file=sys.stderr)
+            except Exception as _exc:
+                print(f"  [warn] benchmarks/backends/{_plugin_file.name}: "
+                      f"failed to load: {_exc}", file=sys.stderr)
 except Exception:
     pass
 
@@ -2338,7 +2343,17 @@ def run_single(config: BenchmarkConfig, seed: int) -> RunResult:
                 # Shuffle scenarios to measure order-dependence
                 shuffled = list(scenarios)
                 random.shuffle(shuffled)
-                cat_result = runner(backend, shuffled, judge)
+                try:
+                    cat_result = runner(backend, shuffled, judge)
+                except Exception as exc:
+                    print(f"  ERROR in {category_name}: {exc}", file=sys.stderr)
+                    cat_result = CategoryResult(
+                        category=category_name,
+                        total=len(shuffled),
+                        correct=0,
+                        score=0.0,
+                        details=[{"error": str(exc)}],
+                    )
                 results_by_cat[category_name] = cat_result
 
                 # Free transient memory between categories to prevent OOM
@@ -2524,7 +2539,13 @@ def main():
     )
 
     print(f"\nRunning {config.backend_name} benchmark ({config.num_runs} runs)...")
-    agg, runs = run_benchmark(config)
+    try:
+        agg, runs = run_benchmark(config)
+    except Exception as exc:
+        print(f"\nBenchmark failed: {exc}", file=sys.stderr)
+        print(f"Backend '{config.backend_name}' may require additional setup "
+              f"(API keys, running services, etc.).", file=sys.stderr)
+        sys.exit(1)
 
     if args.json:
         # Compute avg retrieval metrics across runs for JSON output

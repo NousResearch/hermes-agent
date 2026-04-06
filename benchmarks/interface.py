@@ -22,35 +22,49 @@ class BenchmarkableStore(ABC):
     @abstractmethod
     def recall(self, query: str, top_k: int = 10,
                scope: Optional[str] = None) -> List[str]:
-        """
-        Recall memories matching the query.
-        Returns list of memory content strings, ranked by relevance.
+        """Recall memories matching the query.
+
+        Returns list of memory content strings, ranked by relevance (best
+        first). Return an empty list if nothing matches.
         """
         ...
 
     @abstractmethod
     def simulate_time(self, days: float) -> None:
-        """Advance the simulated clock by N days. For decay/rehearsal testing."""
+        """Advance the simulated clock by N days.
+
+        Required for time_simulation capability. No-op if unsupported.
+        """
         ...
 
     @abstractmethod
     def simulate_access(self, content_substring: str) -> None:
-        """Simulate accessing/rehearsing a memory (by content substring match)."""
+        """Simulate accessing/rehearsing a memory (by content substring match).
+
+        Required for access_rehearsal capability. No-op if unsupported.
+        """
         ...
 
     @abstractmethod
     def consolidate(self) -> None:
-        """Run consolidation cycle. Noop for backends that don't support it."""
+        """Run consolidation cycle.
+
+        Required for consolidation capability. No-op if unsupported.
+        """
         ...
 
     @abstractmethod
     def get_stats(self) -> Dict[str, Any]:
-        """Return backend statistics."""
+        """Return backend statistics (e.g. fact_count)."""
         ...
 
     @abstractmethod
     def reset(self) -> None:
-        """Clear all stored memories. Called between benchmark runs."""
+        """Clear ALL stored memories. Called between benchmark scenarios.
+
+        Each scenario is independent. This must fully clear the store so
+        facts from one scenario don't leak into the next.
+        """
         ...
 
     def reward_memory(self, memory_id: str, signal: float) -> None:

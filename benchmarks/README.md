@@ -298,51 +298,62 @@ class MyMemoryBackend(BenchmarkableStore):
 
 ### 2. Register Your Backend
 
-**Option A — Direct registration:**
-```python
-from benchmarks.runner import register_backend
-from my_module import MyMemoryBackend
+Drop a Python file in `benchmarks/backends/` with three exports. The runner
+auto-discovers it on startup (prints a warning if exports are missing):
 
-register_backend("my-backend", MyMemoryBackend)
-```
-
-**Option B — Plugin file (auto-discovered):**
 ```python
 # benchmarks/backends/my_backend.py
 from my_module import MyMemoryBackend
 from benchmarks.capabilities import BackendCapabilities
 
-BACKEND_NAME = "my-backend"
-BACKEND_CLASS = MyMemoryBackend
+BACKEND_NAME = "my-backend"       # required — used as --backend value
+BACKEND_CLASS = MyMemoryBackend   # required — must implement BenchmarkableStore
 
+# required — declares which suites your backend can run.
+# Categories requiring capabilities you don't declare are skipped (not failed).
 BACKEND_CAPABILITIES = BackendCapabilities(
-    universal_store_recall=True,   # basic store + recall
-    # time_simulation=False,       # uncomment if supported
-    # access_rehearsal=False,     # uncomment if supported
-    # ... declare only what you actually implement
+    universal_store_recall=True,   # basic store + recall (default True)
+    time_simulation=False,         # simulate_time() does something meaningful
+    access_rehearsal=False,        # simulate_access() boosts recall strength
+    consolidation=False,           # consolidate() runs a compaction cycle
+    scopes=False,                  # store/recall respect scope parameter
+    typed_facts=False,             # understands TYPE[target]: content notation
+    supersession=False,            # same-type facts auto-replace old ones
+    reward_learning=False,         # reward_memory() updates retrieval weights
 )
 ```
+
+**Quick sanity check** before running the full suite:
+
+```bash
+# Verify your backend loads (should appear in the list)
+python -m benchmarks --backend my-backend --suite d --seeds 42
+# Suite D has only 15 scenarios — runs in seconds for local backends
+```
+
+If your backend doesn't appear, check stderr for warnings like
+`[warn] benchmarks/backends/my_backend.py: missing BACKEND_NAME ...`
 
 ### 3. Run Benchmarks
 
 ```bash
 # Quick test (Suite A only, 1 run)
-python -m benchmarks.runner --backend my-backend --suite a --runs 1
+python -m benchmarks --backend my-backend --suite a --runs 1
 
 # Full evaluation (all suites, 5 runs for statistics)
-python -m benchmarks.runner --backend my-backend --suite all --runs 5
+python -m benchmarks --backend my-backend --suite all --runs 5
 
 # Specific suites
-python -m benchmarks.runner --backend my-backend --suite a,b,c,h --runs 3
+python -m benchmarks --backend my-backend --suite a,b,c,h --runs 3
 
 # Compare against another backend
-python -m benchmarks.runner --backend my-backend --suite all --compare baseline-flat
+python -m benchmarks --backend my-backend --suite all --compare baseline-flat
 
 # With LLM judge (more accurate, requires API key)
-python -m benchmarks.runner --backend my-backend --suite all --judge-model claude-3-haiku-20240307
+python -m benchmarks --backend my-backend --suite all --judge-model claude-haiku-4.5
 
 # JSON output for programmatic use
-python -m benchmarks.runner --backend my-backend --suite all --json
+python -m benchmarks --backend my-backend --suite all --json
 ```
 
 ### 4. Interpret Results

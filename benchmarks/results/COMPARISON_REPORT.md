@@ -50,10 +50,13 @@ judge is built-in and requires no API keys.
 
 The following must be completed before this PR should be merged:
 
-1. **byterover**: Rerun with a working API key or upgraded plan
-2. **openviking**: Rerun with a fast cloud LLM backend, or document as
-   "local-only, not benchmarkable at synchronous speeds"
-3. **retaindb**: Create account, run full suite, add results
+1. **byterover**: Rerun with a working API key or upgraded plan.
+   Free tier daily limit is too low for Suite A alone (200 scenarios).
+2. **openviking**: Rerun with a fast cloud LLM backend (e.g. MiniMax via
+   `~/.openviking/ov.conf` with `provider: "openai"` and MiniMax API base).
+   Local 14B model is too slow for synchronous benchmark extraction.
+3. **retaindb**: As of 2026-04-06, the retaindb.com signup page returns
+   404. Adapter is ready but cannot be tested until registration works.
 4. **honcho**: Retest after OpenAI key renewal for fair embedding-based scores
 
 ### What a third party should re-verify

@@ -4109,7 +4109,7 @@ For more help on a command:
     )
     chat_parser.add_argument(
         "--provider",
-        choices=["auto", "openrouter", "nous", "openai-codex", "copilot-acp", "copilot", "anthropic", "huggingface", "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode"],
+        choices=["auto", "openrouter", "nous", "openai-codex", "copilot-acp", "copilot", "anthropic", "huggingface", "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode", "claude-acp", "codex-acp", "gemini-acp", "cursor-acp", "kiro-acp", "kilocode-acp", "opencode-acp", "kimi-acp", "qwen-acp", "cline-acp", "amp-acp", "droid-acp", "iflow-acp"],
         default=None,
         help="Inference provider (default: auto)"
     )

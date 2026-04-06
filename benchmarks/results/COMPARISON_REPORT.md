@@ -52,9 +52,13 @@ The following must be completed before this PR should be merged:
 
 1. **byterover**: Rerun with a working API key or upgraded plan.
    Free tier daily limit is too low for Suite A alone (200 scenarios).
-2. **openviking**: Rerun with a fast cloud LLM backend (e.g. MiniMax via
-   `~/.openviking/ov.conf` with `provider: "openai"` and MiniMax API base).
-   Local 14B model is too slow for synchronous benchmark extraction.
+2. **openviking**: Tested with MiniMax M2.7 cloud LLM -- API calls succeed
+   but OpenViking's async extraction pipeline (message -> commit -> LLM
+   extraction -> embedding -> indexing) is too slow for synchronous
+   benchmarking even with a fast cloud model. Each scenario takes minutes.
+   Either the adapter needs an async/batch mode, or OpenViking should be
+   benchmarked with a different methodology (e.g. pre-load facts, then
+   measure recall quality only).
 3. **retaindb**: As of 2026-04-06, the retaindb.com signup page returns
    404. Adapter is ready but cannot be tested until registration works.
 4. **honcho**: Retest after OpenAI key renewal for fair embedding-based scores

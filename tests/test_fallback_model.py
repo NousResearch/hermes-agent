@@ -191,10 +191,43 @@ class TestTryActivateFallback:
         with patch(
             "agent.auxiliary_client.resolve_provider_client",
             return_value=(mock_client, "my-model"),
-        ):
+        ) as mock_resolve:
             assert agent._try_activate_fallback() is True
             assert agent.client is mock_client
             assert agent.model == "my-model"
+            # Verify explicit_base_url was forwarded — without this the custom
+            # provider falls through to wrong credentials and the wrong endpoint.
+            _, kwargs = mock_resolve.call_args
+            assert kwargs.get("explicit_base_url") == "http://localhost:8080/v1"
+
+    def test_ollama_base_url_forwarded(self):
+        """base_url from fallback config must be passed to resolve_provider_client.
+
+        Regression test: when explicit_base_url is not forwarded, the custom
+        provider falls through to the primary provider's credentials and sends
+        the fallback model name to the wrong endpoint (e.g. a local model slug
+        sent to a cloud API), causing a 404.
+        """
+        agent = _make_agent(
+            fallback_model={
+                "provider": "custom",
+                "model": "mistral:latest",
+                "base_url": "http://127.0.0.1:11434/v1",
+            },
+        )
+        mock_client = _mock_resolve(
+            api_key="no-key-required",
+            base_url="http://127.0.0.1:11434/v1",
+        )
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(mock_client, "mistral:latest"),
+        ) as mock_resolve:
+            assert agent._try_activate_fallback() is True
+            _, kwargs = mock_resolve.call_args
+            assert kwargs.get("explicit_base_url") == "http://127.0.0.1:11434/v1", (
+                "explicit_base_url not forwarded — fallback would route to wrong endpoint"
+            )
 
     def test_prompt_caching_enabled_for_claude_on_openrouter(self):
         agent = _make_agent(

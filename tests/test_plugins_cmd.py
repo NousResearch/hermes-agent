@@ -443,3 +443,115 @@ class TestCopyExampleFiles:
 
         # Should have printed a warning
         assert any("Warning" in str(c) for c in console.print.call_args_list)
+
+
+class TestPromptPluginEnvVars:
+    """Tests for _prompt_plugin_env_vars."""
+
+    def test_skips_when_no_requires_env(self):
+        from hermes_cli.plugins_cmd import _prompt_plugin_env_vars
+        from unittest.mock import MagicMock
+
+        console = MagicMock()
+        _prompt_plugin_env_vars({}, console)
+        console.print.assert_not_called()
+
+    def test_skips_already_set_vars(self, monkeypatch):
+        from hermes_cli.plugins_cmd import _prompt_plugin_env_vars
+        from unittest.mock import MagicMock, patch
+
+        console = MagicMock()
+        with patch("hermes_cli.config.get_env_value", return_value="already-set"):
+            _prompt_plugin_env_vars({"requires_env": ["MY_KEY"]}, console)
+        # No prompt should appear — all vars are set
+        console.print.assert_not_called()
+
+    def test_prompts_for_missing_var_simple_format(self):
+        from hermes_cli.plugins_cmd import _prompt_plugin_env_vars
+        from unittest.mock import MagicMock, patch
+
+        console = MagicMock()
+        manifest = {
+            "name": "test_plugin",
+            "requires_env": ["MY_API_KEY"],
+        }
+
+        with patch("hermes_cli.config.get_env_value", return_value=None), \
+             patch("builtins.input", return_value="sk-test-123"), \
+             patch("hermes_cli.config.save_env_value") as mock_save:
+            _prompt_plugin_env_vars(manifest, console)
+
+        mock_save.assert_called_once_with("MY_API_KEY", "sk-test-123")
+
+    def test_prompts_for_missing_var_rich_format(self):
+        from hermes_cli.plugins_cmd import _prompt_plugin_env_vars
+        from unittest.mock import MagicMock, patch
+
+        console = MagicMock()
+        manifest = {
+            "name": "langfuse_tracing",
+            "requires_env": [
+                {
+                    "name": "LANGFUSE_PUBLIC_KEY",
+                    "description": "Public key",
+                    "url": "https://langfuse.com",
+                    "secret": False,
+                },
+            ],
+        }
+
+        with patch("hermes_cli.config.get_env_value", return_value=None), \
+             patch("builtins.input", return_value="pk-lf-123"), \
+             patch("hermes_cli.config.save_env_value") as mock_save:
+            _prompt_plugin_env_vars(manifest, console)
+
+        mock_save.assert_called_once_with("LANGFUSE_PUBLIC_KEY", "pk-lf-123")
+        # Should show url hint
+        printed = " ".join(str(c) for c in console.print.call_args_list)
+        assert "langfuse.com" in printed
+
+    def test_secret_uses_getpass(self):
+        from hermes_cli.plugins_cmd import _prompt_plugin_env_vars
+        from unittest.mock import MagicMock, patch
+
+        console = MagicMock()
+        manifest = {
+            "name": "test",
+            "requires_env": [{"name": "SECRET_KEY", "secret": True}],
+        }
+
+        with patch("hermes_cli.config.get_env_value", return_value=None), \
+             patch("getpass.getpass", return_value="s3cret") as mock_gp, \
+             patch("hermes_cli.config.save_env_value"):
+            _prompt_plugin_env_vars(manifest, console)
+
+        mock_gp.assert_called_once()
+
+    def test_empty_input_skips(self):
+        from hermes_cli.plugins_cmd import _prompt_plugin_env_vars
+        from unittest.mock import MagicMock, patch
+
+        console = MagicMock()
+        manifest = {"name": "test", "requires_env": ["OPTIONAL_VAR"]}
+
+        with patch("hermes_cli.config.get_env_value", return_value=None), \
+             patch("builtins.input", return_value=""), \
+             patch("hermes_cli.config.save_env_value") as mock_save:
+            _prompt_plugin_env_vars(manifest, console)
+
+        mock_save.assert_not_called()
+
+    def test_keyboard_interrupt_skips_gracefully(self):
+        from hermes_cli.plugins_cmd import _prompt_plugin_env_vars
+        from unittest.mock import MagicMock, patch
+
+        console = MagicMock()
+        manifest = {"name": "test", "requires_env": ["KEY1", "KEY2"]}
+
+        with patch("hermes_cli.config.get_env_value", return_value=None), \
+             patch("builtins.input", side_effect=KeyboardInterrupt), \
+             patch("hermes_cli.config.save_env_value") as mock_save:
+            _prompt_plugin_env_vars(manifest, console)
+
+        # Should not crash, and not save anything
+        mock_save.assert_not_called()

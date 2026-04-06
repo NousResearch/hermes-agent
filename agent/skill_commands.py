@@ -79,6 +79,45 @@ def _load_skill_payload(skill_identifier: str, task_id: str | None = None) -> tu
     return loaded_skill, skill_dir, skill_name
 
 
+def _inject_skill_config(loaded_skill: dict[str, Any], parts: list[str]) -> None:
+    """Resolve and inject skill-declared config values into the message parts.
+
+    If the loaded skill's frontmatter declares ``metadata.hermes.config``
+    entries, their current values (from config.yaml or defaults) are appended
+    as a ``[Skill config: ...]`` block so the agent knows the configured values
+    without needing to read config.yaml itself.
+    """
+    try:
+        from agent.skill_utils import (
+            extract_skill_config_vars,
+            parse_frontmatter,
+            resolve_skill_config_values,
+        )
+
+        # The loaded_skill dict contains the raw content which includes frontmatter
+        raw_content = str(loaded_skill.get("raw_content") or loaded_skill.get("content") or "")
+        if not raw_content:
+            return
+
+        frontmatter, _ = parse_frontmatter(raw_content)
+        config_vars = extract_skill_config_vars(frontmatter)
+        if not config_vars:
+            return
+
+        resolved = resolve_skill_config_values(config_vars)
+        if not resolved:
+            return
+
+        lines = ["", "[Skill config (from ~/.hermes/config.yaml):"]
+        for key, value in resolved.items():
+            display_val = str(value) if value else "(not set)"
+            lines.append(f"  {key} = {display_val}")
+        lines.append("]")
+        parts.extend(lines)
+    except Exception:
+        pass  # Non-critical — skill still loads without config injection
+
+
 def _build_skill_message(
     loaded_skill: dict[str, Any],
     skill_dir: Path | None,
@@ -92,6 +131,9 @@ def _build_skill_message(
     content = str(loaded_skill.get("content") or "")
 
     parts = [activation_note, "", content.strip()]
+
+    # ── Inject resolved skill config values ──
+    _inject_skill_config(loaded_skill, parts)
 
     if loaded_skill.get("setup_skipped"):
         parts.extend(

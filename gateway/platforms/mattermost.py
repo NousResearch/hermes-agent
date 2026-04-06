@@ -661,6 +661,8 @@ class MattermostAdapter(BasePlatformAdapter):
         msg_type = MessageType.TEXT
         if message_text.startswith("/"):
             msg_type = MessageType.COMMAND
+        elif file_ids:
+            msg_type = MessageType.DOCUMENT
 
         # Download file attachments immediately (URLs require auth headers
         # that downstream tools won't have).

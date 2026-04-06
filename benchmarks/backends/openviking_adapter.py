@@ -130,6 +130,27 @@ class _VikingClient:
         if task_id:
             self.wait_for_task(task_id, timeout=60.0, poll_interval=1.0)
 
+    def store_deferred(self, session_id: str, content: str) -> str | None:
+        """Post a message and commit WITHOUT waiting for extraction.
+
+        Returns the task_id so the caller can batch-wait later.
+        Used by the benchmark adapter to avoid per-fact extraction waits.
+        """
+        self.post_message(session_id, content)
+        result = self.commit_session(session_id)
+        return result.get("result", {}).get("task_id")
+
+    def wait_all_tasks(self, task_ids: list[str],
+                       timeout: float = 300.0) -> None:
+        """Wait for all extraction tasks to complete (shared timeout)."""
+        import time as _time
+        deadline = _time.monotonic() + timeout
+        for task_id in task_ids:
+            if not task_id:
+                continue
+            remaining = max(0.1, deadline - _time.monotonic())
+            self.wait_for_task(task_id, timeout=remaining, poll_interval=2.0)
+
     # ------------------------------------------------------------------
     # Semantic search
     # ------------------------------------------------------------------
@@ -205,6 +226,7 @@ class OpenVikingBenchmarkAdapter(BenchmarkableStore):
             timeout=timeout,
         )
         self._session_id: str = self._new_session_id()
+        self._pending_tasks: list[str] = []
         logger.debug(
             "OpenVikingBenchmarkAdapter initialised — endpoint=%s session=%s",
             self._endpoint,
@@ -225,14 +247,19 @@ class OpenVikingBenchmarkAdapter(BenchmarkableStore):
 
     def store(self, content: str, category: str = "factual",
               scope: str = "global", importance: float = 0.5) -> None:
-        """Store content as a session message and immediately commit the session.
+        """Store content via deferred commit (extraction runs in background).
 
-        category, scope, and importance are accepted for interface compliance
-        but are not forwarded — OpenViking derives its own categorisation.
+        OpenViking's extraction pipeline runs two sequential LLM calls per
+        commit (archive summary + memory extraction). Waiting per-store makes
+        benchmarking infeasible. Instead we fire-and-forget the commit and
+        collect task IDs. The pending tasks are flushed before the first
+        recall() call.
         """
         del category, scope, importance
         try:
-            self._client.store(self._session_id, content)
+            task_id = self._client.store_deferred(self._session_id, content)
+            if task_id:
+                self._pending_tasks.append(task_id)
         except httpx.HTTPStatusError as exc:
             logger.error(
                 "OpenViking store failed (session=%s): %s",
@@ -246,14 +273,23 @@ class OpenVikingBenchmarkAdapter(BenchmarkableStore):
             )
             raise
 
+    def _flush_pending(self) -> None:
+        """Wait for all deferred extraction tasks to complete."""
+        if self._pending_tasks:
+            logger.debug("Flushing %d pending extraction tasks", len(self._pending_tasks))
+            self._client.wait_all_tasks(self._pending_tasks, timeout=300.0)
+            self._pending_tasks.clear()
+
     def recall(self, query: str, top_k: int = 10,
                scope: Optional[str] = None) -> list[str]:
         """Recall memories matching query via semantic search.
 
-        scope is accepted for interface compliance but ignored.
+        Flushes any pending extraction tasks first so stored facts are
+        searchable. scope is accepted for interface compliance but ignored.
         Returns a list of abstract strings for the top-k results.
         """
         del scope
+        self._flush_pending()
         try:
             memories = self._client.search(self._session_id, query, top_k=top_k)
         except httpx.HTTPStatusError as exc:
@@ -317,6 +353,7 @@ class OpenVikingBenchmarkAdapter(BenchmarkableStore):
         pollute future recall results.  Failure to delete is logged but does
         not raise so callers always get a clean adapter state.
         """
+        self._pending_tasks.clear()
         old_session_id = self._session_id
         self._session_id = self._new_session_id()
         logger.debug(

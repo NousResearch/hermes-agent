@@ -90,7 +90,7 @@ All values are accuracy percentages (seed=42). `sk` = capability-skipped (fair),
 | **F** | integration | 11 | sk | sk | sk | sk | sk |
 | **G** | qlearning | var | sk | sk | sk | sk | sk |
 | **H** | dedup (only) | 8 | **100** | 87.5 | **87.5** | 87.5~ | 62.5 |
-| **I** | conv+stress | 15 | **86.7** | 80.0 | 73.3 | --~ | 66.7 |
+| **I** | conv+stress | 15 | **86.7** | 80.0 | 73.3 | **86.7**~ | 66.7 |
 | **J** | topic_shift | 8 | **100** | **100** | **100** | **100**~ | **100** |
 | **K** | compress_survival | 8 | **100** | **100** | 75.0 | **100**~ | **100** |
 | **L** | delegation | 8 | **75.0** | 62.5 | 50.0 | **75.0**~ | **75.0** |

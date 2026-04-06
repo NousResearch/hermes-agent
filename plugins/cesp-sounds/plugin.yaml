@@ -1,0 +1,15 @@
+name: cesp-sounds
+version: "0.1.0"
+description: >
+  CESP (Coding Event Sound Pack) audio notifications for Hermes.
+  Maps Hermes lifecycle events to the OpenPeon CESP v1.0 standard
+  and plays sound pack audio on session start, errors, and input-required moments.
+  Compatible with PeonPing sound packs (https://github.com/PeonPing/peon-ping).
+author: Gary Sheng
+requires_env: []
+provides_tools: []
+provides_hooks:
+  - on_session_start
+  - pre_tool_call
+  - post_tool_call
+  - on_session_end

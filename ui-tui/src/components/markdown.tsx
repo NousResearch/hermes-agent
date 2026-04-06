@@ -97,7 +97,9 @@ export function Md({ compact, t, text }: { compact?: boolean; t: Theme; text: st
           {lang && !isDiff && <Text color={t.color.dim}>{'─ ' + lang}</Text>}
           {block.map((l, j) => (
             <Text
-              color={isDiff && l.startsWith('+') ? '#a6e3a1' : isDiff && l.startsWith('-') ? '#f38ba8' : t.color.cornsilk}
+              color={
+                isDiff && l.startsWith('+') ? '#a6e3a1' : isDiff && l.startsWith('-') ? '#f38ba8' : t.color.cornsilk
+              }
               dimColor={isDiff && !l.startsWith('+') && !l.startsWith('-') && l.startsWith(' ')}
               key={j}
             >

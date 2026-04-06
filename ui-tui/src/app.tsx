@@ -138,13 +138,15 @@ export function App({ gw }: { gw: GatewayClient }) {
     }
   }, [sid, stdout]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  const paletteMatches = useMemo(() => (!blocked && input.startsWith('/') ? paletteForLine(input, catalog) : []), [
-    blocked,
-    catalog,
-    input
-  ])
+  const paletteMatches = useMemo(
+    () => (!blocked && input.startsWith('/') ? paletteForLine(input, catalog) : []),
+    [blocked, catalog, input]
+  )
 
-  const queueRows = useMemo(() => estimateQueuedRows(queuedDisplay.length, queueEditIdx), [queueEditIdx, queuedDisplay.length])
+  const queueRows = useMemo(
+    () => estimateQueuedRows(queuedDisplay.length, queueEditIdx),
+    [queueEditIdx, queuedDisplay.length]
+  )
   const thinkingRows = thinking ? Math.max(1, tools.length || 1) + (reasoning || thinkingText ? 1 : 0) : 0
   const paletteRows = paletteMatches.length ? paletteMatches.length + 1 : 0
   const footerRows = statusBar ? 1 : 0
@@ -306,30 +308,28 @@ export function App({ gw }: { gw: GatewayClient }) {
 
   const openEditor = () => {
     const editor = process.env.EDITOR || process.env.VISUAL || 'vi'
-    const dir = mkdtempSync(join(tmpdir(), 'hermes-'))
-    const file = join(dir, 'prompt.md')
+    const file = join(mkdtempSync(join(tmpdir(), 'hermes-')), 'prompt.md')
 
     writeFileSync(file, [...inputBuf, input].join('\n'))
-
     process.stdout.write('\x1b[?1049l')
-    const { status } = spawnSync(editor, [file], { stdio: 'inherit' })
+    const { status: code } = spawnSync(editor, [file], { stdio: 'inherit' })
     process.stdout.write('\x1b[?1049h\x1b[2J\x1b[H')
 
-    if (status === 0) {
-      try {
-        const text = readFileSync(file, 'utf8').trimEnd()
+    if (code === 0) {
+      const text = readFileSync(file, 'utf8').trimEnd()
 
-        if (text) {
-          setInput('')
-          setInputBuf([])
-          submit(text)
-        }
-      } catch {}
+      if (text) {
+        setInput('')
+        setInputBuf([])
+        submit(text)
+      }
     }
 
     try {
       unlinkSync(file)
-    } catch {}
+    } catch (_) {
+      /* cleanup best-effort */
+    }
   }
 
   const interpolate = (text: string, then: (result: string) => void) => {
@@ -1530,15 +1530,6 @@ export function App({ gw }: { gw: GatewayClient }) {
           ? theme.color.warn
           : theme.color.dim
 
-  const footer = [
-    sid ? `session ${sid}` : 'no session',
-    info?.model ? info.model.split('/').pop() : '',
-    queuedDisplay.length ? `queue ${queuedDisplay.length}` : '',
-    usage.total > 0 ? `${fmtK(usage.total)} tok` : ''
-  ]
-    .filter(Boolean)
-    .join(' · ')
-
   return (
     <AltScreen>
       <Box flexDirection="column" flexGrow={1} padding={1}>
@@ -1698,7 +1689,15 @@ export function App({ gw }: { gw: GatewayClient }) {
         {statusBar && (
           <Text color={theme.color.dim}>
             <Text color={statusColor}>{status}</Text>
-            {footer ? ` · ${footer}` : ''}
+            {' · '}
+            {[
+              sid && `session ${sid}`,
+              info?.model?.split('/').pop(),
+              queuedDisplay.length && `queue ${queuedDisplay.length}`,
+              usage.total > 0 && `${fmtK(usage.total)} tok`
+            ]
+              .filter(Boolean)
+              .join(' · ')}
           </Text>
         )}
 

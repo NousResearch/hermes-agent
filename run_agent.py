@@ -95,7 +95,7 @@ from agent.model_metadata import (
 from agent.context_compressor import ContextCompressor
 from agent.subdirectory_hints import SubdirectoryHintTracker
 from agent.prompt_caching import apply_anthropic_cache_control
-from agent.prompt_builder import build_skills_system_prompt, build_context_files_prompt, build_environment_hints, load_soul_md, TOOL_USE_ENFORCEMENT_GUIDANCE, TOOL_USE_ENFORCEMENT_MODELS, DEVELOPER_ROLE_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE, OPENAI_MODEL_EXECUTION_GUIDANCE
+from agent.prompt_builder import build_skills_system_prompt, build_context_files_prompt, build_environment_hints, load_soul_md, TOOL_USE_ENFORCEMENT_GUIDANCE, TOOL_USE_ENFORCEMENT_MODELS, DEVELOPER_ROLE_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE, TONE_AND_STYLE_GUIDANCE, OUTPUT_EFFICIENCY_GUIDANCE, MESSAGING_PLATFORMS
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
 from agent.display import (
     KawaiiSpinner, build_tool_preview as _build_tool_preview,
@@ -3724,6 +3724,16 @@ class AIAgent:
         if not _soul_loaded:
             # Fallback to hardcoded identity
             prompt_parts = [DEFAULT_AGENT_IDENTITY]
+
+        # Output style guidance — injected immediately after the identity so it
+        # carries high weight with local/open-source models that prioritize early
+        # instructions. Messaging platforms and cron are excluded (they have their
+        # own register; see MESSAGING_PLATFORMS in prompt_builder.py).
+        # cli_no_markdown is included by design — it passes the check.
+        _platform_key_early = (self.platform or "").lower().strip()
+        if _platform_key_early not in MESSAGING_PLATFORMS and _platform_key_early != "cron":
+            prompt_parts.append(TONE_AND_STYLE_GUIDANCE)
+            prompt_parts.append(OUTPUT_EFFICIENCY_GUIDANCE)
 
         # Tool-aware behavioral guidance: only inject when the tools are loaded
         tool_guidance = []

@@ -4,7 +4,7 @@ Shared local markdown memory across Hermes, Claude Code, and Codex.
 
 ## Requirements
 
-- `pip install "observational-memory>=0.4.1"` (includes Hermes transcript parser)
+- `pip install "observational-memory>=0.5.0"` (includes Hermes transcript parser plus the latest local search/status improvements)
 - Optional but recommended: `om install` to configure Claude/Codex hooks and OM's background jobs
 - For Hermes writeback: either an existing OM config, or set a direct Anthropic/OpenAI key during `hermes memory setup`
 

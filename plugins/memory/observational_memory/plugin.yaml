@@ -2,7 +2,7 @@ name: observational_memory
 version: 1.0.0
 description: "Observational Memory — shared local markdown memory across Hermes, Claude Code, and Codex."
 pip_dependencies:
-  - "observational-memory>=0.4.1"
+  - "observational-memory>=0.5.0"
 hooks:
   - on_session_end
   - on_memory_write

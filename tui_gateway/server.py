@@ -19,6 +19,7 @@ _methods: dict[str, callable] = {}
 _pending: dict[str, threading.Event] = {}
 _answers: dict[str, str] = {}
 _db = None
+_stdout_lock = threading.Lock()
 
 
 # ── Plumbing ──────────────────────────────────────────────────────────
@@ -31,12 +32,29 @@ def _get_db():
     return _db
 
 
+def write_json(obj: dict) -> bool:
+    line = json.dumps(obj, ensure_ascii=False) + "\n"
+    try:
+        with _stdout_lock:
+            sys.stdout.write(line)
+            sys.stdout.flush()
+        return True
+    except BrokenPipeError:
+        return False
+
+
 def _emit(event: str, sid: str, payload: dict | None = None):
     params = {"type": event, "session_id": sid}
     if payload:
         params["payload"] = payload
-    sys.stdout.write(json.dumps({"jsonrpc": "2.0", "method": "event", "params": params}) + "\n")
-    sys.stdout.flush()
+    write_json({"jsonrpc": "2.0", "method": "event", "params": params})
+
+
+def _status_update(sid: str, kind: str, text: str | None = None):
+    body = (text if text is not None else kind).strip()
+    if not body:
+        return
+    _emit("status.update", sid, {"kind": kind if text is not None else "status", "text": body})
 
 
 def _ok(rid, result: dict) -> dict:
@@ -164,7 +182,7 @@ def _agent_cbs(sid: str) -> dict:
         tool_gen_callback=lambda name: _emit("tool.generating", sid, {"name": name}),
         thinking_callback=lambda text: _emit("thinking.delta", sid, {"text": text}),
         reasoning_callback=lambda text: _emit("reasoning.delta", sid, {"text": text}),
-        status_callback=lambda text: _emit("status.update", sid, {"text": text}),
+        status_callback=lambda kind, text=None: _status_update(sid, str(kind), None if text is None else str(text)),
         clarify_callback=lambda q, c: _block("clarify.request", sid, {"question": q, "choices": c}),
     )
 

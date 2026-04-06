@@ -27,6 +27,8 @@ export function Thinking({
     return () => clearInterval(id)
   }, [])
 
+  const tail = (reasoning || thinking || '').slice(-120).replace(/\n/g, ' ')
+
   return (
     <Box flexDirection="column">
       {tools.length ? (
@@ -35,15 +37,13 @@ export function Thinking({
             {SPINNER[frame]} {TOOL_VERBS[tool.name] ?? '⚡ ' + tool.name}…
           </Text>
         ))
+      ) : tail ? (
+        <Text color={t.color.dim} dimColor wrap="truncate-end">
+          {SPINNER[frame]} 💭 {tail}
+        </Text>
       ) : (
         <Text color={t.color.dim}>
           {SPINNER[frame]} {face} {verb}…
-        </Text>
-      )}
-      {(reasoning || thinking) && (
-        <Text color={t.color.dim} dimColor wrap="truncate-end">
-          {'  💭 '}
-          {(reasoning || thinking || '').slice(-120).replace(/\n/g, ' ')}
         </Text>
       )}
     </Box>

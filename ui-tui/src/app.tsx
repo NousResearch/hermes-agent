@@ -1,3 +1,8 @@
+import { spawnSync } from 'node:child_process'
+import { mkdtempSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
 import { Box, Text, useApp, useInput, useStdout } from 'ink'
 import TextInput from 'ink-text-input'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
@@ -8,7 +13,7 @@ import { CommandPalette } from './components/commandPalette.js'
 import { MaskedPrompt } from './components/maskedPrompt.js'
 import { MessageLine } from './components/messageLine.js'
 import { ApprovalPrompt, ClarifyPrompt } from './components/prompts.js'
-import { QueuedMessages } from './components/queuedMessages.js'
+import { estimateQueuedRows, QueuedMessages } from './components/queuedMessages.js'
 import { SessionPicker } from './components/sessionPicker.js'
 import { Thinking } from './components/thinking.js'
 import { HOTKEYS, INTERPOLATION_RE, MAX_CTX, PLACEHOLDERS, TOOL_VERBS, ZERO } from './constants.js'
@@ -73,6 +78,9 @@ export function App({ gw }: { gw: GatewayClient }) {
   const historyDraftRef = useRef('')
   const queueEditRef = useRef<number | null>(null)
   const lastEmptyAt = useRef(0)
+  const lastStatusNoteRef = useRef('')
+  const protocolWarnedRef = useRef(false)
+  const stderrWarnedRef = useRef(false)
 
   const empty = !messages.length
   const blocked = !!(clarify || approval || sudo || secret || picker)
@@ -130,7 +138,17 @@ export function App({ gw }: { gw: GatewayClient }) {
     }
   }, [sid, stdout]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  const msgBudget = Math.max(3, rows - 2 - (empty ? 0 : 2) - (thinking ? 2 : 0) - 2)
+  const paletteMatches = useMemo(() => (!blocked && input.startsWith('/') ? paletteForLine(input, catalog) : []), [
+    blocked,
+    catalog,
+    input
+  ])
+
+  const queueRows = useMemo(() => estimateQueuedRows(queuedDisplay.length, queueEditIdx), [queueEditIdx, queuedDisplay.length])
+  const thinkingRows = thinking ? Math.max(1, tools.length || 1) + (reasoning || thinkingText ? 1 : 0) : 0
+  const paletteRows = paletteMatches.length ? paletteMatches.length + 1 : 0
+  const footerRows = statusBar ? 1 : 0
+  const msgBudget = Math.max(3, rows - 2 - (empty ? 0 : 2) - thinkingRows - queueRows - paletteRows - footerRows - 2)
 
   const viewport = useMemo(() => {
     if (!messages.length) {
@@ -146,7 +164,8 @@ export function App({ gw }: { gw: GatewayClient }) {
     for (let i = end - 1; i >= 0 && budget > 0; i--) {
       const msg = messages[i]!
       const margin = msg.role === 'user' && i > 0 && messages[i - 1]?.role !== 'user' ? 1 : 0
-      budget -= margin + estimateRows(msg.role === 'user' ? userDisplay(msg.text) : msg.text, width)
+      const text = msg.role === 'user' ? userDisplay(msg.text) : msg.text
+      budget -= margin + estimateRows(text, width, compact && msg.role === 'assistant')
 
       if (budget >= 0) {
         start = i
@@ -162,7 +181,7 @@ export function App({ gw }: { gw: GatewayClient }) {
     }
 
     return { above: start, end, start }
-  }, [cols, messages, msgBudget, scrollOffset])
+  }, [cols, compact, messages, msgBudget, scrollOffset])
 
   const sys = useCallback((text: string) => setMessages(prev => [...prev, { role: 'system' as const, text }]), [])
 
@@ -181,6 +200,9 @@ export function App({ gw }: { gw: GatewayClient }) {
       setMessages([])
       setUsage(ZERO)
       setStatus('ready')
+      lastStatusNoteRef.current = ''
+      protocolWarnedRef.current = false
+      stderrWarnedRef.current = false
 
       if (msg) {
         sys(msg)
@@ -272,6 +294,34 @@ export function App({ gw }: { gw: GatewayClient }) {
     rpc('clipboard.paste', { session_id: sid }).then((r: any) =>
       sys(r.attached ? `📎 image #${r.count} attached` : r.message || 'no image in clipboard')
     )
+
+  const openEditor = () => {
+    const editor = process.env.EDITOR || process.env.VISUAL || 'vi'
+    const dir = mkdtempSync(join(tmpdir(), 'hermes-'))
+    const file = join(dir, 'prompt.md')
+
+    writeFileSync(file, [...inputBuf, input].join('\n'))
+
+    process.stdout.write('\x1b[?1049l')
+    const { status } = spawnSync(editor, [file], { stdio: 'inherit' })
+    process.stdout.write('\x1b[?1049h\x1b[2J\x1b[H')
+
+    if (status === 0) {
+      try {
+        const text = readFileSync(file, 'utf8').trimEnd()
+
+        if (text) {
+          setInput('')
+          setInputBuf([])
+          submit(text)
+        }
+      } catch {}
+    }
+
+    try {
+      unlinkSync(file)
+    } catch {}
+  }
 
   const interpolate = (text: string, then: (result: string) => void) => {
     setStatus('interpolating…')
@@ -409,6 +459,10 @@ export function App({ gw }: { gw: GatewayClient }) {
       setMessages([])
     }
 
+    if (key.ctrl && ch === 'g') {
+      return openEditor()
+    }
+
     if (key.ctrl && ch === 'v') {
       return paste()
     }
@@ -471,6 +525,29 @@ export function App({ gw }: { gw: GatewayClient }) {
         case 'status.update':
           if (p?.text) {
             setStatus(p.text)
+
+            if (p.kind && p.kind !== 'status' && lastStatusNoteRef.current !== p.text) {
+              lastStatusNoteRef.current = p.text
+              sys(p.text)
+            }
+          }
+
+          break
+
+        case 'gateway.stderr':
+          if (!stderrWarnedRef.current) {
+            stderrWarnedRef.current = true
+            sys('gateway stderr captured · /logs to inspect')
+          }
+
+          break
+
+        case 'gateway.protocol_error':
+          setStatus('protocol warning')
+
+          if (!protocolWarnedRef.current) {
+            protocolWarnedRef.current = true
+            sys('protocol noise detected · /logs to inspect')
           }
 
           break
@@ -785,6 +862,14 @@ export function App({ gw }: { gw: GatewayClient }) {
           )
 
           return true
+        case 'logs': {
+          const limit = Math.min(80, Math.max(1, parseInt(arg, 10) || 20))
+          const out = gw.getLogTail(limit)
+
+          sys(out || 'no gateway logs')
+
+          return true
+        }
 
         case 'resume':
           setPicker(true)
@@ -1436,6 +1521,15 @@ export function App({ gw }: { gw: GatewayClient }) {
           ? theme.color.warn
           : theme.color.dim
 
+  const footer = [
+    sid ? `session ${sid}` : 'no session',
+    info?.model ? info.model.split('/').pop() : '',
+    queuedDisplay.length ? `queue ${queuedDisplay.length}` : '',
+    usage.total > 0 ? `${fmtK(usage.total)} tok` : ''
+  ]
+    .filter(Boolean)
+    .join(' · ')
+
   return (
     <AltScreen>
       <Box flexDirection="column" flexGrow={1} padding={1}>
@@ -1573,6 +1667,9 @@ export function App({ gw }: { gw: GatewayClient }) {
                   setSid(r.session_id)
                   setMessages([])
                   setUsage(ZERO)
+                  lastStatusNoteRef.current = ''
+                  protocolWarnedRef.current = false
+                  stderrWarnedRef.current = false
                   sys(`resumed session (${r.message_count} messages)`)
                   setStatus('ready')
                 })
@@ -1585,9 +1682,16 @@ export function App({ gw }: { gw: GatewayClient }) {
           />
         )}
 
-        {!blocked && input.startsWith('/') && <CommandPalette matches={paletteForLine(input, catalog)} t={theme} />}
+        {!!paletteMatches.length && <CommandPalette matches={paletteMatches} t={theme} />}
 
         <QueuedMessages cols={cols} queued={queuedDisplay} queueEditIdx={queueEditIdx} t={theme} />
+
+        {statusBar && (
+          <Text color={theme.color.dim}>
+            <Text color={statusColor}>{status}</Text>
+            {footer ? ` · ${footer}` : ''}
+          </Text>
+        )}
 
         <Text color={theme.color.bronze}>{'─'.repeat(cols - 2)}</Text>
 

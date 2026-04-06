@@ -22,6 +22,7 @@ export const FACES = [
 export const HOTKEYS: [string, string][] = [
   ['Ctrl+C', 'interrupt / clear / exit'],
   ['Ctrl+D', 'exit'],
+  ['Ctrl+G', 'open $EDITOR for prompt'],
   ['Ctrl+L', 'clear screen'],
   ['Ctrl+V', 'paste clipboard image (same as /paste)'],
   ['Tab', 'complete /commands (registry-aware)'],

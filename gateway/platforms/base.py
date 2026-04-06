@@ -569,6 +569,16 @@ class BasePlatformAdapter(ABC):
         """
         self._message_handler = handler
     
+    def set_session_store(self, session_store: Any) -> None:
+        """
+        Set the session store for checking active sessions.
+        
+        Used by adapters that need to check if a thread/conversation
+        has an active session before processing messages (e.g., Slack
+        thread replies without explicit mentions).
+        """
+        self._session_store = session_store
+    
     @abstractmethod
     async def connect(self) -> bool:
         """

@@ -766,11 +766,28 @@ class SlackAdapter(BasePlatformAdapter):
         else:
             thread_ts = event.get("thread_ts") or ts  # ts fallback for channels
 
-        # In channels, only respond if bot is mentioned
+        # In channels, only respond if bot is mentioned OR if this is a
+        # reply in a thread where the bot has an active session.
         bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
-        if not is_dm and bot_uid:
-            if f"<@{bot_uid}>" not in text:
+        is_mentioned = bot_uid and f"<@{bot_uid}>" in text
+        
+        if not is_dm and bot_uid and not is_mentioned:
+            # Check if this is a thread reply (thread_ts exists and differs from ts)
+            event_thread_ts = event.get("thread_ts")
+            is_thread_reply = event_thread_ts and event_thread_ts != ts
+            
+            if is_thread_reply and self._has_active_session_for_thread(
+                channel_id=channel_id,
+                thread_ts=event_thread_ts,
+                user_id=user_id,
+            ):
+                # Allow thread replies without mention if there's an active session
+                pass
+            else:
+                # Not a thread reply or no active session - ignore
                 return
+        
+        if is_mentioned:
             # Strip the bot mention from the text
             text = text.replace(f"<@{bot_uid}>", "").strip()
 
@@ -935,6 +952,68 @@ class SlackAdapter(BasePlatformAdapter):
         )
 
         await self.handle_message(event)
+
+    def _has_active_session_for_thread(
+        self,
+        channel_id: str,
+        thread_ts: str,
+        user_id: str,
+    ) -> bool:
+        """Check if there's an active session for a thread.
+        
+        Used to determine if thread replies without @mentions should be
+        processed (they should if there's an active session).
+        
+        Args:
+            channel_id: The Slack channel ID
+            thread_ts: The thread timestamp (parent message ts)
+            user_id: The user ID of the sender
+            
+        Returns:
+            True if there's an active session for this thread
+        """
+        session_store = getattr(self, "_session_store", None)
+        if not session_store:
+            return False
+        
+        try:
+            # Build a SessionSource for this thread
+            from gateway.session import SessionSource
+            from gateway.config import Platform
+            
+            source = SessionSource(
+                platform=Platform.SLACK,
+                chat_id=channel_id,
+                chat_type="group",
+                user_id=user_id,
+                thread_id=thread_ts,
+            )
+            
+            # Generate the session key using the same logic as SessionStore
+            # This mirrors the logic in build_session_key for group sessions
+            key_parts = ["agent:main", "slack", "group", channel_id, thread_ts]
+            
+            # Include user_id if group_sessions_per_user is enabled
+            # We check the session store config if available
+            group_sessions_per_user = getattr(
+                session_store, "config", {}
+            )
+            if hasattr(group_sessions_per_user, "group_sessions_per_user"):
+                group_sessions_per_user = group_sessions_per_user.group_sessions_per_user
+            else:
+                group_sessions_per_user = True  # Default
+            
+            if group_sessions_per_user and user_id:
+                key_parts.append(str(user_id))
+            
+            session_key = ":".join(key_parts)
+            
+            # Check if the session exists in the store
+            session_store._ensure_loaded()
+            return session_key in session_store._entries
+        except Exception:
+            # If anything goes wrong, default to False (require mention)
+            return False
 
     async def _download_slack_file(self, url: str, ext: str, audio: bool = False, team_id: str = "") -> str:
         """Download a Slack file using the bot token for auth, with retry."""

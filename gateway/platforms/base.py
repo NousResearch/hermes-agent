@@ -12,6 +12,7 @@ import random
 import re
 import uuid
 from abc import ABC, abstractmethod
+from urllib.parse import urlsplit
 
 logger = logging.getLogger(__name__)
 from dataclasses import dataclass, field
@@ -34,6 +35,43 @@ GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE = (
     "Secure secret entry is not supported over messaging. "
     "Load this skill in the local CLI to be prompted, or add the key to ~/.hermes/.env manually."
 )
+
+
+def _safe_url_for_log(url: str, max_len: int = 80) -> str:
+    """Return a URL string safe for logs (no query/fragment/userinfo)."""
+    if max_len <= 0:
+        return ""
+
+    if url is None:
+        return ""
+
+    raw = str(url)
+    if not raw:
+        return ""
+
+    try:
+        parsed = urlsplit(raw)
+    except Exception:
+        return raw[:max_len]
+
+    if parsed.scheme and parsed.netloc:
+        # Strip potential embedded credentials (user:pass@host).
+        netloc = parsed.netloc.rsplit("@", 1)[-1]
+        base = f"{parsed.scheme}://{netloc}"
+        path = parsed.path or ""
+        if path and path != "/":
+            basename = path.rsplit("/", 1)[-1]
+            safe = f"{base}/.../{basename}" if basename else f"{base}/..."
+        else:
+            safe = base
+    else:
+        safe = raw
+
+    if len(safe) <= max_len:
+        return safe
+    if max_len <= 3:
+        return "." * max_len
+    return f"{safe[:max_len - 3]}..."
 
 
 # ---------------------------------------------------------------------------
@@ -112,8 +150,14 @@ async def cache_image_from_url(url: str, ext: str = ".jpg", retries: int = 2) ->
                     raise
                 if attempt < retries:
                     wait = 1.5 * (attempt + 1)
-                    _log.debug("Media cache retry %d/%d for %s (%.1fs): %s",
-                               attempt + 1, retries, url[:80], wait, exc)
+                    _log.debug(
+                        "Media cache retry %d/%d for %s (%.1fs): %s",
+                        attempt + 1,
+                        retries,
+                        _safe_url_for_log(url),
+                        wait,
+                        exc,
+                    )
                     await asyncio.sleep(wait)
                     continue
                 raise
@@ -214,8 +258,14 @@ async def cache_audio_from_url(url: str, ext: str = ".ogg", retries: int = 2) ->
                     raise
                 if attempt < retries:
                     wait = 1.5 * (attempt + 1)
-                    _log.debug("Audio cache retry %d/%d for %s (%.1fs): %s",
-                               attempt + 1, retries, url[:80], wait, exc)
+                    _log.debug(
+                        "Audio cache retry %d/%d for %s (%.1fs): %s",
+                        attempt + 1,
+                        retries,
+                        _safe_url_for_log(url),
+                        wait,
+                        exc,
+                    )
                     await asyncio.sleep(wait)
                     continue
                 raise
@@ -1266,7 +1316,12 @@ class BasePlatformAdapter(ABC):
                     if human_delay > 0:
                         await asyncio.sleep(human_delay)
                     try:
-                        logger.info("[%s] Sending image: %s (alt=%s)", self.name, image_url[:80], alt_text[:30] if alt_text else "")
+                        logger.info(
+                            "[%s] Sending image: %s (alt=%s)",
+                            self.name,
+                            _safe_url_for_log(image_url),
+                            alt_text[:30] if alt_text else "",
+                        )
                         # Route animated GIFs through send_animation for proper playback
                         if self._is_animation_url(image_url):
                             img_result = await self.send_animation(

@@ -360,7 +360,7 @@ def _format_price_per_mtok(per_token_str: str) -> str:
 
 
 def format_pricing_label(pricing: dict[str, str] | None) -> str:
-    """Build a compact pricing label like '$3/$15' (input/output per Mtok).
+    """Build a compact pricing label like 'in $3 · out $15 · cache $0.30/Mtok'.
 
     Returns empty string when pricing is unavailable.
     """
@@ -374,9 +374,14 @@ def format_pricing_label(pricing: dict[str, str] | None) -> str:
     out = _format_price_per_mtok(completion_price)
     if inp == "free" and out == "free":
         return "free"
-    if inp == out:
+    cache_read = pricing.get("input_cache_read", "")
+    cache_str = _format_price_per_mtok(cache_read) if cache_read else ""
+    if inp == out and not cache_str:
         return f"{inp}/Mtok"
-    return f"in {inp} · out {out}/Mtok"
+    parts = [f"in {inp}", f"out {out}"]
+    if cache_str and cache_str != "?" and cache_str != inp:
+        parts.append(f"cache {cache_str}")
+    return " · ".join(parts) + "/Mtok"
 
 
 def format_model_pricing_table(
@@ -393,17 +398,22 @@ def format_model_pricing_table(
     if not models:
         return []
 
-    # Build rows: (model_id, input_price, output_price, is_current)
-    rows: list[tuple[str, str, str, bool]] = []
+    # Build rows: (model_id, input_price, output_price, cache_price, is_current)
+    rows: list[tuple[str, str, str, str, bool]] = []
+    has_cache = False
     for mid, _desc in models:
         is_cur = mid == current_model
         p = pricing_map.get(mid)
         if p:
             inp = _format_price_per_mtok(p.get("prompt", ""))
             out = _format_price_per_mtok(p.get("completion", ""))
+            cache_read = p.get("input_cache_read", "")
+            cache = _format_price_per_mtok(cache_read) if cache_read else ""
+            if cache:
+                has_cache = True
         else:
-            inp, out = "", ""
-        rows.append((mid, inp, out, is_cur))
+            inp, out, cache = "", "", ""
+        rows.append((mid, inp, out, cache, is_cur))
 
     name_col = max(len(r[0]) for r in rows) + 2
     # Compute price column widths from the actual data so decimals align
@@ -412,15 +422,26 @@ def format_model_pricing_table(
         max((len(r[2]) for r in rows if r[2]), default=4),
         3,  # minimum: "In" / "Out" header
     )
+    cache_col = max(
+        max((len(r[3]) for r in rows if r[3]), default=4),
+        5,  # minimum: "Cache" header
+    ) if has_cache else 0
     lines: list[str] = []
 
     # Header
-    lines.append(f"{indent}{'Model':<{name_col}} {'In':>{price_col}}  {'Out':>{price_col}}  /Mtok")
-    lines.append(f"{indent}{'-' * name_col} {'-' * price_col}  {'-' * price_col}")
+    if has_cache:
+        lines.append(f"{indent}{'Model':<{name_col}} {'In':>{price_col}}  {'Out':>{price_col}}  {'Cache':>{cache_col}}  /Mtok")
+        lines.append(f"{indent}{'-' * name_col} {'-' * price_col}  {'-' * price_col}  {'-' * cache_col}")
+    else:
+        lines.append(f"{indent}{'Model':<{name_col}} {'In':>{price_col}}  {'Out':>{price_col}}  /Mtok")
+        lines.append(f"{indent}{'-' * name_col} {'-' * price_col}  {'-' * price_col}")
 
-    for mid, inp, out, is_cur in rows:
+    for mid, inp, out, cache, is_cur in rows:
         marker = "  ← current" if is_cur else ""
-        lines.append(f"{indent}{mid:<{name_col}} {inp:>{price_col}}  {out:>{price_col}}{marker}")
+        if has_cache:
+            lines.append(f"{indent}{mid:<{name_col}} {inp:>{price_col}}  {out:>{price_col}}  {cache:>{cache_col}}{marker}")
+        else:
+            lines.append(f"{indent}{mid:<{name_col}} {inp:>{price_col}}  {out:>{price_col}}{marker}")
 
     return lines
 
@@ -459,10 +480,15 @@ def fetch_models_with_pricing(
         mid = item.get("id")
         pricing = item.get("pricing")
         if mid and isinstance(pricing, dict):
-            result[mid] = {
+            entry: dict[str, str] = {
                 "prompt": str(pricing.get("prompt", "")),
                 "completion": str(pricing.get("completion", "")),
             }
+            if pricing.get("input_cache_read"):
+                entry["input_cache_read"] = str(pricing["input_cache_read"])
+            if pricing.get("input_cache_write"):
+                entry["input_cache_write"] = str(pricing["input_cache_write"])
+            result[mid] = entry
 
     _pricing_cache[cache_key] = result
     return result

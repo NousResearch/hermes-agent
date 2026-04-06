@@ -10,6 +10,7 @@ Environment variables:
     MATRIX_USER_ID              Full user ID (@bot:server) — required for password login
     MATRIX_PASSWORD             Password (alternative to access token)
     MATRIX_ENCRYPTION           Set "true" to enable E2EE
+    MATRIX_DEVICE_ID            Stable device ID for E2EE persistence across restarts
     MATRIX_ALLOWED_USERS    Comma-separated Matrix user IDs (@user:server)
     MATRIX_HOME_ROOM        Room ID for cron/notification delivery
     MATRIX_REACTIONS        Set "false" to disable processing lifecycle reactions
@@ -65,6 +66,21 @@ _MAX_PENDING_EVENTS = 100
 _PENDING_EVENT_TTL = 300  # seconds — stop retrying after 5 min
 
 
+_E2EE_INSTALL_HINT = (
+    "Install with: pip install 'matrix-nio[e2e]'  "
+    "(requires libolm C library)"
+)
+
+
+def _check_e2ee_deps() -> bool:
+    """Return True if matrix-nio E2EE dependencies (python-olm) are available."""
+    try:
+        from nio.crypto import ENCRYPTION_ENABLED
+        return bool(ENCRYPTION_ENABLED)
+    except (ImportError, AttributeError):
+        return False
+
+
 def check_matrix_requirements() -> bool:
     """Return True if the Matrix adapter can be used."""
     token = os.getenv("MATRIX_ACCESS_TOKEN", "")
@@ -79,13 +95,26 @@ def check_matrix_requirements() -> bool:
         return False
     try:
         import nio  # noqa: F401
-        return True
     except ImportError:
         logger.warning(
             "Matrix: matrix-nio not installed. "
             "Run: pip install 'matrix-nio[e2e]'"
         )
         return False
+
+    # If encryption is requested, verify E2EE deps are available at startup
+    # rather than silently degrading to plaintext-only at connect time.
+    encryption_requested = os.getenv("MATRIX_ENCRYPTION", "").lower() in ("true", "1", "yes")
+    if encryption_requested and not _check_e2ee_deps():
+        logger.error(
+            "Matrix: MATRIX_ENCRYPTION=true but E2EE dependencies are missing. %s. "
+            "Without this, encrypted rooms will not work. "
+            "Set MATRIX_ENCRYPTION=false to disable E2EE.",
+            _E2EE_INSTALL_HINT,
+        )
+        return False
+
+    return True
 
 
 class MatrixAdapter(BasePlatformAdapter):
@@ -110,6 +139,10 @@ class MatrixAdapter(BasePlatformAdapter):
         self._encryption: bool = config.extra.get(
             "encryption",
             os.getenv("MATRIX_ENCRYPTION", "").lower() in ("true", "1", "yes"),
+        )
+        self._device_id: str = (
+            config.extra.get("device_id", "")
+            or os.getenv("MATRIX_DEVICE_ID", "")
         )
 
         self._client: Any = None  # nio.AsyncClient
@@ -169,24 +202,42 @@ class MatrixAdapter(BasePlatformAdapter):
         _STORE_DIR.mkdir(parents=True, exist_ok=True)
 
         # Create the client.
+        # When a stable device_id is configured, pass it to the constructor
+        # so matrix-nio binds to it from the start (important for E2EE
+        # crypto-store persistence across restarts).
+        ctor_device_id = self._device_id or None
         if self._encryption:
+            if not _check_e2ee_deps():
+                logger.error(
+                    "Matrix: MATRIX_ENCRYPTION=true but E2EE dependencies are missing. %s. "
+                    "Refusing to connect — encrypted rooms would silently fail.",
+                    _E2EE_INSTALL_HINT,
+                )
+                return False
             try:
                 client = nio.AsyncClient(
                     self._homeserver,
                     self._user_id or "",
+                    device_id=ctor_device_id,
                     store_path=store_path,
                 )
-                logger.info("Matrix: E2EE enabled (store: %s)", store_path)
-            except Exception as exc:
-                logger.warning(
-                    "Matrix: failed to create E2EE client (%s), "
-                    "falling back to plain client. Install: "
-                    "pip install 'matrix-nio[e2e]'",
-                    exc,
+                logger.info(
+                    "Matrix: E2EE enabled (store: %s%s)",
+                    store_path,
+                    f", device_id={self._device_id}" if self._device_id else "",
                 )
-                client = nio.AsyncClient(self._homeserver, self._user_id or "")
+            except Exception as exc:
+                logger.error(
+                    "Matrix: failed to create E2EE client: %s. %s",
+                    exc, _E2EE_INSTALL_HINT,
+                )
+                return False
         else:
-            client = nio.AsyncClient(self._homeserver, self._user_id or "")
+            client = nio.AsyncClient(
+                self._homeserver,
+                self._user_id or "",
+                device_id=ctor_device_id,
+            )
 
         self._client = client
 
@@ -205,30 +256,36 @@ class MatrixAdapter(BasePlatformAdapter):
                 if resolved_user_id:
                     self._user_id = resolved_user_id
 
+                # Prefer the user-configured device_id (MATRIX_DEVICE_ID) so
+                # the bot reuses a stable identity across restarts.  Fall back
+                # to whatever whoami returned.
+                effective_device_id = self._device_id or resolved_device_id
+
                 # restore_login() is the matrix-nio path that binds the access
                 # token to a specific device and loads the crypto store.
-                if resolved_device_id and hasattr(client, "restore_login"):
+                if effective_device_id and hasattr(client, "restore_login"):
                     client.restore_login(
                         self._user_id or resolved_user_id,
-                        resolved_device_id,
+                        effective_device_id,
                         self._access_token,
                     )
                 else:
                     if self._user_id:
                         client.user_id = self._user_id
-                    if resolved_device_id:
-                        client.device_id = resolved_device_id
+                    if effective_device_id:
+                        client.device_id = effective_device_id
                     client.access_token = self._access_token
                     if self._encryption:
                         logger.warning(
                             "Matrix: access-token login did not restore E2EE state; "
-                            "encrypted rooms may fail until a device_id is available"
+                            "encrypted rooms may fail until a device_id is available. "
+                            "Set MATRIX_DEVICE_ID to a stable value."
                         )
 
                 logger.info(
                     "Matrix: using access token for %s%s",
                     self._user_id or "(unknown user)",
-                    f" (device {resolved_device_id})" if resolved_device_id else "",
+                    f" (device {effective_device_id})" if effective_device_id else "",
                 )
             else:
                 logger.error(
@@ -271,10 +328,15 @@ class MatrixAdapter(BasePlatformAdapter):
                 except Exception as exc:
                     logger.debug("Matrix: could not import keys: %s", exc)
         elif self._encryption:
-            logger.warning(
-                "Matrix: E2EE requested but crypto store is not loaded; "
-                "encrypted rooms may fail"
+            # E2EE was requested but the crypto store failed to load —
+            # this means encrypted rooms will silently not work.  Hard-fail.
+            logger.error(
+                "Matrix: E2EE requested but crypto store is not loaded — "
+                "cannot decrypt or encrypt messages. %s",
+                _E2EE_INSTALL_HINT,
             )
+            await client.close()
+            return False
 
         # Register event callbacks.
         client.add_event_callback(self._on_room_message, nio.RoomMessageText)

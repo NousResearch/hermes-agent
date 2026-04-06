@@ -250,7 +250,7 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
 # Kimi Code Endpoint Detection
 # =============================================================================
 
-# Kimi Code (platform.kimi.ai) issues keys prefixed "sk-kimi-" that only work
+# Kimi Code (kimi.com/code) issues keys prefixed "sk-kimi-" that only work
 # on api.kimi.com/coding/v1.  Legacy keys from platform.moonshot.ai work on
 # api.moonshot.ai/v1 (the default).  Auto-detect when user hasn't set
 # KIMI_BASE_URL explicitly.

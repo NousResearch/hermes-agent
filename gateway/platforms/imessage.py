@@ -14,7 +14,6 @@ Optional environment variables:
                            allowed to interact. Leave unset to allow all.
   IMESSAGE_HOME_CHANNEL    Chat rowid (integer) to use as default cron
                            delivery target.
-  IMESSAGE_POLL_INTERVAL   Seconds between polls (default: 30).
 """
 
 import asyncio
@@ -37,7 +36,9 @@ from gateway.platforms.base import (
 logger = logging.getLogger(__name__)
 
 MAX_MESSAGE_LENGTH = 8000
-DEFAULT_POLL_INTERVAL = 30.0
+
+# Seconds to wait before restarting a crashed watch process
+_WATCH_RESTART_DELAY = 5.0
 
 # Maximum seen message rowids to track per chat (prevents unbounded growth)
 _MAX_SEEN_IDS_PER_CHAT = 200
@@ -163,16 +164,12 @@ class IMessageAdapter(BasePlatformAdapter):
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.IMESSAGE)
-        self._poll_interval: float = float(
-            os.getenv("IMESSAGE_POLL_INTERVAL", str(DEFAULT_POLL_INTERVAL))
-        )
-        allowed_raw = os.getenv("IMESSAGE_ALLOWED_USERS", "+14806893441")
+        allowed_raw = os.getenv("IMESSAGE_ALLOWED_USERS", "+148****3441")
         self._allowed_users: List[str] = (
             _parse_comma_list(allowed_raw) if allowed_raw else []
         )
         self._allow_all = not self._allowed_users
         self._chat_identifiers: Dict[int, str] = {}
-        self._last_seen: Dict[int, str] = {}
 
         # Per-message dedup: track seen rowids per chat to avoid re-dispatching
         # messages whose timestamp predates (or equals) a reply we just sent.
@@ -180,14 +177,15 @@ class IMessageAdapter(BasePlatformAdapter):
         self._seen_message_ids: Dict[int, Set[int]] = {}
 
         # Per-chat processing lock: skip a chat that is already being handled
-        # so concurrent polls don't pile up duplicate dispatches.
+        # so concurrent watch events don't pile up duplicate dispatches.
         self._chat_locks: Dict[int, asyncio.Lock] = {}
 
         # Recent-dispatch dedup: (chat_rowid, text_hash) -> monotonic timestamp.
         # Drops a message that was already dispatched within _DEDUP_WINDOW_SECONDS.
         self._recent_dispatches: Dict[Tuple[int, str], float] = {}
 
-        self._poll_task: Optional[asyncio.Task] = None
+        # Per-chat watch tasks, keyed by chat rowid
+        self._watch_tasks: Dict[int, asyncio.Task] = {}
         self._running = False
 
     # ── Lifecycle ────────────────────────────────────────────────────────────
@@ -198,25 +196,49 @@ class IMessageAdapter(BasePlatformAdapter):
             return False
         await self._refresh_chat_map()
         if not self._chat_identifiers:
-            logger.warning("iMessage: no chats found — will keep polling until Messages.app has history")
+            logger.warning("iMessage: no chats found — will not watch any chats until restart")
         else:
             logger.info("iMessage: seeded %d chat(s): %s",
                 len(self._chat_identifiers),
                 [_redact(v) for v in self._chat_identifiers.values()])
-        await self._seed_last_seen()
+
         self._running = True
-        self._poll_task = asyncio.create_task(self._poll_loop())
-        logger.info("iMessage: connected (poll every %.1fs)", self._poll_interval)
+
+        # For each allowed chat, find the max message rowid then spawn a watch task
+        chats_to_watch = []
+        for rowid, identifier in self._chat_identifiers.items():
+            if not self._allow_all and identifier not in self._allowed_users:
+                continue
+            # Get current max rowid to avoid replaying history on connect
+            since_rowid = await self._get_max_rowid(rowid)
+            chats_to_watch.append((rowid, identifier, since_rowid))
+
+        for rowid, identifier, since_rowid in chats_to_watch:
+            task = asyncio.create_task(
+                self._watch_chat(rowid, identifier, since_rowid),
+                name=f"imsg-watch-{rowid}",
+            )
+            self._watch_tasks[rowid] = task
+            logger.info(
+                "iMessage: watching chat %d (%s) since rowid %d",
+                rowid, _redact(identifier), since_rowid,
+            )
+
+        logger.info(
+            "iMessage: connected — watching %d chat(s) via imsg watch",
+            len(self._watch_tasks),
+        )
         return True
 
     async def disconnect(self) -> None:
         self._running = False
-        if self._poll_task:
-            self._poll_task.cancel()
+        for rowid, task in list(self._watch_tasks.items()):
+            task.cancel()
             try:
-                await self._poll_task
+                await task
             except asyncio.CancelledError:
                 pass
+        self._watch_tasks.clear()
         logger.info("iMessage: disconnected")
 
     # ── Send ─────────────────────────────────────────────────────────────────
@@ -346,104 +368,146 @@ class IMessageAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.debug("iMessage: AppleScript error: %s", exc)
 
-    # ── Poll loop ─────────────────────────────────────────────────────────────
+    # ── Watch loop ────────────────────────────────────────────────────────────
 
-    async def _poll_loop(self) -> None:
-        while self._running:
-            try:
-                await self._check_new_messages()
-            except asyncio.CancelledError:
-                break
-            except Exception as exc:
-                logger.error("iMessage: poll error: %s", exc)
-            try:
-                await asyncio.sleep(self._poll_interval)
-            except asyncio.CancelledError:
-                break
-
-    async def _check_new_messages(self) -> None:
-        chats = await self._get_chats()
-        if not chats:
+    async def _watch_chat(self, chat_rowid: int, identifier: str, since_rowid: int) -> None:
+        """Persistent per-chat watch task using `imsg watch --since-rowid`."""
+        imsg = _find_imsg()
+        if not imsg:
+            logger.error("iMessage: imsg binary not found; cannot watch chat %d", chat_rowid)
             return
 
-        # Expire old recent-dispatch entries to keep the dict bounded.
+        current_since = since_rowid
+
+        while self._running:
+            logger.debug(
+                "iMessage: spawning watch for chat %d (%s) since rowid %d",
+                chat_rowid, _redact(identifier), current_since,
+            )
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    imsg, "watch",
+                    "--chat-id", str(chat_rowid),
+                    "--since-rowid", str(current_since),
+                    "--json",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    stdin=asyncio.subprocess.DEVNULL,
+                    env=_SUBPROCESS_ENV,
+                )
+            except Exception as exc:
+                logger.error(
+                    "iMessage: failed to spawn watch for chat %d: %s; retrying in %.1fs",
+                    chat_rowid, exc, _WATCH_RESTART_DELAY,
+                )
+                await asyncio.sleep(_WATCH_RESTART_DELAY)
+                continue
+
+            try:
+                await self._read_watch_stream(proc, chat_rowid, identifier, current_since)
+            except asyncio.CancelledError:
+                # Disconnect requested — kill the process and bail out
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+                raise
+            except Exception as exc:
+                logger.error(
+                    "iMessage: watch stream error for chat %d: %s",
+                    chat_rowid, exc,
+                )
+
+            # Process exited unexpectedly (or errored) — grab the last seen rowid
+            # from our seen_ids so we don't re-replay on restart
+            seen_ids = self._seen_message_ids.get(chat_rowid)
+            if seen_ids:
+                current_since = max(seen_ids)
+
+            if self._running:
+                logger.warning(
+                    "iMessage: watch process for chat %d exited; restarting in %.1fs",
+                    chat_rowid, _WATCH_RESTART_DELAY,
+                )
+                await asyncio.sleep(_WATCH_RESTART_DELAY)
+
+    async def _read_watch_stream(
+        self,
+        proc: asyncio.subprocess.Process,
+        chat_rowid: int,
+        identifier: str,
+        since_rowid: int,
+    ) -> None:
+        """Read JSON lines from a running `imsg watch` process until it exits."""
+        assert proc.stdout is not None
+
+        # Expire old recent-dispatch entries to keep the dict bounded
         _now = time.monotonic()
         expired = [k for k, ts in self._recent_dispatches.items()
                    if _now - ts > _DEDUP_WINDOW_SECONDS * 2]
         for k in expired:
             del self._recent_dispatches[k]
 
-        for chat in chats:
-            rowid = chat.get("id")
-            identifier = chat.get("identifier", "")
-            last_msg_at = chat.get("last_message_at")
-            if rowid is None or not last_msg_at:
-                continue
-            if identifier:
-                self._chat_identifiers[rowid] = identifier
-            if not self._allow_all and identifier not in self._allowed_users:
+        while True:
+            try:
+                line_bytes = await proc.stdout.readline()
+            except Exception as exc:
+                logger.debug("iMessage: readline error for chat %d: %s", chat_rowid, exc)
+                break
+
+            if not line_bytes:
+                # EOF — process exited
+                break
+
+            line = line_bytes.decode("utf-8", errors="replace").strip()
+            if not line:
                 continue
 
-            # Skip chats that are already being processed to avoid concurrent
-            # duplicate dispatches when agent response time exceeds poll interval.
-            lock = self._chat_locks.get(rowid)
+            try:
+                msg = json.loads(line)
+            except json.JSONDecodeError:
+                logger.debug("iMessage: non-JSON line from watch (chat %d): %s", chat_rowid, line[:120])
+                continue
+
+            # Filter: skip outbound messages
+            if msg.get("is_from_me", False):
+                continue
+
+            msg_rowid = msg.get("id") or msg.get("rowid")
+
+            # Rowid-based dedup (safety net)
+            seen_ids = self._seen_message_ids.setdefault(chat_rowid, set())
+            if msg_rowid is not None:
+                if msg_rowid in seen_ids:
+                    logger.debug(
+                        "iMessage: skipping already-seen rowid %d for chat %d",
+                        msg_rowid, chat_rowid,
+                    )
+                    continue
+                seen_ids.add(msg_rowid)
+                # Cap set size to avoid unbounded memory growth
+                if len(seen_ids) > _MAX_SEEN_IDS_PER_CHAT:
+                    overflow = len(seen_ids) - _MAX_SEEN_IDS_PER_CHAT
+                    for old_id in sorted(seen_ids)[:overflow]:
+                        seen_ids.discard(old_id)
+
+            # Per-chat lock: prevent concurrent dispatches for the same chat
+            lock = self._chat_locks.get(chat_rowid)
             if lock is None:
                 lock = asyncio.Lock()
-                self._chat_locks[rowid] = lock
-            if lock.locked():
-                logger.debug("iMessage: chat %d already processing, skipping poll", rowid)
-                continue
-
-            prev_seen = self._last_seen.get(rowid)
-            if prev_seen is None:
-                self._last_seen[rowid] = last_msg_at
-                continue
-            if last_msg_at <= prev_seen:
-                continue
-
-            messages = await self._get_history(rowid, limit=20)
-            new_messages = [
-                m for m in messages
-                if m.get("created_at", "") > prev_seen
-                and not m.get("is_from_me", True)
-            ]
-
-            # Secondary rowid-based filter: only messages we haven't seen before.
-            seen_ids = self._seen_message_ids.setdefault(rowid, set())
-            truly_new = []
-            for m in new_messages:
-                msg_rowid = m.get("rowid") or m.get("id")
-                if msg_rowid is None:
-                    # No rowid available — fall back to timestamp filter only
-                    truly_new.append(m)
-                elif msg_rowid not in seen_ids:
-                    truly_new.append(m)
-
-            if not truly_new:
-                # Update timestamp even if nothing new to dispatch so we
-                # don't keep re-fetching history on every poll.
-                self._last_seen[rowid] = last_msg_at
-                continue
-
-            # Mark all fetched rowids as seen *before* dispatching so that
-            # if a concurrent poll fires while we're awaiting the agent the
-            # rowids are already recorded.
-            for m in truly_new:
-                msg_rowid = m.get("rowid") or m.get("id")
-                if msg_rowid is not None:
-                    seen_ids.add(msg_rowid)
-            # Cap set size to avoid unbounded memory growth.
-            if len(seen_ids) > _MAX_SEEN_IDS_PER_CHAT:
-                overflow = len(seen_ids) - _MAX_SEEN_IDS_PER_CHAT
-                # Discard the smallest (oldest) rowids.
-                for old_id in sorted(seen_ids)[:overflow]:
-                    seen_ids.discard(old_id)
-
-            self._last_seen[rowid] = last_msg_at
+                self._chat_locks[chat_rowid] = lock
 
             async with lock:
-                for msg in truly_new:
-                    await self._dispatch_message(rowid, identifier, msg)
+                await self._dispatch_message(chat_rowid, identifier, msg)
+
+        # Wait for process to fully exit
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=5)
+        except asyncio.TimeoutError:
+            try:
+                proc.kill()
+            except Exception:
+                pass
 
     async def _dispatch_message(self, chat_rowid: int, identifier: str, msg: dict) -> None:
         text = (msg.get("text") or "").strip()
@@ -481,6 +545,8 @@ class IMessageAdapter(BasePlatformAdapter):
         )
         await self.handle_message(event)
 
+    # ── Helpers ───────────────────────────────────────────────────────────────
+
     async def _get_chats(self) -> List[dict]:
         output = await _run_imsg("chats", "--json")
         if not output:
@@ -511,6 +577,26 @@ class IMessageAdapter(BasePlatformAdapter):
                 pass
         return messages
 
+    async def _get_max_rowid(self, chat_rowid: int) -> int:
+        """Return the highest message rowid currently in the chat history.
+
+        Used at startup so `imsg watch --since-rowid` doesn't replay existing
+        messages. Falls back to 0 if history is empty or unavailable.
+        """
+        messages = await self._get_history(chat_rowid, limit=_MAX_SEEN_IDS_PER_CHAT)
+        if not messages:
+            return 0
+        # Pre-populate seen_ids as a safety net
+        seen_ids = self._seen_message_ids.setdefault(chat_rowid, set())
+        max_id = 0
+        for m in messages:
+            msg_rowid = m.get("id") or m.get("rowid")
+            if msg_rowid is not None:
+                seen_ids.add(msg_rowid)
+                if msg_rowid > max_id:
+                    max_id = msg_rowid
+        return max_id
+
     async def _refresh_chat_map(self) -> None:
         chats = await self._get_chats()
         for chat in chats:
@@ -518,25 +604,6 @@ class IMessageAdapter(BasePlatformAdapter):
             identifier = chat.get("identifier", "")
             if rowid is not None and identifier:
                 self._chat_identifiers[rowid] = identifier
-
-    async def _seed_last_seen(self) -> None:
-        """Seed last-seen timestamps and pre-populate seen rowids so existing
-        messages are not re-dispatched on first connect."""
-        chats = await self._get_chats()
-        for chat in chats:
-            rowid = chat.get("id")
-            last_msg_at = chat.get("last_message_at")
-            if rowid is None or not last_msg_at:
-                continue
-            self._last_seen[rowid] = last_msg_at
-            # Pre-populate seen rowids from the most recent messages so we
-            # don't dispatch historical messages after a restart.
-            messages = await self._get_history(rowid, limit=_MAX_SEEN_IDS_PER_CHAT)
-            seen_ids = self._seen_message_ids.setdefault(rowid, set())
-            for m in messages:
-                msg_rowid = m.get("rowid") or m.get("id")
-                if msg_rowid is not None:
-                    seen_ids.add(msg_rowid)
 
     def _split_message(self, text: str) -> List[str]:
         if len(text) <= self.MAX_MESSAGE_LENGTH:

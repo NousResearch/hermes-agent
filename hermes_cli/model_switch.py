@@ -558,6 +558,31 @@ def switch_model(
             if detected:
                 target_provider, new_model = detected
 
+        # --- Step f: Search user-defined providers by default_model ---
+        # Handles the case where multiple custom providers are configured and
+        # the requested model name matches a provider's default_model entry.
+        # This lets users switch by model name even without --provider when
+        # the model is listed under a user-defined endpoint.
+        if (
+            target_provider == current_provider
+            and not resolved_alias
+            and user_providers
+            and isinstance(user_providers, dict)
+        ):
+            new_model_lower = new_model.lower()
+            for pname, pcfg in user_providers.items():
+                if not isinstance(pcfg, dict):
+                    continue
+                default_model = pcfg.get("default_model", "")
+                if default_model and default_model.lower() == new_model_lower:
+                    target_provider = pname
+                    logger.debug(
+                        "Model '%s' matched user-defined provider '%s' via default_model",
+                        new_model,
+                        pname,
+                    )
+                    break
+
     # =================================================================
     # COMMON PATH: Resolve credentials, normalize, get metadata
     # =================================================================

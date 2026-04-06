@@ -276,10 +276,13 @@ class SlackAdapter(BasePlatformAdapter):
         if not self._app:
             return SendResult(success=False, error="Not connected")
         try:
+            # Convert standard markdown → Slack mrkdwn
+            formatted = self.format_message(content)
+
             await self._get_client(chat_id).chat_update(
                 channel=chat_id,
                 ts=message_id,
-                text=content,
+                text=formatted,
             )
             return SendResult(success=True, message_id=message_id)
         except Exception as e:  # pragma: no cover - defensive logging

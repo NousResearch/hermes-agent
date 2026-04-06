@@ -8187,11 +8187,17 @@ class AIAgent:
                         self._vprint(f"{self.log_prefix}   🌐 Endpoint: {_base}", force=True)
                         # Actionable guidance for common auth errors
                         if status_code in (401, 403) or "unauthorized" in error_msg or "forbidden" in error_msg or "permission" in error_msg:
-                            self._vprint(f"{self.log_prefix}   💡 Your API key was rejected by the provider. Check:", force=True)
-                            self._vprint(f"{self.log_prefix}      • Is the key valid? Run: hermes setup", force=True)
-                            self._vprint(f"{self.log_prefix}      • Does your account have access to {_model}?", force=True)
-                            if "openrouter" in str(_base).lower():
-                                self._vprint(f"{self.log_prefix}      • Check credits: https://openrouter.ai/settings/credits", force=True)
+                            if _provider == "openai-codex" and status_code == 401:
+                                self._vprint(f"{self.log_prefix}   💡 Codex OAuth token was rejected (HTTP 401). Your token may have been", force=True)
+                                self._vprint(f"{self.log_prefix}      refreshed by another client (Codex CLI, VS Code). To fix:", force=True)
+                                self._vprint(f"{self.log_prefix}      1. Run `codex` in your terminal to generate fresh tokens.", force=True)
+                                self._vprint(f"{self.log_prefix}      2. Then run `hermes login --provider openai-codex` to re-authenticate.", force=True)
+                            else:
+                                self._vprint(f"{self.log_prefix}   💡 Your API key was rejected by the provider. Check:", force=True)
+                                self._vprint(f"{self.log_prefix}      • Is the key valid? Run: hermes setup", force=True)
+                                self._vprint(f"{self.log_prefix}      • Does your account have access to {_model}?", force=True)
+                                if "openrouter" in str(_base).lower():
+                                    self._vprint(f"{self.log_prefix}      • Check credits: https://openrouter.ai/settings/credits", force=True)
                         else:
                             self._vprint(f"{self.log_prefix}   💡 This type of error won't be fixed by retrying.", force=True)
                         logging.error(f"{self.log_prefix}Non-retryable client error: {api_error}")

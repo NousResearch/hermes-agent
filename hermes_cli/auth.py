@@ -1030,6 +1030,14 @@ def refresh_codex_oauth_pure(
             pass
         if code in {"invalid_grant", "invalid_token", "invalid_request"}:
             relogin_required = True
+        if code == "refresh_token_reused":
+            message = (
+                "Codex refresh token was already consumed by another client "
+                "(e.g. Codex CLI or VS Code extension). "
+                "Run `codex` in your terminal to generate fresh tokens, "
+                "then run `hermes login --provider openai-codex` to re-authenticate."
+            )
+            relogin_required = True
         raise AuthError(
             message,
             provider="openai-codex",

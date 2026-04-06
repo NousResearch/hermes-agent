@@ -478,9 +478,124 @@ To set persistent per-model defaults: My Models tab → gear icon on the model �
 
 ---
 
+### WSL2 Networking (Windows Users)
+
+Since Hermes Agent requires a Unix environment, Windows users run it inside WSL2. If your model server (Ollama, LM Studio, etc.) runs on the **Windows host**, you need to bridge the network gap — WSL2 uses a virtual network adapter with its own subnet, so `localhost` inside WSL2 refers to the Linux VM, **not** the Windows host.
+
+:::tip Both in WSL2? No problem.
+If your model server also runs inside WSL2 (common for vLLM, SGLang, and llama-server), `localhost` works as expected — they share the same network namespace. Skip this section.
+:::
+
+#### Option 1: Mirrored Networking Mode (Recommended)
+
+Available on **Windows 11 22H2+**, mirrored mode makes `localhost` work bidirectionally between Windows and WSL2 — the simplest fix.
+
+1. Create or edit `%USERPROFILE%\.wslconfig` (e.g., `C:\Users\YourName\.wslconfig`):
+   ```ini
+   [wsl2]
+   networkingMode=mirrored
+   ```
+
+2. Restart WSL from PowerShell:
+   ```powershell
+   wsl --shutdown
+   ```
+
+3. Reopen your WSL2 terminal. `localhost` now reaches Windows services:
+   ```bash
+   curl http://localhost:11434/v1/models   # Ollama on Windows — works
+   ```
+
+:::note Hyper-V Firewall
+On some Windows 11 builds, the Hyper-V firewall blocks mirrored connections by default. If `localhost` still doesn't work after enabling mirrored mode, run this in an **Admin PowerShell**:
+```powershell
+Set-NetFirewallHyperVVMSetting -Name '{40E0AC32-46A5-438A-A0B2-2B479E8F2E90}' -DefaultInboundAction Allow
+```
+:::
+
+#### Option 2: Use the Windows Host IP (Windows 10 / older builds)
+
+If you can't use mirrored mode, find the Windows host IP from inside WSL2 and use that instead of `localhost`:
+
+```bash
+# Get the Windows host IP (the default gateway of WSL2's virtual network)
+ip route show | grep -i default | awk '{ print $3 }'
+# Example output: 172.29.192.1
+```
+
+Use that IP in your Hermes config:
+
+```yaml
+model:
+  default: qwen2.5-coder:32b
+  provider: custom
+  base_url: http://172.29.192.1:11434/v1   # Windows host IP, not localhost
+```
+
+:::tip Dynamic helper
+The host IP can change on WSL2 restart. You can grab it dynamically in your shell:
+```bash
+export WSL_HOST=$(ip route show | grep -i default | awk '{ print $3 }')
+echo "Windows host at: $WSL_HOST"
+curl http://$WSL_HOST:11434/v1/models   # Test Ollama
+```
+
+Or use your machine's mDNS name (requires `libnss-mdns` in WSL2):
+```bash
+sudo apt install libnss-mdns
+curl http://$(hostname).local:11434/v1/models
+```
+:::
+
+#### Server Bind Address (Required for NAT Mode)
+
+If you're using **Option 2** (NAT mode with the host IP), the model server on Windows must accept connections from outside `127.0.0.1`. By default, most servers only listen on localhost — WSL2 connections in NAT mode come from a different virtual subnet and will be refused. In mirrored mode, `localhost` maps directly so the default `127.0.0.1` binding works fine.
+
+| Server | Default bind | How to fix |
+|--------|-------------|------------|
+| **Ollama** | `127.0.0.1` | Set `OLLAMA_HOST=0.0.0.0` environment variable before starting Ollama (System Settings → Environment Variables on Windows, or edit the Ollama service) |
+| **LM Studio** | `127.0.0.1` | Enable **"Serve on Network"** in the Developer tab → Server settings |
+| **llama-server** | `127.0.0.1` | Add `--host 0.0.0.0` to the startup command |
+| **vLLM** | `0.0.0.0` | Already binds to all interfaces by default |
+| **SGLang** | `127.0.0.1` | Add `--host 0.0.0.0` to the startup command |
+
+**Ollama on Windows (detailed):** Ollama runs as a Windows service. To set `OLLAMA_HOST`:
+1. Open **System Properties** → **Environment Variables**
+2. Add a new **System variable**: `OLLAMA_HOST` = `0.0.0.0`
+3. Restart the Ollama service (or reboot)
+
+#### Windows Firewall
+
+Windows Firewall treats WSL2 as a separate network (in both NAT and mirrored mode). If connections still fail after the steps above, add a firewall rule for your model server's port:
+
+```powershell
+# Run in Admin PowerShell — replace PORT with your server's port
+New-NetFirewallRule -DisplayName "Allow WSL2 to Model Server" -Direction Inbound -Action Allow -Protocol TCP -LocalPort 11434
+```
+
+Common ports: Ollama `11434`, vLLM `8000`, SGLang `30000`, llama-server `8080`, LM Studio `1234`.
+
+#### Quick Verification
+
+From inside WSL2, test that you can reach your model server:
+
+```bash
+# Replace URL with your server's address and port
+curl http://localhost:11434/v1/models          # Mirrored mode
+curl http://172.29.192.1:11434/v1/models       # NAT mode (use your actual host IP)
+```
+
+If you get a JSON response listing your models, you're good. Use that same URL as the `base_url` in your Hermes config.
+
+---
+
 ### Troubleshooting Local Models
 
 These issues affect **all** local inference servers when used with Hermes.
+
+#### "Connection refused" from WSL2 to a Windows-hosted model server
+
+If you're running Hermes inside WSL2 and your model server on the Windows host, `http://localhost:<port>` won't work in WSL2's default NAT networking mode. See [WSL2 Networking](#wsl2-networking-windows-users) above for the fix.
 
 #### Tool calls appear as text instead of executing
 

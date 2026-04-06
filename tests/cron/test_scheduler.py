@@ -730,6 +730,21 @@ class TestBuildJobPromptSilentHint:
         result = _build_job_prompt(job)
         assert "[SILENT]" in result
 
+    def test_delivery_guidance_present(self):
+        """Cron hint tells agents their final response is auto-delivered."""
+        job = {"prompt": "Generate a report"}
+        result = _build_job_prompt(job)
+        assert "do NOT use send_message" in result
+        assert "automatically delivered" in result
+
+    def test_delivery_guidance_precedes_user_prompt(self):
+        """System guidance appears before the user's prompt text."""
+        job = {"prompt": "My custom prompt"}
+        result = _build_job_prompt(job)
+        system_pos = result.index("do NOT use send_message")
+        prompt_pos = result.index("My custom prompt")
+        assert system_pos < prompt_pos
+
 
 class TestBuildJobPromptMissingSkill:
     """Verify that a missing skill logs a warning and does not crash the job."""

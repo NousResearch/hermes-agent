@@ -776,6 +776,185 @@ class TestSendMethods(unittest.TestCase):
         self.assertEqual(info["subject"], "Test")
 
 
+class TestSuppressOutbound(unittest.TestCase):
+    """Test EMAIL_SUPPRESS_OUTBOUND kill switch.
+
+    When EMAIL_SUPPRESS_OUTBOUND=true is set, the adapter must never
+    contact SMTP from any send path, regardless of what the agent emits
+    or what additional send methods may be added later. Inbound IMAP
+    polling is unaffected.
+    """
+
+    _BASE_ENV = {
+        "EMAIL_ADDRESS": "hermes@test.com",
+        "EMAIL_PASSWORD": "secret",
+        "EMAIL_IMAP_HOST": "imap.test.com",
+        "EMAIL_SMTP_HOST": "smtp.test.com",
+    }
+
+    def _make_adapter(self, suppress_value=None):
+        """Build an EmailAdapter with EMAIL_SUPPRESS_OUTBOUND optionally set.
+
+        ``suppress_value`` of None means leave the env var unset entirely.
+        Any other value is set as the env var literally (so we can test
+        truthy parsing, falsy parsing, and invalid values).
+        """
+        from gateway.config import PlatformConfig
+        env = dict(self._BASE_ENV)
+        if suppress_value is not None:
+            env["EMAIL_SUPPRESS_OUTBOUND"] = suppress_value
+        # Make sure no leaked value from another test bleeds in.
+        with patch.dict(os.environ, env, clear=False):
+            os.environ.pop("EMAIL_SUPPRESS_OUTBOUND", None)
+            if suppress_value is not None:
+                os.environ["EMAIL_SUPPRESS_OUTBOUND"] = suppress_value
+            from gateway.platforms.email import EmailAdapter
+            adapter = EmailAdapter(PlatformConfig(enabled=True))
+        return adapter
+
+    def test_unset_defaults_to_false(self):
+        """Without the env var set, the flag must default to False."""
+        adapter = self._make_adapter(suppress_value=None)
+        self.assertFalse(adapter._suppress_outbound)
+
+    def test_explicit_false_sends_normally(self):
+        """EMAIL_SUPPRESS_OUTBOUND=false must permit normal SMTP sends."""
+        import asyncio
+        adapter = self._make_adapter(suppress_value="false")
+        self.assertFalse(adapter._suppress_outbound)
+
+        with patch("smtplib.SMTP") as mock_smtp:
+            mock_server = MagicMock()
+            mock_smtp.return_value = mock_server
+
+            result = asyncio.run(
+                adapter.send("user@test.com", "Hello from Hermes!")
+            )
+
+            self.assertTrue(result.success)
+            mock_server.send_message.assert_called_once()
+
+    def test_send_suppressed_when_flag_set(self):
+        """send() must not contact SMTP when the flag is set."""
+        import asyncio
+        adapter = self._make_adapter(suppress_value="true")
+        self.assertTrue(adapter._suppress_outbound)
+
+        with patch("smtplib.SMTP") as mock_smtp:
+            result = asyncio.run(
+                adapter.send("user@test.com", "Hello — should be dropped")
+            )
+
+            self.assertTrue(result.success)
+            self.assertIsNone(result.message_id)
+            mock_smtp.assert_not_called()
+
+    def test_send_image_suppressed_when_flag_set(self):
+        """send_image() (which routes through send()) must also suppress."""
+        import asyncio
+        adapter = self._make_adapter(suppress_value="true")
+
+        with patch("smtplib.SMTP") as mock_smtp:
+            result = asyncio.run(
+                adapter.send_image(
+                    "user@test.com",
+                    "https://img.com/photo.jpg",
+                    "caption text",
+                )
+            )
+
+            self.assertTrue(result.success)
+            self.assertIsNone(result.message_id)
+            mock_smtp.assert_not_called()
+
+    def test_send_document_suppressed_when_flag_set(self):
+        """send_document() must also suppress, on its own code path."""
+        import asyncio
+        import tempfile
+        adapter = self._make_adapter(suppress_value="true")
+
+        with tempfile.NamedTemporaryFile(suffix=".txt", delete=False) as f:
+            f.write(b"Test document content")
+            tmp_path = f.name
+
+        try:
+            with patch("smtplib.SMTP") as mock_smtp:
+                result = asyncio.run(
+                    adapter.send_document(
+                        "user@test.com", tmp_path, "Here is the file"
+                    )
+                )
+
+                self.assertTrue(result.success)
+                self.assertIsNone(result.message_id)
+                mock_smtp.assert_not_called()
+        finally:
+            os.unlink(tmp_path)
+
+    def test_truthy_values_all_parse_as_true(self):
+        """All recognized truthy spellings must enable suppression."""
+        for val in ("true", "TRUE", "True", "1", "yes", "YES", "on", "ON", " true "):
+            with self.subTest(value=val):
+                adapter = self._make_adapter(suppress_value=val)
+                self.assertTrue(
+                    adapter._suppress_outbound,
+                    f"{val!r} should parse as truthy",
+                )
+
+    def test_falsy_values_all_parse_as_false(self):
+        """All recognized falsy spellings must leave suppression off."""
+        for val in ("false", "FALSE", "0", "no", "NO", "off", "OFF", "", "  "):
+            with self.subTest(value=val):
+                adapter = self._make_adapter(suppress_value=val)
+                self.assertFalse(
+                    adapter._suppress_outbound,
+                    f"{val!r} should parse as falsy",
+                )
+
+    def test_invalid_value_raises_at_init(self):
+        """A typo or unrecognized value must fail loudly at adapter init.
+
+        This is intentional: silent fallback to false on a typo would
+        mean leaked email, which is the worst possible failure mode for
+        a safety flag.
+        """
+        for val in ("maybe", "yep", "tru", "y", "enabled", "2"):
+            with self.subTest(value=val):
+                with self.assertRaises(ValueError) as ctx:
+                    self._make_adapter(suppress_value=val)
+                self.assertIn("EMAIL_SUPPRESS_OUTBOUND", str(ctx.exception))
+
+    def test_send_email_backstop_raises(self):
+        """If a future code path bypasses the public-method guard and
+        invokes _send_email directly, the backstop must refuse to SMTP.
+        """
+        adapter = self._make_adapter(suppress_value="true")
+
+        with patch("smtplib.SMTP") as mock_smtp:
+            with self.assertRaises(RuntimeError):
+                adapter._send_email("user@test.com", "should never send")
+            mock_smtp.assert_not_called()
+
+    def test_send_email_with_attachment_backstop_raises(self):
+        """Same backstop on the attachment code path."""
+        import tempfile
+        adapter = self._make_adapter(suppress_value="true")
+
+        with tempfile.NamedTemporaryFile(suffix=".txt", delete=False) as f:
+            f.write(b"x")
+            tmp_path = f.name
+
+        try:
+            with patch("smtplib.SMTP") as mock_smtp:
+                with self.assertRaises(RuntimeError):
+                    adapter._send_email_with_attachment(
+                        "user@test.com", "body", tmp_path, "f.txt"
+                    )
+                mock_smtp.assert_not_called()
+        finally:
+            os.unlink(tmp_path)
+
+
 class TestConnectDisconnect(unittest.TestCase):
     """Test IMAP/SMTP connection lifecycle."""
 

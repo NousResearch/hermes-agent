@@ -174,6 +174,35 @@ Email access follows the same pattern as all other Hermes platforms:
 
 ---
 
+## Draft-only / approval-required mode
+
+For mailboxes where you want the agent to read inbound mail but **never** auto-reply via SMTP — for example, when every outbound reply must pass through human approval on a chat platform first — set:
+
+```bash
+EMAIL_SUPPRESS_OUTBOUND=true
+```
+
+When this flag is set, the adapter:
+
+- Continues polling IMAP and dispatching inbound messages to the agent normally
+- **Unconditionally drops** all outbound SMTP from `send()`, `send_image()`, and `send_document()`, regardless of what the agent emits
+- Logs each suppressed call so operators can verify the kill switch is active
+- Logs a `WARNING` at startup so the operating mode is visible in gateway logs
+
+This is enforced at the adapter, not via prompt engineering, so it cannot be bypassed by an LLM forgetting an instruction or by prompt injection from inbound email content. It also serves as a defense-in-depth measure for any mailbox where automated outbound mail is undesirable (compliance, staging, testing).
+
+A typical human-in-the-loop architecture using this flag:
+
+1. Agent receives inbound email via IMAP polling
+2. Agent (with `platform_toolsets.email: [messaging]` locking it down to the `send_message` tool only) cross-posts a draft to a chat platform via `send_message`
+3. The agent's response, whatever it contains, is dropped at the SMTP boundary
+4. A human approves the draft on the chat platform
+5. The approved reply is sent through a separate path (e.g., a Gmail API skill) that does not go through this adapter
+
+The flag accepts: `true`, `false`, `1`, `0`, `yes`, `no`, `on`, `off` (case-insensitive). Anything else raises `ValueError` at adapter init — there is no silent fallback, because a typo in a safety flag means leaked email.
+
+---
+
 ## Environment Variables Reference
 
 | Variable | Required | Default | Description |
@@ -188,3 +217,4 @@ Email access follows the same pattern as all other Hermes platforms:
 | `EMAIL_ALLOWED_USERS` | No | — | Comma-separated allowed sender addresses |
 | `EMAIL_HOME_ADDRESS` | No | — | Default delivery target for cron jobs |
 | `EMAIL_ALLOW_ALL_USERS` | No | `false` | Allow all senders (not recommended) |
+| `EMAIL_SUPPRESS_OUTBOUND` | No | `false` | Kill switch: when set, the adapter never delivers outbound mail via SMTP. Inbound polling is unaffected. Use for draft-only / approval-required mailboxes (see [Draft-only mode](#draft-only--approval-required-mode) below). Accepted values: `true`/`false`, `1`/`0`, `yes`/`no`, `on`/`off`. Invalid values fail loudly at startup. |

@@ -64,6 +64,34 @@ MAX_MESSAGE_LENGTH = 50_000
 # Supported image extensions for inline detection
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
 
+# Recognized values for boolean env vars on this adapter. Anything else
+# raises ValueError at adapter init — there's no silent fallback because
+# this is a safety flag and a typo (e.g. EMAIL_SUPRESS_OUTBOUND=true)
+# silently defaulting to false would mean leaked email.
+_BOOL_TRUTHY = frozenset({"true", "1", "yes", "on"})
+_BOOL_FALSY = frozenset({"false", "0", "no", "off", ""})
+
+
+def _parse_bool_env(name: str) -> bool:
+    """Parse a boolean env var with strict validation.
+
+    Returns False when the var is unset or empty. Accepts truthy values
+    {true, 1, yes, on} and falsy values {false, 0, no, off}, all
+    case-insensitive and whitespace-tolerant. Anything else raises
+    ValueError so a typo or unexpected value fails loudly at adapter
+    init time rather than silently defaulting to false.
+    """
+    raw = os.getenv(name, "")
+    val = raw.strip().lower()
+    if val in _BOOL_TRUTHY:
+        return True
+    if val in _BOOL_FALSY:
+        return False
+    raise ValueError(
+        f"Invalid value for {name}: {raw!r}. Expected one of "
+        f"true/false, 1/0, yes/no, on/off (case-insensitive), or unset."
+    )
+
 def _is_automated_sender(address: str, headers: dict) -> bool:
     """Return True if this email is from an automated/noreply source."""
     addr = address.lower()
@@ -227,6 +255,23 @@ class EmailAdapter(BasePlatformAdapter):
         self._smtp_host = os.getenv("EMAIL_SMTP_HOST", "")
         self._smtp_port = int(os.getenv("EMAIL_SMTP_PORT", "587"))
         self._poll_interval = int(os.getenv("EMAIL_POLL_INTERVAL", "15"))
+
+        # Outbound suppression flag — when set, the adapter never delivers
+        # outbound mail via SMTP, regardless of what the agent emits.
+        # Inbound IMAP polling continues normally. Use this for draft-only
+        # / approval-required mailboxes where replies are routed through a
+        # separate human-approval channel (e.g. a chat platform). The flag
+        # also serves as a defense against prompt injection from inbound
+        # email content: an attacker who hijacks the agent via a crafted
+        # message cannot make the adapter SMTP anything outbound.
+        self._suppress_outbound = _parse_bool_env("EMAIL_SUPPRESS_OUTBOUND")
+        if self._suppress_outbound:
+            logger.warning(
+                "[Email] EMAIL_SUPPRESS_OUTBOUND=true — adapter will NOT "
+                "send any outbound mail via SMTP. Inbound polling remains "
+                "active. Outbound replies must be routed through a "
+                "separate channel (e.g. human approval on a chat platform)."
+            )
 
         # Skip attachments — configured via config.yaml:
         #   platforms:
@@ -465,7 +510,18 @@ class EmailAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Send an email reply to the given address."""
+        """Send an email reply to the given address.
+
+        When ``EMAIL_SUPPRESS_OUTBOUND=true`` is set, this method
+        unconditionally short-circuits and returns success without
+        contacting SMTP. See ``__init__`` for the rationale.
+        """
+        if self._suppress_outbound:
+            logger.info(
+                "[Email] Suppressed outbound to %s (EMAIL_SUPPRESS_OUTBOUND=true)",
+                chat_id,
+            )
+            return SendResult(success=True, message_id=None)
         try:
             loop = asyncio.get_running_loop()
             message_id = await loop.run_in_executor(
@@ -482,7 +538,24 @@ class EmailAdapter(BasePlatformAdapter):
         body: str,
         reply_to_msg_id: Optional[str] = None,
     ) -> str:
-        """Send an email via SMTP. Runs in executor thread."""
+        """Send an email via SMTP. Runs in executor thread.
+
+        Backstop: when ``EMAIL_SUPPRESS_OUTBOUND=true`` is set, public
+        send methods short-circuit before reaching this function. If
+        execution somehow reaches here with the flag set, that indicates
+        a bug (e.g. a new public send path was added without the guard)
+        and we refuse to contact SMTP rather than leak the message.
+        """
+        if self._suppress_outbound:
+            logger.error(
+                "[Email] BUG: _send_email reached with EMAIL_SUPPRESS_OUTBOUND=true. "
+                "A public send path is bypassing the suppression guard. "
+                "Refusing to contact SMTP. to_addr=%s",
+                to_addr,
+            )
+            raise RuntimeError(
+                "EMAIL_SUPPRESS_OUTBOUND is set; refusing to send mail via SMTP"
+            )
         msg = MIMEMultipart()
         msg["From"] = self._address
         msg["To"] = to_addr
@@ -542,7 +615,18 @@ class EmailAdapter(BasePlatformAdapter):
         file_name: Optional[str] = None,
         reply_to: Optional[str] = None,
     ) -> SendResult:
-        """Send a file as an email attachment."""
+        """Send a file as an email attachment.
+
+        When ``EMAIL_SUPPRESS_OUTBOUND=true`` is set, this method
+        unconditionally short-circuits and returns success without
+        contacting SMTP. See ``__init__`` for the rationale.
+        """
+        if self._suppress_outbound:
+            logger.info(
+                "[Email] Suppressed outbound document to %s (EMAIL_SUPPRESS_OUTBOUND=true)",
+                chat_id,
+            )
+            return SendResult(success=True, message_id=None)
         try:
             loop = asyncio.get_running_loop()
             message_id = await loop.run_in_executor(
@@ -565,7 +649,21 @@ class EmailAdapter(BasePlatformAdapter):
         file_path: str,
         file_name: Optional[str] = None,
     ) -> str:
-        """Send an email with a file attachment via SMTP."""
+        """Send an email with a file attachment via SMTP.
+
+        Backstop: see _send_email for rationale.
+        """
+        if self._suppress_outbound:
+            logger.error(
+                "[Email] BUG: _send_email_with_attachment reached with "
+                "EMAIL_SUPPRESS_OUTBOUND=true. A public send path is "
+                "bypassing the suppression guard. Refusing to contact SMTP. "
+                "to_addr=%s",
+                to_addr,
+            )
+            raise RuntimeError(
+                "EMAIL_SUPPRESS_OUTBOUND is set; refusing to send mail via SMTP"
+            )
         msg = MIMEMultipart()
         msg["From"] = self._address
         msg["To"] = to_addr

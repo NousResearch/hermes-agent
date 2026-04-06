@@ -5977,6 +5977,7 @@ class AIAgent:
                 tasks=function_args.get("tasks"),
                 max_iterations=function_args.get("max_iterations"),
                 parent_agent=self,
+                write_memory=function_args.get("write_memory", False),
             )
         elif function_name == "subagent_memory_write":
             from tools.subagent_memory_tool import subagent_memory_write as _smw
@@ -6354,6 +6355,7 @@ class AIAgent:
                         tasks=tasks_arg,
                         max_iterations=function_args.get("max_iterations"),
                         parent_agent=self,
+                        write_memory=function_args.get("write_memory", False),
                     )
                     _delegate_result = function_result
                 finally:

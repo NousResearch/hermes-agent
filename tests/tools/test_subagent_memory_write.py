@@ -347,5 +347,70 @@ class TestDelegateTaskWriteMemory(unittest.TestCase):
         self.assertEqual(props["write_memory"]["type"], "boolean")
 
 
+# ---------------------------------------------------------------------------
+# run_agent.py dispatch paths forward write_memory
+# ---------------------------------------------------------------------------
+
+class TestRunAgentDispatchForwardsWriteMemory(unittest.TestCase):
+    """Verify that both _invoke_tool and _execute_tool_calls_sequential
+    forward write_memory from function_args to delegate_task.
+
+    This is the regression test for the bug where write_memory was added to
+    delegate_task() but never passed from the run_agent.py dispatch branches,
+    silently making the whole feature a no-op in normal usage.
+    """
+
+    def _make_function_args(self, write_memory=True):
+        return {
+            "goal": "test delegation",
+            "write_memory": write_memory,
+        }
+
+    @patch("tools.delegate_tool.delegate_task")
+    def test_invoke_tool_forwards_write_memory_true(self, mock_delegate):
+        """_invoke_tool must pass write_memory=True when the model requests it."""
+        mock_delegate.return_value = json.dumps({"status": "completed", "summary": "ok"})
+        from run_agent import AIAgent
+        agent = MagicMock(spec=AIAgent)
+        agent._subagent_memory_writer = None
+        agent.valid_tool_names = {"delegate_task"}
+        agent._memory_manager = None
+
+        # Call the unbound method with our mock agent as self
+        import run_agent as _ra
+        result = _ra.AIAgent._invoke_tool(
+            agent,
+            "delegate_task",
+            self._make_function_args(write_memory=True),
+            "task-123",
+        )
+        mock_delegate.assert_called_once()
+        _, kwargs = mock_delegate.call_args
+        self.assertTrue(kwargs.get("write_memory") or mock_delegate.call_args[1].get("write_memory"),
+                        "write_memory=True must be forwarded to delegate_task from _invoke_tool")
+
+    @patch("tools.delegate_tool.delegate_task")
+    def test_invoke_tool_forwards_write_memory_false(self, mock_delegate):
+        """_invoke_tool must pass write_memory=False by default."""
+        mock_delegate.return_value = json.dumps({"status": "completed", "summary": "ok"})
+        from run_agent import AIAgent
+        import run_agent as _ra
+        agent = MagicMock(spec=AIAgent)
+        agent._subagent_memory_writer = None
+        agent.valid_tool_names = {"delegate_task"}
+        agent._memory_manager = None
+
+        _ra.AIAgent._invoke_tool(
+            agent,
+            "delegate_task",
+            {"goal": "test delegation"},  # no write_memory key
+            "task-123",
+        )
+        mock_delegate.assert_called_once()
+        call_kwargs = mock_delegate.call_args[1]
+        self.assertFalse(call_kwargs.get("write_memory", False),
+                         "write_memory must default to False")
+
+
 if __name__ == "__main__":
     unittest.main()

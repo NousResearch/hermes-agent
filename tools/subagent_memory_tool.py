@@ -112,6 +112,13 @@ def subagent_memory_write(content: str, writer: Optional[Callable] = None) -> st
     return json.dumps(result, ensure_ascii=False)
 
 
+# NOTE: This tool intentionally does NOT call registry.register().
+# The standard registry pattern assumes a static, globally-available handler,
+# but subagent_memory_write requires a per-subagent writer closure that is
+# created at delegation time and bound to a specific parent agent's _memory_store.
+# Instead, delegate_tool.py injects the schema + writer directly onto child.tools
+# and child.valid_tool_names, and run_agent.py dispatches via a dedicated elif
+# branch in _invoke_tool and _execute_tool_calls_sequential.
 SUBAGENT_MEMORY_WRITE_SCHEMA = {
     "name": "subagent_memory_write",
     "description": (

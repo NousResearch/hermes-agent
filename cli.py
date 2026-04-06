@@ -1849,12 +1849,27 @@ class HermesCLI:
             if self._steering_queue:
                 frags.append(("class:status-bar-dim", " │ "))
                 frags.append(("class:status-bar-warn", f"🎯 {len(self._steering_queue)}"))
+            # Combined workload indicator: A:N (agents), P:N (processes), or both
+            n_agents = 0
             if self._subagent_panel:
-                n_running = sum(1 for r in self._subagent_panel.values() if r.status == "running")
-                if n_running:
-                    frags.append(("class:status-bar-dim", " │ "))
-                    label = f"🔀 {n_running}" + (" ▲" if self._subagent_panel_open else " Ctrl+X")
-                    frags.append(("class:status-bar-warn", label))
+                n_agents = sum(1 for r in self._subagent_panel.values() if r.status == "running")
+            # Background process count from process_registry
+            _process_count = 0
+            try:
+                from tools.process_registry import process_registry as _pr
+                _process_count = len(_pr._running)
+            except Exception:
+                pass
+            if n_agents or _process_count:
+                frags.append(("class:status-bar-dim", " │ "))
+                parts = []
+                if n_agents:
+                    parts.append(f"A:{n_agents}")
+                if _process_count:
+                    parts.append(f"P:{_process_count}")
+                label = ",".join(parts)
+                label += " ▲" if self._subagent_panel_open else " Ctrl+X"
+                frags.append(("class:status-bar-warn", label))
             if self._show_full_user_message:
                 frags.append(("class:status-bar-dim", " │ "))
                 frags.append(("class:status-bar-warn", "↕ full msg"))

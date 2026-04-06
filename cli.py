@@ -9202,33 +9202,118 @@ class HermesCLI:
             voice_status_bar=voice_status_bar,
             completions_menu=completions_menu,
         )
-        # Inject the subagent panel widget just before the status bar.
-        # Done here (not via _get_extra_tui_widgets) so the extension hook
-        # stays clean for subclass use.
-        try:
-            from hermes_cli.subagent_panel import render_panel as _render_panel
-            from prompt_toolkit.application import get_app as _get_app
-            _cli_ref = self
-            _panel_filter = Condition(
-                lambda: _cli_ref._subagent_panel_open and bool(_cli_ref._subagent_panel)
-            )
-            _panel_widget = ConditionalContainer(
-                content=Window(
-                    content=FormattedTextControl(
-                        lambda: _render_panel(
-                            sorted(_cli_ref._subagent_panel.values(), key=lambda r: r.index),
-                            _cli_ref._subagent_panel_cursor,
-                            _get_app().output.get_size().columns,
-                        )
-                    ),
-                    dont_extend_height=True,
-                ),
-                filter=_panel_filter,
-            )
-            status_idx = _layout_children.index(status_bar)
-            _layout_children.insert(status_idx, _panel_widget)
-        except Exception:
-            pass
+        # Inject unified agents + processes panel just before the status bar.
+        proc_cli_ref = self
+
+        @staticmethod
+        def _get_process_records():
+            """Return list of dicts for currently running/completed background processes."""
+            try:
+                from tools.process_registry import process_registry as _pr
+                running = _pr._running
+                finished = _pr._finished
+                out = []
+                for pid, sess in list(running.items()):
+                    age = int(__import__("time").time() - sess.started_at)
+                    cmd = sess.command[:120] if hasattr(sess, 'command') else str(pid)[:120]
+                    out.append({
+                        "session_id": pid,
+                        "command": cmd,
+                        "uptime_seconds": age,
+                        "status": "running",
+                    })
+                for pid, sess in list(finished.items()):
+                    age = getattr(sess, 'exit_code', '?')
+                    cmd = sess.command[:120] if hasattr(sess, 'command') else str(pid)[:120]
+                    out.append({
+                        "session_id": pid,
+                        "command": cmd,
+                        "exit_code": age,
+                        "uptime_seconds": getattr(sess, 'uptime', 0),
+                        "status": "exited",
+                    })
+                return out
+            except Exception:
+                return []
+
+        def _render_unified_panel():
+            """Render combined subagent + process panel."""
+            from prompt_toolkit.application import get_app as _up_app
+            from prompt_toolkit.layout import FormattedTextControl as _UP_FTC
+            records = sorted(proc_cli_ref._subagent_panel.values(), key=lambda r: r.index)
+            procs = _get_process_records()
+            width = _up_app().output.get_size().columns
+
+            W = min(width - 4, 84)
+            n_agents = sum(1 for r in records if r.status == "running")
+            n_procs = sum(1 for p in procs if p.get("status") == "running")
+
+            frags = []
+
+            def line(t, s=""):
+                frags.append((s, t + "\n"))
+
+            # Header
+            hdr = f"╭─ Workload ({n_agents} agent{'s' if n_agents != 1 else ''}, {n_procs} proc{'es' if n_procs != 1 else ''}) "
+            hdr_dashes = max(0, W - len(hdr) - 8)  # 8 = " Ctrl+X ─╮"
+            line(f"{hdr}{'─' * hdr_dashes}Ctrl+X ─╮", "class:subagent-border")
+
+            ELAPSED_W = 9
+            goal_w = max(8, W - ELAPSED_W - 12)
+
+            # Status icons
+            SI = {"running": "●", "completed": "✓", "failed": "✗", "error": "✗", "interrupted": "~"}
+            SS = {"running": "class:subagent-running", "completed": "class:subagent-done",
+                  "failed": "class:subagent-error", "error": "class:subagent-error", "interrupted": "class:subagent-warn"}
+
+            # Agent rows
+            for i, r in enumerate(records[:12]):
+                icon = SI.get(r.status, "?")
+                ist = SS.get(r.status, "")
+                secs = int(r.elapsed)
+                el = f"{secs // 60}:{secs % 60:02d}"
+                if r.status != "running":
+                    el = f"{el} ✓"
+                g = r.goal[:goal_w].ljust(goal_w)
+                line(f"│ {icon} {g} {el.rjust(ELAPSED_W)} │", ist)
+
+            # Divider if both sections exist
+            if records and procs:
+                ph = " ── Processes ── "
+                line(f"│  {ph}{' ' * max(0, W - 4 - len(ph))}│", "class:subagent-border")
+
+            # Process rows
+            for p in procs[:12 - len(records)]:
+                cmd = (p.get("command", "")[:goal_w]).ljust(goal_w)
+                up = p.get("uptime_seconds", 0)
+                us = f"{up // 60}:{up % 60:02d}"
+                st = p.get("status", "exited")
+                if st == "running":
+                    line(f"│ $ {cmd} {us.rjust(ELAPSED_W)} │", "class:subagent-running")
+                else:
+                    ec = p.get("exit_code", "?")
+                    ok = str(ec) == "0"
+                    line(f"│ $ {cmd} {us.rjust(ELAPSED_W - 2)} ✓{'' if ok else '✗'} │",
+                         "class:subagent-done" if ok else "class:subagent-error")
+
+            # Footer
+            ft = " ↑↓ K=kill  C=clear ─╯"
+            ft_dashes = max(0, W - 2 - len(ft))
+            line(f"╰{'─' * ft_dashes}{ft}", "class:subagent-border")
+            return frags
+
+        _up_filter = Condition(
+            lambda: proc_cli_ref._subagent_panel_open and (proc_cli_ref._subagent_panel or _get_process_records())
+        )
+        _up_widget = ConditionalContainer(
+            content=Window(
+                content=FormattedTextControl(_render_unified_panel),
+                dont_extend_height=True,
+            ),
+            filter=_up_filter,
+        )
+        status_idx = _layout_children.index(status_bar)
+        _layout_children.insert(status_idx, _up_widget)
 
         # Inject the stash panel widget just before the status bar (above subagent panel).
         try:

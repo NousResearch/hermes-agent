@@ -534,6 +534,9 @@ class GatewayRunner:
         # Key: session_key, Value: True when a prompt is waiting for user input.
         self._update_prompt_pending: Dict[str, bool] = {}
 
+        # Skill keyword triggers: scanned once from SKILL.md frontmatter.
+        # Key: skill_name, Value: list of trigger keywords.
+        self._skill_triggers: Dict[str, list] = self._scan_skill_triggers()
         # Persistent Honcho managers keyed by gateway session key.
         # This preserves write_frequency="session" semantics across short-lived
         # per-message AIAgent instances.
@@ -581,6 +584,45 @@ class GatewayRunner:
             return _find_skill("hermes-agent-setup") is not None
         except Exception:
             return False
+
+    def _scan_skill_triggers(self) -> Dict[str, tuple]:
+        """Scan all SKILL.md files for `triggers:` in frontmatter.
+
+        Returns {skill_name: ([keyword, ...], skill_content, display_name)} for
+        skills that declare triggers. Keywords are stored lowercased for
+        case-insensitive matching. Skill content is loaded eagerly to avoid
+        repeated file I/O on each matched message.
+        """
+        triggers: Dict[str, tuple] = {}
+        try:
+            from tools.skills_tool import SKILLS_DIR, _parse_frontmatter
+            from agent.skill_utils import get_external_skills_dirs
+            from agent.skill_commands import _load_skill_payload
+            dirs_to_scan = []
+            if SKILLS_DIR.exists():
+                dirs_to_scan.append(SKILLS_DIR)
+            dirs_to_scan.extend(get_external_skills_dirs())
+            for scan_dir in dirs_to_scan:
+                for skill_md in scan_dir.rglob("SKILL.md"):
+                    try:
+                        content = skill_md.read_text(encoding="utf-8")
+                        fm, _ = _parse_frontmatter(content)
+                        kw_list = fm.get("triggers")
+                        if kw_list and isinstance(kw_list, list):
+                            name = fm.get("name", skill_md.parent.name)
+                            keywords = [str(k).lower() for k in kw_list if k]
+                            loaded = _load_skill_payload(name)
+                            if loaded:
+                                sk_content, _sk_dir, sk_display = loaded
+                                triggers[name] = (keywords, sk_content, sk_display)
+                    except Exception:
+                        continue
+            if triggers:
+                logger.info("[Gateway] Skill triggers loaded: %s",
+                            {k: v[0] for k, v in triggers.items()})
+        except Exception as e:
+            logger.warning("[Gateway] Failed to scan skill triggers: %s", e)
+        return triggers
 
     # -- Voice mode persistence ------------------------------------------
 
@@ -1618,6 +1660,13 @@ class GatewayRunner:
                 return None
             return WeComAdapter(config)
 
+        elif platform == Platform.WECHAT:
+            from gateway.platforms.wechat import WeChatAdapter, check_wechat_requirements
+            if not check_wechat_requirements():
+                logger.warning("WeChat: aiohttp not installed or WECHAT_ENABLED not set")
+                return None
+            return WeChatAdapter(config)
+
         elif platform == Platform.MATTERMOST:
             from gateway.platforms.mattermost import MattermostAdapter, check_mattermost_requirements
             if not check_mattermost_requirements():
@@ -1686,6 +1735,7 @@ class GatewayRunner:
             Platform.DINGTALK: "DINGTALK_ALLOWED_USERS",
             Platform.FEISHU: "FEISHU_ALLOWED_USERS",
             Platform.WECOM: "WECOM_ALLOWED_USERS",
+            Platform.WECHAT: "WECHAT_ALLOWED_USERS",
         }
         platform_allow_all_map = {
             Platform.TELEGRAM: "TELEGRAM_ALLOW_ALL_USERS",
@@ -1700,6 +1750,7 @@ class GatewayRunner:
             Platform.DINGTALK: "DINGTALK_ALLOW_ALL_USERS",
             Platform.FEISHU: "FEISHU_ALLOW_ALL_USERS",
             Platform.WECOM: "WECOM_ALLOW_ALL_USERS",
+            Platform.WECHAT: "WECHAT_ALLOW_ALL_USERS",
         }
 
         # Per-platform allow-all flag (e.g., DISCORD_ALLOW_ALL_USERS=true)
@@ -2744,7 +2795,26 @@ class GatewayRunner:
                 message_text = await self._enrich_message_with_vision(
                     message_text, image_paths
                 )
-        
+
+            # -------------------------------------------------------------
+            # Inject video paths for MCP vision analysis
+            # -------------------------------------------------------------
+            video_paths = []
+            for i, path in enumerate(event.media_urls):
+                mtype = event.media_types[i] if i < len(event.media_types) else ""
+                if mtype.startswith("video/"):
+                    video_paths.append(path)
+            if video_paths:
+                parts = []
+                for vp in video_paths:
+                    parts.append(
+                        f"[User sent a video, cached at: {vp}\n"
+                        f" Use mcp_zai_vision_analyze_video with video_source='{vp}' to analyze it.]"
+                    )
+                    logger.info("Video media cached, injected for MCP vision: %s", vp)
+                video_prefix = "\n\n".join(parts)
+                message_text = f"{video_prefix}\n\n{message_text}" if message_text else video_prefix
+
         # -----------------------------------------------------------------
         # Auto-transcribe voice/audio messages sent by the user
         # -----------------------------------------------------------------
@@ -2837,6 +2907,26 @@ class GatewayRunner:
                         f"Ask the user what they'd like you to do with it.]"
                     )
                 message_text = f"{context_note}\n\n{message_text}"
+
+        # -----------------------------------------------------------------
+        # Auto-inject skill on keyword trigger
+        # -----------------------------------------------------------------
+        _raw_msg = (event.text or "").lower()
+        if self._skill_triggers:
+            for _sk_name, (_keywords, _sk_content, _sk_display) in self._skill_triggers.items():
+                if any(_kw in _raw_msg for _kw in _keywords):
+                    message_text = (
+                        f"[SYSTEM: Keyword matched skill '{_sk_display}'. "
+                        f"You MUST follow this skill's workflow. "
+                        f"Do NOT skip steps.]\n\n"
+                        f"{_sk_content}\n\n"
+                        f"---\nUser message: {message_text}"
+                    )
+                    logger.info(
+                        "[Gateway] Auto-injected skill '%s' on keyword trigger for session %s",
+                        _sk_name, session_key,
+                    )
+                    break  # only first match
 
         # -----------------------------------------------------------------
         # Inject reply context when user replies to a message not in history.
@@ -6095,10 +6185,12 @@ class GatewayRunner:
             or os.getenv("HERMES_TOOL_PROGRESS_MODE")
             or "all"
         )
-        # Disable tool progress for webhooks - they don't support message editing,
+        # Disable tool progress for platforms that don't support message editing,
         # so each progress line would be sent as a separate message.
+        # WeChat uses a capped "new-tool-only" mode instead of being excluded entirely.
         from gateway.config import Platform
-        tool_progress_enabled = progress_mode != "off" and source.platform != Platform.WEBHOOK
+        _no_edit_platforms = (Platform.WEBHOOK,)
+        tool_progress_enabled = progress_mode != "off" and source.platform not in _no_edit_platforms
         
         # Queue for progress messages (thread-safe)
         progress_queue = queue.Queue() if tool_progress_enabled else None
@@ -6115,8 +6207,9 @@ class GatewayRunner:
             if event_type not in ("tool.started",):
                 return
 
-            # "new" mode: only report when tool changes
-            if progress_mode == "new" and tool_name == last_tool[0]:
+            # "new" mode: only report when tool changes.
+            # WeChat always uses this behavior to avoid message spam.
+            if (progress_mode == "new" or source.platform == Platform.WECHAT) and tool_name == last_tool[0]:
                 return
             last_tool[0] = tool_name
             
@@ -6188,9 +6281,14 @@ class GatewayRunner:
 
             progress_lines = []      # Accumulated tool lines
             progress_msg_id = None   # ID of the progress message to edit
-            can_edit = True          # False once an edit fails (platform doesn't support it)
+            _is_wechat = source.platform == Platform.WECHAT
+            # WeChat can't edit messages — send each tool as its own message,
+            # capped at 3 to avoid flooding the chat.
+            can_edit = not _is_wechat
+            _wechat_msg_sent = 0
+            _WECHAT_MSG_CAP = 3
             _last_edit_ts = 0.0      # Throttle edits to avoid Telegram flood control
-            _PROGRESS_EDIT_INTERVAL = 1.5  # Minimum seconds between edits
+            _PROGRESS_EDIT_INTERVAL = 5.0 if _is_wechat else 1.5  # WeChat: slower cadence
 
             while True:
                 try:
@@ -6244,9 +6342,15 @@ class GatewayRunner:
                             # First tool: send all accumulated text as new message
                             full_text = "\n".join(progress_lines)
                             result = await adapter.send(chat_id=source.chat_id, content=full_text, metadata=_progress_metadata)
+                        elif _is_wechat and _wechat_msg_sent >= _WECHAT_MSG_CAP:
+                            # WeChat: cap reached — drop silently, typing indicator
+                            # keeps showing activity without flooding the chat.
+                            pass
                         else:
                             # Editing unsupported: send just this line
                             result = await adapter.send(chat_id=source.chat_id, content=msg, metadata=_progress_metadata)
+                            if _is_wechat:
+                                _wechat_msg_sent += 1
                         if result.success and result.message_id:
                             progress_msg_id = result.message_id
 
@@ -6399,7 +6503,11 @@ class GatewayRunner:
                 from gateway.config import StreamingConfig
                 _scfg = StreamingConfig()
 
-            if _scfg.enabled and _scfg.transport != "off":
+            # WeChat doesn't support edit_message, so streaming would send an
+            # initial partial message that never gets cleaned up, resulting in
+            # duplicate messages. Disable streaming for WeChat entirely.
+            _streaming_allowed = _scfg.enabled and _scfg.transport != "off" and source.platform != Platform.WECHAT
+            if _streaming_allowed:
                 try:
                     from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
                     _adapter = self.adapters.get(source.platform)
@@ -7036,8 +7144,7 @@ class GatewayRunner:
                     first_response = result.get("final_response", "")
                     if first_response and not _already_streamed:
                         try:
-                            await adapter.send(source.chat_id, first_response,
-                                               metadata=getattr(event, "metadata", None))
+                            await adapter.send(source.chat_id, first_response)
                         except Exception as e:
                             logger.warning("Failed to send first response before queued message: %s", e)
                 # else: interrupted — discard the interrupted response ("Operation

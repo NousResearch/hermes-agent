@@ -855,6 +855,123 @@ def cmd_whatsapp(args):
         print("⚠ Pairing may not have completed. Run 'hermes whatsapp' to try again.")
 
 
+def cmd_wechat(args):
+    """WeChat integration: login, status, accounts."""
+    action = getattr(args, "wechat_action", None) or "login"
+
+    if action == "login":
+        _require_tty("wechat login")
+        import asyncio, time
+        from hermes_cli.config import get_env_value, save_env_value
+        from gateway.config import PlatformConfig
+
+        print()
+        print("⚕ WeChat Login")
+        print("=" * 50)
+
+        if not get_env_value("WECHAT_ENABLED"):
+            save_env_value("WECHAT_ENABLED", "true")
+            print("  ✓ WECHAT_ENABLED set to true")
+
+        api_base = get_env_value("WECHAT_API_BASE_URL") or ""
+        if not api_base:
+            print()
+            try:
+                api_base = input("  WECHAT_API_BASE_URL (Enter to skip): ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print("\nCancelled.")
+                return
+            if api_base:
+                save_env_value("WECHAT_API_BASE_URL", api_base)
+                print(f"  ✓ API base URL saved: {api_base}")
+
+        async def _do_login():
+            from gateway.platforms.wechat import WeChatAdapter
+            cfg = PlatformConfig(enabled=True)
+            if api_base:
+                cfg.extra["base_url"] = api_base
+            adapter = WeChatAdapter(cfg)
+            ok = await adapter.connect()
+            if not ok:
+                print("  ✗ Failed to connect to WeChat API. Check WECHAT_API_BASE_URL.")
+                return
+            try:
+                login = await adapter.start_login(force=True)
+                session_key = login.get("session_key")
+                qr_url = login.get("qrcode_url", "")
+                print()
+                print("  使用微信扫描以下二维码，以完成连接：")
+                print()
+                if qr_url:
+                    print(f"  {qr_url}")
+                print()
+                print("  等待连接结果...")
+
+                deadline = time.time() + 180
+                while time.time() < deadline:
+                    status = await adapter.wait_login(session_key, timeout_ms=2000)
+                    if status.get("connected"):
+                        account_id = status.get("account_id", "")
+                        if account_id:
+                            save_env_value("WECHAT_ACCOUNT_ID", account_id)
+                        print(f"  ✓ 登录成功！账号: {account_id or '(unknown)'}")
+                        if account_id:
+                            print(f"  ✓ WECHAT_ACCOUNT_ID set to {account_id}")
+                        print()
+                        print("  启动 gateway 开始接收消息:")
+                        print("    hermes gateway restart")
+                        return
+                    await asyncio.sleep(1)
+
+                print("  ✗ 登录超时（3分钟）。请运行 'hermes wechat login' 重试。")
+            finally:
+                await adapter.disconnect()
+
+        asyncio.run(_do_login())
+
+    elif action == "status":
+        from hermes_cli.config import get_env_value
+        from gateway.platforms.wechat_state import WeChatStateStore
+
+        print()
+        print("⚕ WeChat Status")
+        print("=" * 50)
+        enabled = get_env_value("WECHAT_ENABLED") or ""
+        api_base = get_env_value("WECHAT_API_BASE_URL") or "(not set)"
+        print(f"  Enabled:  {'yes' if enabled.lower() in ('true', '1', 'yes') else 'no'}")
+        print(f"  API base: {api_base}")
+        store = WeChatStateStore()
+        ids = store.list_account_ids()
+        print(f"  Accounts: {len(ids)} saved")
+        for aid in ids:
+            acct = store.load_account(aid)
+            status_label = "enabled" if (acct and acct.enabled) else "disabled"
+            user_label = f" ({acct.user_id})" if acct and acct.user_id else ""
+            print(f"    • {aid}{user_label} — {status_label}")
+        print()
+
+    elif action == "accounts":
+        from gateway.platforms.wechat_state import WeChatStateStore
+
+        store = WeChatStateStore()
+        ids = store.list_account_ids()
+        print()
+        if not ids:
+            print("  No WeChat accounts saved. Run 'hermes wechat login' to add one.")
+        else:
+            print(f"  {'ACCOUNT ID':<36}  {'USER ID':<30}  STATUS")
+            print(f"  {'-'*36}  {'-'*30}  ------")
+            for aid in ids:
+                acct = store.load_account(aid)
+                user_id = (acct.user_id or "") if acct else ""
+                status_label = "enabled" if (acct and acct.enabled) else "disabled"
+                print(f"  {aid:<36}  {user_id:<30}  {status_label}")
+        print()
+
+    else:
+        print(f"Unknown wechat action: {action}. Use: login, status, accounts")
+
+
 def cmd_setup(args):
     """Interactive setup wizard."""
     _require_tty("setup")
@@ -931,6 +1048,7 @@ def select_provider_and_model(args=None):
         "kilocode": "Kilo Code",
         "alibaba": "Alibaba Cloud (DashScope)",
         "huggingface": "Hugging Face",
+        "redpill": "RedPill",
         "custom": "Custom endpoint",
     }
     active_label = provider_labels.get(active, active) if active else "none"
@@ -961,6 +1079,7 @@ def select_provider_and_model(args=None):
         ("opencode-go", "OpenCode Go (open models, $10/month subscription)"),
         ("ai-gateway", "AI Gateway (Vercel — 200+ models, pay-per-use)"),
         ("alibaba", "Alibaba Cloud / DashScope Coding (Qwen + multi-provider)"),
+        ("redpill", "RedPill (TEE-protected aggregator API)"),
     ]
 
     # Add user-defined custom providers from config.yaml
@@ -1055,7 +1174,7 @@ def select_provider_and_model(args=None):
         _model_flow_anthropic(config, current_model)
     elif selected_provider == "kimi-coding":
         _model_flow_kimi(config, current_model)
-    elif selected_provider in ("zai", "minimax", "minimax-cn", "kilocode", "opencode-zen", "opencode-go", "ai-gateway", "alibaba", "huggingface"):
+    elif selected_provider in ("zai", "minimax", "minimax-cn", "kilocode", "opencode-zen", "opencode-go", "ai-gateway", "alibaba", "huggingface", "redpill"):
         _model_flow_api_key_provider(config, selected_provider, current_model)
 
 
@@ -4386,6 +4505,20 @@ For more help on a command:
         description="Configure WhatsApp and pair via QR code"
     )
     whatsapp_parser.set_defaults(func=cmd_whatsapp)
+
+    # =========================================================================
+    # wechat command
+    # =========================================================================
+    wechat_parser = subparsers.add_parser(
+        "wechat",
+        help="Set up WeChat integration",
+        description="Log in, check status, or list WeChat accounts"
+    )
+    wechat_subparsers = wechat_parser.add_subparsers(dest="wechat_action")
+    wechat_subparsers.add_parser("login", help="Log in via QR code")
+    wechat_subparsers.add_parser("status", help="Show WeChat configuration and accounts")
+    wechat_subparsers.add_parser("accounts", help="List saved WeChat accounts")
+    wechat_parser.set_defaults(func=cmd_wechat)
 
     # =========================================================================
     # login command

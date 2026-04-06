@@ -315,6 +315,10 @@ class WeChatAdapter(BasePlatformAdapter):
         except Exception as exc:
             return SendResult(success=False, error=str(exc))
 
+    async def _keep_typing(self, chat_id: str, interval: float = 5.0, metadata=None) -> None:
+        """Override base interval to 5s — matches openclaw-weixin reference and reduces API pressure."""
+        await super()._keep_typing(chat_id, interval=interval, metadata=metadata)
+
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         if not self._running:
             return

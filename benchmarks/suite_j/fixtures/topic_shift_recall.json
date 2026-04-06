@@ -1,0 +1,130 @@
+[
+  {
+    "id": "tsr_01",
+    "description": "Shift from editor preferences to deployment details",
+    "topic_a_facts": [
+      "Editor theme preference: dark mode",
+      "Preferred editor font is JetBrains Mono"
+    ],
+    "topic_b_facts": [
+      "Production deploy region is us-east-1",
+      "Blue-green deploy window starts at 02:00 UTC"
+    ],
+    "query": "What region does production deploy to?",
+    "gold_answer": "us-east-1",
+    "forbidden_terms": ["dark mode", "JetBrains Mono"],
+    "difficulty": "easy"
+  },
+  {
+    "id": "tsr_02",
+    "description": "Shift from frontend stack to database settings",
+    "topic_a_facts": [
+      "Frontend uses SvelteKit",
+      "UI component library is Skeleton"
+    ],
+    "topic_b_facts": [
+      "Primary database engine is PostgreSQL 16",
+      "Connection pool limit is 200"
+    ],
+    "query": "What database engine are we using?",
+    "gold_answer": "PostgreSQL 16",
+    "forbidden_terms": ["SvelteKit", "Skeleton"],
+    "difficulty": "easy"
+  },
+  {
+    "id": "tsr_03",
+    "description": "Shift from CI system to auth policy",
+    "topic_a_facts": [
+      "CI runs on GitHub Actions",
+      "Preview deployments post to Discord"
+    ],
+    "topic_b_facts": [
+      "Auth sessions expire after 12 hours",
+      "Refresh tokens last 7 days"
+    ],
+    "query": "How long do auth sessions last?",
+    "gold_answer": "12 hours",
+    "forbidden_terms": ["GitHub Actions", "Discord"],
+    "difficulty": "medium"
+  },
+  {
+    "id": "tsr_04",
+    "description": "Shift from vendor choice to infra endpoint",
+    "topic_a_facts": [
+      "Payment provider is Paddle",
+      "Stripe is explicitly not used"
+    ],
+    "topic_b_facts": [
+      "Internal vector service is at http://qdrant.internal:6333",
+      "Backups run every 6 hours"
+    ],
+    "query": "What is the internal vector service endpoint?",
+    "gold_answer": "qdrant.internal:6333",
+    "forbidden_terms": ["Paddle", "Stripe"],
+    "difficulty": "medium"
+  },
+  {
+    "id": "tsr_05",
+    "description": "Return to topic A after pivoting to topic B",
+    "topic_a_facts": [
+      "Mobile app target platform is Android first",
+      "Offline mode is mandatory"
+    ],
+    "topic_b_facts": [
+      "Observability stack uses Grafana and Loki",
+      "Alerting goes to PagerDuty"
+    ],
+    "query": "Which mobile platform are we targeting first?",
+    "gold_answer": "Android first",
+    "forbidden_terms": ["Grafana", "PagerDuty"],
+    "difficulty": "medium"
+  },
+  {
+    "id": "tsr_06",
+    "description": "Shift from deployment topology to legal policy",
+    "topic_a_facts": [
+      "API runs in three Kubernetes replicas",
+      "Ingress terminates TLS at the edge"
+    ],
+    "topic_b_facts": [
+      "Privacy policy review owner is Mira",
+      "Data retention is 30 days for logs"
+    ],
+    "query": "How long are logs retained?",
+    "gold_answer": "30 days",
+    "forbidden_terms": ["Kubernetes", "TLS"],
+    "difficulty": "medium"
+  },
+  {
+    "id": "tsr_07",
+    "description": "Harder shift with same domain but different subtopic",
+    "topic_a_facts": [
+      "Authentication uses OIDC with Authentik",
+      "MFA is required for admin accounts"
+    ],
+    "topic_b_facts": [
+      "Authorization model is role-based access control",
+      "Editors cannot delete production resources"
+    ],
+    "query": "What authorization model do we use?",
+    "gold_answer": "role-based access control",
+    "forbidden_terms": ["OIDC", "MFA"],
+    "difficulty": "hard"
+  },
+  {
+    "id": "tsr_08",
+    "description": "Harder shift where query could be distracted by earlier topic",
+    "topic_a_facts": [
+      "Read replica pool size is 50",
+      "Primary write pool size is 200"
+    ],
+    "topic_b_facts": [
+      "Redis cache TTL is 900 seconds",
+      "Session cache is warmed every 5 minutes"
+    ],
+    "query": "What TTL does the Redis cache use?",
+    "gold_answer": "900 seconds",
+    "forbidden_terms": ["pool size", "read replica"],
+    "difficulty": "hard"
+  }
+]

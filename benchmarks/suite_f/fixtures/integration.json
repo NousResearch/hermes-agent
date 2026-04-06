@@ -1,0 +1,175 @@
+[
+  {
+    "id": "int_e01",
+    "description": "Store then immediately recall — round-trip fidelity",
+    "difficulty": "easy",
+    "steps": [
+      {"action": "store", "content": "The production Redis cluster has 6 nodes in cluster mode", "scope": "global"},
+      {"action": "recall", "query": "How many nodes does the Redis cluster have?", "expected_in_result": "6"}
+    ],
+    "gold_answer": "6 nodes in cluster mode",
+    "pass_criteria": "expected_in_result present in top-1 recall"
+  },
+  {
+    "id": "int_e02",
+    "description": "Store multiple facts, recall the specific one",
+    "difficulty": "easy",
+    "steps": [
+      {"action": "store", "content": "The primary database is PostgreSQL 16", "scope": "global"},
+      {"action": "store", "content": "The cache layer is Redis 7.2", "scope": "global"},
+      {"action": "store", "content": "The message queue is RabbitMQ 3.12", "scope": "global"},
+      {"action": "store", "content": "The search engine is Elasticsearch 8", "scope": "global"},
+      {"action": "recall", "query": "What message queue technology is used?", "expected_in_result": "RabbitMQ"}
+    ],
+    "gold_answer": "RabbitMQ 3.12",
+    "pass_criteria": "expected_in_result present in top-1 recall"
+  },
+  {
+    "id": "int_e03",
+    "description": "Update a fact and verify the new version is recalled",
+    "difficulty": "easy",
+    "steps": [
+      {"action": "store", "content": "The deployment pipeline uses CircleCI", "scope": "global"},
+      {"action": "advance_time", "days": 1},
+      {"action": "store", "content": "The deployment pipeline was migrated from CircleCI to GitHub Actions", "scope": "global"},
+      {"action": "recall", "query": "What CI/CD system does the project use?", "expected_in_result": "GitHub Actions"}
+    ],
+    "gold_answer": "GitHub Actions (migrated from CircleCI)",
+    "pass_criteria": "expected_in_result present in top-3 recall"
+  },
+  {
+    "id": "int_m01",
+    "description": "Multi-turn: facts stored across separate store calls, recalled together",
+    "difficulty": "medium",
+    "steps": [
+      {"action": "store", "content": "Alice is the tech lead for the payments team", "scope": "global"},
+      {"action": "store", "content": "The payments team owns the Stripe integration", "scope": "global"},
+      {"action": "store", "content": "The Stripe integration webhook secret rotates every 30 days", "scope": "global"},
+      {"action": "recall", "query": "Who is responsible for the Stripe webhook rotation?", "expected_in_result": "Alice"}
+    ],
+    "gold_answer": "Alice (tech lead, payments team, owns Stripe integration)",
+    "pass_criteria": "expected_in_result present in top-3 recall"
+  },
+  {
+    "id": "int_m02",
+    "description": "Scoped recall: user preference stored in user scope, retrieved correctly",
+    "difficulty": "medium",
+    "steps": [
+      {"action": "store", "content": "Global default: dark mode is disabled", "scope": "global"},
+      {"action": "store", "content": "User prefers dark mode enabled", "scope": "user:evi"},
+      {"action": "store", "content": "User prefers verbose output over concise summaries", "scope": "user:evi"},
+      {"action": "recall", "query": "What is the user's display preference?", "scope": "user:evi", "expected_in_result": "dark mode"}
+    ],
+    "gold_answer": "Dark mode enabled",
+    "pass_criteria": "expected_in_result present in top-1 recall"
+  },
+  {
+    "id": "int_m03",
+    "description": "Pinned fact survives consolidation and time decay",
+    "difficulty": "medium",
+    "steps": [
+      {"action": "store", "content": "CRITICAL: Never commit secrets to the git repository", "scope": "global", "pinned": true, "importance": 1.0},
+      {"action": "store", "content": "Temporary debug flag: ENABLE_VERBOSE_LOGGING=true", "scope": "global", "pinned": false, "importance": 0.1},
+      {"action": "advance_time", "days": 365},
+      {"action": "consolidate"},
+      {"action": "recall", "query": "What are the security rules for git commits?", "expected_in_result": "Never commit secrets"}
+    ],
+    "gold_answer": "Never commit secrets to the git repository",
+    "pass_criteria": "expected_in_result present in top-3 recall"
+  },
+  {
+    "id": "int_m04",
+    "description": "Rehearsal pattern: frequently accessed fact survives noise at scale",
+    "difficulty": "medium",
+    "steps": [
+      {"action": "store", "content": "The production API base URL is https://api.example.com/v2", "scope": "global"},
+      {"action": "store", "content": "Fact A: The sky is blue", "scope": "global"},
+      {"action": "store", "content": "Fact B: Water boils at 100C", "scope": "global"},
+      {"action": "store", "content": "Fact C: The capital of France is Paris", "scope": "global"},
+      {"action": "store", "content": "Fact D: Light travels at 299792 km/s", "scope": "global"},
+      {"action": "simulate_access", "content_substring": "api.example.com"},
+      {"action": "simulate_access", "content_substring": "api.example.com"},
+      {"action": "simulate_access", "content_substring": "api.example.com"},
+      {"action": "advance_time", "days": 30},
+      {"action": "consolidate"},
+      {"action": "recall", "query": "What is the production API endpoint?", "expected_in_result": "api.example.com"}
+    ],
+    "gold_answer": "https://api.example.com/v2",
+    "pass_criteria": "expected_in_result present in top-1 recall"
+  },
+  {
+    "id": "int_h01",
+    "description": "Contradiction resolution: new fact should supersede old fact after time",
+    "difficulty": "hard",
+    "steps": [
+      {"action": "store", "content": "The rate limit is 100 requests per minute", "scope": "global"},
+      {"action": "advance_time", "days": 7},
+      {"action": "store", "content": "Rate limit increased to 500 requests per minute after infrastructure upgrade", "scope": "global"},
+      {"action": "advance_time", "days": 1},
+      {"action": "recall", "query": "What is the API rate limit?", "expected_in_result": "500"}
+    ],
+    "gold_answer": "500 requests per minute",
+    "pass_criteria": "expected_in_result present in top-1 recall"
+  },
+  {
+    "id": "int_h02",
+    "description": "Project scope isolation with global fallback",
+    "difficulty": "hard",
+    "steps": [
+      {"action": "store", "content": "Default log level across all services: INFO", "scope": "global"},
+      {"action": "store", "content": "The payments service log level is DEBUG for tracing", "scope": "project:payments"},
+      {"action": "store", "content": "The search service log level is WARN to reduce noise", "scope": "project:search"},
+      {"action": "recall", "query": "What log level does the payments service use?", "scope": "project:payments", "expected_in_result": "DEBUG"},
+      {"action": "recall", "query": "What log level does the search service use?", "scope": "project:search", "expected_in_result": "WARN"}
+    ],
+    "gold_answer": "payments:DEBUG, search:WARN",
+    "pass_criteria": "both expected_in_result values present in respective recall top-1"
+  },
+  {
+    "id": "int_h03",
+    "description": "Long session simulation: 20 store operations then targeted recall",
+    "difficulty": "hard",
+    "steps": [
+      {"action": "store", "content": "The monorepo has 47 services", "scope": "global"},
+      {"action": "store", "content": "Services are written in Go (32), Python (8), TypeScript (7)", "scope": "global"},
+      {"action": "store", "content": "The oldest service is the auth service, created in 2018", "scope": "global"},
+      {"action": "store", "content": "The newest service is the ML inference service, created in 2025", "scope": "global"},
+      {"action": "store", "content": "Services communicate via gRPC internally and REST externally", "scope": "global"},
+      {"action": "store", "content": "Each service owns its own database schema", "scope": "global"},
+      {"action": "store", "content": "Cross-service data access goes through APIs, never direct DB", "scope": "global"},
+      {"action": "store", "content": "The platform team maintains shared libraries for auth, logging, tracing", "scope": "global"},
+      {"action": "store", "content": "Library versions are pinned per service, no forced upgrades", "scope": "global"},
+      {"action": "store", "content": "Dependency audits run weekly via Renovate", "scope": "global"},
+      {"action": "store", "content": "The monorepo build tool is Bazel", "scope": "global"},
+      {"action": "store", "content": "Build cache is shared via Remote Build Execution", "scope": "global"},
+      {"action": "store", "content": "Full build takes 18 minutes without cache, 3 minutes with", "scope": "global"},
+      {"action": "store", "content": "Services are deployed independently via their own pipelines", "scope": "global"},
+      {"action": "store", "content": "The critical bottleneck fact: the ML inference service deployment SLA is 45 minutes due to model loading", "scope": "global"},
+      {"action": "store", "content": "Service ownership is tracked in a CODEOWNERS file per service", "scope": "global"},
+      {"action": "store", "content": "The oncall rotation includes all senior engineers", "scope": "global"},
+      {"action": "store", "content": "Incident playbooks are in Notion, linked from PagerDuty", "scope": "global"},
+      {"action": "store", "content": "The platform SLA for shared services is 99.95% uptime", "scope": "global"},
+      {"action": "store", "content": "Capacity planning uses 6-month forecasts from the finance team", "scope": "global"},
+      {"action": "recall", "query": "Why does the ML inference service deployment take so long?", "expected_in_result": "model loading"}
+    ],
+    "gold_answer": "45 minutes due to model loading",
+    "pass_criteria": "expected_in_result present in top-3 recall"
+  },
+  {
+    "id": "int_h04",
+    "description": "Consolidation preserves high-importance facts, archives noise after long time",
+    "difficulty": "hard",
+    "steps": [
+      {"action": "store", "content": "IMPORTANT: The master encryption key is stored in HSM, never in software", "scope": "global", "importance": 1.0},
+      {"action": "store", "content": "Meeting: discussed pizza for the team lunch", "scope": "global", "importance": 0.05},
+      {"action": "store", "content": "Meeting: someone suggested tacos instead", "scope": "global", "importance": 0.05},
+      {"action": "store", "content": "Meeting: decided on sushi for the team lunch", "scope": "global", "importance": 0.05},
+      {"action": "store", "content": "Note: the office printer was out of paper last Tuesday", "scope": "global", "importance": 0.05},
+      {"action": "advance_time", "days": 180},
+      {"action": "consolidate"},
+      {"action": "recall", "query": "Where is the master encryption key stored?", "expected_in_result": "HSM"}
+    ],
+    "gold_answer": "HSM (Hardware Security Module), never in software",
+    "pass_criteria": "expected_in_result present in top-1 recall"
+  }
+]

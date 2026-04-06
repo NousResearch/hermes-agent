@@ -1,0 +1,180 @@
+{
+  "backend": "holographic",
+  "profile": "balanced",
+  "embedding_model": "auto",
+  "timestamp": "2026-04-05T15:54:59.900007Z",
+  "suites": [
+    "j",
+    "k",
+    "l"
+  ],
+  "mean_score": 0.875,
+  "std": 0.0,
+  "ci_95": [
+    0.875,
+    0.875
+  ],
+  "per_category_mean": {
+    "contradictions": 0.65,
+    "importance_filtering": 0.75,
+    "semantic_recall": 0.84,
+    "cross_reference": 0.6,
+    "temporal_decay": 0.6222222222222222,
+    "scopes": 0.1,
+    "format_sensitivity": 0.9,
+    "timestamp_integrity": 0.625,
+    "adversarial": 1.0,
+    "scale": 1.0,
+    "deduplication": 0.875,
+    "conversation_memory": 0.8,
+    "capacity_stress": 0.8,
+    "delegation_memory": 0.625,
+    "topic_shift_recall": 1.0,
+    "compression_survival": 1.0
+  },
+  "per_category_std": {
+    "contradictions": 0.0,
+    "importance_filtering": 0.0,
+    "semantic_recall": 0.0,
+    "cross_reference": 0.0,
+    "temporal_decay": 0.0,
+    "scopes": 0.0,
+    "format_sensitivity": 0.0,
+    "timestamp_integrity": 0.0,
+    "adversarial": 0.0,
+    "scale": 0.0,
+    "deduplication": 0.0,
+    "conversation_memory": 0.0,
+    "capacity_stress": 0.0,
+    "delegation_memory": 0.0,
+    "topic_shift_recall": 0.0,
+    "compression_survival": 0.0
+  },
+  "num_runs": 1,
+  "retrieval_metrics": {
+    "recall_at_1": 0.875,
+    "recall_at_3": 1.0,
+    "recall_at_5": 1.0,
+    "recall_at_10": 1.0,
+    "mrr": 0.9375,
+    "ndcg_at_5": 0.9538662191964322,
+    "ndcg_at_10": 0.9538662191964322,
+    "average_precision": 0.9375,
+    "exact_match": 0.0,
+    "token_f1": 0.24115445920197567,
+    "token_precision": 0.15124591395876225,
+    "token_recall": 0.7916666666666666
+  },
+  "cost_metrics": {
+    "tokens_per_query": 27.916666666666668,
+    "tokens_per_correct": 31.904761904761905,
+    "cost_efficiency": 0.18027003764877306,
+    "score": 0.875,
+    "total_tokens": 670.0,
+    "total_queries": 24.0,
+    "correct": 21.0,
+    "total": 24.0
+  },
+  "runs": [
+    {
+      "seed": 42,
+      "overall_score": 0.875,
+      "wall_time_seconds": 1.337784767150879,
+      "token_usage": {
+        "recall_tokens": 670,
+        "recall_chars": 2743,
+        "recall_queries": 24,
+        "avg_recall_tokens_per_query": 27
+      },
+      "retrieval_metrics": {
+        "recall_at_1": 0.875,
+        "recall_at_3": 1.0,
+        "recall_at_5": 1.0,
+        "recall_at_10": 1.0,
+        "mrr": 0.9375,
+        "ndcg_at_5": 0.9538662191964322,
+        "ndcg_at_10": 0.9538662191964322,
+        "average_precision": 0.9375,
+        "exact_match": 0.0,
+        "token_f1": 0.24115445920197567,
+        "token_precision": 0.15124591395876225,
+        "token_recall": 0.7916666666666666
+      },
+      "cost_metrics": {
+        "tokens_per_query": 27.916666666666668,
+        "tokens_per_correct": 31.904761904761905,
+        "cost_efficiency": 0.18027003764877306,
+        "score": 0.875,
+        "total_tokens": 670,
+        "total_queries": 24,
+        "correct": 21,
+        "total": 24
+      },
+      "categories": {
+        "topic_shift_recall": {
+          "score": 1.0,
+          "correct": 8,
+          "total": 8,
+          "recall_tokens": 113,
+          "recall_chars": 472,
+          "retrieval_metrics": {
+            "recall_at_1": 1.0,
+            "recall_at_3": 1.0,
+            "recall_at_5": 1.0,
+            "recall_at_10": 1.0,
+            "mrr": 1.0,
+            "ndcg_at_5": 1.0,
+            "ndcg_at_10": 1.0,
+            "average_precision": 1.0,
+            "exact_match": 0.0,
+            "token_f1": 0.4236111111111111,
+            "token_precision": 0.2839285714285714,
+            "token_recall": 0.875
+          }
+        },
+        "compression_survival": {
+          "score": 1.0,
+          "correct": 8,
+          "total": 8,
+          "recall_tokens": 296,
+          "recall_chars": 1201,
+          "retrieval_metrics": {
+            "recall_at_1": 1.0,
+            "recall_at_3": 1.0,
+            "recall_at_5": 1.0,
+            "recall_at_10": 1.0,
+            "mrr": 1.0,
+            "ndcg_at_5": 1.0,
+            "ndcg_at_10": 1.0,
+            "average_precision": 1.0,
+            "exact_match": 0.0,
+            "token_f1": 0.16435472739820567,
+            "token_precision": 0.09209119054320293,
+            "token_recall": 0.875
+          }
+        },
+        "delegation_memory": {
+          "score": 0.625,
+          "correct": 5,
+          "total": 8,
+          "recall_tokens": 261,
+          "recall_chars": 1070,
+          "retrieval_metrics": {
+            "recall_at_1": 0.625,
+            "recall_at_3": 1.0,
+            "recall_at_5": 1.0,
+            "recall_at_10": 1.0,
+            "mrr": 0.8125,
+            "ndcg_at_5": 0.8615986575892965,
+            "ndcg_at_10": 0.8615986575892965,
+            "average_precision": 0.8125,
+            "exact_match": 0.0,
+            "token_f1": 0.1354975390966103,
+            "token_precision": 0.07771797990451242,
+            "token_recall": 0.625
+          }
+        }
+      }
+    }
+  ]
+}

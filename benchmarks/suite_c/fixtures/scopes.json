@@ -1,0 +1,298 @@
+[
+  {
+    "id": "sc_01",
+    "description": "Hermes project-specific API key should not leak to other project scope",
+    "facts": [
+      {"content": "Hermes API gateway URL: api.hermes.internal:8080", "scope": "project:hermes"},
+      {"content": "Hermes uses OAuth2 with PKCE for user authentication", "scope": "project:hermes"},
+      {"content": "Other project API gateway URL: api.other.internal:9090", "scope": "project:other"},
+      {"content": "Other project uses basic auth with username/password", "scope": "project:other"},
+      {"content": "All internal services communicate over mTLS", "scope": "global"}
+    ],
+    "query": "What authentication method does the project use?",
+    "query_scope": "project:hermes",
+    "gold_answer": "OAuth2 with PKCE",
+    "should_not_contain": "basic auth"
+  },
+  {
+    "id": "sc_02",
+    "description": "Hermes DB config should not surface other project's DB details",
+    "facts": [
+      {"content": "Hermes database: PostgreSQL at hermes-db.internal:5432", "scope": "project:hermes"},
+      {"content": "Hermes DB name: hermes_production", "scope": "project:hermes"},
+      {"content": "Other project database: MySQL at other-db.internal:3306", "scope": "project:other"},
+      {"content": "Other project DB name: other_production", "scope": "project:other"},
+      {"content": "Database backups run nightly at 2 AM UTC", "scope": "global"}
+    ],
+    "query": "What database does the project use?",
+    "query_scope": "project:hermes",
+    "gold_answer": "PostgreSQL at hermes-db.internal:5432",
+    "should_not_contain": "MySQL"
+  },
+  {
+    "id": "sc_03",
+    "description": "Hermes deployment scripts should not return other project deploy info",
+    "facts": [
+      {"content": "Hermes deploys via: ./scripts/deploy.sh --env prod", "scope": "project:hermes"},
+      {"content": "Hermes staging URL: staging.hermes.io", "scope": "project:hermes"},
+      {"content": "Other project deploys via: kubectl apply -f k8s/", "scope": "project:other"},
+      {"content": "Other project staging: staging.other.io", "scope": "project:other"},
+      {"content": "All deployments require CI to pass first", "scope": "global"}
+    ],
+    "query": "How do you deploy to production?",
+    "query_scope": "project:hermes",
+    "gold_answer": "./scripts/deploy.sh --env prod",
+    "should_not_contain": "kubectl"
+  },
+  {
+    "id": "sc_04",
+    "description": "Hermes port config isolated from other project port config",
+    "facts": [
+      {"content": "Hermes API runs on port 8080", "scope": "project:hermes"},
+      {"content": "Hermes WebSocket server on port 8081", "scope": "project:hermes"},
+      {"content": "Other project API runs on port 3000", "scope": "project:other"},
+      {"content": "Other project uses Next.js default port 3000", "scope": "project:other"},
+      {"content": "All services expose /health on their primary port", "scope": "global"}
+    ],
+    "query": "What port does the API run on?",
+    "query_scope": "project:hermes",
+    "gold_answer": "8080",
+    "should_not_contain": "3000"
+  },
+  {
+    "id": "sc_05",
+    "description": "Hermes tech stack recall should not pull other project's stack",
+    "facts": [
+      {"content": "Hermes backend is written in Python 3.11 using FastAPI", "scope": "project:hermes"},
+      {"content": "Hermes frontend uses Vue 3 with TypeScript", "scope": "project:hermes"},
+      {"content": "Other project backend is Go 1.21 with Gin framework", "scope": "project:other"},
+      {"content": "Other project frontend uses React 18 with TypeScript", "scope": "project:other"},
+      {"content": "All projects enforce strict TypeScript for frontend code", "scope": "global"}
+    ],
+    "query": "What language and framework is the backend written in?",
+    "query_scope": "project:hermes",
+    "gold_answer": "Python 3.11 using FastAPI",
+    "should_not_contain": "Go"
+  },
+  {
+    "id": "sc_06",
+    "description": "Hermes repo URL should not surface other project repo",
+    "facts": [
+      {"content": "Hermes source code: github.com/company/hermes-agent", "scope": "project:hermes"},
+      {"content": "Hermes branch strategy: main, develop, feature/*", "scope": "project:hermes"},
+      {"content": "Other project source: github.com/company/other-service", "scope": "project:other"},
+      {"content": "Other project uses trunk-based development", "scope": "project:other"},
+      {"content": "All repos use pull request reviews before merge", "scope": "global"}
+    ],
+    "query": "What is the project repository URL?",
+    "query_scope": "project:hermes",
+    "gold_answer": "github.com/company/hermes-agent",
+    "should_not_contain": "other-service"
+  },
+  {
+    "id": "sc_07",
+    "description": "Hermes monitoring config should not expose other project alerts",
+    "facts": [
+      {"content": "Hermes error rate alert: fires if >1% of requests fail in 5min", "scope": "project:hermes"},
+      {"content": "Hermes latency alert: fires if p99 > 500ms", "scope": "project:hermes"},
+      {"content": "Other project error alert: fires if >5% fail in 10min", "scope": "project:other"},
+      {"content": "Other project latency SLA: p99 < 2000ms", "scope": "project:other"},
+      {"content": "All alerts send to PagerDuty on-call rotation", "scope": "global"}
+    ],
+    "query": "What is the error rate alert threshold?",
+    "query_scope": "project:hermes",
+    "gold_answer": "1% of requests in 5 minutes",
+    "should_not_contain": "5%"
+  },
+  {
+    "id": "sc_08",
+    "description": "Hermes config file location should not return other project config path",
+    "facts": [
+      {"content": "Hermes main config: ~/.hermes/config.yaml", "scope": "project:hermes"},
+      {"content": "Hermes skills directory: ~/.hermes/skills/", "scope": "project:hermes"},
+      {"content": "Other project config: /etc/other-service/config.toml", "scope": "project:other"},
+      {"content": "Other project logs: /var/log/other-service/", "scope": "project:other"},
+      {"content": "All projects use environment variables to override config files", "scope": "global"}
+    ],
+    "query": "Where is the main configuration file?",
+    "query_scope": "project:hermes",
+    "gold_answer": "~/.hermes/config.yaml",
+    "should_not_contain": "/etc/other-service"
+  },
+  {
+    "id": "sc_09",
+    "description": "Hermes test command should not surface other project test instructions",
+    "facts": [
+      {"content": "Run Hermes tests: cd ~/Projects/hermes-agent && python -m pytest tests/ -q", "scope": "project:hermes"},
+      {"content": "Hermes test coverage threshold: 80%", "scope": "project:hermes"},
+      {"content": "Other project tests: cd ~/Projects/other-service && go test ./...", "scope": "project:other"},
+      {"content": "Other project test coverage threshold: 70%", "scope": "project:other"},
+      {"content": "All CI pipelines must pass tests before merge", "scope": "global"}
+    ],
+    "query": "How do you run the project tests?",
+    "query_scope": "project:hermes",
+    "gold_answer": "python -m pytest tests/ -q",
+    "should_not_contain": "go test"
+  },
+  {
+    "id": "sc_10",
+    "description": "Hermes memory backend type should not leak to other project scope",
+    "facts": [
+      {"content": "Hermes uses SQLite as memory backend in development", "scope": "project:hermes"},
+      {"content": "Hermes production memory backend: PostgreSQL with pgvector", "scope": "project:hermes"},
+      {"content": "Other project uses Redis for session storage", "scope": "project:other"},
+      {"content": "Other project uses Elasticsearch for search", "scope": "project:other"},
+      {"content": "Vector databases are recommended for semantic search at scale", "scope": "global"}
+    ],
+    "query": "What is the memory storage backend?",
+    "query_scope": "project:hermes",
+    "gold_answer": "SQLite (dev) / PostgreSQL with pgvector (production)",
+    "should_not_contain": "Elasticsearch"
+  },
+  {
+    "id": "sc_11",
+    "description": "Global facts appear in any scope query",
+    "facts": [
+      {"content": "All engineers use 1Password for credential management", "scope": "global"},
+      {"content": "Company VPN required for all production access", "scope": "global"},
+      {"content": "Hermes-specific secret: uses vault-backed env injection", "scope": "project:hermes"},
+      {"content": "Other project secret: uses Kubernetes secrets directly", "scope": "project:other"}
+    ],
+    "query": "How are credentials managed?",
+    "query_scope": "project:hermes",
+    "gold_answer": "1Password",
+    "should_not_contain": "Kubernetes secrets"
+  },
+  {
+    "id": "sc_12",
+    "description": "User-scoped fact only visible in that user's scope",
+    "facts": [
+      {"content": "Alice's preferred IDE: VS Code with vim keybindings", "scope": "user:alice"},
+      {"content": "Alice's local dev port: 4000", "scope": "user:alice"},
+      {"content": "Bob's preferred IDE: Neovim with LSP", "scope": "user:bob"},
+      {"content": "Bob's local dev port: 5000", "scope": "user:bob"},
+      {"content": "Team code style guide enforced via pre-commit hooks", "scope": "global"}
+    ],
+    "query": "What IDE does Alice prefer?",
+    "query_scope": "user:alice",
+    "gold_answer": "VS Code with vim keybindings",
+    "should_not_contain": "Neovim"
+  },
+  {
+    "id": "sc_13",
+    "description": "Backend team config should not surface frontend team config",
+    "facts": [
+      {"content": "Backend team uses black and isort for Python formatting", "scope": "team:backend"},
+      {"content": "Backend team Slack channel: #backend-eng", "scope": "team:backend"},
+      {"content": "Frontend team uses prettier for JS/TS formatting", "scope": "team:frontend"},
+      {"content": "Frontend team Slack channel: #frontend-eng", "scope": "team:frontend"},
+      {"content": "All teams do weekly sync on Thursdays", "scope": "global"}
+    ],
+    "query": "What formatter does the team use?",
+    "query_scope": "team:backend",
+    "gold_answer": "black and isort",
+    "should_not_contain": "prettier"
+  },
+  {
+    "id": "sc_14",
+    "description": "Alice's personal dev notes not visible in Bob's scope",
+    "facts": [
+      {"content": "Alice notes: always run migrations before testing auth flow", "scope": "user:alice"},
+      {"content": "Alice notes: use virtualenv activate from ~/venvs/hermes", "scope": "user:alice"},
+      {"content": "Bob notes: remember to docker-compose up before backend dev", "scope": "user:bob"},
+      {"content": "Bob notes: frontend dev server: cd frontend && npm run dev", "scope": "user:bob"},
+      {"content": "Dev environment setup docs: docs.internal/dev-setup", "scope": "global"}
+    ],
+    "query": "What should I remember before testing the auth flow?",
+    "query_scope": "user:alice",
+    "gold_answer": "run migrations",
+    "should_not_contain": "docker-compose"
+  },
+  {
+    "id": "sc_15",
+    "description": "Global compliance fact visible in both project scopes",
+    "facts": [
+      {"content": "All user PII must be encrypted at rest using AES-256", "scope": "global"},
+      {"content": "SOC2 audit requires access logs for all admin actions", "scope": "global"},
+      {"content": "Hermes stores user memories in encrypted SQLite", "scope": "project:hermes"},
+      {"content": "Other project stores user profiles in encrypted PostgreSQL", "scope": "project:other"}
+    ],
+    "query": "How must user PII be stored?",
+    "query_scope": "project:hermes",
+    "gold_answer": "encrypted at rest using AES-256",
+    "should_not_contain": "other project"
+  },
+  {
+    "id": "sc_16",
+    "description": "Team-scoped sprint info does not bleed to other team",
+    "facts": [
+      {"content": "Backend team sprint goal this cycle: complete API v3 migration", "scope": "team:backend"},
+      {"content": "Backend team velocity: 34 story points per sprint", "scope": "team:backend"},
+      {"content": "Frontend team sprint goal: redesign settings page", "scope": "team:frontend"},
+      {"content": "Frontend team velocity: 28 story points per sprint", "scope": "team:frontend"},
+      {"content": "All teams use two-week sprints", "scope": "global"}
+    ],
+    "query": "What is the current sprint goal?",
+    "query_scope": "team:backend",
+    "gold_answer": "API v3 migration",
+    "should_not_contain": "settings page"
+  },
+  {
+    "id": "sc_17",
+    "description": "Project-scoped incident runbook not visible from other project",
+    "facts": [
+      {"content": "Hermes database outage runbook: docs.internal/runbooks/hermes-db-outage", "scope": "project:hermes"},
+      {"content": "Hermes cache miss runbook: docs.internal/runbooks/hermes-cache", "scope": "project:hermes"},
+      {"content": "Other project outage runbook: docs.internal/runbooks/other-outage", "scope": "project:other"},
+      {"content": "On-call rotation covers all projects", "scope": "global"}
+    ],
+    "query": "Where is the database outage runbook?",
+    "query_scope": "project:hermes",
+    "gold_answer": "docs.internal/runbooks/hermes-db-outage",
+    "should_not_contain": "other-outage"
+  },
+  {
+    "id": "sc_18",
+    "description": "User-scoped API token should not appear when querying another user's scope",
+    "facts": [
+      {"content": "Alice's personal dev token prefix: dev_alice_", "scope": "user:alice"},
+      {"content": "Alice's local config: API_BASE=http://localhost:8080", "scope": "user:alice"},
+      {"content": "Bob's personal dev token prefix: dev_bob_", "scope": "user:bob"},
+      {"content": "Bob's local config: API_BASE=http://localhost:9090", "scope": "user:bob"},
+      {"content": "Never share personal dev tokens with teammates", "scope": "global"}
+    ],
+    "query": "What is the personal dev token prefix?",
+    "query_scope": "user:alice",
+    "gold_answer": "dev_alice_",
+    "should_not_contain": "dev_bob_"
+  },
+  {
+    "id": "sc_19",
+    "description": "Global fact ranked alongside project fact when querying project scope",
+    "facts": [
+      {"content": "All projects must pass security scan before production release", "scope": "global"},
+      {"content": "Hermes security scanner config: .snyk at project root", "scope": "project:hermes"},
+      {"content": "Hermes runs Bandit for Python static analysis", "scope": "project:hermes"},
+      {"content": "Other project uses gosec for Go static analysis", "scope": "project:other"}
+    ],
+    "query": "What security scanning is required?",
+    "query_scope": "project:hermes",
+    "gold_answer": "Bandit for Python static analysis, plus security scan required before production",
+    "should_not_contain": "gosec"
+  },
+  {
+    "id": "sc_20",
+    "description": "Backend team tooling isolated from frontend team tooling",
+    "facts": [
+      {"content": "Backend team uses pytest-asyncio for async test support", "scope": "team:backend"},
+      {"content": "Backend team primary language: Python", "scope": "team:backend"},
+      {"content": "Frontend team uses Jest and Testing Library for component tests", "scope": "team:frontend"},
+      {"content": "Frontend team primary language: TypeScript", "scope": "team:frontend"},
+      {"content": "Both teams report test coverage in CI dashboards", "scope": "global"}
+    ],
+    "query": "What testing framework does the team use?",
+    "query_scope": "team:backend",
+    "gold_answer": "pytest-asyncio",
+    "should_not_contain": "Jest"
+  }
+]

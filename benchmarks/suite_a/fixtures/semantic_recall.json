@@ -1,0 +1,352 @@
+[
+  {
+    "id": "sr_e01",
+    "fact": "The project uses PostgreSQL 15 with the pgvector extension",
+    "query": "What Postgres database version does the project run?",
+    "gold_answer": "PostgreSQL 15 with pgvector extension",
+    "difficulty": "easy"
+  },
+  {
+    "id": "sr_e02",
+    "fact": "The backend API is deployed on port 8080",
+    "query": "What port is the backend API running on?",
+    "gold_answer": "Port 8080",
+    "difficulty": "easy"
+  },
+  {
+    "id": "sr_e03",
+    "fact": "Alice Chen is the tech lead for the payments team",
+    "query": "Who leads the payments team?",
+    "gold_answer": "Alice Chen",
+    "difficulty": "easy"
+  },
+  {
+    "id": "sr_e04",
+    "fact": "The CI pipeline uses GitHub Actions with ubuntu-latest runners",
+    "query": "What CI system and runner OS do we use?",
+    "gold_answer": "GitHub Actions with ubuntu-latest",
+    "difficulty": "easy"
+  },
+  {
+    "id": "sr_e05",
+    "fact": "The Python version for this project is 3.11.4",
+    "query": "Which Python version are we using?",
+    "gold_answer": "Python 3.11.4",
+    "difficulty": "easy"
+  },
+  {
+    "id": "sr_e06",
+    "fact": "Redis is used for session caching with a 30-minute TTL",
+    "query": "What's the session cache and its timeout?",
+    "gold_answer": "Redis with 30-minute TTL",
+    "difficulty": "easy"
+  },
+  {
+    "id": "sr_e07",
+    "fact": "The frontend is built with Next.js 14 and TypeScript",
+    "query": "What framework and language is the frontend in?",
+    "gold_answer": "Next.js 14 with TypeScript",
+    "difficulty": "easy"
+  },
+  {
+    "id": "sr_e08",
+    "fact": "Docker images are stored in the GitHub Container Registry (ghcr.io)",
+    "query": "Where are our Docker images hosted?",
+    "gold_answer": "GitHub Container Registry (ghcr.io)",
+    "difficulty": "easy"
+  },
+  {
+    "id": "sr_e09",
+    "fact": "The staging environment is at staging.example.com",
+    "query": "What's the URL for staging?",
+    "gold_answer": "staging.example.com",
+    "difficulty": "easy"
+  },
+  {
+    "id": "sr_e10",
+    "fact": "Bob Martinez handles infrastructure and DevOps",
+    "query": "Who's responsible for DevOps?",
+    "gold_answer": "Bob Martinez",
+    "difficulty": "easy"
+  },
+  {
+    "id": "sr_e11",
+    "fact": "The API rate limit is 100 requests per minute per user",
+    "query": "What's the rate limit for API calls?",
+    "gold_answer": "100 requests per minute per user",
+    "difficulty": "easy"
+  },
+  {
+    "id": "sr_e12",
+    "fact": "We use Stripe for payment processing",
+    "query": "What payment provider do we use?",
+    "gold_answer": "Stripe",
+    "difficulty": "easy"
+  },
+  {
+    "id": "sr_e13",
+    "fact": "The main branch is protected and requires 2 approvals for merge",
+    "query": "How many approvals are needed to merge to main?",
+    "gold_answer": "2 approvals",
+    "difficulty": "easy"
+  },
+  {
+    "id": "sr_e14",
+    "fact": "Sentry is used for error tracking in production",
+    "query": "What error monitoring tool do we use?",
+    "gold_answer": "Sentry",
+    "difficulty": "easy"
+  },
+  {
+    "id": "sr_e15",
+    "fact": "The database backup runs daily at 3 AM UTC",
+    "query": "When does the DB backup happen?",
+    "gold_answer": "Daily at 3 AM UTC",
+    "difficulty": "easy"
+  },
+  {
+    "id": "sr_m01",
+    "fact": "The microservices communicate via gRPC with protobuf serialization",
+    "query": "How do the services talk to each other and what serialization format?",
+    "gold_answer": "gRPC with protobuf",
+    "difficulty": "medium"
+  },
+  {
+    "id": "sr_m02",
+    "fact": "Kubernetes cluster runs on AWS EKS in us-east-1 region",
+    "query": "Describe our container orchestration setup and cloud region",
+    "gold_answer": "Kubernetes on AWS EKS in us-east-1",
+    "difficulty": "medium"
+  },
+  {
+    "id": "sr_m03",
+    "fact": "The search feature uses Elasticsearch 8.9 with custom analyzers for multilingual support",
+    "query": "What powers our search functionality and how does it handle multiple languages?",
+    "gold_answer": "Elasticsearch 8.9 with custom multilingual analyzers",
+    "difficulty": "medium"
+  },
+  {
+    "id": "sr_m04",
+    "fact": "Authentication uses JWT tokens with RS256 signing and 15-minute expiry",
+    "query": "Explain the auth token configuration including algorithm and lifetime",
+    "gold_answer": "JWT with RS256 signing, 15-minute expiry",
+    "difficulty": "medium"
+  },
+  {
+    "id": "sr_m05",
+    "fact": "The data pipeline ingests events from Kafka topics and writes to BigQuery",
+    "query": "Where does the analytics data flow from source to destination?",
+    "gold_answer": "Kafka topics to BigQuery",
+    "difficulty": "medium"
+  },
+  {
+    "id": "sr_m06",
+    "fact": "Carol Wu wrote the recommendation engine using collaborative filtering with implicit feedback",
+    "query": "Who built the recommendations system and what algorithm does it use?",
+    "gold_answer": "Carol Wu, collaborative filtering with implicit feedback",
+    "difficulty": "medium"
+  },
+  {
+    "id": "sr_m07",
+    "fact": "The mobile app supports iOS 15+ and Android API level 26+",
+    "query": "What are the minimum OS version requirements for our mobile platforms?",
+    "gold_answer": "iOS 15+ and Android API 26+",
+    "difficulty": "medium"
+  },
+  {
+    "id": "sr_m08",
+    "fact": "Feature flags are managed through LaunchDarkly with a 5-minute sync interval",
+    "query": "How do we control feature rollouts and how often does the config refresh?",
+    "gold_answer": "LaunchDarkly with 5-minute sync",
+    "difficulty": "medium"
+  },
+  {
+    "id": "sr_m09",
+    "fact": "The CDN is CloudFront with a 24-hour cache TTL for static assets",
+    "query": "What content delivery network serves our static files and for how long are they cached?",
+    "gold_answer": "CloudFront with 24-hour cache TTL",
+    "difficulty": "medium"
+  },
+  {
+    "id": "sr_m10",
+    "fact": "Database migrations are managed with Alembic and auto-generated from SQLAlchemy models",
+    "query": "How do we handle schema changes and what tools are involved?",
+    "gold_answer": "Alembic migrations auto-generated from SQLAlchemy models",
+    "difficulty": "medium"
+  },
+  {
+    "id": "sr_m11",
+    "fact": "The notification service sends emails via SendGrid and push notifications via Firebase Cloud Messaging",
+    "query": "What third-party services handle our email and push notification delivery?",
+    "gold_answer": "SendGrid for email, Firebase Cloud Messaging for push",
+    "difficulty": "medium"
+  },
+  {
+    "id": "sr_m12",
+    "fact": "Load testing is done with k6 scripts targeting 500 concurrent users",
+    "query": "What tool do we use for performance testing and what's the target concurrency?",
+    "gold_answer": "k6 with 500 concurrent users",
+    "difficulty": "medium"
+  },
+  {
+    "id": "sr_m13",
+    "fact": "The logging stack is Fluent Bit \u2192 Loki \u2192 Grafana",
+    "query": "Describe the log collection, storage, and visualization pipeline",
+    "gold_answer": "Fluent Bit collects, Loki stores, Grafana visualizes",
+    "difficulty": "medium"
+  },
+  {
+    "id": "sr_m14",
+    "fact": "API documentation is auto-generated from OpenAPI 3.0 specs using Redoc",
+    "query": "How are the API docs produced and what specification standard do they follow?",
+    "gold_answer": "Auto-generated from OpenAPI 3.0 via Redoc",
+    "difficulty": "medium"
+  },
+  {
+    "id": "sr_m15",
+    "fact": "The user table has a composite index on (tenant_id, email) for multi-tenant queries",
+    "query": "What database index optimization exists for looking up users across tenants?",
+    "gold_answer": "Composite index on tenant_id and email",
+    "difficulty": "medium"
+  },
+  {
+    "id": "sr_m16",
+    "fact": "Secrets are stored in AWS Secrets Manager and rotated every 90 days",
+    "query": "Where do we keep credentials and how often are they changed?",
+    "gold_answer": "AWS Secrets Manager, rotated every 90 days",
+    "difficulty": "medium"
+  },
+  {
+    "id": "sr_m17",
+    "fact": "The WebSocket connections are handled by a dedicated Go service with 10K connection capacity",
+    "query": "What technology handles real-time connections and what's the scale limit?",
+    "gold_answer": "Go service, 10K connections",
+    "difficulty": "medium"
+  },
+  {
+    "id": "sr_m18",
+    "fact": "Code coverage threshold is 80% enforced in CI with pytest-cov",
+    "query": "What's the minimum test coverage requirement and how is it checked?",
+    "gold_answer": "80% coverage enforced by pytest-cov in CI",
+    "difficulty": "medium"
+  },
+  {
+    "id": "sr_m19",
+    "fact": "The ML models are served via TensorFlow Serving behind an nginx reverse proxy",
+    "query": "How are machine learning predictions served in production?",
+    "gold_answer": "TensorFlow Serving behind nginx",
+    "difficulty": "medium"
+  },
+  {
+    "id": "sr_m20",
+    "fact": "Sprint retrospectives happen every other Friday at 2 PM Pacific",
+    "query": "When does the team reflect on their development process?",
+    "gold_answer": "Every other Friday at 2 PM Pacific",
+    "difficulty": "medium"
+  },
+  {
+    "id": "sr_h01",
+    "fact": "The primary data store uses PostgreSQL 15 with pgvector for embedding similarity search",
+    "query": "What handles vector similarity lookups in our persistence layer?",
+    "gold_answer": "PostgreSQL 15 with pgvector",
+    "difficulty": "hard"
+  },
+  {
+    "id": "sr_h02",
+    "fact": "Our container orchestration runs on AWS EKS with spot instances for non-critical workloads",
+    "query": "How do we reduce compute costs for background processing?",
+    "gold_answer": "Spot instances on EKS for non-critical workloads",
+    "difficulty": "hard"
+  },
+  {
+    "id": "sr_h03",
+    "fact": "The event-driven architecture uses Kafka with exactly-once semantics enabled",
+    "query": "What guarantees do we have about message processing in our async pipeline?",
+    "gold_answer": "Exactly-once semantics via Kafka",
+    "difficulty": "hard"
+  },
+  {
+    "id": "sr_h04",
+    "fact": "Blue-green deployments are configured with 5-minute health check intervals before traffic switch",
+    "query": "How long does the system verify stability before completing a release?",
+    "gold_answer": "5-minute health check intervals in blue-green deployment",
+    "difficulty": "hard"
+  },
+  {
+    "id": "sr_h05",
+    "fact": "The circuit breaker pattern is implemented with a 50% error threshold and 30-second recovery window",
+    "query": "What protects downstream services from cascading failures and how quickly does it recover?",
+    "gold_answer": "Circuit breaker with 50% threshold, 30-second recovery",
+    "difficulty": "hard"
+  },
+  {
+    "id": "sr_h06",
+    "fact": "PII is encrypted at rest using AES-256-GCM with keys managed by AWS KMS",
+    "query": "How is sensitive user data protected in storage?",
+    "gold_answer": "AES-256-GCM encryption with AWS KMS key management",
+    "difficulty": "hard"
+  },
+  {
+    "id": "sr_h07",
+    "fact": "The recommendation engine retrains nightly using the previous 30 days of interaction data",
+    "query": "How fresh is the personalization model and what data window does it consider?",
+    "gold_answer": "Retrained nightly on 30 days of data",
+    "difficulty": "hard"
+  },
+  {
+    "id": "sr_h08",
+    "fact": "Database connection pooling uses PgBouncer with 50 connections per service instance",
+    "query": "How do we manage the finite number of database connections across services?",
+    "gold_answer": "PgBouncer connection pooling, 50 per instance",
+    "difficulty": "hard"
+  },
+  {
+    "id": "sr_h09",
+    "fact": "The SLA for the core API is 99.95% uptime with a maximum P99 latency of 200ms",
+    "query": "What reliability and performance commitments does the platform make?",
+    "gold_answer": "99.95% uptime, P99 latency under 200ms",
+    "difficulty": "hard"
+  },
+  {
+    "id": "sr_h10",
+    "fact": "GraphQL subscriptions use Server-Sent Events as transport instead of WebSockets for better proxy compatibility",
+    "query": "Why did the team choose a non-standard transport for real-time GraphQL?",
+    "gold_answer": "SSE instead of WebSockets for better proxy compatibility",
+    "difficulty": "hard"
+  },
+  {
+    "id": "sr_h11",
+    "fact": "The data retention policy deletes user event logs after 365 days to comply with GDPR",
+    "query": "How long do we keep behavioral analytics before privacy requirements force removal?",
+    "gold_answer": "365 days, deleted for GDPR compliance",
+    "difficulty": "hard"
+  },
+  {
+    "id": "sr_h12",
+    "fact": "Terraform state is stored in an S3 bucket with DynamoDB locking to prevent concurrent modifications",
+    "query": "How is infrastructure-as-code state managed to avoid race conditions?",
+    "gold_answer": "S3 + DynamoDB locking for Terraform state",
+    "difficulty": "hard"
+  },
+  {
+    "id": "sr_h13",
+    "fact": "The canary deployment strategy routes 5% of traffic to new versions for 15 minutes before full rollout",
+    "query": "What percentage of users unknowingly test new releases and for how long?",
+    "gold_answer": "5% for 15 minutes (canary deployment)",
+    "difficulty": "hard"
+  },
+  {
+    "id": "sr_h14",
+    "fact": "Cross-service tracing is implemented with OpenTelemetry exporting to Jaeger",
+    "query": "How can developers follow a request as it travels through multiple services?",
+    "gold_answer": "OpenTelemetry distributed tracing exported to Jaeger",
+    "difficulty": "hard"
+  },
+  {
+    "id": "sr_h15",
+    "fact": "The async task queue uses Celery with RabbitMQ as broker and Redis as result backend",
+    "query": "What handles background job processing and where do the results go?",
+    "gold_answer": "Celery with RabbitMQ broker and Redis result backend",
+    "difficulty": "hard"
+  }
+]

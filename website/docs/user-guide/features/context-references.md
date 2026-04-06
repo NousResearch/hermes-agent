@@ -95,6 +95,38 @@ All paths are resolved relative to the working directory. References that resolv
 
 Binary files are detected via MIME type and null-byte scanning. Known text extensions (`.py`, `.md`, `.json`, `.yaml`, `.toml`, `.js`, `.ts`, etc.) bypass MIME-based detection. Binary files are rejected with a warning.
 
+## Platform Availability
+
+Context references are primarily a **CLI feature**. They work in the interactive CLI where `@` triggers tab completion and references are expanded before the message is sent to the agent.
+
+In **messaging platforms** (Telegram, Discord, etc.), the `@` syntax is not expanded by the gateway — messages are passed through as-is. The agent itself can still reference files via the `read_file`, `search_files`, and `web_extract` tools.
+
+## Interaction with Context Compression
+
+When conversation context is compressed, the expanded reference content is included in the compression summary. This means:
+
+- Large file contents injected via `@file:` contribute to context usage
+- If the conversation is later compressed, the file content is summarized (not preserved verbatim)
+- For very large files, consider using line ranges (`@file:main.py:100-200`) to inject only relevant sections
+
+## Common Patterns
+
+```text
+# Code review workflow
+Review @diff and check for security issues
+
+# Debug with context
+This test is failing. Here's the test @file:tests/test_auth.py
+and the implementation @file:src/auth.py:50-80
+
+# Project exploration
+What does this project do? @folder:src @file:README.md
+
+# Research
+Compare the approaches in @url:https://arxiv.org/abs/2301.00001
+and @url:https://arxiv.org/abs/2301.00002
+```
+
 ## Error Handling
 
 Invalid references produce inline warnings rather than failures:

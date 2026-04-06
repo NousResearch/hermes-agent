@@ -3288,22 +3288,36 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path) -> None:
 
 
 def _invalidate_update_cache():
-    """Delete the update-check cache for ALL profiles so no banner
-    reports a stale "commits behind" count after a successful update.
+    """Delete the update-check cache for all known Hermes homes.
 
-    The git repo is shared across profiles — when one profile runs
-    ``hermes update``, every profile is now current.
+    The git repo may be shared across the default home, named profiles, and a
+    custom ``HERMES_HOME`` override. When one of them runs ``hermes update``,
+    any cached "commits behind" banner should be invalidated everywhere we can
+    identify safely.
     """
     homes = []
+
+    def _add_home(home: Path) -> None:
+        if home not in homes:
+            homes.append(home)
+
+    # Active runtime home (respects HERMES_HOME / --profile)
+    try:
+        _add_home(get_hermes_home())
+    except Exception:
+        pass
+
     # Default profile home
     default_home = Path.home() / ".hermes"
-    homes.append(default_home)
+    _add_home(default_home)
+
     # Named profiles under ~/.hermes/profiles/
     profiles_root = default_home / "profiles"
     if profiles_root.is_dir():
         for entry in profiles_root.iterdir():
             if entry.is_dir():
-                homes.append(entry)
+                _add_home(entry)
+
     for home in homes:
         try:
             cache_file = home / ".update_check"

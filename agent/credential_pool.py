@@ -1029,14 +1029,34 @@ def _seed_custom_pool(pool_key: str, entries: List[PooledCredential]) -> Tuple[b
     changed = False
     active_sources: Set[str] = set()
 
-    # Seed from the custom_providers config entry's api_key field
+    # Seed from the custom_providers config entry's api_key field or env-backed api_key_env/api_key_env_vars
     cp_config = _get_custom_provider_config(pool_key)
     if cp_config:
         api_key = str(cp_config.get("api_key") or "").strip()
+        api_key_source = None
+        if api_key:
+            api_key_source = f"config:{str(cp_config.get('name') or '').strip()}"
+        else:
+            env_var = str(cp_config.get("api_key_env") or "").strip()
+            env_vars = cp_config.get("api_key_env_vars") or []
+            if env_var:
+                env_vars = [env_var, *env_vars]
+            for env_name in env_vars:
+                if not isinstance(env_name, str):
+                    continue
+                env_name = env_name.strip()
+                if not env_name:
+                    continue
+                env_value = os.getenv(env_name, "").strip()
+                if env_value:
+                    api_key = env_value
+                    api_key_source = f"env:{env_name}"
+                    break
+
         base_url = str(cp_config.get("base_url") or "").strip().rstrip("/")
         name = str(cp_config.get("name") or "").strip()
         if api_key:
-            source = f"config:{name}"
+            source = api_key_source or f"config:{name}"
             active_sources.add(source)
             changed |= _upsert_entry(
                 entries,

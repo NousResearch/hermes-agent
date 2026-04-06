@@ -888,6 +888,62 @@ def test_custom_endpoint_pool_seeds_from_model_config(tmp_path, monkeypatch):
     assert model_entries[0].access_token == "sk-model-key"
 
 
+def test_custom_endpoint_pool_seeds_from_api_key_env(tmp_path, monkeypatch):
+    """Verify seeding from custom_providers api_key_env."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setenv("GOOGLE_API_KEY", "test-google-key")
+    _write_auth_store(tmp_path, {"version": 1})
+
+    import yaml
+    config_path = tmp_path / "hermes" / "config.yaml"
+    config_path.write_text(yaml.dump({
+        "custom_providers": [
+            {
+                "name": "Google",
+                "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+                "api_key_env": "GOOGLE_API_KEY",
+            }
+        ]
+    }))
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("custom:google")
+    assert pool.has_credentials()
+    entries = pool.entries()
+    assert len(entries) == 1
+    assert entries[0].access_token == "test-google-key"
+    assert entries[0].source == "env:GOOGLE_API_KEY"
+
+
+def test_custom_endpoint_pool_seeds_from_api_key_env_vars(tmp_path, monkeypatch):
+    """Verify seeding from the first available custom_providers api_key_env_vars entry."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setenv("SECONDARY_CUSTOM_KEY", "secondary-test-key")
+    _write_auth_store(tmp_path, {"version": 1})
+
+    import yaml
+    config_path = tmp_path / "hermes" / "config.yaml"
+    config_path.write_text(yaml.dump({
+        "custom_providers": [
+            {
+                "name": "Google",
+                "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+                "api_key_env_vars": ["MISSING_CUSTOM_KEY", "SECONDARY_CUSTOM_KEY"],
+            }
+        ]
+    }))
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("custom:google")
+    assert pool.has_credentials()
+    entries = pool.entries()
+    assert len(entries) == 1
+    assert entries[0].access_token == "secondary-test-key"
+    assert entries[0].source == "env:SECONDARY_CUSTOM_KEY"
+
+
 def test_custom_pool_does_not_break_existing_providers(tmp_path, monkeypatch):
     """Existing registry providers work exactly as before with custom pool support."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))

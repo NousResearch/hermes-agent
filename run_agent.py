@@ -2424,6 +2424,24 @@ class AIAgent:
 
         return context
 
+    def _usage_summary_for_api_request_hook(self, response: Any) -> Optional[Dict[str, Any]]:
+        """Token buckets for ``post_api_request`` plugins (no raw ``response`` object)."""
+        if response is None:
+            return None
+        raw_usage = getattr(response, "usage", None)
+        if not raw_usage:
+            return None
+        from dataclasses import asdict
+
+        from agent.usage_pricing import normalize_usage
+
+        cu = normalize_usage(raw_usage, provider=self.provider, api_mode=self.api_mode)
+        summary = asdict(cu)
+        summary.pop("raw_usage", None)
+        summary["prompt_tokens"] = cu.prompt_tokens
+        summary["total_tokens"] = cu.total_tokens
+        return summary
+
     def _dump_api_request_debug(
         self,
         api_kwargs: Dict[str, Any],
@@ -7281,9 +7299,9 @@ class AIAgent:
                         api_kwargs = self._preflight_codex_api_kwargs(api_kwargs, allow_stream=False)
 
                     try:
-                        from hermes_cli.plugins import invoke_hook
-                        invoke_hook(
-                            "pre_llm_request",
+                        from hermes_cli.plugins import invoke_hook as _invoke_hook
+                        _invoke_hook(
+                            "pre_api_request",
                             task_id=effective_task_id,
                             session_id=self.session_id or "",
                             platform=self.platform or "",
@@ -7292,14 +7310,16 @@ class AIAgent:
                             base_url=self.base_url,
                             api_mode=self.api_mode,
                             api_call_count=api_call_count,
-                            messages=api_messages,
+                            message_count=len(api_messages),
+                            tool_count=len(self.tools or []),
+                            approx_input_tokens=approx_tokens,
+                            request_char_count=total_chars,
                             max_tokens=self.max_tokens,
-                            tools=self.tools or [],
                         )
                     except Exception:
                         pass
 
-                    if os.getenv("HERMES_DUMP_REQUESTS", "").strip().lower() in {"1", "true", "yes", "on"}:
+                    if env_var_enabled("HERMES_DUMP_REQUESTS"):
                         self._dump_api_request_debug(api_kwargs, reason="preflight")
 
                     # Always prefer the streaming path — even without stream
@@ -8386,9 +8406,11 @@ class AIAgent:
                         assistant_message.content = str(raw)
 
                 try:
-                    from hermes_cli.plugins import invoke_hook
-                    invoke_hook(
-                        "post_llm_request",
+                    from hermes_cli.plugins import invoke_hook as _invoke_hook
+                    _assistant_tool_calls = getattr(assistant_message, "tool_calls", None) or []
+                    _assistant_text = assistant_message.content or ""
+                    _invoke_hook(
+                        "post_api_request",
                         task_id=effective_task_id,
                         session_id=self.session_id or "",
                         platform=self.platform or "",
@@ -8399,9 +8421,11 @@ class AIAgent:
                         api_call_count=api_call_count,
                         api_duration=api_duration,
                         finish_reason=finish_reason,
-                        messages=api_messages,
-                        response=response,
-                        assistant_message=assistant_message,
+                        message_count=len(api_messages),
+                        response_model=getattr(response, "model", None),
+                        usage=self._usage_summary_for_api_request_hook(response),
+                        assistant_content_chars=len(_assistant_text),
+                        assistant_tool_call_count=len(_assistant_tool_calls),
                     )
                 except Exception:
                     pass

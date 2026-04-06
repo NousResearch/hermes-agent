@@ -779,6 +779,9 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             config.platforms[Platform.MATRIX].extra["password"] = matrix_password
         matrix_e2ee = os.getenv("MATRIX_ENCRYPTION", "").lower() in ("true", "1", "yes")
         config.platforms[Platform.MATRIX].extra["encryption"] = matrix_e2ee
+        matrix_device_id = os.getenv("MATRIX_DEVICE_ID", "")
+        if matrix_device_id:
+            config.platforms[Platform.MATRIX].extra["device_id"] = matrix_device_id
     matrix_home = os.getenv("MATRIX_HOME_ROOM")
     if matrix_home and Platform.MATRIX in config.platforms:
         config.platforms[Platform.MATRIX].home_channel = HomeChannel(

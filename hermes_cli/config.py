@@ -42,7 +42,7 @@ _EXTRA_ENV_KEYS = frozenset({
     "TERMINAL_ENV", "TERMINAL_SSH_KEY", "TERMINAL_SSH_PORT",
     "WHATSAPP_MODE", "WHATSAPP_ENABLED",
     "MATTERMOST_HOME_CHANNEL", "MATTERMOST_REPLY_MODE",
-    "MATRIX_PASSWORD", "MATRIX_ENCRYPTION", "MATRIX_HOME_ROOM",
+    "MATRIX_PASSWORD", "MATRIX_ENCRYPTION", "MATRIX_DEVICE_ID", "MATRIX_HOME_ROOM",
     "MATRIX_REQUIRE_MENTION", "MATRIX_FREE_RESPONSE_ROOMS", "MATRIX_AUTO_THREAD",
 })
 import yaml
@@ -1074,6 +1074,14 @@ OPTIONAL_ENV_VARS = {
     "MATRIX_AUTO_THREAD": {
         "description": "Auto-create threads for messages in Matrix rooms (default: true)",
         "prompt": "Auto-create threads in rooms (true/false)",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+        "advanced": True,
+    },
+    "MATRIX_DEVICE_ID": {
+        "description": "Stable Matrix device ID for E2EE persistence across restarts (e.g. HERMES_BOT)",
+        "prompt": "Matrix device ID (stable across restarts)",
         "url": None,
         "password": False,
         "category": "messaging",

@@ -428,6 +428,7 @@ class TestMatrixRequirements:
     def test_check_requirements_with_token(self, monkeypatch):
         monkeypatch.setenv("MATRIX_ACCESS_TOKEN", "syt_test")
         monkeypatch.setenv("MATRIX_HOMESERVER", "https://matrix.example.org")
+        monkeypatch.delenv("MATRIX_ENCRYPTION", raising=False)
         from gateway.platforms.matrix import check_matrix_requirements
         try:
             import nio  # noqa: F401
@@ -447,6 +448,45 @@ class TestMatrixRequirements:
         monkeypatch.delenv("MATRIX_HOMESERVER", raising=False)
         from gateway.platforms.matrix import check_matrix_requirements
         assert check_matrix_requirements() is False
+
+    def test_check_requirements_encryption_true_no_e2ee_deps(self, monkeypatch):
+        """MATRIX_ENCRYPTION=true should fail if python-olm is not installed."""
+        monkeypatch.setenv("MATRIX_ACCESS_TOKEN", "syt_test")
+        monkeypatch.setenv("MATRIX_HOMESERVER", "https://matrix.example.org")
+        monkeypatch.setenv("MATRIX_ENCRYPTION", "true")
+
+        from gateway.platforms import matrix as matrix_mod
+        with patch.object(matrix_mod, "_check_e2ee_deps", return_value=False):
+            assert matrix_mod.check_matrix_requirements() is False
+
+    def test_check_requirements_encryption_false_no_e2ee_deps_ok(self, monkeypatch):
+        """Without encryption, missing E2EE deps should not block startup."""
+        monkeypatch.setenv("MATRIX_ACCESS_TOKEN", "syt_test")
+        monkeypatch.setenv("MATRIX_HOMESERVER", "https://matrix.example.org")
+        monkeypatch.delenv("MATRIX_ENCRYPTION", raising=False)
+
+        from gateway.platforms import matrix as matrix_mod
+        with patch.object(matrix_mod, "_check_e2ee_deps", return_value=False):
+            # Still needs nio itself to be importable
+            try:
+                import nio  # noqa: F401
+                assert matrix_mod.check_matrix_requirements() is True
+            except ImportError:
+                assert matrix_mod.check_matrix_requirements() is False
+
+    def test_check_requirements_encryption_true_with_e2ee_deps(self, monkeypatch):
+        """MATRIX_ENCRYPTION=true should pass if E2EE deps are available."""
+        monkeypatch.setenv("MATRIX_ACCESS_TOKEN", "syt_test")
+        monkeypatch.setenv("MATRIX_HOMESERVER", "https://matrix.example.org")
+        monkeypatch.setenv("MATRIX_ENCRYPTION", "true")
+
+        from gateway.platforms import matrix as matrix_mod
+        with patch.object(matrix_mod, "_check_e2ee_deps", return_value=True):
+            try:
+                import nio  # noqa: F401
+                assert matrix_mod.check_matrix_requirements() is True
+            except ImportError:
+                assert matrix_mod.check_matrix_requirements() is False
 
 
 # ---------------------------------------------------------------------------
@@ -516,10 +556,12 @@ class TestMatrixAccessTokenAuth:
         fake_nio.InviteMemberEvent = type("InviteMemberEvent", (), {})
         fake_nio.MegolmEvent = type("MegolmEvent", (), {})
 
-        with patch.dict("sys.modules", {"nio": fake_nio}):
-            with patch.object(adapter, "_refresh_dm_cache", AsyncMock()):
-                with patch.object(adapter, "_sync_loop", AsyncMock(return_value=None)):
-                    assert await adapter.connect() is True
+        from gateway.platforms import matrix as matrix_mod
+        with patch.object(matrix_mod, "_check_e2ee_deps", return_value=True):
+            with patch.dict("sys.modules", {"nio": fake_nio}):
+                with patch.object(adapter, "_refresh_dm_cache", AsyncMock()):
+                    with patch.object(adapter, "_sync_loop", AsyncMock(return_value=None)):
+                        assert await adapter.connect() is True
 
         fake_client.restore_login.assert_called_once_with(
             "@bot:example.org", "DEV123", "syt_test_access_token"
@@ -530,6 +572,326 @@ class TestMatrixAccessTokenAuth:
         fake_client.whoami.assert_awaited_once()
 
         await adapter.disconnect()
+
+
+class TestMatrixE2EEHardFail:
+    """connect() must refuse to start when E2EE is requested but deps are missing."""
+
+    @pytest.mark.asyncio
+    async def test_connect_fails_when_encryption_true_but_no_e2ee_deps(self):
+        from gateway.platforms.matrix import MatrixAdapter
+
+        config = PlatformConfig(
+            enabled=True,
+            token="syt_test_access_token",
+            extra={
+                "homeserver": "https://matrix.example.org",
+                "user_id": "@bot:example.org",
+                "encryption": True,
+            },
+        )
+        adapter = MatrixAdapter(config)
+
+        fake_nio = MagicMock()
+        fake_nio.AsyncClient = MagicMock()
+
+        from gateway.platforms import matrix as matrix_mod
+        with patch.object(matrix_mod, "_check_e2ee_deps", return_value=False):
+            with patch.dict("sys.modules", {"nio": fake_nio}):
+                result = await adapter.connect()
+
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_connect_fails_when_olm_not_loaded_after_login(self):
+        """Even if _check_e2ee_deps passes, if olm is None after auth, hard-fail."""
+        from gateway.platforms.matrix import MatrixAdapter
+
+        config = PlatformConfig(
+            enabled=True,
+            token="syt_test_access_token",
+            extra={
+                "homeserver": "https://matrix.example.org",
+                "user_id": "@bot:example.org",
+                "encryption": True,
+            },
+        )
+        adapter = MatrixAdapter(config)
+
+        class FakeWhoamiResponse:
+            def __init__(self, user_id, device_id):
+                self.user_id = user_id
+                self.device_id = device_id
+
+        fake_client = MagicMock()
+        fake_client.whoami = AsyncMock(return_value=FakeWhoamiResponse("@bot:example.org", "DEV123"))
+        fake_client.close = AsyncMock()
+        # olm is None — crypto store not loaded
+        fake_client.olm = None
+        fake_client.should_upload_keys = False
+
+        def _restore_login(user_id, device_id, access_token):
+            fake_client.user_id = user_id
+            fake_client.device_id = device_id
+            fake_client.access_token = access_token
+
+        fake_client.restore_login = MagicMock(side_effect=_restore_login)
+
+        fake_nio = MagicMock()
+        fake_nio.AsyncClient = MagicMock(return_value=fake_client)
+        fake_nio.WhoamiResponse = FakeWhoamiResponse
+
+        from gateway.platforms import matrix as matrix_mod
+        with patch.object(matrix_mod, "_check_e2ee_deps", return_value=True):
+            with patch.dict("sys.modules", {"nio": fake_nio}):
+                result = await adapter.connect()
+
+        assert result is False
+        fake_client.close.assert_awaited_once()
+
+
+class TestMatrixDeviceId:
+    """MATRIX_DEVICE_ID should be used for stable device identity."""
+
+    def test_device_id_from_config_extra(self):
+        from gateway.platforms.matrix import MatrixAdapter
+
+        config = PlatformConfig(
+            enabled=True,
+            token="syt_test",
+            extra={
+                "homeserver": "https://matrix.example.org",
+                "device_id": "HERMES_BOT_STABLE",
+            },
+        )
+        adapter = MatrixAdapter(config)
+        assert adapter._device_id == "HERMES_BOT_STABLE"
+
+    def test_device_id_from_env(self, monkeypatch):
+        monkeypatch.setenv("MATRIX_DEVICE_ID", "FROM_ENV")
+
+        from gateway.platforms.matrix import MatrixAdapter
+
+        config = PlatformConfig(
+            enabled=True,
+            token="syt_test",
+            extra={
+                "homeserver": "https://matrix.example.org",
+            },
+        )
+        adapter = MatrixAdapter(config)
+        assert adapter._device_id == "FROM_ENV"
+
+    def test_device_id_config_takes_precedence_over_env(self, monkeypatch):
+        monkeypatch.setenv("MATRIX_DEVICE_ID", "FROM_ENV")
+
+        from gateway.platforms.matrix import MatrixAdapter
+
+        config = PlatformConfig(
+            enabled=True,
+            token="syt_test",
+            extra={
+                "homeserver": "https://matrix.example.org",
+                "device_id": "FROM_CONFIG",
+            },
+        )
+        adapter = MatrixAdapter(config)
+        assert adapter._device_id == "FROM_CONFIG"
+
+    @pytest.mark.asyncio
+    async def test_connect_uses_configured_device_id_over_whoami(self):
+        """When MATRIX_DEVICE_ID is set, it should be used instead of whoami device_id."""
+        from gateway.platforms.matrix import MatrixAdapter
+
+        config = PlatformConfig(
+            enabled=True,
+            token="syt_test_access_token",
+            extra={
+                "homeserver": "https://matrix.example.org",
+                "user_id": "@bot:example.org",
+                "encryption": True,
+                "device_id": "MY_STABLE_DEVICE",
+            },
+        )
+        adapter = MatrixAdapter(config)
+
+        class FakeWhoamiResponse:
+            def __init__(self, user_id, device_id):
+                self.user_id = user_id
+                self.device_id = device_id
+
+        class FakeSyncResponse:
+            def __init__(self):
+                self.rooms = MagicMock(join={})
+
+        fake_client = MagicMock()
+        fake_client.whoami = AsyncMock(return_value=FakeWhoamiResponse("@bot:example.org", "WHOAMI_DEV"))
+        fake_client.sync = AsyncMock(return_value=FakeSyncResponse())
+        fake_client.keys_upload = AsyncMock()
+        fake_client.keys_query = AsyncMock()
+        fake_client.keys_claim = AsyncMock()
+        fake_client.send_to_device_messages = AsyncMock(return_value=[])
+        fake_client.get_users_for_key_claiming = MagicMock(return_value={})
+        fake_client.close = AsyncMock()
+        fake_client.add_event_callback = MagicMock()
+        fake_client.rooms = {}
+        fake_client.account_data = {}
+        fake_client.olm = object()
+        fake_client.should_upload_keys = False
+        fake_client.should_query_keys = False
+        fake_client.should_claim_keys = False
+
+        def _restore_login(user_id, device_id, access_token):
+            fake_client.user_id = user_id
+            fake_client.device_id = device_id
+            fake_client.access_token = access_token
+
+        fake_client.restore_login = MagicMock(side_effect=_restore_login)
+
+        fake_nio = MagicMock()
+        fake_nio.AsyncClient = MagicMock(return_value=fake_client)
+        fake_nio.WhoamiResponse = FakeWhoamiResponse
+        fake_nio.SyncResponse = FakeSyncResponse
+        fake_nio.LoginResponse = type("LoginResponse", (), {})
+        fake_nio.RoomMessageText = type("RoomMessageText", (), {})
+        fake_nio.RoomMessageImage = type("RoomMessageImage", (), {})
+        fake_nio.RoomMessageAudio = type("RoomMessageAudio", (), {})
+        fake_nio.RoomMessageVideo = type("RoomMessageVideo", (), {})
+        fake_nio.RoomMessageFile = type("RoomMessageFile", (), {})
+        fake_nio.InviteMemberEvent = type("InviteMemberEvent", (), {})
+        fake_nio.MegolmEvent = type("MegolmEvent", (), {})
+
+        from gateway.platforms import matrix as matrix_mod
+        with patch.object(matrix_mod, "_check_e2ee_deps", return_value=True):
+            with patch.dict("sys.modules", {"nio": fake_nio}):
+                with patch.object(adapter, "_refresh_dm_cache", AsyncMock()):
+                    with patch.object(adapter, "_sync_loop", AsyncMock(return_value=None)):
+                        assert await adapter.connect() is True
+
+        # The configured device_id should override the whoami device_id
+        fake_client.restore_login.assert_called_once_with(
+            "@bot:example.org", "MY_STABLE_DEVICE", "syt_test_access_token"
+        )
+        assert fake_client.device_id == "MY_STABLE_DEVICE"
+
+        # Verify device_id was passed to nio.AsyncClient constructor
+        ctor_call = fake_nio.AsyncClient.call_args
+        assert ctor_call.kwargs.get("device_id") == "MY_STABLE_DEVICE"
+
+        await adapter.disconnect()
+
+
+class TestMatrixE2EEClientConstructorFailure:
+    """connect() should hard-fail if nio.AsyncClient() raises when encryption is on."""
+
+    @pytest.mark.asyncio
+    async def test_connect_fails_when_e2ee_client_constructor_raises(self):
+        from gateway.platforms.matrix import MatrixAdapter
+
+        config = PlatformConfig(
+            enabled=True,
+            token="syt_test_access_token",
+            extra={
+                "homeserver": "https://matrix.example.org",
+                "user_id": "@bot:example.org",
+                "encryption": True,
+            },
+        )
+        adapter = MatrixAdapter(config)
+
+        fake_nio = MagicMock()
+        fake_nio.AsyncClient = MagicMock(side_effect=Exception("olm init failed"))
+
+        from gateway.platforms import matrix as matrix_mod
+        with patch.object(matrix_mod, "_check_e2ee_deps", return_value=True):
+            with patch.dict("sys.modules", {"nio": fake_nio}):
+                result = await adapter.connect()
+
+        assert result is False
+
+
+class TestMatrixPasswordLoginDeviceId:
+    """MATRIX_DEVICE_ID should be passed to nio.AsyncClient even with password login."""
+
+    @pytest.mark.asyncio
+    async def test_password_login_passes_device_id_to_constructor(self):
+        from gateway.platforms.matrix import MatrixAdapter
+
+        config = PlatformConfig(
+            enabled=True,
+            extra={
+                "homeserver": "https://matrix.example.org",
+                "user_id": "@bot:example.org",
+                "password": "secret",
+                "device_id": "STABLE_PW_DEVICE",
+            },
+        )
+        adapter = MatrixAdapter(config)
+
+        class FakeLoginResponse:
+            pass
+
+        class FakeSyncResponse:
+            def __init__(self):
+                self.rooms = MagicMock(join={})
+
+        fake_client = MagicMock()
+        fake_client.login = AsyncMock(return_value=FakeLoginResponse())
+        fake_client.sync = AsyncMock(return_value=FakeSyncResponse())
+        fake_client.close = AsyncMock()
+        fake_client.add_event_callback = MagicMock()
+        fake_client.rooms = {}
+        fake_client.account_data = {}
+
+        fake_nio = MagicMock()
+        fake_nio.AsyncClient = MagicMock(return_value=fake_client)
+        fake_nio.LoginResponse = FakeLoginResponse
+        fake_nio.SyncResponse = FakeSyncResponse
+        fake_nio.RoomMessageText = type("RoomMessageText", (), {})
+        fake_nio.RoomMessageImage = type("RoomMessageImage", (), {})
+        fake_nio.RoomMessageAudio = type("RoomMessageAudio", (), {})
+        fake_nio.RoomMessageVideo = type("RoomMessageVideo", (), {})
+        fake_nio.RoomMessageFile = type("RoomMessageFile", (), {})
+        fake_nio.InviteMemberEvent = type("InviteMemberEvent", (), {})
+
+        with patch.dict("sys.modules", {"nio": fake_nio}):
+            with patch.object(adapter, "_refresh_dm_cache", AsyncMock()):
+                with patch.object(adapter, "_sync_loop", AsyncMock(return_value=None)):
+                    assert await adapter.connect() is True
+
+        # Verify device_id was passed to the nio.AsyncClient constructor
+        ctor_call = fake_nio.AsyncClient.call_args
+        assert ctor_call.kwargs.get("device_id") == "STABLE_PW_DEVICE"
+
+        await adapter.disconnect()
+
+
+class TestMatrixDeviceIdConfig:
+    """MATRIX_DEVICE_ID should be plumbed through gateway config."""
+
+    def test_device_id_in_config_extra(self, monkeypatch):
+        monkeypatch.setenv("MATRIX_ACCESS_TOKEN", "syt_abc123")
+        monkeypatch.setenv("MATRIX_HOMESERVER", "https://matrix.example.org")
+        monkeypatch.setenv("MATRIX_DEVICE_ID", "HERMES_BOT")
+
+        from gateway.config import GatewayConfig, _apply_env_overrides
+        config = GatewayConfig()
+        _apply_env_overrides(config)
+
+        mc = config.platforms[Platform.MATRIX]
+        assert mc.extra.get("device_id") == "HERMES_BOT"
+
+    def test_device_id_not_set_when_env_empty(self, monkeypatch):
+        monkeypatch.setenv("MATRIX_ACCESS_TOKEN", "syt_abc123")
+        monkeypatch.setenv("MATRIX_HOMESERVER", "https://matrix.example.org")
+        monkeypatch.delenv("MATRIX_DEVICE_ID", raising=False)
+
+        from gateway.config import GatewayConfig, _apply_env_overrides
+        config = GatewayConfig()
+        _apply_env_overrides(config)
+
+        mc = config.platforms[Platform.MATRIX]
+        assert "device_id" not in mc.extra
 
 
 class TestMatrixE2EEMaintenance:
@@ -1071,10 +1433,12 @@ class TestMatrixEncryptedMedia:
         fake_nio.InviteMemberEvent = FakeInviteMemberEvent
         fake_nio.MegolmEvent = FakeMegolmEvent
 
-        with patch.dict("sys.modules", {"nio": fake_nio}):
-            with patch.object(adapter, "_refresh_dm_cache", AsyncMock()):
-                with patch.object(adapter, "_sync_loop", AsyncMock(return_value=None)):
-                    assert await adapter.connect() is True
+        from gateway.platforms import matrix as matrix_mod
+        with patch.object(matrix_mod, "_check_e2ee_deps", return_value=True):
+            with patch.dict("sys.modules", {"nio": fake_nio}):
+                with patch.object(adapter, "_refresh_dm_cache", AsyncMock()):
+                    with patch.object(adapter, "_sync_loop", AsyncMock(return_value=None)):
+                        assert await adapter.connect() is True
 
         callback_classes = [call.args[1] for call in fake_client.add_event_callback.call_args_list]
         assert FakeRoomEncryptedImage in callback_classes

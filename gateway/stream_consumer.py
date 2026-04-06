@@ -140,8 +140,9 @@ class GatewayStreamConsumer:
                     self._last_edit_time = time.monotonic()
 
                 if got_done:
-                    # Final edit without cursor
-                    if self._accumulated and self._message_id:
+                    if self._accumulated:
+                        # Send final content regardless of whether message_id is set —
+                        # message_id can be None after an overflow-split whose send failed.
                         await self._send_or_edit(self._accumulated)
                     return
 
@@ -149,7 +150,7 @@ class GatewayStreamConsumer:
 
         except asyncio.CancelledError:
             # Best-effort final edit on cancellation
-            if self._accumulated and self._message_id:
+            if self._accumulated:
                 try:
                     await self._send_or_edit(self._accumulated)
                 except Exception:

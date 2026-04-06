@@ -26,8 +26,8 @@ Gmail, Calendar, Drive, Contacts, Sheets, and Docs — all through Python script
 
 ## Scripts
 
-- `scripts/setup.py` — OAuth2 setup (run once to authorize)
-- `scripts/google_api.py` — API wrapper CLI (agent uses this for all operations)
+- `scripts/setup.py` — OAuth2 setup (run once to authorize). Auto-detects the Hermes repo path for imports and installs Python deps into `~/.hermes/.pythonlibs/google-workspace/` when system package installation is unavailable.
+- `scripts/google_api.py` — API wrapper CLI (agent uses this for all operations). Auto-detects the Hermes repo path for imports and loads deps from `~/.hermes/.pythonlibs/google-workspace/`.
 
 ## First-Time Setup
 
@@ -106,7 +106,7 @@ This prints a URL. **Send the URL to the user** and tell them:
 
 ### Step 4: Exchange the code
 
-The user will paste back either a URL like `http://localhost:1/?code=4/0A...&scope=...`
+The user will paste back either a URL like `http://localhost/?code=4/0A...&scope=...`
 or just the code string. Either works. The `--auth-url` step stores a temporary
 pending OAuth session locally so `--auth-code` can complete the PKCE exchange
 later, even on headless systems:

@@ -23,9 +23,21 @@ Agent workflow:
 
 import argparse
 import json
+import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+LOCAL_LIB_PATH = Path.home() / ".hermes" / ".pythonlibs" / "google-workspace"
+for candidate in [
+    LOCAL_LIB_PATH,
+    Path(__file__).resolve().parents[3],
+    Path.home() / ".hermes" / "hermes-agent",
+]:
+    candidate_str = str(candidate)
+    if candidate.exists() and candidate_str not in sys.path:
+        sys.path.insert(0, candidate_str)
 
 from hermes_constants import display_hermes_home, get_hermes_home
 
@@ -48,9 +60,10 @@ SCOPES = [
 REQUIRED_PACKAGES = ["google-api-python-client", "google-auth-oauthlib", "google-auth-httplib2"]
 
 # OAuth redirect for "out of band" manual code copy flow.
-# Google deprecated OOB, so we use a localhost redirect and tell the user to
-# copy the code from the browser's URL bar (or the page body).
-REDIRECT_URI = "http://localhost:1"
+# Use plain localhost so it matches default Desktop app OAuth credentials.
+# The browser may land on an error page because nothing is listening there;
+# that's fine — copy the full final URL from the address bar.
+REDIRECT_URI = "http://localhost"
 
 
 def _load_token_payload(path: Path = TOKEN_PATH) -> dict:
@@ -88,10 +101,17 @@ def install_deps():
         pass
 
     print("Installing Google API dependencies...")
+    LOCAL_LIB_PATH.mkdir(parents=True, exist_ok=True)
+    pip_cmd = [sys.executable, "-m", "pip", "install", "--quiet", "--target", str(LOCAL_LIB_PATH)]
+    if shutil.which("uv"):
+        pip_cmd = ["uv", "pip", "install", "--target", str(LOCAL_LIB_PATH)]
+
+    env = os.environ.copy()
     try:
         subprocess.check_call(
-            [sys.executable, "-m", "pip", "install", "--quiet"] + REQUIRED_PACKAGES,
+            pip_cmd + REQUIRED_PACKAGES,
             stdout=subprocess.DEVNULL,
+            env=env,
         )
         print("Dependencies installed.")
         return True

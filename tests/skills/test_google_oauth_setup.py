@@ -133,6 +133,9 @@ def setup_module(monkeypatch, tmp_path):
 
 
 class TestGetAuthUrl:
+    def test_uses_plain_localhost_redirect(self, setup_module):
+        assert setup_module.REDIRECT_URI == "http://localhost"
+
     def test_persists_state_and_code_verifier_for_later_exchange(self, setup_module, capsys):
         setup_module.get_auth_url()
 
@@ -144,6 +147,7 @@ class TestGetAuthUrl:
         assert saved["code_verifier"] == "generated-code-verifier"
 
         flow = FakeFlow.created[-1]
+        assert flow.redirect_uri == "http://localhost"
         assert flow.autogenerate_code_verifier is True
         assert flow.authorization_kwargs == {"access_type": "offline", "prompt": "consent"}
 
@@ -169,7 +173,7 @@ class TestExchangeAuthCode:
         )
 
         setup_module.exchange_auth_code(
-            "http://localhost:1/?code=4/extracted-code&state=saved-state&scope=gmail"
+            "http://localhost/?code=4/extracted-code&state=saved-state&scope=gmail"
         )
 
         flow = FakeFlow.created[-1]
@@ -182,7 +186,7 @@ class TestExchangeAuthCode:
 
         with pytest.raises(SystemExit):
             setup_module.exchange_auth_code(
-                "http://localhost:1/?code=4/extracted-code&state=wrong-state"
+                "http://localhost/?code=4/extracted-code&state=wrong-state"
             )
 
         out = capsys.readouterr().out

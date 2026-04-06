@@ -27,6 +27,16 @@ from datetime import datetime, timedelta, timezone
 from email.mime.text import MIMEText
 from pathlib import Path
 
+LOCAL_LIB_PATH = Path.home() / ".hermes" / ".pythonlibs" / "google-workspace"
+for candidate in [
+    LOCAL_LIB_PATH,
+    Path(__file__).resolve().parents[3],
+    Path.home() / ".hermes" / "hermes-agent",
+]:
+    candidate_str = str(candidate)
+    if candidate.exists() and candidate_str not in sys.path:
+        sys.path.insert(0, candidate_str)
+
 from hermes_constants import display_hermes_home, get_hermes_home
 
 HERMES_HOME = get_hermes_home()

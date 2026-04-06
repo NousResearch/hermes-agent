@@ -6534,6 +6534,16 @@ class GatewayRunner:
             _approval_session_token = set_current_session_key(_approval_session_key)
             register_gateway_notify(_approval_session_key, _approval_notify_sync)
             try:
+                # Inject current timestamp into every user message so the agent
+                # always knows the current time without needing a tool call.
+                _now = datetime.now()
+                import locale as _locale
+                try:
+                    _locale.setlocale(_locale.LC_TIME, 'en_US.UTF-8')
+                except Exception:
+                    pass
+                _ts_str = _now.strftime('%A, %B %d, %Y %I:%M %p')
+                message = f"[Current time: {_ts_str}]\n\n{message}"
                 result = agent.run_conversation(message, conversation_history=agent_history, task_id=session_id)
             finally:
                 unregister_gateway_notify(_approval_session_key)

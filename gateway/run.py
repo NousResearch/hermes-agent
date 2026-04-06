@@ -6553,8 +6553,20 @@ class GatewayRunner:
         _status_chat_id = source.chat_id
         _status_thread_metadata = {"thread_id": _progress_thread_id} if _progress_thread_id else None
 
+        # Waiki: plataformas donde se muestran status/lifecycle
+        _INTERNAL_PLATFORMS = {Platform.MATTERMOST, Platform.LOCAL}
+
         def _status_callback_sync(event_type: str, message: str) -> None:
             if not _status_adapter:
+                return
+            # Waiki: no enviar lifecycle/status a clientes
+            if source.platform not in _INTERNAL_PLATFORMS:
+                logger.debug(
+                    "Suppressed %s on %s: %s",
+                    event_type,
+                    source.platform,
+                    message[:80],
+                )
                 return
             try:
                 asyncio.run_coroutine_threadsafe(

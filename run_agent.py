@@ -1506,6 +1506,11 @@ class AIAgent:
         """Return True when the base URL targets Anthropic (native or /anthropic proxy path)."""
         return "api.anthropic.com" in self._base_url_lower or self._base_url_lower.rstrip("/").endswith("/anthropic")
 
+    def _is_localhost_url(self, base_url: str = None) -> bool:
+        """Return True when the base URL targets localhost (bypasses system proxy)."""
+        url = (base_url or self._base_url_lower).lower()
+        return any(host in url for host in ("localhost", "127.0.0.1", "[::1]"))
+
     def _max_tokens_param(self, value: int) -> dict:
         """Return the correct max tokens kwarg for the current provider.
         
@@ -3666,6 +3671,14 @@ class AIAgent:
                 self._client_log_context(),
             )
             return client
+        # Prevent httpx from using system proxy (macOS wifi proxy, etc.) for
+        # local/custom endpoints — otherwise requests to localhost get routed
+        # through the proxy and return 502.  Pass an httpx.Client with
+        # trust_env=False so localhost URLs bypass the proxy.
+        if self.provider == "custom" or self._is_localhost_url(client_kwargs.get("base_url", "")):
+            import httpx
+            http_client = httpx.Client(trust_env=False)
+            client_kwargs = {**client_kwargs, "http_client": http_client}
         client = OpenAI(**client_kwargs)
         logger.info(
             "OpenAI client created (%s, shared=%s) %s",

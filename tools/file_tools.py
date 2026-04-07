@@ -25,30 +25,23 @@ _EXPECTED_WRITE_ERRNOS = {errno.EACCES, errno.EPERM, errno.EROFS}
 # Configurable via config.yaml:  file_read_max_chars: 200000
 # ---------------------------------------------------------------------------
 _DEFAULT_MAX_READ_CHARS = 100_000
-_max_read_chars_cached: int | None = None
 
 
 def _get_max_read_chars() -> int:
     """Return the configured max characters per file read.
 
-    Reads ``file_read_max_chars`` from config.yaml on first call, caches
-    the result for the lifetime of the process.  Falls back to the
-    built-in default if the config is missing or invalid.
+    Reads ``file_read_max_chars`` from config.yaml. Falls back to the built-in
+    default if the config is missing or invalid.
     """
-    global _max_read_chars_cached
-    if _max_read_chars_cached is not None:
-        return _max_read_chars_cached
     try:
         from hermes_cli.config import load_config
         cfg = load_config()
         val = cfg.get("file_read_max_chars")
         if isinstance(val, (int, float)) and val > 0:
-            _max_read_chars_cached = int(val)
-            return _max_read_chars_cached
+            return int(val)
     except Exception:
         pass
-    _max_read_chars_cached = _DEFAULT_MAX_READ_CHARS
-    return _max_read_chars_cached
+    return _DEFAULT_MAX_READ_CHARS
 
 # If the total file size exceeds this AND the caller didn't specify a narrow
 # range (limit <= 200), we include a hint encouraging targeted reads.

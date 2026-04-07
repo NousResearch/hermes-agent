@@ -144,6 +144,7 @@ class TestNormalizeProvider:
         assert normalize_provider("") == "openrouter"
 
     def test_known_aliases(self):
+        assert normalize_provider("openai") == "openrouter"
         assert normalize_provider("glm") == "zai"
         assert normalize_provider("kimi") == "kimi-coding"
         assert normalize_provider("moonshot") == "kimi-coding"

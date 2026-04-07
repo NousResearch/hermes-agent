@@ -158,6 +158,9 @@ class TestResolveProvider:
     def test_alias_glm(self):
         assert resolve_provider("glm") == "zai"
 
+    def test_alias_openai(self):
+        assert resolve_provider("openai") == "openrouter"
+
     def test_alias_z_ai(self):
         assert resolve_provider("z-ai") == "zai"
 

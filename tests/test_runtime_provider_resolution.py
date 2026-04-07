@@ -947,6 +947,40 @@ def test_resolve_provider_openrouter_unchanged():
     assert resolve_provider("openrouter") == "openrouter"
 
 
+def test_resolve_runtime_provider_openai_alias_uses_openrouter(monkeypatch):
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "model": {
+                "provider": "openai",
+                "default": "openai/gpt-4.1-mini",
+            }
+        },
+    )
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
+    monkeypatch.setattr(rp, "load_pool", lambda provider: None)
+    monkeypatch.setattr(
+        rp,
+        "_resolve_openrouter_runtime",
+        lambda **kwargs: {
+            "provider": "openrouter",
+            "api_mode": "chat_completions",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key": "or-key",
+            "source": "env",
+            "requested_provider": kwargs["requested_provider"],
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider()
+
+    assert resolved["provider"] == "openrouter"
+    assert resolved["requested_provider"] == "openai"
+
+
 def test_custom_provider_runtime_preserves_provider_name(monkeypatch):
     """resolve_runtime_provider with provider='custom' must return provider='custom'."""
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)

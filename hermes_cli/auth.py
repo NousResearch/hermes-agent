@@ -807,6 +807,7 @@ def resolve_provider(
 
     # Normalize provider aliases
     _PROVIDER_ALIASES = {
+        "openai": "openrouter",
         "glm": "zai", "z-ai": "zai", "z.ai": "zai", "zhipu": "zai",
         "google": "gemini", "google-gemini": "gemini", "google-ai-studio": "gemini",
         "kimi": "kimi-coding", "moonshot": "kimi-coding",

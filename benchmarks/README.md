@@ -1,11 +1,13 @@
 # Agent Memory Benchmark Suite
 
-A system-agnostic benchmark for evaluating AI agent memory systems across 424 scenarios, 19 benchmark categories, and 15 suites. It measures retrieval quality, contradiction handling, scope isolation, adversarial robustness, scale handling, feedback-driven reranking, and multi-agent memory behaviors.
+A system-agnostic benchmark framework for evaluating AI agent memory systems across 424 scenarios, 19 benchmark categories, and 15 suites. It measures retrieval quality, contradiction handling, scope isolation, adversarial robustness, scale handling, feedback-driven reranking, and multi-agent memory behaviors.
 
-This repository currently includes:
+This framework currently includes:
 - 7 adapter implementations under `benchmarks/backends/`
-- 6 checked-in result bundles under `benchmarks/results/`
 - 22 benchmark tests across 9 test files in `tests/benchmarks/`
+- reporting, comparison, optimization, and validation tooling
+
+This branch is the framework-first PR. It intentionally does not commit a result bundle.
 
 ## What This Benchmarks
 
@@ -28,11 +30,12 @@ python -m benchmarks --backend baseline-flat --suite d --runs 1 --seeds 42
 # Multi-seed local run for stronger evidence
 python -m benchmarks --backend baseline-flat --suite all --runs 5 --seeds 42 43 44 45 46
 
-# Compare two stored result files
-python -m benchmarks --compare benchmarks/results/baseline-flat.json benchmarks/results/holographic.json
+# Generate a markdown report from a locally produced result file
+python -m benchmarks --backend baseline-flat --suite d --runs 1 --seeds 42 --output-dir /tmp/bench-out
+python -m benchmarks --report --result-file /tmp/bench-out/baseline-flat.json
 
-# Generate a markdown report from a stored result file
-python -m benchmarks --report --result-file benchmarks/results/baseline-flat.json
+# Compare two locally produced result files
+python -m benchmarks --compare /tmp/bench-out/before.json /tmp/bench-out/after.json
 ```
 
 ## Suites
@@ -69,15 +72,7 @@ Adapter implementations currently present in-tree:
 - `openviking`
 - `retaindb`
 
-Checked-in result artifacts are currently included for these 6 backends:
-- `baseline-flat`
-- `hindsight`
-- `holographic`
-- `honcho`
-- `mem0`
-- `retaindb`
-
-`openviking` and `byterover` are implemented but are not included in the checked-in comparison bundle yet.
+The framework PR includes adapters and tooling only. Result snapshots can be generated locally or proposed in a follow-up PR.
 
 ## Methodology
 
@@ -102,13 +97,13 @@ Backends declare support through `BackendCapabilities`. Categories that require 
 
 ### Shared-Suite Aggregation
 
-Aggregate comparisons should use only categories that all compared backends actually ran. The checked-in `COMPARISON_REPORT.md` includes a shared-suite table for this reason.
+Aggregate comparisons should use only categories that all compared backends actually ran. Full-suite means across mismatched category subsets can mislead.
 
 ### Seeds and Statistical Validity
 
 The framework supports multi-seed runs, confidence intervals, and significance testing.
 
-Important honesty note: the checked-in result JSON files in `benchmarks/results/` are currently single-seed snapshots (`num_runs = 1`). They are useful for development and qualitative comparison, but they are not strong statistical evidence. Re-run with 5 seeds before making publication-strength claims.
+This framework-only branch does not ship committed result JSONs. When generating results locally, prefer 5-seed reruns where feasible before making strong benchmark claims.
 
 ## Interpreting Results
 
@@ -125,9 +120,9 @@ What scores do not mean:
 ## Known Limitations
 
 1. Heuristic judge bias: lexical overlap is still favored over paraphrase.
-2. Checked-in result bundle is single-seed: useful, but not statistically strong.
-3. External/service backends vary in reset semantics and environmental dependencies.
-4. Result quality depends on backend environment quality (API keys, local services, embedding providers).
+2. External/service backends vary in reset semantics and environmental dependencies.
+3. Result quality depends on backend environment quality (API keys, local services, embedding providers).
+4. Statistical strength depends on how many seeds/runs you actually execute.
 
 ## Running the Benchmark Test Suite
 

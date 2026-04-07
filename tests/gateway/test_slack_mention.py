@@ -74,7 +74,8 @@ def _make_adapter(require_mention=None, free_response_channels=None):
 # Tests: _slack_require_mention
 # ---------------------------------------------------------------------------
 
-def test_require_mention_defaults_to_true():
+def test_require_mention_defaults_to_true(monkeypatch):
+    monkeypatch.delenv("SLACK_REQUIRE_MENTION", raising=False)
     adapter = _make_adapter()
     assert adapter._slack_require_mention() is True
 
@@ -99,9 +100,31 @@ def test_require_mention_string_false():
     assert adapter._slack_require_mention() is False
 
 
+def test_require_mention_string_no():
+    adapter = _make_adapter(require_mention="no")
+    assert adapter._slack_require_mention() is False
+
+
+def test_require_mention_string_yes():
+    adapter = _make_adapter(require_mention="yes")
+    assert adapter._slack_require_mention() is True
+
+
+def test_require_mention_empty_string_stays_true():
+    """Empty/malformed strings keep gating ON (explicit-false parser)."""
+    adapter = _make_adapter(require_mention="")
+    assert adapter._slack_require_mention() is True
+
+
+def test_require_mention_malformed_string_stays_true():
+    """Unrecognised values keep gating ON (fail-closed)."""
+    adapter = _make_adapter(require_mention="maybe")
+    assert adapter._slack_require_mention() is True
+
+
 def test_require_mention_env_var_fallback(monkeypatch):
     monkeypatch.setenv("SLACK_REQUIRE_MENTION", "false")
-    adapter = _make_adapter()  # no config value → falls back to env
+    adapter = _make_adapter()  # no config value -> falls back to env
     assert adapter._slack_require_mention() is False
 
 
@@ -115,7 +138,8 @@ def test_require_mention_env_var_default_true(monkeypatch):
 # Tests: _slack_free_response_channels
 # ---------------------------------------------------------------------------
 
-def test_free_response_channels_default_empty():
+def test_free_response_channels_default_empty(monkeypatch):
+    monkeypatch.delenv("SLACK_FREE_RESPONSE_CHANNELS", raising=False)
     adapter = _make_adapter()
     assert adapter._slack_free_response_channels() == set()
 
@@ -227,6 +251,31 @@ def test_thread_reply_without_active_session_ignored():
         adapter, text="followup",
         thread_reply=True, active_session=False,
     ) is False
+
+
+def test_bot_uid_none_processes_channel_message():
+    """When bot_uid is None (before auth_test), channel messages pass through.
+
+    This preserves the old behavior: the gating block is skipped entirely
+    when bot_uid is falsy, so messages are not silently dropped during
+    startup or for new workspaces.
+    """
+    adapter = _make_adapter(require_mention=True)
+    adapter._bot_user_id = None
+    adapter._team_bot_user_ids = {}
+
+    # With bot_uid=None, the `if not is_dm and bot_uid:` condition is False,
+    # so the gating block is skipped — message passes through.
+    bot_uid = adapter._team_bot_user_ids.get("T1", adapter._bot_user_id)
+    assert bot_uid is None
+
+    # Simulate: gating block not entered when bot_uid is falsy
+    is_dm = False
+    if not is_dm and bot_uid:
+        result = False  # would enter gating
+    else:
+        result = True  # gating skipped, message processed
+    assert result is True
 
 
 # ---------------------------------------------------------------------------

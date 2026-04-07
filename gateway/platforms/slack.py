@@ -772,7 +772,7 @@ class SlackAdapter(BasePlatformAdapter):
         bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
         is_mentioned = bot_uid and f"<@{bot_uid}>" in text
 
-        if not is_dm:
+        if not is_dm and bot_uid:
             if channel_id in self._slack_free_response_channels():
                 pass  # Free-response channel — always process
             elif not self._slack_require_mention():
@@ -1056,13 +1056,18 @@ class SlackAdapter(BasePlatformAdapter):
     # ── Channel mention gating ─────────────────────────────────────────────
 
     def _slack_require_mention(self) -> bool:
-        """Return whether channel messages require an explicit bot mention."""
+        """Return whether channel messages require an explicit bot mention.
+
+        Uses explicit-false parsing (like Discord/Matrix) rather than
+        truthy parsing, since the safe default is True (gating on).
+        Unrecognised or empty values keep gating enabled.
+        """
         configured = self.config.extra.get("require_mention")
         if configured is not None:
             if isinstance(configured, str):
-                return configured.lower() in ("true", "1", "yes", "on")
+                return configured.lower() not in ("false", "0", "no", "off")
             return bool(configured)
-        return os.getenv("SLACK_REQUIRE_MENTION", "true").lower() in ("true", "1", "yes", "on")
+        return os.getenv("SLACK_REQUIRE_MENTION", "true").lower() not in ("false", "0", "no", "off")
 
     def _slack_free_response_channels(self) -> set[str]:
         """Return channel IDs that don't require mention."""

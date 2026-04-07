@@ -25,16 +25,20 @@ The Signal adapter uses `httpx` (already a core Hermes dependency) for all commu
 ### Installing signal-cli
 
 ```bash
-# Linux (Debian/Ubuntu)
-sudo apt install signal-cli
-
 # macOS
 brew install signal-cli
 
-# Manual install (any platform)
-# Download from https://github.com/AsamK/signal-cli/releases
-# Extract and add to PATH
+# Linux (download latest release)
+VERSION=$(curl -Ls -o /dev/null -w %{url_effective} \
+  https://github.com/AsamK/signal-cli/releases/latest | sed 's/^.*\/v//')
+curl -L -O "https://github.com/AsamK/signal-cli/releases/download/v${VERSION}/signal-cli-${VERSION}.tar.gz"
+sudo tar xf "signal-cli-${VERSION}.tar.gz" -C /opt
+sudo ln -sf "/opt/signal-cli-${VERSION}/bin/signal-cli" /usr/local/bin/
 ```
+
+:::caution
+signal-cli is **not** in apt or snap repositories. The Linux install above downloads directly from [GitHub releases](https://github.com/AsamK/signal-cli/releases).
+:::
 
 ---
 

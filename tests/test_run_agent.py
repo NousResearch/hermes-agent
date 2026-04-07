@@ -5,6 +5,7 @@ pieces. The OpenAI client and tool loading are mocked so no network calls
 are made.
 """
 
+import copy
 import json
 import logging
 import re
@@ -1778,6 +1779,63 @@ class TestRunConversation:
         # User-friendly message is returned
         assert result["final_response"] is not None
         assert "Thinking Budget Exhausted" in result["final_response"]
+
+    def test_length_rollback_persists_same_history_as_returned(self, agent):
+        self._setup_agent(agent)
+        tc = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
+        resp = _mock_response(content="Partial answer", finish_reason="length", tool_calls=[tc])
+        agent.client.chat.completions.create.return_value = resp
+
+        persisted = {}
+
+        def _capture_persist(messages, conversation_history=None):
+            persisted["messages"] = copy.deepcopy(messages)
+            persisted["conversation_history"] = copy.deepcopy(conversation_history)
+
+        history = [
+            {"role": "user", "content": "old question"},
+            {"role": "assistant", "content": "old answer"},
+        ]
+
+        with (
+            patch.object(agent, "_persist_session", side_effect=_capture_persist),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("new question", conversation_history=history)
+
+        assert result["error"] == "Response truncated due to output length limit"
+        assert persisted["messages"] == result["messages"]
+
+    def test_incomplete_scratchpad_rollback_persists_same_history_as_returned(self, agent):
+        self._setup_agent(agent)
+        bad = "<REASONING_SCRATCHPAD>unfinished"
+        agent.client.chat.completions.create.side_effect = [
+            _mock_response(content=bad, finish_reason="stop"),
+            _mock_response(content=bad, finish_reason="stop"),
+            _mock_response(content=bad, finish_reason="stop"),
+        ]
+
+        persisted = {}
+
+        def _capture_persist(messages, conversation_history=None):
+            persisted["messages"] = copy.deepcopy(messages)
+            persisted["conversation_history"] = copy.deepcopy(conversation_history)
+
+        history = [
+            {"role": "user", "content": "old question"},
+            {"role": "assistant", "content": "old answer"},
+        ]
+
+        with (
+            patch.object(agent, "_persist_session", side_effect=_capture_persist),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("new question", conversation_history=history)
+
+        assert result["error"] == "Incomplete REASONING_SCRATCHPAD after 2 retries"
+        assert persisted["messages"] == result["messages"]
 
 
 class TestRetryExhaustion:

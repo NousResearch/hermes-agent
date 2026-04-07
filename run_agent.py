@@ -7717,7 +7717,7 @@ class AIAgent:
                             rolled_back_messages = self._get_messages_up_to_last_assistant(messages)
 
                             self._cleanup_task_resources(effective_task_id)
-                            self._persist_session(messages, conversation_history)
+                            self._persist_session(rolled_back_messages, conversation_history)
 
                             return {
                                 "final_response": None,
@@ -8590,7 +8590,7 @@ class AIAgent:
                         
                         rolled_back_messages = self._get_messages_up_to_last_assistant(messages)
                         self._cleanup_task_resources(effective_task_id)
-                        self._persist_session(messages, conversation_history)
+                        self._persist_session(rolled_back_messages, conversation_history)
                         
                         return {
                             "final_response": None,

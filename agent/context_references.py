@@ -343,10 +343,9 @@ def _resolve_path(cwd: Path, target: str, *, allowed_root: Path | None = None) -
 
 
 def _ensure_reference_path_allowed(path: Path) -> None:
+    from hermes_constants import get_hermes_home
     home = Path(os.path.expanduser("~")).resolve()
-    hermes_home = Path(
-        os.getenv("HERMES_HOME", str(home / ".hermes"))
-    ).expanduser().resolve()
+    hermes_home = get_hermes_home().resolve()
 
     blocked_exact = {home / rel for rel in _SENSITIVE_HOME_FILES}
     blocked_exact.add(hermes_home / ".env")

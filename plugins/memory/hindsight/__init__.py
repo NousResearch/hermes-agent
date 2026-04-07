@@ -290,8 +290,7 @@ class HindsightMemoryProvider(MemoryProvider):
         if self._mode == "local":
             def _start_daemon():
                 import traceback
-                from pathlib import Path
-                log_dir = Path(os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes"))) / "logs"
+                log_dir = get_hermes_home() / "logs"
                 log_dir.mkdir(parents=True, exist_ok=True)
                 log_path = log_dir / "hindsight-embed.log"
                 try:

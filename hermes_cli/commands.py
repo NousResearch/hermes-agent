@@ -294,10 +294,8 @@ def _resolve_config_gates() -> set[str]:
         return set()
     try:
         import yaml
-        config_path = os.path.join(
-            os.getenv("HERMES_HOME", os.path.expanduser("~/.hermes")),
-            "config.yaml",
-        )
+        from hermes_constants import get_hermes_home
+        config_path = str(get_hermes_home() / "config.yaml")
         if os.path.exists(config_path):
             with open(config_path, encoding="utf-8") as f:
                 cfg = yaml.safe_load(f) or {}

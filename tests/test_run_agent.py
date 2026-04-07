@@ -8,6 +8,7 @@ are made.
 import json
 import logging
 import re
+import threading
 import uuid
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -134,6 +135,92 @@ def test_aiagent_reuses_existing_errors_log_handler():
                 handler.close()
         for handler in original_handlers:
             root_logger.addHandler(handler)
+
+
+class TestBackgroundReviewArtifacts:
+    @staticmethod
+    def _fake_thread_class():
+        class _ImmediateThread:
+            def __init__(self, target=None, daemon=None, name=None):
+                self._target = target
+
+            def start(self):
+                if self._target:
+                    self._target()
+
+        return _ImmediateThread
+
+    @staticmethod
+    def _fake_review_agent_class(messages):
+        class _FakeReviewAgent:
+            def __init__(self, *args, **kwargs):
+                self._session_messages = []
+                self.client = None
+                self._memory_store = None
+                self._memory_enabled = False
+                self._user_profile_enabled = False
+                self._memory_nudge_interval = 0
+                self._skill_nudge_interval = 0
+
+            def run_conversation(self, user_message, conversation_history):
+                self._session_messages = messages
+                return {"completed": True}
+
+        return _FakeReviewAgent
+
+    def test_background_review_artifacts_are_printed_and_forwarded_when_enabled(self, agent):
+        tool_messages = [
+            {
+                "role": "tool",
+                "content": json.dumps(
+                    {"success": True, "message": "Entry added", "target": "memory"}
+                ),
+            },
+            {
+                "role": "tool",
+                "content": json.dumps(
+                    {"success": True, "message": "Entry added", "target": "user"}
+                ),
+            },
+        ]
+        agent._safe_print = MagicMock()
+        agent.background_review_callback = MagicMock()
+        agent.show_background_review_artifacts = True
+
+        with (
+            patch.object(run_agent, "AIAgent", self._fake_review_agent_class(tool_messages)),
+            patch.object(threading, "Thread", self._fake_thread_class()),
+        ):
+            agent._spawn_background_review([], review_memory=True)
+
+        agent._safe_print.assert_called_once_with(
+            "  💾 Memory updated · User profile updated"
+        )
+        agent.background_review_callback.assert_called_once_with(
+            "💾 Memory updated · User profile updated"
+        )
+
+    def test_background_review_artifacts_are_suppressed_when_disabled(self, agent):
+        tool_messages = [
+            {
+                "role": "tool",
+                "content": json.dumps(
+                    {"success": True, "message": "Entry added", "target": "memory"}
+                ),
+            }
+        ]
+        agent._safe_print = MagicMock()
+        agent.background_review_callback = MagicMock()
+        agent.show_background_review_artifacts = False
+
+        with (
+            patch.object(run_agent, "AIAgent", self._fake_review_agent_class(tool_messages)),
+            patch.object(threading, "Thread", self._fake_thread_class()),
+        ):
+            agent._spawn_background_review([], review_memory=True)
+
+        agent._safe_print.assert_not_called()
+        agent.background_review_callback.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

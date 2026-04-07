@@ -1724,6 +1724,22 @@ def setup_agent_settings(config: dict):
         f"Context compression threshold set to {config['compression'].get('threshold', 0.50)}"
     )
 
+    # ── Conversation Artifacts ──
+    print_header("Conversation Artifacts")
+    print_info("Controls non-tool status blurbs that can appear during normal chat flow.")
+    print_info('Examples: "💾 Memory updated" or "User profile updated".')
+    print_info("Disable this if you want replies to feel more conversational and less system-y.")
+
+    current_artifacts = bool(config.get("display", {}).get("background_review_artifacts", True))
+    show_artifacts = prompt_yes_no(
+        "Show background review artifacts in chat?",
+        current_artifacts,
+    )
+    config.setdefault("display", {})["background_review_artifacts"] = show_artifacts
+    save_config(config)
+    state = "enabled" if show_artifacts else "disabled"
+    print_success(f"Background review artifacts {state}")
+
     # ── Session Reset Policy ──
     print_header("Session Reset Policy")
     print_info(

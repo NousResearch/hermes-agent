@@ -598,6 +598,7 @@ class AIAgent:
         # would mangle the escape sequences.  None = use builtins.print.
         self._print_fn = None
         self.background_review_callback = None  # Optional sync callback for gateway delivery
+        self.show_background_review_artifacts = True
         self.skip_context_files = skip_context_files
         self.pass_session_id = pass_session_id
         self.persist_session = persist_session
@@ -1818,7 +1819,7 @@ class AIAgent:
                         label = "Memory" if target == "memory" else "User profile" if target == "user" else target
                         actions.append(f"{label} updated")
 
-                if actions:
+                if actions and self.show_background_review_artifacts:
                     summary = " · ".join(dict.fromkeys(actions))
                     self._safe_print(f"  💾 {summary}")
                     _bg_cb = self.background_review_callback

@@ -2353,6 +2353,9 @@ class HermesCLI:
                 stream_delta_callback=self._stream_delta if self.streaming_enabled else None,
                 tool_gen_callback=self._on_tool_gen_start if self.streaming_enabled else None,
             )
+            self.agent.show_background_review_artifacts = self.config["display"].get(
+                "background_review_artifacts", True
+            )
             # Store reference for atexit memory provider shutdown
             global _active_agent_ref
             _active_agent_ref = self.agent

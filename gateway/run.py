@@ -2311,11 +2311,12 @@ class GatewayRunner:
         # Get or create session
         session_entry = self.session_store.get_or_create_session(source)
         session_key = session_entry.session_key
+        _was_auto_reset_session = bool(getattr(session_entry, "was_auto_reset", False))
         
         # Emit session:start for new or auto-reset sessions
         _is_new_session = (
             session_entry.created_at == session_entry.updated_at
-            or getattr(session_entry, "was_auto_reset", False)
+            or _was_auto_reset_session
         )
         if _is_new_session:
             await self.hooks.emit("session:start", {
@@ -2346,7 +2347,7 @@ class GatewayRunner:
         
         # If the previous session expired and was auto-reset, prepend a notice
         # so the agent knows this is a fresh conversation (not an intentional /reset).
-        if getattr(session_entry, 'was_auto_reset', False):
+        if _was_auto_reset_session:
             reset_reason = getattr(session_entry, 'auto_reset_reason', None) or 'idle'
             if reset_reason == "daily":
                 context_note = "[System note: The user's session was automatically reset by the daily schedule. This is a fresh conversation with no prior context.]"
@@ -2354,50 +2355,10 @@ class GatewayRunner:
                 context_note = "[System note: The user's previous session expired due to inactivity. This is a fresh conversation with no prior context.]"
             context_prompt = context_note + "\n\n" + context_prompt
 
-            # Send a user-facing notification explaining the reset, unless:
-            # - notifications are disabled in config
-            # - the platform is excluded (e.g. api_server, webhook)
-            # - the expired session had no activity (nothing was cleared)
-            try:
-                policy = self.session_store.config.get_reset_policy(
-                    platform=source.platform,
-                    session_type=getattr(source, 'chat_type', 'dm'),
-                )
-                platform_name = source.platform.value if source.platform else ""
-                had_activity = getattr(session_entry, 'reset_had_activity', False)
-                should_notify = (
-                    policy.notify
-                    and had_activity
-                    and platform_name not in policy.notify_exclude_platforms
-                )
-                if should_notify:
-                    adapter = self.adapters.get(source.platform)
-                    if adapter:
-                        if reset_reason == "daily":
-                            reason_text = f"daily schedule at {policy.at_hour}:00"
-                        else:
-                            hours = policy.idle_minutes // 60
-                            mins = policy.idle_minutes % 60
-                            duration = f"{hours}h" if not mins else f"{hours}h {mins}m" if hours else f"{mins}m"
-                            reason_text = f"inactive for {duration}"
-                        notice = (
-                            f"◐ Session automatically reset ({reason_text}). "
-                            f"Conversation history cleared.\n"
-                            f"Use /resume to browse and restore a previous session.\n"
-                            f"Adjust reset timing in config.yaml under session_reset."
-                        )
-                        try:
-                            session_info = self._format_session_info()
-                            if session_info:
-                                notice = f"{notice}\n\n{session_info}"
-                        except Exception:
-                            pass
-                        await adapter.send(
-                            source.chat_id, notice,
-                            metadata=getattr(event, 'metadata', None),
-                        )
-            except Exception as e:
-                logger.debug("Auto-reset notification failed (non-fatal): %s", e)
+            # Auto-resets are intentionally silent for the user. We still inject
+            # the context note above so the agent knows this is a fresh session,
+            # but only manual /reset or /new actions should produce a visible
+            # "session reset" confirmation in chat.
 
             session_entry.was_auto_reset = False
             session_entry.auto_reset_reason = None
@@ -2680,7 +2641,15 @@ class GatewayRunner:
         
         # One-time prompt if no home channel is set for this platform
         # Skip for webhooks - they deliver directly to configured targets (github_comment, etc.)
-        if not history and source.platform and source.platform != Platform.LOCAL and source.platform != Platform.WEBHOOK:
+        # Auto-reset sessions are intentionally silent; don't replay onboarding
+        # notices like this when Hermes starts a fresh session automatically.
+        if (
+            not history
+            and not _was_auto_reset_session
+            and source.platform
+            and source.platform != Platform.LOCAL
+            and source.platform != Platform.WEBHOOK
+        ):
             platform_name = source.platform.value
             env_key = f"{platform_name.upper()}_HOME_CHANNEL"
             if not os.getenv(env_key):
@@ -6280,6 +6249,14 @@ class GatewayRunner:
             or os.getenv("HERMES_TOOL_PROGRESS_MODE")
             or "all"
         )
+        show_background_review_artifacts = user_config.get("display", {}).get(
+            "background_review_artifacts",
+            True,
+        )
+        if show_background_review_artifacts is False:
+            show_background_review_artifacts = False
+        else:
+            show_background_review_artifacts = bool(show_background_review_artifacts)
         # Disable tool progress for webhooks - they don't support message editing,
         # so each progress line would be sent as a separate message.
         from gateway.config import Platform
@@ -6662,6 +6639,7 @@ class GatewayRunner:
             agent.stream_delta_callback = _stream_delta_cb
             agent.status_callback = _status_callback_sync
             agent.reasoning_config = reasoning_config
+            agent.show_background_review_artifacts = show_background_review_artifacts
 
             # Background review delivery — send "💾 Memory updated" etc. to user
             def _bg_review_send(message: str) -> None:
@@ -6679,7 +6657,9 @@ class GatewayRunner:
                 except Exception as _e:
                     logger.debug("background_review_callback error: %s", _e)
 
-            agent.background_review_callback = _bg_review_send
+            agent.background_review_callback = (
+                _bg_review_send if show_background_review_artifacts else None
+            )
 
             # Store agent reference for interrupt support
             agent_holder[0] = agent

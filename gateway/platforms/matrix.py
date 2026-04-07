@@ -308,6 +308,7 @@ class MatrixAdapter(BasePlatformAdapter):
                     client.user_id = resp.user_id
                 if getattr(resp, "device_id", ""):
                     client.device_id = resp.device_id
+                    self._device_id = resp.device_id
                 if getattr(resp, "access_token", ""):
                     client.access_token = resp.access_token
                 logger.info(

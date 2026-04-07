@@ -2256,6 +2256,7 @@ class TestMatrixPasswordAuth:
         # All three credentials must be set on the client after password login
         assert fake_client.user_id == "@bot:example.org", "user_id not set from LoginResponse"
         assert fake_client.device_id == "DEVPWD1", "device_id not set from LoginResponse"
+        assert adapter._device_id == "DEVPWD1", "self._device_id not updated — device flooding will occur on restart"
         assert fake_client.access_token == "syt_password_derived_token", "access_token not set from LoginResponse"
         # self._user_id must also be updated
         assert adapter._user_id == "@bot:example.org"

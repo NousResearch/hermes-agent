@@ -101,6 +101,11 @@ from agent.trajectory import (
     convert_scratchpad_to_think, has_incomplete_scratchpad,
     save_trajectory as _save_trajectory_to_file,
 )
+from agent.provider_errors import (
+    ProviderErrorReason,
+    classify_provider_error as _classify_provider_error,
+    parse_rate_limit_headers as _parse_rate_limit_headers,
+)
 from utils import atomic_json_write, env_var_enabled
 
 
@@ -1201,6 +1206,7 @@ class AIAgent:
             working_dir=os.getenv("TERMINAL_CWD") or None,
         )
         self._user_turn_count = 0
+        self._rate_limit_state = None  # RateLimitState from last API response
 
         # Cumulative token usage for the session
         self.session_prompt_tokens = 0
@@ -1284,6 +1290,7 @@ class AIAgent:
         
         # Turn counter (added after reset_session_state was first written — #2635)
         self._user_turn_count = 0
+        self._rate_limit_state = None  # Reset rate-limit tracking for new session
 
         # Context compressor internal counters (if present)
         if hasattr(self, "context_compressor") and self.context_compressor:
@@ -7294,6 +7301,13 @@ class AIAgent:
 
             while retry_count < max_retries:
                 try:
+                    # Pre-emptive rate-limit throttle based on previous response headers
+                    if self._rate_limit_state and self._rate_limit_state.should_throttle():
+                        _delay = self._rate_limit_state.suggested_delay()
+                        if _delay > 0:
+                            self._vprint(f"{self.log_prefix}\u23f1\ufe0f Rate limit quota low \u2014 throttling {_delay:.1f}s")
+                            time.sleep(_delay)
+
                     api_kwargs = self._build_api_kwargs(api_messages)
                     if self.api_mode == "codex_responses":
                         api_kwargs = self._preflight_codex_api_kwargs(api_kwargs, allow_stream=False)
@@ -7490,8 +7504,9 @@ class AIAgent:
                             }
                         
                         # Longer backoff for rate limiting (likely cause of None choices)
-                        wait_time = min(5 * (2 ** (retry_count - 1)), 120)  # 5s, 10s, 20s, 40s, 80s, 120s
-                        self._vprint(f"{self.log_prefix}⏳ Retrying in {wait_time}s (extended backoff for possible rate limit)...", force=True)
+                        _base_wait = min(5 * (2 ** (retry_count - 1)), 120)  # 5s, 10s, 20s, 40s, 80s, 120s
+                        wait_time = _base_wait + random.uniform(0, _base_wait * 0.25)
+                        self._vprint(f"{self.log_prefix}⏳ Retrying in {wait_time:.0f}s (extended backoff for possible rate limit)...", force=True)
                         logging.warning(f"Invalid API response (retry {retry_count}/{max_retries}): {', '.join(error_details)} | Provider: {provider_name}")
                         
                         # Sleep in small increments to stay responsive to interrupts
@@ -7768,6 +7783,12 @@ class AIAgent:
                                 self._vprint(f"{self.log_prefix}   💾 Cache: {cached:,}/{prompt:,} tokens ({hit_pct:.0f}% hit, {written:,} written)")
                     
                     has_retried_429 = False  # Reset on success
+
+                    # Track rate-limit headers for pre-emptive throttling
+                    _rls = _parse_rate_limit_headers(response)
+                    if _rls:
+                        self._rate_limit_state = _rls
+
                     self._touch_activity(f"API call #{api_call_count} completed")
                     break  # Success, exit retry loop
 
@@ -7872,6 +7893,21 @@ class AIAgent:
                     error_type = type(api_error).__name__
                     error_msg = str(api_error).lower()
                     _error_summary = self._summarize_api_error(api_error)
+
+                    # ── Structured error classification ──────────────────
+                    _classified = _classify_provider_error(
+                        api_error,
+                        error_msg=error_msg,
+                        status_code=status_code,
+                        provider=getattr(self, "provider", None),
+                        model=getattr(self, "model", ""),
+                        approx_tokens=approx_tokens,
+                        num_messages=len(api_messages),
+                        context_length=getattr(
+                            getattr(self, "context_compressor", None),
+                            "context_length", 200_000,
+                        ),
+                    )
                     logger.warning(
                         "API call failed (attempt %s/%s) error_type=%s %s summary=%s",
                         retry_count,
@@ -7973,13 +8009,9 @@ class AIAgent:
                     # When a fallback model is configured, switch immediately instead
                     # of burning through retries with exponential backoff -- the
                     # primary provider won't recover within the retry window.
-                    is_rate_limited = (
-                        status_code == 429
-                        or "rate limit" in error_msg
-                        or "too many requests" in error_msg
-                        or "rate_limit" in error_msg
-                        or "usage limit" in error_msg
-                        or "quota" in error_msg
+                    is_rate_limited = _classified.reason in (
+                        ProviderErrorReason.RATE_LIMIT,
+                        ProviderErrorReason.BILLING,
                     )
                     if is_rate_limited and self._fallback_index < len(self._fallback_chain):
                         # Don't eagerly fallback if credential pool rotation may
@@ -7995,10 +8027,7 @@ class AIAgent:
                                 continue
 
                     is_payload_too_large = (
-                        status_code == 413
-                        or 'request entity too large' in error_msg
-                        or 'payload too large' in error_msg
-                        or 'error code: 413' in error_msg
+                        _classified.reason == ProviderErrorReason.PAYLOAD_TOO_LARGE
                     )
 
                     if is_payload_too_large:
@@ -8042,64 +8071,38 @@ class AIAgent:
                             }
 
                     # Check for context-length errors BEFORE generic 4xx handler.
-                    # Local backends (LM Studio, Ollama, llama.cpp) often return
-                    # HTTP 400 with messages like "Context size has been exceeded"
-                    # which must trigger compression, not an immediate abort.
-                    is_context_length_error = any(phrase in error_msg for phrase in [
-                        'context length', 'context size', 'maximum context',
-                        'token limit', 'too many tokens', 'reduce the length',
-                        'exceeds the limit', 'context window',
-                        'request entity too large',  # OpenRouter/Nous 413 safety net
-                        'prompt is too long',  # Anthropic: "prompt is too long: N tokens > M maximum"
-                        'prompt exceeds max length',  # Z.AI / GLM: generic 400 overflow wording
-                    ])
+                    # Classification is handled by _classify_provider_error() which
+                    # covers: explicit keyword phrases, generic 400 + large session
+                    # heuristic (#1630), and server disconnect + large session (#2153).
+                    is_context_length_error = (
+                        _classified.reason == ProviderErrorReason.CONTEXT_OVERFLOW
+                    )
 
-                    # Fallback heuristic: Anthropic sometimes returns a generic
-                    # 400 invalid_request_error with just "Error" as the message
-                    # when the context is too large.  If the error message is very
-                    # short/generic AND the session is large, treat it as a
-                    # probable context-length error and attempt compression rather
-                    # than aborting.  This prevents an infinite failure loop where
-                    # each failed message gets persisted, making the session even
-                    # larger. (#1630)
-                    if not is_context_length_error and status_code == 400:
+                    # Preserve diagnostic messages for heuristic context-overflow cases
+                    if is_context_length_error and status_code == 400:
                         ctx_len = getattr(getattr(self, 'context_compressor', None), 'context_length', 200000)
                         is_large_session = approx_tokens > ctx_len * 0.4 or len(api_messages) > 80
-                        is_generic_error = len(error_msg.strip()) < 30  # e.g. just "error"
+                        is_generic_error = len(error_msg.strip()) < 30
                         if is_large_session and is_generic_error:
-                            is_context_length_error = True
                             self._vprint(
                                 f"{self.log_prefix}⚠️  Generic 400 with large session "
                                 f"(~{approx_tokens:,} tokens, {len(api_messages)} msgs) — "
                                 f"treating as probable context overflow.",
                                 force=True,
                             )
-
-                    # Server disconnects on large sessions are often caused by
-                    # the request exceeding the provider's context/payload limit
-                    # without a proper HTTP error response.  Treat these as
-                    # context-length errors to trigger compression rather than
-                    # burning through retries that will all fail the same way.
-                    # This breaks the death spiral: disconnect → no token data
-                    # → no compression → bigger session → more disconnects.
-                    # (#2153)
-                    if not is_context_length_error and not status_code:
+                    if is_context_length_error and not status_code:
                         _is_server_disconnect = (
                             'server disconnected' in error_msg
                             or 'peer closed connection' in error_msg
                             or error_type in ('ReadError', 'RemoteProtocolError', 'ServerDisconnectedError')
                         )
                         if _is_server_disconnect:
-                            ctx_len = getattr(getattr(self, 'context_compressor', None), 'context_length', 200000)
-                            _is_large = approx_tokens > ctx_len * 0.6 or len(api_messages) > 200
-                            if _is_large:
-                                is_context_length_error = True
-                                self._vprint(
-                                    f"{self.log_prefix}⚠️  Server disconnected with large session "
-                                    f"(~{approx_tokens:,} tokens, {len(api_messages)} msgs) — "
-                                    f"treating as context-length error, attempting compression.",
-                                    force=True,
-                                )
+                            self._vprint(
+                                f"{self.log_prefix}⚠️  Server disconnected with large session "
+                                f"(~{approx_tokens:,} tokens, {len(api_messages)} msgs) — "
+                                f"treating as context-length error, attempting compression.",
+                                force=True,
+                            )
 
                     if is_context_length_error:
                         compressor = self.context_compressor
@@ -8172,34 +8175,21 @@ class AIAgent:
                             }
 
                     # Check for non-retryable client errors (4xx HTTP status codes).
-                    # These indicate a problem with the request itself (bad model ID,
-                    # invalid API key, forbidden, etc.) and will never succeed on retry.
-                    # Note: 413 and context-length errors are excluded — handled above.
-                    # 429 (rate limit) is transient and MUST be retried with backoff.
-                    # 529 (Anthropic overloaded) is also transient.
-                    # Also catch local validation errors (ValueError, TypeError) — these
-                    # are programming bugs, not transient failures.
-                    # Exclude UnicodeEncodeError — it's a ValueError subclass but is
-                    # handled separately by the surrogate sanitization path above.
-                    _RETRYABLE_STATUS_CODES = {413, 429, 529}
-                    is_local_validation_error = (
-                        isinstance(api_error, (ValueError, TypeError))
-                        and not isinstance(api_error, UnicodeEncodeError)
+                    # Classification is handled by _classify_provider_error() which
+                    # covers: 4xx status codes (excluding retryable 413/429/529),
+                    # local validation errors (ValueError/TypeError), error-code
+                    # phrases, model-not-found, invalid-api-key, auth failures, and
+                    # the generic 400 Anthropic OAuth transient heuristic (#1608).
+                    # Context-length errors are excluded — handled above.
+                    is_client_error = (
+                        _classified.reason in (
+                            ProviderErrorReason.AUTH,
+                            ProviderErrorReason.AUTH_PERMANENT,
+                            ProviderErrorReason.MODEL_NOT_FOUND,
+                            ProviderErrorReason.FORMAT_ERROR,
+                        )
+                        and not is_context_length_error
                     )
-                    # Detect generic 400s from Anthropic OAuth (transient server-side failures).
-                    # Real invalid_request_error responses include a descriptive message;
-                    # transient ones contain only "Error" or are empty. (ref: issue #1608)
-                    _err_body = getattr(api_error, "body", None) or {}
-                    _err_message = (_err_body.get("error", {}).get("message", "") if isinstance(_err_body, dict) else "")
-                    _is_generic_400 = (status_code == 400 and _err_message.strip().lower() in ("error", ""))
-                    is_client_status_error = isinstance(status_code, int) and 400 <= status_code < 500 and status_code not in _RETRYABLE_STATUS_CODES and not _is_generic_400
-                    is_client_error = (is_local_validation_error or is_client_status_error or any(phrase in error_msg for phrase in [
-                        'error code: 401', 'error code: 403',
-                        'error code: 404', 'error code: 422',
-                        'is not a valid model', 'invalid model', 'model not found',
-                        'invalid api key', 'invalid_api_key', 'authentication',
-                        'unauthorized', 'forbidden', 'not found',
-                    ])) and not is_context_length_error
 
                     if is_client_error:
                         # Try fallback before aborting — a different provider
@@ -8285,12 +8275,7 @@ class AIAgent:
                         # very large tool call (write_file with huge content)
                         # and the proxy/CDN drops the stream mid-response.
                         _is_stream_drop = (
-                            not getattr(api_error, "status_code", None)
-                            and any(p in error_msg for p in (
-                                "connection lost", "connection reset",
-                                "connection closed", "network connection",
-                                "network error", "terminated",
-                            ))
+                            _classified.reason == ProviderErrorReason.STREAM_DROP
                         )
                         if _is_stream_drop:
                             self._vprint(
@@ -8347,7 +8332,10 @@ class AIAgent:
                                     _retry_after = min(int(_ra_raw), 120)  # Cap at 2 minutes
                                 except (TypeError, ValueError):
                                     pass
-                    wait_time = _retry_after if _retry_after else min(2 ** retry_count, 60)
+                    _base_wait = _retry_after if _retry_after else min(2 ** retry_count, 60)
+                    # Add jitter (0–25% of base) to avoid thundering-herd
+                    # when multiple sessions hit the same provider limit.
+                    wait_time = _base_wait + random.uniform(0, _base_wait * 0.25)
                     if is_rate_limited:
                         self._emit_status(f"⏱️ Rate limit reached. Waiting {wait_time}s before retry (attempt {retry_count + 1}/{max_retries})...")
                     else:

@@ -4910,8 +4910,8 @@ class GatewayRunner:
         cycle = ["off", "new", "all", "verbose"]
         descriptions = {
             "off": "⚙️ Tool progress: **OFF** — no tool activity shown.",
-            "new": "⚙️ Tool progress: **NEW** — shown when tool changes (short previews).",
-            "all": "⚙️ Tool progress: **ALL** — every tool call shown (short previews).",
+            "new": "⚙️ Tool progress: **NEW** — shown when tool changes (preview length: `display.tool_preview_length`, default 40).",
+            "all": "⚙️ Tool progress: **ALL** — every tool call shown (preview length: `display.tool_preview_length`, default 40).",
             "verbose": "⚙️ Tool progress: **VERBOSE** — every tool call with full arguments.",
         }
 
@@ -6324,10 +6324,15 @@ class GatewayRunner:
                 progress_queue.put(msg)
                 return
             
-            # "all" / "new" modes: short preview, always truncated (40 chars)
+            # "all" / "new" modes: short preview, respects tool_preview_length
+            # config (defaults to 40 chars when unset to keep gateway messages
+            # compact — unlike CLI spinners, these persist as permanent messages).
             if preview:
-                if len(preview) > 40:
-                    preview = preview[:37] + "..."
+                from agent.display import get_tool_preview_max_len
+                _pl = get_tool_preview_max_len()
+                _cap = _pl if _pl > 0 else 40
+                if len(preview) > _cap:
+                    preview = preview[:_cap - 3] + "..."
                 msg = f"{emoji} {tool_name}: \"{preview}\""
             else:
                 msg = f"{emoji} {tool_name}..."

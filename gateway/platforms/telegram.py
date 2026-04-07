@@ -151,6 +151,8 @@ class TelegramAdapter(BasePlatformAdapter):
         self._dm_topics: Dict[str, int] = {}
         # DM Topics config from extra.dm_topics
         self._dm_topics_config: List[Dict[str, Any]] = self.config.extra.get("dm_topics", [])
+        # Interactive model picker state per chat
+        self._model_picker_state: Dict[str, dict] = {}
 
     def _fallback_ips(self) -> list[str]:
         """Return validated fallback IPs from config (populated by _apply_env_overrides)."""
@@ -1008,14 +1010,252 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.warning("[%s] send_update_prompt failed: %s", self.name, e)
             return SendResult(success=False, error=str(e))
 
+    async def send_model_picker(
+        self,
+        chat_id: str,
+        providers: list,
+        current_model: str,
+        current_provider: str,
+        session_key: str,
+        on_model_selected,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send an interactive inline-keyboard model picker.
+
+        Two-step drill-down: provider selection → model selection.
+        Edits the same message in-place as the user navigates.
+        """
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+
+        try:
+            from hermes_cli.providers import get_label
+        except ImportError:
+            def get_label(slug):
+                return slug
+
+        try:
+            # Build provider buttons — 2 per row
+            buttons: list = []
+            for p in providers:
+                count = p.get("total_models", len(p.get("models", [])))
+                label = f"{p['name']} ({count})"
+                if p.get("is_current"):
+                    label = f"✓ {label}"
+                # Compact callback data: mp:<slug>  (max 64 bytes)
+                buttons.append(
+                    InlineKeyboardButton(label, callback_data=f"mp:{p['slug']}")
+                )
+
+            rows = [buttons[i : i + 2] for i in range(0, len(buttons), 2)]
+            rows.append([InlineKeyboardButton("✗ Cancel", callback_data="mx")])
+            keyboard = InlineKeyboardMarkup(rows)
+
+            provider_label = get_label(current_provider)
+            text = (
+                f"⚙ *Model Configuration*\n\n"
+                f"Current model: `{current_model or 'unknown'}`\n"
+                f"Provider: {provider_label}\n\n"
+                f"Select a provider:"
+            )
+
+            thread_id = metadata.get("thread_id") if metadata else None
+            msg = await self._bot.send_message(
+                chat_id=int(chat_id),
+                text=text,
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=keyboard,
+                message_thread_id=int(thread_id) if thread_id else None,
+            )
+
+            # Store picker state keyed by chat_id
+            self._model_picker_state[str(chat_id)] = {
+                "msg_id": msg.message_id,
+                "providers": providers,
+                "session_key": session_key,
+                "on_model_selected": on_model_selected,
+                "current_model": current_model,
+                "current_provider": current_provider,
+            }
+
+            return SendResult(success=True, message_id=str(msg.message_id))
+        except Exception as e:
+            logger.warning("[%s] send_model_picker failed: %s", self.name, e)
+            return SendResult(success=False, error=str(e))
+
+    async def _handle_model_picker_callback(
+        self, query, data: str, chat_id: str
+    ) -> None:
+        """Handle model picker inline keyboard callbacks (mp:/mm:/mb:/mx:)."""
+        state = self._model_picker_state.get(chat_id)
+        if not state:
+            await query.answer(text="Picker expired — use /model again.")
+            return
+
+        try:
+            from hermes_cli.providers import get_label
+        except ImportError:
+            def get_label(slug):
+                return slug
+
+        if data.startswith("mp:"):
+            # --- Provider selected: show model buttons ---
+            provider_slug = data[3:]
+            provider = next(
+                (p for p in state["providers"] if p["slug"] == provider_slug),
+                None,
+            )
+            if not provider:
+                await query.answer(text="Provider not found.")
+                return
+
+            models = provider.get("models", [])
+            state["selected_provider"] = provider_slug
+            state["selected_provider_name"] = provider.get("name", provider_slug)
+            state["model_list"] = models
+
+            buttons: list = []
+            for i, model_id in enumerate(models):
+                # Short display label: strip vendor prefix
+                short = model_id.split("/")[-1] if "/" in model_id else model_id
+                # Truncate long model names for button label (max ~40 chars)
+                if len(short) > 38:
+                    short = short[:35] + "..."
+                buttons.append(
+                    InlineKeyboardButton(short, callback_data=f"mm:{i}")
+                )
+
+            rows = [buttons[i : i + 2] for i in range(0, len(buttons), 2)]
+            rows.append([
+                InlineKeyboardButton("◀ Back", callback_data="mb"),
+                InlineKeyboardButton("✗ Cancel", callback_data="mx"),
+            ])
+            keyboard = InlineKeyboardMarkup(rows)
+
+            pname = provider.get("name", provider_slug)
+            total = provider.get("total_models", len(models))
+            shown = len(models)
+            extra = f"\n_{total - shown} more available — type `/model <name>` directly_" if total > shown else ""
+
+            await query.edit_message_text(
+                text=(
+                    f"⚙ *Model Configuration*\n\n"
+                    f"Provider: *{pname}*\n"
+                    f"Select a model:{extra}"
+                ),
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=keyboard,
+            )
+            await query.answer()
+
+        elif data.startswith("mm:"):
+            # --- Model selected: perform the switch ---
+            try:
+                idx = int(data[3:])
+            except ValueError:
+                await query.answer(text="Invalid selection.")
+                return
+
+            model_list = state.get("model_list", [])
+            if idx < 0 or idx >= len(model_list):
+                await query.answer(text="Invalid model index.")
+                return
+
+            model_id = model_list[idx]
+            provider_slug = state.get("selected_provider", "")
+            callback = state.get("on_model_selected")
+
+            if not callback:
+                await query.answer(text="Picker expired.")
+                return
+
+            try:
+                result_text = await callback(chat_id, model_id, provider_slug)
+            except Exception as exc:
+                logger.error("Model picker switch failed: %s", exc)
+                result_text = f"Error switching model: {exc}"
+
+            # Edit message to show confirmation, remove buttons
+            try:
+                await query.edit_message_text(
+                    text=result_text,
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=None,
+                )
+            except Exception:
+                # Markdown parse failure — retry as plain text
+                try:
+                    await query.edit_message_text(
+                        text=result_text,
+                        parse_mode=None,
+                        reply_markup=None,
+                    )
+                except Exception:
+                    pass
+            await query.answer(text="Model switched!")
+
+            # Clean up state
+            self._model_picker_state.pop(chat_id, None)
+
+        elif data == "mb":
+            # --- Back to provider list ---
+            buttons = []
+            for p in state["providers"]:
+                count = p.get("total_models", len(p.get("models", [])))
+                label = f"{p['name']} ({count})"
+                if p.get("is_current"):
+                    label = f"✓ {label}"
+                buttons.append(
+                    InlineKeyboardButton(label, callback_data=f"mp:{p['slug']}")
+                )
+
+            rows = [buttons[i : i + 2] for i in range(0, len(buttons), 2)]
+            rows.append([InlineKeyboardButton("✗ Cancel", callback_data="mx")])
+            keyboard = InlineKeyboardMarkup(rows)
+
+            try:
+                provider_label = get_label(state["current_provider"])
+            except Exception:
+                provider_label = state["current_provider"]
+
+            await query.edit_message_text(
+                text=(
+                    f"⚙ *Model Configuration*\n\n"
+                    f"Current model: `{state['current_model'] or 'unknown'}`\n"
+                    f"Provider: {provider_label}\n\n"
+                    f"Select a provider:"
+                ),
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=keyboard,
+            )
+            await query.answer()
+
+        elif data == "mx":
+            # --- Cancel ---
+            self._model_picker_state.pop(chat_id, None)
+            await query.edit_message_text(
+                text="Model selection cancelled.",
+                reply_markup=None,
+            )
+            await query.answer()
+
     async def _handle_callback_query(
         self, update: "Update", context: "ContextTypes.DEFAULT_TYPE"
     ) -> None:
-        """Handle inline keyboard button clicks (update prompts)."""
+        """Handle inline keyboard button clicks."""
         query = update.callback_query
         if not query or not query.data:
             return
         data = query.data
+
+        # --- Model picker callbacks ---
+        if data.startswith(("mp:", "mm:", "mb", "mx")):
+            chat_id = str(query.message.chat_id) if query.message else None
+            if chat_id:
+                await self._handle_model_picker_callback(query, data, chat_id)
+            return
+
+        # --- Update prompt callbacks ---
         if not data.startswith("update_prompt:"):
             return
         answer = data.split(":", 1)[1]  # "y" or "n"

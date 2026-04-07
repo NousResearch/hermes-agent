@@ -23,9 +23,9 @@ import json
 import logging
 import os
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple
 
 from utils import atomic_json_write
 
@@ -231,7 +231,7 @@ def fetch_models_dev(force_refresh: bool = False) -> Dict[str, Any]:
         response = requests.get(MODELS_DEV_URL, timeout=15)
         response.raise_for_status()
         data = response.json()
-        if isinstance(data, dict) and len(data) > 0:
+        if isinstance(data, dict) and data:
             _models_dev_cache = data
             _models_dev_cache_time = time.time()
             _save_disk_cache(data)

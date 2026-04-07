@@ -653,7 +653,7 @@ class WeComAdapter(BasePlatformAdapter):
             return ".png"
         if data.startswith(b"\xff\xd8\xff"):
             return ".jpg"
-        if data.startswith(b"GIF87a") or data.startswith(b"GIF89a"):
+        if data.startswith((b"GIF87a", b"GIF89a")):
             return ".gif"
         if data.startswith(b"RIFF") and data[8:12] == b"WEBP":
             return ".webp"
@@ -689,7 +689,7 @@ class WeComAdapter(BasePlatformAdapter):
     @staticmethod
     def _derive_message_type(body: Dict[str, Any], text: str, media_types: List[str]) -> MessageType:
         """Choose the normalized inbound message type."""
-        if any(mtype.startswith("application/") or mtype.startswith("text/") for mtype in media_types):
+        if any(mtype.startswith(("application/", "text/")) for mtype in media_types):
             return MessageType.DOCUMENT
         if any(mtype.startswith("image/") for mtype in media_types):
             return MessageType.TEXT if text else MessageType.PHOTO

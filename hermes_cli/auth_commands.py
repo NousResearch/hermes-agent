@@ -18,7 +18,6 @@ from agent.credential_pool import (
     STRATEGY_ROUND_ROBIN,
     STRATEGY_RANDOM,
     STRATEGY_LEAST_USED,
-    SUPPORTED_POOL_STRATEGIES,
     PooledCredential,
     _exhausted_until,
     _normalize_custom_pool_name,

@@ -12,7 +12,7 @@ Adapt this for your specific task by modifying:
 
 import torch
 import re
-from datasets import load_dataset, Dataset
+from datasets import load_dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from peft import LoraConfig
 from trl import GRPOTrainer, GRPOConfig

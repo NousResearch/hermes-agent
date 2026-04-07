@@ -550,7 +550,6 @@ def text_to_speech_tool(
             if edge_available:
                 logger.info("Generating speech with Edge TTS...")
                 try:
-                    loop = asyncio.get_running_loop()
                     import concurrent.futures
                     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
                         pool.submit(

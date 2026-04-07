@@ -592,7 +592,7 @@ def get_toolset_info(name: str) -> Dict[str, Any]:
         "includes": toolset["includes"],
         "resolved_tools": resolved_tools,
         "tool_count": len(resolved_tools),
-        "is_composite": len(toolset["includes"]) > 0
+        "is_composite": bool(toolset["includes"])
     }
 
 

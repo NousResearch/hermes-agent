@@ -150,7 +150,6 @@ def _validate_cron_script_path(script: Optional[str]) -> Optional[str]:
     if not script or not script.strip():
         return None  # empty/None = clearing the field, always OK
 
-    from pathlib import Path
     from hermes_constants import get_hermes_home
 
     raw = script.strip()

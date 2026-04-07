@@ -920,8 +920,8 @@ def run_doctor(args):
                         pass
     except ImportError:
         pass
-    except Exception as _e:
-        logger.debug("Profile health check failed: %s", _e)
+    except Exception:
+        pass
 
     # =========================================================================
     # Summary

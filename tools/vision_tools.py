@@ -82,7 +82,7 @@ def _validate_image_url(url: str) -> bool:
         return False
 
     # Basic HTTP/HTTPS URL check
-    if not (url.startswith("http://") or url.startswith("https://")):
+    if not url.startswith(("http://", "https://")):
         return False
 
     # Parse to ensure we at least have a network location; still allow URLs

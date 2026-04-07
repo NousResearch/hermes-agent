@@ -260,7 +260,7 @@ class MemoryStore:
             entries = self._entries_for(target)
             matches = [(i, e) for i, e in enumerate(entries) if old_text in e]
 
-            if len(matches) == 0:
+            if not matches:
                 return {"success": False, "error": f"No entry matched '{old_text}'."}
 
             if len(matches) > 1:
@@ -310,7 +310,7 @@ class MemoryStore:
             entries = self._entries_for(target)
             matches = [(i, e) for i, e in enumerate(entries) if old_text in e]
 
-            if len(matches) == 0:
+            if not matches:
                 return {"success": False, "error": f"No entry matched '{old_text}'."}
 
             if len(matches) > 1:

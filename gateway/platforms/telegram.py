@@ -1369,7 +1369,7 @@ class TelegramAdapter(BasePlatformAdapter):
             
             with open(audio_path, "rb") as audio_file:
                 # .ogg files -> send as voice (round playable bubble)
-                if audio_path.endswith(".ogg") or audio_path.endswith(".opus"):
+                if audio_path.endswith((".ogg", ".opus")):
                     _voice_thread = metadata.get("thread_id") if metadata else None
                     msg = await self._bot.send_voice(
                         chat_id=int(chat_id),

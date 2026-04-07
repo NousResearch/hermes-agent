@@ -128,7 +128,7 @@ class GatewayStreamConsumer:
                     got_done
                     or got_segment_break
                     or (elapsed >= self.cfg.edit_interval
-                        and len(self._accumulated) > 0)
+                        and self._accumulated)
                     or len(self._accumulated) >= self.cfg.buffer_threshold
                 )
 

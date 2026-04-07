@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 
 from hermes_constants import get_hermes_home
-from plugins.memory.honcho.client import resolve_active_host, resolve_config_path, GLOBAL_CONFIG_PATH, HOST
+from plugins.memory.honcho.client import resolve_active_host, resolve_config_path, HOST
 
 
 def clone_honcho_for_profile(profile_name: str) -> bool:
@@ -1220,7 +1220,6 @@ def register_cli(subparser) -> None:
     Called by the plugin CLI registration system during argparse setup.
     The *subparser* is the parser for ``hermes honcho``.
     """
-    import argparse
 
     subparser.add_argument(
         "--target-profile", metavar="NAME", dest="target_profile",

@@ -979,16 +979,7 @@ class SlackAdapter(BasePlatformAdapter):
         try:
             # Build a SessionSource for this thread
             from gateway.session import SessionSource
-            from gateway.config import Platform
-            
-            source = SessionSource(
-                platform=Platform.SLACK,
-                chat_id=channel_id,
-                chat_type="group",
-                user_id=user_id,
-                thread_id=thread_ts,
-            )
-            
+
             # Generate the session key using the same logic as SessionStore
             # This mirrors the logic in build_session_key for group sessions
             key_parts = ["agent:main", "slack", "group", channel_id, thread_ts]

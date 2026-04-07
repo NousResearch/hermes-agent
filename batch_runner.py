@@ -31,6 +31,8 @@ from multiprocessing import Pool, Lock
 import traceback
 from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeRemainingColumn, MofNCompleteColumn
 from rich.console import Console
+
+logger = logging.getLogger(__name__)
 import fire
 
 from run_agent import AIAgent
@@ -1016,7 +1018,7 @@ class BatchRunner:
                             tool_stats = data.get('tool_stats', {})
                             
                             # Check for invalid tool names (model hallucinations)
-                            invalid_tools = [k for k in tool_stats.keys() if k not in VALID_TOOLS]
+                            invalid_tools = [k for k in tool_stats if k not in VALID_TOOLS]
                             
                             if invalid_tools:
                                 filtered_entries += 1

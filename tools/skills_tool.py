@@ -72,12 +72,10 @@ import logging
 from hermes_constants import get_hermes_home
 import os
 import re
-import sys
 from enum import Enum
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Set, Tuple
 
-import yaml
 from tools.registry import registry
 
 logger = logging.getLogger(__name__)

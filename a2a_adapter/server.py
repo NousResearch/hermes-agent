@@ -66,7 +66,7 @@ except ImportError as _sdk_err:
 # Hermes agent factory (shared with acp_adapter pattern)
 # ---------------------------------------------------------------------------
 
-def _make_agent(session_id: str, stream_delta_callback=None) -> Any:
+def _make_agent(session_id: str, stream_delta_callback=None, tool_gen_callback=None) -> Any:
     """Create a Hermes AIAgent using the runtime provider from config."""
     from run_agent import AIAgent
     from hermes_cli.config import load_config
@@ -92,6 +92,8 @@ def _make_agent(session_id: str, stream_delta_callback=None) -> Any:
     }
     if stream_delta_callback is not None:
         kwargs["stream_delta_callback"] = stream_delta_callback
+    if tool_gen_callback is not None:
+        kwargs["tool_gen_callback"] = tool_gen_callback
 
     try:
         runtime = resolve_runtime_provider(requested=config_provider)
@@ -190,10 +192,13 @@ class HermesAgentExecutor(AgentExecutor):
             if delta is not None:
                 delta_queue.put(delta)
 
+        def _on_tool_gen(tool_name: str) -> None:
+            delta_queue.put({"type": "tool_call", "name": tool_name})
+
         # Run synchronous Hermes agent in thread executor
         agent_future = loop.run_in_executor(
             _executor,
-            lambda: _run_sync(session_id, user_message, stream_delta_callback=_on_delta),
+            lambda: _run_sync(session_id, user_message, stream_delta_callback=_on_delta, tool_gen_callback=_on_tool_gen),
         )
 
         # Drain delta queue while agent runs
@@ -202,7 +207,16 @@ class HermesAgentExecutor(AgentExecutor):
                 token = await loop.run_in_executor(
                     None, lambda: delta_queue.get(timeout=0.05)
                 )
-                if isinstance(token, str):
+                if isinstance(token, dict) and token.get("type") == "tool_call":
+                    await event_queue.enqueue_event(
+                        TaskArtifactUpdateEvent(
+                            taskId=task_id,
+                            contextId=context_id,
+                            artifact={"artifactId": f"tool_{token['name']}", "parts": [{"kind": "data", "data": {"type": "tool_call", "name": token["name"]}}]},
+                            final=False,
+                        )
+                    )
+                elif isinstance(token, str):
                     accumulated += token
                     await event_queue.enqueue_event(
                         TaskArtifactUpdateEvent(
@@ -308,9 +322,10 @@ def _run_sync(
     session_id: str,
     user_message: str,
     stream_delta_callback=None,
+    tool_gen_callback=None,
 ) -> tuple[dict, dict]:
     """Synchronous Hermes invocation (runs in thread executor)."""
-    agent = _make_agent(session_id=session_id, stream_delta_callback=stream_delta_callback)
+    agent = _make_agent(session_id=session_id, stream_delta_callback=stream_delta_callback, tool_gen_callback=tool_gen_callback)
     result = agent.run_conversation(user_message=user_message, conversation_history=[])
     usage = {
         "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,

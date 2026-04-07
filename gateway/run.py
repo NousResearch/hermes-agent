@@ -1987,10 +1987,7 @@ class GatewayRunner:
                             existing.media_urls.extend(event.media_urls)
                             existing.media_types.extend(event.media_types)
                             if event.text:
-                                if not existing.text:
-                                    existing.text = event.text
-                                elif event.text not in existing.text:
-                                    existing.text = f"{existing.text}\n\n{event.text}".strip()
+                                existing.text = BasePlatformAdapter._merge_caption(existing.text, event.text)
                         else:
                             adapter._pending_messages[_quick_key] = event
                     else:

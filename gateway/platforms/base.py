@@ -1105,6 +1105,22 @@ class BasePlatformAdapter(ABC):
             logger.error("[%s] Fallback send also failed: %s", self.name, fallback_result.error)
         return fallback_result
 
+    @staticmethod
+    def _merge_caption(existing_text: Optional[str], new_text: str) -> str:
+        """Merge a new caption into existing text, avoiding duplicates.
+
+        Uses line-by-line exact match (not substring) to prevent false positives
+        where a shorter caption is silently dropped because it appears as a
+        substring of a longer one (e.g. "Meeting" inside "Meeting agenda").
+        Whitespace is normalised for comparison.
+        """
+        if not existing_text:
+            return new_text
+        existing_captions = [c.strip() for c in existing_text.split("\n\n")]
+        if new_text.strip() not in existing_captions:
+            return f"{existing_text}\n\n{new_text}".strip()
+        return existing_text
+
     async def handle_message(self, event: MessageEvent) -> None:
         """
         Process an incoming message.
@@ -1164,10 +1180,7 @@ class BasePlatformAdapter(ABC):
                     existing.media_urls.extend(event.media_urls)
                     existing.media_types.extend(event.media_types)
                     if event.text:
-                        if not existing.text:
-                            existing.text = event.text
-                        elif event.text not in existing.text:
-                            existing.text = f"{existing.text}\n\n{event.text}".strip()
+                        existing.text = self._merge_caption(existing.text, event.text)
                 else:
                     self._pending_messages[session_key] = event
                 return  # Don't interrupt now - will run after current task completes

@@ -2213,22 +2213,6 @@ class TelegramAdapter(BasePlatformAdapter):
             if self._pending_photo_batch_tasks.get(batch_key) is current_task:
                 self._pending_photo_batch_tasks.pop(batch_key, None)
 
-    @staticmethod
-    def _merge_caption(existing_text: Optional[str], new_text: str) -> str:
-        """Merge a new caption into existing text, avoiding duplicates.
-
-        Uses line-by-line exact match (not substring) to prevent false positives
-        where a shorter caption is silently dropped because it appears as a
-        substring of a longer one (e.g. "Meeting" inside "Meeting agenda").
-        Whitespace is normalised for comparison.
-        """
-        if not existing_text:
-            return new_text
-        existing_captions = [c.strip() for c in existing_text.split("\n\n")]
-        if new_text.strip() not in existing_captions:
-            return f"{existing_text}\n\n{new_text}".strip()
-        return existing_text
-
     def _enqueue_photo_event(self, batch_key: str, event: MessageEvent) -> None:
         """Merge photo events into a pending batch and schedule flush."""
         existing = self._pending_photo_batches.get(batch_key)

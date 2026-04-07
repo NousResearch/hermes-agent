@@ -127,3 +127,69 @@ def test_resume_carried_patch_conflict_llm_mode_continues(monkeypatch, tmp_path)
     assert saved["current_index"] == 1
     assert ["git", "add", "--", "hermes_cli/main.py"] in recorded
     assert ["git", "cherry-pick", "--continue"] in recorded
+
+
+def test_topologically_sort_carried_patch_nodes_orders_parents_first():
+    ordered = hermes_main._topologically_sort_carried_patch_nodes([
+        {"id": "banner", "sha": "bbb222", "parents": ["update"]},
+        {"id": "update", "sha": "aaa111", "parents": []},
+        {"id": "notes", "sha": "ccc333", "parents": ["update"]},
+    ])
+
+    assert [item["id"] for item in ordered] == ["update", "banner", "notes"]
+
+
+def test_resolve_carried_patch_plan_prefers_manifest(monkeypatch, tmp_path):
+    (tmp_path / ".git").mkdir()
+    manifest_path = tmp_path / ".git" / "hermes-carried-patches.json"
+    manifest_path.write_text(
+        '{"base_ref": "origin/main", "patches": ['
+        '{"id": "banner", "sha": "bbb222", "parents": ["update"], "subject": "banner patch"},'
+        '{"id": "update", "sha": "aaa111", "parents": [], "subject": "update patch"}'
+        ']}',
+        encoding="utf-8",
+    )
+
+    def fake_git_stdout(git_cmd, cwd, args, check=True):
+        if args == ["rev-list", "origin/main..HEAD"]:
+            return "bbb222\naaa111\n"
+        if args == ["show", "-s", "--format=%s", "aaa111"]:
+            return "update patch"
+        if args == ["show", "-s", "--format=%s", "bbb222"]:
+            return "banner patch"
+        raise AssertionError(f"unexpected args: {args}")
+
+    monkeypatch.setattr(hermes_main, "_git_stdout", fake_git_stdout)
+
+    patches, base_ref = hermes_main._resolve_carried_patch_plan(["git"], tmp_path, "origin/main")
+
+    assert base_ref == "origin/main"
+    assert [patch["id"] for patch in patches] == ["update", "banner"]
+    assert [patch["sha"] for patch in patches] == ["aaa111", "bbb222"]
+
+
+def test_resolve_carried_patch_plan_skips_manifest_nodes_not_on_head(monkeypatch, tmp_path):
+    (tmp_path / ".git").mkdir()
+    manifest_path = tmp_path / ".git" / "hermes-carried-patches.json"
+    manifest_path.write_text(
+        '{"base_ref": "origin/main", "patches": ['
+        '{"id": "update", "sha": "aaa111", "parents": []},'
+        '{"id": "banner", "sha": "bbb222", "parents": ["update"]}'
+        ']}',
+        encoding="utf-8",
+    )
+
+    def fake_git_stdout(git_cmd, cwd, args, check=True):
+        if args == ["rev-list", "origin/main..HEAD"]:
+            return "aaa111\n"
+        if args == ["show", "-s", "--format=%s", "aaa111"]:
+            return "update patch"
+        if args == ["show", "-s", "--format=%s", "bbb222"]:
+            return "banner patch"
+        raise AssertionError(f"unexpected args: {args}")
+
+    monkeypatch.setattr(hermes_main, "_git_stdout", fake_git_stdout)
+
+    patches, _ = hermes_main._resolve_carried_patch_plan(["git"], tmp_path, "origin/main")
+
+    assert [patch["id"] for patch in patches] == ["update"]

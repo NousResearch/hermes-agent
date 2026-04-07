@@ -3352,6 +3352,94 @@ def _is_cherry_pick_in_progress(cwd: Path) -> bool:
     return (git_dir / "CHERRY_PICK_HEAD").exists()
 
 
+def _carried_patch_manifest_path(cwd: Path) -> Path:
+    return cwd / ".git" / "hermes-carried-patches.json"
+
+
+def _load_carried_patch_manifest(cwd: Path) -> Optional[dict]:
+    import json
+
+    path = _carried_patch_manifest_path(cwd)
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _topologically_sort_carried_patch_nodes(patches: list[dict]) -> list[dict]:
+    by_id = {}
+    for patch in patches:
+        patch_id = str(patch.get("id", "")).strip()
+        sha = str(patch.get("sha", "")).strip()
+        if not patch_id or not sha:
+            raise ValueError("Each carried patch manifest entry needs non-empty 'id' and 'sha'.")
+        if patch_id in by_id:
+            raise ValueError(f"Duplicate carried patch id in manifest: {patch_id}")
+        patch["id"] = patch_id
+        patch["sha"] = sha
+        parents = patch.get("parents") or []
+        if not isinstance(parents, list):
+            raise ValueError(f"Carried patch '{patch_id}' has invalid parents; expected a list.")
+        patch["parents"] = [str(parent).strip() for parent in parents if str(parent).strip()]
+        by_id[patch_id] = patch
+
+    for patch in patches:
+        for parent in patch["parents"]:
+            if parent not in by_id:
+                raise ValueError(f"Carried patch '{patch['id']}' references unknown parent '{parent}'.")
+
+    indegree = {patch_id: 0 for patch_id in by_id}
+    children = {patch_id: [] for patch_id in by_id}
+    for patch in patches:
+        for parent in patch["parents"]:
+            indegree[patch["id"]] += 1
+            children[parent].append(patch["id"])
+
+    queue = sorted([patch_id for patch_id, deg in indegree.items() if deg == 0])
+    ordered = []
+    while queue:
+        current = queue.pop(0)
+        ordered.append(by_id[current])
+        for child in sorted(children[current]):
+            indegree[child] -= 1
+            if indegree[child] == 0:
+                queue.append(child)
+                queue.sort()
+
+    if len(ordered) != len(patches):
+        raise ValueError("Carried patch manifest contains a cycle; cannot compute an apply order.")
+    return ordered
+
+
+def _resolve_carried_patch_plan(git_cmd: list[str], cwd: Path, base_ref: str = "origin/main") -> tuple[list[dict[str, str]], str]:
+    manifest = _load_carried_patch_manifest(cwd)
+    if manifest:
+        manifest_base_ref = str(manifest.get("base_ref") or base_ref).strip() or base_ref
+        raw_patches = manifest.get("patches") or []
+        if not isinstance(raw_patches, list):
+            raise ValueError("Carried patch manifest is invalid: 'patches' must be a list.")
+        ordered = _topologically_sort_carried_patch_nodes([dict(item) for item in raw_patches if isinstance(item, dict)])
+        commits_ahead = set(line.strip() for line in _git_stdout(git_cmd, cwd, ["rev-list", f"{manifest_base_ref}..HEAD"]).splitlines() if line.strip())
+        plan = []
+        for patch in ordered:
+            sha = patch["sha"]
+            if commits_ahead and sha not in commits_ahead:
+                continue
+            subject = str(patch.get("subject") or _git_stdout(git_cmd, cwd, ["show", "-s", "--format=%s", sha])).strip()
+            plan.append({
+                "id": patch["id"],
+                "sha": sha,
+                "subject": subject,
+                "parents": patch.get("parents", []),
+            })
+        return plan, manifest_base_ref
+
+    return _list_carried_patch_commits(git_cmd, cwd, base_ref), base_ref
+
+
 def _list_carried_patch_commits(git_cmd: list[str], cwd: Path, base_ref: str = "origin/main") -> list[dict[str, str]]:
     stdout = _git_stdout(git_cmd, cwd, ["rev-list", "--reverse", f"{base_ref}..HEAD"])
     commits = []
@@ -3388,7 +3476,8 @@ def _strip_code_fences(text: str) -> str:
 def _print_carried_patch_conflict_summary(patch: dict[str, str], conflicted_files: list[str], backup_branch: Optional[str]) -> None:
     print()
     print("✗ Carried patch reapply hit a conflict.")
-    print(f"  Patch: {patch.get('sha', '')[:12]} {patch.get('subject', '')}".rstrip())
+    patch_label = patch.get("id") or patch.get("sha", "")[:12]
+    print(f"  Patch: {patch_label} {patch.get('subject', '')}".rstrip())
     if conflicted_files:
         print("  Conflicted files:")
         for path in conflicted_files:
@@ -3861,7 +3950,7 @@ def cmd_update_with_carried_patches(args):
     else:
         auto_stash_ref = _stash_local_changes_if_needed(git_cmd, PROJECT_ROOT)
 
-    carried_patches = _list_carried_patch_commits(git_cmd, PROJECT_ROOT, "origin/main")
+    carried_patches, base_ref = _resolve_carried_patch_plan(git_cmd, PROJECT_ROOT, "origin/main")
     if not carried_patches:
         print("→ No carried patches detected on local main; falling back to normal update.")
         passthrough_args = argparse.Namespace(gateway=gateway_mode)
@@ -3872,7 +3961,8 @@ def cmd_update_with_carried_patches(args):
     backup_branch = _make_backup_branch_name()
     subprocess.run(git_cmd + ["branch", backup_branch, "HEAD"], cwd=PROJECT_ROOT, capture_output=True, text=True, check=True)
 
-    print(f"→ Found {len(carried_patches)} carried patch commit(s)")
+    source_label = "tree manifest" if _load_carried_patch_manifest(PROJECT_ROOT) else "linear history"
+    print(f"→ Found {len(carried_patches)} carried patch commit(s) from {source_label}")
     for patch in carried_patches:
         print(f"  - {patch['sha'][:12]} {patch['subject']}")
 
@@ -3884,7 +3974,7 @@ def cmd_update_with_carried_patches(args):
         "current_index": 0,
         "backup_branch": backup_branch,
         "original_branch": current_branch,
-        "base_ref": "origin/main",
+        "base_ref": base_ref,
     }
     _save_carried_patch_state(PROJECT_ROOT, state)
 

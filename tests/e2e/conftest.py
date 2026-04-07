@@ -84,11 +84,41 @@ def _ensure_discord_mock():
     sys.modules.setdefault("discord.opus", discord_mod.opus)
 
 
+def _ensure_slack_mock():
+    """Install mock slack modules so SlackAdapter can be imported."""
+    if "slack_bolt" in sys.modules and hasattr(sys.modules["slack_bolt"], "__file__"):
+        return  # Real library installed
+
+    slack_bolt = MagicMock()
+    slack_bolt.async_app.AsyncApp = MagicMock
+    slack_bolt.adapter.socket_mode.async_handler.AsyncSocketModeHandler = MagicMock
+
+    slack_sdk = MagicMock()
+    slack_sdk.web.async_client.AsyncWebClient = MagicMock
+
+    for name, mod in [
+        ("slack_bolt", slack_bolt),
+        ("slack_bolt.async_app", slack_bolt.async_app),
+        ("slack_bolt.adapter", slack_bolt.adapter),
+        ("slack_bolt.adapter.socket_mode", slack_bolt.adapter.socket_mode),
+        ("slack_bolt.adapter.socket_mode.async_handler", slack_bolt.adapter.socket_mode.async_handler),
+        ("slack_sdk", slack_sdk),
+        ("slack_sdk.web", slack_sdk.web),
+        ("slack_sdk.web.async_client", slack_sdk.web.async_client),
+    ]:
+        sys.modules.setdefault(name, mod)
+
+
 _ensure_telegram_mock()
 _ensure_discord_mock()
+_ensure_slack_mock()
 
 from gateway.platforms.discord import DiscordAdapter   # noqa: E402
 from gateway.platforms.telegram import TelegramAdapter  # noqa: E402
+
+import gateway.platforms.slack as _slack_mod  # noqa: E402
+_slack_mod.SLACK_AVAILABLE = True
+from gateway.platforms.slack import SlackAdapter  # noqa: E402
 
 
 # Platform-generic factories
@@ -184,6 +214,9 @@ def make_adapter(platform: Platform, runner=None):
         with patch.object(DiscordAdapter, "_load_participated_threads", return_value=set()):
             adapter = DiscordAdapter(config)
         platform_key = Platform.DISCORD
+    elif platform == Platform.SLACK:
+        adapter = SlackAdapter(config)
+        platform_key = Platform.SLACK
     else:
         adapter = TelegramAdapter(config)
         platform_key = Platform.TELEGRAM
@@ -207,7 +240,7 @@ async def send_and_capture(adapter, text: str, platform: Platform, **event_kwarg
 
 
 # Parametrized fixtures for platform-generic tests
-@pytest.fixture(params=[Platform.TELEGRAM, Platform.DISCORD], ids=["telegram", "discord"])
+@pytest.fixture(params=[Platform.TELEGRAM, Platform.DISCORD, Platform.SLACK], ids=["telegram", "discord", "slack"])
 def platform(request):
     return request.param
 

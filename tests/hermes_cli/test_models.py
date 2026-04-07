@@ -1,10 +1,15 @@
 """Tests for the hermes_cli models module."""
 
+from unittest.mock import patch, MagicMock
+
 from hermes_cli.models import (
     OPENROUTER_MODELS, menu_labels, model_ids, detect_provider_for_model,
     filter_nous_free_models, _NOUS_ALLOWED_FREE_MODELS,
     is_nous_free_tier, partition_nous_models_by_tier,
+    check_nous_free_tier, clear_nous_free_tier_cache,
+    _FREE_TIER_CACHE_TTL,
 )
+import hermes_cli.models as _models_mod
 
 
 class TestModelIds:
@@ -291,3 +296,63 @@ class TestPartitionNousModelsByTier:
         sel, unav = partition_nous_models_by_tier(models, pricing, free_tier=True)
         assert sel == []
         assert unav == models
+
+
+class TestCheckNousFreeTierCache:
+    """Tests for the TTL cache on check_nous_free_tier()."""
+
+    def setup_method(self):
+        """Reset cache before each test."""
+        clear_nous_free_tier_cache()
+
+    def teardown_method(self):
+        """Reset cache after each test."""
+        clear_nous_free_tier_cache()
+
+    @patch("hermes_cli.models.fetch_nous_account_tier")
+    @patch("hermes_cli.models.is_nous_free_tier", return_value=True)
+    def test_result_is_cached(self, mock_is_free, mock_fetch):
+        """Second call within TTL returns cached result without API call."""
+        mock_fetch.return_value = {"subscription": {"monthly_charge": 0}}
+        with patch("hermes_cli.auth.get_provider_auth_state", return_value={"access_token": "tok"}), \
+             patch("hermes_cli.auth.resolve_nous_runtime_credentials"):
+            result1 = check_nous_free_tier()
+            result2 = check_nous_free_tier()
+
+        assert result1 is True
+        assert result2 is True
+        # fetch_nous_account_tier should only be called once (cached on second call)
+        assert mock_fetch.call_count == 1
+
+    @patch("hermes_cli.models.fetch_nous_account_tier")
+    @patch("hermes_cli.models.is_nous_free_tier", return_value=False)
+    def test_cache_expires_after_ttl(self, mock_is_free, mock_fetch):
+        """After TTL expires, the API is called again."""
+        mock_fetch.return_value = {"subscription": {"monthly_charge": 20}}
+        with patch("hermes_cli.auth.get_provider_auth_state", return_value={"access_token": "tok"}), \
+             patch("hermes_cli.auth.resolve_nous_runtime_credentials"):
+            result1 = check_nous_free_tier()
+            assert mock_fetch.call_count == 1
+
+            # Simulate TTL expiry by backdating the cache timestamp
+            cached_result, cached_at = _models_mod._free_tier_cache
+            _models_mod._free_tier_cache = (cached_result, cached_at - _FREE_TIER_CACHE_TTL - 1)
+
+            result2 = check_nous_free_tier()
+            assert mock_fetch.call_count == 2
+
+        assert result1 is False
+        assert result2 is False
+
+    def test_clear_cache_forces_refresh(self):
+        """clear_nous_free_tier_cache() invalidates the cached result."""
+        # Manually seed the cache
+        import time
+        _models_mod._free_tier_cache = (True, time.monotonic())
+
+        clear_nous_free_tier_cache()
+        assert _models_mod._free_tier_cache is None
+
+    def test_cache_ttl_is_short(self):
+        """TTL should be short enough to catch upgrades quickly (<=5 min)."""
+        assert _FREE_TIER_CACHE_TTL <= 300

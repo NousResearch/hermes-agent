@@ -404,13 +404,38 @@ def partition_nous_models_by_tier(
     return (selectable, unavailable)
 
 
+# ---------------------------------------------------------------------------
+# TTL cache for free-tier detection — avoids repeated API calls within a
+# session while still picking up upgrades quickly.
+# ---------------------------------------------------------------------------
+_FREE_TIER_CACHE_TTL: int = 180  # seconds (3 minutes)
+_free_tier_cache: tuple[bool, float] | None = None  # (result, timestamp)
+
+
+def clear_nous_free_tier_cache() -> None:
+    """Invalidate the cached free-tier result (e.g. after login/logout)."""
+    global _free_tier_cache
+    _free_tier_cache = None
+
+
 def check_nous_free_tier() -> bool:
     """Check if the current Nous Portal user is on a free (unpaid) tier.
 
-    Resolves the OAuth access token from the auth store, calls the
-    portal account endpoint, and returns True if the account has no
-    paid subscription.  Returns False (assume paid) on any error.
+    Results are cached for ``_FREE_TIER_CACHE_TTL`` seconds to avoid
+    hitting the Portal API on every call.  The cache is short-lived so
+    that an account upgrade is reflected within a few minutes.
+
+    Returns False (assume paid) on any error — never blocks paying users.
     """
+    global _free_tier_cache
+    import time
+
+    now = time.monotonic()
+    if _free_tier_cache is not None:
+        cached_result, cached_at = _free_tier_cache
+        if now - cached_at < _FREE_TIER_CACHE_TTL:
+            return cached_result
+
     try:
         from hermes_cli.auth import get_provider_auth_state, resolve_nous_runtime_credentials
 
@@ -419,15 +444,20 @@ def check_nous_free_tier() -> bool:
 
         state = get_provider_auth_state("nous")
         if not state:
+            _free_tier_cache = (False, now)
             return False
         access_token = state.get("access_token", "")
         portal_url = state.get("portal_base_url", "")
         if not access_token:
+            _free_tier_cache = (False, now)
             return False
 
         account_info = fetch_nous_account_tier(access_token, portal_url)
-        return is_nous_free_tier(account_info)
+        result = is_nous_free_tier(account_info)
+        _free_tier_cache = (result, now)
+        return result
     except Exception:
+        _free_tier_cache = (False, now)
         return False  # default to paid on error — don't block users
 
 

@@ -5741,6 +5741,7 @@ class AIAgent:
                 api_msg.pop("reasoning", None)
                 api_msg.pop("finish_reason", None)
                 api_msg.pop("_flush_sentinel", None)
+                api_msg.pop("_thinking_prefill", None)
                 if _needs_sanitize:
                     self._sanitize_tool_calls_for_strict_api(api_msg)
                 api_messages.append(api_msg)
@@ -6664,7 +6665,7 @@ class AIAgent:
             api_messages = []
             for msg in messages:
                 api_msg = msg.copy()
-                for internal_field in ("reasoning", "finish_reason"):
+                for internal_field in ("reasoning", "finish_reason", "_thinking_prefill"):
                     api_msg.pop(internal_field, None)
                 if _needs_sanitize:
                     self._sanitize_tool_calls_for_strict_api(api_msg)
@@ -6856,6 +6857,7 @@ class AIAgent:
         self._empty_content_retries = 0
         self._incomplete_scratchpad_retries = 0
         self._codex_incomplete_retries = 0
+        self._thinking_prefill_retries = 0
         self._last_content_with_tools = None
         self._mute_post_response = False
         self._surrogate_sanitized = False
@@ -7201,6 +7203,8 @@ class AIAgent:
                 # Remove finish_reason - not accepted by strict APIs (e.g. Mistral)
                 if "finish_reason" in api_msg:
                     api_msg.pop("finish_reason")
+                # Strip internal thinking-prefill marker
+                api_msg.pop("_thinking_prefill", None)
                 # Strip Codex Responses API fields (call_id, response_item_id) for
                 # strict providers like Mistral, Fireworks, etc. that reject unknown fields.
                 # Uses new dicts so the internal messages list retains the fields
@@ -8735,6 +8739,15 @@ class AIAgent:
                             if clean:
                                 self._vprint(f"  ┊ 💬 {clean}")
                     
+                    # Pop thinking-only prefill message(s) before appending
+                    # (tool-call path — same rationale as the final-response path).
+                    while (
+                        messages
+                        and isinstance(messages[-1], dict)
+                        and messages[-1].get("_thinking_prefill")
+                    ):
+                        messages.pop()
+
                     messages.append(assistant_msg)
 
                     # Close any open streaming display (response box, reasoning
@@ -8848,11 +8861,36 @@ class AIAgent:
                             self._response_was_previewed = True
                             break
 
-                        # Reasoning-only response: the model produced thinking
-                        # but no visible content.  This is a valid response —
-                        # keep reasoning in its own field and set content to
-                        # "(empty)" so every provider accepts the message.
-                        # No retries needed.
+                        # ── Thinking-only prefill continuation ──────────
+                        # The model produced structured reasoning (via API
+                        # fields) but no visible text content.  Rather than
+                        # giving up, append the assistant message as-is and
+                        # continue — the model will see its own reasoning
+                        # on the next turn and produce the text portion.
+                        # Inspired by clawdbot's "incomplete-text" recovery.
+                        _has_structured = bool(
+                            getattr(assistant_message, "reasoning", None)
+                            or getattr(assistant_message, "reasoning_content", None)
+                            or getattr(assistant_message, "reasoning_details", None)
+                        )
+                        if _has_structured and self._thinking_prefill_retries < 2:
+                            self._thinking_prefill_retries += 1
+                            self._vprint(
+                                f"{self.log_prefix}↻ Thinking-only response — "
+                                f"prefilling to continue "
+                                f"({self._thinking_prefill_retries}/2)"
+                            )
+                            interim_msg = self._build_assistant_message(
+                                assistant_message, "incomplete"
+                            )
+                            interim_msg["_thinking_prefill"] = True
+                            messages.append(interim_msg)
+                            self._session_messages = messages
+                            self._save_session_log(messages)
+                            continue
+
+                        # Exhausted prefill attempts or no structured
+                        # reasoning — fall through to "(empty)" terminal.
                         reasoning_text = self._extract_reasoning(assistant_message)
                         assistant_msg = self._build_assistant_message(assistant_message, finish_reason)
                         assistant_msg["content"] = "(empty)"
@@ -8871,6 +8909,7 @@ class AIAgent:
                     if hasattr(self, '_empty_content_retries'):
                         self._empty_content_retries = 0
                     self._last_empty_content_signature = None
+                    self._thinking_prefill_retries = 0
 
                     if (
                         self.api_mode == "codex_responses"
@@ -8909,7 +8948,18 @@ class AIAgent:
                     final_response = self._strip_think_blocks(final_response).strip()
                     
                     final_msg = self._build_assistant_message(assistant_message, finish_reason)
-                    
+
+                    # Pop thinking-only prefill message(s) before appending
+                    # the final response.  This avoids consecutive assistant
+                    # messages which break strict-alternation providers
+                    # (Anthropic Messages API) and keeps history clean.
+                    while (
+                        messages
+                        and isinstance(messages[-1], dict)
+                        and messages[-1].get("_thinking_prefill")
+                    ):
+                        messages.pop()
+
                     messages.append(final_msg)
                     
                     if not self.quiet_mode:

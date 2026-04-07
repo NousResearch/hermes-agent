@@ -1934,24 +1934,52 @@ def resolve_nous_runtime_credentials(
 # =============================================================================
 
 def get_nous_auth_status() -> Dict[str, Any]:
-    """Status snapshot for `hermes status` output."""
+    """Status snapshot for `hermes status` output.
+
+    Checks the legacy provider state first, then falls back to the
+    credential pool (where ``hermes auth add`` stores credentials).
+    This mirrors the approach used by ``get_codex_auth_status()``.
+    """
     state = get_provider_auth_state("nous")
-    if not state:
+    if state and state.get("access_token"):
         return {
-            "logged_in": False,
-            "portal_base_url": None,
-            "inference_base_url": None,
-            "access_expires_at": None,
-            "agent_key_expires_at": None,
-            "has_refresh_token": False,
+            "logged_in": True,
+            "portal_base_url": state.get("portal_base_url"),
+            "inference_base_url": state.get("inference_base_url"),
+            "access_expires_at": state.get("expires_at"),
+            "agent_key_expires_at": state.get("agent_key_expires_at"),
+            "has_refresh_token": bool(state.get("refresh_token")),
         }
+
+    # Fall back to credential pool — credentials added via `hermes auth add`
+    # or migrated entries live here and won't appear in the providers section.
+    try:
+        from agent.credential_pool import load_pool
+        pool = load_pool("nous")
+        if pool and pool.has_credentials():
+            entry = pool.select()
+            if entry is not None:
+                token = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")
+                if token:
+                    return {
+                        "logged_in": True,
+                        "portal_base_url": getattr(entry, "portal_base_url", None),
+                        "inference_base_url": getattr(entry, "inference_base_url", None) or getattr(entry, "base_url", None),
+                        "access_expires_at": getattr(entry, "expires_at", None),
+                        "agent_key_expires_at": getattr(entry, "agent_key_expires_at", None),
+                        "has_refresh_token": bool(getattr(entry, "refresh_token", None)),
+                        "source": f"pool:{getattr(entry, 'label', 'unknown')}",
+                    }
+    except Exception:
+        pass
+
     return {
-        "logged_in": bool(state.get("access_token")),
-        "portal_base_url": state.get("portal_base_url"),
-        "inference_base_url": state.get("inference_base_url"),
-        "access_expires_at": state.get("expires_at"),
-        "agent_key_expires_at": state.get("agent_key_expires_at"),
-        "has_refresh_token": bool(state.get("refresh_token")),
+        "logged_in": False,
+        "portal_base_url": None,
+        "inference_base_url": None,
+        "access_expires_at": None,
+        "agent_key_expires_at": None,
+        "has_refresh_token": False,
     }
 
 

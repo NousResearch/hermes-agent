@@ -231,6 +231,14 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         auth_type="api_key",
         inference_base_url="https://router.huggingface.co/v1",
         api_key_env_vars=("HF_TOKEN",),
+    "chutes": ProviderConfig(
+        id="chutes",
+        name="Chutes AI",
+        auth_type="api_key",
+        inference_base_url="https://llm.chutes.ai/v1",
+        api_key_env_vars=("CHUTES_API_KEY",),
+        base_url_env_var="CHUTES_BASE_URL",
+    ),
         base_url_env_var="HF_BASE_URL",
     ),
 }
@@ -777,6 +785,7 @@ def resolve_provider(
         "aigateway": "ai-gateway", "vercel": "ai-gateway", "vercel-ai-gateway": "ai-gateway",
         "opencode": "opencode-zen", "zen": "opencode-zen",
         "hf": "huggingface", "hugging-face": "huggingface", "huggingface-hub": "huggingface",
+        "chutes-ai": "chutes",
         "go": "opencode-go", "opencode-go-sub": "opencode-go",
         "kilo": "kilocode", "kilo-code": "kilocode", "kilo-gateway": "kilocode",
         # Local server aliases — route through the generic custom provider

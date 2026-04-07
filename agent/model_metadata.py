@@ -26,9 +26,11 @@ _PROVIDER_PREFIXES: frozenset[str] = frozenset({
     "openrouter", "nous", "openai-codex", "copilot", "copilot-acp",
     "gemini", "zai", "kimi-coding", "minimax", "minimax-cn", "anthropic", "deepseek",
     "opencode-zen", "opencode-go", "ai-gateway", "kilocode", "alibaba",
+    "chutes",
     "custom", "local",
     # Common aliases
     "google", "google-gemini", "google-ai-studio",
+    "chutes-ai",
     "glm", "z-ai", "z.ai", "zhipu", "github", "github-copilot",
     "github-models", "kimi", "moonshot", "claude", "deep-seek",
     "opencode", "zen", "go", "vercel", "kilo", "dashscope", "aliyun", "qwen",
@@ -132,6 +134,10 @@ DEFAULT_CONTEXT_LENGTHS = {
     "mimo-v2-pro": 1048576,
     "mimo-v2-omni": 1048576,
     "zai-org/GLM-5": 202752,
+    # Chutes AI — TEE (Trusted Execution Environment) models
+    "chutes/DeepSeek-V3.2-TEE": 65536,
+    "chutes/Qwen3-32B-TEE": 131072,
+    "chutes/Kimi-K2.5-TEE": 262144,
 }
 
 _CONTEXT_LENGTH_KEYS = (

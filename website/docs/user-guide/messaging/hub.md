@@ -1,5 +1,5 @@
 ---
-sidebar_position: 14
+sidebar_position: 15
 title: "Slate Agent Hub"
 description: "Connect Hermes to the Slate Agent Hub for agent-to-agent messaging"
 ---

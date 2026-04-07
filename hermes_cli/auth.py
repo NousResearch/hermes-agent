@@ -2279,13 +2279,20 @@ def _prompt_model_selection(
     model_ids: List[str],
     current_model: str = "",
     pricing: Optional[Dict[str, Dict[str, str]]] = None,
+    unavailable_models: Optional[List[str]] = None,
+    portal_url: str = "",
 ) -> Optional[str]:
     """Interactive model selection. Puts current_model first with a marker. Returns chosen model ID or None.
 
     If *pricing* is provided (``{model_id: {prompt, completion}}``), a compact
     price indicator is shown next to each model in aligned columns.
+
+    If *unavailable_models* is provided, those models are shown grayed out
+    and unselectable, with an upgrade link to *portal_url*.
     """
     from hermes_cli.models import _format_price_per_mtok
+
+    _unavailable = unavailable_models or []
 
     # Reorder: current model first, then the rest (deduplicated)
     ordered = []
@@ -2295,9 +2302,12 @@ def _prompt_model_selection(
         if mid not in ordered:
             ordered.append(mid)
 
+    # All models for column-width computation (selectable + unavailable)
+    all_models = list(ordered) + list(_unavailable)
+
     # Column-aligned labels when pricing is available
-    has_pricing = bool(pricing and any(pricing.get(m) for m in ordered))
-    name_col = max((len(m) for m in ordered), default=0) + 2 if has_pricing else 0
+    has_pricing = bool(pricing and any(pricing.get(m) for m in all_models))
+    name_col = max((len(m) for m in all_models), default=0) + 2 if has_pricing else 0
 
     # Pre-compute formatted prices and dynamic column widths
     _price_cache: dict[str, tuple[str, str, str]] = {}
@@ -2305,7 +2315,7 @@ def _prompt_model_selection(
     cache_col = 0  # only set if any model has cache pricing
     has_cache = False
     if has_pricing:
-        for mid in ordered:
+        for mid in all_models:
             p = pricing.get(mid)  # type: ignore[union-attr]
             if p:
                 inp = _format_price_per_mtok(p.get("prompt", ""))
@@ -2350,12 +2360,35 @@ def _prompt_model_selection(
             header += f"  {'Cache':>{cache_col}}"
         menu_title += header + "  /Mtok"
 
+    # ANSI escape for dim text
+    _DIM = "\033[2m"
+    _RESET = "\033[0m"
+
     # Try arrow-key menu first, fall back to number input
     try:
         from simple_term_menu import TerminalMenu
+
         choices = [f"  {_label(mid)}" for mid in ordered]
         choices.append("  Enter custom model name")
         choices.append("  Skip (keep current)")
+
+        # Print the unavailable block BEFORE the menu via regular print().
+        # simple_term_menu pads title lines to terminal width (causes wrapping),
+        # so we keep the title minimal and use stdout for the static block.
+        # clear_screen=False means our printed output stays visible above.
+        _upgrade_url = (portal_url or DEFAULT_NOUS_PORTAL_URL).rstrip("/")
+        if _unavailable:
+            print(menu_title)
+            print()
+            for mid in _unavailable:
+                print(f"{_DIM}     {_label(mid)}{_RESET}")
+            print()
+            print(f"{_DIM}  ── Upgrade at {_upgrade_url} for paid models ──{_RESET}")
+            print()
+            effective_title = "Available free models:"
+        else:
+            effective_title = menu_title
+
         menu = TerminalMenu(
             choices,
             cursor_index=default_idx,
@@ -2364,7 +2397,7 @@ def _prompt_model_selection(
             menu_highlight_style=("fg_green",),
             cycle_cursor=True,
             clear_screen=False,
-            title=menu_title,
+            title=effective_title,
         )
         idx = menu.show()
         if idx is None:
@@ -2387,6 +2420,13 @@ def _prompt_model_selection(
     n = len(ordered)
     print(f"  {n + 1:>{num_width}}. Enter custom model name")
     print(f"  {n + 2:>{num_width}}. Skip (keep current)")
+
+    if _unavailable:
+        _upgrade_url = (portal_url or DEFAULT_NOUS_PORTAL_URL).rstrip("/")
+        print()
+        print(f"  {_DIM}── Unavailable models (requires paid tier — upgrade at {_upgrade_url}) ──{_RESET}")
+        for mid in _unavailable:
+            print(f"  {'':>{num_width}}  {_DIM}{_label(mid)}{_RESET}")
     print()
 
     while True:
@@ -2821,16 +2861,37 @@ def _login_nous(args, pconfig: ProviderConfig) -> None:
                     code="invalid_token",
                 )
 
-            from hermes_cli.models import _PROVIDER_MODELS
+            from hermes_cli.models import (
+                _PROVIDER_MODELS, get_pricing_for_provider, filter_nous_free_models,
+                check_nous_free_tier, partition_nous_models_by_tier,
+            )
             model_ids = _PROVIDER_MODELS.get("nous", [])
 
             print()
+            unavailable_models: list = []
+            if model_ids:
+                pricing = get_pricing_for_provider("nous")
+                model_ids = filter_nous_free_models(model_ids, pricing)
+                free_tier = check_nous_free_tier()
+                if free_tier:
+                    model_ids, unavailable_models = partition_nous_models_by_tier(
+                        model_ids, pricing, free_tier=True,
+                    )
+            _portal = auth_state.get("portal_base_url", "")
             if model_ids:
                 print(f"Showing {len(model_ids)} curated models — use \"Enter custom model name\" for others.")
-                selected_model = _prompt_model_selection(model_ids)
+                selected_model = _prompt_model_selection(
+                    model_ids, pricing=pricing,
+                    unavailable_models=unavailable_models,
+                    portal_url=_portal,
+                )
                 if selected_model:
                     _save_model_choice(selected_model)
                     print(f"Default model set to: {selected_model}")
+            elif unavailable_models:
+                _url = (_portal or DEFAULT_NOUS_PORTAL_URL).rstrip("/")
+                print("No free models currently available.")
+                print(f"Upgrade at {_url} to access paid models.")
             else:
                 print("No curated models available for Nous Portal.")
         except Exception as exc:

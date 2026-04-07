@@ -1028,6 +1028,8 @@ class AIAgent:
         self._memory_flush_min_turns = 6
         self._turns_since_memory = 0
         self._iters_since_skill = 0
+        self._blocked_tool_retry_cache: dict[str, str] = {}
+        self._blocked_tool_retry_lock = threading.Lock()
         if not skip_memory:
             try:
                 mem_config = _agent_cfg.get("memory", {})
@@ -3007,6 +3009,91 @@ class AIAgent:
             return matches[0]
 
         return None
+
+    @staticmethod
+    def _find_blocked_marker(value: Any) -> str | None:
+        """Return the first BLOCKED-style marker found in nested tool output."""
+        if isinstance(value, str):
+            stripped = value.strip()
+            if stripped.startswith("BLOCKED:") or stripped.startswith("[BLOCKED:"):
+                return stripped
+            return None
+        if isinstance(value, dict):
+            for nested in value.values():
+                found = AIAgent._find_blocked_marker(nested)
+                if found:
+                    return found
+            return None
+        if isinstance(value, list):
+            for nested in value:
+                found = AIAgent._find_blocked_marker(nested)
+                if found:
+                    return found
+        return None
+
+    def _extract_blocked_tool_message(self, result: str | None) -> str | None:
+        """Return the blocking message when a tool result represents a hard block."""
+        direct = self._find_blocked_marker(result)
+        if direct:
+            return direct
+        if not result:
+            return None
+        try:
+            parsed = json.loads(result)
+        except (json.JSONDecodeError, TypeError):
+            return None
+        return self._find_blocked_marker(parsed)
+
+    def _blocked_tool_retry_key(self, function_name: str, function_args: dict) -> str:
+        """Build a stable key for exact tool-call retries within one conversation turn."""
+        return json.dumps(
+            {"tool_name": function_name, "arguments": function_args or {}},
+            sort_keys=True,
+            ensure_ascii=False,
+            default=str,
+        )
+
+    def _maybe_short_circuit_blocked_tool_retry(self, function_name: str, function_args: dict) -> str | None:
+        """Prevent the model from reissuing an exact tool call that already hard-blocked."""
+        key = self._blocked_tool_retry_key(function_name, function_args)
+        with self._blocked_tool_retry_lock:
+            previous_blocked = self._blocked_tool_retry_cache.get(key)
+        if not previous_blocked:
+            return None
+
+        logger.warning("Skipping exact blocked tool retry for %s", function_name)
+        return json.dumps(
+            {
+                "error": (
+                    f"BLOCKED: This exact {function_name} call with the same arguments "
+                    "was already blocked earlier in this turn. Do NOT retry it unchanged. "
+                    "Read the earlier blocked result, change the arguments, choose a "
+                    "different action, or explain the blocker to the user."
+                ),
+                "tool_name": function_name,
+                "arguments": function_args,
+                "retry_prevented": True,
+                "previous_blocked_result": previous_blocked,
+            },
+            ensure_ascii=False,
+        )
+
+    def _remember_blocked_tool_result(self, function_name: str, function_args: dict, function_result: str | None) -> None:
+        """Record hard-blocked tool calls so exact retries can be short-circuited."""
+        try:
+            parsed = json.loads(function_result) if function_result else None
+        except (json.JSONDecodeError, TypeError):
+            parsed = None
+        if isinstance(parsed, dict) and parsed.get("retry_prevented") is True:
+            return
+
+        blocked_message = self._extract_blocked_tool_message(function_result)
+        if not blocked_message:
+            return
+
+        key = self._blocked_tool_retry_key(function_name, function_args)
+        with self._blocked_tool_retry_lock:
+            self._blocked_tool_retry_cache[key] = blocked_message
 
     def _invalidate_system_prompt(self):
         """
@@ -6221,11 +6308,18 @@ class AIAgent:
             """Worker function executed in a thread."""
             start = time.time()
             try:
-                result = self._invoke_tool(function_name, function_args, effective_task_id, tool_call.id)
+                result = self._maybe_short_circuit_blocked_tool_retry(
+                    function_name, function_args
+                )
+                if result is None:
+                    result = self._invoke_tool(
+                        function_name, function_args, effective_task_id, tool_call.id
+                    )
             except Exception as tool_error:
                 result = f"Error executing tool '{function_name}': {tool_error}"
                 logger.error("_invoke_tool raised for %s: %s", function_name, tool_error, exc_info=True)
             duration = time.time() - start
+            self._remember_blocked_tool_result(function_name, function_args, result)
             is_error, _ = _detect_tool_failure(function_name, result)
             if is_error:
                 logger.info("tool %s failed (%.2fs): %s", function_name, duration, result[:200])
@@ -6374,6 +6468,9 @@ class AIAgent:
                 function_args = {}
             if not isinstance(function_args, dict):
                 function_args = {}
+            blocked_retry_result = self._maybe_short_circuit_blocked_tool_retry(
+                function_name, function_args
+            )
 
             if not self.quiet_mode:
                 args_str = json.dumps(function_args, ensure_ascii=False)
@@ -6426,7 +6523,10 @@ class AIAgent:
 
             tool_start_time = time.time()
 
-            if function_name == "todo":
+            if blocked_retry_result is not None:
+                function_result = blocked_retry_result
+                tool_duration = 0.0
+            elif function_name == "todo":
                 from tools.todo_tool import todo_tool as _todo_tool
                 function_result = _todo_tool(
                     todos=function_args.get("todos"),
@@ -6570,6 +6670,8 @@ class AIAgent:
                     function_result = f"Error executing tool '{function_name}': {tool_error}"
                     logger.error("handle_function_call raised for %s: %s", function_name, tool_error, exc_info=True)
                 tool_duration = time.time() - tool_start_time
+
+            self._remember_blocked_tool_result(function_name, function_args, function_result)
 
             result_preview = function_result if self.verbose_logging else (
                 function_result[:200] if len(function_result) > 200 else function_result
@@ -6941,6 +7043,7 @@ class AIAgent:
         self._last_content_with_tools = None
         self._mute_post_response = False
         self._surrogate_sanitized = False
+        self._blocked_tool_retry_cache.clear()
 
         # Pre-turn connection health check: detect and clean up dead TCP
         # connections left over from provider outages or dropped streams.

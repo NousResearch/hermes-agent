@@ -1016,6 +1016,46 @@ class TestExecuteToolCalls:
         assert "Large tool response" in messages[0]["content"]
         assert "Full output saved to:" in messages[0]["content"]
 
+    def test_sequential_short_circuits_exact_blocked_tool_retry(self, agent):
+        first_call = _mock_tool_call(name="web_search", arguments='{"q":"test"}', call_id="c1")
+        second_call = _mock_tool_call(name="web_search", arguments='{"q":"test"}', call_id="c2")
+
+        with patch("run_agent.handle_function_call", return_value='{"error":"BLOCKED: no matches found"}') as mock_hfc:
+            agent._execute_tool_calls_sequential(
+                _mock_assistant_msg(content="", tool_calls=[first_call]), [], "task-1"
+            )
+            mock_hfc.assert_called_once()
+
+        messages = []
+        with patch("run_agent.handle_function_call", return_value="should not run") as mock_hfc:
+            agent._execute_tool_calls_sequential(
+                _mock_assistant_msg(content="", tool_calls=[second_call]), messages, "task-1"
+            )
+            mock_hfc.assert_not_called()
+
+        payload = json.loads(messages[0]["content"])
+        assert payload["retry_prevented"] is True
+        assert "already blocked earlier in this turn" in payload["error"]
+        assert payload["previous_blocked_result"] == "BLOCKED: no matches found"
+
+    def test_changed_args_after_blocked_tool_still_execute(self, agent):
+        blocked_call = _mock_tool_call(name="web_search", arguments='{"q":"test"}', call_id="c1")
+        changed_call = _mock_tool_call(name="web_search", arguments='{"q":"other"}', call_id="c2")
+
+        with patch("run_agent.handle_function_call", return_value='{"error":"BLOCKED: no matches found"}'):
+            agent._execute_tool_calls_sequential(
+                _mock_assistant_msg(content="", tool_calls=[blocked_call]), [], "task-1"
+            )
+
+        messages = []
+        with patch("run_agent.handle_function_call", return_value='{"result":"fresh"}') as mock_hfc:
+            agent._execute_tool_calls_sequential(
+                _mock_assistant_msg(content="", tool_calls=[changed_call]), messages, "task-1"
+            )
+            mock_hfc.assert_called_once()
+
+        assert messages[0]["content"] == '{"result":"fresh"}'
+
 
 class TestConcurrentToolExecution:
     """Tests for _execute_tool_calls_concurrent and dispatch logic."""
@@ -1217,6 +1257,29 @@ class TestConcurrentToolExecution:
         assert "Error" in messages[0]["content"] or "boom" in messages[0]["content"]
         # Second tool should succeed
         assert "success" in messages[1]["content"]
+
+    def test_concurrent_skips_only_exact_blocked_retry(self, agent):
+        blocked_seed = _mock_tool_call(name="web_search", arguments='{"q":"test"}', call_id="seed")
+        with patch("run_agent.handle_function_call", return_value='{"error":"BLOCKED: no matches found"}'):
+            agent._execute_tool_calls_sequential(
+                _mock_assistant_msg(content="", tool_calls=[blocked_seed]), [], "task-1"
+            )
+
+        tc1 = _mock_tool_call(name="web_search", arguments='{"q":"test"}', call_id="c1")
+        tc2 = _mock_tool_call(name="web_search", arguments='{"q":"fresh"}', call_id="c2")
+        messages = []
+
+        with patch("run_agent.handle_function_call", return_value='{"result":"fresh"}') as mock_hfc:
+            agent._execute_tool_calls_concurrent(
+                _mock_assistant_msg(content="", tool_calls=[tc1, tc2]), messages, "task-1"
+            )
+
+        mock_hfc.assert_called_once()
+        assert mock_hfc.call_args.args[:2] == ("web_search", {"q": "fresh"})
+
+        blocked_payload = json.loads(messages[0]["content"])
+        assert blocked_payload["retry_prevented"] is True
+        assert messages[1]["content"] == '{"result":"fresh"}'
 
     def test_concurrent_interrupt_before_start(self, agent):
         """If interrupt is requested before concurrent execution, all tools are skipped."""

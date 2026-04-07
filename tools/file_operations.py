@@ -873,9 +873,22 @@ class ShellFileOperations(FileOperations):
         else:
             return self._search_content(pattern, path, file_glob, limit, offset, 
                                         output_mode, context)
-    
+
+    def _looks_like_regex_file_pattern(self, pattern: str) -> bool:
+        """Return True when a file search pattern looks regex-like, not glob-like."""
+        return any(token in pattern for token in ("\\", "^", "$", "|"))
+
     def _search_files(self, pattern: str, path: str, limit: int, offset: int) -> SearchResult:
         """Search for files by name pattern (glob-like)."""
+        if self._looks_like_regex_file_pattern(pattern):
+            if not self._has_command('rg'):
+                return SearchResult(
+                    error="Regex-style file search requires ripgrep (rg). "
+                          "Use a glob like '*.cpp' or install ripgrep.",
+                    total_count=0
+                )
+            return self._search_files_rg_regex(pattern, path, limit, offset)
+
         # Auto-prepend **/ for recursive search if not already present
         if not pattern.startswith('**/') and '/' not in pattern:
             search_pattern = pattern
@@ -923,6 +936,34 @@ class ShellFileOperations(FileOperations):
         return SearchResult(
             files=files,
             total_count=len(files)
+        )
+
+    def _search_files_rg_regex(self, pattern: str, path: str, limit: int, offset: int) -> SearchResult:
+        """Search for files by matching a regex against rg --files output."""
+        try:
+            re.compile(pattern)
+        except re.error as exc:
+            return SearchResult(
+                error=f"Invalid regex file search pattern: {pattern} ({exc}). "
+                      "Use a valid regex or a glob like '*.cpp'.",
+                total_count=0
+            )
+
+        fetch_limit = limit + offset
+        cmd = (
+            f"rg --files {self._escape_shell_arg(path)} 2>/dev/null "
+            f"| rg {self._escape_shell_arg(pattern)} "
+            f"| head -n {fetch_limit}"
+        )
+        result = self._exec(cmd, timeout=60)
+
+        all_files = [f for f in result.stdout.strip().split('\n') if f]
+        page = all_files[offset:offset + limit]
+
+        return SearchResult(
+            files=page,
+            total_count=len(all_files),
+            truncated=len(all_files) >= fetch_limit,
         )
 
     def _search_files_rg(self, pattern: str, path: str, limit: int, offset: int) -> SearchResult:

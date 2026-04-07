@@ -322,6 +322,67 @@ class TestSearchPathValidation:
         assert result.error is not None
         assert "search failed" in result.error.lower() or "Search error" in result.error
 
+    def test_search_files_regex_pattern_matches_paths(self, mock_env):
+        """Regex-like file searches should match against file paths."""
+        commands = []
+
+        def side_effect(command, **kwargs):
+            commands.append(command)
+            if "test -e" in command:
+                return {"output": "exists", "returncode": 0}
+            if "command -v rg" in command:
+                return {"output": "yes", "returncode": 0}
+            if "rg --files" in command and "| rg " in command:
+                return {"output": "src/main.cpp\nsrc/lib.c\n", "returncode": 0}
+            return {"output": "", "returncode": 0}
+
+        mock_env.execute.side_effect = side_effect
+        ops = ShellFileOperations(mock_env)
+        result = ops.search(r"\.c$|\.cpp$", path="/project", target="files")
+
+        assert result.error is None
+        assert result.files == ["src/main.cpp", "src/lib.c"]
+        assert result.total_count == 2
+        assert any("| rg " in command for command in commands)
+
+    def test_search_files_invalid_regex_returns_error(self, mock_env):
+        """Invalid regex-like file patterns should return a helpful error."""
+        def side_effect(command, **kwargs):
+            if "test -e" in command:
+                return {"output": "exists", "returncode": 0}
+            if "command -v rg" in command:
+                return {"output": "yes", "returncode": 0}
+            return {"output": "", "returncode": 0}
+
+        mock_env.execute.side_effect = side_effect
+        ops = ShellFileOperations(mock_env)
+        result = ops.search(r"\.(cpp$", path="/project", target="files")
+
+        assert result.error is not None
+        assert "invalid regex file search pattern" in result.error.lower()
+
+    def test_search_files_glob_pattern_still_uses_glob_mode(self, mock_env):
+        """Normal glob searches should keep using rg --files -g."""
+        commands = []
+
+        def side_effect(command, **kwargs):
+            commands.append(command)
+            if "test -e" in command:
+                return {"output": "exists", "returncode": 0}
+            if "command -v rg" in command:
+                return {"output": "yes", "returncode": 0}
+            if "rg --files -g" in command:
+                return {"output": "pkg/file.py\n", "returncode": 0}
+            return {"output": "", "returncode": 0}
+
+        mock_env.execute.side_effect = side_effect
+        ops = ShellFileOperations(mock_env)
+        result = ops.search("*.py", path="/project", target="files")
+
+        assert result.error is None
+        assert result.files == ["pkg/file.py"]
+        assert any("rg --files -g" in command for command in commands)
+
 
 class TestShellFileOpsWriteDenied:
     def test_write_file_denied_path(self, file_ops):

@@ -54,6 +54,10 @@ _CONTEXT_INVISIBLE_CHARS = {
 
 def _scan_context_content(content: str, filename: str) -> str:
     """Scan context file content for injection. Returns sanitized content."""
+    # A leading UTF-8 BOM is a normal encoding marker, not hidden prompt
+    # injection. Strip it before scanning so saved markdown files don't get
+    # blocked just for their encoding.
+    content = content.lstrip('\ufeff')
     findings = []
 
     # Check invisible unicode

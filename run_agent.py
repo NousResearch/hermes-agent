@@ -3444,7 +3444,22 @@ class AIAgent:
         """Normalize a Responses API object to an assistant_message-like object."""
         output = getattr(response, "output", None)
         if not isinstance(output, list) or not output:
-            raise RuntimeError("Responses API returned no output items")
+            # The Codex backend can return empty output when the answer was
+            # delivered entirely via stream events. Check output_text as a
+            # last-resort fallback before raising.
+            out_text = getattr(response, "output_text", None)
+            if isinstance(out_text, str) and out_text.strip():
+                logger.debug(
+                    "Codex response has empty output but output_text is present (%d chars); "
+                    "synthesizing output item.", len(out_text.strip()),
+                )
+                output = [SimpleNamespace(
+                    type="message", role="assistant", status="completed",
+                    content=[SimpleNamespace(type="output_text", text=out_text.strip())],
+                )]
+                response.output = output
+            else:
+                raise RuntimeError("Responses API returned no output items")
 
         response_status = getattr(response, "status", None)
         if isinstance(response_status, str):
@@ -3997,11 +4012,28 @@ class AIAgent:
             return stream_or_response
 
         terminal_response = None
+        collected_output_items: list = []
+        collected_text_deltas: list = []
         try:
             for event in stream_or_response:
                 event_type = getattr(event, "type", None)
                 if not event_type and isinstance(event, dict):
                     event_type = event.get("type")
+
+                # Collect output items and text deltas for backfill
+                if event_type == "response.output_item.done":
+                    done_item = getattr(event, "item", None)
+                    if done_item is None and isinstance(event, dict):
+                        done_item = event.get("item")
+                    if done_item is not None:
+                        collected_output_items.append(done_item)
+                elif event_type in ("response.output_text.delta",):
+                    delta = getattr(event, "delta", "")
+                    if not delta and isinstance(event, dict):
+                        delta = event.get("delta", "")
+                    if delta:
+                        collected_text_deltas.append(delta)
+
                 if event_type not in {"response.completed", "response.incomplete", "response.failed"}:
                     continue
 
@@ -4009,6 +4041,26 @@ class AIAgent:
                 if terminal_response is None and isinstance(event, dict):
                     terminal_response = event.get("response")
                 if terminal_response is not None:
+                    # Backfill empty output from collected stream events
+                    _out = getattr(terminal_response, "output", None)
+                    if isinstance(_out, list) and not _out:
+                        if collected_output_items:
+                            terminal_response.output = list(collected_output_items)
+                            logger.debug(
+                                "Codex fallback stream: backfilled %d output items",
+                                len(collected_output_items),
+                            )
+                        elif collected_text_deltas:
+                            assembled = "".join(collected_text_deltas)
+                            terminal_response.output = [SimpleNamespace(
+                                type="message", role="assistant",
+                                status="completed",
+                                content=[SimpleNamespace(type="output_text", text=assembled)],
+                            )]
+                            logger.debug(
+                                "Codex fallback stream: synthesized from %d deltas (%d chars)",
+                                len(collected_text_deltas), len(assembled),
+                            )
                     return terminal_response
         finally:
             close_fn = getattr(stream_or_response, "close", None)

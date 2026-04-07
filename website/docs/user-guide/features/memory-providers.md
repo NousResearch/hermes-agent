@@ -6,14 +6,14 @@ description: "External memory provider plugins — Honcho, OpenViking, Mem0, Hin
 
 # Memory Providers
 
-Hermes Agent ships with 8 external memory provider plugins that give the agent persistent, cross-session knowledge beyond the built-in MEMORY.md and USER.md. Only **one** external provider can be active at a time — the built-in memory is always active alongside it.
+Hermes Agent ships with 8 external memory provider plugins that give the agent persistent, cross-session knowledge beyond the built-in MEMORY.md and USER.md. Multiple external providers can run simultaneously — the built-in memory is always active alongside them.
 
 ## Quick Start
 
 ```bash
-hermes memory setup      # interactive picker + configuration
+hermes memory setup      # interactive picker — run multiple times to add providers
 hermes memory status     # check what's active
-hermes memory off        # disable external provider
+hermes memory off        # disable all external providers
 ```
 
 You can also select the active memory provider via `hermes plugins` → Provider Plugins → Memory Provider.
@@ -22,8 +22,14 @@ Or set manually in `~/.hermes/config.yaml`:
 
 ```yaml
 memory:
-  provider: openviking   # or honcho, mem0, hindsight, holographic, retaindb, byterover, supermemory
+  providers:
+    - honcho
+    - hindsight
 ```
+
+:::tip Single provider still works
+The legacy `provider: honcho` syntax (single string) is still supported and automatically treated as `providers: [honcho]`. No migration needed.
+:::
 
 ## How It Works
 

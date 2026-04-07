@@ -416,6 +416,13 @@ memory:
   # For exit/reset, only fires if the session had at least this many user turns.
   flush_min_turns: 6        # Min user turns to trigger flush on exit/reset (0 = disabled)
 
+  # External memory providers — multiple can run simultaneously.
+  # Run `hermes memory setup` to configure interactively, or set here:
+  # providers:
+  #   - honcho        # AI-native user modeling (cloud or self-hosted)
+  #   - hindsight     # Knowledge graph with entity resolution
+  # Legacy single-provider syntax still works: provider: honcho
+
 # =============================================================================
 # Session Reset Policy (Messaging Platforms)
 # =============================================================================

@@ -766,26 +766,29 @@ class SlackAdapter(BasePlatformAdapter):
         else:
             thread_ts = event.get("thread_ts") or ts  # ts fallback for channels
 
-        # In channels, only respond if bot is mentioned OR if this is a
+        # In channels, only respond if bot is mentioned, channel is in
+        # free_response_channels, require_mention is disabled, OR this is a
         # reply in a thread where the bot has an active session.
         bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
         is_mentioned = bot_uid and f"<@{bot_uid}>" in text
-        
-        if not is_dm and bot_uid and not is_mentioned:
-            # Check if this is a thread reply (thread_ts exists and differs from ts)
-            event_thread_ts = event.get("thread_ts")
-            is_thread_reply = event_thread_ts and event_thread_ts != ts
-            
-            if is_thread_reply and self._has_active_session_for_thread(
-                channel_id=channel_id,
-                thread_ts=event_thread_ts,
-                user_id=user_id,
-            ):
-                # Allow thread replies without mention if there's an active session
-                pass
-            else:
-                # Not a thread reply or no active session - ignore
-                return
+
+        if not is_dm:
+            if channel_id in self._slack_free_response_channels():
+                pass  # Free-response channel — always process
+            elif not self._slack_require_mention():
+                pass  # Mention requirement disabled globally for Slack
+            elif not is_mentioned:
+                # Check if this is a thread reply with active session
+                event_thread_ts = event.get("thread_ts")
+                is_thread_reply = event_thread_ts and event_thread_ts != ts
+                if is_thread_reply and self._has_active_session_for_thread(
+                    channel_id=channel_id,
+                    thread_ts=event_thread_ts,
+                    user_id=user_id,
+                ):
+                    pass
+                else:
+                    return
         
         if is_mentioned:
             # Strip the bot mention from the text
@@ -1049,6 +1052,28 @@ class SlackAdapter(BasePlatformAdapter):
                         continue
                     raise
         raise last_exc
+
+    # ── Channel mention gating ─────────────────────────────────────────────
+
+    def _slack_require_mention(self) -> bool:
+        """Return whether channel messages require an explicit bot mention."""
+        configured = self.config.extra.get("require_mention")
+        if configured is not None:
+            if isinstance(configured, str):
+                return configured.lower() in ("true", "1", "yes", "on")
+            return bool(configured)
+        return os.getenv("SLACK_REQUIRE_MENTION", "true").lower() in ("true", "1", "yes", "on")
+
+    def _slack_free_response_channels(self) -> set[str]:
+        """Return channel IDs that don't require mention."""
+        raw = self.config.extra.get("free_response_channels")
+        if raw is None:
+            raw = os.getenv("SLACK_FREE_RESPONSE_CHANNELS", "")
+        if isinstance(raw, list):
+            return {str(part).strip() for part in raw if str(part).strip()}
+        if isinstance(raw, str) and raw.strip():
+            return {part.strip() for part in raw.split(",") if part.strip()}
+        return set()
 
     async def _download_slack_file_bytes(self, url: str, team_id: str = "") -> bytes:
         """Download a Slack file and return raw bytes, with retry."""

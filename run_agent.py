@@ -7391,20 +7391,30 @@ class AIAgent:
                             response_invalid = True
                             error_details.append("response.output is not a list")
                         elif not output_items:
-                            # If we reach here, _run_codex_stream's backfill
-                            # from output_item.done events and text-delta
-                            # synthesis both failed to populate output.
-                            _resp_status = getattr(response, "status", None)
-                            _resp_incomplete = getattr(response, "incomplete_details", None)
-                            logging.warning(
-                                "Codex response.output is empty after stream backfill "
-                                "(status=%s, incomplete_details=%s, model=%s). %s",
-                                _resp_status, _resp_incomplete,
-                                getattr(response, "model", None),
-                                f"api_mode={self.api_mode} provider={self.provider}",
-                            )
-                            response_invalid = True
-                            error_details.append("response.output is empty")
+                            # Stream backfill may have failed, but
+                            # _normalize_codex_response can still recover
+                            # from response.output_text. Only mark invalid
+                            # when that fallback is also absent.
+                            _out_text = getattr(response, "output_text", None)
+                            _out_text_stripped = _out_text.strip() if isinstance(_out_text, str) else ""
+                            if _out_text_stripped:
+                                logger.debug(
+                                    "Codex response.output is empty but output_text is present "
+                                    "(%d chars); deferring to normalization.",
+                                    len(_out_text_stripped),
+                                )
+                            else:
+                                _resp_status = getattr(response, "status", None)
+                                _resp_incomplete = getattr(response, "incomplete_details", None)
+                                logger.warning(
+                                    "Codex response.output is empty after stream backfill "
+                                    "(status=%s, incomplete_details=%s, model=%s). %s",
+                                    _resp_status, _resp_incomplete,
+                                    getattr(response, "model", None),
+                                    f"api_mode={self.api_mode} provider={self.provider}",
+                                )
+                                response_invalid = True
+                                error_details.append("response.output is empty")
                     elif self.api_mode == "anthropic_messages":
                         content_blocks = getattr(response, "content", None) if response is not None else None
                         if response is None:

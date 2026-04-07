@@ -386,6 +386,56 @@ def test_run_conversation_codex_plain_text(monkeypatch):
     assert result["messages"][-1]["content"] == "OK"
 
 
+def test_run_conversation_codex_empty_output_with_output_text(monkeypatch):
+    """Regression: empty response.output + valid output_text should succeed,
+    not trigger retry/fallback. The validation stage must defer to
+    _normalize_codex_response which synthesizes output from output_text."""
+    agent = _build_agent(monkeypatch)
+
+    def _empty_output_response(api_kwargs):
+        return SimpleNamespace(
+            output=[],
+            output_text="Hello from Codex",
+            usage=SimpleNamespace(input_tokens=5, output_tokens=3, total_tokens=8),
+            status="completed",
+            model="gpt-5-codex",
+        )
+
+    monkeypatch.setattr(agent, "_interruptible_api_call", _empty_output_response)
+
+    result = agent.run_conversation("Say hello")
+
+    assert result["completed"] is True
+    assert result["final_response"] == "Hello from Codex"
+
+
+def test_run_conversation_codex_empty_output_no_output_text_retries(monkeypatch):
+    """When both output and output_text are empty, validation should
+    correctly mark the response as invalid and trigger retry."""
+    agent = _build_agent(monkeypatch)
+    calls = {"api": 0}
+
+    def _fake_api_call(api_kwargs):
+        calls["api"] += 1
+        if calls["api"] == 1:
+            return SimpleNamespace(
+                output=[],
+                output_text=None,
+                usage=SimpleNamespace(input_tokens=5, output_tokens=3, total_tokens=8),
+                status="completed",
+                model="gpt-5-codex",
+            )
+        return _codex_message_response("Recovered")
+
+    monkeypatch.setattr(agent, "_interruptible_api_call", _fake_api_call)
+
+    result = agent.run_conversation("Say hello")
+
+    assert calls["api"] >= 2
+    assert result["completed"] is True
+    assert result["final_response"] == "Recovered"
+
+
 def test_run_conversation_codex_refreshes_after_401_and_retries(monkeypatch):
     agent = _build_agent(monkeypatch)
     calls = {"api": 0, "refresh": 0}

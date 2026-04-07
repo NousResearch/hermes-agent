@@ -63,8 +63,8 @@ class TestBlueBubblesHelpers:
         adapter = _make_adapter(monkeypatch)
         payload = {
             'guid': 'MESSAGE-GUID',
-            'chatGuid': 'iMessage;-;ben@sehl.ca',
-            'chatIdentifier': 'ben@sehl.ca',
+            'chatGuid': 'iMessage;-;user@example.com',
+            'chatIdentifier': 'user@example.com',
         }
         record = adapter._extract_payload_record(payload) or {}
         chat_guid = adapter._value(
@@ -74,7 +74,7 @@ class TestBlueBubblesHelpers:
             payload.get('chat_guid'),
             payload.get('guid'),
         )
-        assert chat_guid == 'iMessage;-;ben@sehl.ca'
+        assert chat_guid == 'iMessage;-;user@example.com'
 
     def test_webhook_can_fall_back_to_sender_when_chat_fields_missing(self, monkeypatch):
         adapter = _make_adapter(monkeypatch)
@@ -82,7 +82,7 @@ class TestBlueBubblesHelpers:
             'data': {
                 'guid': 'MESSAGE-GUID',
                 'text': 'hello',
-                'handle': {'address': 'ben@sehl.ca'},
+                'handle': {'address': 'user@example.com'},
                 'isFromMe': False,
             }
         }
@@ -108,7 +108,7 @@ class TestBlueBubblesHelpers:
         ) or chat_identifier or chat_guid
         if not (chat_guid or chat_identifier) and sender:
             chat_identifier = sender
-        assert chat_identifier == 'ben@sehl.ca'
+        assert chat_identifier == 'user@example.com'
 
     def test_extract_payload_record_accepts_list_data(self, monkeypatch):
         adapter = _make_adapter(monkeypatch)
@@ -117,8 +117,8 @@ class TestBlueBubblesHelpers:
             'data': [
                 {
                     'text': 'hello',
-                    'chatGuid': 'iMessage;-;ben@sehl.ca',
-                    'chatIdentifier': 'ben@sehl.ca',
+                    'chatGuid': 'iMessage;-;user@example.com',
+                    'chatIdentifier': 'user@example.com',
                 }
             ],
         }

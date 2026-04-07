@@ -277,10 +277,6 @@ Check the browser console for any JavaScript errors
 
 Use `clear=True` to clear the console after reading, so subsequent calls only show new messages.
 
-### `browser_close`
-
-Close the browser session and release resources. Call this when done to free up Browserbase session quota.
-
 ## Practical Examples
 
 ### Filling Out a Web Form
@@ -295,7 +291,6 @@ Agent workflow:
 4. browser_type(ref="@e5", text="SecurePass123")
 5. browser_click(ref="@e8")  → clicks "Create Account"
 6. browser_snapshot()  → confirms success
-7. browser_close()
 ```
 
 ### Researching Dynamic Content
@@ -307,7 +302,6 @@ Agent workflow:
 1. browser_navigate("https://github.com/trending")
 2. browser_snapshot(full=true)  → reads trending repo list
 3. Returns formatted results
-4. browser_close()
 ```
 
 ## Session Recording
@@ -349,5 +343,5 @@ If paid features aren't available on your plan, Hermes automatically falls back 
 - **Text-based interaction** — relies on accessibility tree, not pixel coordinates
 - **Snapshot size** — large pages may be truncated or LLM-summarized at 8000 characters
 - **Session timeout** — cloud sessions expire based on your provider's plan settings
-- **Cost** — cloud sessions consume provider credits; use `browser_close` when done. Use `/browser connect` for free local browsing.
+- **Cost** — cloud sessions consume provider credits; sessions are automatically cleaned up when the conversation ends or after inactivity. Use `/browser connect` for free local browsing.
 - **No file downloads** — cannot download files from the browser

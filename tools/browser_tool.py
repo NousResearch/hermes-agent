@@ -518,7 +518,7 @@ atexit.register(_stop_browser_cleanup_thread)
 BROWSER_TOOL_SCHEMAS = [
     {
         "name": "browser_navigate",
-        "description": "Navigate to a URL in the browser. Initializes the session and loads the page. Must be called before other browser tools. For simple information retrieval, prefer web_search or web_extract (faster, cheaper). Use browser tools when you need to interact with a page (click, fill forms, dynamic content).",
+        "description": "Navigate to a URL in the browser. Initializes the session and loads the page. Must be called before other browser tools. For simple information retrieval, prefer web_search or web_extract (faster, cheaper). Use browser tools when you need to interact with a page (click, fill forms, dynamic content). Returns a compact page snapshot with interactive elements and ref IDs — no need to call browser_snapshot separately after navigating.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -532,7 +532,7 @@ BROWSER_TOOL_SCHEMAS = [
     },
     {
         "name": "browser_snapshot",
-        "description": "Get a text-based snapshot of the current page's accessibility tree. Returns interactive elements with ref IDs (like @e1, @e2) for browser_click and browser_type. full=false (default): compact view with interactive elements. full=true: complete page content. Snapshots over 8000 chars are truncated or LLM-summarized. Requires browser_navigate first.",
+        "description": "Get a text-based snapshot of the current page's accessibility tree. Returns interactive elements with ref IDs (like @e1, @e2) for browser_click and browser_type. full=false (default): compact view with interactive elements. full=true: complete page content. Snapshots over 8000 chars are truncated or LLM-summarized. Requires browser_navigate first. Note: browser_navigate already returns a compact snapshot — use this to refresh after interactions that change the page, or with full=true for complete content.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -615,15 +615,7 @@ BROWSER_TOOL_SCHEMAS = [
             "required": ["key"]
         }
     },
-    {
-        "name": "browser_close",
-        "description": "Close the browser session and release resources. Call this when done with browser tasks to free up Browserbase session quota.",
-        "parameters": {
-            "type": "object",
-            "properties": {},
-            "required": []
-        }
-    },
+
     {
         "name": "browser_get_images",
         "description": "Get a list of all images on the current page with their URLs and alt text. Useful for finding images to analyze with the vision tool. Requires browser_navigate to be called first.",
@@ -1229,7 +1221,22 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
                     "Consider upgrading Browserbase plan for proxy support."
                 )
             response["stealth_features"] = active_features
-        
+
+        # Auto-take a compact snapshot so the model can act immediately
+        # without a separate browser_snapshot call.
+        try:
+            snap_result = _run_browser_command(effective_task_id, "snapshot", ["-c"])
+            if snap_result.get("success"):
+                snap_data = snap_result.get("data", {})
+                snapshot_text = snap_data.get("snapshot", "")
+                refs = snap_data.get("refs", {})
+                if len(snapshot_text) > SNAPSHOT_SUMMARIZE_THRESHOLD:
+                    snapshot_text = _truncate_snapshot(snapshot_text)
+                response["snapshot"] = snapshot_text
+                response["element_count"] = len(refs) if refs else 0
+        except Exception as e:
+            logger.debug("Auto-snapshot after navigate failed: %s", e)
+
         return json.dumps(response, ensure_ascii=False)
     else:
         return json.dumps({
@@ -1376,31 +1383,40 @@ def browser_scroll(direction: str, task_id: Optional[str] = None) -> str:
     Returns:
         JSON string with scroll result
     """
-    if _is_camofox_mode():
-        from tools.browser_camofox import camofox_scroll
-        return camofox_scroll(direction, task_id)
-
-    effective_task_id = task_id or "default"
-    
     # Validate direction
     if direction not in ["up", "down"]:
         return json.dumps({
             "success": False,
             "error": f"Invalid direction '{direction}'. Use 'up' or 'down'."
         }, ensure_ascii=False)
-    
-    result = _run_browser_command(effective_task_id, "scroll", [direction])
-    
-    if result.get("success"):
-        return json.dumps({
-            "success": True,
-            "scrolled": direction
-        }, ensure_ascii=False)
-    else:
-        return json.dumps({
-            "success": False,
-            "error": result.get("error", f"Failed to scroll {direction}")
-        }, ensure_ascii=False)
+
+    # Repeat the scroll 5 times to get meaningful page movement.
+    # Most backends scroll ~100px per call, which is barely visible.
+    # 5x gives roughly half a viewport of travel, backend-agnostic.
+    _SCROLL_REPEATS = 5
+
+    if _is_camofox_mode():
+        from tools.browser_camofox import camofox_scroll
+        result = None
+        for _ in range(_SCROLL_REPEATS):
+            result = camofox_scroll(direction, task_id)
+        return result
+
+    effective_task_id = task_id or "default"
+
+    result = None
+    for _ in range(_SCROLL_REPEATS):
+        result = _run_browser_command(effective_task_id, "scroll", [direction])
+        if not result.get("success"):
+            return json.dumps({
+                "success": False,
+                "error": result.get("error", f"Failed to scroll {direction}")
+            }, ensure_ascii=False)
+
+    return json.dumps({
+        "success": True,
+        "scrolled": direction
+    }, ensure_ascii=False)
 
 
 def browser_back(task_id: Optional[str] = None) -> str:
@@ -1463,33 +1479,7 @@ def browser_press(key: str, task_id: Optional[str] = None) -> str:
         }, ensure_ascii=False)
 
 
-def browser_close(task_id: Optional[str] = None) -> str:
-    """
-    Close the browser session.
 
-    Args:
-        task_id: Task identifier for session isolation
-
-    Returns:
-        JSON string with close result
-    """
-    if _is_camofox_mode():
-        from tools.browser_camofox import camofox_close
-        return camofox_close(task_id)
-
-    effective_task_id = task_id or "default"
-    with _cleanup_lock:
-        had_session = effective_task_id in _active_sessions
-
-    cleanup_browser(effective_task_id)
-
-    response = {
-        "success": True,
-        "closed": True,
-    }
-    if not had_session:
-        response["warning"] = "Session may not have been active"
-    return json.dumps(response, ensure_ascii=False)
 
 
 def browser_console(clear: bool = False, expression: Optional[str] = None, task_id: Optional[str] = None) -> str:
@@ -1942,13 +1932,21 @@ def cleanup_browser(task_id: Optional[str] = None) -> None:
     Clean up browser session for a task.
     
     Called automatically when a task completes or when inactivity timeout is reached.
-    Closes both the agent-browser session and the Browserbase session.
+    Closes both the agent-browser/Browserbase session and Camofox sessions.
     
     Args:
         task_id: Task identifier to clean up
     """
     if task_id is None:
         task_id = "default"
+    
+    # Also clean up Camofox session if running in Camofox mode
+    if _is_camofox_mode():
+        try:
+            from tools.browser_camofox import camofox_close
+            camofox_close(task_id)
+        except Exception as e:
+            logger.debug("Camofox cleanup for task %s: %s", task_id, e)
     
     logger.debug("cleanup_browser called for task_id: %s", task_id)
     logger.debug("Active sessions: %s", list(_active_sessions.keys()))
@@ -2168,14 +2166,7 @@ registry.register(
     check_fn=check_browser_requirements,
     emoji="⌨️",
 )
-registry.register(
-    name="browser_close",
-    toolset="browser",
-    schema=_BROWSER_SCHEMA_MAP["browser_close"],
-    handler=lambda args, **kw: browser_close(task_id=kw.get("task_id")),
-    check_fn=check_browser_requirements,
-    emoji="🚪",
-)
+
 registry.register(
     name="browser_get_images",
     toolset="browser",

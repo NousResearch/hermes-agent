@@ -39,7 +39,6 @@ TOOL_KIND_MAP: Dict[str, ToolKind] = {
     "browser_scroll": "execute",
     "browser_press": "execute",
     "browser_back": "execute",
-    "browser_close": "execute",
     "browser_get_images": "read",
     # Agent internals
     "delegate_task": "execute",

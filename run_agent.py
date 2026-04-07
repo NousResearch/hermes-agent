@@ -3868,6 +3868,10 @@ class AIAgent:
         has_tool_calls = False
         first_delta_fired = False
         self._reasoning_deltas_fired = False
+        # Accumulate streamed text so we can recover if get_final_response()
+        # returns empty output (e.g. chatgpt.com backend-api sends
+        # response.incomplete instead of response.completed).
+        self._codex_streamed_text_parts: list = []
         for attempt in range(max_stream_retries + 1):
             try:
                 with active_client.responses.stream(**api_kwargs) as stream:
@@ -3887,6 +3891,7 @@ class AIAgent:
                                         except Exception:
                                             pass
                                 self._fire_stream_delta(delta_text)
+                                self._codex_streamed_text_parts.append(delta_text)
                         # Track tool calls to suppress text streaming
                         elif "function_call" in event_type:
                             has_tool_calls = True
@@ -3895,6 +3900,18 @@ class AIAgent:
                             reasoning_text = getattr(event, "delta", "")
                             if reasoning_text:
                                 self._fire_reasoning_delta(reasoning_text)
+                        # Log non-completed terminal events for diagnostics
+                        elif event_type in ("response.incomplete", "response.failed"):
+                            resp_obj = getattr(event, "response", None)
+                            status = getattr(resp_obj, "status", None) if resp_obj else None
+                            incomplete_details = getattr(resp_obj, "incomplete_details", None) if resp_obj else None
+                            logger.warning(
+                                "Codex Responses stream received terminal event %s "
+                                "(status=%s, incomplete_details=%s, streamed_chars=%d). %s",
+                                event_type, status, incomplete_details,
+                                sum(len(p) for p in self._codex_streamed_text_parts),
+                                self._client_log_context(),
+                            )
                     return stream.get_final_response()
             except (_httpx.RemoteProtocolError, _httpx.ReadTimeout, _httpx.ConnectError, ConnectionError) as exc:
                 if attempt < max_stream_retries:
@@ -7366,8 +7383,50 @@ class AIAgent:
                             response_invalid = True
                             error_details.append("response.output is not a list")
                         elif len(output_items) == 0:
-                            response_invalid = True
-                            error_details.append("response.output is empty")
+                            # Log diagnostics for empty output
+                            _resp_status = getattr(response, "status", None)
+                            _resp_incomplete = getattr(response, "incomplete_details", None)
+                            _streamed_parts = getattr(self, "_codex_streamed_text_parts", [])
+                            _streamed_text = "".join(_streamed_parts).strip() if _streamed_parts else ""
+                            logging.warning(
+                                "Codex response.output is empty "
+                                "(status=%s, incomplete_details=%s, streamed_chars=%d, "
+                                "output_text=%r, model=%s). %s",
+                                _resp_status, _resp_incomplete, len(_streamed_text),
+                                getattr(response, "output_text", None),
+                                getattr(response, "model", None),
+                                f"api_mode={self.api_mode} provider={self.provider}",
+                            )
+                            # Recovery: if we streamed text but the final response
+                            # lost it (e.g. response.incomplete from chatgpt backend-api),
+                            # synthesize a minimal response so the user gets the answer
+                            # the model already delivered.
+                            if _streamed_text:
+                                logging.info(
+                                    "Recovering %d chars of streamed text as response "
+                                    "(status was %s).", len(_streamed_text), _resp_status,
+                                )
+                                response = SimpleNamespace(
+                                    output=[SimpleNamespace(
+                                        type="message",
+                                        role="assistant",
+                                        status="completed",
+                                        content=[SimpleNamespace(
+                                            type="output_text",
+                                            text=_streamed_text,
+                                        )],
+                                    )],
+                                    status=_resp_status or "completed",
+                                    model=getattr(response, "model", self.model),
+                                    usage=getattr(response, "usage", None),
+                                    id=getattr(response, "id", None),
+                                    output_text=_streamed_text,
+                                )
+                                # Clear the accumulated parts so we don't double-recover
+                                self._codex_streamed_text_parts = []
+                            else:
+                                response_invalid = True
+                                error_details.append("response.output is empty")
                     elif self.api_mode == "anthropic_messages":
                         content_blocks = getattr(response, "content", None) if response is not None else None
                         if response is None:

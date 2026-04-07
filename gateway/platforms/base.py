@@ -484,6 +484,9 @@ class BasePlatformAdapter(ABC):
         self._background_tasks: set[asyncio.Task] = set()
         # Chats where auto-TTS on voice input is disabled (set by /voice off)
         self._auto_tts_disabled_chats: set = set()
+        # Chats where typing indicator is paused (e.g. during approval waits).
+        # _keep_typing skips send_typing when the chat_id is in this set.
+        self._typing_paused: set = set()
 
     @property
     def has_fatal_error(self) -> bool:
@@ -943,10 +946,16 @@ class BasePlatformAdapter(ABC):
         
         Telegram/Discord typing status expires after ~5 seconds, so we refresh every 2
         to recover quickly after progress messages interrupt it.
+        
+        Skips send_typing when the chat is in ``_typing_paused`` (e.g. while
+        the agent is waiting for dangerous-command approval).  This is critical
+        for Slack's Assistant API where ``assistant_threads_setStatus`` disables
+        the compose box — pausing lets the user type ``/approve`` or ``/deny``.
         """
         try:
             while True:
-                await self.send_typing(chat_id, metadata=metadata)
+                if chat_id not in self._typing_paused:
+                    await self.send_typing(chat_id, metadata=metadata)
                 await asyncio.sleep(interval)
         except asyncio.CancelledError:
             pass  # Normal cancellation when handler completes
@@ -960,7 +969,20 @@ class BasePlatformAdapter(ABC):
                     await self.stop_typing(chat_id)
                 except Exception:
                     pass
-    
+            self._typing_paused.discard(chat_id)
+
+    def pause_typing_for_chat(self, chat_id: str) -> None:
+        """Pause typing indicator for a chat (e.g. during approval waits).
+
+        Thread-safe (CPython GIL) — can be called from the sync agent thread
+        while ``_keep_typing`` runs on the async event loop.
+        """
+        self._typing_paused.add(chat_id)
+
+    def resume_typing_for_chat(self, chat_id: str) -> None:
+        """Resume typing indicator for a chat after approval resolves."""
+        self._typing_paused.discard(chat_id)
+
     # ── Processing lifecycle hooks ──────────────────────────────────────────
     # Subclasses override these to react to message processing events
     # (e.g. Discord adds 👀/✅/❌ reactions).

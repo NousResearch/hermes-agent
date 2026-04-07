@@ -2155,8 +2155,10 @@ class GatewayRunner:
                     exec_cmd = qcmd.get("command", "")
                     if exec_cmd:
                         try:
-                            proc = await asyncio.create_subprocess_shell(
-                                exec_cmd,
+                            import shlex
+                            args = shlex.split(exec_cmd)
+                            proc = await asyncio.create_subprocess_exec(
+                                *args,
                                 stdout=asyncio.subprocess.PIPE,
                                 stderr=asyncio.subprocess.PIPE,
                             )

@@ -3301,6 +3301,629 @@ def _install_python_dependencies_with_optional_fallback(
         print(f"  ⚠ Skipped optional extras that still failed: {', '.join(failed_extras)}")
 
 
+_CARRIED_PATCH_STATE_FILE = PROJECT_ROOT / ".git" / "hermes-update-carried-patches.json"
+
+
+def _git_stdout(git_cmd: list[str], cwd: Path, args: list[str], *, check: bool = True) -> str:
+    result = subprocess.run(
+        git_cmd + args,
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        check=check,
+    )
+    return (result.stdout or "").strip()
+
+
+def _carried_patch_state_path(cwd: Path) -> Path:
+    return cwd / ".git" / "hermes-update-carried-patches.json"
+
+
+def _save_carried_patch_state(cwd: Path, state: dict) -> None:
+    import json
+
+    path = _carried_patch_state_path(cwd)
+    path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+
+
+def _load_carried_patch_state(cwd: Path) -> Optional[dict]:
+    import json
+
+    path = _carried_patch_state_path(cwd)
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def _clear_carried_patch_state(cwd: Path) -> None:
+    path = _carried_patch_state_path(cwd)
+    try:
+        path.unlink(missing_ok=True)
+    except TypeError:
+        if path.exists():
+            path.unlink()
+
+
+def _is_cherry_pick_in_progress(cwd: Path) -> bool:
+    git_dir = cwd / ".git"
+    return (git_dir / "CHERRY_PICK_HEAD").exists()
+
+
+def _list_carried_patch_commits(git_cmd: list[str], cwd: Path, base_ref: str = "origin/main") -> list[dict[str, str]]:
+    stdout = _git_stdout(git_cmd, cwd, ["rev-list", "--reverse", f"{base_ref}..HEAD"])
+    commits = []
+    for sha in [line.strip() for line in stdout.splitlines() if line.strip()]:
+        subject = _git_stdout(git_cmd, cwd, ["show", "-s", "--format=%s", sha])
+        commits.append({"sha": sha, "subject": subject})
+    return commits
+
+
+def _get_conflicted_files(git_cmd: list[str], cwd: Path) -> list[str]:
+    stdout = _git_stdout(git_cmd, cwd, ["diff", "--name-only", "--diff-filter=U"], check=False)
+    return [line.strip() for line in stdout.splitlines() if line.strip()]
+
+
+def _make_backup_branch_name() -> str:
+    from datetime import datetime, timezone
+
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    return f"backup/update-carry-{stamp}"
+
+
+def _strip_code_fences(text: str) -> str:
+    stripped = (text or "").strip()
+    if stripped.startswith("```"):
+        lines = stripped.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        stripped = "\n".join(lines).strip()
+    return stripped
+
+
+def _print_carried_patch_conflict_summary(patch: dict[str, str], conflicted_files: list[str], backup_branch: Optional[str]) -> None:
+    print()
+    print("✗ Carried patch reapply hit a conflict.")
+    print(f"  Patch: {patch.get('sha', '')[:12]} {patch.get('subject', '')}".rstrip())
+    if conflicted_files:
+        print("  Conflicted files:")
+        for path in conflicted_files:
+            print(f"    - {path}")
+    if backup_branch:
+        print(f"  Backup branch: {backup_branch}")
+    print()
+    print("Next moves:")
+    print("  - Manual: resolve files, git add ..., git cherry-pick --continue")
+    print("  - Plan only: hermes update-with-carried-patches --on-conflict=plan")
+    print("  - Try auto-merge: hermes update-with-carried-patches --on-conflict=llm")
+
+
+def _build_conflict_prompt(cwd: Path, patch: dict[str, str], conflicted_files: list[str], mode: str) -> str:
+    sections = [
+        "You are resolving a git cherry-pick conflict while reapplying a carried patch after updating Hermes.",
+        f"Patch SHA: {patch.get('sha', '')}",
+        f"Patch subject: {patch.get('subject', '')}",
+        f"Mode: {mode}",
+        "Preserve the intent of the carried patch while adapting to the updated upstream code.",
+    ]
+    for rel_path in conflicted_files:
+        file_path = cwd / rel_path
+        try:
+            content = file_path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            content = file_path.read_text(errors="replace")
+        except Exception as exc:
+            content = f"<could not read file: {exc}>"
+        sections.append(f"\n=== FILE: {rel_path} ===\n{content}")
+    if mode == "plan":
+        sections.append(
+            "\nReturn a concise conflict-resolution plan. Explain the intent mismatch, list the edits needed per file, and end with the exact git commands to continue. Do not return full file contents."
+        )
+    else:
+        sections.append(
+            "\nReturn a JSON object only with this shape: {\"files\": [{\"path\": \"relative/path\", \"content\": \"full merged file content\"}], \"summary\": \"one-line summary\"}. No markdown fences."
+        )
+    return "\n".join(sections)
+
+
+def _llm_conflict_plan(cwd: Path, patch: dict[str, str], conflicted_files: list[str]) -> str:
+    from agent.auxiliary_client import call_llm, extract_content_or_reasoning
+
+    prompt = _build_conflict_prompt(cwd, patch, conflicted_files, mode="plan")
+    response = call_llm(
+        task="compression",
+        messages=[
+            {"role": "system", "content": "You are a terse, high-signal git conflict resolution assistant."},
+            {"role": "user", "content": prompt},
+        ],
+        temperature=0.1,
+        max_tokens=1800,
+    )
+    return extract_content_or_reasoning(response).strip()
+
+
+def _llm_resolve_conflicts(cwd: Path, patch: dict[str, str], conflicted_files: list[str]) -> tuple[bool, str]:
+    import json
+
+    if len(conflicted_files) > 3:
+        return False, "Refusing auto-merge: more than 3 conflicted files. Use --on-conflict=plan or resolve manually."
+
+    from agent.auxiliary_client import call_llm, extract_content_or_reasoning
+
+    prompt = _build_conflict_prompt(cwd, patch, conflicted_files, mode="llm")
+    response = call_llm(
+        task="compression",
+        messages=[
+            {"role": "system", "content": "You resolve git conflicts. Return strict JSON only."},
+            {"role": "user", "content": prompt},
+        ],
+        temperature=0,
+        max_tokens=6000,
+    )
+    raw = _strip_code_fences(extract_content_or_reasoning(response))
+    try:
+        payload = json.loads(raw)
+    except Exception as exc:
+        return False, f"LLM returned invalid JSON: {exc}"
+
+    files = payload.get("files")
+    if not isinstance(files, list) or not files:
+        return False, "LLM did not return any merged files."
+
+    seen = set()
+    for entry in files:
+        rel_path = str(entry.get("path", "")).strip()
+        content = entry.get("content")
+        if not rel_path or not isinstance(content, str):
+            return False, "LLM returned an invalid file entry."
+        if rel_path not in conflicted_files:
+            return False, f"LLM tried to modify unexpected file: {rel_path}"
+        seen.add(rel_path)
+        (cwd / rel_path).write_text(content, encoding="utf-8")
+
+    missing = [path for path in conflicted_files if path not in seen]
+    if missing:
+        return False, f"LLM skipped conflicted file(s): {', '.join(missing)}"
+
+    return True, str(payload.get("summary", "LLM resolved conflicted files.")).strip()
+
+
+def _resume_carried_patch_conflict(git_cmd: list[str], cwd: Path, state: dict, on_conflict: str) -> bool:
+    patches = state.get("patches") or []
+    current_index = int(state.get("current_index", 0))
+    backup_branch = state.get("backup_branch")
+    patch = patches[current_index] if 0 <= current_index < len(patches) else {"sha": "", "subject": "unknown"}
+    conflicted_files = _get_conflicted_files(git_cmd, cwd)
+    _print_carried_patch_conflict_summary(patch, conflicted_files, backup_branch)
+
+    if on_conflict == "stop":
+        return False
+
+    if on_conflict == "plan":
+        try:
+            plan = _llm_conflict_plan(cwd, patch, conflicted_files)
+            print("\nLLM conflict plan:\n")
+            print(plan)
+        except Exception as exc:
+            print(f"\n⚠ Couldn't generate an LLM conflict plan: {exc}")
+        return False
+
+    try:
+        ok, message = _llm_resolve_conflicts(cwd, patch, conflicted_files)
+    except Exception as exc:
+        print(f"\n⚠ LLM conflict resolution failed before applying anything: {exc}")
+        return False
+
+    if not ok:
+        print(f"\n⚠ {message}")
+        return False
+
+    print(f"\n→ {message}")
+    subprocess.run(git_cmd + ["add", "--"] + conflicted_files, cwd=cwd, check=True)
+    cont = subprocess.run(git_cmd + ["cherry-pick", "--continue"], cwd=cwd, capture_output=True, text=True)
+    if cont.returncode != 0:
+        print("\n⚠ LLM wrote merged files, but git cherry-pick --continue still failed.")
+        if cont.stdout.strip():
+            print(cont.stdout.strip())
+        if cont.stderr.strip():
+            print(cont.stderr.strip())
+        return False
+
+    state["current_index"] = current_index + 1
+    _save_carried_patch_state(cwd, state)
+    return True
+
+
+def _finalize_update(gateway_mode: bool, *, is_fork: bool, branch: str = "main", git_cmd: Optional[list[str]] = None, skip_upstream_sync: bool = False) -> None:
+    import shutil
+
+    _invalidate_update_cache()
+
+    removed = _clear_bytecode_cache(PROJECT_ROOT)
+    if removed:
+        print(f"  ✓ Cleared {removed} stale __pycache__ director{'y' if removed == 1 else 'ies'}")
+
+    if is_fork and branch == "main" and git_cmd and not skip_upstream_sync:
+        _sync_with_upstream_if_needed(git_cmd, PROJECT_ROOT)
+
+    print("→ Updating Python dependencies...")
+    uv_bin = shutil.which("uv")
+    if uv_bin:
+        uv_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
+        _install_python_dependencies_with_optional_fallback([uv_bin, "pip"], env=uv_env)
+    else:
+        pip_cmd = [sys.executable, "-m", "pip"]
+        try:
+            subprocess.run(pip_cmd + ["--version"], cwd=PROJECT_ROOT, check=True, capture_output=True)
+        except subprocess.CalledProcessError:
+            subprocess.run(
+                [sys.executable, "-m", "ensurepip", "--upgrade", "--default-pip"],
+                cwd=PROJECT_ROOT,
+                check=True,
+            )
+        _install_python_dependencies_with_optional_fallback(pip_cmd)
+
+    if (PROJECT_ROOT / "package.json").exists() and shutil.which("npm"):
+        print("→ Updating Node.js dependencies...")
+        subprocess.run(["npm", "install", "--silent"], cwd=PROJECT_ROOT, check=False)
+
+    print()
+    print("✓ Code updated!")
+
+    try:
+        import importlib
+        import hermes_constants as _hc
+        importlib.reload(_hc)
+    except Exception:
+        pass
+
+    try:
+        from tools.skills_sync import sync_skills
+        print()
+        print("→ Syncing bundled skills...")
+        result = sync_skills(quiet=True)
+        if result["copied"]:
+            print(f"  + {len(result['copied'])} new: {', '.join(result['copied'])}")
+        if result.get("updated"):
+            print(f"  ↑ {len(result['updated'])} updated: {', '.join(result['updated'])}")
+        if result.get("user_modified"):
+            print(f"  ~ {len(result['user_modified'])} user-modified (kept)")
+        if result.get("cleaned"):
+            print(f"  − {len(result['cleaned'])} removed from manifest")
+        if not result["copied"] and not result.get("updated"):
+            print("  ✓ Skills are up to date")
+    except Exception as e:
+        logger.debug("Skills sync during update failed: %s", e)
+
+    try:
+        from hermes_cli.profiles import list_profiles, get_active_profile_name, seed_profile_skills
+        active = get_active_profile_name()
+        other_profiles = [p for p in list_profiles() if p.name != active]
+        if other_profiles:
+            print()
+            print("→ Syncing bundled skills to other profiles...")
+            for p in other_profiles:
+                try:
+                    r = seed_profile_skills(p.path, quiet=True)
+                    if r:
+                        copied = len(r.get("copied", []))
+                        updated = len(r.get("updated", []))
+                        modified = len(r.get("user_modified", []))
+                        parts = []
+                        if copied:
+                            parts.append(f"+{copied} new")
+                        if updated:
+                            parts.append(f"↑{updated} updated")
+                        if modified:
+                            parts.append(f"~{modified} user-modified")
+                        status = ", ".join(parts) if parts else "up to date"
+                    else:
+                        status = "sync failed"
+                    print(f"  {p.name}: {status}")
+                except Exception as pe:
+                    print(f"  {p.name}: error ({pe})")
+    except Exception:
+        pass
+
+    try:
+        from plugins.memory.honcho.cli import sync_honcho_profiles_quiet
+        synced = sync_honcho_profiles_quiet()
+        if synced:
+            print(f"\n-> Honcho: synced {synced} profile(s)")
+    except Exception:
+        pass
+
+    print()
+    print("→ Checking configuration for new options...")
+
+    from hermes_cli.config import (
+        get_missing_env_vars, get_missing_config_fields,
+        check_config_version, migrate_config
+    )
+
+    missing_env = get_missing_env_vars(required_only=True)
+    missing_config = get_missing_config_fields()
+    current_ver, latest_ver = check_config_version()
+
+    needs_migration = missing_env or missing_config or current_ver < latest_ver
+
+    if needs_migration:
+        print()
+        if missing_env:
+            print(f"  ⚠️  {len(missing_env)} new required setting(s) need configuration")
+        if missing_config:
+            print(f"  ℹ️  {len(missing_config)} new config option(s) available")
+
+        print()
+        if gateway_mode:
+            response = _gateway_prompt(
+                "Would you like to configure new options now? [Y/n]", "n"
+            ).strip().lower()
+        elif not (sys.stdin.isatty() and sys.stdout.isatty()):
+            print("  ℹ Non-interactive session — skipping config migration prompt.")
+            print("    Run 'hermes config migrate' later to apply any new config/env options.")
+            response = "n"
+        else:
+            try:
+                response = input("Would you like to configure them now? [Y/n]: ").strip().lower()
+            except EOFError:
+                response = "n"
+
+        if response in ('', 'y', 'yes'):
+            print()
+            results = migrate_config(interactive=not gateway_mode, quiet=False)
+
+            if results["env_added"] or results["config_added"]:
+                print()
+                print("✓ Configuration updated!")
+            if gateway_mode and missing_env:
+                print("  ℹ API keys require manual entry: hermes config migrate")
+        else:
+            print()
+            print("Skipped. Run 'hermes config migrate' later to configure.")
+    else:
+        print("  ✓ Configuration is up to date")
+
+    print()
+    print("✓ Update complete!")
+
+    try:
+        from hermes_cli.gateway import (
+            is_macos, is_linux, _ensure_user_systemd_env,
+            find_gateway_pids, _get_service_pids,
+        )
+        import signal as _signal
+
+        restarted_services = []
+        killed_pids = set()
+
+        if is_linux():
+            try:
+                _ensure_user_systemd_env()
+            except Exception:
+                pass
+
+            for scope_cmd in (["systemctl", "--user"], ["systemctl"]):
+                try:
+                    result = subprocess.run(
+                        scope_cmd + ["list-units", "hermes-gateway*", "--plain", "--no-legend", "--no-pager"],
+                        capture_output=True, text=True, timeout=10,
+                    )
+                    for line in result.stdout.strip().splitlines():
+                        parts = line.split()
+                        if not parts:
+                            continue
+                        unit = parts[0]
+                        if not unit.endswith(".service"):
+                            continue
+                        svc_name = unit.removesuffix(".service")
+                        check = subprocess.run(
+                            scope_cmd + ["is-active", svc_name],
+                            capture_output=True, text=True, timeout=5,
+                        )
+                        if check.stdout.strip() == "active":
+                            restart = subprocess.run(
+                                scope_cmd + ["restart", svc_name],
+                                capture_output=True, text=True, timeout=15,
+                            )
+                            if restart.returncode == 0:
+                                restarted_services.append(svc_name)
+                            else:
+                                print(f"  ⚠ Failed to restart {svc_name}: {restart.stderr.strip()}")
+                except (FileNotFoundError, subprocess.TimeoutExpired):
+                    pass
+
+        if is_macos():
+            try:
+                from hermes_cli.gateway import launchd_restart, get_launchd_label, get_launchd_plist_path
+                plist_path = get_launchd_plist_path()
+                if plist_path.exists():
+                    check = subprocess.run(
+                        ["launchctl", "list", get_launchd_label()],
+                        capture_output=True, text=True, timeout=5,
+                    )
+                    if check.returncode == 0:
+                        try:
+                            launchd_restart()
+                            restarted_services.append(get_launchd_label())
+                        except subprocess.CalledProcessError as e:
+                            stderr = (getattr(e, "stderr", "") or "").strip()
+                            print(f"  ⚠ Gateway restart failed: {stderr}")
+            except (FileNotFoundError, subprocess.TimeoutExpired, ImportError):
+                pass
+
+        service_pids = _get_service_pids()
+        manual_pids = find_gateway_pids(exclude_pids=service_pids)
+        for pid in manual_pids:
+            try:
+                os.kill(pid, _signal.SIGTERM)
+                killed_pids.add(pid)
+            except (ProcessLookupError, PermissionError):
+                pass
+
+        if restarted_services or killed_pids:
+            print()
+            for svc in restarted_services:
+                print(f"  ✓ Restarted {svc}")
+            if killed_pids:
+                print(f"  → Stopped {len(killed_pids)} manual gateway process(es)")
+                print("    Restart manually: hermes gateway run")
+                if len(killed_pids) > 1:
+                    print("    (or: hermes -p <profile> gateway run  for each profile)")
+    except Exception as e:
+        logger.debug("Gateway restart during update failed: %s", e)
+
+    print()
+    print("Tip: You can now select a provider and model:")
+    print("  hermes model              # Select provider and model")
+
+
+def cmd_update_with_carried_patches(args):
+    """Update Hermes and reapply local carried patch commits on top of origin/main."""
+    from hermes_cli.config import is_managed, managed_error
+
+    if is_managed():
+        managed_error("update Hermes Agent with carried patches")
+        return
+
+    gateway_mode = getattr(args, "gateway", False)
+    on_conflict = (getattr(args, "on_conflict", None) or "stop").strip().lower()
+    if on_conflict not in {"stop", "plan", "llm"}:
+        print("✗ Invalid --on-conflict value. Use: stop, plan, or llm")
+        sys.exit(1)
+
+    print("⚕ Updating Hermes Agent with carried patches...")
+    print()
+
+    git_dir = PROJECT_ROOT / ".git"
+    if not git_dir.exists():
+        print("✗ Not a git repository. This command only works for git installs.")
+        sys.exit(1)
+
+    git_cmd = ["git", "-c", "windows.appendAtomically=false"] if sys.platform == "win32" else ["git"]
+
+    state = _load_carried_patch_state(PROJECT_ROOT)
+    if state and _is_cherry_pick_in_progress(PROJECT_ROOT):
+        resumed = _resume_carried_patch_conflict(git_cmd, PROJECT_ROOT, state, on_conflict)
+        if not resumed:
+            sys.exit(1)
+        state = _load_carried_patch_state(PROJECT_ROOT) or state
+
+        patches = state.get("patches") or []
+        start_index = int(state.get("current_index", 0))
+        backup_branch = state.get("backup_branch")
+        for idx in range(start_index, len(patches)):
+            patch = patches[idx]
+            _save_carried_patch_state(PROJECT_ROOT, {**state, "current_index": idx})
+            result = subprocess.run(git_cmd + ["cherry-pick", patch["sha"]], cwd=PROJECT_ROOT, capture_output=True, text=True)
+            if result.returncode != 0:
+                conflicted_files = _get_conflicted_files(git_cmd, PROJECT_ROOT)
+                _save_carried_patch_state(PROJECT_ROOT, {**state, "current_index": idx})
+                _print_carried_patch_conflict_summary(patch, conflicted_files, backup_branch)
+                if on_conflict == "llm":
+                    resumed = _resume_carried_patch_conflict(git_cmd, PROJECT_ROOT, state, on_conflict)
+                    if resumed:
+                        state = _load_carried_patch_state(PROJECT_ROOT) or state
+                        continue
+                elif on_conflict == "plan":
+                    _resume_carried_patch_conflict(git_cmd, PROJECT_ROOT, state, on_conflict)
+                sys.exit(1)
+
+        _clear_carried_patch_state(PROJECT_ROOT)
+        _finalize_update(gateway_mode, is_fork=_is_fork(_get_origin_url(git_cmd, PROJECT_ROOT)), branch="main", git_cmd=git_cmd, skip_upstream_sync=True)
+        return
+
+    if _is_cherry_pick_in_progress(PROJECT_ROOT):
+        print("✗ A git cherry-pick is already in progress.")
+        print("  Resolve it first or run: git cherry-pick --abort")
+        sys.exit(1)
+
+    origin_url = _get_origin_url(git_cmd, PROJECT_ROOT)
+    is_fork = _is_fork(origin_url)
+
+    fetch_result = subprocess.run(git_cmd + ["fetch", "origin"], cwd=PROJECT_ROOT, capture_output=True, text=True)
+    if fetch_result.returncode != 0:
+        print("✗ Failed to fetch updates from origin.")
+        if fetch_result.stderr.strip():
+            print(f"  {fetch_result.stderr.strip().splitlines()[0]}")
+        sys.exit(1)
+
+    current_branch = _git_stdout(git_cmd, PROJECT_ROOT, ["rev-parse", "--abbrev-ref", "HEAD"])
+    if current_branch != "main":
+        label = "detached HEAD" if current_branch == "HEAD" else f"branch '{current_branch}'"
+        print(f"  ⚠ Currently on {label} — switching to main for carried patch update...")
+        auto_stash_ref = _stash_local_changes_if_needed(git_cmd, PROJECT_ROOT)
+        subprocess.run(git_cmd + ["checkout", "main"], cwd=PROJECT_ROOT, capture_output=True, text=True, check=True)
+    else:
+        auto_stash_ref = _stash_local_changes_if_needed(git_cmd, PROJECT_ROOT)
+
+    carried_patches = _list_carried_patch_commits(git_cmd, PROJECT_ROOT, "origin/main")
+    if not carried_patches:
+        print("→ No carried patches detected on local main; falling back to normal update.")
+        passthrough_args = argparse.Namespace(gateway=gateway_mode)
+        cmd_update(passthrough_args)
+        return
+
+    prompt_for_restore = auto_stash_ref is not None and (gateway_mode or (sys.stdin.isatty() and sys.stdout.isatty()))
+    backup_branch = _make_backup_branch_name()
+    subprocess.run(git_cmd + ["branch", backup_branch, "HEAD"], cwd=PROJECT_ROOT, capture_output=True, text=True, check=True)
+
+    print(f"→ Found {len(carried_patches)} carried patch commit(s)")
+    for patch in carried_patches:
+        print(f"  - {patch['sha'][:12]} {patch['subject']}")
+
+    print("→ Resetting local main to origin/main before reapplying carried patches...")
+    subprocess.run(git_cmd + ["reset", "--hard", "origin/main"], cwd=PROJECT_ROOT, capture_output=True, text=True, check=True)
+
+    state = {
+        "patches": carried_patches,
+        "current_index": 0,
+        "backup_branch": backup_branch,
+        "original_branch": current_branch,
+        "base_ref": "origin/main",
+    }
+    _save_carried_patch_state(PROJECT_ROOT, state)
+
+    for idx, patch in enumerate(carried_patches):
+        state["current_index"] = idx
+        _save_carried_patch_state(PROJECT_ROOT, state)
+        print(f"→ Reapplying carried patch {idx + 1}/{len(carried_patches)}: {patch['subject']}")
+        result = subprocess.run(git_cmd + ["cherry-pick", patch["sha"]], cwd=PROJECT_ROOT, capture_output=True, text=True)
+        if result.returncode == 0:
+            continue
+
+        combined = f"{result.stdout}\n{result.stderr}".lower()
+        if "previous cherry-pick is now empty" in combined or "nothing to commit" in combined:
+            subprocess.run(git_cmd + ["cherry-pick", "--skip"], cwd=PROJECT_ROOT, capture_output=True, text=True, check=False)
+            print("  ℹ Patch is already present upstream; skipped empty cherry-pick.")
+            continue
+
+        conflicted_files = _get_conflicted_files(git_cmd, PROJECT_ROOT)
+        _print_carried_patch_conflict_summary(patch, conflicted_files, backup_branch)
+        if on_conflict in {"plan", "llm"}:
+            resumed = _resume_carried_patch_conflict(git_cmd, PROJECT_ROOT, state, on_conflict)
+            if resumed:
+                continue
+        sys.exit(1)
+
+    _clear_carried_patch_state(PROJECT_ROOT)
+
+    if auto_stash_ref is not None:
+        _restore_stashed_changes(
+            git_cmd,
+            PROJECT_ROOT,
+            auto_stash_ref,
+            prompt_user=prompt_for_restore,
+            input_fn=(lambda prompt, default="": _gateway_prompt(prompt, default)) if gateway_mode else None,
+        )
+
+    _finalize_update(gateway_mode, is_fork=is_fork, branch="main", git_cmd=git_cmd, skip_upstream_sync=True)
+
+
 def cmd_update(args):
     """Update Hermes Agent to the latest version."""
     import shutil
@@ -3425,7 +4048,6 @@ def cmd_update(args):
 
         if commit_count == 0:
             _invalidate_update_cache()
-            # Restore stash and switch back to original branch if we moved
             if auto_stash_ref is not None:
                 _restore_stashed_changes(
                     git_cmd, PROJECT_ROOT, auto_stash_ref,
@@ -3452,9 +4074,6 @@ def cmd_update(args):
                 text=True,
             )
             if pull_result.returncode != 0:
-                # ff-only failed — local and remote have diverged (e.g. upstream
-                # force-pushed or rebase).  Since local changes are already
-                # stashed, reset to match the remote exactly.
                 print("  ⚠ Fast-forward not possible (history diverged), resetting to match remote...")
                 reset_result = subprocess.run(
                     git_cmd + ["reset", "--hard", f"origin/{branch}"],
@@ -3471,8 +4090,6 @@ def cmd_update(args):
             update_succeeded = True
         finally:
             if auto_stash_ref is not None:
-                # Don't attempt stash restore if the code update itself failed —
-                # working tree is in an unknown state.
                 if not update_succeeded:
                     print(f"  ℹ️  Local changes preserved in stash (ref: {auto_stash_ref})")
                     print(f"  Restore manually with: git stash apply")
@@ -3484,286 +4101,9 @@ def cmd_update(args):
                         prompt_user=prompt_for_restore,
                         input_fn=gw_input_fn,
                     )
-        
-        _invalidate_update_cache()
 
-        # Clear stale .pyc bytecode cache — prevents ImportError on gateway
-        # restart when updated source references names that didn't exist in
-        # the old bytecode (e.g. get_hermes_home added to hermes_constants).
-        removed = _clear_bytecode_cache(PROJECT_ROOT)
-        if removed:
-            print(f"  ✓ Cleared {removed} stale __pycache__ director{'y' if removed == 1 else 'ies'}")
+        _finalize_update(gateway_mode, is_fork=is_fork, branch=branch, git_cmd=git_cmd)
 
-        # Fork upstream sync logic (only for main branch on forks)
-        if is_fork and branch == "main":
-            _sync_with_upstream_if_needed(git_cmd, PROJECT_ROOT)
-        
-        # Reinstall Python dependencies. Prefer .[all], but if one optional extra
-        # breaks on this machine, keep base deps and reinstall the remaining extras
-        # individually so update does not silently strip working capabilities.
-        print("→ Updating Python dependencies...")
-        uv_bin = shutil.which("uv")
-        if uv_bin:
-            uv_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
-            _install_python_dependencies_with_optional_fallback([uv_bin, "pip"], env=uv_env)
-        else:
-            # Use sys.executable to explicitly call the venv's pip module,
-            # avoiding PEP 668 'externally-managed-environment' errors on Debian/Ubuntu.
-            # Some environments lose pip inside the venv; bootstrap it back with
-            # ensurepip before trying the editable install.
-            pip_cmd = [sys.executable, "-m", "pip"]
-            try:
-                subprocess.run(pip_cmd + ["--version"], cwd=PROJECT_ROOT, check=True, capture_output=True)
-            except subprocess.CalledProcessError:
-                subprocess.run(
-                    [sys.executable, "-m", "ensurepip", "--upgrade", "--default-pip"],
-                    cwd=PROJECT_ROOT,
-                    check=True,
-                )
-            _install_python_dependencies_with_optional_fallback(pip_cmd)
-        
-        # Check for Node.js deps
-        if (PROJECT_ROOT / "package.json").exists():
-            import shutil
-            if shutil.which("npm"):
-                print("→ Updating Node.js dependencies...")
-                subprocess.run(["npm", "install", "--silent"], cwd=PROJECT_ROOT, check=False)
-        
-        print()
-        print("✓ Code updated!")
-        
-        # After git pull, source files on disk are newer than cached Python
-        # modules in this process.  Reload hermes_constants so that any lazy
-        # import executed below (skills sync, gateway restart) sees new
-        # attributes like display_hermes_home() added since the last release.
-        try:
-            import importlib
-            import hermes_constants as _hc
-            importlib.reload(_hc)
-        except Exception:
-            pass  # non-fatal — worst case a lazy import fails gracefully
-        
-        # Sync bundled skills (copies new, updates changed, respects user deletions)
-        try:
-            from tools.skills_sync import sync_skills
-            print()
-            print("→ Syncing bundled skills...")
-            result = sync_skills(quiet=True)
-            if result["copied"]:
-                print(f"  + {len(result['copied'])} new: {', '.join(result['copied'])}")
-            if result.get("updated"):
-                print(f"  ↑ {len(result['updated'])} updated: {', '.join(result['updated'])}")
-            if result.get("user_modified"):
-                print(f"  ~ {len(result['user_modified'])} user-modified (kept)")
-            if result.get("cleaned"):
-                print(f"  − {len(result['cleaned'])} removed from manifest")
-            if not result["copied"] and not result.get("updated"):
-                print("  ✓ Skills are up to date")
-        except Exception as e:
-            logger.debug("Skills sync during update failed: %s", e)
-
-        # Sync bundled skills to all other profiles
-        try:
-            from hermes_cli.profiles import list_profiles, get_active_profile_name, seed_profile_skills
-            active = get_active_profile_name()
-            other_profiles = [p for p in list_profiles() if p.name != active]
-            if other_profiles:
-                print()
-                print("→ Syncing bundled skills to other profiles...")
-                for p in other_profiles:
-                    try:
-                        r = seed_profile_skills(p.path, quiet=True)
-                        if r:
-                            copied = len(r.get("copied", []))
-                            updated = len(r.get("updated", []))
-                            modified = len(r.get("user_modified", []))
-                            parts = []
-                            if copied: parts.append(f"+{copied} new")
-                            if updated: parts.append(f"↑{updated} updated")
-                            if modified: parts.append(f"~{modified} user-modified")
-                            status = ", ".join(parts) if parts else "up to date"
-                        else:
-                            status = "sync failed"
-                        print(f"  {p.name}: {status}")
-                    except Exception as pe:
-                        print(f"  {p.name}: error ({pe})")
-        except Exception:
-            pass  # profiles module not available or no profiles
-
-        # Sync Honcho host blocks to all profiles
-        try:
-            from plugins.memory.honcho.cli import sync_honcho_profiles_quiet
-            synced = sync_honcho_profiles_quiet()
-            if synced:
-                print(f"\n-> Honcho: synced {synced} profile(s)")
-        except Exception:
-            pass  # honcho plugin not installed or not configured
-
-        # Check for config migrations
-        print()
-        print("→ Checking configuration for new options...")
-        
-        from hermes_cli.config import (
-            get_missing_env_vars, get_missing_config_fields, 
-            check_config_version, migrate_config
-        )
-        
-        missing_env = get_missing_env_vars(required_only=True)
-        missing_config = get_missing_config_fields()
-        current_ver, latest_ver = check_config_version()
-        
-        needs_migration = missing_env or missing_config or current_ver < latest_ver
-        
-        if needs_migration:
-            print()
-            if missing_env:
-                print(f"  ⚠️  {len(missing_env)} new required setting(s) need configuration")
-            if missing_config:
-                print(f"  ℹ️  {len(missing_config)} new config option(s) available")
-            
-            print()
-            if gateway_mode:
-                response = _gateway_prompt(
-                    "Would you like to configure new options now? [Y/n]", "n"
-                ).strip().lower()
-            elif not (sys.stdin.isatty() and sys.stdout.isatty()):
-                print("  ℹ Non-interactive session — skipping config migration prompt.")
-                print("    Run 'hermes config migrate' later to apply any new config/env options.")
-                response = "n"
-            else:
-                try:
-                    response = input("Would you like to configure them now? [Y/n]: ").strip().lower()
-                except EOFError:
-                    response = "n"
-            
-            if response in ('', 'y', 'yes'):
-                print()
-                # In gateway mode, run auto-migrations only (no input() prompts
-                # for API keys which would hang the detached process).
-                results = migrate_config(interactive=not gateway_mode, quiet=False)
-                
-                if results["env_added"] or results["config_added"]:
-                    print()
-                    print("✓ Configuration updated!")
-                if gateway_mode and missing_env:
-                    print("  ℹ API keys require manual entry: hermes config migrate")
-            else:
-                print()
-                print("Skipped. Run 'hermes config migrate' later to configure.")
-        else:
-            print("  ✓ Configuration is up to date")
-        
-        print()
-        print("✓ Update complete!")
-        
-        # Auto-restart ALL gateways after update.
-        # The code update (git pull) is shared across all profiles, so every
-        # running gateway needs restarting to pick up the new code.
-        try:
-            from hermes_cli.gateway import (
-                is_macos, is_linux, _ensure_user_systemd_env,
-                get_systemd_linger_status, find_gateway_pids,
-                _get_service_pids,
-            )
-            import signal as _signal
-
-            restarted_services = []
-            killed_pids = set()
-
-            # --- Systemd services (Linux) ---
-            # Discover all hermes-gateway* units (default + profiles)
-            if is_linux():
-                try:
-                    _ensure_user_systemd_env()
-                except Exception:
-                    pass
-
-                for scope, scope_cmd in [("user", ["systemctl", "--user"]), ("system", ["systemctl"])]:
-                    try:
-                        result = subprocess.run(
-                            scope_cmd + ["list-units", "hermes-gateway*", "--plain", "--no-legend", "--no-pager"],
-                            capture_output=True, text=True, timeout=10,
-                        )
-                        for line in result.stdout.strip().splitlines():
-                            parts = line.split()
-                            if not parts:
-                                continue
-                            unit = parts[0]  # e.g. hermes-gateway.service or hermes-gateway-coder.service
-                            if not unit.endswith(".service"):
-                                continue
-                            svc_name = unit.removesuffix(".service")
-                            # Check if active
-                            check = subprocess.run(
-                                scope_cmd + ["is-active", svc_name],
-                                capture_output=True, text=True, timeout=5,
-                            )
-                            if check.stdout.strip() == "active":
-                                restart = subprocess.run(
-                                    scope_cmd + ["restart", svc_name],
-                                    capture_output=True, text=True, timeout=15,
-                                )
-                                if restart.returncode == 0:
-                                    restarted_services.append(svc_name)
-                                else:
-                                    print(f"  ⚠ Failed to restart {svc_name}: {restart.stderr.strip()}")
-                    except (FileNotFoundError, subprocess.TimeoutExpired):
-                        pass
-
-            # --- Launchd services (macOS) ---
-            if is_macos():
-                try:
-                    from hermes_cli.gateway import launchd_restart, get_launchd_label, get_launchd_plist_path
-                    plist_path = get_launchd_plist_path()
-                    if plist_path.exists():
-                        check = subprocess.run(
-                            ["launchctl", "list", get_launchd_label()],
-                            capture_output=True, text=True, timeout=5,
-                        )
-                        if check.returncode == 0:
-                            try:
-                                launchd_restart()
-                                restarted_services.append(get_launchd_label())
-                            except subprocess.CalledProcessError as e:
-                                stderr = (getattr(e, "stderr", "") or "").strip()
-                                print(f"  ⚠ Gateway restart failed: {stderr}")
-                except (FileNotFoundError, subprocess.TimeoutExpired, ImportError):
-                    pass
-
-            # --- Manual (non-service) gateways ---
-            # Kill any remaining gateway processes not managed by a service.
-            # Exclude PIDs that belong to just-restarted services so we don't
-            # immediately kill the process that systemd/launchd just spawned.
-            service_pids = _get_service_pids()
-            manual_pids = find_gateway_pids(exclude_pids=service_pids)
-            for pid in manual_pids:
-                try:
-                    os.kill(pid, _signal.SIGTERM)
-                    killed_pids.add(pid)
-                except (ProcessLookupError, PermissionError):
-                    pass
-
-            if restarted_services or killed_pids:
-                print()
-                for svc in restarted_services:
-                    print(f"  ✓ Restarted {svc}")
-                if killed_pids:
-                    print(f"  → Stopped {len(killed_pids)} manual gateway process(es)")
-                    print("    Restart manually: hermes gateway run")
-                    # Also restart for each profile if needed
-                    if len(killed_pids) > 1:
-                        print("    (or: hermes -p <profile> gateway run  for each profile)")
-
-            if not restarted_services and not killed_pids:
-                # No gateways were running — nothing to do
-                pass
-
-        except Exception as e:
-            logger.debug("Gateway restart during update failed: %s", e)
-        
-        print()
-        print("Tip: You can now select a provider and model:")
-        print("  hermes model              # Select provider and model")
-        
     except subprocess.CalledProcessError as e:
         if sys.platform == "win32":
             print(f"⚠ Git update failed: {e}")
@@ -5337,6 +5677,23 @@ For more help on a command:
         help="Gateway mode: use file-based IPC for prompts instead of stdin (used internally by /update)"
     )
     update_parser.set_defaults(func=cmd_update)
+
+    update_carried_parser = subparsers.add_parser(
+        "update-with-carried-patches",
+        help="Update Hermes and reapply local carried patch commits on top of the new main",
+        description="Fetch origin/main, reset local main, then reapply local commits that were carried on top"
+    )
+    update_carried_parser.add_argument(
+        "--on-conflict",
+        default="stop",
+        choices=["stop", "plan", "llm"],
+        help="Conflict behavior: stop and print next steps, ask an auxiliary LLM for a resolution plan, or let the LLM try to resolve and continue",
+    )
+    update_carried_parser.add_argument(
+        "--gateway", action="store_true", default=False,
+        help="Gateway mode: use file-based IPC for prompts instead of stdin"
+    )
+    update_carried_parser.set_defaults(func=cmd_update_with_carried_patches)
     
     # =========================================================================
     # uninstall command

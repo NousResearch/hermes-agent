@@ -947,7 +947,7 @@ def test_list_custom_pool_providers(tmp_path, monkeypatch):
                         "auth_type": "api_key",
                         "priority": 0,
                         "source": "manual",
-                        "access_token": "sk-ant-xxx",
+                        "access_token": "***",
                     }
                 ],
                 "custom:together.ai": [
@@ -957,7 +957,7 @@ def test_list_custom_pool_providers(tmp_path, monkeypatch):
                         "auth_type": "api_key",
                         "priority": 0,
                         "source": "manual",
-                        "access_token": "sk-tog-xxx",
+                        "access_token": "***",
                     }
                 ],
                 "custom:fireworks": [
@@ -967,7 +967,7 @@ def test_list_custom_pool_providers(tmp_path, monkeypatch):
                         "auth_type": "api_key",
                         "priority": 0,
                         "source": "manual",
-                        "access_token": "sk-fw-xxx",
+                        "access_token": "***",
                     }
                 ],
                 "custom:empty": [],
@@ -980,3 +980,78 @@ def test_list_custom_pool_providers(tmp_path, monkeypatch):
     result = list_custom_pool_providers()
     assert result == ["custom:fireworks", "custom:together.ai"]
     # "custom:empty" not included because it's empty
+
+
+
+def test_acquire_lease_prefers_unleased_entry(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "openrouter": [
+                    {
+                        "id": "cred-1",
+                        "label": "primary",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": "***",
+                    },
+                    {
+                        "id": "cred-2",
+                        "label": "secondary",
+                        "auth_type": "api_key",
+                        "priority": 1,
+                        "source": "manual",
+                        "access_token": "***",
+                    },
+                ]
+            },
+        },
+    )
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("openrouter")
+    first = pool.acquire_lease()
+    second = pool.acquire_lease()
+
+    assert first == "cred-1"
+    assert second == "cred-2"
+    assert pool.active_lease_count("cred-1") == 1
+    assert pool.active_lease_count("cred-2") == 1
+
+
+
+def test_release_lease_decrements_counter(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "openrouter": [
+                    {
+                        "id": "cred-1",
+                        "label": "primary",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": "***",
+                    }
+                ]
+            },
+        },
+    )
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("openrouter")
+    leased = pool.acquire_lease()
+    assert leased == "cred-1"
+    assert pool.active_lease_count("cred-1") == 1
+
+    pool.release_lease("cred-1")
+    assert pool.active_lease_count("cred-1") == 0

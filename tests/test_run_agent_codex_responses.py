@@ -338,6 +338,99 @@ def test_run_codex_stream_falls_back_to_create_after_stream_completion_error(mon
     assert response.output[0].content[0].text == "create fallback ok"
 
 
+def _codex_empty_terminal_response():
+    return SimpleNamespace(
+        output=[],
+        output_text="",
+        usage=SimpleNamespace(input_tokens=5, output_tokens=3, total_tokens=8),
+        status="completed",
+        model="gpt-5-codex",
+    )
+
+
+def test_run_codex_stream_backfills_message_output_from_stream_events(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    terminal = _codex_empty_terminal_response()
+    stream_events = [
+        SimpleNamespace(
+            type="response.output_item.done",
+            item=SimpleNamespace(
+                type="message",
+                phase="final_answer",
+                status="completed",
+                content=[SimpleNamespace(type="output_text", text="stream backfilled")],
+            ),
+        ),
+        SimpleNamespace(type="response.output_text.delta", delta="stream backfilled"),
+    ]
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(
+            stream=lambda **kwargs: _FakeResponsesStream(final_response=terminal, events=stream_events),
+            create=lambda **kwargs: _codex_message_response("unused"),
+        )
+    )
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+    assistant_message, finish_reason = agent._normalize_codex_response(response)
+
+    assert finish_reason == "stop"
+    assert assistant_message.content == "stream backfilled"
+    assert response.output[0].content[0].text == "stream backfilled"
+
+
+def test_run_codex_stream_backfills_tool_calls_from_stream_events(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    terminal = _codex_empty_terminal_response()
+    stream_events = [
+        SimpleNamespace(
+            type="response.output_item.done",
+            item=SimpleNamespace(
+                type="function_call",
+                id="fc_1",
+                call_id="call_1",
+                name="terminal",
+                arguments="{}",
+            ),
+        ),
+    ]
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(
+            stream=lambda **kwargs: _FakeResponsesStream(final_response=terminal, events=stream_events),
+            create=lambda **kwargs: _codex_message_response("unused"),
+        )
+    )
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+    assistant_message, finish_reason = agent._normalize_codex_response(response)
+
+    assert finish_reason == "tool_calls"
+    assert len(assistant_message.tool_calls) == 1
+    assert assistant_message.tool_calls[0].call_id == "call_1"
+    assert assistant_message.tool_calls[0].function.name == "terminal"
+
+
+def test_run_codex_stream_backfills_text_only_stream_events(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    terminal = _codex_empty_terminal_response()
+    stream_events = [SimpleNamespace(type="response.output_text.delta", delta="stream text only")]
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(
+            stream=lambda **kwargs: _FakeResponsesStream(final_response=terminal, events=stream_events),
+            create=lambda **kwargs: _codex_message_response("unused"),
+        )
+    )
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+    assistant_message, finish_reason = agent._normalize_codex_response(response)
+
+    assert finish_reason == "stop"
+    assert assistant_message.content == "stream text only"
+    assert response.output_text == "stream text only"
+
+
 def test_run_codex_stream_fallback_parses_create_stream_events(monkeypatch):
     agent = _build_agent(monkeypatch)
     calls = {"stream": 0, "create": 0}

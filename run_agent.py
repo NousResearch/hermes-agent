@@ -3460,7 +3460,6 @@ class AIAgent:
                 response.output = output
             else:
                 raise RuntimeError("Responses API returned no output items")
-
         response_status = getattr(response, "status", None)
         if isinstance(response_status, str):
             response_status = response_status.strip().lower()
@@ -3474,6 +3473,25 @@ class AIAgent:
             else:
                 error_msg = str(error_obj) if error_obj else f"Responses API returned status '{response_status}'"
             raise RuntimeError(error_msg)
+
+        output = getattr(response, "output", None)
+        if not isinstance(output, list) or not output:
+            # The Codex backend can return empty output when the answer was
+            # delivered entirely via stream events. Check output_text as a
+            # last-resort fallback before raising.
+            out_text = getattr(response, "output_text", None)
+            if isinstance(out_text, str) and out_text.strip():
+                logger.debug(
+                    "Codex response has empty output but output_text is present (%d chars); "
+                    "synthesizing output item.", len(out_text.strip()),
+                )
+                output = [SimpleNamespace(
+                    type="message", role="assistant", status="completed",
+                    content=[SimpleNamespace(type="output_text", text=out_text.strip())],
+                )]
+                response.output = output
+            else:
+                raise RuntimeError("Responses API returned no output items")
 
         content_parts: List[str] = []
         reasoning_parts: List[str] = []
@@ -3874,6 +3892,10 @@ class AIAgent:
     def _close_request_openai_client(self, client: Any, *, reason: str) -> None:
         self._close_openai_client(client, reason=reason, shared=False)
 
+    @staticmethod
+    def _is_responses_output_text_delta_event(event_type: Any) -> bool:
+        return isinstance(event_type, str) and "output_text.delta" in event_type
+
     def _run_codex_stream(self, api_kwargs: dict, client: Any = None, on_first_delta: callable = None):
         """Execute one streaming Responses API request and return the final response."""
         import httpx as _httpx
@@ -3896,7 +3918,7 @@ class AIAgent:
                             break
                         event_type = getattr(event, "type", "")
                         # Fire callbacks on text content deltas (suppress during tool calls)
-                        if "output_text.delta" in event_type or event_type == "response.output_text.delta":
+                        if self._is_responses_output_text_delta_event(event_type):
                             delta_text = getattr(event, "delta", "")
                             if delta_text:
                                 self._codex_streamed_text_parts.append(delta_text)
@@ -4019,21 +4041,18 @@ class AIAgent:
                 event_type = getattr(event, "type", None)
                 if not event_type and isinstance(event, dict):
                     event_type = event.get("type")
-
-                # Collect output items and text deltas for backfill
                 if event_type == "response.output_item.done":
                     done_item = getattr(event, "item", None)
                     if done_item is None and isinstance(event, dict):
                         done_item = event.get("item")
                     if done_item is not None:
                         collected_output_items.append(done_item)
-                elif event_type in ("response.output_text.delta",):
+                elif self._is_responses_output_text_delta_event(event_type):
                     delta = getattr(event, "delta", "")
                     if not delta and isinstance(event, dict):
                         delta = event.get("delta", "")
                     if delta:
                         collected_text_deltas.append(delta)
-
                 if event_type not in {"response.completed", "response.incomplete", "response.failed"}:
                     continue
 

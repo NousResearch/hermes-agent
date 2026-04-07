@@ -294,6 +294,24 @@ DEFAULT_CONFIG = {
         "summary_provider": "auto",
         "summary_base_url": None,
     },
+    # Session continuity — auto-generate a summary on exit and offer resume prompts.
+    "continuity": {
+        "enabled": True,          # Generate exit summaries and offer resume prompt
+        "recency_hours": 4,       # Only show prompt for sessions within this window
+        "min_messages": 5,        # Minimum message count to generate a summary
+        "show_prompt": True,      # Show "Resume?" prompt on startup (TTY only)
+    },
+
+    # Session startup behavior.
+    "session": {
+        # Inject previous session summary into new prompts (disabled by default).
+        "inject_previous_summary": False,
+        # Continuity lineage scope in CLI mode:
+        #   directory_root (default): git root if available, otherwise cwd; includes descendants
+        #   exact_cwd: only exact working-directory matches
+        "lineage_scope": "directory_root",
+    },
+
     "smart_model_routing": {
         "enabled": False,
         "max_simple_chars": 160,

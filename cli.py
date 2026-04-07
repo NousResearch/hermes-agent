@@ -1208,6 +1208,8 @@ class HermesCLI:
         resume: str = None,
         checkpoints: bool = False,
         pass_session_id: bool = False,
+        last_session_summary: str = None,
+        last_session_time: float = None,
     ):
         """
         Initialize the Hermes CLI.
@@ -1223,6 +1225,8 @@ class HermesCLI:
             compact: Use compact display mode
             resume: Session ID to resume (restores conversation history from SQLite)
             pass_session_id: Include the session ID in the agent's system prompt
+            last_session_summary: Brief summary of previous session for continuity injection
+            last_session_time: Unix timestamp of when the previous session started
         """
         # Initialize Rich console
         self.console = Console()
@@ -1344,6 +1348,8 @@ class HermesCLI:
         self.checkpoints_enabled = checkpoints or cp_cfg.get("enabled", False)
         self.checkpoint_max_snapshots = cp_cfg.get("max_snapshots", 50)
         self.pass_session_id = pass_session_id
+        self._last_session_summary = last_session_summary
+        self._last_session_time = last_session_time
         
         # Ephemeral system prompt: env var takes precedence, then config
         self.system_prompt = (
@@ -1455,6 +1461,10 @@ class HermesCLI:
 
         # Status bar visibility (toggled via /statusbar)
         self._status_bar_visible = True
+
+        # Workspace footer cache (directory/repo/branch line below input)
+        self._workspace_footer_cache: Optional[Dict[str, Any]] = None
+        self._workspace_footer_last_refresh: float = 0.0
 
         # Background task tracking: {task_id: threading.Thread}
         self._background_tasks: Dict[str, threading.Thread] = {}
@@ -1682,6 +1692,128 @@ class HermesCLI:
             return frags
         except Exception:
             return [("class:status-bar", f" {self._build_status_bar_text()} ")]
+
+    def _workspace_path_label(self, path: str, max_len: int = 56) -> str:
+        """Render a compact cwd label with home-dir shortening and truncation."""
+        if not path:
+            return "?"
+        try:
+            home = str(Path.home())
+            if path.startswith(home):
+                path = "~" + path[len(home):]
+        except Exception:
+            pass
+        if len(path) <= max_len:
+            return path
+        keep = max(12, max_len // 2)
+        return f"{path[:keep]}…{path[-keep:]}"
+
+    def _detect_github_slug(self, remote_url: str) -> Optional[str]:
+        """Extract owner/repo slug from a GitHub remote URL when possible."""
+        if not remote_url:
+            return None
+        raw = remote_url.strip()
+        if "github.com" not in raw:
+            return None
+        suffix = raw.split("github.com", 1)[1].lstrip(":/")
+        if suffix.endswith(".git"):
+            suffix = suffix[:-4]
+        parts = [p for p in suffix.split("/") if p]
+        if len(parts) < 2:
+            return None
+        return f"{parts[0]}/{parts[1]}"
+
+    def _get_workspace_footer_snapshot(self, refresh_interval: float = 2.0) -> Dict[str, Any]:
+        """Return cached cwd/git context for the footer under the input area."""
+        import subprocess as _subprocess
+        import time as _time
+
+        now = _time.monotonic()
+        cwd = os.getcwd()
+        cache = self._workspace_footer_cache
+        if (
+            cache
+            and cache.get("cwd") == cwd
+            and (now - self._workspace_footer_last_refresh) < refresh_interval
+        ):
+            return cache
+
+        snapshot: Dict[str, Any] = {
+            "cwd": cwd,
+            "path_label": self._workspace_path_label(cwd),
+            "is_git": False,
+            "branch": None,
+            "github_slug": None,
+        }
+
+        try:
+            inside = _subprocess.run(
+                ["git", "rev-parse", "--is-inside-work-tree"],
+                capture_output=True,
+                text=True,
+                timeout=1.5,
+                cwd=cwd,
+            )
+            if inside.returncode == 0 and inside.stdout.strip().lower() == "true":
+                snapshot["is_git"] = True
+
+                branch = _subprocess.run(
+                    ["git", "branch", "--show-current"],
+                    capture_output=True,
+                    text=True,
+                    timeout=1.5,
+                    cwd=cwd,
+                )
+                branch_name = branch.stdout.strip()
+                if not branch_name:
+                    head = _subprocess.run(
+                        ["git", "rev-parse", "--short", "HEAD"],
+                        capture_output=True,
+                        text=True,
+                        timeout=1.5,
+                        cwd=cwd,
+                    )
+                    if head.returncode == 0 and head.stdout.strip():
+                        branch_name = f"detached@{head.stdout.strip()}"
+                snapshot["branch"] = branch_name or None
+
+                remote = _subprocess.run(
+                    ["git", "config", "--get", "remote.origin.url"],
+                    capture_output=True,
+                    text=True,
+                    timeout=1.5,
+                    cwd=cwd,
+                )
+                if remote.returncode == 0 and remote.stdout.strip():
+                    snapshot["github_slug"] = self._detect_github_slug(remote.stdout.strip())
+        except Exception:
+            pass
+
+        self._workspace_footer_cache = snapshot
+        self._workspace_footer_last_refresh = now
+        return snapshot
+
+    def _get_workspace_footer_fragments(self):
+        """Styled fragments for footer under input with cwd + GitHub context."""
+        snap = self._get_workspace_footer_snapshot()
+        frags = [
+            ("class:workspace-bar", " 📁 "),
+            ("class:workspace-path", snap.get("path_label") or "?"),
+        ]
+        if snap.get("github_slug") and snap.get("branch"):
+            frags.extend([
+                ("class:workspace-dim", "  ·  "),
+                ("class:workspace-strong", snap["github_slug"]),
+                ("class:workspace-dim", "  ·  ⎇ "),
+                ("class:workspace-strong", snap["branch"]),
+            ])
+        elif snap.get("is_git") and snap.get("branch"):
+            frags.extend([
+                ("class:workspace-dim", "  ·  git  ·  ⎇ "),
+                ("class:workspace-strong", snap["branch"]),
+            ])
+        frags.append(("class:workspace-bar", " "))
+        return frags
 
     def _normalize_model_for_provider(self, resolved_provider: str) -> bool:
         """Normalize provider-specific model IDs and routing."""
@@ -2347,6 +2479,12 @@ class HermesCLI:
                 checkpoints_enabled=self.checkpoints_enabled,
                 checkpoint_max_snapshots=self.checkpoint_max_snapshots,
                 pass_session_id=self.pass_session_id,
+                last_session_summary=(
+                    self._last_session_summary if not self._resumed else None
+                ),
+                last_session_time=(
+                    self._last_session_time if not self._resumed else None
+                ),
                 tool_progress_callback=self._on_tool_progress,
                 tool_start_callback=self._on_tool_start if self._inline_diffs_enabled else None,
                 tool_complete_callback=self._on_tool_complete if self._inline_diffs_enabled else None,
@@ -3299,7 +3437,16 @@ class HermesCLI:
             except (Exception, KeyboardInterrupt):
                 pass
 
+        # Generate exit summary before ending the old session
         old_session_id = self.session_id
+        if self.conversation_history and len(self.conversation_history) > 4:
+            try:
+                exit_summary = self._generate_exit_summary()
+                if exit_summary and self._session_db and old_session_id:
+                    self._session_db.update_exit_summary(old_session_id, exit_summary)
+            except Exception:
+                pass
+
         if self._session_db and old_session_id:
             try:
                 self._session_db.end_session(old_session_id, "new_session")
@@ -3339,6 +3486,7 @@ class HermesCLI:
                             "max_iterations": self.max_turns,
                             "reasoning_config": self.reasoning_config,
                         },
+                        cwd=os.getcwd(),
                     )
                 except Exception:
                     pass
@@ -6723,6 +6871,47 @@ class HermesCLI:
             if tts_thread is not None and tts_thread.is_alive():
                 tts_thread.join(timeout=5)
     
+    def _generate_exit_summary(self) -> Optional[str]:
+        """Generate a brief exit summary for session continuity.
+
+        Uses the auxiliary LLM to summarize the conversation in 2-4 sentences.
+        Returns None if the conversation is too short or the LLM call fails.
+        """
+        if len(self.conversation_history) < 5:
+            return None
+        try:
+            from agent.auxiliary_client import call_llm
+            from agent.context_compressor import serialize_turns_for_summary
+
+            serialized = serialize_turns_for_summary(
+                self.conversation_history, max_turns=30, max_content_chars=1500,
+            )
+            if not serialized.strip():
+                return None
+
+            response = call_llm(
+                task="exit_summary",
+                messages=[{
+                    "role": "user",
+                    "content": (
+                        "Summarize this conversation in 2-4 sentences for continuity "
+                        "into the next session. Include: what the user was working on, "
+                        "key outcomes, and any unfinished work. Be specific (file names, "
+                        "error messages, decisions) but extremely concise.\n\n"
+                        f"CONVERSATION:\n{serialized}"
+                    ),
+                }],
+                max_tokens=300,
+                timeout=5.0,
+            )
+            if response and hasattr(response, "choices") and response.choices:
+                content = response.choices[0].message.content
+                if content and content.strip():
+                    return content.strip()
+        except Exception:
+            logger.debug("Exit summary generation failed", exc_info=True)
+        return None
+
     def _print_exit_summary(self):
         """Print session resume info on exit, similar to Claude Code."""
         print()
@@ -6905,6 +7094,7 @@ class HermesCLI:
         image_bar,
         input_area,
         input_rule_bot,
+        workspace_footer,
         voice_status_bar,
         completions_menu,
     ) -> list:
@@ -6928,6 +7118,7 @@ class HermesCLI:
             image_bar,
             input_area,
             input_rule_bot,
+            workspace_footer,
             voice_status_bar,
             completions_menu,
         ]
@@ -7968,6 +8159,11 @@ class HermesCLI:
             filter=Condition(lambda: cli_ref._status_bar_visible),
         )
 
+        workspace_footer = Window(
+            content=FormattedTextControl(lambda: cli_ref._get_workspace_footer_fragments()),
+            height=1,
+        )
+
         # Allow wrapper CLIs to register extra keybindings.
         self._register_extra_tui_keybindings(kb, input_area=input_area)
 
@@ -7990,6 +8186,7 @@ class HermesCLI:
                     image_bar=image_bar,
                     input_area=input_area,
                     input_rule_bot=input_rule_bot,
+                    workspace_footer=workspace_footer,
                     voice_status_bar=voice_status_bar,
                     completions_menu=completions_menu,
                 )
@@ -8014,6 +8211,11 @@ class HermesCLI:
             'input-rule': '#CD7F32',
             # Clipboard image attachment badges
             'image-badge': '#87CEEB bold',
+            # Workspace footer (below input)
+            'workspace-bar': '#6E6A66',
+            'workspace-path': '#BDB7AA',
+            'workspace-dim': '#6E6A66',
+            'workspace-strong': '#87CEEB',
             'completion-menu': 'bg:#1a1a2e #FFF8DC',
             'completion-menu.completion': 'bg:#1a1a2e #FFF8DC',
             'completion-menu.completion.current': 'bg:#333355 #FFD700',
@@ -8363,6 +8565,14 @@ class HermesCLI:
             set_sudo_password_callback(None)
             set_approval_callback(None)
             set_secret_capture_callback(None)
+            # Generate exit summary for session continuity
+            if self.agent and self.conversation_history and len(self.conversation_history) > 4:
+                try:
+                    exit_summary = self._generate_exit_summary()
+                    if exit_summary and hasattr(self, '_session_db') and self._session_db:
+                        self._session_db.update_exit_summary(self.session_id, exit_summary)
+                except Exception:
+                    pass
             # Close session in SQLite
             if hasattr(self, '_session_db') and self._session_db and self.agent:
                 try:
@@ -8415,10 +8625,12 @@ def main(
     w: bool = False,
     checkpoints: bool = False,
     pass_session_id: bool = False,
+    last_session_summary: str = None,
+    last_session_time: float = None,
 ):
     """
     Hermes Agent CLI - Interactive AI Assistant
-    
+
     Args:
         query: Single query to execute (then exit). Alias: -q
         q: Shorthand for --query
@@ -8522,6 +8734,8 @@ def main(
         resume=resume,
         checkpoints=checkpoints,
         pass_session_id=pass_session_id,
+        last_session_summary=last_session_summary,
+        last_session_time=last_session_time,
     )
 
     if parsed_skills:

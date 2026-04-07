@@ -10,6 +10,7 @@ without overriding run().
 from __future__ import annotations
 
 import importlib
+import subprocess
 import sys
 from unittest.mock import MagicMock, patch
 
@@ -84,6 +85,7 @@ class TestExtensionHookDefaults:
             image_bar="image-bar",
             input_area="input-area",
             input_rule_bot="bottom-rule",
+            workspace_footer="workspace-footer",
             voice_status_bar="voice-status",
             completions_menu="completions-menu",
         )
@@ -91,7 +93,7 @@ class TestExtensionHookDefaults:
         assert children[1:] == [
             "sudo", "secret", "approval", "clarify", "spinner",
             "spacer", "status", "top-rule", "image-bar", "input-area",
-            "bottom-rule", "voice-status", "completions-menu",
+            "bottom-rule", "workspace-footer", "voice-status", "completions-menu",
         ]
 
 
@@ -113,6 +115,7 @@ class TestExtensionHookSubclass:
             image_bar="image-bar",
             input_area="input-area",
             input_rule_bot="bottom-rule",
+            workspace_footer="workspace-footer",
             voice_status_bar="voice-status",
             completions_menu="completions-menu",
         )
@@ -136,3 +139,30 @@ class TestExtensionHookSubclass:
         cli._register_extra_tui_keybindings = _custom_hook
         cli._register_extra_tui_keybindings(kb, input_area=None)
         assert len(kb.bindings) == 1
+
+
+class TestWorkspaceFooter:
+    def test_workspace_footer_shows_github_repo_and_branch(self, monkeypatch):
+        cli = _make_cli()
+
+        monkeypatch.setattr("os.getcwd", lambda: "/Users/test/work/hermes-agent")
+
+        def _fake_run(cmd, capture_output, text, timeout, cwd):
+            if cmd == ["git", "rev-parse", "--is-inside-work-tree"]:
+                return subprocess.CompletedProcess(cmd, 0, stdout="true\n", stderr="")
+            if cmd == ["git", "branch", "--show-current"]:
+                return subprocess.CompletedProcess(cmd, 0, stdout="feat/session-continuity\n", stderr="")
+            if cmd == ["git", "config", "--get", "remote.origin.url"]:
+                return subprocess.CompletedProcess(cmd, 0, stdout="git@github.com:0xNyk/hermes-agent.git\n", stderr="")
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="")
+
+        monkeypatch.setattr("subprocess.run", _fake_run)
+        cli._workspace_footer_cache = None
+        cli._workspace_footer_last_refresh = 0.0
+
+        fragments = cli._get_workspace_footer_fragments()
+        rendered = "".join(text for _, text in fragments)
+
+        assert "/Users/test/work/hermes-agent" in rendered
+        assert "0xNyk/hermes-agent" in rendered
+        assert "feat/session-continuity" in rendered

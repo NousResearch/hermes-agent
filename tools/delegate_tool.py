@@ -45,7 +45,12 @@ def check_delegate_requirements() -> bool:
     return True
 
 
-def _build_child_system_prompt(goal: str, context: Optional[str] = None) -> str:
+def _build_child_system_prompt(
+    goal: str,
+    context: Optional[str] = None,
+    *,
+    workspace_path: Optional[str] = None,
+) -> str:
     """Build a focused system prompt for a child agent."""
     parts = [
         "You are a focused subagent working on a specific delegated task.",
@@ -54,6 +59,12 @@ def _build_child_system_prompt(goal: str, context: Optional[str] = None) -> str:
     ]
     if context and context.strip():
         parts.append(f"\nCONTEXT:\n{context}")
+    if workspace_path and str(workspace_path).strip():
+        parts.append(
+            "\nWORKSPACE PATH:\n"
+            f"{workspace_path}\n"
+            "Use this exact path for local repository/workdir operations unless the task explicitly says otherwise."
+        )
     parts.append(
         "\nComplete this task using the tools available to you. "
         "When finished, provide a clear, concise summary of:\n"
@@ -61,10 +72,37 @@ def _build_child_system_prompt(goal: str, context: Optional[str] = None) -> str:
         "- What you found or accomplished\n"
         "- Any files you created or modified\n"
         "- Any issues encountered\n\n"
+        "Important workspace rule: Never assume a repository lives at /workspace/... or any other container-style path unless the task/context explicitly gives that path. "
+        "If no exact local path is provided, discover it first before issuing git/workdir-specific commands.\n\n"
         "Be thorough but concise -- your response is returned to the "
         "parent agent as a summary."
     )
     return "\n".join(parts)
+
+
+def _resolve_workspace_hint(parent_agent) -> Optional[str]:
+    """Best-effort local workspace hint for child prompts.
+
+    We only inject a path when we have a concrete absolute directory. This avoids
+    teaching subagents a fake container path while still helping them avoid
+    guessing `/workspace/...` for local repo tasks.
+    """
+    candidates = [
+        os.getenv("TERMINAL_CWD"),
+        getattr(getattr(parent_agent, "_subdirectory_hints", None), "working_dir", None),
+        getattr(parent_agent, "terminal_cwd", None),
+        getattr(parent_agent, "cwd", None),
+    ]
+    for candidate in candidates:
+        if not candidate:
+            continue
+        try:
+            text = os.path.abspath(os.path.expanduser(str(candidate)))
+        except Exception:
+            continue
+        if os.path.isabs(text) and os.path.isdir(text):
+            return text
+    return None
 
 
 def _strip_blocked_tools(toolsets: List[str]) -> List[str]:
@@ -210,7 +248,8 @@ def _build_child_agent(
     else:
         child_toolsets = _strip_blocked_tools(DEFAULT_TOOLSETS)
 
-    child_prompt = _build_child_system_prompt(goal, context)
+    workspace_hint = _resolve_workspace_hint(parent_agent)
+    child_prompt = _build_child_system_prompt(goal, context, workspace_path=workspace_hint)
     # Extract parent's API key so subagents inherit auth (e.g. Nous Portal).
     parent_api_key = getattr(parent_agent, "api_key", None)
     if (not parent_api_key) and hasattr(parent_agent, "_client_kwargs"):

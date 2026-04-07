@@ -383,6 +383,19 @@ To find a topic's `thread_id`, open the topic in Telegram Web or Desktop and loo
 - **Privacy policy:** Telegram now requires bots to have a privacy policy. Set one via BotFather with `/setprivacy_policy`, or Telegram may auto-generate a placeholder. This is particularly important if your bot is public-facing.
 - **Message streaming:** Bot API 9.x added support for streaming long responses, which can improve perceived latency for lengthy agent replies.
 
+## Interactive Model Picker
+
+When you send `/model` with no arguments in a Telegram chat, Hermes shows an interactive inline keyboard for switching models:
+
+1. **Provider selection** — buttons showing each available provider with model counts (e.g., "OpenAI (15)", "✓ Anthropic (12)" for the current provider).
+2. **Model selection** — paginated model list with **Prev**/**Next** navigation, a **Back** button to return to providers, and **Cancel**.
+
+The current model and provider are displayed at the top. All navigation happens by editing the same message in-place (no chat clutter).
+
+:::tip
+If you know the exact model name, type `/model <name>` directly to skip the picker. You can also type `/model <name> --global` to persist the change across sessions.
+:::
+
 ## Webhook Mode
 
 By default, the Telegram adapter connects via **long polling** — the gateway makes outbound connections to Telegram's servers. This works everywhere but keeps a persistent connection open.

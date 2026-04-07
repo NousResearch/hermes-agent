@@ -348,17 +348,31 @@ class TestUnifiedCronjobTool:
         result = json.loads(
             cronjob(
                 action="create",
-                skill="blogwatcher",
+                skills=["blogwatcher"],
                 prompt="Check the configured feeds and summarize anything new.",
                 schedule="every 1h",
                 name="Morning feeds",
             )
         )
         assert result["success"] is True
-        assert result["skill"] == "blogwatcher"
+        assert result["skills"] == ["blogwatcher"]
 
         listing = json.loads(cronjob(action="list"))
-        assert listing["jobs"][0]["skill"] == "blogwatcher"
+        assert listing["jobs"][0]["skills"] == ["blogwatcher"]
+
+    def test_create_skill_backed_job_legacy_param(self):
+        """Backward compat: passing skill= (singular) still works."""
+        result = json.loads(
+            cronjob(
+                action="create",
+                skill="blogwatcher",
+                prompt="Check feeds.",
+                schedule="every 1h",
+                name="Legacy skill param",
+            )
+        )
+        assert result["success"] is True
+        assert result["skills"] == ["blogwatcher"]
 
     def test_create_multi_skill_job(self):
         result = json.loads(
@@ -402,4 +416,3 @@ class TestUnifiedCronjobTool:
         )
         assert updated["success"] is True
         assert updated["job"]["skills"] == []
-        assert updated["job"]["skill"] is None

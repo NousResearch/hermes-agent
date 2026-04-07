@@ -158,7 +158,6 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
     result = {
         "job_id": job["id"],
         "name": job["name"],
-        "skill": skills[0] if skills else None,
         "skills": skills,
         "prompt_preview": prompt[:100] + "..." if len(prompt) > 100 else prompt,
         "model": job.get("model"),
@@ -189,7 +188,6 @@ def cronjob(
     repeat: Optional[int] = None,
     deliver: Optional[str] = None,
     include_disabled: bool = False,
-    skill: Optional[str] = None,
     skills: Optional[List[str]] = None,
     model: Optional[str] = None,
     provider: Optional[str] = None,
@@ -197,6 +195,8 @@ def cronjob(
     reason: Optional[str] = None,
     script: Optional[str] = None,
     task_id: str = None,
+    # Deprecated — kept for backward compat with callers still passing skill=
+    skill: Optional[str] = None,
 ) -> str:
     """Unified cron job management tool."""
     del task_id  # unused but kept for handler signature compatibility
@@ -239,7 +239,6 @@ def cronjob(
                     "success": True,
                     "job_id": job["id"],
                     "name": job["name"],
-                    "skill": job.get("skill"),
                     "skills": job.get("skills", []),
                     "schedule": job["schedule_display"],
                     "repeat": _repeat_display(job),
@@ -392,7 +391,7 @@ Use action='list' to inspect jobs.
 Use action='update', 'pause', 'resume', 'remove', or 'run' to manage an existing job.
 
 Jobs run in a fresh session with no current-chat context, so prompts must be self-contained.
-If skill or skills are provided on create, the future cron run loads those skills in order, then follows the prompt as the task instruction.
+If skills are provided on create, the future cron run loads those skills in order, then follows the prompt as the task instruction.
 On update, passing skills=[] clears attached skills.
 
 If script is provided on create, the referenced Python script runs before each agent turn.
@@ -418,7 +417,7 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
             },
             "prompt": {
                 "type": "string",
-                "description": "For create: the full self-contained prompt. If skill or skills are also provided, this becomes the task instruction paired with those skills."
+                "description": "For create: the full self-contained prompt. If skills are also provided, this becomes the task instruction paired with those skills."
             },
             "schedule": {
                 "type": "string",
@@ -452,14 +451,10 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
                 "type": "boolean",
                 "description": "For list: include paused/completed jobs"
             },
-            "skill": {
-                "type": "string",
-                "description": "Optional single skill name to load before executing the cron prompt"
-            },
             "skills": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": "Optional ordered list of skills to load before executing the cron prompt. On update, pass an empty array to clear attached skills."
+                "description": "Optional ordered list of skill names to load before executing the cron prompt. On update, pass an empty array to clear attached skills."
             },
             "reason": {
                 "type": "string",
@@ -511,7 +506,6 @@ registry.register(
         repeat=args.get("repeat"),
         deliver=args.get("deliver"),
         include_disabled=args.get("include_disabled", False),
-        skill=args.get("skill"),
         skills=args.get("skills"),
         model=args.get("model"),
         provider=args.get("provider"),

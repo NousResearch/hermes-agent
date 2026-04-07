@@ -55,6 +55,7 @@ _modules = [
     "tools.mixture_of_agents_tool",
     "tools.image_generation_tool",
     "tools.skills_tool",
+    "tools.skill_manager_tool",
     "tools.browser_tool",
     "tools.cronjob_tools",
     "tools.rl_training_tool",
@@ -67,7 +68,7 @@ _modules = [
     "tools.delegate_tool",
     "tools.process_registry",
     "tools.send_message_tool",
-    "tools.honcho_tools",
+    # "tools.honcho_tools",  # Removed — Honcho is now a memory provider plugin
     "tools.homeassistant_tool",
 ]
 ```

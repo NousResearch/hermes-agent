@@ -88,9 +88,9 @@ Platform toolsets define the complete tool configuration for a deployment target
 
 | Toolset | Differences from `hermes-cli` |
 |---------|-------------------------------|
-| `hermes-cli` | Full toolset — all 39 tools including `clarify`. The default for interactive CLI sessions. |
+| `hermes-cli` | Full toolset — all 38 tools including `clarify`. The default for interactive CLI sessions. |
 | `hermes-acp` | Drops `clarify`, `cronjob`, `image_generate`, `mixture_of_agents`, `send_message`, `text_to_speech`, homeassistant tools. Focused on coding tasks in IDE context. |
-| `hermes-api-server` | Drops `clarify` and `send_message`. Adds everything else — suitable for programmatic access where user interaction isn't possible. |
+| `hermes-api-server` | Drops `clarify`, `send_message`, and `text_to_speech`. Adds everything else — suitable for programmatic access where user interaction isn't possible. |
 | `hermes-telegram` | Same as `hermes-cli`. |
 | `hermes-discord` | Same as `hermes-cli`. |
 | `hermes-slack` | Same as `hermes-cli`. |

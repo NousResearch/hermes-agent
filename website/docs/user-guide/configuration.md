@@ -574,7 +574,7 @@ auxiliary:
     model: ""                  # e.g. "google/gemini-2.5-flash"
     base_url: ""
     api_key: ""
-    timeout: 30                # seconds
+    timeout: 360               # seconds (6min) — per-attempt LLM summarization
 
   # Dangerous command approval classifier
   approval:
@@ -622,7 +622,7 @@ auxiliary:
 ```
 
 :::tip
-Each auxiliary task has a configurable `timeout` (in seconds). Defaults: vision 30s, web_extract 30s, approval 30s, compression 120s. Increase these if you use slow local models for auxiliary tasks. Vision also has a separate `download_timeout` (default 30s) for the HTTP image download — increase this for slow connections or self-hosted image servers.
+Each auxiliary task has a configurable `timeout` (in seconds). Defaults: vision 30s, web_extract 360s, approval 30s, compression 120s. Increase these if you use slow local models for auxiliary tasks. Vision also has a separate `download_timeout` (default 30s) for the HTTP image download — increase this for slow connections or self-hosted image servers.
 :::
 
 :::info
@@ -804,29 +804,15 @@ display:
   tool_progress: all      # off | new | all | verbose
   tool_progress_command: false  # Enable /verbose slash command in messaging gateway
   skin: default           # Built-in or custom CLI skin (see user-guide/features/skins)
-  theme_mode: auto        # auto | light | dark — color scheme for skin-aware rendering
   personality: "kawaii"  # Legacy cosmetic field still surfaced in some summaries
   compact: false          # Compact output mode (less whitespace)
   resume_display: full    # full (show previous messages on resume) | minimal (one-liner only)
   bell_on_complete: false # Play terminal bell when agent finishes (great for long tasks)
   show_reasoning: false   # Show model reasoning/thinking above each response (toggle with /reasoning show|hide)
   streaming: false        # Stream tokens to terminal as they arrive (real-time output)
-  background_process_notifications: all  # all | result | error | off (gateway only)
   show_cost: false        # Show estimated $ cost in the CLI status bar
   tool_preview_length: 0  # Max chars for tool call previews (0 = no limit, show full paths/commands)
 ```
-
-### Theme mode
-
-The `theme_mode` setting controls whether skins render in light or dark mode:
-
-| Mode | Behavior |
-|------|----------|
-| `auto` (default) | Detects your terminal's background color automatically. Falls back to `dark` if detection fails. |
-| `light` | Forces light-mode skin colors. Skins that define a `colors_light` override use those colors instead of the default dark-mode palette. |
-| `dark` | Forces dark-mode skin colors. |
-
-This works with any skin — built-in or custom. Skin authors can provide `colors_light` in their skin definition for optimal light-terminal appearance.
 
 | Mode | What you see |
 |------|-------------|

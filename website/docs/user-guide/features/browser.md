@@ -174,8 +174,8 @@ BROWSERBASE_KEEP_ALIVE=true
 # Examples: 600000 (10min), 1800000 (30min)
 BROWSERBASE_SESSION_TIMEOUT=600000
 
-# Inactivity timeout before auto-cleanup in seconds (default: 300)
-BROWSER_INACTIVITY_TIMEOUT=300
+# Inactivity timeout before auto-cleanup in seconds (default: 120)
+BROWSER_INACTIVITY_TIMEOUT=120
 ```
 
 ### Install agent-browser CLI
@@ -265,7 +265,7 @@ The screenshot is saved persistently and the file path is returned alongside the
 What does the chart on this page show?
 ```
 
-Screenshots are stored in `~/.hermes/browser_screenshots/` and automatically cleaned up after 24 hours.
+Screenshots are stored in `~/.hermes/cache/screenshots/` and automatically cleaned up after 24 hours.
 
 ### `browser_console`
 
@@ -333,7 +333,7 @@ If paid features aren't available on your plan, Hermes automatically falls back 
 ## Session Management
 
 - Each task gets an isolated browser session via Browserbase
-- Sessions are automatically cleaned up after inactivity (default: 5 minutes)
+- Sessions are automatically cleaned up after inactivity (default: 2 minutes)
 - A background thread checks every 30 seconds for stale sessions
 - Emergency cleanup runs on process exit to prevent orphaned sessions
 - Sessions are released via the Browserbase API (`REQUEST_RELEASE` status)

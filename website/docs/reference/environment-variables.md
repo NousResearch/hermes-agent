@@ -39,6 +39,9 @@ All variables go in `~/.hermes/.env`. You can also set them with `hermes config 
 | `KILOCODE_BASE_URL` | Override Kilo Code base URL (default: `https://api.kilo.ai/api/gateway`) |
 | `HF_TOKEN` | Hugging Face token for Inference Providers ([huggingface.co/settings/tokens](https://huggingface.co/settings/tokens)) |
 | `HF_BASE_URL` | Override Hugging Face base URL (default: `https://router.huggingface.co/v1`) |
+| `GOOGLE_API_KEY` | Google AI Studio API key ([aistudio.google.com/app/apikey](https://aistudio.google.com/app/apikey)) |
+| `GEMINI_API_KEY` | Alias for `GOOGLE_API_KEY` |
+| `GEMINI_BASE_URL` | Override Google AI Studio base URL |
 | `ANTHROPIC_API_KEY` | Anthropic Console API key ([console.anthropic.com](https://console.anthropic.com/)) |
 | `ANTHROPIC_TOKEN` | Manual or legacy Anthropic OAuth/setup-token override |
 | `DASHSCOPE_API_KEY` | Alibaba Cloud DashScope API key for Qwen models ([modelstudio.console.alibabacloud.com](https://modelstudio.console.alibabacloud.com/)) |
@@ -108,7 +111,7 @@ For native Anthropic auth, Hermes prefers Claude Code's own credential files whe
 | Variable | Description |
 |----------|-------------|
 | `TERMINAL_ENV` | Backend: `local`, `docker`, `ssh`, `singularity`, `modal`, `daytona` |
-| `TERMINAL_DOCKER_IMAGE` | Docker image (default: `python:3.11`) |
+| `TERMINAL_DOCKER_IMAGE` | Docker image (default: `nikolaik/python-nodejs:python3.11-nodejs20`) |
 | `TERMINAL_DOCKER_FORWARD_ENV` | JSON array of env var names to explicitly forward into Docker terminal sessions. Note: skill-declared `required_environment_variables` are forwarded automatically — you only need this for vars not declared by any skill. |
 | `TERMINAL_DOCKER_VOLUMES` | Additional Docker volume mounts (comma-separated `host:container` pairs) |
 | `TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE` | Advanced opt-in: mount the launch cwd into Docker `/workspace` (`true`/`false`, default: `false`) |
@@ -262,7 +265,7 @@ For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETI
 | `HERMES_HUMAN_DELAY_MIN_MS` | Custom delay range minimum (ms) |
 | `HERMES_HUMAN_DELAY_MAX_MS` | Custom delay range maximum (ms) |
 | `HERMES_QUIET` | Suppress non-essential output (`true`/`false`) |
-| `HERMES_API_TIMEOUT` | LLM API call timeout in seconds (default: `900`) |
+| `HERMES_API_TIMEOUT` | LLM API call timeout in seconds (default: `1800`) |
 | `HERMES_EXEC_ASK` | Enable execution approval prompts in gateway mode (`true`/`false`) |
 | `HERMES_ENABLE_PROJECT_PLUGINS` | Enable auto-discovery of repo-local plugins from `./.hermes/plugins/` (`true`/`false`, default: `false`) |
 | `HERMES_BACKGROUND_NOTIFICATIONS` | Background process notification mode in gateway: `all` (default), `result`, `error`, `off` |
@@ -283,7 +286,7 @@ Context compression is configured exclusively through the `compression` section 
 compression:
   enabled: true
   threshold: 0.50
-  summary_model: google/gemini-3-flash-preview
+  summary_model: ""                            # empty = use main configured model
   summary_provider: auto
   summary_base_url: null  # Custom OpenAI-compatible endpoint for summaries
 ```

@@ -31,7 +31,8 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **OpenCode Go** | `OPENCODE_GO_API_KEY` in `~/.hermes/.env` (provider: `opencode-go`) |
 | **DeepSeek** | `DEEPSEEK_API_KEY` in `~/.hermes/.env` (provider: `deepseek`) |
 | **Hugging Face** | `HF_TOKEN` in `~/.hermes/.env` (provider: `huggingface`, aliases: `hf`) |
-| **Custom Endpoint** | `hermes model` (saved in `config.yaml`) or `OPENAI_BASE_URL` + `OPENAI_API_KEY` in `~/.hermes/.env` |
+| **Google / Gemini** | `GOOGLE_API_KEY` (or `GEMINI_API_KEY`) in `~/.hermes/.env` (provider: `gemini`) |
+| **Custom Endpoint** | `hermes model` → choose "Custom endpoint" (saved in `config.yaml`) |
 
 :::tip Model key alias
 In the `model:` config section, you can use either `default:` or `model:` as the key name for your model ID. Both `model: { default: my-model }` and `model: { model: my-model }` work identically.
@@ -219,7 +220,7 @@ model:
 ```
 
 :::warning Legacy env vars
-`OPENAI_BASE_URL` and `LLM_MODEL` in `.env` are **deprecated**. The CLI ignores `LLM_MODEL` entirely (only the gateway reads it). Use `hermes model` or edit `config.yaml` directly — both persist correctly across restarts and Docker containers.
+`OPENAI_BASE_URL` and `LLM_MODEL` in `.env` are **deprecated**. `OPENAI_BASE_URL` is no longer consulted for endpoint resolution — `config.yaml` is the single source of truth. The CLI ignores `LLM_MODEL` entirely (only the gateway reads it as a fallback). Use `hermes model` or edit `config.yaml` directly — both persist correctly across restarts and Docker containers.
 :::
 
 Both approaches persist to `config.yaml`, which is the source of truth for model, provider, and base URL.

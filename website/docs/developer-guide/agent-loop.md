@@ -151,9 +151,11 @@ for each tool_call in response.tool_calls:
 Some tools are intercepted by `run_agent.py` *before* reaching `handle_function_call()`:
 
 | Tool | Why intercepted |
-|------|-----------------|
+|------|--------------------|
 | `todo` | Reads/writes agent-local task state |
 | `memory` | Writes to persistent memory files with character limits |
+| `session_search` | Queries session history via the agent's session DB |
+| `delegate_task` | Spawns subagent(s) with isolated context |
 
 These tools modify agent state directly and return synthetic tool results without going through the registry.
 
@@ -180,7 +182,9 @@ The agent tracks iterations via `IterationBudget`:
 
 - Default: 90 iterations (configurable via `agent.max_turns`)
 - Shared across parent and child agents — a subagent consumes from the parent's budget
-- At 70%+ usage, `_get_budget_warning()` appends a `[BUDGET WARNING: ...]` to the last tool result
+- Two-tier budget pressure via `_get_budget_warning()`:
+  - At 70%+ usage (caution tier): appends `[BUDGET: Iteration X/Y. N iterations left. Start consolidating your work.]` to the last tool result
+  - At 90%+ usage (warning tier): appends `[BUDGET WARNING: Iteration X/Y. Only N iteration(s) left. Provide your final response NOW.]`
 - At 100%, the agent stops and returns a summary of work done
 
 ### Fallback Model

@@ -240,6 +240,25 @@ def camofox_navigate(url: str, task_id: Optional[str] = None) -> str:
                 "Browser is visible via VNC. "
                 "Share this link with the user so they can watch the browser live."
             )
+
+        # Auto-take a compact snapshot so the model can act immediately
+        try:
+            snap_data = _get(
+                f"/tabs/{session['tab_id']}/snapshot",
+                params={"userId": session["user_id"]},
+            )
+            snapshot_text = snap_data.get("snapshot", "")
+            from tools.browser_tool import (
+                SNAPSHOT_SUMMARIZE_THRESHOLD,
+                _truncate_snapshot,
+            )
+            if len(snapshot_text) > SNAPSHOT_SUMMARIZE_THRESHOLD:
+                snapshot_text = _truncate_snapshot(snapshot_text)
+            result["snapshot"] = snapshot_text
+            result["element_count"] = snap_data.get("refsCount", 0)
+        except Exception:
+            pass  # Navigation succeeded; snapshot is a bonus
+
         return json.dumps(result)
     except requests.HTTPError as e:
         return json.dumps({"success": False, "error": f"Navigation failed: {e}"})

@@ -399,7 +399,7 @@ class SupermemoryMemoryProvider(MemoryProvider):
         self._capture_mode = _DEFAULT_CAPTURE_MODE
         self._entity_context = _DEFAULT_ENTITY_CONTEXT
         self._api_timeout = _DEFAULT_API_TIMEOUT
-        self._hermes_home = os.path.expanduser("~/.hermes")
+        self._hermes_home = ""
         self._write_enabled = True
         self._active = False
 
@@ -439,7 +439,8 @@ class SupermemoryMemoryProvider(MemoryProvider):
         _save_supermemory_config(sanitized, hermes_home)
 
     def initialize(self, session_id: str, **kwargs) -> None:
-        self._hermes_home = kwargs.get("hermes_home") or os.path.expanduser("~/.hermes")
+        from hermes_constants import get_hermes_home
+        self._hermes_home = kwargs.get("hermes_home") or str(get_hermes_home())
         self._session_id = session_id
         self._turn_count = 0
         self._config = _load_supermemory_config(self._hermes_home)

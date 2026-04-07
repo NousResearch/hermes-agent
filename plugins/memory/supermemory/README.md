@@ -17,7 +17,7 @@ Or manually:
 
 ```bash
 hermes config set memory.provider supermemory
-echo 'SUPERMEMORY_API_KEY=***' >> ~/.hermes/.env
+echo 'SUPERMEMORY_API_KEY=your-key-here' >> ~/.hermes/.env
 ```
 
 ## Config

@@ -116,6 +116,16 @@ def _codex_incomplete_message_response(text: str):
     )
 
 
+def _codex_output_text_only_response(text: str, *, status: str = "completed"):
+    return SimpleNamespace(
+        output=[],
+        output_text=text,
+        usage=SimpleNamespace(input_tokens=4, output_tokens=2, total_tokens=6),
+        status=status,
+        model="gpt-5-codex",
+    )
+
+
 def _codex_commentary_message_response(text: str):
     return SimpleNamespace(
         output=[
@@ -148,7 +158,8 @@ def _codex_ack_message_response(text: str):
 
 
 class _FakeResponsesStream:
-    def __init__(self, *, final_response=None, final_error=None):
+    def __init__(self, *, events=None, final_response=None, final_error=None):
+        self._events = list(events or [])
         self._final_response = final_response
         self._final_error = final_error
 
@@ -159,7 +170,7 @@ class _FakeResponsesStream:
         return False
 
     def __iter__(self):
-        return iter(())
+        return iter(self._events)
 
     def get_final_response(self):
         if self._final_error is not None:
@@ -374,6 +385,61 @@ def test_run_codex_stream_fallback_parses_create_stream_events(monkeypatch):
     assert response.output[0].content[0].text == "streamed create ok"
 
 
+def test_run_codex_stream_recovers_text_from_stream_deltas_when_final_response_is_empty(monkeypatch):
+    agent = _build_agent(monkeypatch)
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(
+            stream=lambda **kwargs: _FakeResponsesStream(
+                events=[
+                    SimpleNamespace(type="response.output_text.delta", delta="shape "),
+                    SimpleNamespace(type="response.output_text.delta", delta="ok"),
+                ],
+                final_response=SimpleNamespace(
+                    output=[],
+                    output_text="",
+                    status="completed",
+                    usage=SimpleNamespace(input_tokens=4, output_tokens=2, total_tokens=6),
+                    model="gpt-5-codex",
+                ),
+            ),
+            create=lambda **kwargs: _codex_message_response("fallback"),
+        )
+    )
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+    assert response.output == []
+    assert response.output_text == "shape ok"
+
+
+def test_run_codex_create_stream_fallback_recovers_text_from_deltas_when_terminal_response_is_empty(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    create_stream = _FakeCreateStream(
+        [
+            SimpleNamespace(type="response.output_text.delta", delta="stream "),
+            SimpleNamespace(type="response.output_text.delta", delta="ok"),
+            SimpleNamespace(
+                type="response.completed",
+                response=SimpleNamespace(
+                    output=[],
+                    output_text="",
+                    status="completed",
+                    usage=SimpleNamespace(input_tokens=4, output_tokens=2, total_tokens=6),
+                    model="gpt-5-codex",
+                ),
+            ),
+        ]
+    )
+
+    response = agent._run_codex_create_stream_fallback(_codex_request_kwargs(), client=SimpleNamespace(
+        responses=SimpleNamespace(create=lambda **kwargs: create_stream)
+    ))
+
+    assert create_stream.closed is True
+    assert response.output == []
+    assert response.output_text == "stream ok"
+
+
 def test_run_conversation_codex_plain_text(monkeypatch):
     agent = _build_agent(monkeypatch)
     monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: _codex_message_response("OK"))
@@ -384,6 +450,74 @@ def test_run_conversation_codex_plain_text(monkeypatch):
     assert result["final_response"] == "OK"
     assert result["messages"][-1]["role"] == "assistant"
     assert result["messages"][-1]["content"] == "OK"
+
+
+def test_run_conversation_codex_accepts_output_text_without_output_items(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    monkeypatch.setattr(
+        agent,
+        "_interruptible_api_call",
+        lambda api_kwargs: _codex_output_text_only_response("shape ok"),
+    )
+
+    result = agent.run_conversation("Say shape ok")
+
+    assert result["completed"] is True
+    assert result["final_response"] == "shape ok"
+    assert result["messages"][-1]["role"] == "assistant"
+    assert result["messages"][-1]["content"] == "shape ok"
+
+
+def test_run_codex_stream_retries_with_simplified_payload_when_final_response_is_empty(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    calls = {"stream": 0}
+
+    def _fake_stream(**kwargs):
+        calls["stream"] += 1
+        if calls["stream"] == 1:
+            assert kwargs["reasoning"]["effort"] == "high"
+            assert kwargs.get("tools")
+            return _FakeResponsesStream(
+                events=[],
+                final_response=SimpleNamespace(
+                    output=[],
+                    output_text="",
+                    status="completed",
+                    usage=SimpleNamespace(input_tokens=4, output_tokens=0, total_tokens=4),
+                    model="gpt-5-codex",
+                ),
+            )
+        assert kwargs["reasoning"]["effort"] == "medium"
+        assert "tools" not in kwargs
+        return _FakeResponsesStream(
+            events=[
+                SimpleNamespace(type="response.output_text.delta", delta="retry "),
+                SimpleNamespace(type="response.output_text.delta", delta="ok"),
+            ],
+            final_response=SimpleNamespace(
+                output=[],
+                output_text="",
+                status="completed",
+                usage=SimpleNamespace(input_tokens=4, output_tokens=2, total_tokens=6),
+                model="gpt-5-codex",
+            ),
+        )
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(
+            stream=_fake_stream,
+            create=lambda **kwargs: _codex_message_response("fallback"),
+        )
+    )
+
+    kwargs = _codex_request_kwargs()
+    kwargs["tools"] = [{"type": "function", "name": "terminal", "parameters": {"type": "object"}}]
+    kwargs["reasoning"] = {"effort": "high"}
+    response = agent._run_codex_stream(kwargs)
+
+    assert calls["stream"] == 2
+    assert response.output == []
+    assert response.output_text == "retry ok"
 
 
 def test_run_conversation_codex_refreshes_after_401_and_retries(monkeypatch):

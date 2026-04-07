@@ -639,31 +639,47 @@ def resolve_runtime_provider(
             )
 
     if provider == "nous":
-        creds = resolve_nous_runtime_credentials(
-            min_key_ttl_seconds=max(60, int(os.getenv("HERMES_NOUS_MIN_KEY_TTL_SECONDS", "1800"))),
-            timeout_seconds=float(os.getenv("HERMES_NOUS_TIMEOUT_SECONDS", "15")),
-        )
-        return {
-            "provider": "nous",
-            "api_mode": "chat_completions",
-            "base_url": creds.get("base_url", "").rstrip("/"),
-            "api_key": creds.get("api_key", ""),
-            "source": creds.get("source", "portal"),
-            "expires_at": creds.get("expires_at"),
-            "requested_provider": requested_provider,
-        }
+        try:
+            creds = resolve_nous_runtime_credentials(
+                min_key_ttl_seconds=max(60, int(os.getenv("HERMES_NOUS_MIN_KEY_TTL_SECONDS", "1800"))),
+                timeout_seconds=float(os.getenv("HERMES_NOUS_TIMEOUT_SECONDS", "15")),
+            )
+            return {
+                "provider": "nous",
+                "api_mode": "chat_completions",
+                "base_url": creds.get("base_url", "").rstrip("/"),
+                "api_key": creds.get("api_key", ""),
+                "source": creds.get("source", "portal"),
+                "expires_at": creds.get("expires_at"),
+                "requested_provider": requested_provider,
+            }
+        except AuthError:
+            if requested_provider != "auto":
+                raise
+            # Auto-detected Nous but credentials are stale/revoked —
+            # fall through to env-var providers (e.g. OpenRouter).
+            logger.info("Auto-detected Nous provider but credentials failed; "
+                        "falling through to next provider.")
 
     if provider == "openai-codex":
-        creds = resolve_codex_runtime_credentials()
-        return {
-            "provider": "openai-codex",
-            "api_mode": "codex_responses",
-            "base_url": creds.get("base_url", "").rstrip("/"),
-            "api_key": creds.get("api_key", ""),
-            "source": creds.get("source", "hermes-auth-store"),
-            "last_refresh": creds.get("last_refresh"),
-            "requested_provider": requested_provider,
-        }
+        try:
+            creds = resolve_codex_runtime_credentials()
+            return {
+                "provider": "openai-codex",
+                "api_mode": "codex_responses",
+                "base_url": creds.get("base_url", "").rstrip("/"),
+                "api_key": creds.get("api_key", ""),
+                "source": creds.get("source", "hermes-auth-store"),
+                "last_refresh": creds.get("last_refresh"),
+                "requested_provider": requested_provider,
+            }
+        except AuthError:
+            if requested_provider != "auto":
+                raise
+            # Auto-detected Codex but credentials are stale/revoked —
+            # fall through to env-var providers (e.g. OpenRouter).
+            logger.info("Auto-detected Codex provider but credentials failed; "
+                        "falling through to next provider.")
 
     if provider == "copilot-acp":
         creds = resolve_external_process_provider_credentials(provider)

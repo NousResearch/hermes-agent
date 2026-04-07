@@ -90,7 +90,14 @@ from agent.model_metadata import (
 )
 from agent.context_compressor import ContextCompressor
 from agent.subdirectory_hints import SubdirectoryHintTracker
-from agent.prompt_caching import apply_anthropic_cache_control
+from agent.prompt_caching import (
+    apply_anthropic_cache_control,
+    apply_anthropic_cache_control_v2,
+    SystemPromptBlock,
+    build_system_content_blocks,
+    extract_cache_metrics,
+    CacheMetrics,
+)
 from agent.prompt_builder import build_skills_system_prompt, build_context_files_prompt, load_soul_md, TOOL_USE_ENFORCEMENT_GUIDANCE, TOOL_USE_ENFORCEMENT_MODELS, DEVELOPER_ROLE_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE, OPENAI_MODEL_EXECUTION_GUIDANCE
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
 from agent.display import (
@@ -972,6 +979,7 @@ class AIAgent:
         
         # Cached system prompt -- built once per session, only rebuilt on compression
         self._cached_system_prompt: Optional[str] = None
+        self._cached_system_blocks: Optional[List[SystemPromptBlock]] = None
         
         # Filesystem checkpoint manager (transparent — not a tool)
         from tools.checkpoint_manager import CheckpointManager
@@ -2675,38 +2683,29 @@ class AIAgent:
 
 
 
-    def _build_system_prompt(self, system_message: str = None) -> str:
-        """
-        Assemble the full system prompt from all layers.
-        
-        Called once per session (cached on self._cached_system_prompt) and only
-        rebuilt after context compression events. This ensures the system prompt
-        is stable across all turns in a session, maximizing prefix cache hits.
-        """
-        # Layers (in order):
-        #   1. Agent identity — SOUL.md when available, else DEFAULT_AGENT_IDENTITY
-        #   2. User / gateway system prompt (if provided)
-        #   3. Persistent memory (frozen snapshot)
-        #   4. Skills guidance (if skills tools are loaded)
-        #   5. Context files (AGENTS.md, .cursorrules — SOUL.md excluded here when used as identity)
-        #   6. Current date & time (frozen at build time)
-        #   7. Platform-specific formatting hint
+    def _build_system_prompt_blocks(self, system_message: str = None) -> List[SystemPromptBlock]:
+        """Assemble the system prompt as structured blocks with caching tiers.
 
-        # Try SOUL.md as primary identity (unless context files are skipped)
+        Returns three blocks:
+          - static  (1h TTL): identity, tool guidance, skills — cross-session stable
+          - session (5m TTL): memory, context files, system_message — session-stable
+          - ephemeral (none): timestamp, platform hints — changes per-turn
+
+        Called by _build_system_prompt(). Blocks are cached on
+        self._cached_system_blocks for multi-block API delivery.
+        """
+        # ── Block 1: STATIC (identity + guidance + skills) ──────────────
+        static_parts = []
+
         _soul_loaded = False
         if not self.skip_context_files:
             _soul_content = load_soul_md()
             if _soul_content:
-                prompt_parts = [_soul_content]
+                static_parts.append(_soul_content)
                 _soul_loaded = True
 
         if not _soul_loaded:
-            # Fallback to hardcoded identity
-            _ai_peer_name = (
-                None
-                if False
-                else None
-            )
+            _ai_peer_name = None
             if _ai_peer_name:
                 _identity = DEFAULT_AGENT_IDENTITY.replace(
                     "You are Hermes Agent",
@@ -2715,9 +2714,9 @@ class AIAgent:
                 )
             else:
                 _identity = DEFAULT_AGENT_IDENTITY
-            prompt_parts = [_identity]
+            static_parts.append(_identity)
 
-        # Tool-aware behavioral guidance: only inject when the tools are loaded
+        # Tool-aware behavioral guidance
         tool_guidance = []
         if "memory" in self.valid_tool_names:
             tool_guidance.append(MEMORY_GUIDANCE)
@@ -2726,18 +2725,13 @@ class AIAgent:
         if "skill_manage" in self.valid_tool_names:
             tool_guidance.append(SKILLS_GUIDANCE)
         if tool_guidance:
-            prompt_parts.append(" ".join(tool_guidance))
+            static_parts.append(" ".join(tool_guidance))
 
         nous_subscription_prompt = build_nous_subscription_prompt(self.valid_tool_names)
         if nous_subscription_prompt:
-            prompt_parts.append(nous_subscription_prompt)
-        # Tool-use enforcement: tells the model to actually call tools instead
-        # of describing intended actions.  Controlled by config.yaml
-        # agent.tool_use_enforcement:
-        #   "auto" (default) — matches TOOL_USE_ENFORCEMENT_MODELS
-        #   true  — always inject (all models)
-        #   false — never inject
-        #   list  — custom model-name substrings to match
+            static_parts.append(nous_subscription_prompt)
+
+        # Tool-use enforcement
         if self.valid_tool_names:
             _enforce = self._tool_use_enforcement
             _inject = False
@@ -2749,48 +2743,21 @@ class AIAgent:
                 model_lower = (self.model or "").lower()
                 _inject = any(p.lower() in model_lower for p in _enforce if isinstance(p, str))
             else:
-                # "auto" or any unrecognised value — use hardcoded defaults
                 model_lower = (self.model or "").lower()
                 _inject = any(p in model_lower for p in TOOL_USE_ENFORCEMENT_MODELS)
             if _inject:
-                prompt_parts.append(TOOL_USE_ENFORCEMENT_GUIDANCE)
+                static_parts.append(TOOL_USE_ENFORCEMENT_GUIDANCE)
                 _model_lower = (self.model or "").lower()
                 # Google model operational guidance (conciseness, absolute
                 # paths, parallel tool calls, verify-before-edit, etc.)
                 if "gemini" in _model_lower or "gemma" in _model_lower:
-                    prompt_parts.append(GOOGLE_MODEL_OPERATIONAL_GUIDANCE)
+                    static_parts.append(GOOGLE_MODEL_OPERATIONAL_GUIDANCE)
                 # OpenAI GPT/Codex execution discipline (tool persistence,
                 # prerequisite checks, verification, anti-hallucination).
                 if "gpt" in _model_lower or "codex" in _model_lower:
-                    prompt_parts.append(OPENAI_MODEL_EXECUTION_GUIDANCE)
+                    static_parts.append(OPENAI_MODEL_EXECUTION_GUIDANCE)
 
-        # so it can refer the user to them rather than reinventing answers.
-
-        # Note: ephemeral_system_prompt is NOT included here. It's injected at
-        # API-call time only so it stays out of the cached/stored system prompt.
-        if system_message is not None:
-            prompt_parts.append(system_message)
-
-        if self._memory_store:
-            if self._memory_enabled:
-                mem_block = self._memory_store.format_for_system_prompt("memory")
-                if mem_block:
-                    prompt_parts.append(mem_block)
-            # USER.md is always included when enabled.
-            if self._user_profile_enabled:
-                user_block = self._memory_store.format_for_system_prompt("user")
-                if user_block:
-                    prompt_parts.append(user_block)
-
-        # External memory provider system prompt block (additive to built-in)
-        if self._memory_manager:
-            try:
-                _ext_mem_block = self._memory_manager.build_system_prompt()
-                if _ext_mem_block:
-                    prompt_parts.append(_ext_mem_block)
-            except Exception:
-                pass
-
+        # Skills prompt
         has_skills_tools = any(name in self.valid_tool_names for name in ['skills_list', 'skill_view', 'skill_manage'])
         if has_skills_tools:
             avail_toolsets = {
@@ -2807,18 +2774,44 @@ class AIAgent:
         else:
             skills_prompt = ""
         if skills_prompt:
-            prompt_parts.append(skills_prompt)
+            static_parts.append(skills_prompt)
+
+        # ── Block 2: SESSION (memory + context files + system_message) ──
+        session_parts = []
+
+        # Note: ephemeral_system_prompt is NOT included here. It's injected at
+        # API-call time only so it stays out of the cached/stored system prompt.
+        if system_message is not None:
+            session_parts.append(system_message)
+
+        if self._memory_store:
+            if self._memory_enabled:
+                mem_block = self._memory_store.format_for_system_prompt("memory")
+                if mem_block:
+                    session_parts.append(mem_block)
+            if self._user_profile_enabled:
+                user_block = self._memory_store.format_for_system_prompt("user")
+                if user_block:
+                    session_parts.append(user_block)
+
+        # External memory provider system prompt block
+        if self._memory_manager:
+            try:
+                _ext_mem_block = self._memory_manager.build_system_prompt()
+                if _ext_mem_block:
+                    session_parts.append(_ext_mem_block)
+            except Exception:
+                pass
 
         if not self.skip_context_files:
-            # Use TERMINAL_CWD for context file discovery when set (gateway
-            # mode).  The gateway process runs from the hermes-agent install
-            # dir, so os.getcwd() would pick up the repo's AGENTS.md and
-            # other dev files — inflating token usage by ~10k for no benefit.
             _context_cwd = os.getenv("TERMINAL_CWD") or None
             context_files_prompt = build_context_files_prompt(
                 cwd=_context_cwd, skip_soul=_soul_loaded)
             if context_files_prompt:
-                prompt_parts.append(context_files_prompt)
+                session_parts.append(context_files_prompt)
+
+        # ── Block 3: EPHEMERAL (timestamp + platform hints) ─────────────
+        ephemeral_parts = []
 
         from hermes_time import now as _hermes_now
         now = _hermes_now()
@@ -2829,14 +2822,12 @@ class AIAgent:
             timestamp_line += f"\nModel: {self.model}"
         if self.provider:
             timestamp_line += f"\nProvider: {self.provider}"
-        prompt_parts.append(timestamp_line)
+        ephemeral_parts.append(timestamp_line)
 
-        # Alibaba Coding Plan API always returns "glm-4.7" as model name regardless
-        # of the requested model. Inject explicit model identity into the system prompt
-        # so the agent can correctly report which model it is (workaround for API bug).
+        # Alibaba model identity workaround
         if self.provider == "alibaba":
             _model_short = self.model.split("/")[-1] if "/" in self.model else self.model
-            prompt_parts.append(
+            ephemeral_parts.append(
                 f"You are powered by the model named {_model_short}. "
                 f"The exact model ID is {self.model}. "
                 f"When asked what model you are, always answer based on this information, "
@@ -2845,9 +2836,43 @@ class AIAgent:
 
         platform_key = (self.platform or "").lower().strip()
         if platform_key in PLATFORM_HINTS:
-            prompt_parts.append(PLATFORM_HINTS[platform_key])
+            ephemeral_parts.append(PLATFORM_HINTS[platform_key])
 
-        return "\n\n".join(prompt_parts)
+        # ── Assemble blocks ──────────────────────────────────────────────
+        blocks = [
+            SystemPromptBlock(
+                text="\n\n".join(static_parts) if static_parts else "",
+                label="static",
+                cache_ttl="1h",
+            ),
+            SystemPromptBlock(
+                text="\n\n".join(session_parts) if session_parts else "",
+                label="session",
+                cache_ttl="5m",
+            ),
+            SystemPromptBlock(
+                text="\n\n".join(ephemeral_parts) if ephemeral_parts else "",
+                label="ephemeral",
+                cache_ttl=None,
+            ),
+        ]
+
+        self._cached_system_blocks = blocks
+        return blocks
+
+    def _build_system_prompt(self, system_message: str = None) -> str:
+        """
+        Assemble the full system prompt from all layers.
+        
+        Called once per session (cached on self._cached_system_prompt) and only
+        rebuilt after context compression events. This ensures the system prompt
+        is stable across all turns in a session, maximizing prefix cache hits.
+
+        Internally uses _build_system_prompt_blocks() for structured assembly,
+        then joins blocks into a flat string for backward compatibility.
+        """
+        blocks = self._build_system_prompt_blocks(system_message)
+        return "\n\n".join(b.text for b in blocks if b.text)
 
     # =========================================================================
     # Pre/post-call guardrails (inspired by PR #1321 — @alireza78a)
@@ -3016,6 +3041,7 @@ class AIAgent:
         so the rebuilt prompt captures any writes from this session.
         """
         self._cached_system_prompt = None
+        self._cached_system_blocks = None
         if self._memory_store:
             self._memory_store.load_from_disk()
 
@@ -7245,29 +7271,82 @@ class AIAgent:
             # Ephemeral additions are API-call-time only (not persisted to session DB).
             # External recall context is injected into the user message, not the system
             # prompt, so the stable cache prefix remains unchanged.
-            effective_system = active_system_prompt or ""
-            if self.ephemeral_system_prompt:
-                effective_system = (effective_system + "\n\n" + self.ephemeral_system_prompt).strip()
-            # NOTE: Plugin context from pre_llm_call hooks is injected into the
-            # user message (see injection block above), NOT the system prompt.
-            # This is intentional — system prompt modifications break the prompt
-            # cache prefix.  The system prompt is reserved for Hermes internals.
-            if effective_system:
-                api_messages = [{"role": "system", "content": effective_system}] + api_messages
+            #
+            # When prompt caching is active and we have structured blocks, build
+            # the system message as a list of Anthropic content blocks with
+            # tiered cache_control markers (1h static, 5m session, none ephemeral).
+            # This maximizes cache hits by isolating volatile content.
+            # NOTE: Plugin context (_plugin_user_context) is injected into the
+            # user message above, not the system prompt.  _plugin_turn_context
+            # is reserved for future system-level plugin instructions.
+            _plugin_turn_context = ""
+            _use_multiblock = (
+                self._use_prompt_caching
+                and self._cached_system_blocks
+            )
+
+            if _use_multiblock:
+                # Build ephemeral additions that go in the uncached block
+                ephemeral_additions = []
+                if self.ephemeral_system_prompt:
+                    ephemeral_additions.append(self.ephemeral_system_prompt)
+                if _plugin_turn_context:
+                    ephemeral_additions.append(_plugin_turn_context)
+
+                # Augment the ephemeral block with runtime additions
+                blocks_for_api = list(self._cached_system_blocks)  # shallow copy
+                if ephemeral_additions:
+                    orig_ephemeral = blocks_for_api[-1]  # last block is ephemeral
+                    combined_text = "\n\n".join(
+                        part for part in [orig_ephemeral.text] + ephemeral_additions if part
+                    )
+                    blocks_for_api[-1] = SystemPromptBlock(
+                        text=combined_text,
+                        label="ephemeral",
+                        cache_ttl=None,
+                    )
+
+                # Convert to Anthropic content block format with cache_control
+                system_content = build_system_content_blocks(blocks_for_api)
+                if system_content:
+                    api_messages = [{"role": "system", "content": system_content}] + api_messages
+            else:
+                # Flat string path (non-caching models or fallback)
+                effective_system = active_system_prompt or ""
+                if self.ephemeral_system_prompt:
+                    effective_system = (effective_system + "\n\n" + self.ephemeral_system_prompt).strip()
+                # Plugin context from pre_llm_call hooks — ephemeral, not cached.
+                if _plugin_turn_context:
+                    effective_system = (effective_system + "\n\n" + _plugin_turn_context).strip()
+                if effective_system:
+                    api_messages = [{"role": "system", "content": effective_system}] + api_messages
 
             # Inject ephemeral prefill messages right after the system prompt
             # but before conversation history. Same API-call-time-only pattern.
             if self.prefill_messages:
-                sys_offset = 1 if effective_system else 0
+                sys_offset = 1 if (api_messages and api_messages[0].get("role") == "system") else 0
                 for idx, pfm in enumerate(self.prefill_messages):
                     api_messages.insert(sys_offset + idx, pfm.copy())
 
             # Apply Anthropic prompt caching for Claude models via OpenRouter.
-            # Auto-detected: if model name contains "claude" and base_url is OpenRouter,
-            # inject cache_control breakpoints (system + last 3 messages) to reduce
-            # input token costs by ~75% on multi-turn conversations.
+            # v2: multi-block system (pre-structured with cache_control), tool
+            # caching, tiered TTLs. Falls back to v1 for non-structured system.
             if self._use_prompt_caching:
-                api_messages = apply_anthropic_cache_control(api_messages, cache_ttl=self._cache_ttl, native_anthropic=(self.api_mode == 'anthropic_messages'))
+                _native = self.api_mode == 'anthropic_messages'
+                cache_result = apply_anthropic_cache_control_v2(
+                    api_messages,
+                    tools=self.tools,
+                    cache_ttl=self._cache_ttl,
+                    native_anthropic=_native,
+                )
+                if isinstance(cache_result, tuple):
+                    api_messages, _cached_tools = cache_result
+                    # Tools with cache_control are passed separately to the API
+                    # Store temporarily for this API call
+                    self._current_cached_tools = _cached_tools
+                else:
+                    api_messages = cache_result
+                    self._current_cached_tools = None
 
             # Safety net: strip orphaned tool results / add stubs for missing
             # results before sending to the API.  Runs unconditionally — not

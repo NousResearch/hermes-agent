@@ -15,9 +15,13 @@ Run with:  python -m pytest tests/test_code_execution.py -v
 import pytest
 # pytestmark removed — tests run fine (61 pass, ~99s)
 
-
 import json
 import os
+
+# Force local terminal backend for ALL tests in this file.
+# Under xdist, another test may leak TERMINAL_ENV=modal/docker, sending
+# execute_code down the remote path → modal.exception.AuthError.
+os.environ["TERMINAL_ENV"] = "local"
 import sys
 import time
 import threading
@@ -325,7 +329,7 @@ class TestStubSchemaDrift(unittest.TestCase):
     # Parameters that are internal (injected by the handler, not user-facing)
     _INTERNAL_PARAMS = {"task_id", "user_task"}
     # Parameters intentionally blocked in the sandbox
-    _BLOCKED_TERMINAL_PARAMS = {"background", "check_interval", "pty"}
+    _BLOCKED_TERMINAL_PARAMS = {"background", "check_interval", "pty", "notify_on_complete"}
 
     def test_stubs_cover_all_schema_params(self):
         """Every user-facing parameter in the real schema must appear in the

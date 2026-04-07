@@ -59,6 +59,7 @@ def _make_runner():
     runner._honcho_managers = {}
     runner._honcho_configs = {}
     runner._shutdown_all_gateway_honcho = lambda: None
+    runner.session_store = MagicMock()
     return runner
 
 

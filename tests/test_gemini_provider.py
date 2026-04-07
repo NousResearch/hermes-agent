@@ -171,7 +171,11 @@ class TestGeminiModelNormalization:
 
 class TestGeminiContextLength:
     def test_gemma_4_31b_context(self):
-        ctx = get_model_context_length("gemma-4-31b-it", provider="gemini")
+        # Mock external API lookups to test against hardcoded defaults
+        # (models.dev and OpenRouter may return different values like 262144).
+        with patch("agent.models_dev.lookup_models_dev_context", return_value=None), \
+             patch("agent.model_metadata.fetch_model_metadata", return_value={}):
+            ctx = get_model_context_length("gemma-4-31b-it", provider="gemini")
         assert ctx == 256000
 
     def test_gemma_4_26b_context(self):

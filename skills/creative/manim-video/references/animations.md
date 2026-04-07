@@ -50,6 +50,31 @@ self.play(circle.animate.set_color(RED))
 self.play(circle.animate.shift(RIGHT * 2).scale(0.5))  # chain multiple
 ```
 
+## Additional Creation Animations
+
+```python
+self.play(GrowFromPoint(circle, LEFT * 3))     # scale 0 -> 1 from a specific point
+self.play(GrowFromEdge(rect, DOWN))             # grow from one edge
+self.play(SpinInFromNothing(square))            # scale up while rotating (default PI/2)
+self.play(GrowArrow(arrow))                     # grows arrow from start to tip
+```
+
+## Movement Animations
+
+```python
+# Move a mobject along an arbitrary path
+path = Arc(radius=2, angle=PI)
+self.play(MoveAlongPath(dot, path), run_time=2)
+
+# Rotate (as a Transform, not .animate — supports about_point)
+self.play(Rotate(square, angle=PI / 2, about_point=ORIGIN), run_time=1.5)
+
+# Rotating (continuous rotation, updater-style — good for spinning objects)
+self.play(Rotating(gear, angle=TAU, run_time=4, rate_func=linear))
+```
+
+`MoveAlongPath` takes any `VMobject` as the path — use `Arc`, `CubicBezier`, `Line`, or a custom `VMobject`. Position is computed via `path.point_from_proportion()`.
+
 ## Emphasis Animations
 
 ```python

@@ -1083,10 +1083,53 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.warning("[%s] send_model_picker failed: %s", self.name, e)
             return SendResult(success=False, error=str(e))
 
+    _MODEL_PAGE_SIZE = 8
+
+    def _build_model_keyboard(self, models: list, page: int) -> tuple:
+        """Build paginated model buttons. Returns (keyboard, page_info_text)."""
+        page_size = self._MODEL_PAGE_SIZE
+        total = len(models)
+        total_pages = max(1, (total + page_size - 1) // page_size)
+        page = max(0, min(page, total_pages - 1))
+
+        start = page * page_size
+        end = min(start + page_size, total)
+        page_models = models[start:end]
+
+        buttons: list = []
+        for i, model_id in enumerate(page_models):
+            abs_idx = start + i
+            short = model_id.split("/")[-1] if "/" in model_id else model_id
+            if len(short) > 38:
+                short = short[:35] + "..."
+            buttons.append(
+                InlineKeyboardButton(short, callback_data=f"mm:{abs_idx}")
+            )
+
+        rows = [buttons[i : i + 2] for i in range(0, len(buttons), 2)]
+
+        # Pagination row (if needed)
+        if total_pages > 1:
+            nav: list = []
+            if page > 0:
+                nav.append(InlineKeyboardButton("◀ Prev", callback_data=f"mg:{page - 1}"))
+            nav.append(InlineKeyboardButton(f"{page + 1}/{total_pages}", callback_data="mx:noop"))
+            if page < total_pages - 1:
+                nav.append(InlineKeyboardButton("Next ▶", callback_data=f"mg:{page + 1}"))
+            rows.append(nav)
+
+        rows.append([
+            InlineKeyboardButton("◀ Back", callback_data="mb"),
+            InlineKeyboardButton("✗ Cancel", callback_data="mx"),
+        ])
+
+        page_info = f" ({start + 1}–{end} of {total})" if total_pages > 1 else ""
+        return InlineKeyboardMarkup(rows), page_info
+
     async def _handle_model_picker_callback(
         self, query, data: str, chat_id: str
     ) -> None:
-        """Handle model picker inline keyboard callbacks (mp:/mm:/mb:/mx:)."""
+        """Handle model picker inline keyboard callbacks (mp:/mm:/mb:/mx:/mg:)."""
         state = self._model_picker_state.get(chat_id)
         if not state:
             await query.answer(text="Picker expired — use /model again.")
@@ -1099,7 +1142,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 return slug
 
         if data.startswith("mp:"):
-            # --- Provider selected: show model buttons ---
+            # --- Provider selected: show model buttons (page 0) ---
             provider_slug = data[3:]
             provider = next(
                 (p for p in state["providers"] if p["slug"] == provider_slug),
@@ -1113,24 +1156,9 @@ class TelegramAdapter(BasePlatformAdapter):
             state["selected_provider"] = provider_slug
             state["selected_provider_name"] = provider.get("name", provider_slug)
             state["model_list"] = models
+            state["model_page"] = 0
 
-            buttons: list = []
-            for i, model_id in enumerate(models):
-                # Short display label: strip vendor prefix
-                short = model_id.split("/")[-1] if "/" in model_id else model_id
-                # Truncate long model names for button label (max ~40 chars)
-                if len(short) > 38:
-                    short = short[:35] + "..."
-                buttons.append(
-                    InlineKeyboardButton(short, callback_data=f"mm:{i}")
-                )
-
-            rows = [buttons[i : i + 2] for i in range(0, len(buttons), 2)]
-            rows.append([
-                InlineKeyboardButton("◀ Back", callback_data="mb"),
-                InlineKeyboardButton("✗ Cancel", callback_data="mx"),
-            ])
-            keyboard = InlineKeyboardMarkup(rows)
+            keyboard, page_info = self._build_model_keyboard(models, 0)
 
             pname = provider.get("name", provider_slug)
             total = provider.get("total_models", len(models))
@@ -1140,7 +1168,41 @@ class TelegramAdapter(BasePlatformAdapter):
             await query.edit_message_text(
                 text=(
                     f"⚙ *Model Configuration*\n\n"
-                    f"Provider: *{pname}*\n"
+                    f"Provider: *{pname}*{page_info}\n"
+                    f"Select a model:{extra}"
+                ),
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=keyboard,
+            )
+            await query.answer()
+
+        elif data.startswith("mg:"):
+            # --- Page navigation ---
+            try:
+                page = int(data[3:])
+            except ValueError:
+                await query.answer(text="Invalid page.")
+                return
+
+            models = state.get("model_list", [])
+            state["model_page"] = page
+
+            keyboard, page_info = self._build_model_keyboard(models, page)
+
+            pname = state.get("selected_provider_name", "")
+            provider_slug = state.get("selected_provider", "")
+            provider = next(
+                (p for p in state["providers"] if p["slug"] == provider_slug),
+                None,
+            )
+            total = provider.get("total_models", len(models)) if provider else len(models)
+            shown = len(models)
+            extra = f"\n_{total - shown} more available — type `/model <name>` directly_" if total > shown else ""
+
+            await query.edit_message_text(
+                text=(
+                    f"⚙ *Model Configuration*\n\n"
+                    f"Provider: *{pname}*{page_info}\n"
                     f"Select a model:{extra}"
                 ),
                 parse_mode=ParseMode.MARKDOWN,
@@ -1239,6 +1301,10 @@ class TelegramAdapter(BasePlatformAdapter):
             )
             await query.answer()
 
+        else:
+            # Catch-all (e.g. page counter button "mx:noop")
+            await query.answer()
+
     async def _handle_callback_query(
         self, update: "Update", context: "ContextTypes.DEFAULT_TYPE"
     ) -> None:
@@ -1249,7 +1315,7 @@ class TelegramAdapter(BasePlatformAdapter):
         data = query.data
 
         # --- Model picker callbacks ---
-        if data.startswith(("mp:", "mm:", "mb", "mx")):
+        if data.startswith(("mp:", "mm:", "mb", "mx", "mg:")):
             chat_id = str(query.message.chat_id) if query.message else None
             if chat_id:
                 await self._handle_model_picker_callback(query, data, chat_id)

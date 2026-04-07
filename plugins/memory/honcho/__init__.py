@@ -216,6 +216,12 @@ class HonchoMemoryProvider(MemoryProvider):
                 logger.debug("Honcho not configured — plugin inactive")
                 return
 
+            # Override peer_name with gateway user_id for per-user memory scoping.
+            # CLI sessions won't have user_id, so the config default is preserved.
+            _gw_user_id = kwargs.get("user_id")
+            if _gw_user_id:
+                cfg.peer_name = _gw_user_id
+
             self._config = cfg
 
             # ----- B1: recall_mode from config -----

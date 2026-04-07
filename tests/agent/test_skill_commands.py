@@ -260,7 +260,7 @@ Generate some audio.
         assert msg is None
 
     def test_uses_shared_skill_loader_for_secure_setup(self, tmp_path, monkeypatch):
-        monkeypatch.delenv("TENOR_API_KEY", raising=False)
+        monkeypatch.delenv("GIPHY_API_KEY", raising=False)
         calls = []
 
         def fake_secret_callback(var_name, prompt, metadata=None):
@@ -286,8 +286,8 @@ Generate some audio.
                 "test-skill",
                 frontmatter_extra=(
                     "required_environment_variables:\n"
-                    "  - name: TENOR_API_KEY\n"
-                    "    prompt: Tenor API key\n"
+                    "  - name: GIPHY_API_KEY\n"
+                    "    prompt: Giphy API key\n"
                 ),
             )
             scan_skill_commands()
@@ -296,12 +296,12 @@ Generate some audio.
         assert msg is not None
         assert "test-skill" in msg
         assert len(calls) == 1
-        assert calls[0][0] == "TENOR_API_KEY"
+        assert calls[0][0] == "GIPHY_API_KEY"
 
     def test_gateway_still_loads_skill_but_returns_setup_guidance(
         self, tmp_path, monkeypatch
     ):
-        monkeypatch.delenv("TENOR_API_KEY", raising=False)
+        monkeypatch.delenv("GIPHY_API_KEY", raising=False)
 
         def fail_if_called(var_name, prompt, metadata=None):
             raise AssertionError(
@@ -324,8 +324,8 @@ Generate some audio.
                     "test-skill",
                     frontmatter_extra=(
                         "required_environment_variables:\n"
-                        "  - name: TENOR_API_KEY\n"
-                        "    prompt: Tenor API key\n"
+                        "  - name: GIPHY_API_KEY\n"
+                        "    prompt: Giphy API key\n"
                     ),
                 )
                 scan_skill_commands()

@@ -25,9 +25,9 @@ def _clean_passthrough():
 
 class TestSkillScopedPassthrough:
     def test_register_and_check(self):
-        assert not is_env_passthrough("TENOR_API_KEY")
-        register_env_passthrough(["TENOR_API_KEY"])
-        assert is_env_passthrough("TENOR_API_KEY")
+        assert not is_env_passthrough("GIPHY_API_KEY")
+        register_env_passthrough(["GIPHY_API_KEY"])
+        assert is_env_passthrough("GIPHY_API_KEY")
 
     def test_register_multiple(self):
         register_env_passthrough(["FOO_TOKEN", "BAR_SECRET"])
@@ -36,10 +36,10 @@ class TestSkillScopedPassthrough:
         assert not is_env_passthrough("OTHER_KEY")
 
     def test_clear(self):
-        register_env_passthrough(["TENOR_API_KEY"])
-        assert is_env_passthrough("TENOR_API_KEY")
+        register_env_passthrough(["GIPHY_API_KEY"])
+        assert is_env_passthrough("GIPHY_API_KEY")
         clear_env_passthrough()
-        assert not is_env_passthrough("TENOR_API_KEY")
+        assert not is_env_passthrough("GIPHY_API_KEY")
 
     def test_get_all(self):
         register_env_passthrough(["A_KEY", "B_TOKEN"])

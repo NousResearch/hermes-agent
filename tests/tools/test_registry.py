@@ -305,7 +305,7 @@ class TestSecretCaptureResultContract:
     def test_secret_request_result_does_not_include_secret_value(self):
         result = {
             "success": True,
-            "stored_as": "TENOR_API_KEY",
+            "stored_as": "GIPHY_API_KEY",
             "validated": False,
         }
         assert "secret" not in json.dumps(result).lower()

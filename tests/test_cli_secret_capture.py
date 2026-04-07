@@ -43,13 +43,13 @@ def test_secret_capture_callback_can_be_completed_from_cli_state_machine():
     with patch("hermes_cli.callbacks.save_env_value_secure") as save_secret:
         save_secret.return_value = {
             "success": True,
-            "stored_as": "TENOR_API_KEY",
+            "stored_as": "GIPHY_API_KEY",
             "validated": False,
         }
 
         thread = threading.Thread(
             target=lambda: results.append(
-                cli._secret_capture_callback("TENOR_API_KEY", "Tenor API key")
+                cli._secret_capture_callback("GIPHY_API_KEY", "Giphy API key")
             )
         )
         thread.start()
@@ -63,7 +63,7 @@ def test_secret_capture_callback_can_be_completed_from_cli_state_machine():
         thread.join(timeout=2)
 
     assert results[0]["success"] is True
-    assert results[0]["stored_as"] == "TENOR_API_KEY"
+    assert results[0]["stored_as"] == "GIPHY_API_KEY"
     assert results[0]["skipped"] is False
 
 
@@ -71,8 +71,8 @@ def test_cancel_secret_capture_marks_setup_skipped():
     cli = _make_cli_stub()
     cli._secret_state = {
         "response_queue": queue.Queue(),
-        "var_name": "TENOR_API_KEY",
-        "prompt": "Tenor API key",
+        "var_name": "GIPHY_API_KEY",
+        "prompt": "Giphy API key",
         "metadata": {},
     }
     cli._secret_deadline = 123
@@ -91,13 +91,13 @@ def test_secret_capture_uses_getpass_without_tui():
     ) as save_secret:
         save_secret.return_value = {
             "success": True,
-            "stored_as": "TENOR_API_KEY",
+            "stored_as": "GIPHY_API_KEY",
             "validated": False,
         }
-        result = prompt_for_secret(cli, "TENOR_API_KEY", "Tenor API key")
+        result = prompt_for_secret(cli, "GIPHY_API_KEY", "Giphy API key")
 
     assert result["success"] is True
-    assert result["stored_as"] == "TENOR_API_KEY"
+    assert result["stored_as"] == "GIPHY_API_KEY"
     assert result["skipped"] is False
 
 
@@ -114,7 +114,7 @@ def test_secret_capture_timeout_clears_hidden_input_buffer():
         "hermes_cli.callbacks._time.monotonic",
         side_effect=[0, 121],
     ):
-        result = prompt_for_secret(cli, "TENOR_API_KEY", "Tenor API key")
+        result = prompt_for_secret(cli, "GIPHY_API_KEY", "Giphy API key")
 
     assert result["success"] is True
     assert result["skipped"] is True

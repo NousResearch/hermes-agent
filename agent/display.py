@@ -890,8 +890,6 @@ def get_cute_tool_message(
         return _wrap(f"┊ ◀️  back      {dur}")
     if tool_name == "browser_press":
         return _wrap(f"┊ ⌨️  press     {args.get('key', '?')}  {dur}")
-    if tool_name == "browser_close":
-        return _wrap(f"┊ 🚪 close     browser  {dur}")
     if tool_name == "browser_get_images":
         return _wrap(f"┊ 🖼️  images    extracting  {dur}")
     if tool_name == "browser_vision":

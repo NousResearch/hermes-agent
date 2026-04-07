@@ -148,7 +148,8 @@ def _codex_ack_message_response(text: str):
 
 
 class _FakeResponsesStream:
-    def __init__(self, *, final_response=None, final_error=None):
+    def __init__(self, *, events=None, final_response=None, final_error=None):
+        self._events = list(events or [])
         self._final_response = final_response
         self._final_error = final_error
 
@@ -159,7 +160,7 @@ class _FakeResponsesStream:
         return False
 
     def __iter__(self):
-        return iter(())
+        return iter(self._events)
 
     def get_final_response(self):
         if self._final_error is not None:
@@ -372,6 +373,44 @@ def test_run_codex_stream_fallback_parses_create_stream_events(monkeypatch):
     assert calls["create"] == 1
     assert create_stream.closed is True
     assert response.output[0].content[0].text == "streamed create ok"
+
+
+def test_run_codex_stream_reconstructs_empty_terminal_response_from_stream_items(monkeypatch):
+    agent = _build_agent(monkeypatch)
+
+    streamed_item = SimpleNamespace(
+        type="message",
+        phase="final_answer",
+        status="completed",
+        content=[SimpleNamespace(type="output_text", text="ok")],
+    )
+    terminal_response = SimpleNamespace(
+        output=[],
+        usage=SimpleNamespace(input_tokens=5, output_tokens=1, total_tokens=6),
+        status="completed",
+        model="gpt-5.4",
+        error=None,
+        id="resp_123",
+    )
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(
+            stream=lambda **kwargs: _FakeResponsesStream(
+                events=[
+                    SimpleNamespace(type="response.created"),
+                    SimpleNamespace(type="response.output_item.done", item=streamed_item),
+                ],
+                final_response=terminal_response,
+            ),
+            create=lambda **kwargs: None,
+        )
+    )
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+
+    assert len(response.output) == 1
+    assert response.output[0].content[0].text == "ok"
+    assert response.model == "gpt-5.4"
 
 
 def test_run_conversation_codex_plain_text(monkeypatch):

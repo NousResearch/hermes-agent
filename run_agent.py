@@ -3382,6 +3382,7 @@ class AIAgent:
         first_delta_fired = False
         for attempt in range(max_stream_retries + 1):
             try:
+                streamed_output_items: List[Any] = []
                 with active_client.responses.stream(**api_kwargs) as stream:
                     for event in stream:
                         if self._interrupt_requested:
@@ -3402,12 +3403,29 @@ class AIAgent:
                         # Track tool calls to suppress text streaming
                         elif "function_call" in event_type:
                             has_tool_calls = True
+                        elif event_type == "response.output_item.done":
+                            item = getattr(event, "item", None)
+                            if item is not None:
+                                streamed_output_items.append(item)
                         # Fire reasoning callbacks
                         elif "reasoning" in event_type and "delta" in event_type:
                             reasoning_text = getattr(event, "delta", "")
                             if reasoning_text:
                                 self._fire_reasoning_delta(reasoning_text)
-                    return stream.get_final_response()
+                    final_response = stream.get_final_response()
+                    output = getattr(final_response, "output", None)
+                    if isinstance(output, list) and output:
+                        return final_response
+                    if streamed_output_items:
+                        return SimpleNamespace(
+                            output=streamed_output_items,
+                            usage=getattr(final_response, "usage", None),
+                            status=getattr(final_response, "status", None),
+                            model=getattr(final_response, "model", None),
+                            error=getattr(final_response, "error", None),
+                            id=getattr(final_response, "id", None),
+                        )
+                    return final_response
             except RuntimeError as exc:
                 err_text = str(exc)
                 missing_completed = "response.completed" in err_text

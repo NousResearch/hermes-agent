@@ -1111,14 +1111,17 @@ class AIAgent:
                 logger.warning("Memory provider plugin init failed: %s", _mpe)
                 self._memory_manager = None
 
-        # Inject memory provider tool schemas into the tool surface
+        # Inject memory provider tool schemas into the tool surface, but only
+        # when the platform's enabled_toolsets includes "memory" (or when no
+        # toolset filter is active — None means all toolsets are enabled).
         if self._memory_manager and self.tools is not None:
-            for _schema in self._memory_manager.get_all_tool_schemas():
-                _wrapped = {"type": "function", "function": _schema}
-                self.tools.append(_wrapped)
-                _tname = _schema.get("name", "")
-                if _tname:
-                    self.valid_tool_names.add(_tname)
+            if self.enabled_toolsets is None or "memory" in self.enabled_toolsets:
+                for _schema in self._memory_manager.get_all_tool_schemas():
+                    _wrapped = {"type": "function", "function": _schema}
+                    self.tools.append(_wrapped)
+                    _tname = _schema.get("name", "")
+                    if _tname:
+                        self.valid_tool_names.add(_tname)
 
         # Skills config: nudge interval for skill creation reminders
         self._skill_nudge_interval = 10

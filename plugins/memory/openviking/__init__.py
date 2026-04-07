@@ -528,6 +528,23 @@ class OpenVikingMemoryProvider(MemoryProvider):
 
     # -- Tool implementations ------------------------------------------------
 
+    @staticmethod
+    def _unwrap_result(resp: Any) -> Any:
+        """Return OpenViking payload body regardless of wrapped/unwrapped shape."""
+        if isinstance(resp, dict) and "result" in resp:
+            return resp.get("result")
+        return resp
+
+    @staticmethod
+    def _normalize_summary_uri(uri: str) -> str:
+        """Map pseudo summary files to their parent directory URI for L0/L1 reads."""
+        if not uri:
+            return uri
+        for suffix in ("/.abstract.md", "/.overview.md", "/.read.md", "/.full.md"):
+            if uri.endswith(suffix):
+                return uri[: -len(suffix)] or "viking://"
+        return uri
+
     def _tool_search(self, args: dict) -> str:
         query = args.get("query", "")
         if not query:
@@ -576,17 +593,26 @@ class OpenVikingMemoryProvider(MemoryProvider):
             return tool_error("uri is required")
 
         level = args.get("level", "overview")
+
+        # OpenViking v0.3.3 expects directory URIs for abstract/overview.
+        resolved_uri = self._normalize_summary_uri(uri) if level in ("abstract", "overview") else uri
+
         # Map our level names to OpenViking GET endpoints
         if level == "abstract":
-            resp = self._client.get("/api/v1/content/abstract", params={"uri": uri})
+            resp = self._client.get("/api/v1/content/abstract", params={"uri": resolved_uri})
         elif level == "full":
-            resp = self._client.get("/api/v1/content/read", params={"uri": uri})
+            resp = self._client.get("/api/v1/content/read", params={"uri": resolved_uri})
         else:  # overview
-            resp = self._client.get("/api/v1/content/overview", params={"uri": uri})
+            resp = self._client.get("/api/v1/content/overview", params={"uri": resolved_uri})
 
-        result = resp.get("result", "")
-        # result is a plain string from the content endpoints
-        content = result if isinstance(result, str) else result.get("content", "")
+        result = self._unwrap_result(resp)
+        # Content endpoints may return either plain strings or objects.
+        if isinstance(result, str):
+            content = result
+        elif isinstance(result, dict):
+            content = result.get("content", "") or result.get("text", "")
+        else:
+            content = ""
 
         # Truncate very long content to avoid flooding the context
         if len(content) > 8000:
@@ -594,6 +620,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
 
         return json.dumps({
             "uri": uri,
+            "resolved_uri": resolved_uri,
             "level": level,
             "content": content,
         }, ensure_ascii=False)
@@ -606,19 +633,27 @@ class OpenVikingMemoryProvider(MemoryProvider):
         endpoint_map = {"tree": "/api/v1/fs/tree", "list": "/api/v1/fs/ls", "stat": "/api/v1/fs/stat"}
         endpoint = endpoint_map.get(action, "/api/v1/fs/ls")
         resp = self._client.get(endpoint, params={"uri": path})
-        result = resp.get("result", {})
+        result = self._unwrap_result(resp)
 
         # Format list/tree results for readability
-        if action in ("list", "tree") and isinstance(result, list):
-            entries = []
-            for e in result[:50]:  # cap at 50 entries
-                entries.append({
-                    "name": e.get("rel_path", e.get("name", "")),
-                    "uri": e.get("uri", ""),
-                    "type": "dir" if e.get("isDir") else "file",
-                    "abstract": e.get("abstract", ""),
-                })
-            return json.dumps({"path": path, "entries": entries}, ensure_ascii=False)
+        if action in ("list", "tree"):
+            raw_entries = result
+            if isinstance(result, dict):
+                raw_entries = result.get("entries") or result.get("items") or result.get("children") or []
+
+            if isinstance(raw_entries, list):
+                entries = []
+                for e in raw_entries[:50]:  # cap at 50 entries
+                    uri = e.get("uri", "")
+                    name = e.get("rel_path") or e.get("name") or (uri.rsplit("/", 1)[-1] if uri else "")
+                    is_dir = bool(e.get("isDir") or e.get("is_dir") or e.get("type") == "dir")
+                    entries.append({
+                        "name": name,
+                        "uri": uri,
+                        "type": "dir" if is_dir else "file",
+                        "abstract": e.get("abstract", ""),
+                    })
+                return json.dumps({"path": path, "entries": entries}, ensure_ascii=False)
 
         return json.dumps(result, ensure_ascii=False)
 

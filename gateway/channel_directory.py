@@ -76,6 +76,14 @@ def build_channel_directory(adapters: Dict[Any, Any]) -> Dict[str, Any]:
         except Exception as e:
             logger.warning("Channel directory: failed to build %s: %s", platform.value, e)
 
+    # Linear can enumerate teams and projects via CLI
+    for platform, adapter in adapters.items():
+        try:
+            if platform == Platform.LINEAR:
+                platforms["linear"] = _build_linear(adapter)
+        except Exception as e:
+            logger.warning("Channel directory: failed to build %s: %s", platform.value, e)
+
     # Telegram, WhatsApp & Signal can't enumerate chats -- pull from session history
     for plat_name in ("telegram", "whatsapp", "signal", "email", "sms", "linear"):
         if plat_name not in platforms:
@@ -138,6 +146,55 @@ def _build_slack(adapter) -> List[Dict[str, str]]:
 
     # Fallback to session data
     return _build_from_sessions("slack")
+
+
+def _build_linear(adapter) -> List[Dict[str, str]]:
+    """Enumerate Linear teams and projects via the linear CLI."""
+    import subprocess
+
+    channels = []
+
+    # List teams
+    try:
+        proc = subprocess.run(
+            ["linear", "team", "list"],
+            capture_output=True, text=True, timeout=15,
+        )
+        if proc.returncode == 0 and proc.stdout.strip():
+            for line in proc.stdout.strip().split("\n")[1:]:  # Skip header
+                parts = line.split()
+                if len(parts) >= 2:
+                    team_key = parts[0]
+                    # Team name may have spaces — rejoin everything between key and the flags
+                    channels.append({
+                        "id": team_key,
+                        "name": line.strip(),
+                        "type": "team",
+                    })
+    except Exception as e:
+        logger.debug("Channel directory: failed to list Linear teams: %s", e)
+
+    # List projects
+    try:
+        proc = subprocess.run(
+            ["linear", "project", "list"],
+            capture_output=True, text=True, timeout=15,
+        )
+        if proc.returncode == 0 and proc.stdout.strip():
+            for line in proc.stdout.strip().split("\n")[1:]:  # Skip header
+                parts = line.split()
+                if len(parts) >= 2:
+                    channels.append({
+                        "id": parts[0],
+                        "name": line.strip(),
+                        "type": "project",
+                    })
+    except Exception as e:
+        logger.debug("Channel directory: failed to list Linear projects: %s", e)
+
+    # Also merge any issues from session history
+    channels.extend(_build_from_sessions("linear"))
+    return channels
 
 
 def _build_from_sessions(platform_name: str) -> List[Dict[str, str]]:

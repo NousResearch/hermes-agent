@@ -454,6 +454,9 @@ class DiscordAdapter(BasePlatformAdapter):
         self._seen_messages: Dict[str, float] = {}
         self._SEEN_TTL = 300   # 5 minutes
         self._SEEN_MAX = 2000  # prune threshold
+        # Reply threading mode — controlled via PlatformConfig.reply_to_mode.
+        # Defaults to "off" (Discord traditional behaviour: no threaded replies).
+        self._reply_to_mode: str = getattr(config, 'reply_to_mode', 'off') or 'off'
 
     async def connect(self) -> bool:
         """Connect to Discord and start receiving events."""

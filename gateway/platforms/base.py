@@ -583,6 +583,25 @@ class BasePlatformAdapter(ABC):
         """Disconnect from the platform."""
         pass
     
+    def _should_thread_reply(self, reply_to: Optional[str], chunk_index: int = 0) -> bool:
+        """Determine whether a response chunk should thread to the original message.
+
+        Controlled by ``PlatformConfig.reply_to_mode`` on each platform.
+        Default behaviour returns ``False`` for ``"off"`` (Discord) and
+        ``True`` for the first chunk when the mode is ``"first"`` (Telegram).
+
+        Sub-classes that do not set a ``_reply_to_mode`` attribute
+        default to ``"off"`` (no threading) for backward compatibility.
+        """
+        if not reply_to:
+            return False
+        mode = getattr(self, '_reply_to_mode', 'off') or 'off'
+        if mode == "all":
+            return True
+        if mode == "first":
+            return chunk_index == 0
+        return False  # "off"
+
     @abstractmethod
     async def send(
         self,
@@ -1298,10 +1317,11 @@ class BasePlatformAdapter(ABC):
                 # Send the text portion
                 if text_content:
                     logger.info("[%s] Sending response (%d chars) to %s", self.name, len(text_content), event.source.chat_id)
+                    _reply_to_b = event.message_id if self._should_thread_reply(event.message_id) else None
                     result = await self._send_with_retry(
                         chat_id=event.source.chat_id,
                         content=text_content,
-                        reply_to=event.message_id,
+                        reply_to=_reply_to_b,
                         metadata=_thread_metadata,
                     )
                     _record_delivery(result)

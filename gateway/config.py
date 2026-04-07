@@ -144,9 +144,9 @@ class PlatformConfig:
     api_key: Optional[str] = None  # API key if different from token
     home_channel: Optional[HomeChannel] = None
     
-    # Reply threading mode (Telegram/Slack)
-    # - "off": Never thread replies to original message
-    # - "first": Only first chunk threads to user's message (default)
+    # Reply threading mode (Telegram/Discord/Slack)
+    # - "off": Never thread replies to original message (default for Discord)
+    # - "first": Only first chunk threads to user's message (default for Telegram)
     # - "all": All chunks in multi-part replies thread to user's message
     reply_to_mode: str = "first"
     

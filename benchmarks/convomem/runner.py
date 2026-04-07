@@ -31,7 +31,6 @@ sys.path.insert(0, str(_PROJECT_ROOT))
 from benchmarks.judge import HeuristicJudge, MemoryJudge
 from benchmarks.convomem.adapter import (
     N_EVIDENCE_LEVELS,
-    DEFAULT_N_EVIDENCE,
     ConvoMemSummary,
     load_convomem_dataset,
     load_convomem_local,

@@ -23,6 +23,7 @@ from hermes_cli.auth import (
     _agent_key_is_usable,
     _codex_access_token_is_expiring,
     _decode_jwt_claims,
+    _import_codex_cli_tokens,
     _is_expiring,
     _load_auth_store,
     _load_provider_state,
@@ -440,6 +441,39 @@ class CredentialPool:
             logger.debug("Failed to sync from credentials file: %s", exc)
         return entry
 
+    def _sync_codex_entry_from_cli(self, entry: PooledCredential) -> PooledCredential:
+        """Sync an openai-codex pool entry from ~/.codex/auth.json if tokens differ.
+
+        OpenAI OAuth refresh tokens are single-use and rotate on every refresh.
+        When the Codex CLI (or another Hermes profile) refreshes its token,
+        the pool entry's refresh_token becomes stale.  This method detects that
+        by comparing against ~/.codex/auth.json and syncing the fresh pair.
+        """
+        if self.provider != "openai-codex":
+            return entry
+        try:
+            cli_tokens = _import_codex_cli_tokens()
+            if not cli_tokens:
+                return entry
+            cli_refresh = cli_tokens.get("refresh_token", "")
+            cli_access = cli_tokens.get("access_token", "")
+            if cli_refresh and cli_refresh != entry.refresh_token:
+                logger.debug("Pool entry %s: syncing tokens from ~/.codex/auth.json (refresh token changed)", entry.id)
+                updated = replace(
+                    entry,
+                    access_token=cli_access,
+                    refresh_token=cli_refresh,
+                    last_status=None,
+                    last_status_at=None,
+                    last_error_code=None,
+                )
+                self._replace_entry(entry, updated)
+                self._persist()
+                return updated
+        except Exception as exc:
+            logger.debug("Failed to sync from ~/.codex/auth.json: %s", exc)
+        return entry
+
     def _refresh_entry(self, entry: PooledCredential, *, force: bool) -> Optional[PooledCredential]:
         if entry.auth_type != AUTH_TYPE_OAUTH or not entry.refresh_token:
             if force:
@@ -626,6 +660,16 @@ class CredentialPool:
             if (self.provider == "anthropic" and entry.source == "claude_code"
                     and entry.last_status == STATUS_EXHAUSTED):
                 synced = self._sync_anthropic_entry_from_credentials_file(entry)
+                if synced is not entry:
+                    entry = synced
+                    cleared_any = True
+            # For openai-codex entries, sync from ~/.codex/auth.json before
+            # any status/refresh checks.  This picks up tokens refreshed by
+            # the Codex CLI or another Hermes profile.
+            if (self.provider == "openai-codex"
+                    and entry.last_status == STATUS_EXHAUSTED
+                    and entry.refresh_token):
+                synced = self._sync_codex_entry_from_cli(entry)
                 if synced is not entry:
                     entry = synced
                     cleared_any = True

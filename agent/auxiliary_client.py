@@ -265,6 +265,7 @@ class _CodexCompletionsAdapter:
             # get_final_response() even when items were streamed.
             collected_output_items: List[Any] = []
             collected_text_deltas: List[str] = []
+            has_function_calls = False
             with self._client.responses.stream(**resp_kwargs) as stream:
                 for _event in stream:
                     _etype = getattr(_event, "type", "")
@@ -276,6 +277,8 @@ class _CodexCompletionsAdapter:
                         _delta = getattr(_event, "delta", "")
                         if _delta:
                             collected_text_deltas.append(_delta)
+                    elif "function_call" in _etype:
+                        has_function_calls = True
                 final = stream.get_final_response()
 
             # Backfill empty output from collected stream events
@@ -287,7 +290,10 @@ class _CodexCompletionsAdapter:
                         "Codex auxiliary: backfilled %d output items from stream events",
                         len(collected_output_items),
                     )
-                elif collected_text_deltas:
+                elif collected_text_deltas and not has_function_calls:
+                    # Only synthesize text when no tool calls were streamed —
+                    # a function_call response with incidental text should not
+                    # be collapsed into a plain-text message.
                     assembled = "".join(collected_text_deltas)
                     final.output = [SimpleNamespace(
                         type="message", role="assistant", status="completed",
@@ -298,21 +304,29 @@ class _CodexCompletionsAdapter:
                         len(collected_text_deltas), len(assembled),
                     )
 
-            # Extract text and tool calls from the Responses output
+            # Extract text and tool calls from the Responses output.
+            # Items may be SDK objects (attrs) or dicts (raw/fallback paths),
+            # so use a helper that handles both shapes.
+            def _item_get(obj: Any, key: str, default: Any = None) -> Any:
+                val = getattr(obj, key, None)
+                if val is None and isinstance(obj, dict):
+                    val = obj.get(key, default)
+                return val if val is not None else default
+
             for item in getattr(final, "output", []):
-                item_type = getattr(item, "type", None)
+                item_type = _item_get(item, "type")
                 if item_type == "message":
-                    for part in getattr(item, "content", []):
-                        ptype = getattr(part, "type", None)
+                    for part in (_item_get(item, "content") or []):
+                        ptype = _item_get(part, "type")
                         if ptype in ("output_text", "text"):
-                            text_parts.append(getattr(part, "text", ""))
+                            text_parts.append(_item_get(part, "text", ""))
                 elif item_type == "function_call":
                     tool_calls_raw.append(SimpleNamespace(
-                        id=getattr(item, "call_id", ""),
+                        id=_item_get(item, "call_id", ""),
                         type="function",
                         function=SimpleNamespace(
-                            name=getattr(item, "name", ""),
-                            arguments=getattr(item, "arguments", "{}"),
+                            name=_item_get(item, "name", ""),
+                            arguments=_item_get(item, "arguments", "{}"),
                         ),
                     ))
 

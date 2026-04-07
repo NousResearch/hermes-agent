@@ -118,11 +118,14 @@ class ContextEngine(ABC):
         """
         return []
 
-    def handle_tool_call(self, name: str, args: Dict[str, Any]) -> str:
+    def handle_tool_call(self, name: str, args: Dict[str, Any], **kwargs) -> str:
         """Handle a tool call from the agent.
 
         Only called for tool names returned by get_tool_schemas().
         Must return a JSON string.
+
+        kwargs may include:
+          messages: the current in-memory message list (for live ingestion)
         """
         import json
         return json.dumps({"error": f"Unknown context engine tool: {name}"})

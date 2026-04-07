@@ -207,7 +207,7 @@ Paths support `~` expansion and `${VAR}` environment variable substitution.
 
 ### How it works
 
-- **Read-only**: External dirs are only scanned for skill discovery. When the agent creates or edits a skill, it always writes to `~/.hermes/skills/`.
+- **Read-only (copy-on-write)**: External dirs are treated as read-only. When the agent creates a new skill, it always writes to `~/.hermes/skills/`. When the agent **edits an existing external skill** (via `skill_edit`, `skill_patch`, `skill_write_file`, or `skill_remove_file`), Hermes first copies the whole skill directory into the profile-local `~/.hermes/skills/` and then applies the change to the copy. The external source is never mutated by the agent — the edited skill becomes a profile-local override that shadows the shared version by name. Deleting an external skill is rejected with a message pointing to `skills.disabled` (to hide it from the current profile) or direct filesystem removal (to unshare it from all profiles).
 - **Local precedence**: If the same skill name exists in both the local dir and an external dir, the local version wins.
 - **Full integration**: External skills appear in the system prompt index, `skills_list`, `skill_view`, and as `/skill-name` slash commands — no different from local skills.
 - **Non-existent paths are silently skipped**: If a configured directory doesn't exist, Hermes ignores it without errors. Useful for optional shared directories that may not be present on every machine.
@@ -229,6 +229,65 @@ Paths support `~` expansion and `${VAR}` environment variable substitution.
 ```
 
 All four skills appear in your skill index. If you create a new skill called `my-custom-workflow` locally, it shadows the external version.
+
+## Sharing Specific Skills Across Profiles
+
+For skills you want to share across **some** (but not all) profiles, use the `skills.shared` shorthand. Place each shared skill under `~/.hermes/shared-skills/`:
+
+```text
+~/.hermes/shared-skills/
+├── team-runbook/
+│   └── SKILL.md
+└── company-style-guide/
+    └── SKILL.md
+```
+
+Then list the names in each profile's `config.yaml`:
+
+```yaml
+# Profile A — includes both
+skills:
+  shared:
+    - team-runbook
+    - company-style-guide
+```
+
+```yaml
+# Profile B — only style guide
+skills:
+  shared:
+    - company-style-guide
+```
+
+```yaml
+# Profile C — neither (no shared entry, no implicit inclusion)
+skills:
+  external_dirs: []
+```
+
+Each profile sees only the shared skills it explicitly opts into. Profiles with no `skills.shared` key see no shared skills at all — sharing is opt-in, not automatic.
+
+### How it relates to `external_dirs`
+
+Internally, `skills.shared: [team-runbook]` is equivalent to `skills.external_dirs: [~/.hermes/shared-skills/team-runbook]`. The `shared` key is just a shorthand that:
+
+- Establishes `~/.hermes/shared-skills/` as the canonical shared location, so users don't have to remember a path
+- Lets you list shared skills by **name** instead of repeating the full path each time
+- Validates names (no slashes, no `..`, no leading dot) to prevent path-traversal mistakes in config
+
+Use `skills.shared` for the common case ("share skills X and Y across these profiles"). Use `skills.external_dirs` when you need full paths, environment-variable substitution, or to share entire directories of skills from outside `~/.hermes/`.
+
+### Precedence
+
+The full skill search order is:
+
+1. **Profile-local** (`HERMES_HOME/skills/`) — highest precedence, read/write
+2. **`skills.shared`** entries from `~/.hermes/shared-skills/`
+3. **`skills.external_dirs`** entries
+
+Duplicates (same resolved path) are filtered: a skill listed in both `shared` and `external_dirs` only appears once. A profile-local skill with the same name as a shared one shadows it.
+
+Shared skills are read-only from the agent's perspective — `skill_edit`, `skill_patch`, `skill_write_file`, and `skill_remove_file` copy-on-write into the profile-local `skills/` directory before applying changes (see [External Skill Directories — How it works](#how-it-works)). The shared source is never mutated by the agent.
 
 ## Agent-Managed Skills (skill_manage tool)
 

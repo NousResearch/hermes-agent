@@ -1,6 +1,7 @@
 """Tests for tools/skill_manager_tool.py — skill creation, editing, and deletion."""
 
 import json
+import os
 from pathlib import Path
 from unittest.mock import patch
 
@@ -17,6 +18,8 @@ from tools.skill_manager_tool import (
     _delete_skill,
     _write_file,
     _remove_file,
+    _is_external_skill,
+    _copy_on_write_to_local,
     skill_manage,
     VALID_NAME_RE,
     ALLOWED_SUBDIRS,
@@ -411,3 +414,256 @@ class TestSkillManageDispatcher:
             raw = skill_manage(action="create", name="test-skill", content=VALID_SKILL_CONTENT)
         result = json.loads(raw)
         assert result["success"] is True
+
+
+# ---------------------------------------------------------------------------
+# Copy-on-write for external (shared / external_dirs) skills
+# ---------------------------------------------------------------------------
+
+
+def _write_external_skill(root: Path, name: str, description: str = "Ext skill") -> Path:
+    """Helper: create a skill at root/name/SKILL.md and return the skill dir."""
+    d = root / name
+    d.mkdir(parents=True)
+    (d / "SKILL.md").write_text(
+        f"---\nname: {name}\ndescription: {description}\n---\n\n# {name}\n\nStep 1: original step.\n"
+    )
+    return d
+
+
+class TestIsExternalSkill:
+    def test_local_skill_is_not_external(self, tmp_path):
+        local = tmp_path / "local-skills"
+        local.mkdir()
+        skill = local / "a"
+        skill.mkdir()
+        with patch("tools.skill_manager_tool.SKILLS_DIR", local):
+            assert _is_external_skill(skill) is False
+
+    def test_sibling_skill_is_external(self, tmp_path):
+        local = tmp_path / "local-skills"
+        ext = tmp_path / "external"
+        local.mkdir()
+        ext.mkdir()
+        skill = ext / "a"
+        skill.mkdir()
+        with patch("tools.skill_manager_tool.SKILLS_DIR", local):
+            assert _is_external_skill(skill) is True
+
+
+class TestCopyOnWriteHelper:
+    def test_copies_directory_contents(self, tmp_path):
+        local = tmp_path / "local"
+        ext = tmp_path / "external"
+        local.mkdir()
+        source = _write_external_skill(ext, "shared-skill")
+        (source / "references").mkdir()
+        (source / "references" / "notes.md").write_text("notes")
+        with patch("tools.skill_manager_tool.SKILLS_DIR", local):
+            result = _copy_on_write_to_local(source)
+        assert result == local / "shared-skill"
+        assert (result / "SKILL.md").read_text() == (source / "SKILL.md").read_text()
+        assert (result / "references" / "notes.md").read_text() == "notes"
+
+    def test_raises_when_local_already_exists(self, tmp_path):
+        local = tmp_path / "local"
+        ext = tmp_path / "external"
+        (local / "clash").mkdir(parents=True)
+        source = _write_external_skill(ext, "clash")
+        with patch("tools.skill_manager_tool.SKILLS_DIR", local):
+            try:
+                _copy_on_write_to_local(source)
+            except RuntimeError as exc:
+                assert "already exists" in str(exc)
+            else:
+                raise AssertionError("expected RuntimeError")
+
+
+class TestEditExternalSkillCopyOnWrite:
+    """Verify _edit_skill copy-on-writes external skills instead of mutating them in place."""
+
+    def _setup(self, tmp_path):
+        local = tmp_path / "hermes" / "skills"
+        local.mkdir(parents=True)
+        ext = tmp_path / "shared-skills"
+        ext.mkdir()
+        _write_external_skill(ext, "shared-editable", "original desc")
+        hermes_home = tmp_path / "hermes"
+        (hermes_home / "config.yaml").write_text(
+            f"skills:\n  external_dirs:\n    - {ext}\n"
+        )
+        return local, ext, hermes_home
+
+    def test_edit_external_skill_creates_local_copy(self, tmp_path):
+        local, ext, hermes_home = self._setup(tmp_path)
+        new_content = (
+            "---\nname: shared-editable\ndescription: edited from profile A\n---\n\n"
+            "# shared-editable\n\nStep 1: edited step.\n"
+        )
+        with (
+            patch("tools.skill_manager_tool.SKILLS_DIR", local),
+            patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}),
+        ):
+            result = _edit_skill("shared-editable", new_content)
+        # Edit succeeded
+        assert result["success"] is True
+        # A note was attached explaining the copy-on-write
+        assert "note" in result
+        assert "override" in result["note"].lower() or "profile-local" in result["note"].lower()
+        # Local copy was created with the new content
+        local_copy = local / "shared-editable" / "SKILL.md"
+        assert local_copy.exists()
+        assert "edited from profile A" in local_copy.read_text()
+        # External skill is untouched
+        external_original = ext / "shared-editable" / "SKILL.md"
+        assert "original desc" in external_original.read_text()
+        # Returned path points at the local copy, not the external
+        assert str(local / "shared-editable") == result["path"]
+
+    def test_edit_local_skill_still_writes_in_place(self, tmp_path):
+        local, ext, hermes_home = self._setup(tmp_path)
+        with (
+            patch("tools.skill_manager_tool.SKILLS_DIR", local),
+            patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}),
+        ):
+            _create_skill("local-only", VALID_SKILL_CONTENT)
+            result = _edit_skill("local-only", VALID_SKILL_CONTENT_2)
+        assert result["success"] is True
+        # No CoW note for local skills
+        assert "note" not in result
+        assert "Updated description" in (local / "local-only" / "SKILL.md").read_text()
+
+
+class TestPatchExternalSkillCopyOnWrite:
+    def _setup(self, tmp_path):
+        local = tmp_path / "hermes" / "skills"
+        local.mkdir(parents=True)
+        ext = tmp_path / "shared-skills"
+        ext.mkdir()
+        _write_external_skill(ext, "shared-patchable")
+        hermes_home = tmp_path / "hermes"
+        (hermes_home / "config.yaml").write_text(
+            f"skills:\n  external_dirs:\n    - {ext}\n"
+        )
+        return local, ext, hermes_home
+
+    def test_patch_external_skill_creates_local_copy(self, tmp_path):
+        local, ext, hermes_home = self._setup(tmp_path)
+        with (
+            patch("tools.skill_manager_tool.SKILLS_DIR", local),
+            patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}),
+        ):
+            result = _patch_skill(
+                "shared-patchable", "original step", "patched step",
+            )
+        assert result["success"] is True
+        assert "note" in result
+        # Local copy has the patched content
+        assert "patched step" in (local / "shared-patchable" / "SKILL.md").read_text()
+        # External source is unchanged
+        assert "original step" in (ext / "shared-patchable" / "SKILL.md").read_text()
+
+    def test_patch_external_skill_rolls_back_copy_on_invalid_match(self, tmp_path):
+        local, ext, hermes_home = self._setup(tmp_path)
+        with (
+            patch("tools.skill_manager_tool.SKILLS_DIR", local),
+            patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}),
+        ):
+            result = _patch_skill(
+                "shared-patchable", "this does not exist", "whatever",
+            )
+        assert result["success"] is False
+        # The CoW copy should have been rolled back; local dir is empty.
+        assert not (local / "shared-patchable").exists()
+        # External still untouched
+        assert "original step" in (ext / "shared-patchable" / "SKILL.md").read_text()
+
+
+class TestWriteFileExternalSkillCopyOnWrite:
+    def test_write_file_on_external_copies_skill_first(self, tmp_path):
+        local = tmp_path / "hermes" / "skills"
+        local.mkdir(parents=True)
+        ext = tmp_path / "shared-skills"
+        ext.mkdir()
+        _write_external_skill(ext, "shared-writefile")
+        hermes_home = tmp_path / "hermes"
+        (hermes_home / "config.yaml").write_text(
+            f"skills:\n  external_dirs:\n    - {ext}\n"
+        )
+        with (
+            patch("tools.skill_manager_tool.SKILLS_DIR", local),
+            patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}),
+        ):
+            result = _write_file(
+                "shared-writefile", "references/notes.md", "local override notes",
+            )
+        assert result["success"] is True
+        assert "note" in result
+        # New file is in the local copy
+        assert (local / "shared-writefile" / "references" / "notes.md").read_text() == "local override notes"
+        # Original SKILL.md was also copied over as part of the CoW
+        assert (local / "shared-writefile" / "SKILL.md").exists()
+        # External skill has no new file
+        assert not (ext / "shared-writefile" / "references" / "notes.md").exists()
+
+
+class TestRemoveFileExternalSkillCopyOnWrite:
+    def test_remove_file_on_external_copies_then_removes(self, tmp_path):
+        local = tmp_path / "hermes" / "skills"
+        local.mkdir(parents=True)
+        ext = tmp_path / "shared-skills"
+        ext.mkdir()
+        source = _write_external_skill(ext, "shared-removefile")
+        (source / "references").mkdir()
+        (source / "references" / "notes.md").write_text("to be removed")
+        hermes_home = tmp_path / "hermes"
+        (hermes_home / "config.yaml").write_text(
+            f"skills:\n  external_dirs:\n    - {ext}\n"
+        )
+        with (
+            patch("tools.skill_manager_tool.SKILLS_DIR", local),
+            patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}),
+        ):
+            result = _remove_file("shared-removefile", "references/notes.md")
+        assert result["success"] is True
+        assert "note" in result
+        # Local copy exists, but the file is gone from the copy
+        assert (local / "shared-removefile" / "SKILL.md").exists()
+        assert not (local / "shared-removefile" / "references" / "notes.md").exists()
+        # External source still has the file
+        assert (ext / "shared-removefile" / "references" / "notes.md").exists()
+
+
+class TestDeleteExternalSkillRejected:
+    def test_delete_external_skill_returns_error(self, tmp_path):
+        local = tmp_path / "hermes" / "skills"
+        local.mkdir(parents=True)
+        ext = tmp_path / "shared-skills"
+        ext.mkdir()
+        _write_external_skill(ext, "shared-undeletable")
+        hermes_home = tmp_path / "hermes"
+        (hermes_home / "config.yaml").write_text(
+            f"skills:\n  external_dirs:\n    - {ext}\n"
+        )
+        with (
+            patch("tools.skill_manager_tool.SKILLS_DIR", local),
+            patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}),
+        ):
+            result = _delete_skill("shared-undeletable")
+        assert result["success"] is False
+        assert "skills.disabled" in result["error"]
+        # External skill still exists
+        assert (ext / "shared-undeletable" / "SKILL.md").exists()
+
+    def test_delete_local_skill_still_works(self, tmp_path):
+        local = tmp_path / "hermes" / "skills"
+        local.mkdir(parents=True)
+        hermes_home = tmp_path / "hermes"
+        with (
+            patch("tools.skill_manager_tool.SKILLS_DIR", local),
+            patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}),
+        ):
+            _create_skill("local-goner", VALID_SKILL_CONTENT)
+            result = _delete_skill("local-goner")
+        assert result["success"] is True
+        assert not (local / "local-goner").exists()

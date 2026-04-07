@@ -219,6 +219,55 @@ def _find_skill(name: str) -> Optional[Dict[str, Any]]:
     return None
 
 
+def _is_external_skill(skill_path: Path) -> bool:
+    """True if the skill lives outside the profile-local SKILLS_DIR.
+
+    An "external" skill is anything resolved from ``skills.external_dirs``
+    (or any future shared-skills mechanism). Such skills are treated as
+    read-only by the agent: mutations are copy-on-written into the local
+    profile ``skills/`` directory so they become profile-local overrides,
+    matching the documented behavior at
+    https://hermes-agent.nousresearch.com/docs/user-guide/features/skills/#external-skill-directories
+    """
+    try:
+        skill_path.resolve().relative_to(SKILLS_DIR.resolve())
+        return False
+    except ValueError:
+        return True
+
+
+def _copy_on_write_to_local(skill_path: Path) -> Path:
+    """Copy an external skill dir into the profile-local SKILLS_DIR.
+
+    Preserves the skill's directory name. Returns the path to the new
+    local copy. Raises RuntimeError if a skill with the same name already
+    exists locally (which would indicate ``_find_skill`` should have
+    returned the local one instead).
+    """
+    name = skill_path.name
+    local_dir = SKILLS_DIR / name
+    if local_dir.exists():
+        raise RuntimeError(
+            f"Cannot copy-on-write: {local_dir} already exists. "
+            f"This suggests the skill resolver returned an external path "
+            f"despite a local copy being available."
+        )
+    local_dir.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(skill_path, local_dir)
+    return local_dir
+
+
+# Human-readable note attached to mutation responses when a copy-on-write
+# occurred. The agent should surface this to the user so they understand
+# why the change didn't propagate to other profiles using the shared copy.
+_COPY_ON_WRITE_NOTE_TEMPLATE = (
+    "This skill originally lived at {original} (external / shared). "
+    "Your change was saved as a profile-local override at {local} and the "
+    "original is unchanged. To propagate the change to every profile that "
+    "uses this skill, edit the source file directly outside the agent."
+)
+
+
 def _validate_file_path(file_path: str) -> Optional[str]:
     """
     Validate a file path for write_file/remove_file.
@@ -339,7 +388,12 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
 
 
 def _edit_skill(name: str, content: str) -> Dict[str, Any]:
-    """Replace the SKILL.md of any existing skill (full rewrite)."""
+    """Replace the SKILL.md of any existing skill (full rewrite).
+
+    External / shared skills are copied to the profile-local SKILLS_DIR
+    before editing (copy-on-write) so the original remains untouched and
+    the edit only affects the current profile.
+    """
     err = _validate_frontmatter(content)
     if err:
         return {"success": False, "error": err}
@@ -352,23 +406,46 @@ def _edit_skill(name: str, content: str) -> Dict[str, Any]:
     if not existing:
         return {"success": False, "error": f"Skill '{name}' not found. Use skills_list() to see available skills."}
 
-    skill_md = existing["path"] / "SKILL.md"
-    # Back up original content for rollback
+    original_skill_dir = existing["path"]
+    was_external = _is_external_skill(original_skill_dir)
+    copy_on_write_note = None
+    copied_dir = None
+
+    if was_external:
+        try:
+            copied_dir = _copy_on_write_to_local(original_skill_dir)
+        except RuntimeError as exc:
+            return {"success": False, "error": str(exc)}
+        skill_dir = copied_dir
+        copy_on_write_note = _COPY_ON_WRITE_NOTE_TEMPLATE.format(
+            original=original_skill_dir, local=skill_dir,
+        )
+    else:
+        skill_dir = original_skill_dir
+
+    skill_md = skill_dir / "SKILL.md"
+    # Back up original content for rollback (of the file we're about to write).
     original_content = skill_md.read_text(encoding="utf-8") if skill_md.exists() else None
     _atomic_write_text(skill_md, content)
 
-    # Security scan — roll back on block
-    scan_error = _security_scan_skill(existing["path"])
+    # Security scan — roll back on block.
+    scan_error = _security_scan_skill(skill_dir)
     if scan_error:
-        if original_content is not None:
+        if was_external:
+            # Roll back the copy entirely; nothing was mutated in place.
+            shutil.rmtree(copied_dir, ignore_errors=True)
+        elif original_content is not None:
             _atomic_write_text(skill_md, original_content)
         return {"success": False, "error": scan_error}
 
-    return {
+    result = {
         "success": True,
         "message": f"Skill '{name}' updated.",
-        "path": str(existing["path"]),
+        "path": str(skill_dir),
     }
+    if copy_on_write_note:
+        result["note"] = copy_on_write_note
+    return result
 
 
 def _patch_skill(
@@ -392,22 +469,47 @@ def _patch_skill(
     if not existing:
         return {"success": False, "error": f"Skill '{name}' not found."}
 
-    skill_dir = existing["path"]
+    original_skill_dir = existing["path"]
+    was_external = _is_external_skill(original_skill_dir)
+    copy_on_write_note = None
+    copied_dir = None
 
     if file_path:
-        # Patching a supporting file
+        # Patching a supporting file — validate the path up front so an
+        # invalid request doesn't trigger a copy-on-write.
         err = _validate_file_path(file_path)
         if err:
             return {"success": False, "error": err}
-        target = skill_dir / file_path
+
+    # Read the current content from the *original* location before
+    # copying, so we can validate the patch target exists without
+    # allocating disk space for the copy on the error path.
+    src_target = original_skill_dir / (file_path or "SKILL.md")
+    if not src_target.exists():
+        return {
+            "success": False,
+            "error": f"File not found: {src_target.relative_to(original_skill_dir)}",
+        }
+    content = src_target.read_text(encoding="utf-8")
+
+    if was_external:
+        try:
+            copied_dir = _copy_on_write_to_local(original_skill_dir)
+        except RuntimeError as exc:
+            return {"success": False, "error": str(exc)}
+        skill_dir = copied_dir
+        copy_on_write_note = _COPY_ON_WRITE_NOTE_TEMPLATE.format(
+            original=original_skill_dir, local=skill_dir,
+        )
     else:
-        # Patching SKILL.md
-        target = skill_dir / "SKILL.md"
+        skill_dir = original_skill_dir
 
-    if not target.exists():
-        return {"success": False, "error": f"File not found: {target.relative_to(skill_dir)}"}
+    target = skill_dir / (file_path or "SKILL.md")
 
-    content = target.read_text(encoding="utf-8")
+    def _cleanup_cow_on_failure() -> None:
+        """If we copied the skill for CoW, delete the copy so nothing lingers."""
+        if was_external and copied_dir is not None:
+            shutil.rmtree(copied_dir, ignore_errors=True)
 
     # Use the same fuzzy matching engine as the file patch tool.
     # This handles whitespace normalization, indentation differences,
@@ -419,6 +521,7 @@ def _patch_skill(
         content, old_string, new_string, replace_all
     )
     if match_error:
+        _cleanup_cow_on_failure()
         # Show a short preview of the file so the model can self-correct
         preview = content[:500] + ("..." if len(content) > 500 else "")
         return {
@@ -431,12 +534,14 @@ def _patch_skill(
     target_label = "SKILL.md" if not file_path else file_path
     err = _validate_content_size(new_content, label=target_label)
     if err:
+        _cleanup_cow_on_failure()
         return {"success": False, "error": err}
 
     # If patching SKILL.md, validate frontmatter is still intact
     if not file_path:
         err = _validate_frontmatter(new_content)
         if err:
+            _cleanup_cow_on_failure()
             return {
                 "success": False,
                 "error": f"Patch would break SKILL.md structure: {err}",
@@ -448,22 +553,48 @@ def _patch_skill(
     # Security scan — roll back on block
     scan_error = _security_scan_skill(skill_dir)
     if scan_error:
-        _atomic_write_text(target, original_content)
+        if was_external:
+            _cleanup_cow_on_failure()
+        else:
+            _atomic_write_text(target, original_content)
         return {"success": False, "error": scan_error}
 
-    return {
+    result = {
         "success": True,
         "message": f"Patched {'SKILL.md' if not file_path else file_path} in skill '{name}' ({match_count} replacement{'s' if match_count > 1 else ''}).",
     }
+    if copy_on_write_note:
+        result["note"] = copy_on_write_note
+    return result
 
 
 def _delete_skill(name: str) -> Dict[str, Any]:
-    """Delete a skill."""
+    """Delete a skill.
+
+    External / shared skills cannot be deleted via this tool — they live
+    outside the profile's own skills dir and may be in use by other
+    profiles. To hide a shared skill from the current profile, add it to
+    the ``skills.disabled`` list in ``config.yaml``. To actually remove a
+    shared skill, delete the source directory directly outside the agent.
+    """
     existing = _find_skill(name)
     if not existing:
         return {"success": False, "error": f"Skill '{name}' not found."}
 
     skill_dir = existing["path"]
+
+    if _is_external_skill(skill_dir):
+        return {
+            "success": False,
+            "error": (
+                f"Skill '{name}' is external/shared (located at {skill_dir}) "
+                f"and cannot be deleted via this tool. To hide it from the "
+                f"current profile, add '{name}' to skills.disabled in "
+                f"config.yaml. To fully remove it, delete the source "
+                f"directory directly outside the agent."
+            ),
+        }
+
     shutil.rmtree(skill_dir)
 
     # Clean up empty category directories (don't remove SKILLS_DIR itself)
@@ -505,30 +636,58 @@ def _write_file(name: str, file_path: str, file_content: str) -> Dict[str, Any]:
     if not existing:
         return {"success": False, "error": f"Skill '{name}' not found. Create it first with action='create'."}
 
-    target = existing["path"] / file_path
+    original_skill_dir = existing["path"]
+    was_external = _is_external_skill(original_skill_dir)
+    copy_on_write_note = None
+    copied_dir = None
+
+    if was_external:
+        try:
+            copied_dir = _copy_on_write_to_local(original_skill_dir)
+        except RuntimeError as exc:
+            return {"success": False, "error": str(exc)}
+        skill_dir = copied_dir
+        copy_on_write_note = _COPY_ON_WRITE_NOTE_TEMPLATE.format(
+            original=original_skill_dir, local=skill_dir,
+        )
+    else:
+        skill_dir = original_skill_dir
+
+    target = skill_dir / file_path
     target.parent.mkdir(parents=True, exist_ok=True)
     # Back up for rollback
     original_content = target.read_text(encoding="utf-8") if target.exists() else None
     _atomic_write_text(target, file_content)
 
     # Security scan — roll back on block
-    scan_error = _security_scan_skill(existing["path"])
+    scan_error = _security_scan_skill(skill_dir)
     if scan_error:
-        if original_content is not None:
+        if was_external:
+            # Throw away the whole copy; nothing existed before it.
+            shutil.rmtree(copied_dir, ignore_errors=True)
+        elif original_content is not None:
             _atomic_write_text(target, original_content)
         else:
             target.unlink(missing_ok=True)
         return {"success": False, "error": scan_error}
 
-    return {
+    result = {
         "success": True,
         "message": f"File '{file_path}' written to skill '{name}'.",
         "path": str(target),
     }
+    if copy_on_write_note:
+        result["note"] = copy_on_write_note
+    return result
 
 
 def _remove_file(name: str, file_path: str) -> Dict[str, Any]:
-    """Remove a supporting file from any skill directory."""
+    """Remove a supporting file from any skill directory.
+
+    For external / shared skills, the whole skill is first copy-on-written
+    into the profile-local SKILLS_DIR, then the file is removed from the
+    copy. The original external skill is untouched.
+    """
     err = _validate_file_path(file_path)
     if err:
         return {"success": False, "error": err}
@@ -536,24 +695,41 @@ def _remove_file(name: str, file_path: str) -> Dict[str, Any]:
     existing = _find_skill(name)
     if not existing:
         return {"success": False, "error": f"Skill '{name}' not found."}
-    skill_dir = existing["path"]
+    original_skill_dir = existing["path"]
 
-    target = skill_dir / file_path
-    if not target.exists():
-        # List what's actually there for the model to see
+    # Validate the target file exists in the original skill before doing
+    # anything destructive or disk-allocating.
+    if not (original_skill_dir / file_path).exists():
         available = []
         for subdir in ALLOWED_SUBDIRS:
-            d = skill_dir / subdir
+            d = original_skill_dir / subdir
             if d.exists():
                 for f in d.rglob("*"):
                     if f.is_file():
-                        available.append(str(f.relative_to(skill_dir)))
+                        available.append(str(f.relative_to(original_skill_dir)))
         return {
             "success": False,
             "error": f"File '{file_path}' not found in skill '{name}'.",
             "available_files": available if available else None,
         }
 
+    was_external = _is_external_skill(original_skill_dir)
+    copy_on_write_note = None
+    copied_dir = None
+
+    if was_external:
+        try:
+            copied_dir = _copy_on_write_to_local(original_skill_dir)
+        except RuntimeError as exc:
+            return {"success": False, "error": str(exc)}
+        skill_dir = copied_dir
+        copy_on_write_note = _COPY_ON_WRITE_NOTE_TEMPLATE.format(
+            original=original_skill_dir, local=skill_dir,
+        )
+    else:
+        skill_dir = original_skill_dir
+
+    target = skill_dir / file_path
     target.unlink()
 
     # Clean up empty subdirectories
@@ -561,10 +737,13 @@ def _remove_file(name: str, file_path: str) -> Dict[str, Any]:
     if parent != skill_dir and parent.exists() and not any(parent.iterdir()):
         parent.rmdir()
 
-    return {
+    result = {
         "success": True,
         "message": f"File '{file_path}' removed from skill '{name}'.",
     }
+    if copy_on_write_note:
+        result["note"] = copy_on_write_note
+    return result
 
 
 # =============================================================================

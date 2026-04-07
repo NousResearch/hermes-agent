@@ -6306,6 +6306,7 @@ class HermesCLI:
             return None
 
         turn_route = self._resolve_turn_agent_config(message)
+        self._turn_response_prefix = turn_route.get("response_prefix", "")
         if turn_route["signature"] != self._active_agent_route_signature:
             self.agent = None
 
@@ -6469,6 +6470,10 @@ class HermesCLI:
                         "error": _summary,
                     }
 
+            # Show smart routing indicator before streamed output starts
+            if getattr(self, "_turn_response_prefix", ""):
+                _cprint(f"{_DIM}{self._turn_response_prefix}{_RST}")
+
             # Start agent in background thread
             agent_thread = threading.Thread(target=run_agent)
             agent_thread.start()
@@ -6553,6 +6558,8 @@ class HermesCLI:
 
             # Get the final response
             response = result.get("final_response", "") if result else ""
+            if response and getattr(self, "_turn_response_prefix", ""):
+                response = f"{self._turn_response_prefix} {response}"
 
             # Auto-generate session title after first exchange (non-blocking)
             if response and result and not result.get("failed") and not result.get("partial"):

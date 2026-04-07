@@ -9,40 +9,44 @@ from typing import Any, Dict, Optional
 from utils import is_truthy_value
 
 _COMPLEX_KEYWORDS = {
+    # Action verbs that signal real work
     "debug",
     "debugging",
     "implement",
     "implementation",
     "refactor",
+    "refactoring",
     "patch",
+    "deploy",
+    "migrate",
+    "rewrite",
+    # Error indicators (user pasting a problem)
     "traceback",
     "stacktrace",
     "exception",
-    "error",
-    "analyze",
-    "analysis",
+    # Deep analysis tasks
     "investigate",
     "architecture",
-    "design",
-    "compare",
     "benchmark",
     "optimize",
     "optimise",
-    "review",
-    "terminal",
-    "shell",
-    "tool",
-    "tools",
-    "pytest",
-    "test",
-    "tests",
-    "plan",
-    "planning",
+    # Orchestration
     "delegate",
     "subagent",
-    "cron",
-    "docker",
-    "kubernetes",
+}
+
+# Two-word phrases that signal complexity only when both words appear.
+# Avoids false positives like "what does this test do?" or "compare these two".
+_COMPLEX_PHRASES = {
+    ("write", "test"),
+    ("write", "tests"),
+    ("run", "pytest"),
+    ("run", "test"),
+    ("run", "tests"),
+    ("code", "review"),
+    ("design", "system"),
+    ("create", "plan"),
+    ("write", "plan"),
 }
 
 _URL_RE = re.compile(r"https?://|www\.", re.IGNORECASE)
@@ -81,29 +85,38 @@ def choose_cheap_model_route(user_message: str, routing_config: Optional[Dict[st
     if not text:
         return None
 
-    max_chars = _coerce_int(cfg.get("max_simple_chars"), 160)
-    max_words = _coerce_int(cfg.get("max_simple_words"), 28)
+    max_chars = _coerce_int(cfg.get("max_simple_chars"), 300)
+    max_words = _coerce_int(cfg.get("max_simple_words"), 50)
 
     if len(text) > max_chars:
         return None
     if len(text.split()) > max_words:
         return None
-    if text.count("\n") > 1:
+    if text.count("\n") > 3:
         return None
-    if "```" in text or "`" in text:
+    # Code fences are a strong signal for primary model
+    if "```" in text:
         return None
     if _URL_RE.search(text):
         return None
 
     lowered = text.lower()
     words = {token.strip(".,:;!?()[]{}\"'`") for token in lowered.split()}
+    # Addressing the agent by name signals intent for the primary model
+    _AGENT_NAMES = {"herman", "herm", "hermy", "hermes"}
+    if words & _AGENT_NAMES:
+        return None
     if words & _COMPLEX_KEYWORDS:
+        return None
+    # Check two-word phrases that only signal complexity together
+    if any(a in words and b in words for a, b in _COMPLEX_PHRASES):
         return None
 
     route = dict(cheap_model)
     route["provider"] = provider
     route["model"] = model
     route["routing_reason"] = "simple_turn"
+    route["response_prefix"] = str(cfg.get("response_prefix", "")).strip()
     return route
 
 
@@ -126,6 +139,7 @@ def resolve_turn_route(user_message: str, routing_config: Optional[Dict[str, Any
                 "credential_pool": primary.get("credential_pool"),
             },
             "label": None,
+            "response_prefix": "",
             "signature": (
                 primary.get("model"),
                 primary.get("provider"),
@@ -162,6 +176,7 @@ def resolve_turn_route(user_message: str, routing_config: Optional[Dict[str, Any
                 "credential_pool": primary.get("credential_pool"),
             },
             "label": None,
+            "response_prefix": "",
             "signature": (
                 primary.get("model"),
                 primary.get("provider"),
@@ -183,6 +198,7 @@ def resolve_turn_route(user_message: str, routing_config: Optional[Dict[str, Any
             "args": list(runtime.get("args") or []),
         },
         "label": f"smart route → {route.get('model')} ({runtime.get('provider')})",
+        "response_prefix": route.get("response_prefix", ""),
         "signature": (
             route.get("model"),
             runtime.get("provider"),

@@ -6437,6 +6437,7 @@ class GatewayRunner:
                     logger.debug("Could not set up stream consumer: %s", _sc_err)
 
             turn_route = self._resolve_turn_agent_config(message, model, runtime_kwargs)
+            _smart_response_prefix = turn_route.get("response_prefix", "")
 
             # Check agent cache — reuse the AIAgent from the previous message
             # in this session to preserve the frozen system prompt and tool
@@ -6668,6 +6669,8 @@ class GatewayRunner:
             
             # Return final response, or a message if something went wrong
             final_response = result.get("final_response")
+            if final_response and _smart_response_prefix:
+                final_response = f"{_smart_response_prefix} {final_response}"
 
             # Extract actual token counts from the agent instance used for this run
             _last_prompt_toks = 0

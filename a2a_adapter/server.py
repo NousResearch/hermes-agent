@@ -157,7 +157,7 @@ class HermesAgentExecutor(AgentExecutor):
         """Handle a task: run Hermes and stream results back via EventQueue."""
         task_id = context.task_id
         context_id = getattr(context, "context_id", None) or task_id
-        user_message = _extract_text(context.message)
+        user_message = _extract_message_content(context.message)
         session_id = context_id
 
         if not user_message:
@@ -316,6 +316,59 @@ def _extract_text(message: Any) -> str:
         elif isinstance(part, dict) and part.get("type") == "text":
             texts.append(part.get("text", ""))
     return " ".join(texts).strip()
+
+
+def _extract_message_content(message: Any):
+    """Extract content from an A2A Message.
+
+    Returns a plain string for text-only messages, or a list of Anthropic-format
+    content blocks (text + image) when image file parts are present.
+    """
+    if message is None:
+        return ""
+
+    parts = getattr(message, "parts", None) or []
+    texts: list[str] = []
+    image_blocks: list[dict] = []
+
+    for part in parts:
+        # Text parts
+        if hasattr(part, "text"):
+            texts.append(str(part.text))
+        elif hasattr(part, "root") and hasattr(part.root, "text"):
+            texts.append(str(part.root.text))
+        elif isinstance(part, dict) and (part.get("type") == "text" or part.get("kind") == "text"):
+            texts.append(part.get("text", ""))
+        # File parts (sent by Akela a2a_caller for image attachments)
+        elif isinstance(part, dict) and part.get("kind") == "file":
+            file_info = part.get("file") or {}
+            mime = file_info.get("mimeType", "")
+            b64 = file_info.get("bytes", "")
+            if mime.startswith("image/") and b64:
+                image_blocks.append({
+                    "type": "image",
+                    "source": {"type": "base64", "media_type": mime, "data": b64},
+                })
+        elif hasattr(part, "root") and hasattr(part.root, "file"):
+            file_info = part.root.file
+            mime = getattr(file_info, "mimeType", "") or ""
+            b64 = getattr(file_info, "bytes", "") or ""
+            if mime.startswith("image/") and b64:
+                image_blocks.append({
+                    "type": "image",
+                    "source": {"type": "base64", "media_type": mime, "data": b64},
+                })
+
+    text = " ".join(texts).strip()
+
+    if not image_blocks:
+        return text
+
+    # Build multimodal list — images first, then text
+    content: list[dict] = list(image_blocks)
+    if text:
+        content.append({"type": "text", "text": text})
+    return content
 
 
 def _run_sync(

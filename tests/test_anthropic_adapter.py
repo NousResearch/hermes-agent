@@ -967,6 +967,37 @@ class TestBuildAnthropicKwargs:
         )
         assert "thinking" not in kwargs
 
+    def test_reasoning_skipped_when_sdk_lacks_thinking_kwarg(self, monkeypatch):
+        monkeypatch.setattr(
+            "agent.anthropic_adapter._anthropic_messages_create_supports",
+            lambda arg_name: False if arg_name == "thinking" else True,
+        )
+        kwargs = build_anthropic_kwargs(
+            model="claude-sonnet-4-20250514",
+            messages=[{"role": "user", "content": "think hard"}],
+            tools=None,
+            max_tokens=4096,
+            reasoning_config={"enabled": True, "effort": "high"},
+        )
+        assert "thinking" not in kwargs
+        assert "output_config" not in kwargs
+        assert kwargs["max_tokens"] == 4096
+
+    def test_adaptive_thinking_omits_output_config_if_sdk_lacks_it(self, monkeypatch):
+        monkeypatch.setattr(
+            "agent.anthropic_adapter._anthropic_messages_create_supports",
+            lambda arg_name: arg_name != "output_config",
+        )
+        kwargs = build_anthropic_kwargs(
+            model="claude-sonnet-4-6",
+            messages=[{"role": "user", "content": "think hard"}],
+            tools=None,
+            max_tokens=4096,
+            reasoning_config={"enabled": True, "effort": "high"},
+        )
+        assert kwargs["thinking"] == {"type": "adaptive"}
+        assert "output_config" not in kwargs
+
     def test_default_max_tokens_uses_model_output_limit(self):
         """When max_tokens is None, use the model's native output limit."""
         kwargs = build_anthropic_kwargs(

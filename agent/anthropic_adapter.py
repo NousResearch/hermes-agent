@@ -11,9 +11,11 @@ Auth supports:
 """
 
 import copy
+import inspect
 import json
 import logging
 import os
+from functools import lru_cache
 from pathlib import Path
 
 from hermes_constants import get_hermes_home
@@ -88,6 +90,24 @@ def _get_anthropic_max_output(model: str) -> int:
 def _supports_adaptive_thinking(model: str) -> bool:
     """Return True for Claude 4.6 models that support adaptive thinking."""
     return any(v in model for v in ("4-6", "4.6"))
+
+
+@lru_cache(maxsize=None)
+def _anthropic_messages_create_supports(arg_name: str) -> bool:
+    """Return whether the installed Anthropic SDK accepts a given kwarg.
+
+    Hermes can be updated without reinstalling Python dependencies. Older
+    anthropic SDK versions accepted neither `thinking` nor `output_config`.
+    In that case, reasoning kwargs must be omitted for compatibility.
+    """
+    if _anthropic_sdk is None:
+        return True
+    try:
+        from anthropic.resources.messages import Messages
+
+        return arg_name in inspect.signature(Messages.create).parameters
+    except Exception:
+        return True
 
 
 # Beta headers for enhanced features (sent with ALL auth types)
@@ -1313,18 +1333,25 @@ def build_anthropic_kwargs(
     # Haiku models do NOT support extended thinking at all — skip entirely.
     if reasoning_config and isinstance(reasoning_config, dict):
         if reasoning_config.get("enabled") is not False and "haiku" not in model.lower():
-            effort = str(reasoning_config.get("effort", "medium")).lower()
-            budget = THINKING_BUDGET.get(effort, 8000)
-            if _supports_adaptive_thinking(model):
-                kwargs["thinking"] = {"type": "adaptive"}
-                kwargs["output_config"] = {
-                    "effort": ADAPTIVE_EFFORT_MAP.get(effort, "medium")
-                }
+            if not _anthropic_messages_create_supports("thinking"):
+                logger.info(
+                    "Installed anthropic SDK lacks `thinking` support; "
+                    "skipping reasoning kwargs for compatibility."
+                )
             else:
-                kwargs["thinking"] = {"type": "enabled", "budget_tokens": budget}
-                # Anthropic requires temperature=1 when thinking is enabled on older models
-                kwargs["temperature"] = 1
-                kwargs["max_tokens"] = max(effective_max_tokens, budget + 4096)
+                effort = str(reasoning_config.get("effort", "medium")).lower()
+                budget = THINKING_BUDGET.get(effort, 8000)
+                if _supports_adaptive_thinking(model):
+                    kwargs["thinking"] = {"type": "adaptive"}
+                    if _anthropic_messages_create_supports("output_config"):
+                        kwargs["output_config"] = {
+                            "effort": ADAPTIVE_EFFORT_MAP.get(effort, "medium")
+                        }
+                else:
+                    kwargs["thinking"] = {"type": "enabled", "budget_tokens": budget}
+                    # Anthropic requires temperature=1 when thinking is enabled on older models
+                    kwargs["temperature"] = 1
+                    kwargs["max_tokens"] = max(effective_max_tokens, budget + 4096)
 
     return kwargs
 

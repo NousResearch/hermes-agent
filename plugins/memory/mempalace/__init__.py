@@ -282,7 +282,7 @@ class MemPalaceMemoryProvider(MemoryProvider):
         self._prefetch_lock = threading.Lock()
 
         # Background worker
-        self._work_queue: queue.Queue = queue.Queue()
+        self._work_queue: queue.Queue = queue.Queue(maxsize=500)
         self._worker_thread: threading.Thread | None = None
 
         # Circuit breaker
@@ -355,8 +355,8 @@ class MemPalaceMemoryProvider(MemoryProvider):
         if config_path.exists():
             try:
                 existing = json.loads(config_path.read_text(encoding="utf-8"))
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("MemPalace: could not parse existing config at %s (%s) — overwriting", config_path, e)
         existing.update(values)
         config_path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
 
@@ -404,20 +404,23 @@ class MemPalaceMemoryProvider(MemoryProvider):
             if item is None:
                 self._work_queue.task_done()
                 break
-            fn, args, kwargs = item
+            fn, args = item
             try:
-                fn(*args, **kwargs)
+                fn(*args)
             except Exception as exc:
-                logger.debug("MemPalace worker error in %s: %s", fn.__name__, exc)
+                logger.warning("MemPalace worker error in %s: %s", fn.__name__, exc)
             finally:
                 self._work_queue.task_done()
 
-    def _enqueue(self, fn, *args, **kwargs) -> None:
+    def _enqueue(self, fn, *args) -> None:
         """Queue a function for background execution (skips if breaker open)."""
         if self._is_breaker_open():
             logger.debug("MemPalace: circuit breaker open, skipping %s", fn.__name__)
             return
-        self._work_queue.put((fn, args, kwargs))
+        try:
+            self._work_queue.put((fn, args), block=True, timeout=0.5)
+        except queue.Full:
+            logger.warning("MemPalace: work queue full — dropping %s", fn.__name__)
 
     # -- Palace helpers ------------------------------------------------------
 
@@ -469,8 +472,8 @@ class MemPalaceMemoryProvider(MemoryProvider):
                     self._palace_path = Path(
                         os.path.expanduser(self._config["palace_path"])
                     )
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("MemPalace: could not read config at %s (%s) — using defaults", cfg_path, e)
 
         # FIX 5: Update mempalace_dir based on config, not hardcoded in __init__
         if self._config.get("mempalace_dir"):
@@ -638,6 +641,9 @@ class MemPalaceMemoryProvider(MemoryProvider):
             drawer_id = f"drawer_{wing}_{room}_{drawer_hash}"
 
             col = self._get_collection()
+            if col is None:
+                logger.debug("MemPalace: collection not ready, skipping %s", "_do_sync_turn")
+                return
 
             # Check for existing drawer
             existing = col.get(ids=[drawer_id])
@@ -687,6 +693,9 @@ class MemPalaceMemoryProvider(MemoryProvider):
             drawer_id = f"drawer_{wing}_{room}_{drawer_hash}"
 
             col = self._get_collection()
+            if col is None:
+                logger.debug("MemPalace: collection not ready, skipping %s", "_do_file_single")
+                return
 
             existing = col.get(ids=[drawer_id])
             if existing.get("ids"):
@@ -767,6 +776,8 @@ class MemPalaceMemoryProvider(MemoryProvider):
             with self._wakeup_lock:
                 self._wakeup_cache = ""
 
+            # Runs synchronously in the worker thread — intentional, ensures L1 is
+            # regenerated before the next session start reads system_prompt_block().
             # Regenerate L1 AAAK
             self._refresh_wakeup()
 
@@ -1045,6 +1056,12 @@ class MemPalaceMemoryProvider(MemoryProvider):
         if self._worker_thread and self._worker_thread.is_alive():
             self._work_queue.put(None)  # sentinel
             self._worker_thread.join(timeout=10.0)
+            if self._worker_thread.is_alive():
+                logger.warning(
+                    "MemPalace: worker thread did not finish within 10s — "
+                    "approximately %d queued items may not have been written to the palace.",
+                    self._work_queue.qsize()
+                )
         logger.info("MemPalace: shutdown complete.")
 
 

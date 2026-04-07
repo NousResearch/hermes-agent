@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 # FIX 8: import _extract_text_content from the main module — no duplication
-from plugins.memory.mempalace import _extract_text_content  # noqa: E402
+from plugins.memory.mempalace import _extract_text_content
 
 
 # ---------------------------------------------------------------------------

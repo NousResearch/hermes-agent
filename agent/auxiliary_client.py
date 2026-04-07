@@ -1032,15 +1032,19 @@ def _to_async_client(sync_client, model: str):
         "api_key": sync_client.api_key,
         "base_url": str(sync_client.base_url),
     }
-    base_lower = str(sync_client.base_url).lower()
-    if "openrouter" in base_lower:
-        async_kwargs["default_headers"] = dict(_OR_HEADERS)
-    elif "api.githubcopilot.com" in base_lower:
-        from hermes_cli.models import copilot_default_headers
+    preserved_headers = dict(getattr(sync_client, "_default_headers", {}) or {})
+    if preserved_headers:
+        async_kwargs["default_headers"] = preserved_headers
+    else:
+        base_lower = str(sync_client.base_url).lower()
+        if "openrouter" in base_lower:
+            async_kwargs["default_headers"] = dict(_OR_HEADERS)
+        elif "api.githubcopilot.com" in base_lower:
+            from hermes_cli.models import copilot_default_headers
 
-        async_kwargs["default_headers"] = copilot_default_headers()
-    elif "api.kimi.com" in base_lower:
-        async_kwargs["default_headers"] = {"User-Agent": "KimiCLI/1.0"}
+            async_kwargs["default_headers"] = copilot_default_headers()
+        elif "api.kimi.com" in base_lower:
+            async_kwargs["default_headers"] = {"User-Agent": "KimiCLI/1.0"}
     return AsyncOpenAI(**async_kwargs), model
 
 
@@ -1051,6 +1055,7 @@ def resolve_provider_client(
     raw_codex: bool = False,
     explicit_base_url: str = None,
     explicit_api_key: str = None,
+    is_vision: bool = False,
 ) -> Tuple[Optional[Any], Optional[str]]:
     """Central router: given a provider name and optional model, return a
     configured client with the correct auth, base URL, and API format.
@@ -1221,12 +1226,25 @@ def resolve_provider_client(
         if "api.kimi.com" in base_url.lower():
             headers["User-Agent"] = "KimiCLI/1.0"
         elif "api.githubcopilot.com" in base_url.lower():
-            from hermes_cli.models import copilot_default_headers
+            from hermes_cli.copilot_auth import copilot_request_headers
 
-            headers.update(copilot_default_headers())
+            headers.update(copilot_request_headers(is_agent_turn=True, is_vision=is_vision))
 
         client = OpenAI(api_key=api_key, base_url=base_url,
                         **({"default_headers": headers} if headers else {}))
+
+        if provider == "copilot":
+            try:
+                from hermes_cli.models import copilot_model_api_mode
+
+                if copilot_model_api_mode(final_model, api_key=api_key) == "codex_responses":
+                    wrapped = CodexAuxiliaryClient(client, final_model)
+                    logger.debug("resolve_provider_client: %s (%s) via Responses adapter", provider, final_model)
+                    return (_to_async_client(wrapped, final_model) if async_mode
+                            else (wrapped, final_model))
+            except Exception:
+                pass
+
         logger.debug("resolve_provider_client: %s (%s)", provider, final_model)
         return (_to_async_client(client, final_model) if async_mode
                 else (client, final_model))
@@ -1286,6 +1304,7 @@ def get_async_text_auxiliary_client(task: str = ""):
 
 
 _VISION_AUTO_PROVIDER_ORDER = (
+    "copilot",
     "openrouter",
     "nous",
     "openai-codex",
@@ -1305,6 +1324,8 @@ def _normalize_vision_provider(provider: Optional[str]) -> str:
 
 def _resolve_strict_vision_backend(provider: str) -> Tuple[Optional[Any], Optional[str]]:
     provider = _normalize_vision_provider(provider)
+    if provider == "copilot":
+        return resolve_provider_client("copilot", model="gpt-4.1", is_vision=True)
     if provider == "openrouter":
         return _try_openrouter()
     if provider == "nous":
@@ -1786,6 +1807,84 @@ def _build_call_kwargs(
     return kwargs
 
 
+def _is_max_tokens_compat_error(error: Exception) -> bool:
+    err_str = str(error)
+    return "max_tokens" in err_str or "unsupported_parameter" in err_str
+
+
+def _extract_error_text(error: Exception) -> str:
+    parts = [str(error)]
+    body = getattr(error, "body", None)
+    if isinstance(body, dict):
+        payload = body.get("error", body)
+        if isinstance(payload, dict):
+            msg = payload.get("message")
+            if msg:
+                parts.append(str(msg))
+            code = payload.get("code")
+            if code:
+                parts.append(str(code))
+    return " ".join(part for part in parts if part)
+
+
+def _should_fallback_vision_backend(error: Exception) -> bool:
+    status_code = getattr(error, "status_code", None)
+    message = _extract_error_text(error).lower()
+
+    if status_code in (402, 429):
+        return True
+    if status_code == 403:
+        fallback_markers = (
+            "key limit exceeded",
+            "total limit",
+            "rate limit",
+            "quota",
+            "more credits",
+            "insufficient credits",
+            "credit",
+            "billing",
+        )
+        return any(marker in message for marker in fallback_markers)
+    return False
+
+
+def _get_vision_fallback_providers(current_provider: Optional[str]) -> List[str]:
+    current = _normalize_vision_provider(current_provider)
+    seen = set()
+    ordered: List[str] = []
+    for provider in get_available_vision_backends():
+        normalized = _normalize_vision_provider(provider)
+        if not normalized or normalized == current or normalized in seen:
+            continue
+        ordered.append(normalized)
+        seen.add(normalized)
+    return ordered
+
+
+def _call_chat_completion_with_compat_retry(client: Any, kwargs: dict) -> Any:
+    try:
+        return client.chat.completions.create(**kwargs)
+    except Exception as err:
+        if _is_max_tokens_compat_error(err) and "max_tokens" in kwargs:
+            retry_kwargs = dict(kwargs)
+            max_tokens = retry_kwargs.pop("max_tokens", None)
+            retry_kwargs["max_completion_tokens"] = max_tokens
+            return client.chat.completions.create(**retry_kwargs)
+        raise
+
+
+async def _async_call_chat_completion_with_compat_retry(client: Any, kwargs: dict) -> Any:
+    try:
+        return await client.chat.completions.create(**kwargs)
+    except Exception as err:
+        if _is_max_tokens_compat_error(err) and "max_tokens" in kwargs:
+            retry_kwargs = dict(kwargs)
+            max_tokens = retry_kwargs.pop("max_tokens", None)
+            retry_kwargs["max_completion_tokens"] = max_tokens
+            return await client.chat.completions.create(**retry_kwargs)
+        raise
+
+
 def call_llm(
     task: str = None,
     *,
@@ -1826,6 +1925,7 @@ def call_llm(
     """
     resolved_provider, resolved_model, resolved_base_url, resolved_api_key = _resolve_task_provider_model(
         task, provider, model, base_url, api_key)
+    requested_provider = resolved_provider
 
     if task == "vision":
         effective_provider, client, final_model = resolve_vision_provider_client(
@@ -1898,28 +1998,43 @@ def call_llm(
         tools=tools, timeout=effective_timeout, extra_body=extra_body,
         base_url=resolved_base_url)
 
-    # Handle max_tokens vs max_completion_tokens retry, then payment fallback.
     try:
-        return client.chat.completions.create(**kwargs)
+        return _call_chat_completion_with_compat_retry(client, kwargs)
     except Exception as first_err:
-        err_str = str(first_err)
-        if "max_tokens" in err_str or "unsupported_parameter" in err_str:
-            kwargs.pop("max_tokens", None)
-            kwargs["max_completion_tokens"] = max_tokens
-            try:
-                return client.chat.completions.create(**kwargs)
-            except Exception as retry_err:
-                # If the max_tokens retry also hits a payment error,
-                # fall through to the payment fallback below.
-                if not _is_payment_error(retry_err):
-                    raise
-                first_err = retry_err
+        if task == "vision" and requested_provider == "auto" and _should_fallback_vision_backend(first_err):
+            for fallback_provider in _get_vision_fallback_providers(resolved_provider):
+                logger.warning(
+                    "Vision backend %s failed (%s); retrying with %s",
+                    resolved_provider,
+                    _extract_error_text(first_err)[:200],
+                    fallback_provider,
+                )
+                fallback_effective, fallback_client, fallback_model = resolve_vision_provider_client(
+                    provider=fallback_provider,
+                    model=resolved_model,
+                    async_mode=False,
+                )
+                if fallback_client is None:
+                    continue
+                fallback_kwargs = _build_call_kwargs(
+                    fallback_effective or fallback_provider,
+                    fallback_model,
+                    messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    tools=tools,
+                    timeout=effective_timeout,
+                    extra_body=extra_body,
+                    base_url=resolved_base_url,
+                )
+                try:
+                    return _call_chat_completion_with_compat_retry(fallback_client, fallback_kwargs)
+                except Exception as fallback_err:
+                    if not _should_fallback_vision_backend(fallback_err):
+                        raise
+                    first_err = fallback_err
+            raise first_err
 
-        # ── Payment / credit exhaustion fallback ──────────────────────
-        # When the resolved provider returns 402 or a credit-related error,
-        # try alternative providers instead of giving up.  This handles the
-        # common case where a user runs out of OpenRouter credits but has
-        # Codex OAuth or another provider available.
         if _is_payment_error(first_err):
             fb_client, fb_model, fb_label = _try_payment_fallback(
                 resolved_provider, task)
@@ -2009,6 +2124,7 @@ async def async_call_llm(
     """
     resolved_provider, resolved_model, resolved_base_url, resolved_api_key = _resolve_task_provider_model(
         task, provider, model, base_url, api_key)
+    requested_provider = resolved_provider
 
     if task == "vision":
         effective_provider, client, final_model = resolve_vision_provider_client(
@@ -2070,11 +2186,39 @@ async def async_call_llm(
         base_url=resolved_base_url)
 
     try:
-        return await client.chat.completions.create(**kwargs)
+        return await _async_call_chat_completion_with_compat_retry(client, kwargs)
     except Exception as first_err:
-        err_str = str(first_err)
-        if "max_tokens" in err_str or "unsupported_parameter" in err_str:
-            kwargs.pop("max_tokens", None)
-            kwargs["max_completion_tokens"] = max_tokens
-            return await client.chat.completions.create(**kwargs)
+        if task == "vision" and requested_provider == "auto" and _should_fallback_vision_backend(first_err):
+            for fallback_provider in _get_vision_fallback_providers(resolved_provider):
+                logger.warning(
+                    "Vision backend %s failed (%s); retrying with %s",
+                    resolved_provider,
+                    _extract_error_text(first_err)[:200],
+                    fallback_provider,
+                )
+                fallback_effective, fallback_client, fallback_model = resolve_vision_provider_client(
+                    provider=fallback_provider,
+                    model=resolved_model,
+                    async_mode=True,
+                )
+                if fallback_client is None:
+                    continue
+                fallback_kwargs = _build_call_kwargs(
+                    fallback_effective or fallback_provider,
+                    fallback_model,
+                    messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    tools=tools,
+                    timeout=effective_timeout,
+                    extra_body=extra_body,
+                    base_url=resolved_base_url,
+                )
+                try:
+                    return await _async_call_chat_completion_with_compat_retry(fallback_client, fallback_kwargs)
+                except Exception as fallback_err:
+                    if not _should_fallback_vision_backend(fallback_err):
+                        raise
+                    first_err = fallback_err
+            raise first_err
         raise

@@ -326,7 +326,6 @@ def _prompt_for_sudo_password(timeout_seconds: int = 45) -> str:
         if "HERMES_SPINNER_PAUSE" in os.environ:
             del os.environ["HERMES_SPINNER_PAUSE"]
 
-
 def _safe_command_preview(command: Any, limit: int = 200) -> str:
     """Return a log-safe preview for possibly-invalid command values."""
     if command is None:
@@ -337,6 +336,110 @@ def _safe_command_preview(command: Any, limit: int = 200) -> str:
         return repr(command)[:limit]
     except Exception:
         return f"<{type(command).__name__}>"
+
+def _looks_like_env_assignment(token: str) -> bool:
+    """Return True when *token* is a leading shell environment assignment."""
+    if "=" not in token or token.startswith("="):
+        return False
+    name, _value = token.split("=", 1)
+    return bool(re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", name))
+
+
+def _read_shell_token(command: str, start: int) -> tuple[str, int]:
+    """Read one shell token, preserving quotes/escapes, starting at *start*."""
+    i = start
+    n = len(command)
+
+    while i < n:
+        ch = command[i]
+        if ch.isspace() or ch in ";|&()":
+            break
+        if ch == "'":
+            i += 1
+            while i < n and command[i] != "'":
+                i += 1
+            if i < n:
+                i += 1
+            continue
+        if ch == '"':
+            i += 1
+            while i < n:
+                inner = command[i]
+                if inner == "\\" and i + 1 < n:
+                    i += 2
+                    continue
+                if inner == '"':
+                    i += 1
+                    break
+                i += 1
+            continue
+        if ch == "\\" and i + 1 < n:
+            i += 2
+            continue
+        i += 1
+
+    return command[start:i], i
+
+
+def _rewrite_real_sudo_invocations(command: str) -> tuple[str, bool]:
+    """Rewrite only real unquoted sudo command words, not plain text mentions."""
+    out: list[str] = []
+    i = 0
+    n = len(command)
+    command_start = True
+    found = False
+
+    while i < n:
+        ch = command[i]
+
+        if ch.isspace():
+            out.append(ch)
+            if ch == "\n":
+                command_start = True
+            i += 1
+            continue
+
+        if ch == "#" and command_start:
+            comment_end = command.find("\n", i)
+            if comment_end == -1:
+                out.append(command[i:])
+                break
+            out.append(command[i:comment_end])
+            i = comment_end
+            continue
+
+        if command.startswith("&&", i) or command.startswith("||", i) or command.startswith(";;", i):
+            out.append(command[i:i + 2])
+            i += 2
+            command_start = True
+            continue
+
+        if ch in ";|&(":
+            out.append(ch)
+            i += 1
+            command_start = True
+            continue
+
+        if ch == ")":
+            out.append(ch)
+            i += 1
+            command_start = False
+            continue
+
+        token, next_i = _read_shell_token(command, i)
+        if command_start and token == "sudo":
+            out.append("sudo -S -p ''")
+            found = True
+        else:
+            out.append(token)
+
+        if command_start and _looks_like_env_assignment(token):
+            command_start = True
+        else:
+            command_start = False
+        i = next_i
+
+    return "".join(out), found
 
 
 def _transform_sudo_command(command: str | None) -> tuple[str | None, str | None]:
@@ -374,40 +477,26 @@ def _transform_sudo_command(command: str | None) -> tuple[str | None, str | None
       Command runs as-is (fails gracefully with "sudo: a password is required").
     """
     global _cached_sudo_password
-    import re
 
-    # Check if command even contains sudo
     if command is None:
         return None, None
+    transformed, has_real_sudo = _rewrite_real_sudo_invocations(command)
+    if not has_real_sudo:
+        return command, None
 
-    if not re.search(r'\bsudo\b', command):
-        return command, None  # No sudo in command, nothing to do
+    has_configured_password = "SUDO_PASSWORD" in os.environ
+    sudo_password = os.environ.get("SUDO_PASSWORD", "") if has_configured_password else _cached_sudo_password
 
-    # Try to get password from: env var -> session cache -> interactive prompt
-    sudo_password = os.getenv("SUDO_PASSWORD", "") or _cached_sudo_password
+    if not has_configured_password and not sudo_password and os.getenv("HERMES_INTERACTIVE"):
+        sudo_password = _prompt_for_sudo_password(timeout_seconds=45)
+        if sudo_password:
+            _cached_sudo_password = sudo_password
 
-    if not sudo_password:
-        # No password configured - check if we're in interactive mode
-        if os.getenv("HERMES_INTERACTIVE"):
-            # Prompt user for password
-            sudo_password = _prompt_for_sudo_password(timeout_seconds=45)
-            if sudo_password:
-                _cached_sudo_password = sudo_password  # Cache for session
+    if has_configured_password or sudo_password:
+        # Trailing newline is required: sudo -S reads one line for the password.
+        return transformed, sudo_password + "\n"
 
-    if not sudo_password:
-        return command, None  # No password, let it fail gracefully
-
-    def replace_sudo(match):
-        # Replace bare 'sudo' with 'sudo -S -p ""'.
-        # The password is returned as sudo_stdin and must be written to the
-        # process's stdin pipe by the caller — it never appears in any
-        # command-line argument or shell string.
-        return "sudo -S -p ''"
-
-    # Match 'sudo' at word boundaries (not 'visudo' or 'sudoers')
-    transformed = re.sub(r'\bsudo\b', replace_sudo, command)
-    # Trailing newline is required: sudo -S reads one line for the password.
-    return transformed, sudo_password + "\n"
+    return command, None
 
 
 # Environment classes now live in tools/environments/

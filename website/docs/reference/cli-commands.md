@@ -37,8 +37,8 @@ hermes [global-options] <command> [subcommand/options]
 | `hermes gateway` | Run or manage the messaging gateway service. |
 | `hermes setup` | Interactive setup wizard for all or part of the configuration. |
 | `hermes whatsapp` | Configure and pair the WhatsApp bridge. |
-| `hermes login` / `logout` | Authenticate with OAuth-backed providers. |
-| `hermes auth` | Manage credential pools — add, list, remove, reset, set strategy. |
+| `hermes auth` | Manage credentials — add, list, remove, reset, set strategy. Handles OAuth flows for Codex/Nous/Anthropic. |
+| `hermes login` / `logout` | **Deprecated** — use `hermes auth` instead. |
 | `hermes status` | Show agent, auth, and platform status. |
 | `hermes cron` | Inspect and tick the cron scheduler. |
 | `hermes webhook` | Manage dynamic webhook subscriptions for event-driven activation. |
@@ -178,22 +178,11 @@ hermes whatsapp
 
 Runs the WhatsApp pairing/setup flow, including mode selection and QR-code pairing.
 
-## `hermes login` / `hermes logout`
+## `hermes login` / `hermes logout` *(Deprecated)*
 
-```bash
-hermes login [--provider nous|openai-codex] [--portal-url ...] [--inference-url ...]
-hermes logout [--provider nous|openai-codex]
-```
-
-`login` supports:
-- Nous Portal OAuth/device flow
-- OpenAI Codex OAuth/device flow
-
-Useful options for `login`:
-- `--no-browser`
-- `--timeout <seconds>`
-- `--ca-bundle <pem>`
-- `--insecure`
+:::caution
+`hermes login` has been removed. Use `hermes auth` to manage OAuth credentials, `hermes model` to select a provider, or `hermes setup` for full interactive setup.
+:::
 
 ## `hermes auth`
 

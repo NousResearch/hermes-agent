@@ -208,7 +208,7 @@ class HermesAgentExecutor(AgentExecutor):
                         TaskArtifactUpdateEvent(
                             taskId=task_id,
                             contextId=context_id,
-                            artifact={"parts": [{"type": "text", "text": accumulated}]},
+                            artifact={"artifactId": "response", "parts": [{"type": "text", "text": accumulated}]},
                             final=False,
                         )
                     )
@@ -224,7 +224,7 @@ class HermesAgentExecutor(AgentExecutor):
                 TaskArtifactUpdateEvent(
                     taskId=task_id,
                     contextId=context_id,
-                    artifact={"parts": [{"type": "text", "text": final_text}]},
+                    artifact={"artifactId": "response", "parts": [{"type": "text", "text": final_text}]},
                     final=True,
                 )
             )

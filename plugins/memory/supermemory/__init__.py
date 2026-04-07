@@ -26,6 +26,8 @@ _DEFAULT_CONTAINER_TAG = "hermes"
 _DEFAULT_MAX_RECALL_RESULTS = 10
 _DEFAULT_PROFILE_FREQUENCY = 50
 _DEFAULT_CAPTURE_MODE = "all"
+_DEFAULT_SEARCH_MODE = "hybrid"
+_VALID_SEARCH_MODES = ("hybrid", "memories", "documents")
 _DEFAULT_API_TIMEOUT = 5.0
 _MIN_CAPTURE_LENGTH = 10
 _MAX_ENTITY_CONTEXT_LENGTH = 1500
@@ -59,8 +61,12 @@ def _default_config() -> dict:
         "max_recall_results": _DEFAULT_MAX_RECALL_RESULTS,
         "profile_frequency": _DEFAULT_PROFILE_FREQUENCY,
         "capture_mode": _DEFAULT_CAPTURE_MODE,
+        "search_mode": _DEFAULT_SEARCH_MODE,
         "entity_context": _DEFAULT_ENTITY_CONTEXT,
         "api_timeout": _DEFAULT_API_TIMEOUT,
+        "enable_custom_container_tags": False,
+        "custom_containers": [],
+        "custom_container_instructions": "",
     }
 
 
@@ -100,7 +106,10 @@ def _load_supermemory_config(hermes_home: str) -> dict:
         except Exception:
             logger.debug("Failed to parse %s", config_path, exc_info=True)
 
-    config["container_tag"] = _sanitize_tag(str(config.get("container_tag", _DEFAULT_CONTAINER_TAG)))
+    # Keep raw container_tag — template variables like {identity} are resolved
+    # in initialize(), and _sanitize_tag runs AFTER resolution.
+    raw_tag = str(config.get("container_tag", _DEFAULT_CONTAINER_TAG)).strip()
+    config["container_tag"] = raw_tag if raw_tag else _DEFAULT_CONTAINER_TAG
     config["auto_recall"] = _as_bool(config.get("auto_recall"), True)
     config["auto_capture"] = _as_bool(config.get("auto_capture"), True)
     try:
@@ -112,11 +121,23 @@ def _load_supermemory_config(hermes_home: str) -> dict:
     except Exception:
         config["profile_frequency"] = _DEFAULT_PROFILE_FREQUENCY
     config["capture_mode"] = "everything" if config.get("capture_mode") == "everything" else "all"
+    raw_search_mode = str(config.get("search_mode", _DEFAULT_SEARCH_MODE)).strip().lower()
+    config["search_mode"] = raw_search_mode if raw_search_mode in _VALID_SEARCH_MODES else _DEFAULT_SEARCH_MODE
     config["entity_context"] = _clamp_entity_context(str(config.get("entity_context", _DEFAULT_ENTITY_CONTEXT)))
     try:
         config["api_timeout"] = max(0.5, min(15.0, float(config.get("api_timeout", _DEFAULT_API_TIMEOUT))))
     except Exception:
         config["api_timeout"] = _DEFAULT_API_TIMEOUT
+
+    # Multi-container support
+    config["enable_custom_container_tags"] = _as_bool(config.get("enable_custom_container_tags"), False)
+    raw_containers = config.get("custom_containers", [])
+    if isinstance(raw_containers, list):
+        config["custom_containers"] = [_sanitize_tag(str(t)) for t in raw_containers if t]
+    else:
+        config["custom_containers"] = []
+    config["custom_container_instructions"] = str(config.get("custom_container_instructions", "")).strip()
+
     return config
 
 
@@ -240,28 +261,41 @@ def _is_trivial_message(text: str) -> bool:
 
 
 class _SupermemoryClient:
-    def __init__(self, api_key: str, timeout: float, container_tag: str):
+    def __init__(self, api_key: str, timeout: float, container_tag: str, search_mode: str = "hybrid"):
         from supermemory import Supermemory
 
         self._api_key = api_key
         self._container_tag = container_tag
+        self._search_mode = search_mode if search_mode in _VALID_SEARCH_MODES else _DEFAULT_SEARCH_MODE
         self._timeout = timeout
         self._client = Supermemory(api_key=api_key, timeout=timeout, max_retries=0)
 
-    def add_memory(self, content: str, metadata: Optional[dict] = None, *, entity_context: str = "") -> dict:
-        kwargs = {
+    def add_memory(self, content: str, metadata: Optional[dict] = None, *,
+                   entity_context: str = "", container_tag: Optional[str] = None,
+                   custom_id: Optional[str] = None) -> dict:
+        tag = container_tag or self._container_tag
+        kwargs: dict[str, Any] = {
             "content": content.strip(),
-            "container_tags": [self._container_tag],
+            "container_tags": [tag],
         }
         if metadata:
             kwargs["metadata"] = metadata
         if entity_context:
             kwargs["entity_context"] = _clamp_entity_context(entity_context)
+        if custom_id:
+            kwargs["custom_id"] = custom_id
         result = self._client.documents.add(**kwargs)
         return {"id": getattr(result, "id", "")}
 
-    def search_memories(self, query: str, *, limit: int = 5) -> list[dict]:
-        response = self._client.search.memories(q=query, container_tag=self._container_tag, limit=limit)
+    def search_memories(self, query: str, *, limit: int = 5,
+                        container_tag: Optional[str] = None,
+                        search_mode: Optional[str] = None) -> list[dict]:
+        tag = container_tag or self._container_tag
+        mode = search_mode or self._search_mode
+        kwargs: dict[str, Any] = {"q": query, "container_tag": tag, "limit": limit}
+        if mode in _VALID_SEARCH_MODES:
+            kwargs["search_mode"] = mode
+        response = self._client.search.memories(**kwargs)
         results = []
         for item in (getattr(response, "results", None) or []):
             results.append({
@@ -273,8 +307,10 @@ class _SupermemoryClient:
             })
         return results
 
-    def get_profile(self, query: Optional[str] = None) -> dict:
-        kwargs = {"container_tag": self._container_tag}
+    def get_profile(self, query: Optional[str] = None, *,
+                    container_tag: Optional[str] = None) -> dict:
+        tag = container_tag or self._container_tag
+        kwargs: dict[str, Any] = {"container_tag": tag}
         if query:
             kwargs["q"] = query
         response = self._client.profile(**kwargs)
@@ -296,18 +332,19 @@ class _SupermemoryClient:
                     })
         return {"static": static, "dynamic": dynamic, "search_results": search_results}
 
-    def forget_memory(self, memory_id: str) -> None:
-        self._client.memories.forget(container_tag=self._container_tag, id=memory_id)
+    def forget_memory(self, memory_id: str, *, container_tag: Optional[str] = None) -> None:
+        tag = container_tag or self._container_tag
+        self._client.memories.forget(container_tag=tag, id=memory_id)
 
-    def forget_by_query(self, query: str) -> dict:
-        results = self.search_memories(query, limit=5)
+    def forget_by_query(self, query: str, *, container_tag: Optional[str] = None) -> dict:
+        results = self.search_memories(query, limit=5, container_tag=container_tag)
         if not results:
             return {"success": False, "message": "No matching memory found to forget."}
         target = results[0]
         memory_id = target.get("id", "")
         if not memory_id:
             return {"success": False, "message": "Best matching memory has no id."}
-        self.forget_memory(memory_id)
+        self.forget_memory(memory_id, container_tag=container_tag)
         preview = (target.get("memory") or "")[:100]
         return {"success": True, "message": f'Forgot: "{preview}"', "id": memory_id}
 
@@ -398,11 +435,17 @@ class SupermemoryMemoryProvider(MemoryProvider):
         self._max_recall_results = _DEFAULT_MAX_RECALL_RESULTS
         self._profile_frequency = _DEFAULT_PROFILE_FREQUENCY
         self._capture_mode = _DEFAULT_CAPTURE_MODE
+        self._search_mode = _DEFAULT_SEARCH_MODE
         self._entity_context = _DEFAULT_ENTITY_CONTEXT
         self._api_timeout = _DEFAULT_API_TIMEOUT
         self._hermes_home = ""
         self._write_enabled = True
         self._active = False
+        # Multi-container support
+        self._enable_custom_containers = False
+        self._custom_containers: List[str] = []
+        self._custom_container_instructions = ""
+        self._allowed_containers: List[str] = []
 
     @property
     def name(self) -> str:
@@ -419,16 +462,11 @@ class SupermemoryMemoryProvider(MemoryProvider):
             return False
 
     def get_config_schema(self):
+        # Only prompt for the API key during `hermes memory setup`.
+        # All other options are documented for $HERMES_HOME/supermemory.json
+        # or the SUPERMEMORY_CONTAINER_TAG env var.
         return [
             {"key": "api_key", "description": "Supermemory API key", "secret": True, "required": True, "env_var": "SUPERMEMORY_API_KEY", "url": "https://supermemory.ai"},
-            {"key": "container_tag", "description": "Container tag for reads and writes", "default": _DEFAULT_CONTAINER_TAG},
-            {"key": "auto_recall", "description": "Enable automatic recall before each turn", "default": "true", "choices": ["true", "false"]},
-            {"key": "auto_capture", "description": "Enable automatic capture after each completed turn", "default": "true", "choices": ["true", "false"]},
-            {"key": "max_recall_results", "description": "Maximum recalled items to inject", "default": str(_DEFAULT_MAX_RECALL_RESULTS)},
-            {"key": "profile_frequency", "description": "Include profile facts on first turn and every N turns", "default": str(_DEFAULT_PROFILE_FREQUENCY)},
-            {"key": "capture_mode", "description": "Capture mode", "default": _DEFAULT_CAPTURE_MODE, "choices": ["all", "everything"]},
-            {"key": "entity_context", "description": "Extraction guidance passed to Supermemory", "default": _DEFAULT_ENTITY_CONTEXT},
-            {"key": "api_timeout", "description": "Timeout in seconds for SDK and ingest calls", "default": str(_DEFAULT_API_TIMEOUT)},
         ]
 
     def save_config(self, values, hermes_home):
@@ -446,14 +484,29 @@ class SupermemoryMemoryProvider(MemoryProvider):
         self._turn_count = 0
         self._config = _load_supermemory_config(self._hermes_home)
         self._api_key = os.environ.get("SUPERMEMORY_API_KEY", "")
-        self._container_tag = self._config["container_tag"]
+
+        # Resolve container tag: env var > config > default.
+        # Supports {identity} template for profile-scoped containers.
+        env_tag = os.environ.get("SUPERMEMORY_CONTAINER_TAG", "").strip()
+        raw_tag = env_tag or self._config["container_tag"]
+        identity = kwargs.get("agent_identity", "default")
+        self._container_tag = _sanitize_tag(raw_tag.replace("{identity}", identity))
+
         self._auto_recall = self._config["auto_recall"]
         self._auto_capture = self._config["auto_capture"]
         self._max_recall_results = self._config["max_recall_results"]
         self._profile_frequency = self._config["profile_frequency"]
         self._capture_mode = self._config["capture_mode"]
+        self._search_mode = self._config["search_mode"]
         self._entity_context = self._config["entity_context"]
         self._api_timeout = self._config["api_timeout"]
+
+        # Multi-container setup
+        self._enable_custom_containers = self._config["enable_custom_container_tags"]
+        self._custom_containers = self._config["custom_containers"]
+        self._custom_container_instructions = self._config["custom_container_instructions"]
+        self._allowed_containers = [self._container_tag] + list(self._custom_containers)
+
         agent_context = kwargs.get("agent_context", "")
         self._write_enabled = agent_context not in ("cron", "flush", "subagent")
         self._active = bool(self._api_key)
@@ -464,6 +517,7 @@ class SupermemoryMemoryProvider(MemoryProvider):
                     api_key=self._api_key,
                     timeout=self._api_timeout,
                     container_tag=self._container_tag,
+                    search_mode=self._search_mode,
                 )
             except Exception:
                 logger.warning("Supermemory initialization failed", exc_info=True)
@@ -476,11 +530,18 @@ class SupermemoryMemoryProvider(MemoryProvider):
     def system_prompt_block(self) -> str:
         if not self._active:
             return ""
-        return (
-            "# Supermemory\n"
-            f"Active. Container: {self._container_tag}.\n"
-            "Use supermemory_search, supermemory_store, supermemory_forget, and supermemory_profile for explicit memory operations."
-        )
+        lines = [
+            "# Supermemory",
+            f"Active. Container: {self._container_tag}.",
+            "Use supermemory_search, supermemory_store, supermemory_forget, and supermemory_profile for explicit memory operations.",
+        ]
+        if self._enable_custom_containers and self._custom_containers:
+            tags_str = ", ".join(self._allowed_containers)
+            lines.append(f"\nMulti-container mode enabled. Available containers: {tags_str}.")
+            lines.append("Pass an optional container_tag to supermemory_search, supermemory_store, supermemory_forget, and supermemory_profile to target a specific container.")
+            if self._custom_container_instructions:
+                lines.append(f"\n{self._custom_container_instructions}")
+        return "\n".join(lines)
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
         if not self._active or not self._auto_recall or not self._client or not query.strip():
@@ -582,22 +643,62 @@ class SupermemoryMemoryProvider(MemoryProvider):
                 thread.join(timeout=5.0)
             setattr(self, attr_name, None)
 
+    def _resolve_tool_container_tag(self, args: dict) -> Optional[str]:
+        """Validate and resolve container_tag from tool call args.
+
+        Returns None (use primary) if multi-container is disabled or no tag provided.
+        Returns the validated tag if it's in the allowed list.
+        Raises ValueError if the tag is not whitelisted.
+        """
+        if not self._enable_custom_containers:
+            return None
+        tag = str(args.get("container_tag") or "").strip()
+        if not tag:
+            return None
+        sanitized = _sanitize_tag(tag)
+        if sanitized not in self._allowed_containers:
+            raise ValueError(
+                f"Container tag '{sanitized}' is not allowed. "
+                f"Allowed: {', '.join(self._allowed_containers)}"
+            )
+        return sanitized
+
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
-        return [STORE_SCHEMA, SEARCH_SCHEMA, FORGET_SCHEMA, PROFILE_SCHEMA]
+        if not self._enable_custom_containers:
+            return [STORE_SCHEMA, SEARCH_SCHEMA, FORGET_SCHEMA, PROFILE_SCHEMA]
+
+        # When multi-container is enabled, add optional container_tag to relevant tools
+        container_param = {
+            "type": "string",
+            "description": f"Optional container tag. Allowed: {', '.join(self._allowed_containers)}. Defaults to primary ({self._container_tag}).",
+        }
+        schemas = []
+        for base in [STORE_SCHEMA, SEARCH_SCHEMA, FORGET_SCHEMA, PROFILE_SCHEMA]:
+            schema = json.loads(json.dumps(base))  # deep copy
+            schema["parameters"]["properties"]["container_tag"] = container_param
+            schemas.append(schema)
+        return schemas
 
     def _tool_store(self, args: dict) -> str:
         content = str(args.get("content") or "").strip()
         if not content:
             return tool_error("content is required")
+        try:
+            tag = self._resolve_tool_container_tag(args)
+        except ValueError as exc:
+            return tool_error(str(exc))
         metadata = args.get("metadata") or {}
         if not isinstance(metadata, dict):
             metadata = {}
         metadata.setdefault("type", _detect_category(content))
         metadata["source"] = "hermes_tool"
         try:
-            result = self._client.add_memory(content, metadata=metadata, entity_context=self._entity_context)
+            result = self._client.add_memory(content, metadata=metadata, entity_context=self._entity_context, container_tag=tag)
             preview = content[:80] + ("..." if len(content) > 80 else "")
-            return json.dumps({"saved": True, "id": result.get("id", ""), "preview": preview})
+            resp: dict[str, Any] = {"saved": True, "id": result.get("id", ""), "preview": preview}
+            if tag:
+                resp["container_tag"] = tag
+            return json.dumps(resp)
         except Exception as exc:
             return tool_error(f"Failed to store memory: {exc}")
 
@@ -606,21 +707,28 @@ class SupermemoryMemoryProvider(MemoryProvider):
         if not query:
             return tool_error("query is required")
         try:
+            tag = self._resolve_tool_container_tag(args)
+        except ValueError as exc:
+            return tool_error(str(exc))
+        try:
             limit = max(1, min(20, int(args.get("limit", 5) or 5)))
         except Exception:
             limit = 5
         try:
-            results = self._client.search_memories(query, limit=limit)
+            results = self._client.search_memories(query, limit=limit, container_tag=tag)
             formatted = []
             for item in results:
-                entry = {"id": item.get("id", ""), "content": item.get("memory", "")}
+                entry: dict[str, Any] = {"id": item.get("id", ""), "content": item.get("memory", "")}
                 if item.get("similarity") is not None:
                     try:
                         entry["similarity"] = round(float(item["similarity"]) * 100)
                     except Exception:
                         pass
                 formatted.append(entry)
-            return json.dumps({"results": formatted, "count": len(formatted)})
+            resp: dict[str, Any] = {"results": formatted, "count": len(formatted)}
+            if tag:
+                resp["container_tag"] = tag
+            return json.dumps(resp)
         except Exception as exc:
             return tool_error(f"Search failed: {exc}")
 
@@ -630,27 +738,38 @@ class SupermemoryMemoryProvider(MemoryProvider):
         if not memory_id and not query:
             return tool_error("Provide either id or query")
         try:
+            tag = self._resolve_tool_container_tag(args)
+        except ValueError as exc:
+            return tool_error(str(exc))
+        try:
             if memory_id:
-                self._client.forget_memory(memory_id)
+                self._client.forget_memory(memory_id, container_tag=tag)
                 return json.dumps({"forgotten": True, "id": memory_id})
-            return json.dumps(self._client.forget_by_query(query))
+            return json.dumps(self._client.forget_by_query(query, container_tag=tag))
         except Exception as exc:
             return tool_error(f"Forget failed: {exc}")
 
     def _tool_profile(self, args: dict) -> str:
         query = str(args.get("query") or "").strip() or None
         try:
-            profile = self._client.get_profile(query=query)
+            tag = self._resolve_tool_container_tag(args)
+        except ValueError as exc:
+            return tool_error(str(exc))
+        try:
+            profile = self._client.get_profile(query=query, container_tag=tag)
             sections = []
             if profile["static"]:
                 sections.append("## User Profile (Persistent)\n" + "\n".join(f"- {item}" for item in profile["static"]))
             if profile["dynamic"]:
                 sections.append("## Recent Context\n" + "\n".join(f"- {item}" for item in profile["dynamic"]))
-            return json.dumps({
+            resp: dict[str, Any] = {
                 "profile": "\n\n".join(sections),
                 "static_count": len(profile["static"]),
                 "dynamic_count": len(profile["dynamic"]),
-            })
+            }
+            if tag:
+                resp["container_tag"] = tag
+            return json.dumps(resp)
         except Exception as exc:
             return tool_error(f"Profile failed: {exc}")
 

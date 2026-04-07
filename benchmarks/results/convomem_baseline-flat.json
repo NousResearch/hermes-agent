@@ -1,0 +1,88 @@
+{
+  "benchmark": "convomem",
+  "dataset": "Salesforce/ConvoMem",
+  "backend": "baseline-flat",
+  "n_evidence_filter": null,
+  "total": 6693,
+  "correct": 4477,
+  "score": 0.66890781413417,
+  "wall_time_seconds": 7.281098127365112,
+  "mean_metrics": {
+    "recall_at_1": 0.03003137606454505,
+    "recall_at_3": 0.05005229344090841,
+    "recall_at_5": 0.05647691618108472,
+    "recall_at_10": 0.061407440609592114,
+    "mrr": 0.04103102269843641,
+    "ndcg_at_5": 0.04236247734224062,
+    "ndcg_at_10": 0.0451794827879442,
+    "average_precision": 0.048538629556110505,
+    "exact_match": 0.0,
+    "token_f1": 0.15752573548646553,
+    "token_precision": 0.10957164656622588,
+    "token_recall": 0.49662999277622866
+  },
+  "by_type": {
+    "abstention_evidence": {
+      "total": 934,
+      "correct": 234,
+      "score": 0.2505353319057816
+    },
+    "assistant_facts_evidence": {
+      "total": 1657,
+      "correct": 1371,
+      "score": 0.8273989136994568
+    },
+    "changing_evidence": {
+      "total": 1524,
+      "correct": 1072,
+      "score": 0.7034120734908137
+    },
+    "implicit_connection_evidence": {
+      "total": 670,
+      "correct": 417,
+      "score": 0.6223880597014926
+    },
+    "preference_evidence": {
+      "total": 316,
+      "correct": 214,
+      "score": 0.6772151898734177
+    },
+    "user_evidence": {
+      "total": 1592,
+      "correct": 1169,
+      "score": 0.7342964824120602
+    }
+  },
+  "by_n_evidence": {
+    "1": {
+      "total": 2084,
+      "correct": 1409,
+      "score": 0.6761036468330134
+    },
+    "2": {
+      "total": 1910,
+      "correct": 1363,
+      "score": 0.7136125654450262
+    },
+    "3": {
+      "total": 1258,
+      "correct": 823,
+      "score": 0.6542130365659777
+    },
+    "4": {
+      "total": 740,
+      "correct": 480,
+      "score": 0.6486486486486487
+    },
+    "5": {
+      "total": 384,
+      "correct": 214,
+      "score": 0.5572916666666666
+    },
+    "6": {
+      "total": 317,
+      "correct": 188,
+      "score": 0.5930599369085173
+    }
+  }
+}

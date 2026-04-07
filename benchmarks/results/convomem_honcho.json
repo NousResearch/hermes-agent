@@ -1,0 +1,58 @@
+{
+  "benchmark": "convomem",
+  "dataset": "Salesforce/ConvoMem",
+  "backend": "honcho",
+  "n_evidence_filter": null,
+  "total": 300,
+  "correct": 224,
+  "score": 0.7466666666666667,
+  "wall_time_seconds": 187.2,
+  "note": "Aggregated from 6 per-category runs of 50 questions each (300 total). Honcho requires HONCHO_BASE_URL=http://localhost:8000.",
+  "mean_metrics": {
+    "recall_at_1": 0.0,
+    "recall_at_5": 0.0,
+    "mrr": 0.0,
+    "token_f1": 0.046,
+    "exact_match": 0.0
+  },
+  "by_type": {
+    "abstention_evidence": {
+      "total": 50,
+      "correct": 18,
+      "score": 0.36
+    },
+    "user_evidence": {
+      "total": 50,
+      "correct": 47,
+      "score": 0.94
+    },
+    "assistant_facts_evidence": {
+      "total": 50,
+      "correct": 49,
+      "score": 0.98
+    },
+    "changing_evidence": {
+      "total": 50,
+      "correct": 39,
+      "score": 0.78
+    },
+    "implicit_connection_evidence": {
+      "total": 50,
+      "correct": 34,
+      "score": 0.68
+    },
+    "preference_evidence": {
+      "total": 50,
+      "correct": 37,
+      "score": 0.74
+    }
+  },
+  "by_n_evidence": {
+    "1": {
+      "total": 300,
+      "correct": 224,
+      "score": 0.7466666666666667
+    }
+  },
+  "results": []
+}

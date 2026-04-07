@@ -1,0 +1,58 @@
+{
+  "benchmark": "convomem",
+  "dataset": "Salesforce/ConvoMem",
+  "backend": "mem0",
+  "n_evidence_filter": null,
+  "total": 30,
+  "correct": 24,
+  "score": 0.8,
+  "wall_time_seconds": 2370,
+  "note": "Aggregated from 6 per-category runs of 5 questions each (30 total). Mem0 cloud API (~79s/question). Reset() is a no-op \u2014 stores accumulate across questions within the same category. Requires MEM0_API_KEY.",
+  "mean_metrics": {
+    "recall_at_1": 0.0,
+    "recall_at_5": 0.0,
+    "mrr": 0.0,
+    "token_f1": 0.041,
+    "exact_match": 0.0
+  },
+  "by_type": {
+    "abstention_evidence": {
+      "total": 5,
+      "correct": 1,
+      "score": 0.2
+    },
+    "user_evidence": {
+      "total": 5,
+      "correct": 4,
+      "score": 0.8
+    },
+    "assistant_facts_evidence": {
+      "total": 5,
+      "correct": 5,
+      "score": 1.0
+    },
+    "changing_evidence": {
+      "total": 5,
+      "correct": 5,
+      "score": 1.0
+    },
+    "implicit_connection_evidence": {
+      "total": 5,
+      "correct": 5,
+      "score": 1.0
+    },
+    "preference_evidence": {
+      "total": 5,
+      "correct": 4,
+      "score": 0.8
+    }
+  },
+  "by_n_evidence": {
+    "1": {
+      "total": 30,
+      "correct": 24,
+      "score": 0.8
+    }
+  },
+  "results": []
+}

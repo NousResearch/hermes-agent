@@ -23,8 +23,8 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **AI Gateway** | `AI_GATEWAY_API_KEY` in `~/.hermes/.env` (provider: `ai-gateway`) |
 | **z.ai / GLM** | `GLM_API_KEY` in `~/.hermes/.env` (provider: `zai`) |
 | **Kimi / Moonshot** | `KIMI_API_KEY` in `~/.hermes/.env` (provider: `kimi-coding`) |
-| **MiniMax** | `MINIMAX_API_KEY` in `~/.hermes/.env` (provider: `minimax`) |
-| **MiniMax China** | `MINIMAX_CN_API_KEY` in `~/.hermes/.env` (provider: `minimax-cn`) |
+| **MiniMax** | `MINIMAX_TOKEN` in `~/.hermes/.env` (preferred) or `MINIMAX_API_KEY` as fallback (provider: `minimax`) |
+| **MiniMax China** | `MINIMAX_CN_TOKEN` in `~/.hermes/.env` (preferred) or `MINIMAX_CN_API_KEY` as fallback (provider: `minimax-cn`) |
 | **Alibaba Cloud** | `DASHSCOPE_API_KEY` in `~/.hermes/.env` (provider: `alibaba`, aliases: `dashscope`, `qwen`) |
 | **Kilo Code** | `KILOCODE_API_KEY` in `~/.hermes/.env` (provider: `kilocode`) |
 | **OpenCode Zen** | `OPENCODE_ZEN_API_KEY` in `~/.hermes/.env` (provider: `opencode-zen`) |
@@ -147,11 +147,11 @@ hermes chat --provider kimi-coding --model kimi-for-coding
 
 # MiniMax (global endpoint)
 hermes chat --provider minimax --model MiniMax-M2.7
-# Requires: MINIMAX_API_KEY in ~/.hermes/.env
+# Requires: MINIMAX_TOKEN (preferred) or MINIMAX_API_KEY in ~/.hermes/.env
 
 # MiniMax (China endpoint)
 hermes chat --provider minimax-cn --model MiniMax-M2.7
-# Requires: MINIMAX_CN_API_KEY in ~/.hermes/.env
+# Requires: MINIMAX_CN_TOKEN (preferred) or MINIMAX_CN_API_KEY in ~/.hermes/.env
 
 # Alibaba Cloud / DashScope (Qwen models)
 hermes chat --provider alibaba --model qwen3.5-plus

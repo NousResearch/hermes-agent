@@ -26,12 +26,14 @@ from agent.auxiliary_client import (
 
 
 @pytest.fixture(autouse=True)
-def _clean_env(monkeypatch):
+def _clean_env(monkeypatch, tmp_path):
     """Strip provider env vars so each test starts clean."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     for key in (
         "OPENROUTER_API_KEY", "OPENAI_BASE_URL", "OPENAI_API_KEY",
         "OPENAI_MODEL", "LLM_MODEL", "NOUS_INFERENCE_BASE_URL",
         "ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN",
+        "MINIMAX_TOKEN", "MINIMAX_API_KEY", "MINIMAX_CN_TOKEN", "MINIMAX_CN_API_KEY",
         # Per-task provider/model/direct-endpoint overrides
         "AUXILIARY_VISION_PROVIDER", "AUXILIARY_VISION_MODEL",
         "AUXILIARY_VISION_BASE_URL", "AUXILIARY_VISION_API_KEY",
@@ -618,7 +620,10 @@ class TestVisionClientFallback:
     def test_vision_returns_none_without_any_credentials(self):
         with (
             patch("agent.auxiliary_client._read_nous_auth", return_value=None),
+            patch("agent.auxiliary_client._try_openrouter", return_value=(None, None)),
+            patch("agent.auxiliary_client._try_codex", return_value=(None, None)),
             patch("agent.auxiliary_client._try_anthropic", return_value=(None, None)),
+            patch("agent.auxiliary_client._try_custom_endpoint", return_value=(None, None)),
         ):
             client, model = get_vision_auxiliary_client()
         assert client is None
@@ -989,6 +994,7 @@ class TestResolveForcedProvider:
 
     def test_forced_main_falls_to_codex(self, codex_auth_dir, monkeypatch):
         with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
+             patch("agent.auxiliary_client._try_custom_endpoint", return_value=(None, None)), \
              patch("agent.auxiliary_client.OpenAI"):
             client, model = _resolve_forced_provider("main")
         from agent.auxiliary_client import CodexAuxiliaryClient

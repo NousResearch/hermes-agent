@@ -70,12 +70,12 @@ class TestProviderRegistry:
 
     def test_minimax_env_vars(self):
         pconfig = PROVIDER_REGISTRY["minimax"]
-        assert pconfig.api_key_env_vars == ("MINIMAX_API_KEY",)
+        assert pconfig.api_key_env_vars == ("MINIMAX_TOKEN", "MINIMAX_API_KEY")
         assert pconfig.base_url_env_var == "MINIMAX_BASE_URL"
 
     def test_minimax_cn_env_vars(self):
         pconfig = PROVIDER_REGISTRY["minimax-cn"]
-        assert pconfig.api_key_env_vars == ("MINIMAX_CN_API_KEY",)
+        assert pconfig.api_key_env_vars == ("MINIMAX_CN_TOKEN", "MINIMAX_CN_API_KEY")
         assert pconfig.base_url_env_var == "MINIMAX_CN_BASE_URL"
 
     def test_ai_gateway_env_vars(self):
@@ -120,7 +120,8 @@ PROVIDER_ENV_VARS = (
     "OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN",
     "CLAUDE_CODE_OAUTH_TOKEN",
     "GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY",
-    "KIMI_API_KEY", "KIMI_BASE_URL", "MINIMAX_API_KEY", "MINIMAX_CN_API_KEY",
+    "KIMI_API_KEY", "KIMI_BASE_URL", "MINIMAX_TOKEN", "MINIMAX_API_KEY",
+    "MINIMAX_CN_TOKEN", "MINIMAX_CN_API_KEY",
     "AI_GATEWAY_API_KEY", "AI_GATEWAY_BASE_URL",
     "KILOCODE_API_KEY", "KILOCODE_BASE_URL",
     "DASHSCOPE_API_KEY", "OPENCODE_ZEN_API_KEY", "OPENCODE_GO_API_KEY",
@@ -425,11 +426,34 @@ class TestResolveApiKeyProviderCredentials:
         assert creds["api_key"] == "mm-secret-key"
         assert creds["base_url"] == "https://api.minimax.io/anthropic"
 
+    def test_resolve_minimax_with_token(self, monkeypatch):
+        monkeypatch.setenv("MINIMAX_TOKEN", "mm-token")
+        creds = resolve_api_key_provider_credentials("minimax")
+        assert creds["provider"] == "minimax"
+        assert creds["api_key"] == "mm-token"
+        assert creds["source"] == "MINIMAX_TOKEN"
+        assert creds["base_url"] == "https://api.minimax.io/anthropic"
+
+    def test_minimax_token_takes_priority_over_legacy_api_key(self, monkeypatch):
+        monkeypatch.setenv("MINIMAX_TOKEN", "mm-token")
+        monkeypatch.setenv("MINIMAX_API_KEY", "mm-legacy-key")
+        creds = resolve_api_key_provider_credentials("minimax")
+        assert creds["api_key"] == "mm-token"
+        assert creds["source"] == "MINIMAX_TOKEN"
+
     def test_resolve_minimax_cn_with_key(self, monkeypatch):
         monkeypatch.setenv("MINIMAX_CN_API_KEY", "mmcn-secret-key")
         creds = resolve_api_key_provider_credentials("minimax-cn")
         assert creds["provider"] == "minimax-cn"
         assert creds["api_key"] == "mmcn-secret-key"
+        assert creds["base_url"] == "https://api.minimaxi.com/anthropic"
+
+    def test_resolve_minimax_cn_with_token(self, monkeypatch):
+        monkeypatch.setenv("MINIMAX_CN_TOKEN", "mmcn-token")
+        creds = resolve_api_key_provider_credentials("minimax-cn")
+        assert creds["provider"] == "minimax-cn"
+        assert creds["api_key"] == "mmcn-token"
+        assert creds["source"] == "MINIMAX_CN_TOKEN"
         assert creds["base_url"] == "https://api.minimaxi.com/anthropic"
 
     def test_resolve_ai_gateway_with_key(self, monkeypatch):
@@ -627,11 +651,15 @@ class TestHasAnyProviderConfigured:
         from hermes_cli import config as config_module
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
+        monkeypatch.setattr("hermes_cli.auth.get_auth_status", lambda *_args, **_kwargs: {"logged_in": False})
         monkeypatch.setattr(config_module, "get_env_path", lambda: hermes_home / ".env")
         monkeypatch.setattr(config_module, "get_hermes_home", lambda: hermes_home)
         # Clear all provider env vars so earlier checks don't short-circuit
-        for var in ("OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
-                     "ANTHROPIC_TOKEN", "OPENAI_BASE_URL"):
+        for var in (
+            "OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
+            "ANTHROPIC_TOKEN", "OPENAI_BASE_URL",
+            "MINIMAX_TOKEN", "MINIMAX_API_KEY", "MINIMAX_CN_TOKEN", "MINIMAX_CN_API_KEY",
+        ):
             monkeypatch.delenv(var, raising=False)
         # Simulate valid Claude Code credentials
         monkeypatch.setattr(
@@ -659,8 +687,11 @@ class TestHasAnyProviderConfigured:
         monkeypatch.setattr(config_module, "get_hermes_home", lambda: hermes_home)
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
         # Clear all provider env vars
-        for var in ("OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
-                     "ANTHROPIC_TOKEN", "OPENAI_BASE_URL"):
+        for var in (
+            "OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
+            "ANTHROPIC_TOKEN", "OPENAI_BASE_URL",
+            "MINIMAX_TOKEN", "MINIMAX_API_KEY", "MINIMAX_CN_TOKEN", "MINIMAX_CN_API_KEY",
+        ):
             monkeypatch.delenv(var, raising=False)
         from hermes_cli.main import _has_any_provider_configured
         assert _has_any_provider_configured() is True
@@ -678,8 +709,11 @@ class TestHasAnyProviderConfigured:
         monkeypatch.setattr(config_module, "get_env_path", lambda: hermes_home / ".env")
         monkeypatch.setattr(config_module, "get_hermes_home", lambda: hermes_home)
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        for var in ("OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
-                     "ANTHROPIC_TOKEN", "OPENAI_BASE_URL"):
+        for var in (
+            "OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
+            "ANTHROPIC_TOKEN", "OPENAI_BASE_URL",
+            "MINIMAX_TOKEN", "MINIMAX_API_KEY", "MINIMAX_CN_TOKEN", "MINIMAX_CN_API_KEY",
+        ):
             monkeypatch.delenv(var, raising=False)
         from hermes_cli.main import _has_any_provider_configured
         assert _has_any_provider_configured() is True
@@ -697,8 +731,11 @@ class TestHasAnyProviderConfigured:
         monkeypatch.setattr(config_module, "get_env_path", lambda: hermes_home / ".env")
         monkeypatch.setattr(config_module, "get_hermes_home", lambda: hermes_home)
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        for var in ("OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
-                     "ANTHROPIC_TOKEN", "OPENAI_BASE_URL"):
+        for var in (
+            "OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
+            "ANTHROPIC_TOKEN", "OPENAI_BASE_URL",
+            "MINIMAX_TOKEN", "MINIMAX_API_KEY", "MINIMAX_CN_TOKEN", "MINIMAX_CN_API_KEY",
+        ):
             monkeypatch.delenv(var, raising=False)
         from hermes_cli.main import _has_any_provider_configured
         assert _has_any_provider_configured() is True
@@ -709,6 +746,7 @@ class TestHasAnyProviderConfigured:
         from hermes_cli import config as config_module
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
+        monkeypatch.setattr("hermes_cli.auth.get_auth_status", lambda *_args, **_kwargs: {"logged_in": False})
         config_file = hermes_home / "config.yaml"
         config_file.write_text(yaml.dump({
             "model": {"default": ""},
@@ -716,8 +754,11 @@ class TestHasAnyProviderConfigured:
         monkeypatch.setattr(config_module, "get_env_path", lambda: hermes_home / ".env")
         monkeypatch.setattr(config_module, "get_hermes_home", lambda: hermes_home)
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        for var in ("OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
-                     "ANTHROPIC_TOKEN", "OPENAI_BASE_URL"):
+        for var in (
+            "OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
+            "ANTHROPIC_TOKEN", "OPENAI_BASE_URL",
+            "MINIMAX_TOKEN", "MINIMAX_API_KEY", "MINIMAX_CN_TOKEN", "MINIMAX_CN_API_KEY",
+        ):
             monkeypatch.delenv(var, raising=False)
         from hermes_cli.main import _has_any_provider_configured
         assert _has_any_provider_configured() is False
@@ -735,8 +776,11 @@ class TestHasAnyProviderConfigured:
         monkeypatch.setattr(config_module, "get_hermes_home", lambda: hermes_home)
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
         # Clear all provider env vars
-        for var in ("OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
-                     "ANTHROPIC_TOKEN", "OPENAI_BASE_URL"):
+        for var in (
+            "OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
+            "ANTHROPIC_TOKEN", "OPENAI_BASE_URL",
+            "MINIMAX_TOKEN", "MINIMAX_API_KEY", "MINIMAX_CN_TOKEN", "MINIMAX_CN_API_KEY",
+        ):
             monkeypatch.delenv(var, raising=False)
         # Simulate valid Claude Code credentials
         monkeypatch.setattr(

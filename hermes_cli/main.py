@@ -2188,6 +2188,10 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
 
     if not existing_key:
         print(f"No {pconfig.name} API key configured.")
+        if provider_id == "minimax":
+            print("  MiniMax now prefers MINIMAX_TOKEN. MINIMAX_API_KEY is still accepted as a legacy fallback.")
+        elif provider_id == "minimax-cn":
+            print("  MiniMax China now prefers MINIMAX_CN_TOKEN. MINIMAX_CN_API_KEY is still accepted as a legacy fallback.")
         if key_env:
             try:
                 import getpass
@@ -2202,7 +2206,10 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
             print("API key saved.")
             print()
     else:
-        print(f"  {pconfig.name} API key: {existing_key[:8]}... ✓")
+        credential_label = "API key"
+        if provider_id in {"minimax", "minimax-cn"}:
+            credential_label = "credential"
+        print(f"  {pconfig.name} {credential_label}: {existing_key[:8]}... ✓")
         print()
 
     # Optional base URL override

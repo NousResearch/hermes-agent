@@ -662,9 +662,17 @@ OPTIONAL_ENV_VARS = {
         "category": "provider",
         "advanced": True,
     },
+    "MINIMAX_TOKEN": {
+        "description": "MiniMax access token (international)",
+        "prompt": "MiniMax access token",
+        "url": "https://www.minimax.io/",
+        "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
     "MINIMAX_API_KEY": {
-        "description": "MiniMax API key (international)",
-        "prompt": "MiniMax API key",
+        "description": "MiniMax legacy API key (international, compatibility fallback)",
+        "prompt": "MiniMax legacy API key",
         "url": "https://www.minimax.io/",
         "password": True,
         "category": "provider",
@@ -678,9 +686,17 @@ OPTIONAL_ENV_VARS = {
         "category": "provider",
         "advanced": True,
     },
+    "MINIMAX_CN_TOKEN": {
+        "description": "MiniMax access token (China endpoint)",
+        "prompt": "MiniMax (China) access token",
+        "url": "https://www.minimaxi.com/",
+        "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
     "MINIMAX_CN_API_KEY": {
-        "description": "MiniMax API key (China endpoint)",
-        "prompt": "MiniMax (China) API key",
+        "description": "MiniMax legacy API key (China endpoint, compatibility fallback)",
+        "prompt": "MiniMax (China) legacy API key",
         "url": "https://www.minimaxi.com/",
         "password": True,
         "category": "provider",
@@ -1936,8 +1952,8 @@ _FALLBACK_COMMENT = """
 #   nous         (OAuth — hermes auth) — Nous Portal
 #   zai          (ZAI_API_KEY)         — Z.AI / GLM
 #   kimi-coding  (KIMI_API_KEY)        — Kimi / Moonshot
-#   minimax      (MINIMAX_API_KEY)     — MiniMax
-#   minimax-cn   (MINIMAX_CN_API_KEY)  — MiniMax (China)
+#   minimax      (MINIMAX_TOKEN or MINIMAX_API_KEY)       — MiniMax
+#   minimax-cn   (MINIMAX_CN_TOKEN or MINIMAX_CN_API_KEY) — MiniMax (China)
 #
 # For custom OpenAI-compatible endpoints, add base_url and api_key_env.
 #
@@ -1979,8 +1995,8 @@ _COMMENTED_SECTIONS = """
 #   nous         (OAuth — hermes auth) — Nous Portal
 #   zai          (ZAI_API_KEY)         — Z.AI / GLM
 #   kimi-coding  (KIMI_API_KEY)        — Kimi / Moonshot
-#   minimax      (MINIMAX_API_KEY)     — MiniMax
-#   minimax-cn   (MINIMAX_CN_API_KEY)  — MiniMax (China)
+#   minimax      (MINIMAX_TOKEN or MINIMAX_API_KEY)       — MiniMax
+#   minimax-cn   (MINIMAX_CN_TOKEN or MINIMAX_CN_API_KEY) — MiniMax (China)
 #
 # For custom OpenAI-compatible endpoints, add base_url and api_key_env.
 #

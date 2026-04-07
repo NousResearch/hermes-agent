@@ -119,8 +119,8 @@ def show_status(args):
         "OpenAI": "OPENAI_API_KEY",
         "Z.AI/GLM": "GLM_API_KEY",
         "Kimi": "KIMI_API_KEY",
-        "MiniMax": "MINIMAX_API_KEY",
-        "MiniMax-CN": "MINIMAX_CN_API_KEY",
+        "MiniMax": "MINIMAX_TOKEN / MINIMAX_API_KEY",
+        "MiniMax-CN": "MINIMAX_CN_TOKEN / MINIMAX_CN_API_KEY",
         "Firecrawl": "FIRECRAWL_API_KEY",
         "Tavily": "TAVILY_API_KEY",
         "Browserbase": "BROWSERBASE_API_KEY",  # Optional — local browser works without this
@@ -132,7 +132,12 @@ def show_status(args):
     }
     
     for name, env_var in keys.items():
-        value = get_env_value(env_var) or ""
+        env_candidates = tuple(part.strip() for part in env_var.split("/") if part.strip())
+        value = ""
+        for candidate in env_candidates:
+            value = get_env_value(candidate) or ""
+            if value:
+                break
         has_key = bool(value)
         display = redact_key(value) if not show_all else value
         print(f"  {name:<12}  {check_mark(has_key)} {display}")
@@ -222,8 +227,8 @@ def show_status(args):
     apikey_providers = {
         "Z.AI / GLM":       ("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY"),
         "Kimi / Moonshot":  ("KIMI_API_KEY",),
-        "MiniMax":          ("MINIMAX_API_KEY",),
-        "MiniMax (China)":  ("MINIMAX_CN_API_KEY",),
+        "MiniMax":          ("MINIMAX_TOKEN", "MINIMAX_API_KEY"),
+        "MiniMax (China)":  ("MINIMAX_CN_TOKEN", "MINIMAX_CN_API_KEY"),
     }
     for pname, env_vars in apikey_providers.items():
         key_val = ""

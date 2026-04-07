@@ -1285,6 +1285,7 @@ def _setup_tts_provider(config: dict):
         existing = get_env_value("MINIMAX_API_KEY")
         if not existing:
             print()
+            print_info("MiniMax TTS still uses MINIMAX_API_KEY. MiniMax model inference now prefers MINIMAX_TOKEN.")
             api_key = prompt("MiniMax API key for TTS", password=True)
             if api_key:
                 save_env_value("MINIMAX_API_KEY", api_key)

@@ -336,7 +336,7 @@ Full config reference: https://hermes-agent.nousresearch.com/docs/user-guide/con
 | DeepSeek | API key | `DEEPSEEK_API_KEY` |
 | Hugging Face | Token | `HF_TOKEN` |
 | Z.AI / GLM | API key | `GLM_API_KEY` |
-| MiniMax | API key | `MINIMAX_API_KEY` |
+| MiniMax | Token / API key | `MINIMAX_TOKEN` (preferred) or `MINIMAX_API_KEY` |
 | Kimi / Moonshot | API key | `KIMI_API_KEY` |
 | Alibaba / DashScope | API key | `DASHSCOPE_API_KEY` |
 | Kilo Code | API key | `KILOCODE_API_KEY` |

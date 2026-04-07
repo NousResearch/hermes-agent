@@ -20,8 +20,8 @@ def mock_provider_registry():
     return {
         "zai": FakePConfig("ZAI", ["ZAI_API_KEY"], "ZAI_BASE_URL", "https://api.zai.example"),
         "kimi-coding": FakePConfig("Kimi Coding", ["KIMI_API_KEY"], "KIMI_BASE_URL", "https://api.kimi.example"),
-        "minimax": FakePConfig("MiniMax", ["MINIMAX_API_KEY"], "MINIMAX_BASE_URL", "https://api.minimax.example"),
-        "minimax-cn": FakePConfig("MiniMax CN", ["MINIMAX_API_KEY"], "MINIMAX_CN_BASE_URL", "https://api.minimax-cn.example"),
+        "minimax": FakePConfig("MiniMax", ["MINIMAX_TOKEN", "MINIMAX_API_KEY"], "MINIMAX_BASE_URL", "https://api.minimax.example"),
+        "minimax-cn": FakePConfig("MiniMax CN", ["MINIMAX_CN_TOKEN", "MINIMAX_CN_API_KEY"], "MINIMAX_CN_BASE_URL", "https://api.minimax-cn.example"),
         "opencode-zen": FakePConfig("OpenCode Zen", ["OPENCODE_ZEN_API_KEY"], "OPENCODE_ZEN_BASE_URL", "https://opencode.ai/zen/v1"),
         "opencode-go": FakePConfig("OpenCode Go", ["OPENCODE_GO_API_KEY"], "OPENCODE_GO_BASE_URL", "https://opencode.ai/zen/go/v1"),
     }

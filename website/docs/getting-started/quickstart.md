@@ -47,8 +47,8 @@ hermes setup       # Or configure everything at once
 | **OpenRouter** | Multi-provider routing across many models | Enter your API key |
 | **Z.AI** | GLM / Zhipu-hosted models | Set `GLM_API_KEY` / `ZAI_API_KEY` |
 | **Kimi / Moonshot** | Moonshot-hosted coding and chat models | Set `KIMI_API_KEY` |
-| **MiniMax** | International MiniMax endpoint | Set `MINIMAX_API_KEY` |
-| **MiniMax China** | China-region MiniMax endpoint | Set `MINIMAX_CN_API_KEY` |
+| **MiniMax** | International MiniMax endpoint | Set `MINIMAX_TOKEN` (preferred) or `MINIMAX_API_KEY` |
+| **MiniMax China** | China-region MiniMax endpoint | Set `MINIMAX_CN_TOKEN` (preferred) or `MINIMAX_CN_API_KEY` |
 | **Alibaba Cloud** | Qwen models via DashScope | Set `DASHSCOPE_API_KEY` |
 | **Hugging Face** | 20+ open models via unified router (Qwen, DeepSeek, Kimi, etc.) | Set `HF_TOKEN` |
 | **Kilo Code** | KiloCode-hosted models | Set `KILOCODE_API_KEY` |

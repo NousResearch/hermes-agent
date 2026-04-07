@@ -31,10 +31,12 @@ All variables go in `~/.hermes/.env`. You can also set them with `hermes config 
 | `GLM_BASE_URL` | Override z.ai base URL (default: `https://api.z.ai/api/paas/v4`) |
 | `KIMI_API_KEY` | Kimi / Moonshot AI API key ([moonshot.ai](https://platform.moonshot.ai)) |
 | `KIMI_BASE_URL` | Override Kimi base URL (default: `https://api.moonshot.ai/v1`) |
-| `MINIMAX_API_KEY` | MiniMax API key — global endpoint ([minimax.io](https://www.minimax.io)) |
-| `MINIMAX_BASE_URL` | Override MiniMax base URL (default: `https://api.minimax.io/v1`) |
-| `MINIMAX_CN_API_KEY` | MiniMax API key — China endpoint ([minimaxi.com](https://www.minimaxi.com)) |
-| `MINIMAX_CN_BASE_URL` | Override MiniMax China base URL (default: `https://api.minimaxi.com/v1`) |
+| `MINIMAX_TOKEN` | MiniMax access token — global endpoint, preferred for inference ([minimax.io](https://www.minimax.io)) |
+| `MINIMAX_API_KEY` | MiniMax legacy API key — global endpoint, kept as compatibility fallback |
+| `MINIMAX_BASE_URL` | Override MiniMax base URL (default: `https://api.minimax.io/anthropic`) |
+| `MINIMAX_CN_TOKEN` | MiniMax access token — China endpoint, preferred for inference ([minimaxi.com](https://www.minimaxi.com)) |
+| `MINIMAX_CN_API_KEY` | MiniMax legacy API key — China endpoint, kept as compatibility fallback |
+| `MINIMAX_CN_BASE_URL` | Override MiniMax China base URL (default: `https://api.minimaxi.com/anthropic`) |
 | `KILOCODE_API_KEY` | Kilo Code API key ([kilo.ai](https://kilo.ai)) |
 | `KILOCODE_BASE_URL` | Override Kilo Code base URL (default: `https://api.kilo.ai/api/gateway`) |
 | `HF_TOKEN` | Hugging Face token for Inference Providers ([huggingface.co/settings/tokens](https://huggingface.co/settings/tokens)) |

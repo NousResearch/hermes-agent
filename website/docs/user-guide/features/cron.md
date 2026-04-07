@@ -338,6 +338,8 @@ For `update`, pass `skills=[]` to remove all attached skills.
 
 Jobs are stored in `~/.hermes/cron/jobs.json`. Output from job runs is saved to `~/.hermes/cron/output/{job_id}/{timestamp}.md`.
 
+Jobs may store `model` and `provider` as `null`. When those fields are omitted, Hermes resolves them at execution time from the global configuration. They only appear in the job record when a per-job override is set.
+
 The storage uses atomic file writes so interrupted writes do not leave a partially written job file behind.
 
 ## Self-contained prompts still matter

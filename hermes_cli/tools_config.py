@@ -61,22 +61,6 @@ def _prompt(question: str, default: str = None, password: bool = False) -> str:
         print()
         return default or ""
 
-def _prompt_yes_no(question: str, default: bool = True) -> bool:
-    default_str = "Y/n" if default else "y/N"
-    while True:
-        try:
-            value = input(color(f"{question} [{default_str}]: ", Colors.YELLOW)).strip().lower()
-        except (KeyboardInterrupt, EOFError):
-            print()
-            return default
-        if not value:
-            return default
-        if value in ('y', 'yes'):
-            return True
-        if value in ('n', 'no'):
-            return False
-
-
 # ─── Toolset Registry ─────────────────────────────────────────────────────────
 
 # Toolsets shown in the configurator, grouped for display.

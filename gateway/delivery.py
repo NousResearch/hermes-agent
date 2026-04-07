@@ -314,38 +314,4 @@ def parse_deliver_spec(
     return deliver
 
 
-def build_delivery_context_for_tool(
-    config: GatewayConfig,
-    origin: Optional[SessionSource] = None
-) -> Dict[str, Any]:
-    """
-    Build context for the unified cronjob tool to understand delivery options.
-    
-    This is passed to the tool so it can validate and explain delivery targets.
-    """
-    connected = config.get_connected_platforms()
-    
-    options = {
-        "origin": {
-            "description": "Back to where this job was created",
-            "available": origin is not None,
-        },
-        "local": {
-            "description": "Save to local files only",
-            "available": True,
-        }
-    }
-    
-    for platform in connected:
-        home = config.get_home_channel(platform)
-        options[platform.value] = {
-            "description": f"{platform.value.title()} home channel",
-            "available": True,
-            "home_channel": home.to_dict() if home else None,
-        }
-    
-    return {
-        "origin": origin.to_dict() if origin else None,
-        "options": options,
-        "always_log_local": config.always_log_local,
-    }
+

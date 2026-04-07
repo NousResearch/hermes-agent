@@ -1505,10 +1505,6 @@ class AIAgent:
         """Return True when the base URL targets OpenRouter."""
         return "openrouter" in self._base_url_lower
 
-    def _is_anthropic_url(self) -> bool:
-        """Return True when the base URL targets Anthropic (native or /anthropic proxy path)."""
-        return "api.anthropic.com" in self._base_url_lower or self._base_url_lower.rstrip("/").endswith("/anthropic")
-
     def _max_tokens_param(self, value: int) -> dict:
         """Return the correct max tokens kwarg for the current provider.
         
@@ -1694,74 +1690,6 @@ class AIAgent:
         
         return None
 
-    def _classify_empty_content_response(
-        self,
-        assistant_message,
-        *,
-        finish_reason: Optional[str],
-        approx_tokens: int,
-        api_messages: List[Dict[str, Any]],
-        conversation_history: Optional[List[Dict[str, Any]]],
-    ) -> Dict[str, Any]:
-        """Classify think-only/empty responses so we can retry, compress, or salvage.
-
-        We intentionally do NOT short-circuit all structured-reasoning responses.
-        Prior discussion/PR history shows some models recover on retry. Instead we:
-        - compress immediately when the pattern looks like implicit context pressure
-        - salvage reasoning early when the same reasoning-only payload repeats
-        - otherwise preserve the normal retry path
-        """
-        reasoning_text = self._extract_reasoning(assistant_message)
-        has_structured_reasoning = bool(
-            getattr(assistant_message, "reasoning", None)
-            or getattr(assistant_message, "reasoning_content", None)
-            or getattr(assistant_message, "reasoning_details", None)
-        )
-        content = getattr(assistant_message, "content", None) or ""
-        stripped_content = self._strip_think_blocks(content).strip()
-        signature = (
-            content,
-            reasoning_text or "",
-            bool(has_structured_reasoning),
-            finish_reason or "",
-        )
-        repeated_signature = signature == getattr(self, "_last_empty_content_signature", None)
-
-        compressor = getattr(self, "context_compressor", None)
-        ctx_len = getattr(compressor, "context_length", 0) or 0
-        threshold_tokens = getattr(compressor, "threshold_tokens", 0) or 0
-        is_large_session = bool(
-            (ctx_len and approx_tokens >= max(int(ctx_len * 0.4), threshold_tokens))
-            or len(api_messages) > 80
-        )
-        is_local_custom = is_local_endpoint(getattr(self, "base_url", "") or "")
-        is_resumed = bool(conversation_history)
-        context_pressure_signals = any(
-            [
-                finish_reason == "length",
-                getattr(compressor, "_context_probed", False),
-                is_large_session,
-                is_resumed,
-            ]
-        )
-        should_compress = bool(
-            self.compression_enabled
-            and is_local_custom
-            and context_pressure_signals
-            and not stripped_content
-        )
-
-        self._last_empty_content_signature = signature
-        return {
-            "reasoning_text": reasoning_text,
-            "has_structured_reasoning": has_structured_reasoning,
-            "repeated_signature": repeated_signature,
-            "should_compress": should_compress,
-            "is_local_custom": is_local_custom,
-            "is_large_session": is_large_session,
-            "is_resumed": is_resumed,
-        }
-    
     def _cleanup_task_resources(self, task_id: str) -> None:
         """Clean up VM and browser resources for a given task."""
         try:

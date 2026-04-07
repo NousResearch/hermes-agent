@@ -23,10 +23,6 @@ def log_success(msg: str):
 def log_warn(msg: str):
     print(f"{color('⚠', Colors.YELLOW)} {msg}")
 
-def log_error(msg: str):
-    print(f"{color('✗', Colors.RED)} {msg}")
-
-
 def get_project_root() -> Path:
     """Get the project installation directory."""
     return Path(__file__).parent.parent.resolve()

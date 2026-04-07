@@ -713,11 +713,6 @@ FILE_TOOLS = [
 ]
 
 
-def get_file_tools():
-    """Get the list of file tool definitions."""
-    return FILE_TOOLS
-
-
 # ---------------------------------------------------------------------------
 # Schemas + Registry
 # ---------------------------------------------------------------------------

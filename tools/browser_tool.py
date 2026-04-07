@@ -2024,16 +2024,6 @@ def cleanup_all_browsers() -> None:
         cleanup_browser(task_id)
 
 
-def get_active_browser_sessions() -> Dict[str, Dict[str, str]]:
-    """
-    Get information about active browser sessions.
-    
-    Returns:
-        Dict mapping task_id to session info (session_name, bb_session_id, cdp_url)
-    """
-    with _cleanup_lock:
-        return _active_sessions.copy()
-
 
 # ============================================================================
 # Requirements Check

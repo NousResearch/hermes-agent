@@ -3536,13 +3536,6 @@ class HermesCLI:
         _cprint(f"  Original session: {parent_session_id}")
         _cprint(f"  Branch session:   {new_session_id}")
 
-    def reset_conversation(self):
-        """Reset the conversation by starting a new session."""
-        # Shut down memory provider before resetting — actual session boundary
-        if hasattr(self, 'agent') and self.agent:
-            self.agent.shutdown_memory_provider(self.conversation_history)
-        self.new_session()
-    
     def save_conversation(self):
         """Save the current conversation to a file."""
         if not self.conversation_history:
@@ -6289,14 +6282,6 @@ class HermesCLI:
                 self._app.current_buffer.reset()
             except Exception:
                 pass
-
-    def _clear_current_input(self) -> None:
-        if getattr(self, "_app", None):
-            try:
-                self._app.current_buffer.text = ""
-            except Exception:
-                pass
-
 
     def chat(self, message, images: list = None) -> Optional[str]:
         """

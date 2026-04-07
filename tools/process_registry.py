@@ -714,11 +714,6 @@ class ProcessRegistry:
             oldest_id = min(self._finished, key=lambda sid: self._finished[sid].started_at)
             del self._finished[oldest_id]
 
-    def cleanup_expired(self):
-        """Public method to prune expired finished sessions."""
-        with self._lock:
-            self._prune_if_needed()
-
     # ----- Checkpoint (crash recovery) -----
 
     def _write_checkpoint(self):

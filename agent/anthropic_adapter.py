@@ -706,29 +706,6 @@ def run_hermes_oauth_login_pure() -> Optional[Dict[str, Any]]:
     }
 
 
-def run_hermes_oauth_login() -> Optional[str]:
-    """Run Hermes-native OAuth PKCE flow for Claude Pro/Max subscription.
-
-    Opens a browser to claude.ai for authorization, prompts for the code,
-    exchanges it for tokens, and stores them in ~/.hermes/.anthropic_oauth.json.
-
-    Returns the access token on success, None on failure.
-    """
-    result = run_hermes_oauth_login_pure()
-    if not result:
-        return None
-
-    access_token = result["access_token"]
-    refresh_token = result["refresh_token"]
-    expires_at_ms = result["expires_at_ms"]
-
-    _save_hermes_oauth_credentials(access_token, refresh_token, expires_at_ms)
-    _write_claude_code_credentials(access_token, refresh_token, expires_at_ms)
-
-    print("Authentication successful!")
-    return access_token
-
-
 def _save_hermes_oauth_credentials(access_token: str, refresh_token: str, expires_at_ms: int) -> None:
     """Save OAuth credentials to ~/.hermes/.anthropic_oauth.json."""
     data = {
@@ -753,38 +730,6 @@ def read_hermes_oauth_credentials() -> Optional[Dict[str, Any]]:
                 return data
         except (json.JSONDecodeError, OSError, IOError) as e:
             logger.debug("Failed to read Hermes OAuth credentials: %s", e)
-    return None
-
-
-def refresh_hermes_oauth_token() -> Optional[str]:
-    """Refresh the Hermes-managed OAuth token using the stored refresh token.
-
-    Returns the new access token, or None if refresh fails.
-    """
-    creds = read_hermes_oauth_credentials()
-    if not creds or not creds.get("refreshToken"):
-        return None
-
-    try:
-        refreshed = refresh_anthropic_oauth_pure(
-            creds["refreshToken"],
-            use_json=True,
-        )
-        _save_hermes_oauth_credentials(
-            refreshed["access_token"],
-            refreshed["refresh_token"],
-            refreshed["expires_at_ms"],
-        )
-        _write_claude_code_credentials(
-            refreshed["access_token"],
-            refreshed["refresh_token"],
-            refreshed["expires_at_ms"],
-        )
-        logger.debug("Successfully refreshed Hermes OAuth token")
-        return refreshed["access_token"]
-    except Exception as e:
-        logger.debug("Failed to refresh Hermes OAuth token: %s", e)
-
     return None
 
 
@@ -854,35 +799,6 @@ def _convert_openai_image_part_to_anthropic(part: Dict[str, Any]) -> Optional[Di
             },
         }
 
-    return None
-
-
-def _convert_user_content_part_to_anthropic(part: Any) -> Optional[Dict[str, Any]]:
-    if isinstance(part, dict):
-        ptype = part.get("type")
-        if ptype == "text":
-            block = {"type": "text", "text": part.get("text", "")}
-            if isinstance(part.get("cache_control"), dict):
-                block["cache_control"] = dict(part["cache_control"])
-            return block
-        if ptype == "image_url":
-            return _convert_openai_image_part_to_anthropic(part)
-        if ptype == "image" and part.get("source"):
-            return dict(part)
-        if ptype == "image" and part.get("data"):
-            media_type = part.get("mimeType") or part.get("media_type") or "image/png"
-            return {
-                "type": "image",
-                "source": {
-                    "type": "base64",
-                    "media_type": media_type,
-                    "data": part.get("data", ""),
-                },
-            }
-        if ptype == "tool_result":
-            return dict(part)
-    elif part is not None:
-        return {"type": "text", "text": str(part)}
     return None
 
 

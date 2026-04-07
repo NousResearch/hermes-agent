@@ -3342,25 +3342,36 @@ class GatewayRunner:
         """Handle /status command."""
         source = event.source
         session_entry = self.session_store.get_or_create_session(source)
-        
+
         connected_platforms = [p.value for p in self.adapters.keys()]
-        
+
         # Check if there's an active agent
         session_key = session_entry.session_key
         is_running = session_key in self._running_agents
-        
+
+        title = None
+        if self._session_db:
+            try:
+                title = self._session_db.get_session_title(session_entry.session_id)
+            except Exception:
+                title = None
+
         lines = [
             "📊 **Hermes Gateway Status**",
             "",
-            f"**Session ID:** `{session_entry.session_id[:12]}...`",
+            f"**Session ID:** `{session_entry.session_id}`",
+        ]
+        if title:
+            lines.append(f"**Title:** {title}")
+        lines.extend([
             f"**Created:** {session_entry.created_at.strftime('%Y-%m-%d %H:%M')}",
             f"**Last Activity:** {session_entry.updated_at.strftime('%Y-%m-%d %H:%M')}",
             f"**Tokens:** {session_entry.total_tokens:,}",
             f"**Agent Running:** {'Yes ⚡' if is_running else 'No'}",
             "",
             f"**Connected Platforms:** {', '.join(connected_platforms)}",
-        ]
-        
+        ])
+
         return "\n".join(lines)
     
     async def _handle_stop_command(self, event: MessageEvent) -> str:

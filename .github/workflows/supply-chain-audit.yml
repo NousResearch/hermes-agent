@@ -165,7 +165,7 @@ jobs:
           fi
 
       - name: Post warning comment
-        if: steps.scan.outputs.found == 'true'
+        if: steps.scan.outputs.found == 'true' && github.event.pull_request.head.repo.full_name == github.repository
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -184,6 +184,11 @@ jobs:
           *Automated scan triggered by [supply-chain-audit](/.github/workflows/supply-chain-audit.yml). If this is a false positive, a maintainer can approve after manual review.*"
 
           gh pr comment "${{ github.event.pull_request.number }}" --body "$BODY"
+
+      - name: Note when PR comment is skipped
+        if: steps.scan.outputs.found == 'true' && github.event.pull_request.head.repo.full_name != github.repository
+        run: |
+          echo "::warning::Supply chain findings detected, but this workflow cannot post a PR comment because the PR comes from a fork and the pull_request token does not have comment permissions."
 
       - name: Fail on critical findings
         if: steps.scan.outputs.critical == 'true'

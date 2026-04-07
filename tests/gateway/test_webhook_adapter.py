@@ -590,8 +590,15 @@ class TestSessionIsolation:
 class TestDeliveryCleanup:
 
     @pytest.mark.asyncio
-    async def test_delivery_info_cleaned_after_send(self):
-        """send() pops delivery_info so the entry doesn't leak memory."""
+    async def test_delivery_info_survives_multiple_sends(self):
+        """send() must NOT pop delivery_info.
+
+        Interim status messages (fallback notifications, context-pressure
+        warnings, etc.) flow through the same send() path as the final
+        response.  If the entry were popped on the first send, the final
+        response would silently downgrade to the ``log`` deliver type.
+        Regression test for that bug.
+        """
         adapter = _make_adapter()
         chat_id = "webhook:test:d-xyz"
         adapter._delivery_info[chat_id] = {
@@ -599,10 +606,40 @@ class TestDeliveryCleanup:
             "deliver_extra": {},
             "payload": {"x": 1},
         }
+        adapter._delivery_info_created[chat_id] = time.time()
 
-        result = await adapter.send(chat_id, "Agent response here")
-        assert result.success is True
-        assert chat_id not in adapter._delivery_info
+        # First send (e.g. an interim status message)
+        result1 = await adapter.send(chat_id, "Status: switching to fallback")
+        assert result1.success is True
+        # Entry must still be present so the final send can read it
+        assert chat_id in adapter._delivery_info
+
+        # Second send (the final agent response)
+        result2 = await adapter.send(chat_id, "Final agent response")
+        assert result2.success is True
+        assert chat_id in adapter._delivery_info
+
+    @pytest.mark.asyncio
+    async def test_delivery_info_pruned_via_ttl(self):
+        """Stale delivery_info entries are dropped on the next POST."""
+        adapter = _make_adapter()
+        adapter._idempotency_ttl = 60  # short TTL for the test
+        now = time.time()
+
+        # Stale entry — older than TTL
+        adapter._delivery_info["webhook:test:old"] = {"deliver": "log"}
+        adapter._delivery_info_created["webhook:test:old"] = now - 120
+
+        # Fresh entry — should survive
+        adapter._delivery_info["webhook:test:new"] = {"deliver": "log"}
+        adapter._delivery_info_created["webhook:test:new"] = now - 5
+
+        adapter._prune_delivery_info(now)
+
+        assert "webhook:test:old" not in adapter._delivery_info
+        assert "webhook:test:old" not in adapter._delivery_info_created
+        assert "webhook:test:new" in adapter._delivery_info
+        assert "webhook:test:new" in adapter._delivery_info_created
 
 
 # ===================================================================

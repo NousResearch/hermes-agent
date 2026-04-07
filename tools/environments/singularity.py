@@ -8,6 +8,7 @@ via writable overlay directories that survive across sessions.
 import json
 import logging
 import os
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -16,7 +17,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from hermes_cli.config import get_hermes_home
+from hermes_constants import get_hermes_home
 from tools.environments.base import BaseEnvironment
 from tools.interrupt import is_interrupted
 
@@ -254,6 +255,27 @@ class SingularityEnvironment(BaseEnvironment):
         else:
             cmd.append("--writable-tmpfs")
 
+        # Mount credential files and skills directory (read-only).
+        try:
+            from tools.credential_files import get_credential_file_mounts, get_skills_directory_mount
+
+            for mount_entry in get_credential_file_mounts():
+                cmd.extend(["--bind", f"{mount_entry['host_path']}:{mount_entry['container_path']}:ro"])
+                logger.info(
+                    "Singularity: binding credential %s -> %s",
+                    mount_entry["host_path"],
+                    mount_entry["container_path"],
+                )
+            for skills_mount in get_skills_directory_mount():
+                cmd.extend(["--bind", f"{skills_mount['host_path']}:{skills_mount['container_path']}:ro"])
+                logger.info(
+                    "Singularity: binding skills dir %s -> %s",
+                    skills_mount["host_path"],
+                    skills_mount["container_path"],
+                )
+        except Exception as e:
+            logger.debug("Singularity: could not load credential/skills mounts: %s", e)
+
         # Resource limits (cgroup-based, may require root or appropriate config)
         if self._memory > 0:
             cmd.extend(["--memory", f"{self._memory}M"])
@@ -290,9 +312,13 @@ class SingularityEnvironment(BaseEnvironment):
         else:
             effective_stdin = stdin_data
 
-        # apptainer exec --pwd doesn't expand ~, so prepend a cd into the command
-        if work_dir == "~" or work_dir.startswith("~/"):
-            exec_command = f"cd {work_dir} && {exec_command}"
+        # apptainer exec --pwd doesn't expand ~, so prepend a cd into the command.
+        # Keep ~ unquoted (for shell expansion) and quote only the subpath.
+        if work_dir == "~":
+            exec_command = f"cd ~ && {exec_command}"
+            work_dir = "/tmp"
+        elif work_dir.startswith("~/"):
+            exec_command = f"cd ~/{shlex.quote(work_dir[2:])} && {exec_command}"
             work_dir = "/tmp"
 
         cmd = [self.executable, "exec", "--pwd", work_dir,

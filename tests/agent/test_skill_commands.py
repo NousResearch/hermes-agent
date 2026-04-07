@@ -10,6 +10,7 @@ from agent.skill_commands import (
     build_plan_path,
     build_preloaded_skills_prompt,
     build_skill_invocation_message,
+    resolve_skill_command_key,
     scan_skill_commands,
 )
 
@@ -54,7 +55,7 @@ class TestScanSkillCommands:
         """macOS-only skills should not register slash commands on Linux."""
         with (
             patch("tools.skills_tool.SKILLS_DIR", tmp_path),
-            patch("tools.skills_tool.sys") as mock_sys,
+            patch("agent.skill_utils.sys") as mock_sys,
         ):
             mock_sys.platform = "linux"
             _make_skill(tmp_path, "imessage", frontmatter_extra="platforms: [macos]\n")
@@ -67,7 +68,7 @@ class TestScanSkillCommands:
         """macOS-only skills should register slash commands on macOS."""
         with (
             patch("tools.skills_tool.SKILLS_DIR", tmp_path),
-            patch("tools.skills_tool.sys") as mock_sys,
+            patch("agent.skill_utils.sys") as mock_sys,
         ):
             mock_sys.platform = "darwin"
             _make_skill(tmp_path, "imessage", frontmatter_extra="platforms: [macos]\n")
@@ -78,7 +79,7 @@ class TestScanSkillCommands:
         """Skills without platforms field should register on any platform."""
         with (
             patch("tools.skills_tool.SKILLS_DIR", tmp_path),
-            patch("tools.skills_tool.sys") as mock_sys,
+            patch("agent.skill_utils.sys") as mock_sys,
         ):
             mock_sys.platform = "win32"
             _make_skill(tmp_path, "generic-tool")
@@ -99,6 +100,96 @@ class TestScanSkillCommands:
             result = scan_skill_commands()
         assert "/enabled-skill" in result
         assert "/disabled-skill" not in result
+
+
+    def test_special_chars_stripped_from_cmd_key(self, tmp_path):
+        """Skill names with +, /, or other special chars produce clean cmd keys."""
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            # Simulate a skill named "Jellyfin + Jellystat 24h Summary"
+            skill_dir = tmp_path / "jellyfin-plus"
+            skill_dir.mkdir()
+            (skill_dir / "SKILL.md").write_text(
+                "---\nname: Jellyfin + Jellystat 24h Summary\n"
+                "description: Test skill\n---\n\nBody.\n"
+            )
+            result = scan_skill_commands()
+        # The + should be stripped, not left as a literal character
+        assert "/jellyfin-jellystat-24h-summary" in result
+        # The old buggy key should NOT exist
+        assert "/jellyfin-+-jellystat-24h-summary" not in result
+
+    def test_allspecial_name_skipped(self, tmp_path):
+        """Skill with name consisting only of special chars is silently skipped."""
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            skill_dir = tmp_path / "bad-name"
+            skill_dir.mkdir()
+            (skill_dir / "SKILL.md").write_text(
+                "---\nname: +++\ndescription: Bad skill\n---\n\nBody.\n"
+            )
+            result = scan_skill_commands()
+        # Should not create a "/" key or any entry
+        assert "/" not in result
+        assert result == {}
+
+    def test_slash_in_name_stripped_from_cmd_key(self, tmp_path):
+        """Skill names with / chars produce clean cmd keys."""
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            skill_dir = tmp_path / "sonarr-api"
+            skill_dir.mkdir()
+            (skill_dir / "SKILL.md").write_text(
+                "---\nname: Sonarr v3/v4 API\n"
+                "description: Test skill\n---\n\nBody.\n"
+            )
+            result = scan_skill_commands()
+        assert "/sonarr-v3v4-api" in result
+        assert any("/" in k[1:] for k in result) is False  # no unescaped /
+
+
+class TestResolveSkillCommandKey:
+    """Telegram bot-command names disallow hyphens, so the menu registers
+    skills with hyphens swapped for underscores. When Telegram autocomplete
+    sends the underscored form back, we need to find the hyphenated key.
+    """
+
+    def test_hyphenated_form_matches_directly(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "claude-code")
+            scan_skill_commands()
+            assert resolve_skill_command_key("claude-code") == "/claude-code"
+
+    def test_underscore_form_resolves_to_hyphenated_skill(self, tmp_path):
+        """/claude_code from Telegram autocomplete must resolve to /claude-code."""
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "claude-code")
+            scan_skill_commands()
+            assert resolve_skill_command_key("claude_code") == "/claude-code"
+
+    def test_single_word_command_resolves(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "investigate")
+            scan_skill_commands()
+            assert resolve_skill_command_key("investigate") == "/investigate"
+
+    def test_unknown_command_returns_none(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "claude-code")
+            scan_skill_commands()
+            assert resolve_skill_command_key("does_not_exist") is None
+            assert resolve_skill_command_key("does-not-exist") is None
+
+    def test_empty_command_returns_none(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            scan_skill_commands()
+            assert resolve_skill_command_key("") is None
+
+    def test_hyphenated_command_is_not_mangled(self, tmp_path):
+        """A user-typed /foo-bar (hyphen) must not trigger the underscore fallback."""
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "foo-bar")
+            scan_skill_commands()
+            assert resolve_skill_command_key("foo-bar") == "/foo-bar"
+            # Underscore form also works (Telegram round-trip)
+            assert resolve_skill_command_key("foo_bar") == "/foo-bar"
 
 
 class TestBuildPreloadedSkillsPrompt:
@@ -246,20 +337,10 @@ Generate some audio.
     def test_preserves_remaining_remote_setup_warning(self, tmp_path, monkeypatch):
         monkeypatch.setenv("TERMINAL_ENV", "ssh")
         monkeypatch.delenv("TENOR_API_KEY", raising=False)
-
-        def fake_secret_callback(var_name, prompt, metadata=None):
-            os.environ[var_name] = "stored-in-test"
-            return {
-                "success": True,
-                "stored_as": var_name,
-                "validated": False,
-                "skipped": False,
-            }
-
         monkeypatch.setattr(
             skills_tool_module,
             "_secret_capture_callback",
-            fake_secret_callback,
+            None,
             raising=False,
         )
 

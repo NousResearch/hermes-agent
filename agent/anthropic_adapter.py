@@ -10,6 +10,7 @@ Auth supports:
   - Claude Code credentials (~/.claude.json or ~/.claude/.credentials.json) → Bearer auth
 """
 
+import copy
 import json
 import logging
 import os
@@ -35,6 +36,54 @@ ADAPTIVE_EFFORT_MAP = {
     "minimal": "low",
 }
 
+# ── Max output token limits per Anthropic model ───────────────────────
+# Source: Anthropic docs + Cline model catalog.  Anthropic's API requires
+# max_tokens as a mandatory field.  Previously we hardcoded 16384, which
+# starves thinking-enabled models (thinking tokens count toward the limit).
+_ANTHROPIC_OUTPUT_LIMITS = {
+    # Claude 4.6
+    "claude-opus-4-6":   128_000,
+    "claude-sonnet-4-6":  64_000,
+    # Claude 4.5
+    "claude-opus-4-5":    64_000,
+    "claude-sonnet-4-5":  64_000,
+    "claude-haiku-4-5":   64_000,
+    # Claude 4
+    "claude-opus-4":      32_000,
+    "claude-sonnet-4":    64_000,
+    # Claude 3.7
+    "claude-3-7-sonnet": 128_000,
+    # Claude 3.5
+    "claude-3-5-sonnet":   8_192,
+    "claude-3-5-haiku":    8_192,
+    # Claude 3
+    "claude-3-opus":       4_096,
+    "claude-3-sonnet":     4_096,
+    "claude-3-haiku":      4_096,
+}
+
+# For any model not in the table, assume the highest current limit.
+# Future Anthropic models are unlikely to have *less* output capacity.
+_ANTHROPIC_DEFAULT_OUTPUT_LIMIT = 128_000
+
+
+def _get_anthropic_max_output(model: str) -> int:
+    """Look up the max output token limit for an Anthropic model.
+
+    Uses substring matching against _ANTHROPIC_OUTPUT_LIMITS so date-stamped
+    model IDs (claude-sonnet-4-5-20250929) and variant suffixes (:1m, :fast)
+    resolve correctly.  Longest-prefix match wins to avoid e.g. "claude-3-5"
+    matching before "claude-3-5-sonnet".
+    """
+    m = model.lower()
+    best_key = ""
+    best_val = _ANTHROPIC_DEFAULT_OUTPUT_LIMIT
+    for key, val in _ANTHROPIC_OUTPUT_LIMITS.items():
+        if key in m and len(key) > len(best_key):
+            best_key = key
+            best_val = val
+    return best_val
+
 
 def _supports_adaptive_thinking(model: str) -> bool:
     """Return True for Claude 4.6 models that support adaptive thinking."""
@@ -59,6 +108,7 @@ _OAUTH_ONLY_BETAS = [
 # The version must stay reasonably current — Anthropic rejects OAuth requests
 # when the spoofed user-agent version is too far behind the actual release.
 _CLAUDE_CODE_VERSION_FALLBACK = "2.1.74"
+_claude_code_version_cache: Optional[str] = None
 
 
 def _detect_claude_code_version() -> str:
@@ -86,9 +136,16 @@ def _detect_claude_code_version() -> str:
     return _CLAUDE_CODE_VERSION_FALLBACK
 
 
-_CLAUDE_CODE_VERSION = _detect_claude_code_version()
 _CLAUDE_CODE_SYSTEM_PREFIX = "You are Claude Code, Anthropic's official CLI for Claude."
 _MCP_TOOL_PREFIX = "mcp_"
+
+
+def _get_claude_code_version() -> str:
+    """Lazily detect the installed Claude Code version when OAuth headers need it."""
+    global _claude_code_version_cache
+    if _claude_code_version_cache is None:
+        _claude_code_version_cache = _detect_claude_code_version()
+    return _claude_code_version_cache
 
 
 def _is_oauth_token(key: str) -> bool:
@@ -104,6 +161,36 @@ def _is_oauth_token(key: str) -> bool:
         return False
     # Everything else (setup-tokens, managed keys, JWTs) uses Bearer auth
     return True
+
+
+def _is_third_party_anthropic_endpoint(base_url: str | None) -> bool:
+    """Return True for non-Anthropic endpoints using the Anthropic Messages API.
+
+    Third-party proxies (Azure AI Foundry, AWS Bedrock, self-hosted) authenticate
+    with their own API keys via x-api-key, not Anthropic OAuth tokens. OAuth
+    detection should be skipped for these endpoints.
+    """
+    if not base_url:
+        return False  # No base_url = direct Anthropic API
+    normalized = base_url.rstrip("/").lower()
+    if "anthropic.com" in normalized:
+        return False  # Direct Anthropic API — OAuth applies
+    return True  # Any other endpoint is a third-party proxy
+
+
+def _requires_bearer_auth(base_url: str | None) -> bool:
+    """Return True for Anthropic-compatible providers that require Bearer auth.
+
+    Some third-party /anthropic endpoints implement Anthropic's Messages API but
+    require Authorization: Bearer instead of Anthropic's native x-api-key header.
+    MiniMax's global and China Anthropic-compatible endpoints follow this pattern.
+    """
+    if not base_url:
+        return False
+    normalized = base_url.rstrip("/").lower()
+    return normalized.startswith("https://api.minimax.io/anthropic") or normalized.startswith(
+        "https://api.minimaxi.com/anthropic"
+    )
 
 
 def build_anthropic_client(api_key: str, base_url: str = None):
@@ -124,7 +211,25 @@ def build_anthropic_client(api_key: str, base_url: str = None):
     if base_url:
         kwargs["base_url"] = base_url
 
-    if _is_oauth_token(api_key):
+    if _requires_bearer_auth(base_url):
+        # Some Anthropic-compatible providers (e.g. MiniMax) expect the API key in
+        # Authorization: Bearer even for regular API keys. Route those endpoints
+        # through auth_token so the SDK sends Bearer auth instead of x-api-key.
+        # Check this before OAuth token shape detection because MiniMax secrets do
+        # not use Anthropic's sk-ant-api prefix and would otherwise be misread as
+        # Anthropic OAuth/setup tokens.
+        kwargs["auth_token"] = api_key
+        if _COMMON_BETAS:
+            kwargs["default_headers"] = {"anthropic-beta": ",".join(_COMMON_BETAS)}
+    elif _is_third_party_anthropic_endpoint(base_url):
+        # Third-party proxies (Azure AI Foundry, AWS Bedrock, etc.) use their
+        # own API keys with x-api-key auth. Skip OAuth detection — their keys
+        # don't follow Anthropic's sk-ant-* prefix convention and would be
+        # misclassified as OAuth tokens.
+        kwargs["api_key"] = api_key
+        if _COMMON_BETAS:
+            kwargs["default_headers"] = {"anthropic-beta": ",".join(_COMMON_BETAS)}
+    elif _is_oauth_token(api_key):
         # OAuth access token / setup-token → Bearer auth + Claude Code identity.
         # Anthropic routes OAuth requests based on user-agent and headers;
         # without Claude Code's fingerprint, requests get intermittent 500s.
@@ -132,7 +237,7 @@ def build_anthropic_client(api_key: str, base_url: str = None):
         kwargs["auth_token"] = api_key
         kwargs["default_headers"] = {
             "anthropic-beta": ",".join(all_betas),
-            "user-agent": f"claude-cli/{_CLAUDE_CODE_VERSION} (external, cli)",
+            "user-agent": f"claude-cli/{_get_claude_code_version()} (external, cli)",
             "x-app": "cli",
         }
     else:
@@ -203,64 +308,105 @@ def is_claude_code_token_valid(creds: Dict[str, Any]) -> bool:
     return now_ms < (expires_at - 60_000)
 
 
-def _refresh_oauth_token(creds: Dict[str, Any]) -> Optional[str]:
-    """Attempt to refresh an expired Claude Code OAuth token.
-
-    Uses the same token endpoint and client_id as Claude Code / OpenCode.
-    Only works for credentials that have a refresh token (from claude /login
-    or claude setup-token with OAuth flow).
-
-    Returns the new access token, or None if refresh fails.
-    """
+def refresh_anthropic_oauth_pure(refresh_token: str, *, use_json: bool = False) -> Dict[str, Any]:
+    """Refresh an Anthropic OAuth token without mutating local credential files."""
+    import time
     import urllib.parse
     import urllib.request
 
+    if not refresh_token:
+        raise ValueError("refresh_token is required")
+
+    client_id = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+    if use_json:
+        data = json.dumps({
+            "grant_type": "refresh_token",
+            "refresh_token": refresh_token,
+            "client_id": client_id,
+        }).encode()
+        content_type = "application/json"
+    else:
+        data = urllib.parse.urlencode({
+            "grant_type": "refresh_token",
+            "refresh_token": refresh_token,
+            "client_id": client_id,
+        }).encode()
+        content_type = "application/x-www-form-urlencoded"
+
+    token_endpoints = [
+        "https://platform.claude.com/v1/oauth/token",
+        "https://console.anthropic.com/v1/oauth/token",
+    ]
+    last_error = None
+    for endpoint in token_endpoints:
+        req = urllib.request.Request(
+            endpoint,
+            data=data,
+            headers={
+                "Content-Type": content_type,
+                "User-Agent": f"claude-cli/{_get_claude_code_version()} (external, cli)",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                result = json.loads(resp.read().decode())
+        except Exception as exc:
+            last_error = exc
+            logger.debug("Anthropic token refresh failed at %s: %s", endpoint, exc)
+            continue
+
+        access_token = result.get("access_token", "")
+        if not access_token:
+            raise ValueError("Anthropic refresh response was missing access_token")
+        next_refresh = result.get("refresh_token", refresh_token)
+        expires_in = result.get("expires_in", 3600)
+        return {
+            "access_token": access_token,
+            "refresh_token": next_refresh,
+            "expires_at_ms": int(time.time() * 1000) + (expires_in * 1000),
+        }
+
+    if last_error is not None:
+        raise last_error
+    raise ValueError("Anthropic token refresh failed")
+
+
+def _refresh_oauth_token(creds: Dict[str, Any]) -> Optional[str]:
+    """Attempt to refresh an expired Claude Code OAuth token."""
     refresh_token = creds.get("refreshToken", "")
     if not refresh_token:
         logger.debug("No refresh token available — cannot refresh")
         return None
 
-    # Client ID used by Claude Code's OAuth flow
-    CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
-
-    data = urllib.parse.urlencode({
-        "grant_type": "refresh_token",
-        "refresh_token": refresh_token,
-        "client_id": CLIENT_ID,
-    }).encode()
-
-    req = urllib.request.Request(
-        "https://console.anthropic.com/v1/oauth/token",
-        data=data,
-        headers={
-            "Content-Type": "application/x-www-form-urlencoded",
-            "User-Agent": f"claude-cli/{_CLAUDE_CODE_VERSION} (external, cli)",
-        },
-        method="POST",
-    )
-
     try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            result = json.loads(resp.read().decode())
-            new_access = result.get("access_token", "")
-            new_refresh = result.get("refresh_token", refresh_token)
-            expires_in = result.get("expires_in", 3600)  # seconds
-
-            if new_access:
-                import time
-                new_expires_ms = int(time.time() * 1000) + (expires_in * 1000)
-                # Write refreshed credentials back to ~/.claude/.credentials.json
-                _write_claude_code_credentials(new_access, new_refresh, new_expires_ms)
-                logger.debug("Successfully refreshed Claude Code OAuth token")
-                return new_access
+        refreshed = refresh_anthropic_oauth_pure(refresh_token, use_json=False)
+        _write_claude_code_credentials(
+            refreshed["access_token"],
+            refreshed["refresh_token"],
+            refreshed["expires_at_ms"],
+        )
+        logger.debug("Successfully refreshed Claude Code OAuth token")
+        return refreshed["access_token"]
     except Exception as e:
         logger.debug("Failed to refresh Claude Code token: %s", e)
+        return None
 
-    return None
 
+def _write_claude_code_credentials(
+    access_token: str,
+    refresh_token: str,
+    expires_at_ms: int,
+    *,
+    scopes: Optional[list] = None,
+) -> None:
+    """Write refreshed credentials back to ~/.claude/.credentials.json.
 
-def _write_claude_code_credentials(access_token: str, refresh_token: str, expires_at_ms: int) -> None:
-    """Write refreshed credentials back to ~/.claude/.credentials.json."""
+    The optional *scopes* list (e.g. ``["user:inference", "user:profile", ...]``)
+    is persisted so that Claude Code's own auth check recognises the credential
+    as valid.  Claude Code >=2.1.81 gates on the presence of ``"user:inference"``
+    in the stored scopes before it will use the token.
+    """
     cred_path = Path.home() / ".claude" / ".credentials.json"
     try:
         # Read existing file to preserve other fields
@@ -268,11 +414,19 @@ def _write_claude_code_credentials(access_token: str, refresh_token: str, expire
         if cred_path.exists():
             existing = json.loads(cred_path.read_text(encoding="utf-8"))
 
-        existing["claudeAiOauth"] = {
+        oauth_data: Dict[str, Any] = {
             "accessToken": access_token,
             "refreshToken": refresh_token,
             "expiresAt": expires_at_ms,
         }
+        if scopes is not None:
+            oauth_data["scopes"] = scopes
+        elif "claudeAiOauth" in existing and "scopes" in existing["claudeAiOauth"]:
+            # Preserve previously-stored scopes when the refresh response
+            # does not include a scope field.
+            oauth_data["scopes"] = existing["claudeAiOauth"]["scopes"]
+
+        existing["claudeAiOauth"] = oauth_data
 
         cred_path.parent.mkdir(parents=True, exist_ok=True)
         cred_path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
@@ -432,10 +586,208 @@ def run_oauth_setup_token() -> Optional[str]:
     return None
 
 
+# ── Hermes-native PKCE OAuth flow ────────────────────────────────────────
+# Mirrors the flow used by Claude Code, pi-ai, and OpenCode.
+# Stores credentials in ~/.hermes/.anthropic_oauth.json (our own file).
+
+_OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+_OAUTH_TOKEN_URL = "https://console.anthropic.com/v1/oauth/token"
+_OAUTH_REDIRECT_URI = "https://console.anthropic.com/oauth/code/callback"
+_OAUTH_SCOPES = "org:create_api_key user:profile user:inference"
+_HERMES_OAUTH_FILE = get_hermes_home() / ".anthropic_oauth.json"
 
 
+def _generate_pkce() -> tuple:
+    """Generate PKCE code_verifier and code_challenge (S256)."""
+    import base64
+    import hashlib
+    import secrets
+
+    verifier = base64.urlsafe_b64encode(secrets.token_bytes(32)).rstrip(b"=").decode()
+    challenge = base64.urlsafe_b64encode(
+        hashlib.sha256(verifier.encode()).digest()
+    ).rstrip(b"=").decode()
+    return verifier, challenge
 
 
+def run_hermes_oauth_login_pure() -> Optional[Dict[str, Any]]:
+    """Run Hermes-native OAuth PKCE flow and return credential state."""
+    import time
+    import webbrowser
+
+    verifier, challenge = _generate_pkce()
+
+    params = {
+        "code": "true",
+        "client_id": _OAUTH_CLIENT_ID,
+        "response_type": "code",
+        "redirect_uri": _OAUTH_REDIRECT_URI,
+        "scope": _OAUTH_SCOPES,
+        "code_challenge": challenge,
+        "code_challenge_method": "S256",
+        "state": verifier,
+    }
+    from urllib.parse import urlencode
+
+    auth_url = f"https://claude.ai/oauth/authorize?{urlencode(params)}"
+
+    print()
+    print("Authorize Hermes with your Claude Pro/Max subscription.")
+    print()
+    print("╭─ Claude Pro/Max Authorization ────────────────────╮")
+    print("│                                                   │")
+    print("│  Open this link in your browser:                  │")
+    print("╰───────────────────────────────────────────────────╯")
+    print()
+    print(f"  {auth_url}")
+    print()
+
+    try:
+        webbrowser.open(auth_url)
+        print("  (Browser opened automatically)")
+    except Exception:
+        pass
+
+    print()
+    print("After authorizing, you'll see a code. Paste it below.")
+    print()
+    try:
+        auth_code = input("Authorization code: ").strip()
+    except (KeyboardInterrupt, EOFError):
+        return None
+
+    if not auth_code:
+        print("No code entered.")
+        return None
+
+    splits = auth_code.split("#")
+    code = splits[0]
+    state = splits[1] if len(splits) > 1 else ""
+
+    try:
+        import urllib.request
+
+        exchange_data = json.dumps({
+            "grant_type": "authorization_code",
+            "client_id": _OAUTH_CLIENT_ID,
+            "code": code,
+            "state": state,
+            "redirect_uri": _OAUTH_REDIRECT_URI,
+            "code_verifier": verifier,
+        }).encode()
+
+        req = urllib.request.Request(
+            _OAUTH_TOKEN_URL,
+            data=exchange_data,
+            headers={
+                "Content-Type": "application/json",
+                "User-Agent": f"claude-cli/{_get_claude_code_version()} (external, cli)",
+            },
+            method="POST",
+        )
+
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            result = json.loads(resp.read().decode())
+    except Exception as e:
+        print(f"Token exchange failed: {e}")
+        return None
+
+    access_token = result.get("access_token", "")
+    refresh_token = result.get("refresh_token", "")
+    expires_in = result.get("expires_in", 3600)
+
+    if not access_token:
+        print("No access token in response.")
+        return None
+
+    expires_at_ms = int(time.time() * 1000) + (expires_in * 1000)
+    return {
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "expires_at_ms": expires_at_ms,
+    }
+
+
+def run_hermes_oauth_login() -> Optional[str]:
+    """Run Hermes-native OAuth PKCE flow for Claude Pro/Max subscription.
+
+    Opens a browser to claude.ai for authorization, prompts for the code,
+    exchanges it for tokens, and stores them in ~/.hermes/.anthropic_oauth.json.
+
+    Returns the access token on success, None on failure.
+    """
+    result = run_hermes_oauth_login_pure()
+    if not result:
+        return None
+
+    access_token = result["access_token"]
+    refresh_token = result["refresh_token"]
+    expires_at_ms = result["expires_at_ms"]
+
+    _save_hermes_oauth_credentials(access_token, refresh_token, expires_at_ms)
+    _write_claude_code_credentials(access_token, refresh_token, expires_at_ms)
+
+    print("Authentication successful!")
+    return access_token
+
+
+def _save_hermes_oauth_credentials(access_token: str, refresh_token: str, expires_at_ms: int) -> None:
+    """Save OAuth credentials to ~/.hermes/.anthropic_oauth.json."""
+    data = {
+        "accessToken": access_token,
+        "refreshToken": refresh_token,
+        "expiresAt": expires_at_ms,
+    }
+    try:
+        _HERMES_OAUTH_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _HERMES_OAUTH_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        _HERMES_OAUTH_FILE.chmod(0o600)
+    except (OSError, IOError) as e:
+        logger.debug("Failed to save Hermes OAuth credentials: %s", e)
+
+
+def read_hermes_oauth_credentials() -> Optional[Dict[str, Any]]:
+    """Read Hermes-managed OAuth credentials from ~/.hermes/.anthropic_oauth.json."""
+    if _HERMES_OAUTH_FILE.exists():
+        try:
+            data = json.loads(_HERMES_OAUTH_FILE.read_text(encoding="utf-8"))
+            if data.get("accessToken"):
+                return data
+        except (json.JSONDecodeError, OSError, IOError) as e:
+            logger.debug("Failed to read Hermes OAuth credentials: %s", e)
+    return None
+
+
+def refresh_hermes_oauth_token() -> Optional[str]:
+    """Refresh the Hermes-managed OAuth token using the stored refresh token.
+
+    Returns the new access token, or None if refresh fails.
+    """
+    creds = read_hermes_oauth_credentials()
+    if not creds or not creds.get("refreshToken"):
+        return None
+
+    try:
+        refreshed = refresh_anthropic_oauth_pure(
+            creds["refreshToken"],
+            use_json=True,
+        )
+        _save_hermes_oauth_credentials(
+            refreshed["access_token"],
+            refreshed["refresh_token"],
+            refreshed["expires_at_ms"],
+        )
+        _write_claude_code_credentials(
+            refreshed["access_token"],
+            refreshed["refresh_token"],
+            refreshed["expires_at_ms"],
+        )
+        logger.debug("Successfully refreshed Hermes OAuth token")
+        return refreshed["access_token"]
+    except Exception as e:
+        logger.debug("Failed to refresh Hermes OAuth token: %s", e)
+
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -598,6 +950,69 @@ def _convert_content_part_to_anthropic(part: Any) -> Optional[Dict[str, Any]]:
     return block
 
 
+def _to_plain_data(value: Any, *, _depth: int = 0, _path: Optional[set] = None) -> Any:
+    """Recursively convert SDK objects to plain Python data structures.
+
+    Guards against circular references (``_path`` tracks ``id()`` of objects
+    on the *current* recursion path) and runaway depth (capped at 20 levels).
+    Uses path-based tracking so shared (but non-cyclic) objects referenced by
+    multiple siblings are converted correctly rather than being stringified.
+    """
+    _MAX_DEPTH = 20
+    if _depth > _MAX_DEPTH:
+        return str(value)
+
+    if _path is None:
+        _path = set()
+
+    obj_id = id(value)
+    if obj_id in _path:
+        return str(value)
+
+    if hasattr(value, "model_dump"):
+        _path.add(obj_id)
+        result = _to_plain_data(value.model_dump(), _depth=_depth + 1, _path=_path)
+        _path.discard(obj_id)
+        return result
+    if isinstance(value, dict):
+        _path.add(obj_id)
+        result = {k: _to_plain_data(v, _depth=_depth + 1, _path=_path) for k, v in value.items()}
+        _path.discard(obj_id)
+        return result
+    if isinstance(value, (list, tuple)):
+        _path.add(obj_id)
+        result = [_to_plain_data(v, _depth=_depth + 1, _path=_path) for v in value]
+        _path.discard(obj_id)
+        return result
+    if hasattr(value, "__dict__"):
+        _path.add(obj_id)
+        result = {
+            k: _to_plain_data(v, _depth=_depth + 1, _path=_path)
+            for k, v in vars(value).items()
+            if not k.startswith("_")
+        }
+        _path.discard(obj_id)
+        return result
+    return value
+
+
+def _extract_preserved_thinking_blocks(message: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Return Anthropic thinking blocks previously preserved on the message."""
+    raw_details = message.get("reasoning_details")
+    if not isinstance(raw_details, list):
+        return []
+
+    preserved: List[Dict[str, Any]] = []
+    for detail in raw_details:
+        if not isinstance(detail, dict):
+            continue
+        block_type = str(detail.get("type", "") or "").strip().lower()
+        if block_type not in {"thinking", "redacted_thinking"}:
+            continue
+        preserved.append(copy.deepcopy(detail))
+    return preserved
+
+
 def _convert_content_to_anthropic(content: Any) -> Any:
     """Convert OpenAI-style multimodal content arrays to Anthropic blocks."""
     if not isinstance(content, list):
@@ -644,7 +1059,7 @@ def convert_messages_to_anthropic(
             continue
 
         if role == "assistant":
-            blocks = []
+            blocks = _extract_preserved_thinking_blocks(m)
             if content:
                 if isinstance(content, list):
                     converted_content = _convert_content_to_anthropic(content)
@@ -699,14 +1114,21 @@ def convert_messages_to_anthropic(
                 result.append({"role": "user", "content": [tool_result]})
             continue
 
-        # Regular user message
+        # Regular user message — validate non-empty content (Anthropic rejects empty)
         if isinstance(content, list):
             converted_blocks = _convert_content_to_anthropic(content)
-            result.append({
-                "role": "user",
-                "content": converted_blocks or [{"type": "text", "text": ""}],
-            })
+            # Check if all text blocks are empty
+            if not converted_blocks or all(
+                b.get("text", "").strip() == ""
+                for b in converted_blocks
+                if isinstance(b, dict) and b.get("type") == "text"
+            ):
+                converted_blocks = [{"type": "text", "text": "(empty message)"}]
+            result.append({"role": "user", "content": converted_blocks})
         else:
+            # Validate string content is non-empty
+            if not content or (isinstance(content, str) and not content.strip()):
+                content = "(empty message)"
             result.append({"role": "user", "content": content})
 
     # Strip orphaned tool_use blocks (no matching tool_result follows)
@@ -796,8 +1218,14 @@ def build_anthropic_kwargs(
     tool_choice: Optional[str] = None,
     is_oauth: bool = False,
     preserve_dots: bool = False,
+    context_length: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Build kwargs for anthropic.messages.create().
+
+    When *max_tokens* is None, the model's native output limit is used
+    (e.g. 128K for Opus 4.6, 64K for Sonnet 4.6).  If *context_length*
+    is provided, the effective limit is clamped so it doesn't exceed
+    the context window.
 
     When *is_oauth* is True, applies Claude Code compatibility transforms:
     system prompt prefix, tool name prefixing, and prompt sanitization.
@@ -809,7 +1237,12 @@ def build_anthropic_kwargs(
     anthropic_tools = convert_tools_to_anthropic(tools) if tools else []
 
     model = normalize_model_name(model, preserve_dots=preserve_dots)
-    effective_max_tokens = max_tokens or 16384
+    effective_max_tokens = max_tokens or _get_anthropic_max_output(model)
+
+    # Clamp to context window if the user set a lower context_length
+    # (e.g. custom endpoint with limited capacity).
+    if context_length and effective_max_tokens > context_length:
+        effective_max_tokens = max(context_length - 1, 1)
 
     # ── OAuth: Claude Code identity ──────────────────────────────────
     if is_oauth:
@@ -910,6 +1343,7 @@ def normalize_anthropic_response(
     """
     text_parts = []
     reasoning_parts = []
+    reasoning_details = []
     tool_calls = []
 
     for block in response.content:
@@ -917,6 +1351,9 @@ def normalize_anthropic_response(
             text_parts.append(block.text)
         elif block.type == "thinking":
             reasoning_parts.append(block.thinking)
+            block_dict = _to_plain_data(block)
+            if isinstance(block_dict, dict):
+                reasoning_details.append(block_dict)
         elif block.type == "tool_use":
             name = block.name
             if strip_tool_prefix and name.startswith(_MCP_TOOL_PREFIX):
@@ -947,7 +1384,7 @@ def normalize_anthropic_response(
             tool_calls=tool_calls or None,
             reasoning="\n\n".join(reasoning_parts) if reasoning_parts else None,
             reasoning_content=None,
-            reasoning_details=None,
+            reasoning_details=reasoning_details or None,
         ),
         finish_reason,
     )

@@ -1,0 +1,15 @@
+# Git
+.git
+.gitignore
+.gitmodules
+
+# Dependencies
+node_modules
+
+# CI/CD
+.github
+
+# Environment files
+.env
+
+*.md

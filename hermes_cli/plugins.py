@@ -36,7 +36,9 @@ import sys
 import types
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, List, Optional, Set, Union
+
+from utils import env_var_enabled
 
 try:
     import yaml
@@ -54,6 +56,8 @@ VALID_HOOKS: Set[str] = {
     "post_tool_call",
     "pre_llm_call",
     "post_llm_call",
+    "pre_api_request",
+    "post_api_request",
     "on_session_start",
     "on_session_end",
 }
@@ -65,7 +69,18 @@ _NS_PARENT = "hermes_plugins"
 
 def _env_enabled(name: str) -> bool:
     """Return True when an env var is set to a truthy opt-in value."""
-    return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
+    return env_var_enabled(name)
+
+
+def _get_disabled_plugins() -> set:
+    """Read the disabled plugins list from config.yaml."""
+    try:
+        from hermes_cli.config import load_config
+        config = load_config()
+        disabled = config.get("plugins", {}).get("disabled", [])
+        return set(disabled) if isinstance(disabled, list) else set()
+    except Exception:
+        return set()
 
 
 # ---------------------------------------------------------------------------
@@ -80,7 +95,7 @@ class PluginManifest:
     version: str = ""
     description: str = ""
     author: str = ""
-    requires_env: List[str] = field(default_factory=list)
+    requires_env: List[Union[str, Dict[str, Any]]] = field(default_factory=list)
     provides_tools: List[str] = field(default_factory=list)
     provides_hooks: List[str] = field(default_factory=list)
     source: str = ""        # "user", "project", or "entrypoint"
@@ -141,6 +156,60 @@ class PluginContext:
         self._manager._plugin_tool_names.add(name)
         logger.debug("Plugin %s registered tool: %s", self.manifest.name, name)
 
+    # -- message injection --------------------------------------------------
+
+    def inject_message(self, content: str, role: str = "user") -> bool:
+        """Inject a message into the active conversation.
+
+        If the agent is idle (waiting for user input), this starts a new turn.
+        If the agent is running, this interrupts and injects the message.
+
+        This enables plugins (e.g. remote control viewers, messaging bridges)
+        to send messages into the conversation from external sources.
+
+        Returns True if the message was queued successfully.
+        """
+        cli = self._manager._cli_ref
+        if cli is None:
+            logger.warning("inject_message: no CLI reference (not available in gateway mode)")
+            return False
+
+        msg = content if role == "user" else f"[{role}] {content}"
+
+        if getattr(cli, "_agent_running", False):
+            # Agent is mid-turn — interrupt with the message
+            cli._interrupt_queue.put(msg)
+        else:
+            # Agent is idle — queue as next input
+            cli._pending_input.put(msg)
+        return True
+
+    # -- CLI command registration --------------------------------------------
+
+    def register_cli_command(
+        self,
+        name: str,
+        help: str,
+        setup_fn: Callable,
+        handler_fn: Callable | None = None,
+        description: str = "",
+    ) -> None:
+        """Register a CLI subcommand (e.g. ``hermes honcho ...``).
+
+        The *setup_fn* receives an argparse subparser and should add any
+        arguments/sub-subparsers.  If *handler_fn* is provided it is set
+        as the default dispatch function via ``set_defaults(func=...)``.
+        """
+        self._manager._cli_commands[name] = {
+            "name": name,
+            "help": help,
+            "description": description,
+            "setup_fn": setup_fn,
+            "handler_fn": handler_fn,
+            "plugin": self.manifest.name,
+        }
+        logger.debug("Plugin %s registered CLI command: %s", self.manifest.name, name)
+
     # -- hook registration --------------------------------------------------
 
     def register_hook(self, hook_name: str, callback: Callable) -> None:
@@ -172,7 +241,9 @@ class PluginManager:
         self._plugins: Dict[str, LoadedPlugin] = {}
         self._hooks: Dict[str, List[Callable]] = {}
         self._plugin_tool_names: Set[str] = set()
+        self._cli_commands: Dict[str, dict] = {}
         self._discovered: bool = False
+        self._cli_ref = None  # Set by CLI after plugin discovery
 
     # -----------------------------------------------------------------------
     # Public
@@ -199,8 +270,15 @@ class PluginManager:
         # 3. Pip / entry-point plugins
         manifests.extend(self._scan_entry_points())
 
-        # Load each manifest
+        # Load each manifest (skip user-disabled plugins)
+        disabled = _get_disabled_plugins()
         for manifest in manifests:
+            if manifest.name in disabled:
+                loaded = LoadedPlugin(manifest=manifest, enabled=False)
+                loaded.error = "disabled via config"
+                self._plugins[manifest.name] = loaded
+                logger.debug("Skipping disabled plugin '%s'", manifest.name)
+                continue
             self._load_plugin(manifest)
 
         if manifests:
@@ -385,16 +463,33 @@ class PluginManager:
     # Hook invocation
     # -----------------------------------------------------------------------
 
-    def invoke_hook(self, hook_name: str, **kwargs: Any) -> None:
+    def invoke_hook(self, hook_name: str, **kwargs: Any) -> List[Any]:
         """Call all registered callbacks for *hook_name*.
 
         Each callback is wrapped in its own try/except so a misbehaving
         plugin cannot break the core agent loop.
+
+        Returns a list of non-``None`` return values from callbacks.
+
+        For ``pre_llm_call``, callbacks may return a dict describing
+        context to inject into the current turn's user message::
+
+            {"context": "recalled text..."}
+            "recalled text..."          # plain string, equivalent
+
+        Context is ALWAYS injected into the user message, never the
+        system prompt.  This preserves the prompt cache prefix — the
+        system prompt stays identical across turns so cached tokens
+        are reused.  All injected context is ephemeral — never
+        persisted to session DB.
         """
         callbacks = self._hooks.get(hook_name, [])
+        results: List[Any] = []
         for cb in callbacks:
             try:
-                cb(**kwargs)
+                ret = cb(**kwargs)
+                if ret is not None:
+                    results.append(ret)
             except Exception as exc:
                 logger.warning(
                     "Hook '%s' callback %s raised: %s",
@@ -402,6 +497,7 @@ class PluginManager:
                     getattr(cb, "__name__", repr(cb)),
                     exc,
                 )
+        return results
 
     # -----------------------------------------------------------------------
     # Introspection
@@ -446,14 +542,26 @@ def discover_plugins() -> None:
     get_plugin_manager().discover_and_load()
 
 
-def invoke_hook(hook_name: str, **kwargs: Any) -> None:
-    """Invoke a lifecycle hook on all loaded plugins."""
-    get_plugin_manager().invoke_hook(hook_name, **kwargs)
+def invoke_hook(hook_name: str, **kwargs: Any) -> List[Any]:
+    """Invoke a lifecycle hook on all loaded plugins.
+
+    Returns a list of non-``None`` return values from plugin callbacks.
+    """
+    return get_plugin_manager().invoke_hook(hook_name, **kwargs)
 
 
 def get_plugin_tool_names() -> Set[str]:
     """Return the set of tool names registered by plugins."""
     return get_plugin_manager()._plugin_tool_names
+
+
+def get_plugin_cli_commands() -> Dict[str, dict]:
+    """Return CLI commands registered by general plugins.
+
+    Returns a dict of ``{name: {help, setup_fn, handler_fn, ...}}``
+    suitable for wiring into argparse subparsers.
+    """
+    return dict(get_plugin_manager()._cli_commands)
 
 
 def get_plugin_toolsets() -> List[tuple]:

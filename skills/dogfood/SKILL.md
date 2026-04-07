@@ -16,7 +16,7 @@ This skill guides you through systematic exploratory QA testing of web applicati
 
 ## Prerequisites
 
-- Browser toolset must be available (`browser_navigate`, `browser_snapshot`, `browser_click`, `browser_type`, `browser_vision`, `browser_console`, `browser_scroll`, `browser_back`, `browser_press`, `browser_close`)
+- Browser toolset must be available (`browser_navigate`, `browser_snapshot`, `browser_click`, `browser_type`, `browser_vision`, `browser_console`, `browser_scroll`, `browser_back`, `browser_press`)
 - A target URL and testing scope from the user
 
 ## Inputs
@@ -148,7 +148,6 @@ Save the report to `{output_dir}/report.md`.
 | `browser_press` | Press a keyboard key |
 | `browser_vision` | Screenshot + AI analysis; use `annotate=true` for element labels |
 | `browser_console` | Get JS console output and errors |
-| `browser_close` | Close the browser session |
 
 ## Tips
 

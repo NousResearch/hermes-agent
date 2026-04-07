@@ -1,404 +1,93 @@
 ---
-title: Honcho Memory
-description: AI-native persistent memory for cross-session user modeling and personalization.
-sidebar_label: Honcho Memory
-sidebar_position: 8
+sidebar_position: 99
+title: "Honcho Memory"
+description: "AI-native persistent memory via Honcho — dialectic reasoning, multi-agent user modeling, and deep personalization"
 ---
 
 # Honcho Memory
 
-[Honcho](https://honcho.dev) is an AI-native memory system that gives Hermes persistent, cross-session understanding of users. While Hermes has built-in memory (`MEMORY.md` and `USER.md`), Honcho adds a deeper layer of **user modeling** — learning preferences, goals, communication style, and context across conversations via a dual-peer architecture where both the user and the AI build representations over time.
+[Honcho](https://github.com/plastic-labs/honcho) is an AI-native memory backend that adds dialectic reasoning and deep user modeling on top of Hermes's built-in memory system. Instead of simple key-value storage, Honcho maintains a running model of who the user is — their preferences, communication style, goals, and patterns — by reasoning about conversations after they happen.
 
-## Works Alongside Built-in Memory
+:::info Honcho is a Memory Provider Plugin
+Honcho is integrated into the [Memory Providers](./memory-providers.md) system. All features below are available through the unified memory provider interface.
+:::
 
-Hermes has two memory systems that can work together or be configured separately. In `hybrid` mode (the default), both run side by side — Honcho adds cross-session user modeling while local files handle agent-level notes.
+## What Honcho Adds
 
-| Feature | Built-in Memory | Honcho Memory |
-|---------|----------------|---------------|
-| Storage | Local files (`~/.hermes/memories/`) | Cloud-hosted Honcho API |
-| Scope | Agent-level notes and user profile | Deep user modeling via dialectic reasoning |
-| Persistence | Across sessions on same machine | Across sessions, machines, and platforms |
-| Query | Injected into system prompt automatically | Prefetched + on-demand via tools |
-| Content | Manually curated by the agent | Automatically learned from conversations |
-| Write surface | `memory` tool (add/replace/remove) | `honcho_conclude` tool (persist facts) |
+| Capability | Built-in Memory | Honcho |
+|-----------|----------------|--------|
+| Cross-session persistence | ✔ File-based MEMORY.md/USER.md | ✔ Server-side with API |
+| User profile | ✔ Manual agent curation | ✔ Automatic dialectic reasoning |
+| Multi-agent isolation | — | ✔ Per-peer profile separation |
+| Observation modes | — | ✔ Unified or directional observation |
+| Conclusions (derived insights) | — | ✔ Server-side reasoning about patterns |
+| Search across history | ✔ FTS5 session search | ✔ Semantic search over conclusions |
 
-Set `memoryMode` to `honcho` to use Honcho exclusively. See [Memory Modes](#memory-modes) for per-peer configuration.
+**Dialectic reasoning**: After each conversation, Honcho analyzes the exchange and derives "conclusions" — insights about the user's preferences, habits, and goals. These conclusions accumulate over time, giving the agent a deepening understanding that goes beyond what the user explicitly stated.
 
-
-## Self-hosted / Docker
-
-Hermes supports a local Honcho instance (e.g. via Docker) in addition to the hosted API. Point it at your instance using `HONCHO_BASE_URL` — no API key required.
-
-**Via `hermes config`:**
-
-```bash
-hermes config set HONCHO_BASE_URL http://localhost:8000
-```
-
-**Via `~/.honcho/config.json`:**
-
-```json
-{
-  "hosts": {
-    "hermes": {
-      "base_url": "http://localhost:8000",
-      "enabled": true
-    }
-  }
-}
-```
-
-Hermes auto-enables Honcho when either `apiKey` or `base_url` is present, so no further configuration is needed for a local instance.
-
-To run Honcho locally, refer to the [Honcho self-hosting docs](https://docs.honcho.dev).
+**Multi-agent profiles**: When multiple Hermes instances talk to the same user (e.g., a coding assistant and a personal assistant), Honcho maintains separate "peer" profiles. Each peer sees only its own observations and conclusions, preventing cross-contamination of context.
 
 ## Setup
 
-### Interactive Setup
-
 ```bash
-hermes honcho setup
+hermes memory setup    # select "honcho" from the provider list
 ```
 
-The setup wizard walks through API key, peer names, workspace, memory mode, write frequency, recall mode, and session strategy. It offers to install `honcho-ai` if missing.
-
-### Manual Setup
-
-#### 1. Install the Client Library
-
-```bash
-pip install 'honcho-ai>=2.0.1'
-```
-
-#### 2. Get an API Key
-
-Go to [app.honcho.dev](https://app.honcho.dev) > Settings > API Keys.
-
-#### 3. Configure
-
-Honcho reads from `~/.honcho/config.json` (shared across all Honcho-enabled applications):
-
-```json
-{
-  "apiKey": "your-honcho-api-key",
-  "hosts": {
-    "hermes": {
-      "workspace": "hermes",
-      "peerName": "your-name",
-      "aiPeer": "hermes",
-      "memoryMode": "hybrid",
-      "writeFrequency": "async",
-      "recallMode": "hybrid",
-      "sessionStrategy": "per-session",
-      "enabled": true
-    }
-  }
-}
-```
-
-`apiKey` lives at the root because it is a shared credential across all Honcho-enabled tools. All other settings are scoped under `hosts.hermes`. The `hermes honcho setup` wizard writes this structure automatically.
-
-Or set the API key as an environment variable:
-
-```bash
-hermes config set HONCHO_API_KEY your-key
-```
-
-:::info
-When an API key is present (either in `~/.honcho/config.json` or as `HONCHO_API_KEY`), Honcho auto-enables unless explicitly set to `"enabled": false`.
-:::
-
-## Configuration
-
-### Global Config (`~/.honcho/config.json`)
-
-Settings are scoped to `hosts.hermes` and fall back to root-level globals when the host field is absent. Root-level keys are managed by the user or the honcho CLI -- Hermes only writes to its own host block (except `apiKey`, which is a shared credential at root).
-
-**Root-level (shared)**
-
-| Field | Default | Description |
-|-------|---------|-------------|
-| `apiKey` | — | Honcho API key (required, shared across all hosts) |
-| `sessions` | `{}` | Manual session name overrides per directory (shared) |
-
-**Host-level (`hosts.hermes`)**
-
-| Field | Default | Description |
-|-------|---------|-------------|
-| `workspace` | `"hermes"` | Workspace identifier |
-| `peerName` | *(derived)* | Your identity name for user modeling |
-| `aiPeer` | `"hermes"` | AI assistant identity name |
-| `environment` | `"production"` | Honcho environment |
-| `enabled` | *(auto)* | Auto-enables when API key is present |
-| `saveMessages` | `true` | Whether to sync messages to Honcho |
-| `memoryMode` | `"hybrid"` | Memory mode: `hybrid` or `honcho` |
-| `writeFrequency` | `"async"` | When to write: `async`, `turn`, `session`, or integer N |
-| `recallMode` | `"hybrid"` | Retrieval strategy: `hybrid`, `context`, or `tools` |
-| `sessionStrategy` | `"per-session"` | How sessions are scoped |
-| `sessionPeerPrefix` | `false` | Prefix session names with peer name |
-| `contextTokens` | *(Honcho default)* | Max tokens for auto-injected context |
-| `dialecticReasoningLevel` | `"low"` | Floor for dialectic reasoning: `minimal` / `low` / `medium` / `high` / `max` |
-| `dialecticMaxChars` | `600` | Char cap on dialectic results injected into system prompt |
-| `linkedHosts` | `[]` | Other host keys whose workspaces to cross-reference |
-
-All host-level fields fall back to the equivalent root-level key if not set under `hosts.hermes`. Existing configs with settings at root level continue to work.
-
-### Memory Modes
-
-| Mode | Effect |
-|------|--------|
-| `hybrid` | Write to both Honcho and local files (default) |
-| `honcho` | Honcho only — skip local file writes |
-
-Memory mode can be set globally or per-peer (user, agent1, agent2, etc):
-
-```json
-{
-  "memoryMode": {
-    "default": "hybrid",
-    "hermes": "honcho"
-  }
-}
-```
-
-To disable Honcho entirely, set `enabled: false` or remove the API key.
-
-### Recall Modes
-
-Controls how Honcho context reaches the agent:
-
-| Mode | Behavior |
-|------|----------|
-| `hybrid` | Auto-injected context + Honcho tools available (default) |
-| `context` | Auto-injected context only — Honcho tools hidden |
-| `tools` | Honcho tools only — no auto-injected context |
-
-### Write Frequency
-
-| Setting | Behavior |
-|---------|----------|
-| `async` | Background thread writes (zero blocking, default) |
-| `turn` | Synchronous write after each turn |
-| `session` | Batched write at session end |
-| *integer N* | Write every N turns |
-
-### Session Strategies
-
-| Strategy | Session key | Use case |
-|----------|-------------|----------|
-| `per-session` | Unique per run | Default. Fresh session every time. |
-| `per-directory` | CWD basename | Each project gets its own session. |
-| `per-repo` | Git repo root name | Groups subdirectories under one session. |
-| `global` | Fixed `"global"` | Single cross-project session. |
-
-Resolution order: manual map > session title > strategy-derived key > platform key.
-
-### Multi-host Configuration
-
-Multiple Honcho-enabled tools share `~/.honcho/config.json`. Each tool writes only to its own host block, reads its host block first, and falls back to root-level globals:
-
-```json
-{
-  "apiKey": "your-key",
-  "peerName": "eri",
-  "hosts": {
-    "hermes": {
-      "workspace": "my-workspace",
-      "aiPeer": "hermes-assistant",
-      "memoryMode": "honcho",
-      "linkedHosts": ["claude-code"],
-      "contextTokens": 2000,
-      "dialecticReasoningLevel": "medium"
-    },
-    "claude-code": {
-      "workspace": "my-workspace",
-      "aiPeer": "clawd"
-    }
-  }
-}
-```
-
-Resolution: `hosts.<tool>` field > root-level field > default. In this example, both tools share the root `apiKey` and `peerName`, but each has its own `aiPeer` and workspace settings.
-
-### Hermes Config (`~/.hermes/config.yaml`)
-
-Intentionally minimal — most configuration comes from `~/.honcho/config.json`:
+Or configure manually:
 
 ```yaml
-honcho: {}
+# ~/.hermes/config.yaml
+memory:
+  provider: honcho
 ```
 
-## How It Works
-
-### Async Context Pipeline
-
-Honcho context is fetched asynchronously to avoid blocking the response path:
-
-```mermaid
-flowchart TD
-    user["User message"] --> cache["Consume cached Honcho context<br/>from the previous turn"]
-    cache --> prompt["Inject user, AI, and dialectic context<br/>into the system prompt"]
-    prompt --> llm["LLM call"]
-    llm --> response["Assistant response"]
-    response --> fetch["Start background fetch for Turn N+1"]
-    fetch --> ctx["Fetch context"]
-    fetch --> dia["Fetch dialectic"]
-    ctx --> next["Cache for the next turn"]
-    dia --> next
+```bash
+echo "HONCHO_API_KEY=your-key" >> ~/.hermes/.env
 ```
 
-Turn 1 is a cold start (no cache). All subsequent turns consume cached results with zero HTTP latency on the response path. The system prompt on turn 1 uses only static context to preserve prefix cache hits at the LLM provider.
+Get an API key at [honcho.dev](https://honcho.dev).
 
-### Dual-Peer Architecture
+## Configuration Options
 
-Both the user and AI have peer representations in Honcho:
+```yaml
+# ~/.hermes/config.yaml
+honcho:
+  observation: directional    # "unified" (default for new installs) or "directional"
+  peer_name: ""               # auto-detected from platform, or set manually
+```
 
-- **User peer** — observed from user messages. Honcho learns preferences, goals, communication style.
-- **AI peer** — observed from assistant messages (`observe_me=True`). Honcho builds a representation of the agent's knowledge and behavior.
-
-Both representations are injected into the system prompt when available.
-
-### Dynamic Reasoning Level
-
-Dialectic queries scale reasoning effort with message complexity:
-
-| Message length | Reasoning level |
-|----------------|-----------------|
-| < 120 chars | Config default (typically `low`) |
-| 120-400 chars | One level above default (cap: `high`) |
-| > 400 chars | Two levels above default (cap: `high`) |
-
-`max` is never selected automatically.
-
-### Gateway Integration
-
-The gateway creates short-lived `AIAgent` instances per request. Honcho managers are owned at the gateway session layer (`_honcho_managers` dict) so they persist across requests within the same session and flush at real session boundaries (reset, resume, expiry, server stop).
-
-#### Session Isolation
-
-Each gateway session (e.g., a Telegram chat, a Discord channel) gets its own Honcho session context. The session key — derived from the platform and chat ID — is threaded through the entire tool dispatch chain so that Honcho tool calls always execute against the correct session, even when multiple users are messaging concurrently.
-
-This means:
-- **`honcho_profile`**, **`honcho_search`**, **`honcho_context`**, and **`honcho_conclude`** all resolve the correct session at call time, not at startup
-- Background memory flushes (triggered by `/reset`, `/resume`, or session expiry) preserve the original session key so they write to the correct Honcho session
-- Synthetic flush turns (where the agent saves memories before context is lost) skip Honcho sync to avoid polluting conversation history with internal bookkeeping
-
-#### Session Lifecycle
-
-| Event | What happens to Honcho |
-|-------|------------------------|
-| New message arrives | Agent inherits the gateway's Honcho manager + session key |
-| `/reset` | Memory flush fires with the old session key, then Honcho manager shuts down |
-| `/resume` | Current session is flushed, then the resumed session's Honcho context loads |
-| Session expiry | Automatic flush + shutdown after the configured idle timeout |
-| Gateway stop | All active Honcho managers are flushed and shut down gracefully |
+**Observation modes:**
+- `unified` — All observations go into a single pool. Simpler, good for single-agent setups.
+- `directional` — Observations are tagged with direction (user→agent, agent→user). Enables richer analysis of conversation dynamics.
 
 ## Tools
 
-When Honcho is active, four tools become available. Availability is gated dynamically — they are invisible when Honcho is disabled.
+When Honcho is active as the memory provider, four additional tools become available:
 
-### `honcho_profile`
-
-Fast peer card retrieval (no LLM). Returns a curated list of key facts about the user.
-
-### `honcho_search`
-
-Semantic search over memory (no LLM). Returns raw excerpts ranked by relevance. Cheaper and faster than `honcho_context` — good for factual lookups.
-
-Parameters:
-- `query` (string) — search query
-- `max_tokens` (integer, optional) — result token budget
-
-### `honcho_context`
-
-Dialectic Q&A powered by Honcho's LLM. Synthesizes an answer from accumulated conversation history.
-
-Parameters:
-- `query` (string) — natural language question
-- `peer` (string, optional) — `"user"` (default) or `"ai"`. Querying `"ai"` asks about the assistant's own history and identity.
-
-Example queries the agent might make:
-
-```
-"What are this user's main goals?"
-"What communication style does this user prefer?"
-"What topics has this user discussed recently?"
-"What is this user's technical expertise level?"
-```
-
-### `honcho_conclude`
-
-Writes a fact to Honcho memory. Use when the user explicitly states a preference, correction, or project context worth remembering. Feeds into the user's peer card and representation.
-
-Parameters:
-- `conclusion` (string) — the fact to persist
+| Tool | Purpose |
+|------|---------|
+| `honcho_conclude` | Trigger server-side dialectic reasoning on recent conversations |
+| `honcho_context` | Retrieve relevant context from Honcho's memory for the current conversation |
+| `honcho_profile` | View or update the user's Honcho profile |
+| `honcho_search` | Semantic search across all stored conclusions and observations |
 
 ## CLI Commands
 
-```
-hermes honcho setup                        # Interactive setup wizard
-hermes honcho status                       # Show config and connection status
-hermes honcho sessions                     # List directory → session name mappings
-hermes honcho map <name>                   # Map current directory to a session name
-hermes honcho peer                         # Show peer names and dialectic settings
-hermes honcho peer --user NAME             # Set user peer name
-hermes honcho peer --ai NAME               # Set AI peer name
-hermes honcho peer --reasoning LEVEL       # Set dialectic reasoning level
-hermes honcho mode                         # Show current memory mode
-hermes honcho mode [hybrid|honcho|local]   # Set memory mode
-hermes honcho tokens                       # Show token budget settings
-hermes honcho tokens --context N           # Set context token cap
-hermes honcho tokens --dialectic N         # Set dialectic char cap
-hermes honcho identity                     # Show AI peer identity
-hermes honcho identity <file>              # Seed AI peer identity from file (SOUL.md, etc.)
-hermes honcho migrate                      # Migration guide: OpenClaw → Hermes + Honcho
-```
-
-### Doctor Integration
-
-`hermes doctor` includes a Honcho section that validates config, API key, and connection status.
-
-## Migration
-
-### From Local Memory
-
-When Honcho activates on an instance with existing local history, migration runs automatically:
-
-1. **Conversation history** — prior messages are uploaded as an XML transcript file
-2. **Memory files** — existing `MEMORY.md`, `USER.md`, and `SOUL.md` are uploaded for context
-
-### From OpenClaw
-
 ```bash
-hermes honcho migrate
+hermes honcho status          # Show connection status and config
+hermes honcho peer            # Update peer names for multi-agent setups
 ```
 
-Walks through converting an OpenClaw native Honcho setup to the shared `~/.honcho/config.json` format.
+## Migrating from `hermes honcho`
 
-## AI Peer Identity
+If you previously used the standalone `hermes honcho setup`:
 
-Honcho can build a representation of the AI assistant over time (via `observe_me=True`). You can also seed the AI peer explicitly:
+1. Your existing configuration (`honcho.json` or `~/.honcho/config.json`) is preserved
+2. Your server-side data (memories, conclusions, user profiles) is intact
+3. Set `memory.provider: honcho` in config.yaml to reactivate
 
-```bash
-hermes honcho identity ~/.hermes/SOUL.md
-```
+No re-login or re-setup needed. Run `hermes memory setup` and select "honcho" — the wizard detects your existing config.
 
-This uploads the file content through Honcho's observation pipeline. The AI peer representation is then injected into the system prompt alongside the user's, giving the agent awareness of its own accumulated identity.
+## Full Documentation
 
-```bash
-hermes honcho identity --show
-```
-
-Shows the current AI peer representation from Honcho.
-
-## Use Cases
-
-- **Personalized responses** — Honcho learns how each user prefers to communicate
-- **Goal tracking** — remembers what users are working toward across sessions
-- **Expertise adaptation** — adjusts technical depth based on user's background
-- **Cross-platform memory** — same user understanding across CLI, Telegram, Discord, etc.
-- **Multi-user support** — each user (via messaging platforms) gets their own user model
-
-:::tip
-Honcho is fully opt-in — zero behavior change when disabled or unconfigured. All Honcho calls are non-fatal; if the service is unreachable, the agent continues normally.
-:::
+See [Memory Providers — Honcho](./memory-providers.md#honcho) for the complete reference.

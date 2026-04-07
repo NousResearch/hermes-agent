@@ -56,7 +56,7 @@ def cron_list(show_all: bool = False):
     print()
 
     for job in jobs:
-        job_id = job.get("id", "?")[:8]
+        job_id = job.get("id", "?")
         name = job.get("name", "(unnamed)")
         schedule = job.get("schedule_display", job.get("schedule", {}).get("value", "?"))
         state = job.get("state", "scheduled" if job.get("enabled", True) else "paused")
@@ -90,6 +90,9 @@ def cron_list(show_all: bool = False):
         print(f"    Deliver:   {deliver_str}")
         if skills:
             print(f"    Skills:    {', '.join(skills)}")
+        script = job.get("script")
+        if script:
+            print(f"    Script:    {script}")
         print()
 
     from hermes_cli.gateway import find_gateway_pids
@@ -149,6 +152,7 @@ def cron_create(args):
         repeat=getattr(args, "repeat", None),
         skill=getattr(args, "skill", None),
         skills=_normalize_skills(getattr(args, "skill", None), getattr(args, "skills", None)),
+        script=getattr(args, "script", None),
     )
     if not result.get("success"):
         print(color(f"Failed to create job: {result.get('error', 'unknown error')}", Colors.RED))
@@ -158,6 +162,9 @@ def cron_create(args):
     print(f"  Schedule: {result['schedule']}")
     if result.get("skills"):
         print(f"  Skills: {', '.join(result['skills'])}")
+    job_data = result.get("job", {})
+    if job_data.get("script"):
+        print(f"  Script: {job_data['script']}")
     print(f"  Next run: {result['next_run_at']}")
     return 0
 
@@ -195,6 +202,7 @@ def cron_edit(args):
         deliver=getattr(args, "deliver", None),
         repeat=getattr(args, "repeat", None),
         skills=final_skills,
+        script=getattr(args, "script", None),
     )
     if not result.get("success"):
         print(color(f"Failed to update job: {result.get('error', 'unknown error')}", Colors.RED))
@@ -208,6 +216,8 @@ def cron_edit(args):
         print(f"  Skills: {', '.join(updated['skills'])}")
     else:
         print("  Skills: none")
+    if updated.get("script"):
+        print(f"  Script: {updated['script']}")
     return 0
 
 

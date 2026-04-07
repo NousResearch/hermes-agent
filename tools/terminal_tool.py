@@ -3,18 +3,22 @@
 Terminal Tool Module
 
 A terminal tool that executes commands in local, Docker, Modal, SSH, Singularity, and Daytona environments.
-Supports local execution, Docker containers, and Modal cloud sandboxes.
+Supports local execution, containerized backends, and Modal cloud sandboxes, including managed gateway mode.
 
 Environment Selection (via TERMINAL_ENV environment variable):
 - "local": Execute directly on the host machine (default, fastest)
 - "docker": Execute in Docker containers (isolated, requires Docker)
-- "modal": Execute in Modal cloud sandboxes (scalable, requires Modal account)
+- "modal": Execute in Modal cloud sandboxes (direct Modal or managed gateway)
 
 Features:
 - Multiple execution backends (local, docker, modal)
 - Background task support
 - VM/container lifecycle management
 - Automatic cleanup after inactivity
+
+Cloud sandbox note:
+- Persistent filesystems preserve working state across sandbox recreation
+- Persistent filesystems do NOT guarantee the same live sandbox or long-running processes survive cleanup, idle reaping, or Hermes exit
 
 Usage:
     from terminal_tool import terminal_tool
@@ -31,6 +35,7 @@ import json
 import logging
 import os
 import platform
+import re
 import time
 import threading
 import atexit
@@ -48,6 +53,12 @@ logger = logging.getLogger(__name__)
 # long-running subprocesses immediately instead of blocking until timeout.
 # ---------------------------------------------------------------------------
 from tools.interrupt import is_interrupted, _interrupt_event  # noqa: F401 — re-exported
+# display_hermes_home imported lazily at call site (stale-module safety during hermes update)
+
+
+def ensure_minisweagent_on_path(_repo_root: Path | None = None) -> None:
+    """Backward-compatible no-op after minisweagent_path.py removal."""
+    return
 
 
 # =============================================================================
@@ -56,6 +67,12 @@ from tools.interrupt import is_interrupted, _interrupt_event  # noqa: F401 — r
 
 # Singularity helpers (scratch dir, SIF cache) now live in tools/environments/singularity.py
 from tools.environments.singularity import _get_scratch_dir
+from tools.tool_backend_helpers import (
+    coerce_modal_mode,
+    has_direct_modal_credentials,
+    managed_nous_tools_enabled,
+    resolve_modal_backend_state,
+)
 
 
 # Disk usage warning threshold (in GB)
@@ -137,6 +154,34 @@ def _check_all_guards(command: str, env_type: str) -> dict:
                                   approval_callback=_approval_callback)
 
 
+# Allowlist: characters that can legitimately appear in directory paths.
+# Covers alphanumeric, path separators, tilde, dot, hyphen, underscore, space,
+# plus, at, equals, and comma.  Everything else is rejected.
+_WORKDIR_SAFE_RE = re.compile(r'^[A-Za-z0-9/_\-.~ +@=,]+$')
+
+
+def _validate_workdir(workdir: str) -> str | None:
+    """Reject workdir values that don't look like a filesystem path.
+
+    Uses an allowlist of safe characters rather than a deny-list, so novel
+    shell metacharacters can't slip through.
+
+    Returns None if safe, or an error message string if dangerous.
+    """
+    if not workdir:
+        return None
+    if not _WORKDIR_SAFE_RE.match(workdir):
+        # Find the first offending character for a helpful message.
+        for ch in workdir:
+            if not _WORKDIR_SAFE_RE.match(ch):
+                return (
+                    f"Blocked: workdir contains disallowed character {repr(ch)}. "
+                    "Use a simple filesystem path without shell metacharacters."
+                )
+        return "Blocked: workdir contains disallowed characters."
+    return None
+
+
 def _handle_sudo_failure(output: str, env_type: str) -> str:
     """
     Check for sudo failure and add helpful message for messaging contexts.
@@ -157,7 +202,8 @@ def _handle_sudo_failure(output: str, env_type: str) -> str:
     
     for failure in sudo_failures:
         if failure in output:
-            return output + "\n\n💡 Tip: To enable sudo over messaging, add SUDO_PASSWORD to ~/.hermes/.env on the agent machine."
+            from hermes_constants import display_hermes_home as _dhh
+            return output + f"\n\n💡 Tip: To enable sudo over messaging, add SUDO_PASSWORD to {_dhh()}/.env on the agent machine."
     
     return output
 
@@ -361,10 +407,12 @@ from tools.environments.singularity import SingularityEnvironment as _Singularit
 from tools.environments.ssh import SSHEnvironment as _SSHEnvironment
 from tools.environments.docker import DockerEnvironment as _DockerEnvironment
 from tools.environments.modal import ModalEnvironment as _ModalEnvironment
+from tools.environments.managed_modal import ManagedModalEnvironment as _ManagedModalEnvironment
+from tools.managed_tool_gateway import is_managed_tool_gateway_ready
 
 
 # Tool description for LLM
-TERMINAL_TOOL_DESCRIPTION = """Execute shell commands on a Linux environment. Filesystem persists between calls.
+TERMINAL_TOOL_DESCRIPTION = """Execute shell commands on a Linux environment. Filesystem usually persists between calls.
 
 Do NOT use cat/head/tail to read files — use read_file instead.
 Do NOT use grep/rg/find to search — use search_files instead.
@@ -373,13 +421,16 @@ Do NOT use sed/awk to edit files — use patch instead.
 Do NOT use echo/cat heredoc to create files — use write_file instead.
 Reserve terminal for: builds, installs, git, processes, scripts, network, package managers, and anything that needs a shell.
 
-Foreground (default): Commands return INSTANTLY when done, even if the timeout is high. Set timeout=300 for long builds/scripts — you'll still get the result in seconds if it's fast. Prefer foreground for everything that finishes.
-Background: ONLY for long-running servers, watchers, or processes that never exit. Set background=true to get a session_id, then use process(action="wait") to block until done — it returns instantly on completion, same as foreground. Use process(action="poll") only when you need a progress check without blocking.
-Do NOT use background for scripts, builds, or installs — foreground with a generous timeout is always better (fewer tool calls, instant results).
+Foreground (default): Commands return INSTANTLY when done, even if the timeout is high. Set timeout=300 for long builds/scripts — you'll still get the result in seconds if it's fast. Prefer foreground for short commands.
+Background: Set background=true to get a session_id. Two patterns:
+  (1) Long-lived processes that never exit (servers, watchers).
+  (2) Long-running tasks with notify_on_complete=true — you can keep working on other things and the system auto-notifies you when the task finishes. Great for test suites, builds, deployments, or anything that takes more than a minute.
+Use process(action="poll") for progress checks, process(action="wait") to block until done.
 Working directory: Use 'workdir' for per-command cwd.
 PTY mode: Set pty=true for interactive CLI tools (Codex, Claude Code, Python REPL).
 
 Do NOT use vim/nano/interactive tools without pty=true — they hang without a pseudo-terminal. Pipe git output to cat if it might page.
+Important: cloud sandboxes may be cleaned up, idled out, or recreated between turns. Persistent filesystem means files can resume later; it does NOT guarantee a continuously running machine or surviving background processes. Use terminal sandboxes for task work, not durable hosting.
 """
 
 # Global state for environment lifecycle management
@@ -493,6 +544,7 @@ def _get_env_config() -> Dict[str, Any]:
 
     return {
         "env_type": env_type,
+        "modal_mode": coerce_modal_mode(os.getenv("TERMINAL_MODAL_MODE", "auto")),
         "docker_image": os.getenv("TERMINAL_DOCKER_IMAGE", default_image),
         "docker_forward_env": _parse_env_var("TERMINAL_DOCKER_FORWARD_ENV", "[]", json.loads, "valid JSON"),
         "singularity_image": os.getenv("TERMINAL_SINGULARITY_IMAGE", f"docker://{default_image}"),
@@ -525,6 +577,15 @@ def _get_env_config() -> Dict[str, Any]:
     }
 
 
+def _get_modal_backend_state(modal_mode: object | None) -> Dict[str, Any]:
+    """Resolve direct vs managed Modal backend selection."""
+    return resolve_modal_backend_state(
+        modal_mode,
+        has_direct=has_direct_modal_credentials(),
+        managed_ready=is_managed_tool_gateway_ready("modal"),
+    )
+
+
 def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
                         ssh_config: dict = None, container_config: dict = None,
                         local_config: dict = None,
@@ -553,6 +614,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
     persistent = cc.get("container_persistent", True)
     volumes = cc.get("docker_volumes", [])
     docker_forward_env = cc.get("docker_forward_env", [])
+    docker_env = cc.get("docker_env", {})
 
     if env_type == "local":
         lc = local_config or {}
@@ -568,6 +630,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
             host_cwd=host_cwd,
             auto_mount_cwd=cc.get("docker_mount_cwd_to_workspace", False),
             forward_env=docker_forward_env,
+            env=docker_env,
         )
     
     elif env_type == "singularity":
@@ -590,7 +653,39 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
                     sandbox_kwargs["ephemeral_disk"] = disk
             except Exception:
                 pass
-        
+
+        modal_state = _get_modal_backend_state(cc.get("modal_mode"))
+
+        if modal_state["selected_backend"] == "managed":
+            return _ManagedModalEnvironment(
+                image=image, cwd=cwd, timeout=timeout,
+                modal_sandbox_kwargs=sandbox_kwargs,
+                persistent_filesystem=persistent, task_id=task_id,
+            )
+
+        if modal_state["selected_backend"] != "direct":
+            if modal_state["managed_mode_blocked"]:
+                raise ValueError(
+                    "Modal backend is configured for managed mode, but "
+                    "HERMES_ENABLE_NOUS_MANAGED_TOOLS is not enabled and no direct "
+                    "Modal credentials/config were found. Enable the feature flag or "
+                    "choose TERMINAL_MODAL_MODE=direct/auto."
+                )
+            if modal_state["mode"] == "managed":
+                raise ValueError(
+                    "Modal backend is configured for managed mode, but the managed tool gateway is unavailable."
+                )
+            if modal_state["mode"] == "direct":
+                raise ValueError(
+                    "Modal backend is configured for direct mode, but no direct Modal credentials/config were found."
+                )
+            message = "Modal backend selected but no direct Modal credentials/config was found."
+            if managed_nous_tools_enabled():
+                message = (
+                    "Modal backend selected but no direct Modal credentials/config or managed tool gateway was found."
+                )
+            raise ValueError(message)
+
         return _ModalEnvironment(
             image=image, cwd=cwd, timeout=timeout,
             modal_sandbox_kwargs=sandbox_kwargs,
@@ -835,6 +930,78 @@ def _atexit_cleanup():
 atexit.register(_atexit_cleanup)
 
 
+# =============================================================================
+# Exit Code Context for Common CLI Tools
+# =============================================================================
+# Many Unix commands use non-zero exit codes for informational purposes, not
+# to indicate failure.  The model sees a raw exit_code=1 from `grep` and
+# wastes a turn investigating something that just means "no matches".
+# This lookup adds a human-readable note so the agent can move on.
+
+def _interpret_exit_code(command: str, exit_code: int) -> str | None:
+    """Return a human-readable note when a non-zero exit code is non-erroneous.
+
+    Returns None when the exit code is 0 or genuinely signals an error.
+    The note is appended to the tool result so the model doesn't waste
+    turns investigating expected exit codes.
+    """
+    if exit_code == 0:
+        return None
+
+    # Extract the last command in a pipeline/chain — that determines the
+    # exit code.  Handles  `cmd1 && cmd2`, `cmd1 | cmd2`, `cmd1; cmd2`.
+    # Deliberately simple: split on shell operators and take the last piece.
+    segments = re.split(r'\s*(?:\|\||&&|[|;])\s*', command)
+    last_segment = (segments[-1] if segments else command).strip()
+
+    # Get base command name (first word), stripping env var assignments
+    # like  VAR=val cmd ...
+    words = last_segment.split()
+    base_cmd = ""
+    for w in words:
+        if "=" in w and not w.startswith("-"):
+            continue  # skip VAR=val
+        base_cmd = w.split("/")[-1]  # handle /usr/bin/grep -> grep
+        break
+
+    if not base_cmd:
+        return None
+
+    # Command-specific semantics
+    semantics: dict[str, dict[int, str]] = {
+        # grep/rg/ag/ack: 1=no matches found (normal), 2+=real error
+        "grep":  {1: "No matches found (not an error)"},
+        "egrep": {1: "No matches found (not an error)"},
+        "fgrep": {1: "No matches found (not an error)"},
+        "rg":    {1: "No matches found (not an error)"},
+        "ag":    {1: "No matches found (not an error)"},
+        "ack":   {1: "No matches found (not an error)"},
+        # diff: 1=files differ (expected), 2+=real error
+        "diff":  {1: "Files differ (expected, not an error)"},
+        "colordiff": {1: "Files differ (expected, not an error)"},
+        # find: 1=some dirs inaccessible but results may still be valid
+        "find":  {1: "Some directories were inaccessible (partial results may still be valid)"},
+        # test/[: 1=condition is false (expected)
+        "test":  {1: "Condition evaluated to false (expected, not an error)"},
+        "[":     {1: "Condition evaluated to false (expected, not an error)"},
+        # curl: common non-error codes
+        "curl":  {
+            6: "Could not resolve host",
+            7: "Failed to connect to host",
+            22: "HTTP response code indicated error (e.g. 404, 500)",
+            28: "Operation timed out",
+        },
+        # git: 1 is context-dependent but often normal (e.g. git diff with changes)
+        "git":   {1: "Non-zero exit (often normal — e.g. 'git diff' returns 1 when files differ)"},
+    }
+
+    cmd_semantics = semantics.get(base_cmd)
+    if cmd_semantics and exit_code in cmd_semantics:
+        return cmd_semantics[exit_code]
+
+    return None
+
+
 def terminal_tool(
     command: str,
     background: bool = False,
@@ -844,6 +1011,7 @@ def terminal_tool(
     workdir: Optional[str] = None,
     check_interval: Optional[int] = None,
     pty: bool = False,
+    notify_on_complete: bool = False,
 ) -> str:
     """
     Execute a command in the configured terminal environment.
@@ -857,6 +1025,7 @@ def terminal_tool(
         workdir: Working directory for this command (optional, uses session cwd if not set)
         check_interval: Seconds between auto-checks for background processes (gateway only, min 30)
         pty: If True, use pseudo-terminal for interactive CLI tools (local backend only)
+        notify_on_complete: If True and background=True, auto-notify the agent when the process exits
 
     Returns:
         str: JSON string with output, exit_code, and error fields
@@ -956,6 +1125,7 @@ def terminal_tool(
                                 "container_memory": config.get("container_memory", 5120),
                                 "container_disk": config.get("container_disk", 51200),
                                 "container_persistent": config.get("container_persistent", True),
+                                "modal_mode": config.get("modal_mode", "auto"),
                                 "docker_volumes": config.get("docker_volumes", []),
                                 "docker_mount_cwd_to_workspace": config.get("docker_mount_cwd_to_workspace", False),
                             }
@@ -993,6 +1163,7 @@ def terminal_tool(
 
         # Pre-exec security checks (tirith + dangerous command detection)
         # Skip check if force=True (user has confirmed they want to run it)
+        approval_note = None
         if not force:
             approval = _check_all_guards(command, env_type)
             if not approval["approved"]:
@@ -1019,15 +1190,36 @@ def terminal_tool(
                     "error": approval.get("message", fallback_msg),
                     "status": "blocked"
                 }, ensure_ascii=False)
+            # Track whether approval was explicitly granted by the user
+            if approval.get("user_approved"):
+                desc = approval.get("description", "flagged as dangerous")
+                approval_note = f"Command required approval ({desc}) and was approved by the user."
+            elif approval.get("smart_approved"):
+                desc = approval.get("description", "flagged as dangerous")
+                approval_note = f"Command was flagged ({desc}) and auto-approved by smart approval."
+
+        # Validate workdir against shell injection
+        if workdir:
+            workdir_error = _validate_workdir(workdir)
+            if workdir_error:
+                logger.warning("Blocked dangerous workdir: %s (command: %s)",
+                               workdir[:200], command[:200])
+                return json.dumps({
+                    "output": "",
+                    "exit_code": -1,
+                    "error": workdir_error,
+                    "status": "blocked"
+                }, ensure_ascii=False)
 
         # Prepare command for execution
         if background:
             # Spawn a tracked background process via the process registry.
             # For local backends: uses subprocess.Popen with output buffering.
             # For non-local backends: runs inside the sandbox via env.execute().
+            from tools.approval import get_current_session_key
             from tools.process_registry import process_registry
 
-            session_key = os.getenv("HERMES_SESSION_KEY", "")
+            session_key = get_current_session_key(default="")
             effective_cwd = workdir or cwd
             try:
                 if env_type == "local":
@@ -1055,6 +1247,8 @@ def terminal_tool(
                     "exit_code": 0,
                     "error": None,
                 }
+                if approval_note:
+                    result_data["approval"] = approval_note
 
                 # Transparent timeout clamping note
                 max_timeout = effective_timeout
@@ -1063,6 +1257,32 @@ def terminal_tool(
                         f"Requested timeout {timeout}s was clamped to "
                         f"configured limit of {max_timeout}s"
                     )
+
+                # Mark for agent notification on completion
+                if notify_on_complete and background:
+                    proc_session.notify_on_complete = True
+                    result_data["notify_on_complete"] = True
+
+                    # In gateway mode, auto-register a fast watcher so the
+                    # gateway can detect completion and trigger a new agent
+                    # turn.  CLI mode uses the completion_queue directly.
+                    _gw_platform = os.getenv("HERMES_SESSION_PLATFORM", "")
+                    if _gw_platform and not check_interval:
+                        _gw_chat_id = os.getenv("HERMES_SESSION_CHAT_ID", "")
+                        _gw_thread_id = os.getenv("HERMES_SESSION_THREAD_ID", "")
+                        proc_session.watcher_platform = _gw_platform
+                        proc_session.watcher_chat_id = _gw_chat_id
+                        proc_session.watcher_thread_id = _gw_thread_id
+                        proc_session.watcher_interval = 5
+                        process_registry.pending_watchers.append({
+                            "session_id": proc_session.id,
+                            "check_interval": 5,
+                            "session_key": session_key,
+                            "platform": _gw_platform,
+                            "chat_id": _gw_chat_id,
+                            "thread_id": _gw_thread_id,
+                            "notify_on_complete": True,
+                        })
 
                 # Register check_interval watcher (gateway picks this up after agent run)
                 if check_interval and background:
@@ -1166,17 +1386,31 @@ def terminal_tool(
             from agent.redact import redact_sensitive_text
             output = redact_sensitive_text(output.strip()) if output else ""
 
-            return json.dumps({
+            # Interpret non-zero exit codes that aren't real errors
+            # (e.g. grep=1 means "no matches", diff=1 means "files differ")
+            exit_note = _interpret_exit_code(command, returncode)
+
+            result_dict = {
                 "output": output,
                 "exit_code": returncode,
-                "error": None
-            }, ensure_ascii=False)
+                "error": None,
+            }
+            if approval_note:
+                result_dict["approval"] = approval_note
+            if exit_note:
+                result_dict["exit_code_meaning"] = exit_note
+
+            return json.dumps(result_dict, ensure_ascii=False)
 
     except Exception as e:
+        import traceback
+        tb_str = traceback.format_exc()
+        logger.error("terminal_tool exception:\n%s", tb_str)
         return json.dumps({
             "output": "",
             "exit_code": -1,
             "error": f"Failed to execute command: {str(e)}",
+            "traceback": tb_str,
             "status": "error"
         }, ensure_ascii=False)
 
@@ -1216,18 +1450,58 @@ def check_terminal_requirements() -> bool:
             return True
 
         elif env_type == "modal":
-            if importlib.util.find_spec("swerex") is None:
-                logger.error("swe-rex is required for modal terminal backend: pip install 'swe-rex[modal]'")
+            modal_state = _get_modal_backend_state(config.get("modal_mode"))
+            if modal_state["selected_backend"] == "managed":
+                return True
+
+            if modal_state["selected_backend"] != "direct":
+                if modal_state["managed_mode_blocked"]:
+                    logger.error(
+                        "Modal backend selected with TERMINAL_MODAL_MODE=managed, but "
+                        "HERMES_ENABLE_NOUS_MANAGED_TOOLS is not enabled and no direct "
+                        "Modal credentials/config were found. Enable the feature flag "
+                        "or choose TERMINAL_MODAL_MODE=direct/auto."
+                    )
+                    return False
+                if modal_state["mode"] == "managed":
+                    logger.error(
+                        "Modal backend selected with TERMINAL_MODAL_MODE=managed, but the managed "
+                        "tool gateway is unavailable. Configure the managed gateway or choose "
+                        "TERMINAL_MODAL_MODE=direct/auto."
+                    )
+                    return False
+                elif modal_state["mode"] == "direct":
+                    if managed_nous_tools_enabled():
+                        logger.error(
+                            "Modal backend selected with TERMINAL_MODAL_MODE=direct, but no direct "
+                            "Modal credentials/config were found. Configure Modal or choose "
+                            "TERMINAL_MODAL_MODE=managed/auto."
+                        )
+                    else:
+                        logger.error(
+                            "Modal backend selected with TERMINAL_MODAL_MODE=direct, but no direct "
+                            "Modal credentials/config were found. Configure Modal or choose "
+                            "TERMINAL_MODAL_MODE=auto."
+                        )
+                    return False
+                else:
+                    if managed_nous_tools_enabled():
+                        logger.error(
+                            "Modal backend selected but no direct Modal credentials/config or managed "
+                            "tool gateway was found. Configure Modal, set up the managed gateway, "
+                            "or choose a different TERMINAL_ENV."
+                        )
+                    else:
+                        logger.error(
+                            "Modal backend selected but no direct Modal credentials/config was found. "
+                            "Configure Modal or choose a different TERMINAL_ENV."
+                        )
+                    return False
+
+            if importlib.util.find_spec("modal") is None:
+                logger.error("modal is required for direct modal terminal backend: pip install modal")
                 return False
-            has_token = os.getenv("MODAL_TOKEN_ID") is not None
-            has_config = Path.home().joinpath(".modal.toml").exists()
-            if not (has_token or has_config):
-                logger.error(
-                    "Modal backend selected but no MODAL_TOKEN_ID environment variable "
-                    "or ~/.modal.toml config file was found. Configure Modal or choose "
-                    "a different TERMINAL_ENV."
-                )
-                return False
+
             return True
 
         elif env_type == "daytona":
@@ -1283,7 +1557,8 @@ if __name__ == "__main__":
     print(f"  TERMINAL_MODAL_IMAGE: {os.getenv('TERMINAL_MODAL_IMAGE', default_img)}")
     print(f"  TERMINAL_DAYTONA_IMAGE: {os.getenv('TERMINAL_DAYTONA_IMAGE', default_img)}")
     print(f"  TERMINAL_CWD: {os.getenv('TERMINAL_CWD', os.getcwd())}")
-    print(f"  TERMINAL_SANDBOX_DIR: {os.getenv('TERMINAL_SANDBOX_DIR', '~/.hermes/sandboxes')}")
+    from hermes_constants import display_hermes_home as _dhh
+    print(f"  TERMINAL_SANDBOX_DIR: {os.getenv('TERMINAL_SANDBOX_DIR', f'{_dhh()}/sandboxes')}")
     print(f"  TERMINAL_TIMEOUT: {os.getenv('TERMINAL_TIMEOUT', '60')}")
     print(f"  TERMINAL_LIFETIME_SECONDS: {os.getenv('TERMINAL_LIFETIME_SECONDS', '300')}")
 
@@ -1305,7 +1580,7 @@ TERMINAL_SCHEMA = {
             },
             "background": {
                 "type": "boolean",
-                "description": "ONLY for servers/watchers that never exit. For scripts, builds, installs — use foreground with timeout instead (it returns instantly when done).",
+                "description": "Run the command in the background. Two patterns: (1) Long-lived processes that never exit (servers, watchers). (2) Long-running tasks paired with notify_on_complete=true — you can keep working and get notified when the task finishes. For short commands, prefer foreground with a generous timeout instead.",
                 "default": False
             },
             "timeout": {
@@ -1326,6 +1601,11 @@ TERMINAL_SCHEMA = {
                 "type": "boolean",
                 "description": "Run in pseudo-terminal (PTY) mode for interactive CLI tools like Codex, Claude Code, or Python REPL. Only works with local and SSH backends. Default: false.",
                 "default": False
+            },
+            "notify_on_complete": {
+                "type": "boolean",
+                "description": "When true (and background=true), you'll be automatically notified when the process finishes — no polling needed. Use this for tasks that take a while (tests, builds, deployments) so you can keep working on other things in the meantime.",
+                "default": False
             }
         },
         "required": ["command"]
@@ -1342,6 +1622,7 @@ def _handle_terminal(args, **kw):
         workdir=args.get("workdir"),
         check_interval=args.get("check_interval"),
         pty=args.get("pty", False),
+        notify_on_complete=args.get("notify_on_complete", False),
     )
 
 

@@ -61,6 +61,11 @@ metadata:
     requires_tools: [web_search]        # Optional — only show when these tools are available
     fallback_for_toolsets: [browser]    # Optional — hide when these toolsets are active
     fallback_for_tools: [browser_navigate]  # Optional — hide when these tools exist
+    config:                              # Optional — config.yaml settings the skill needs
+      - key: my.setting
+        description: "What this setting controls"
+        default: "sensible-default"
+        prompt: "Display prompt for setup"
 required_environment_variables:          # Optional — env vars the skill needs
   - name: MY_API_KEY
     prompt: "Enter your API key"
@@ -168,10 +173,90 @@ required_environment_variables:
 The user can skip setup and keep loading the skill. Hermes never exposes the raw secret value to the model. Gateway and messaging sessions show local setup guidance instead of collecting secrets in-band.
 
 :::tip Sandbox Passthrough
-When your skill is loaded, any declared `required_environment_variables` that are set are **automatically passed through** to `execute_code` and `terminal` sandboxes. Your skill's scripts can access `$TENOR_API_KEY` (or `os.environ["TENOR_API_KEY"]` in Python) without the user needing to configure anything extra. See [Environment Variable Passthrough](/docs/user-guide/security#environment-variable-passthrough) for details.
+When your skill is loaded, any declared `required_environment_variables` that are set are **automatically passed through** to `execute_code` and `terminal` sandboxes — including remote backends like Docker and Modal. Your skill's scripts can access `$TENOR_API_KEY` (or `os.environ["TENOR_API_KEY"]` in Python) without the user needing to configure anything extra. See [Environment Variable Passthrough](/docs/user-guide/security#environment-variable-passthrough) for details.
 :::
 
 Legacy `prerequisites.env_vars` remains supported as a backward-compatible alias.
+
+### Config Settings (config.yaml)
+
+Skills can declare non-secret settings that are stored in `config.yaml` under the `skills.config` namespace. Unlike environment variables (which are secrets stored in `.env`), config settings are for paths, preferences, and other non-sensitive values.
+
+```yaml
+metadata:
+  hermes:
+    config:
+      - key: wiki.path
+        description: Path to the LLM Wiki knowledge base directory
+        default: "~/wiki"
+        prompt: Wiki directory path
+      - key: wiki.domain
+        description: Domain the wiki covers
+        default: ""
+        prompt: Wiki domain (e.g., AI/ML research)
+```
+
+Each entry supports:
+- `key` (required) — dotpath for the setting (e.g., `wiki.path`)
+- `description` (required) — explains what the setting controls
+- `default` (optional) — default value if the user doesn't configure it
+- `prompt` (optional) — prompt text shown during `hermes config migrate`; falls back to `description`
+
+**How it works:**
+
+1. **Storage:** Values are written to `config.yaml` under `skills.config.<key>`:
+   ```yaml
+   skills:
+     config:
+       wiki:
+         path: ~/my-research
+   ```
+
+2. **Discovery:** `hermes config migrate` scans all enabled skills, finds unconfigured settings, and prompts the user. Settings also appear in `hermes config show` under "Skill Settings."
+
+3. **Runtime injection:** When a skill loads, its config values are resolved and appended to the skill message:
+   ```
+   [Skill config (from ~/.hermes/config.yaml):
+     wiki.path = /home/user/my-research
+   ]
+   ```
+   The agent sees the configured values without needing to read `config.yaml` itself.
+
+4. **Manual setup:** Users can also set values directly:
+   ```bash
+   hermes config set skills.config.wiki.path ~/my-wiki
+   ```
+
+:::tip When to use which
+Use `required_environment_variables` for API keys, tokens, and other **secrets** (stored in `~/.hermes/.env`, never shown to the model). Use `config` for **paths, preferences, and non-sensitive settings** (stored in `config.yaml`, visible in config show).
+:::
+
+### Credential File Requirements (OAuth tokens, etc.)
+
+Skills that use OAuth or file-based credentials can declare files that need to be mounted into remote sandboxes. This is for credentials stored as **files** (not env vars) — typically OAuth token files produced by a setup script.
+
+```yaml
+required_credential_files:
+  - path: google_token.json
+    description: Google OAuth2 token (created by setup script)
+  - path: google_client_secret.json
+    description: Google OAuth2 client credentials
+```
+
+Each entry supports:
+- `path` (required) — file path relative to `~/.hermes/`
+- `description` (optional) — explains what the file is and how it's created
+
+When loaded, Hermes checks if these files exist. Missing files trigger `setup_needed`. Existing files are automatically:
+- **Mounted into Docker** containers as read-only bind mounts
+- **Synced into Modal** sandboxes (at creation + before each command, so mid-session OAuth works)
+- Available on **local** backend without any special handling
+
+:::tip When to use which
+Use `required_environment_variables` for simple API keys and tokens (strings stored in `~/.hermes/.env`). Use `required_credential_files` for OAuth token files, client secrets, service account JSON, certificates, or any credential that's a file on disk.
+:::
+
+See the `skills/productivity/google-workspace/SKILL.md` for a complete example using both.
 
 ## Skill Guidelines
 

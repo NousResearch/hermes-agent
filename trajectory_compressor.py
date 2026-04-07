@@ -123,7 +123,7 @@ class CompressionConfig:
         # Summarization
         if 'summarization' in data:
             config.summarization_model = data['summarization'].get('model', config.summarization_model)
-            config.base_url = data['summarization'].get('base_url', config.base_url)
+            config.base_url = data['summarization'].get('base_url') or config.base_url
             config.api_key_env = data['summarization'].get('api_key_env', config.api_key_env)
             config.temperature = data['summarization'].get('temperature', config.temperature)
             config.max_retries = data['summarization'].get('max_retries', config.max_retries)
@@ -375,18 +375,37 @@ class TrajectoryCompressor:
                 raise RuntimeError(
                     f"Missing API key. Set {self.config.api_key_env} "
                     f"environment variable.")
-            from openai import OpenAI, AsyncOpenAI
+            from openai import OpenAI
             self.client = OpenAI(
                 api_key=api_key, base_url=self.config.base_url)
-            self.async_client = AsyncOpenAI(
-                api_key=api_key, base_url=self.config.base_url)
+            # AsyncOpenAI is created lazily in _get_async_client() so it
+            # binds to the current event loop — avoids "Event loop is closed"
+            # when process_directory() is called multiple times (each call
+            # creates a new loop via asyncio.run()).
+            self.async_client = None
+            self._async_client_api_key = api_key
 
         print(f"✅ Initialized summarizer client: {self.config.summarization_model}")
         print(f"   Max concurrent requests: {self.config.max_concurrent_requests}")
 
+    def _get_async_client(self):
+        """Return an AsyncOpenAI client bound to the current event loop.
+
+        Created lazily so that each ``asyncio.run()`` call in
+        ``process_directory()`` gets a client tied to its own loop,
+        avoiding "Event loop is closed" errors on repeated calls.
+        """
+        from openai import AsyncOpenAI
+        # Always create a fresh client so it binds to the running loop.
+        self.async_client = AsyncOpenAI(
+            api_key=self._async_client_api_key,
+            base_url=self.config.base_url,
+        )
+        return self.async_client
+
     def _detect_provider(self) -> str:
         """Detect the provider name from the configured base_url."""
-        url = self.config.base_url.lower()
+        url = (self.config.base_url or "").lower()
         if "openrouter" in url:
             return "openrouter"
         if "nousresearch.com" in url:
@@ -615,7 +634,7 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
                         max_tokens=self.config.summary_target_tokens * 2,
                     )
                 else:
-                    response = await self.async_client.chat.completions.create(
+                    response = await self._get_async_client().chat.completions.create(
                         model=self.config.summarization_model,
                         messages=[{"role": "user", "content": prompt}],
                         temperature=self.config.temperature,

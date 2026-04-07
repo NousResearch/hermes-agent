@@ -21,7 +21,7 @@
     in {
       packages.default = pkgs.stdenv.mkDerivation {
         pname = "hermes-agent";
-        version = "0.1.0";
+        version = (builtins.fromTOML (builtins.readFile ../pyproject.toml)).project.version;
 
         dontUnpack = true;
         dontBuild = true;
@@ -35,7 +35,7 @@
 
           ${pkgs.lib.concatMapStringsSep "\n" (name: ''
             makeWrapper ${hermesVenv}/bin/${name} $out/bin/${name} \
-              --prefix PATH : "${runtimePath}" \
+              --suffix PATH : "${runtimePath}" \
               --set HERMES_BUNDLED_SKILLS $out/share/hermes-agent/skills
           '') [ "hermes" "hermes-agent" "hermes-acp" ]}
 

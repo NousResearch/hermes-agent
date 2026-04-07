@@ -327,7 +327,20 @@ def load_jobs() -> List[Dict[str, Any]]:
         with open(JOBS_FILE, 'r', encoding='utf-8') as f:
             data = json.load(f)
             return data.get("jobs", [])
-    except (json.JSONDecodeError, IOError):
+    except json.JSONDecodeError:
+        # Retry with strict=False to handle bare control chars in string values
+        try:
+            with open(JOBS_FILE, 'r', encoding='utf-8') as f:
+                data = json.loads(f.read(), strict=False)
+                jobs = data.get("jobs", [])
+                if jobs:
+                    # Auto-repair: rewrite with proper escaping
+                    save_jobs(jobs)
+                    logger.warning("Auto-repaired jobs.json (had invalid control characters)")
+                return jobs
+        except Exception:
+            return []
+    except IOError:
         return []
 
 
@@ -362,6 +375,7 @@ def create_job(
     model: Optional[str] = None,
     provider: Optional[str] = None,
     base_url: Optional[str] = None,
+    script: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Create a new cron job.
@@ -378,6 +392,9 @@ def create_job(
         model: Optional per-job model override
         provider: Optional per-job provider override
         base_url: Optional per-job base URL override
+        script: Optional path to a Python script whose stdout is injected into the
+                prompt each run.  The script runs before the agent turn, and its output
+                is prepended as context.  Useful for data collection / change detection.
 
     Returns:
         The created job dict
@@ -406,6 +423,8 @@ def create_job(
     normalized_model = normalized_model or None
     normalized_provider = normalized_provider or None
     normalized_base_url = normalized_base_url or None
+    normalized_script = str(script).strip() if isinstance(script, str) else None
+    normalized_script = normalized_script or None
 
     label_source = (prompt or (normalized_skills[0] if normalized_skills else None)) or "cron job"
     job = {
@@ -417,6 +436,7 @@ def create_job(
         "model": normalized_model,
         "provider": normalized_provider,
         "base_url": normalized_base_url,
+        "script": normalized_script,
         "schedule": parsed_schedule,
         "schedule_display": parsed_schedule.get("display", schedule),
         "repeat": {
@@ -596,6 +616,34 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None):
             return
     
     save_jobs(jobs)
+
+
+def advance_next_run(job_id: str) -> bool:
+    """Preemptively advance next_run_at for a recurring job before execution.
+
+    Call this BEFORE run_job() so that if the process crashes mid-execution,
+    the job won't re-fire on the next gateway restart.  This converts the
+    scheduler from at-least-once to at-most-once for recurring jobs — missing
+    one run is far better than firing dozens of times in a crash loop.
+
+    One-shot jobs are left unchanged so they can still retry on restart.
+
+    Returns True if next_run_at was advanced, False otherwise.
+    """
+    jobs = load_jobs()
+    for job in jobs:
+        if job["id"] == job_id:
+            kind = job.get("schedule", {}).get("kind")
+            if kind not in ("cron", "interval"):
+                return False
+            now = _hermes_now().isoformat()
+            new_next = compute_next_run(job["schedule"], now)
+            if new_next and new_next != job.get("next_run_at"):
+                job["next_run_at"] = new_next
+                save_jobs(jobs)
+                return True
+            return False
+    return False
 
 
 def get_due_jobs() -> List[Dict[str, Any]]:

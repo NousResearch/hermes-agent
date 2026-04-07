@@ -103,6 +103,32 @@ def _canonical_skills(skill: Optional[str] = None, skills: Optional[Any] = None)
 
 
 
+
+def _resolve_model_override(model_obj: Optional[Dict[str, Any]]) -> tuple:
+    """Resolve a model override object into (provider, model) for job storage.
+
+    If provider is omitted, pins the current main provider from config so the
+    job doesn't drift when the user later changes their default via hermes model.
+
+    Returns (provider_str_or_none, model_str_or_none).
+    """
+    if not model_obj or not isinstance(model_obj, dict):
+        return (None, None)
+    model_name = (model_obj.get("model") or "").strip() or None
+    provider_name = (model_obj.get("provider") or "").strip() or None
+    if model_name and not provider_name:
+        # Pin to the current main provider so the job is stable
+        try:
+            from hermes_cli.config import load_config
+            cfg = load_config()
+            model_cfg = cfg.get("model", {})
+            if isinstance(model_cfg, dict):
+                provider_name = model_cfg.get("provider") or None
+        except Exception:
+            pass  # Best-effort; provider stays None
+    return (provider_name, model_name)
+
+
 def _normalize_optional_job_value(value: Optional[Any], *, strip_trailing_slash: bool = False) -> Optional[str]:
     if value is None:
         return None
@@ -112,11 +138,50 @@ def _normalize_optional_job_value(value: Optional[Any], *, strip_trailing_slash:
     return text or None
 
 
+def _validate_cron_script_path(script: Optional[str]) -> Optional[str]:
+    """Validate a cron job script path at the API boundary.
+
+    Scripts must be relative paths that resolve within HERMES_HOME/scripts/.
+    Absolute paths and ~ expansion are rejected to prevent arbitrary script
+    execution via prompt injection.
+
+    Returns an error string if blocked, else None (valid).
+    """
+    if not script or not script.strip():
+        return None  # empty/None = clearing the field, always OK
+
+    from pathlib import Path
+    from hermes_constants import get_hermes_home
+
+    raw = script.strip()
+
+    # Reject absolute paths and ~ expansion at the API boundary.
+    # Only relative paths within ~/.hermes/scripts/ are allowed.
+    if raw.startswith(("/", "~")) or (len(raw) >= 2 and raw[1] == ":"):
+        return (
+            f"Script path must be relative to ~/.hermes/scripts/. "
+            f"Got absolute or home-relative path: {raw!r}. "
+            f"Place scripts in ~/.hermes/scripts/ and use just the filename."
+        )
+
+    # Validate containment after resolution
+    scripts_dir = get_hermes_home() / "scripts"
+    scripts_dir.mkdir(parents=True, exist_ok=True)
+    resolved = (scripts_dir / raw).resolve()
+    try:
+        resolved.relative_to(scripts_dir.resolve())
+    except ValueError:
+        return (
+            f"Script path escapes the scripts directory via traversal: {raw!r}"
+        )
+
+    return None
+
 
 def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
     prompt = job.get("prompt", "")
     skills = _canonical_skills(job.get("skill"), job.get("skills"))
-    return {
+    result = {
         "job_id": job["id"],
         "name": job["name"],
         "skill": skills[0] if skills else None,
@@ -136,6 +201,9 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
         "paused_at": job.get("paused_at"),
         "paused_reason": job.get("paused_reason"),
     }
+    if job.get("script"):
+        result["script"] = job["script"]
+    return result
 
 
 def cronjob(
@@ -153,6 +221,7 @@ def cronjob(
     provider: Optional[str] = None,
     base_url: Optional[str] = None,
     reason: Optional[str] = None,
+    script: Optional[str] = None,
     task_id: str = None,
 ) -> str:
     """Unified cron job management tool."""
@@ -172,6 +241,12 @@ def cronjob(
                 if scan_error:
                     return json.dumps({"success": False, "error": scan_error}, indent=2)
 
+            # Validate script path before storing
+            if script:
+                script_error = _validate_cron_script_path(script)
+                if script_error:
+                    return json.dumps({"success": False, "error": script_error}, indent=2)
+
             job = create_job(
                 prompt=prompt or "",
                 schedule=schedule,
@@ -183,6 +258,7 @@ def cronjob(
                 model=_normalize_optional_job_value(model),
                 provider=_normalize_optional_job_value(provider),
                 base_url=_normalize_optional_job_value(base_url, strip_trailing_slash=True),
+                script=_normalize_optional_job_value(script),
             )
             return json.dumps(
                 {
@@ -265,6 +341,13 @@ def cronjob(
                 updates["provider"] = _normalize_optional_job_value(provider)
             if base_url is not None:
                 updates["base_url"] = _normalize_optional_job_value(base_url, strip_trailing_slash=True)
+            if script is not None:
+                # Pass empty string to clear an existing script
+                if script:
+                    script_error = _validate_cron_script_path(script)
+                    if script_error:
+                        return json.dumps({"success": False, "error": script_error}, indent=2)
+                updates["script"] = _normalize_optional_job_value(script) if script else None
             if repeat is not None:
                 # Normalize: treat 0 or negative as None (infinite)
                 normalized_repeat = None if repeat <= 0 else repeat
@@ -335,7 +418,7 @@ Use action='list' to inspect jobs.
 Use action='update', 'pause', 'resume', 'remove', or 'run' to manage an existing job.
 
 Jobs run in a fresh session with no current-chat context, so prompts must be self-contained.
-If skill or skills are provided on create, the future cron run loads those skills in order, then follows the prompt as the task instruction.
+If skills are provided on create, the future cron run loads those skills in order, then follows the prompt as the task instruction.
 On update, passing skills=[] clears attached skills.
 
 NOTE: The agent's final response is auto-delivered to the target. Put the primary
@@ -356,7 +439,7 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
             },
             "prompt": {
                 "type": "string",
-                "description": "For create: the full self-contained prompt. If skill or skills are also provided, this becomes the task instruction paired with those skills."
+                "description": "For create: the full self-contained prompt. If skills are also provided, this becomes the task instruction paired with those skills."
             },
             "schedule": {
                 "type": "string",
@@ -372,37 +455,32 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
             },
             "deliver": {
                 "type": "string",
-                "description": "Delivery target: origin, local, telegram, discord, slack, whatsapp, signal, matrix, mattermost, homeassistant, dingtalk, email, sms, or platform:chat_id or platform:chat_id:thread_id for Telegram topics. Examples: 'origin', 'local', 'telegram', 'telegram:-1001234567890:17585', 'discord:#engineering'"
-            },
-            "model": {
-                "type": "string",
-                "description": "Optional per-job model override used when the cron job runs"
-            },
-            "provider": {
-                "type": "string",
-                "description": "Optional per-job provider override used when resolving runtime credentials"
-            },
-            "base_url": {
-                "type": "string",
-                "description": "Optional per-job base URL override paired with provider/model routing"
-            },
-            "include_disabled": {
-                "type": "boolean",
-                "description": "For list: include paused/completed jobs"
-            },
-            "skill": {
-                "type": "string",
-                "description": "Optional single skill name to load before executing the cron prompt"
+                "description": "Delivery target: origin, local, telegram, discord, slack, whatsapp, signal, matrix, mattermost, homeassistant, dingtalk, feishu, wecom, email, sms, or platform:chat_id or platform:chat_id:thread_id for Telegram topics. Examples: 'origin', 'local', 'telegram', 'telegram:-1001234567890:17585', 'discord:#engineering'"
             },
             "skills": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": "Optional ordered list of skills to load before executing the cron prompt. On update, pass an empty array to clear attached skills."
+                "description": "Optional ordered list of skill names to load before executing the cron prompt. On update, pass an empty array to clear attached skills."
             },
-            "reason": {
+            "model": {
+                "type": "object",
+                "description": "Optional per-job model override. If provider is omitted, the current main provider is pinned at creation time so the job stays stable.",
+                "properties": {
+                    "provider": {
+                        "type": "string",
+                        "description": "Provider name (e.g. 'openrouter', 'anthropic'). Omit to use and pin the current provider."
+                    },
+                    "model": {
+                        "type": "string",
+                        "description": "Model name (e.g. 'anthropic/claude-sonnet-4', 'claude-sonnet-4')"
+                    }
+                },
+                "required": ["model"]
+            },
+            "script": {
                 "type": "string",
-                "description": "Optional pause reason"
-            }
+                "description": "Optional path to a Python script that runs before each cron job execution. Its stdout is injected into the prompt as context. Use for data collection and change detection. Relative paths resolve under ~/.hermes/scripts/. On update, pass empty string to clear."
+            },
         },
         "required": ["action"]
     }
@@ -436,7 +514,7 @@ registry.register(
     name="cronjob",
     toolset="cronjob",
     schema=CRONJOB_SCHEMA,
-    handler=lambda args, **kw: cronjob(
+    handler=lambda args, **kw: (lambda _mo=_resolve_model_override(args.get("model")): cronjob(
         action=args.get("action", ""),
         job_id=args.get("job_id"),
         prompt=args.get("prompt"),
@@ -444,15 +522,16 @@ registry.register(
         name=args.get("name"),
         repeat=args.get("repeat"),
         deliver=args.get("deliver"),
-        include_disabled=args.get("include_disabled", False),
+        include_disabled=args.get("include_disabled", True),
         skill=args.get("skill"),
         skills=args.get("skills"),
-        model=args.get("model"),
-        provider=args.get("provider"),
+        model=_mo[1],
+        provider=_mo[0] or args.get("provider"),
         base_url=args.get("base_url"),
         reason=args.get("reason"),
+        script=args.get("script"),
         task_id=kw.get("task_id"),
-    ),
+    ))(),
     check_fn=check_cronjob_requirements,
     emoji="⏰",
 )

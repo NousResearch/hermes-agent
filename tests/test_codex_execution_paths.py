@@ -112,7 +112,7 @@ def test_cron_run_job_codex_path_handles_internal_401_refresh(monkeypatch):
     _Codex401ThenSuccessAgent.last_init = {}
 
     success, output, final_response, error = cron_scheduler.run_job(
-        {"id": "job-1", "name": "Codex Refresh Test", "prompt": "ping"}
+        {"id": "job-1", "name": "Codex Refresh Test", "prompt": "ping", "model": "gpt-5.3-codex"}
     )
 
     assert success is True
@@ -139,6 +139,7 @@ def test_gateway_run_agent_codex_path_handles_internal_401_refresh(monkeypatch):
         },
     )
     monkeypatch.setenv("HERMES_TOOL_PROGRESS", "false")
+    monkeypatch.setenv("HERMES_MODEL", "gpt-5.3-codex")
 
     _Codex401ThenSuccessAgent.refresh_attempts = 0
     _Codex401ThenSuccessAgent.last_init = {}
@@ -151,11 +152,22 @@ def test_gateway_run_agent_codex_path_handles_internal_401_refresh(monkeypatch):
     runner._provider_routing = {}
     runner._fallback_model = None
     runner._running_agents = {}
+    runner._smart_model_routing = {}
     from unittest.mock import MagicMock, AsyncMock
     runner.hooks = MagicMock()
     runner.hooks.emit = AsyncMock()
     runner.hooks.loaded_hooks = []
     runner._session_db = None
+    # Ensure model resolution returns the codex model even if xdist
+    # leaked env vars cleared HERMES_MODEL.
+    monkeypatch.setattr(
+        gateway_run.GatewayRunner,
+        "_resolve_turn_agent_config",
+        lambda self, msg, model, runtime: {
+            "model": model or "gpt-5.3-codex",
+            "runtime": runtime,
+        },
+    )
 
     source = SessionSource(
         platform=Platform.LOCAL,

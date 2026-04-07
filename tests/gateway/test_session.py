@@ -291,6 +291,69 @@ class TestBuildSessionContextPrompt:
 
         assert "WhatsApp" in prompt or "whatsapp" in prompt.lower()
 
+    def test_multi_user_thread_prompt(self):
+        """Shared thread sessions show multi-user note instead of single user."""
+        config = GatewayConfig(
+            platforms={
+                Platform.TELEGRAM: PlatformConfig(enabled=True, token="fake"),
+            },
+        )
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-1002285219667",
+            chat_name="Test Group",
+            chat_type="group",
+            thread_id="17585",
+            user_name="Alice",
+        )
+        ctx = build_session_context(source, config)
+        prompt = build_session_context_prompt(ctx)
+
+        assert "Multi-user thread" in prompt
+        assert "[sender name]" in prompt
+        # Should NOT show a specific **User:** line (would bust cache)
+        assert "**User:** Alice" not in prompt
+
+    def test_non_thread_group_shows_user(self):
+        """Regular group messages (no thread) still show the user name."""
+        config = GatewayConfig(
+            platforms={
+                Platform.TELEGRAM: PlatformConfig(enabled=True, token="fake"),
+            },
+        )
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-1002285219667",
+            chat_name="Test Group",
+            chat_type="group",
+            user_name="Alice",
+        )
+        ctx = build_session_context(source, config)
+        prompt = build_session_context_prompt(ctx)
+
+        assert "**User:** Alice" in prompt
+        assert "Multi-user thread" not in prompt
+
+    def test_dm_thread_shows_user_not_multi(self):
+        """DM threads are single-user and should show User, not multi-user note."""
+        config = GatewayConfig(
+            platforms={
+                Platform.TELEGRAM: PlatformConfig(enabled=True, token="fake"),
+            },
+        )
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="99",
+            chat_type="dm",
+            thread_id="topic-1",
+            user_name="Alice",
+        )
+        ctx = build_session_context(source, config)
+        prompt = build_session_context_prompt(ctx)
+
+        assert "**User:** Alice" in prompt
+        assert "Multi-user thread" not in prompt
+
 
 class TestSessionStoreRewriteTranscript:
     """Regression: /retry and /undo must persist truncated history to disk."""
@@ -384,6 +447,100 @@ class TestLoadTranscriptCorruptLines:
         assert len(messages) == 2
         assert messages[0]["content"] == "a"
         assert messages[1]["content"] == "b"
+
+
+class TestLoadTranscriptPreferLongerSource:
+    """Regression: load_transcript must return whichever source (SQLite or JSONL)
+    has more messages to prevent silent truncation.  GH-3212."""
+
+    @pytest.fixture()
+    def store_with_db(self, tmp_path):
+        """SessionStore with both SQLite and JSONL active."""
+        from hermes_state import SessionDB
+
+        config = GatewayConfig()
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            s = SessionStore(sessions_dir=tmp_path, config=config)
+        s._db = SessionDB(db_path=tmp_path / "state.db")
+        s._loaded = True
+        return s
+
+    def test_jsonl_longer_than_sqlite_returns_jsonl(self, store_with_db):
+        """Legacy session: JSONL has full history, SQLite has only recent turn."""
+        sid = "legacy_session"
+        store_with_db._db.create_session(session_id=sid, source="gateway", model="m")
+        # JSONL has 10 messages (legacy history — written before SQLite existed)
+        for i in range(10):
+            role = "user" if i % 2 == 0 else "assistant"
+            store_with_db.append_to_transcript(
+                sid, {"role": role, "content": f"msg-{i}"}, skip_db=True,
+            )
+        # SQLite has only 2 messages (recent turn after migration)
+        store_with_db._db.append_message(session_id=sid, role="user", content="new-q")
+        store_with_db._db.append_message(session_id=sid, role="assistant", content="new-a")
+
+        result = store_with_db.load_transcript(sid)
+        assert len(result) == 10
+        assert result[0]["content"] == "msg-0"
+
+    def test_sqlite_longer_than_jsonl_returns_sqlite(self, store_with_db):
+        """Fully migrated session: SQLite has more (JSONL stopped growing)."""
+        sid = "migrated_session"
+        store_with_db._db.create_session(session_id=sid, source="gateway", model="m")
+        # JSONL has 2 old messages
+        store_with_db.append_to_transcript(
+            sid, {"role": "user", "content": "old-q"}, skip_db=True,
+        )
+        store_with_db.append_to_transcript(
+            sid, {"role": "assistant", "content": "old-a"}, skip_db=True,
+        )
+        # SQLite has 4 messages (superset after migration)
+        for i in range(4):
+            role = "user" if i % 2 == 0 else "assistant"
+            store_with_db._db.append_message(session_id=sid, role=role, content=f"db-{i}")
+
+        result = store_with_db.load_transcript(sid)
+        assert len(result) == 4
+        assert result[0]["content"] == "db-0"
+
+    def test_sqlite_empty_falls_back_to_jsonl(self, store_with_db):
+        """No SQLite rows — falls back to JSONL (original behavior preserved)."""
+        sid = "no_db_rows"
+        store_with_db.append_to_transcript(
+            sid, {"role": "user", "content": "hello"}, skip_db=True,
+        )
+        store_with_db.append_to_transcript(
+            sid, {"role": "assistant", "content": "hi"}, skip_db=True,
+        )
+
+        result = store_with_db.load_transcript(sid)
+        assert len(result) == 2
+        assert result[0]["content"] == "hello"
+
+    def test_both_empty_returns_empty(self, store_with_db):
+        """Neither source has data — returns empty list."""
+        result = store_with_db.load_transcript("nonexistent")
+        assert result == []
+
+    def test_equal_length_prefers_sqlite(self, store_with_db):
+        """When both have same count, SQLite wins (has richer fields like reasoning)."""
+        sid = "equal_session"
+        store_with_db._db.create_session(session_id=sid, source="gateway", model="m")
+        # Write 2 messages to JSONL only
+        store_with_db.append_to_transcript(
+            sid, {"role": "user", "content": "jsonl-q"}, skip_db=True,
+        )
+        store_with_db.append_to_transcript(
+            sid, {"role": "assistant", "content": "jsonl-a"}, skip_db=True,
+        )
+        # Write 2 different messages to SQLite only
+        store_with_db._db.append_message(session_id=sid, role="user", content="db-q")
+        store_with_db._db.append_message(session_id=sid, role="assistant", content="db-a")
+
+        result = store_with_db.load_transcript(sid)
+        assert len(result) == 2
+        # Should be the SQLite version (equal count → prefers SQLite)
+        assert result[0]["content"] == "db-q"
 
 
 class TestWhatsAppDMSessionKeyConsistency:
@@ -542,7 +699,28 @@ class TestWhatsAppDMSessionKeyConsistency:
         key = build_session_key(source)
         assert key == "agent:main:telegram:group:-1002285219667:17585"
 
-    def test_group_thread_sessions_are_isolated_per_user(self):
+    def test_group_thread_sessions_are_shared_by_default(self):
+        """Threads default to shared sessions — user_id is NOT appended."""
+        alice = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-1002285219667",
+            chat_type="group",
+            thread_id="17585",
+            user_id="alice",
+        )
+        bob = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-1002285219667",
+            chat_type="group",
+            thread_id="17585",
+            user_id="bob",
+        )
+        assert build_session_key(alice) == "agent:main:telegram:group:-1002285219667:17585"
+        assert build_session_key(bob) == "agent:main:telegram:group:-1002285219667:17585"
+        assert build_session_key(alice) == build_session_key(bob)
+
+    def test_group_thread_sessions_can_be_isolated_per_user(self):
+        """thread_sessions_per_user=True restores per-user isolation in threads."""
         source = SessionSource(
             platform=Platform.TELEGRAM,
             chat_id="-1002285219667",
@@ -550,8 +728,59 @@ class TestWhatsAppDMSessionKeyConsistency:
             thread_id="17585",
             user_id="42",
         )
-        key = build_session_key(source)
+        key = build_session_key(source, thread_sessions_per_user=True)
         assert key == "agent:main:telegram:group:-1002285219667:17585:42"
+
+    def test_non_thread_group_sessions_still_isolated_per_user(self):
+        """Regular group messages (no thread_id) remain per-user by default."""
+        alice = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-1002285219667",
+            chat_type="group",
+            user_id="alice",
+        )
+        bob = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-1002285219667",
+            chat_type="group",
+            user_id="bob",
+        )
+        assert build_session_key(alice) == "agent:main:telegram:group:-1002285219667:alice"
+        assert build_session_key(bob) == "agent:main:telegram:group:-1002285219667:bob"
+        assert build_session_key(alice) != build_session_key(bob)
+
+    def test_discord_thread_sessions_shared_by_default(self):
+        """Discord threads are shared across participants by default."""
+        alice = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="guild-123",
+            chat_type="thread",
+            thread_id="thread-456",
+            user_id="alice",
+        )
+        bob = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="guild-123",
+            chat_type="thread",
+            thread_id="thread-456",
+            user_id="bob",
+        )
+        assert build_session_key(alice) == build_session_key(bob)
+        assert "alice" not in build_session_key(alice)
+        assert "bob" not in build_session_key(bob)
+
+    def test_dm_thread_sessions_not_affected(self):
+        """DM threads use their own keying logic and are not affected."""
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="99",
+            chat_type="dm",
+            thread_id="topic-1",
+            user_id="42",
+        )
+        key = build_session_key(source)
+        # DM logic: chat_id + thread_id, user_id never included
+        assert key == "agent:main:telegram:dm:99:topic-1"
 
 
 class TestSessionStoreEntriesAttribute:
@@ -731,37 +960,44 @@ class TestLastPromptTokens:
         store.update_session("k1", last_prompt_tokens=0)
         assert entry.last_prompt_tokens == 0
 
-    def test_update_session_passes_model_to_db(self, tmp_path):
-        """Gateway session updates should forward the resolved model to SQLite."""
+class TestRewriteTranscriptPreservesReasoning:
+    """rewrite_transcript must not drop reasoning fields from SQLite."""
+
+    def test_reasoning_survives_rewrite(self, tmp_path):
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "test.db")
+        session_id = "reasoning-test"
+        db.create_session(session_id=session_id, source="cli")
+
+        # Insert a message WITH all three reasoning fields
+        db.append_message(
+            session_id=session_id,
+            role="assistant",
+            content="The answer is 42.",
+            reasoning="I need to think step by step.",
+            reasoning_details=[{"type": "summary", "text": "step by step"}],
+            codex_reasoning_items=[{"id": "r1", "type": "reasoning"}],
+        )
+
+        # Verify all three were stored
+        before = db.get_messages_as_conversation(session_id)
+        assert before[0].get("reasoning") == "I need to think step by step."
+        assert before[0].get("reasoning_details") == [{"type": "summary", "text": "step by step"}]
+        assert before[0].get("codex_reasoning_items") == [{"id": "r1", "type": "reasoning"}]
+
+        # Now simulate /retry: build the SessionStore and call rewrite_transcript
         config = GatewayConfig()
         with patch("gateway.session.SessionStore._ensure_loaded"):
             store = SessionStore(sessions_dir=tmp_path, config=config)
+        store._db = db
         store._loaded = True
-        store._save = MagicMock()
-        store._db = MagicMock()
 
-        from gateway.session import SessionEntry
-        from datetime import datetime
-        entry = SessionEntry(
-            session_key="k1",
-            session_id="s1",
-            created_at=datetime.now(),
-            updated_at=datetime.now(),
-        )
-        store._entries = {"k1": entry}
+        # rewrite_transcript receives the messages that load_transcript returned
+        store.rewrite_transcript(session_id, before)
 
-        store.update_session("k1", model="openai/gpt-5.4")
-
-        store._db.update_token_counts.assert_called_once_with(
-            "s1",
-            input_tokens=0,
-            output_tokens=0,
-            cache_read_tokens=0,
-            cache_write_tokens=0,
-            estimated_cost_usd=None,
-            cost_status=None,
-            cost_source=None,
-            billing_provider=None,
-            billing_base_url=None,
-            model="openai/gpt-5.4",
-        )
+        # Load again — all three reasoning fields must survive
+        after = db.get_messages_as_conversation(session_id)
+        assert after[0].get("reasoning") == "I need to think step by step."
+        assert after[0].get("reasoning_details") == [{"type": "summary", "text": "step by step"}]
+        assert after[0].get("codex_reasoning_items") == [{"id": "r1", "type": "reasoning"}]

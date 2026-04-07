@@ -141,6 +141,19 @@ class PersistentShellMixin:
             command, cwd, timeout=timeout, stdin_data=stdin_data,
         )
 
+    def execute_oneshot(self, command: str, cwd: str = "", *,
+                        timeout: int | None = None,
+                        stdin_data: str | None = None) -> dict:
+        """Always use the oneshot (non-persistent) execution path.
+
+        This bypasses _shell_lock so it can run concurrently with a
+        long-running command in the persistent shell — used by
+        execute_code's file-based RPC polling thread.
+        """
+        return self._execute_oneshot(
+            command, cwd, timeout=timeout, stdin_data=stdin_data,
+        )
+
     def cleanup(self):
         if self.persistent:
             self._cleanup_persistent_shell()

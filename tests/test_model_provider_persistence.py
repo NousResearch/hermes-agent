@@ -210,3 +210,50 @@ class TestProviderPersistsAfterModelSave:
         assert model.get("base_url") == "acp://copilot"
         assert model.get("default") == "gpt-5.4"
         assert model.get("api_mode") == "chat_completions"
+
+    def test_opencode_go_models_are_selectable_and_persist_normalized(self, config_home, monkeypatch):
+        from hermes_cli.main import _model_flow_api_key_provider
+        from hermes_cli.config import load_config
+
+        monkeypatch.setenv("OPENCODE_GO_API_KEY", "test-key")
+
+        with patch("hermes_cli.models.fetch_api_models", return_value=["opencode-go/kimi-k2.5", "opencode-go/minimax-m2.7"]), \
+             patch("hermes_cli.auth._prompt_model_selection", return_value="kimi-k2.5"), \
+             patch("hermes_cli.auth.deactivate_provider"), \
+             patch("builtins.input", return_value=""):
+            _model_flow_api_key_provider(load_config(), "opencode-go", "opencode-go/kimi-k2.5")
+
+        import yaml
+        config = yaml.safe_load((config_home / "config.yaml").read_text()) or {}
+        model = config.get("model")
+        assert isinstance(model, dict)
+        assert model.get("provider") == "opencode-go"
+        assert model.get("default") == "kimi-k2.5"
+        assert model.get("api_mode") == "chat_completions"
+
+    def test_opencode_go_same_provider_switch_recomputes_api_mode(self, config_home, monkeypatch):
+        from hermes_cli.main import _model_flow_api_key_provider
+        from hermes_cli.config import load_config
+
+        monkeypatch.setenv("OPENCODE_GO_API_KEY", "test-key")
+        (config_home / "config.yaml").write_text(
+            "model:\n"
+            "  default: kimi-k2.5\n"
+            "  provider: opencode-go\n"
+            "  base_url: https://opencode.ai/zen/go/v1\n"
+            "  api_mode: chat_completions\n"
+        )
+
+        with patch("hermes_cli.models.fetch_api_models", return_value=["opencode-go/kimi-k2.5", "opencode-go/minimax-m2.5"]), \
+             patch("hermes_cli.auth._prompt_model_selection", return_value="minimax-m2.5"), \
+             patch("hermes_cli.auth.deactivate_provider"), \
+             patch("builtins.input", return_value=""):
+            _model_flow_api_key_provider(load_config(), "opencode-go", "kimi-k2.5")
+
+        import yaml
+        config = yaml.safe_load((config_home / "config.yaml").read_text()) or {}
+        model = config.get("model")
+        assert isinstance(model, dict)
+        assert model.get("provider") == "opencode-go"
+        assert model.get("default") == "minimax-m2.5"
+        assert model.get("api_mode") == "anthropic_messages"

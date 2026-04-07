@@ -52,7 +52,7 @@ class TestToolProgressCallback:
             future.result.return_value = None
             mock_rcts.return_value = future
 
-            cb("terminal", "$ ls -la", {"command": "ls -la"})
+            cb("tool.started", "terminal", "$ ls -la", {"command": "ls -la"})
 
         # Should have tracked the tool call ID
         assert "terminal" in tool_call_ids
@@ -75,7 +75,7 @@ class TestToolProgressCallback:
             future.result.return_value = None
             mock_rcts.return_value = future
 
-            cb("read_file", "Reading /etc/hosts", '{"path": "/etc/hosts"}')
+            cb("tool.started", "read_file", "Reading /etc/hosts", '{"path": "/etc/hosts"}')
 
         assert "read_file" in tool_call_ids
 
@@ -91,7 +91,7 @@ class TestToolProgressCallback:
             future.result.return_value = None
             mock_rcts.return_value = future
 
-            cb("terminal", "$ echo hi", None)
+            cb("tool.started", "terminal", "$ echo hi", None)
 
         assert "terminal" in tool_call_ids
 
@@ -108,8 +108,8 @@ class TestToolProgressCallback:
             future.result.return_value = None
             mock_rcts.return_value = future
 
-            progress_cb("terminal", "$ ls", {"command": "ls"})
-            progress_cb("terminal", "$ pwd", {"command": "pwd"})
+            progress_cb("tool.started", "terminal", "$ ls", {"command": "ls"})
+            progress_cb("tool.started", "terminal", "$ pwd", {"command": "pwd"})
             assert len(tool_call_ids["terminal"]) == 2
 
             step_cb(1, [{"name": "terminal", "result": "ok-1"}])
@@ -204,6 +204,47 @@ class TestStepCallback:
 
         assert "read_file" not in tool_call_ids
         mock_rcts.assert_called_once()
+
+    def test_result_passed_to_build_tool_complete(self, mock_conn, event_loop_fixture):
+        """Tool result from prev_tools dict is forwarded to build_tool_complete."""
+        from collections import deque
+
+        tool_call_ids = {"terminal": deque(["tc-xyz789"])}
+        loop = event_loop_fixture
+
+        cb = make_step_cb(mock_conn, "session-1", loop, tool_call_ids)
+
+        with patch("acp_adapter.events.asyncio.run_coroutine_threadsafe") as mock_rcts, \
+             patch("acp_adapter.events.build_tool_complete") as mock_btc:
+            future = MagicMock(spec=Future)
+            future.result.return_value = None
+            mock_rcts.return_value = future
+
+            # Provide a result string in the tool info dict
+            cb(1, [{"name": "terminal", "result": '{"output": "hello"}'}])
+
+        mock_btc.assert_called_once_with(
+            "tc-xyz789", "terminal", result='{"output": "hello"}'
+        )
+
+    def test_none_result_passed_through(self, mock_conn, event_loop_fixture):
+        """When result is None (e.g. first iteration), None is passed through."""
+        from collections import deque
+
+        tool_call_ids = {"web_search": deque(["tc-aaa"])}
+        loop = event_loop_fixture
+
+        cb = make_step_cb(mock_conn, "session-1", loop, tool_call_ids)
+
+        with patch("acp_adapter.events.asyncio.run_coroutine_threadsafe") as mock_rcts, \
+             patch("acp_adapter.events.build_tool_complete") as mock_btc:
+            future = MagicMock(spec=Future)
+            future.result.return_value = None
+            mock_rcts.return_value = future
+
+            cb(1, [{"name": "web_search", "result": None}])
+
+        mock_btc.assert_called_once_with("tc-aaa", "web_search", result=None)
 
 
 # ---------------------------------------------------------------------------

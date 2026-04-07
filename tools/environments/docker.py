@@ -8,6 +8,7 @@ persistence via bind mounts.
 import logging
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -56,6 +57,36 @@ def _normalize_forward_env_names(forward_env: list[str] | None) -> list[str]:
 
         seen.add(key)
         normalized.append(key)
+
+    return normalized
+
+
+def _normalize_env_dict(env: dict | None) -> dict[str, str]:
+    """Validate and normalize a docker_env dict to {str: str}.
+
+    Filters out entries with invalid variable names or non-string values.
+    """
+    if not env:
+        return {}
+    if not isinstance(env, dict):
+        logger.warning("docker_env is not a dict: %r", env)
+        return {}
+
+    normalized: dict[str, str] = {}
+    for key, value in env.items():
+        if not isinstance(key, str) or not _ENV_VAR_NAME_RE.match(key.strip()):
+            logger.warning("Ignoring invalid docker_env key: %r", key)
+            continue
+        key = key.strip()
+        if not isinstance(value, str):
+            # Coerce simple scalar types (int, bool, float) to string;
+            # reject complex types.
+            if isinstance(value, (int, float, bool)):
+                value = str(value)
+            else:
+                logger.warning("Ignoring non-string docker_env value for %r: %r", key, value)
+                continue
+        normalized[key] = value
 
     return normalized
 
@@ -210,6 +241,7 @@ class DockerEnvironment(BaseEnvironment):
         task_id: str = "default",
         volumes: list = None,
         forward_env: list[str] | None = None,
+        env: dict | None = None,
         network: bool = True,
         host_cwd: str = None,
         auto_mount_cwd: bool = False,
@@ -221,6 +253,7 @@ class DockerEnvironment(BaseEnvironment):
         self._persistent = persistent_filesystem
         self._task_id = task_id
         self._forward_env = _normalize_forward_env_names(forward_env)
+        self._env = _normalize_env_dict(env)
         self._container_id: Optional[str] = None
         logger.info(f"DockerEnvironment volumes: {volumes}")
         # Ensure volumes is a list (config.yaml could be malformed)
@@ -312,8 +345,64 @@ class DockerEnvironment(BaseEnvironment):
         elif workspace_explicitly_mounted:
             logger.debug("Skipping docker cwd mount: /workspace already mounted by user config")
 
+        # Mount credential files (OAuth tokens, etc.) declared by skills.
+        # Read-only so the container can authenticate but not modify host creds.
+        try:
+            from tools.credential_files import (
+                get_credential_file_mounts,
+                get_skills_directory_mount,
+                get_cache_directory_mounts,
+            )
+
+            for mount_entry in get_credential_file_mounts():
+                volume_args.extend([
+                    "-v",
+                    f"{mount_entry['host_path']}:{mount_entry['container_path']}:ro",
+                ])
+                logger.info(
+                    "Docker: mounting credential %s -> %s",
+                    mount_entry["host_path"],
+                    mount_entry["container_path"],
+                )
+
+            # Mount skill directories (local + external) so skill
+            # scripts/templates are available inside the container.
+            for skills_mount in get_skills_directory_mount():
+                volume_args.extend([
+                    "-v",
+                    f"{skills_mount['host_path']}:{skills_mount['container_path']}:ro",
+                ])
+                logger.info(
+                    "Docker: mounting skills dir %s -> %s",
+                    skills_mount["host_path"],
+                    skills_mount["container_path"],
+                )
+
+            # Mount host-side cache directories (documents, images, audio,
+            # screenshots) so the agent can access uploaded files and other
+            # cached media from inside the container.  Read-only — the
+            # container reads these but the host gateway manages writes.
+            for cache_mount in get_cache_directory_mounts():
+                volume_args.extend([
+                    "-v",
+                    f"{cache_mount['host_path']}:{cache_mount['container_path']}:ro",
+                ])
+                logger.info(
+                    "Docker: mounting cache dir %s -> %s",
+                    cache_mount["host_path"],
+                    cache_mount["container_path"],
+                )
+        except Exception as e:
+            logger.debug("Docker: could not load credential file mounts: %s", e)
+
+        # Explicit environment variables (docker_env config) — set at container
+        # creation so they're available to all processes (including entrypoint).
+        env_args = []
+        for key in sorted(self._env):
+            env_args.extend(["-e", f"{key}={self._env[key]}"])
+
         logger.info(f"Docker volume_args: {volume_args}")
-        all_run_args = list(_SECURITY_ARGS) + writable_args + resource_args + volume_args
+        all_run_args = list(_SECURITY_ARGS) + writable_args + resource_args + volume_args + env_args
         logger.info(f"Docker run_args: {all_run_args}")
 
         # Resolve the docker executable once so it works even when
@@ -396,9 +485,13 @@ class DockerEnvironment(BaseEnvironment):
         else:
             effective_stdin = stdin_data
 
-        # docker exec -w doesn't expand ~, so prepend a cd into the command
-        if work_dir == "~" or work_dir.startswith("~/"):
-            exec_command = f"cd {work_dir} && {exec_command}"
+        # docker exec -w doesn't expand ~, so prepend a cd into the command.
+        # Keep ~ unquoted (for shell expansion) and quote only the subpath.
+        if work_dir == "~":
+            exec_command = f"cd ~ && {exec_command}"
+            work_dir = "/"
+        elif work_dir.startswith("~/"):
+            exec_command = f"cd ~/{shlex.quote(work_dir[2:])} && {exec_command}"
             work_dir = "/"
 
         assert self._container_id, "Container not started"
@@ -406,13 +499,27 @@ class DockerEnvironment(BaseEnvironment):
         if effective_stdin is not None:
             cmd.append("-i")
         cmd.extend(["-w", work_dir])
-        hermes_env = _load_hermes_env_vars() if self._forward_env else {}
-        for key in self._forward_env:
+        # Build the per-exec environment: start with explicit docker_env values
+        # (static config), then overlay docker_forward_env / skill env_passthrough
+        # (dynamic from host process).  Forward values take precedence.
+        exec_env: dict[str, str] = dict(self._env)
+
+        forward_keys = set(self._forward_env)
+        try:
+            from tools.env_passthrough import get_all_passthrough
+            forward_keys |= get_all_passthrough()
+        except Exception:
+            pass
+        hermes_env = _load_hermes_env_vars() if forward_keys else {}
+        for key in sorted(forward_keys):
             value = os.getenv(key)
             if value is None:
                 value = hermes_env.get(key)
             if value is not None:
-                cmd.extend(["-e", f"{key}={value}"])
+                exec_env[key] = value
+
+        for key in sorted(exec_env):
+            cmd.extend(["-e", f"{key}={exec_env[key]}"])
         cmd.extend([self._container_id, "bash", "-lc", exec_command])
 
         try:

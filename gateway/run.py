@@ -2856,11 +2856,21 @@ class GatewayRunner:
                 message_text = f'[Replying to: "{reply_snippet}"]\n\n{message_text}'
 
         try:
-            # Emit agent:start hook
+            # Emit agent:start hook.
+            #
+            # hook_ctx intentionally carries the minimal-but-sufficient set of
+            # routing keys an external consumer needs to reply to the correct
+            # conversation. All fields except ``chat_id`` tolerate None sources
+            # and fall back to "" so handlers can unconditionally format them.
             hook_ctx = {
                 "platform": source.platform.value if source.platform else "",
                 "user_id": source.user_id,
+                "user_name": source.user_name or "",
                 "session_id": session_entry.session_id,
+                "chat_id": source.chat_id,
+                "chat_name": source.chat_name or "",
+                "chat_type": source.chat_type,
+                "thread_id": source.thread_id or "",
                 "message": message_text[:500],
             }
             await self.hooks.emit("agent:start", hook_ctx)

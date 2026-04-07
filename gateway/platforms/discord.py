@@ -2637,7 +2637,6 @@ if DISCORD_AVAILABLE:
                     discord.SelectOption(
                         label=label[:100],
                         value=p["slug"],
-                        default=bool(p.get("is_current")),
                         description=desc,
                     )
                 )

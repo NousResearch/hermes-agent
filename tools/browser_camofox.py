@@ -36,8 +36,27 @@ import requests
 
 from hermes_cli.config import load_config
 from tools.browser_camofox_state import get_camofox_identity
+from tools.url_safety import is_safe_url
 
 logger = logging.getLogger(__name__)
+
+
+def _ssrf_redirect_hook(response: requests.Response, **kwargs: Any) -> None:
+    """Block HTTP redirects to private/internal addresses (SSRF prevention)."""
+    if response.is_redirect:
+        location = response.headers.get("Location", "")
+        if location and not is_safe_url(location):
+            raise requests.exceptions.InvalidURL(
+                f"SSRF blocked: redirect target is a private/internal address: {location}"
+            )
+
+
+# Module-level session with SSRF redirect guard attached as a response hook.
+# All HTTP helpers in this module use this session so every redirect hop is
+# validated against the blocklist before being followed.
+_session = requests.Session()
+_session.hooks["response"].append(_ssrf_redirect_hook)
+
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -66,7 +85,7 @@ def check_camofox_available() -> bool:
     if not url:
         return False
     try:
-        resp = requests.get(f"{url}/health", timeout=5)
+        resp = _session.get(f"{url}/health", timeout=5)
         if resp.status_code == 200 and not _vnc_url_checked:
             try:
                 data = resp.json()
@@ -151,7 +170,7 @@ def _ensure_tab(task_id: Optional[str], url: str = "about:blank") -> Dict[str, A
     if session["tab_id"]:
         return session
     base = get_camofox_url()
-    resp = requests.post(
+    resp = _session.post(
         f"{base}/tabs",
         json={
             "userId": session["user_id"],
@@ -180,7 +199,7 @@ def _drop_session(task_id: Optional[str]) -> Optional[Dict[str, Any]]:
 def _post(path: str, body: dict, timeout: int = _DEFAULT_TIMEOUT) -> dict:
     """POST JSON to camofox and return parsed response."""
     url = f"{get_camofox_url()}{path}"
-    resp = requests.post(url, json=body, timeout=timeout)
+    resp = _session.post(url, json=body, timeout=timeout)
     resp.raise_for_status()
     return resp.json()
 
@@ -188,7 +207,7 @@ def _post(path: str, body: dict, timeout: int = _DEFAULT_TIMEOUT) -> dict:
 def _get(path: str, params: dict = None, timeout: int = _DEFAULT_TIMEOUT) -> dict:
     """GET from camofox and return parsed response."""
     url = f"{get_camofox_url()}{path}"
-    resp = requests.get(url, params=params, timeout=timeout)
+    resp = _session.get(url, params=params, timeout=timeout)
     resp.raise_for_status()
     return resp.json()
 
@@ -196,7 +215,7 @@ def _get(path: str, params: dict = None, timeout: int = _DEFAULT_TIMEOUT) -> dic
 def _get_raw(path: str, params: dict = None, timeout: int = _DEFAULT_TIMEOUT) -> requests.Response:
     """GET from camofox and return raw response (for binary data)."""
     url = f"{get_camofox_url()}{path}"
-    resp = requests.get(url, params=params, timeout=timeout)
+    resp = _session.get(url, params=params, timeout=timeout)
     resp.raise_for_status()
     return resp
 
@@ -204,7 +223,7 @@ def _get_raw(path: str, params: dict = None, timeout: int = _DEFAULT_TIMEOUT) ->
 def _delete(path: str, body: dict = None, timeout: int = _DEFAULT_TIMEOUT) -> dict:
     """DELETE to camofox and return parsed response."""
     url = f"{get_camofox_url()}{path}"
-    resp = requests.delete(url, json=body, timeout=timeout)
+    resp = _session.delete(url, json=body, timeout=timeout)
     resp.raise_for_status()
     return resp.json()
 

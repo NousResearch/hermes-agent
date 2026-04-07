@@ -87,6 +87,14 @@ class SlackAdapter(BasePlatformAdapter):
         # Track pending approval message_ts → resolved flag to prevent
         # double-clicks on approval buttons.
         self._approval_resolved: Dict[str, bool] = {}
+        # Track timestamps of messages sent by the bot so we can respond
+        # to thread replies even without an explicit @mention.
+        self._bot_message_ts: set = set()
+        self._BOT_TS_MAX = 5000  # cap to avoid unbounded growth
+        # Track threads where the bot has been @mentioned — once mentioned,
+        # respond to ALL subsequent messages in that thread automatically.
+        self._mentioned_threads: set = set()
+        self._MENTIONED_THREADS_MAX = 5000
 
     async def connect(self) -> bool:
         """Connect to Slack via Socket Mode."""
@@ -268,9 +276,22 @@ class SlackAdapter(BasePlatformAdapter):
 
                 last_result = await self._get_client(chat_id).chat_postMessage(**kwargs)
 
+            # Track the sent message ts so we can auto-respond to thread
+            # replies without requiring @mention.
+            sent_ts = last_result.get("ts") if last_result else None
+            if sent_ts:
+                self._bot_message_ts.add(sent_ts)
+                # Also register the thread root so replies-to-my-replies work
+                if thread_ts:
+                    self._bot_message_ts.add(thread_ts)
+                if len(self._bot_message_ts) > self._BOT_TS_MAX:
+                    excess = len(self._bot_message_ts) - self._BOT_TS_MAX // 2
+                    for old_ts in list(self._bot_message_ts)[:excess]:
+                        self._bot_message_ts.discard(old_ts)
+
             return SendResult(
                 success=True,
-                message_id=last_result.get("ts") if last_result else None,
+                message_id=sent_ts,
                 raw_response=last_result,
             )
 
@@ -778,48 +799,61 @@ class SlackAdapter(BasePlatformAdapter):
         else:
             thread_ts = event.get("thread_ts") or ts  # ts fallback for channels
 
-        # In channels, only respond if bot is mentioned OR if this is a
-        # reply in a thread where the bot has an active session.
+        # In channels, respond if:
+        #   1. The bot is @mentioned in this message, OR
+        #   2. The message is a reply in a thread the bot started/participated in, OR
+        #   3. The message is in a thread where the bot was previously @mentioned, OR
+        #   4. There's an existing session for this thread (survives restarts)
         bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
         is_mentioned = bot_uid and f"<@{bot_uid}>" in text
-        
+        event_thread_ts = event.get("thread_ts")
+        is_thread_reply = bool(event_thread_ts and event_thread_ts != ts)
+
         if not is_dm and bot_uid and not is_mentioned:
-            # Check if this is a thread reply (thread_ts exists and differs from ts)
-            event_thread_ts = event.get("thread_ts")
-            is_thread_reply = event_thread_ts and event_thread_ts != ts
-            
-            if is_thread_reply and self._has_active_session_for_thread(
-                channel_id=channel_id,
-                thread_ts=event_thread_ts,
-                user_id=user_id,
-            ):
-                # Allow thread replies without mention if there's an active session
-                pass
-            else:
-                # Not a thread reply or no active session - ignore
+            reply_to_bot_thread = (
+                is_thread_reply and event_thread_ts in self._bot_message_ts
+            )
+            in_mentioned_thread = (
+                event_thread_ts is not None
+                and event_thread_ts in self._mentioned_threads
+            )
+            has_session = (
+                is_thread_reply
+                and self._has_active_session_for_thread(
+                    channel_id=channel_id,
+                    thread_ts=event_thread_ts,
+                    user_id=user_id,
+                )
+            )
+            if not reply_to_bot_thread and not in_mentioned_thread and not has_session:
                 return
-        
+
         if is_mentioned:
             # Strip the bot mention from the text
             text = text.replace(f"<@{bot_uid}>", "").strip()
+            # Register this thread so all future messages auto-trigger the bot
+            if event_thread_ts:
+                self._mentioned_threads.add(event_thread_ts)
+                if len(self._mentioned_threads) > self._MENTIONED_THREADS_MAX:
+                    to_remove = list(self._mentioned_threads)[:self._MENTIONED_THREADS_MAX // 2]
+                    for t in to_remove:
+                        self._mentioned_threads.discard(t)
 
-            # When first mentioned in an existing thread, fetch thread context
-            # so the agent understands the conversation it's joining.
-            event_thread_ts = event.get("thread_ts")
-            is_thread_reply = event_thread_ts and event_thread_ts != ts
-            if is_thread_reply and not self._has_active_session_for_thread(
+        # When entering a thread for the first time (no existing session),
+        # fetch thread context so the agent understands the conversation.
+        if is_thread_reply and not self._has_active_session_for_thread(
+            channel_id=channel_id,
+            thread_ts=event_thread_ts,
+            user_id=user_id,
+        ):
+            thread_context = await self._fetch_thread_context(
                 channel_id=channel_id,
                 thread_ts=event_thread_ts,
-                user_id=user_id,
-            ):
-                thread_context = await self._fetch_thread_context(
-                    channel_id=channel_id,
-                    thread_ts=event_thread_ts,
-                    current_ts=ts,
-                    team_id=team_id,
-                )
-                if thread_context:
-                    text = thread_context + text
+                current_ts=ts,
+                team_id=team_id,
+            )
+            if thread_context:
+                text = thread_context + text
 
         # Determine message type
         msg_type = MessageType.TEXT

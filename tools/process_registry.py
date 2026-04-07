@@ -81,6 +81,7 @@ class ProcessSession:
     watcher_chat_id: str = ""
     watcher_thread_id: str = ""
     watcher_interval: int = 0                   # 0 = no watcher configured
+    notify_on_complete: bool = False             # Queue agent notification on exit
     _lock: threading.Lock = field(default_factory=threading.Lock)
     _reader_thread: Optional[threading.Thread] = field(default=None, repr=False)
     _pty: Any = field(default=None, repr=False)  # ptyprocess handle (when use_pty=True)
@@ -111,6 +112,12 @@ class ProcessRegistry:
 
         # Side-channel for check_interval watchers (gateway reads after agent run)
         self.pending_watchers: List[Dict[str, Any]] = []
+
+        # Completion notifications — processes with notify_on_complete push here
+        # on exit.  CLI process_loop and gateway drain this after each agent turn
+        # to auto-trigger a new agent turn with the process results.
+        import queue as _queue_mod
+        self.completion_queue: _queue_mod.Queue = _queue_mod.Queue()
 
     @staticmethod
     def _clean_shell_noise(text: str) -> str:
@@ -414,6 +421,18 @@ class ProcessRegistry:
             self._running.pop(session.id, None)
             self._finished[session.id] = session
         self._write_checkpoint()
+
+        # If the caller requested agent notification, enqueue the completion
+        # so the CLI/gateway can auto-trigger a new agent turn.
+        if session.notify_on_complete:
+            from tools.ansi_strip import strip_ansi
+            output_tail = strip_ansi(session.output_buffer[-2000:]) if session.output_buffer else ""
+            self.completion_queue.put({
+                "session_id": session.id,
+                "command": session.command,
+                "exit_code": session.exit_code,
+                "output": output_tail,
+            })
 
     # ----- Query Methods -----
 
@@ -721,6 +740,7 @@ class ProcessRegistry:
                             "watcher_chat_id": s.watcher_chat_id,
                             "watcher_thread_id": s.watcher_thread_id,
                             "watcher_interval": s.watcher_interval,
+                            "notify_on_complete": s.notify_on_complete,
                         })
             
             # Atomic write to avoid corruption on crash
@@ -771,6 +791,7 @@ class ProcessRegistry:
                     watcher_chat_id=entry.get("watcher_chat_id", ""),
                     watcher_thread_id=entry.get("watcher_thread_id", ""),
                     watcher_interval=entry.get("watcher_interval", 0),
+                    notify_on_complete=entry.get("notify_on_complete", False),
                 )
                 with self._lock:
                     self._running[session.id] = session

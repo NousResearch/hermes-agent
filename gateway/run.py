@@ -6048,12 +6048,13 @@ class GatewayRunner:
         platform_name = watcher.get("platform", "")
         chat_id = watcher.get("chat_id", "")
         thread_id = watcher.get("thread_id", "")
+        agent_notify = watcher.get("notify_on_complete", False)
         notify_mode = self._load_background_notifications_mode()
 
-        logger.debug("Process watcher started: %s (every %ss, notify=%s)",
-                      session_id, interval, notify_mode)
+        logger.debug("Process watcher started: %s (every %ss, notify=%s, agent_notify=%s)",
+                      session_id, interval, notify_mode, agent_notify)
 
-        if notify_mode == "off":
+        if notify_mode == "off" and not agent_notify:
             # Still wait for the process to exit so we can log it, but don't
             # push any messages to the user.
             while True:
@@ -6077,6 +6078,47 @@ class GatewayRunner:
             last_output_len = current_output_len
 
             if session.exited:
+                # --- Agent-triggered completion: inject synthetic message ---
+                if agent_notify:
+                    from tools.ansi_strip import strip_ansi
+                    _out = strip_ansi(session.output_buffer[-2000:]) if session.output_buffer else ""
+                    synth_text = (
+                        f"[SYSTEM: Background process {session_id} completed "
+                        f"(exit code {session.exit_code}).\n"
+                        f"Command: {session.command}\n"
+                        f"Output:\n{_out}]"
+                    )
+                    adapter = None
+                    for p, a in self.adapters.items():
+                        if p.value == platform_name:
+                            adapter = a
+                            break
+                    if adapter and chat_id:
+                        try:
+                            from gateway.platforms.base import MessageEvent, MessageType
+                            from gateway.session import SessionSource
+                            from gateway.config import Platform
+                            _platform_enum = Platform(platform_name)
+                            _source = SessionSource(
+                                platform=_platform_enum,
+                                chat_id=chat_id,
+                                thread_id=thread_id or None,
+                            )
+                            synth_event = MessageEvent(
+                                text=synth_text,
+                                message_type=MessageType.TEXT,
+                                source=_source,
+                            )
+                            logger.info(
+                                "Process %s finished — injecting agent notification for session %s",
+                                session_id, session_key,
+                            )
+                            await adapter.handle_message(synth_event)
+                        except Exception as e:
+                            logger.error("Agent notify injection error: %s", e)
+                    break
+
+                # --- Normal text-only notification ---
                 # Decide whether to notify based on mode
                 should_notify = (
                     notify_mode in ("all", "result")
@@ -6101,8 +6143,9 @@ class GatewayRunner:
                             logger.error("Watcher delivery error: %s", e)
                 break
 
-            elif has_new_output and notify_mode == "all":
+            elif has_new_output and notify_mode == "all" and not agent_notify:
                 # New output available -- deliver status update (only in "all" mode)
+                # Skip periodic updates for agent_notify watchers (they only care about completion)
                 new_output = session.output_buffer[-500:] if session.output_buffer else ""
                 message_text = (
                     f"[Background process {session_id} is still running~ "

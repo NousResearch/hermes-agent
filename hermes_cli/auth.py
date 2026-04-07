@@ -1971,8 +1971,10 @@ def get_nous_auth_status() -> Dict[str, Any]:
                         "has_refresh_token": bool(getattr(entry, "refresh_token", None)),
                         "source": f"pool:{getattr(entry, 'label', 'unknown')}",
                     }
+    except ImportError:
+        logger.debug("Credential pool support is unavailable while checking Nous auth status")
     except Exception:
-        pass
+        logger.debug("Failed to inspect Nous credential pool while checking auth status", exc_info=True)
 
     return {
         "logged_in": False,

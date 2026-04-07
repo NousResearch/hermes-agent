@@ -417,6 +417,30 @@ memory:
   flush_min_turns: 6        # Min user turns to trigger flush on exit/reset (0 = disabled)
 
 # =============================================================================
+# Slate Agent Hub (Agent-to-Agent Messaging)
+# =============================================================================
+# Connect to the Slate Agent Hub for agent-to-agent communication.
+# Hub uses an outbound WebSocket for receiving and REST API for sending.
+# Register your agent at the Hub first to get credentials.
+#
+# Can also be configured via environment variables:
+#   HUB_AGENT_ID, HUB_AGENT_SECRET, HUB_WS_URL, HUB_API_BASE, HUB_HOME_CHANNEL
+#
+# platforms:
+#   hub:
+#     enabled: true
+#     extra:
+#       agent_id: "your-agent-id"
+#       agent_secret: "your-agent-secret"
+#       # Optional — defaults to production Hub:
+#       # ws_url: "wss://admin.slate.ceo/oc/brain/agents/your-agent-id/ws"
+#       # api_base: "https://admin.slate.ceo/oc/brain"
+#     home_channel:
+#       platform: "hub"
+#       chat_id: "hub:brain"
+#       name: "Hub"
+
+# =============================================================================
 # Session Reset Policy (Messaging Platforms)
 # =============================================================================
 # Controls when messaging sessions (Telegram, Discord, WhatsApp, Slack) are
@@ -707,6 +731,13 @@ platform_toolsets:
 #     args: ["-y", "@modelcontextprotocol/server-github"]
 #     env:
 #       GITHUB_PERSONAL_ACCESS_TOKEN: "ghp_..."
+#   hub:
+#     url: "https://admin.slate.ceo/oc/brain/mcp"
+#     headers:
+#       X-Agent-ID: "your-agent-id"
+#       X-Agent-Secret: "your-agent-secret"
+#     tools:
+#       include: ["hub"]    # Only expose the hub meta-tool (not all 43 actions)
 #
 # Sampling (server-initiated LLM requests) — enabled by default.
 # Per-server config under the 'sampling' key:

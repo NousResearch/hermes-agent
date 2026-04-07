@@ -1683,7 +1683,11 @@ class GatewayRunner:
         # connection, so HA events are always authorized.
         # Webhook events are authenticated via HMAC signature validation in
         # the adapter itself — no user allowlist applies.
+        # Cron conversational messages are system-generated and injected by
+        # the gateway's own cron ticker — always authorized.
         if source.platform in (Platform.HOMEASSISTANT, Platform.WEBHOOK):
+            return True
+        if source.user_id == "cron_system":
             return True
 
         user_id = source.user_id
@@ -1776,7 +1780,80 @@ class GatewayRunner:
         if config and hasattr(config, "get_unauthorized_dm_behavior"):
             return config.get_unauthorized_dm_behavior(platform)
         return "pair"
-    
+
+    async def _handle_cron_conversational(self, result: dict) -> None:
+        """
+        Handle a conversational cron delivery by injecting the cron output
+        as a synthetic user message through the normal message pipeline.
+
+        This gives the agent full visibility into the cron output, enables
+        it to respond, and ensures both the output and response are saved
+        to session history.
+
+        Args:
+            result: Dict with keys platform, chat_id, thread_id, job_name, content.
+        """
+        from gateway.platforms.base import Platform as _PlatMap
+        platform_str = result["platform"]
+        chat_id = result["chat_id"]
+        thread_id = result.get("thread_id")
+        job_name = result.get("job_name", "cron")
+        content = result["content"]
+
+        # Resolve Platform enum from string
+        platform_map = {p.value: p for p in _PlatMap}
+        platform = platform_map.get(platform_str)
+        if not platform:
+            logger.warning("Conversational cron: unknown platform '%s'", platform_str)
+            return
+
+        # Build a synthetic SessionSource — appears as a "cron system" user
+        source = SessionSource(
+            platform=platform,
+            chat_id=chat_id,
+            chat_type="thread" if thread_id else "group",
+            user_id="cron_system",
+            user_name=f"Cron: {job_name}",
+            thread_id=thread_id,
+        )
+
+        # Build synthetic message text — prefixed so the agent knows this
+        # is an automated scheduled output, not a real user message.
+        synthetic_text = (
+            f"[Scheduled Task: {job_name}]\n\n"
+            f"{content}"
+        )
+
+        # Create a synthetic MessageEvent
+        from gateway.platforms.base import MessageEvent, MessageType
+        event = MessageEvent(
+            text=synthetic_text,
+            message_type=MessageType.TEXT,
+            source=source,
+        )
+
+        logger.info(
+            "Conversational cron: injecting '%s' into %s:%s (thread=%s)",
+            job_name, platform_str, chat_id, thread_id,
+        )
+
+        try:
+            response = await self._handle_message(event)
+            if response:
+                logger.info("Conversational cron: agent responded (%d chars)", len(response))
+                # Send the response through the platform adapter
+                adapter = self.adapters.get(platform)
+                if adapter:
+                    send_metadata = {"thread_id": thread_id} if thread_id else None
+                    await adapter.send(chat_id, response, metadata=send_metadata)
+                    logger.info("Conversational cron: response sent via adapter")
+                else:
+                    logger.warning("Conversational cron: no adapter for platform '%s'", platform_str)
+            else:
+                logger.info("Conversational cron: no agent response")
+        except Exception as e:
+            logger.error("Conversational cron: failed to process '%s': %s", job_name, e)
+
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
         """
         Handle an incoming message from any platform.
@@ -7413,7 +7490,7 @@ class GatewayRunner:
         return response
 
 
-def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, interval: int = 60):
+def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, interval: int = 60, runner=None):
     """
     Background thread that ticks the cron scheduler at a regular interval.
     
@@ -7423,10 +7500,15 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
     When ``adapters`` and ``loop`` are provided, passes them through to the
     cron delivery path so live adapters can be used for E2EE rooms.
 
+    When ``runner`` (a GatewayRunner) is provided, conversational cron results
+    are drained from the queue and injected as synthetic messages through the
+    gateway's normal message pipeline.
+
     Also refreshes the channel directory every 5 minutes and prunes the
     image/audio/document cache once per hour.
     """
     from cron.scheduler import tick as cron_tick
+    from cron.scheduler import get_conversational_results
     from gateway.platforms.base import cleanup_image_cache, cleanup_document_cache
 
     IMAGE_CACHE_EVERY = 60   # ticks — once per hour at default 60s interval
@@ -7439,6 +7521,17 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
             cron_tick(verbose=False, adapters=adapters, loop=loop)
         except Exception as e:
             logger.debug("Cron tick error: %s", e)
+
+        # Drain conversational cron results and inject as synthetic messages
+        if runner is not None and loop is not None and not loop.is_closed():
+            try:
+                conv_results = get_conversational_results()
+                for result in conv_results:
+                    asyncio.run_coroutine_threadsafe(
+                        runner._handle_cron_conversational(result), loop,
+                    ).result(timeout=120)
+            except Exception as e:
+                logger.warning("Conversational cron delivery error: %s", e)
 
         tick_count += 1
 
@@ -7623,7 +7716,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     cron_thread = threading.Thread(
         target=_start_cron_ticker,
         args=(cron_stop,),
-        kwargs={"adapters": runner.adapters, "loop": asyncio.get_running_loop()},
+        kwargs={"adapters": runner.adapters, "loop": asyncio.get_running_loop(), "runner": runner},
         daemon=True,
         name="cron-ticker",
     )

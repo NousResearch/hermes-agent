@@ -13,6 +13,7 @@ import concurrent.futures
 import json
 import logging
 import os
+import queue
 import subprocess
 import sys
 
@@ -53,6 +54,29 @@ from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_
 # response with this marker to suppress delivery.  Output is still saved
 # locally for audit.
 SILENT_MARKER = "[SILENT]"
+
+# Thread-safe queue for conversational cron delivery.
+# When a job has conversational=true, its result is placed here instead of
+# being sent directly to the platform. The gateway polls this queue and
+# injects the output as a synthetic user message through the normal message
+# handling pipeline, giving the agent full visibility and session context.
+_conversational_queue: queue.Queue = queue.Queue()
+
+
+def get_conversational_results() -> list:
+    """Drain and return all pending conversational cron results.
+
+    Called by the gateway's cron ticker after each tick.  Returns a list of
+    dicts with keys: platform, chat_id, thread_id, job_name, content.
+    """
+    results = []
+    while True:
+        try:
+            results.append(_conversational_queue.get_nowait())
+        except queue.Empty:
+            break
+    return results
+
 
 # Resolve Hermes home directory (respects HERMES_HOME override)
 _hermes_home = get_hermes_home()
@@ -200,6 +224,11 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     """
     Deliver job output to the configured target (origin chat, specific platform, etc.).
 
+    When ``conversational: true`` is set on the job, the output is placed in the
+    conversational queue instead of being sent directly. The gateway picks it up
+    and injects it as a synthetic user message, triggering the agent to respond
+    with full session context.
+
     When ``adapters`` and ``loop`` are provided (gateway is running), tries to
     use the live adapter first — this supports E2EE rooms (e.g. Matrix) where
     the standalone HTTP path cannot encrypt.  Falls back to standalone send if
@@ -214,6 +243,24 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
             logger.warning("Job '%s': %s", job["id"], msg)
             return msg
         return None  # local-only jobs don't deliver — not a failure
+
+    # Conversational delivery: enqueue for gateway injection instead of
+    # sending directly. The gateway will create a synthetic MessageEvent,
+    # process it through the normal pipeline, and the agent will respond
+    # with full session context.
+    if job.get("conversational", False):
+        _conversational_queue.put({
+            "platform": target["platform"],
+            "chat_id": target["chat_id"],
+            "thread_id": target.get("thread_id"),
+            "job_name": job.get("name", job["id"]),
+            "content": content,
+        })
+        logger.info(
+            "Job '%s': enqueued for conversational delivery to %s:%s",
+            job["id"], target["platform"], target["chat_id"],
+        )
+        return
 
     platform_name = target["platform"]
     chat_id = target["chat_id"]

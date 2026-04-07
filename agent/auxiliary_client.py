@@ -59,6 +59,34 @@ from hermes_constants import OPENROUTER_BASE_URL
 
 logger = logging.getLogger(__name__)
 
+_PROVIDER_ALIASES = {
+    "codex": "openai-codex",
+    "main": "custom",
+    "google": "gemini",
+    "google-gemini": "gemini",
+    "google-ai-studio": "gemini",
+    "glm": "zai",
+    "z-ai": "zai",
+    "z.ai": "zai",
+    "zhipu": "zai",
+    "kimi": "kimi-coding",
+    "moonshot": "kimi-coding",
+    "minimax-china": "minimax-cn",
+    "minimax_cn": "minimax-cn",
+    "claude": "anthropic",
+    "claude-code": "anthropic",
+}
+
+
+def _normalize_aux_provider(provider: Optional[str], *, for_vision: bool = False) -> str:
+    normalized = (provider or "auto").strip().lower()
+    if normalized.startswith("custom:"):
+        suffix = normalized.split(":", 1)[1].strip()
+        if not suffix:
+            return "custom"
+        normalized = suffix if not for_vision else "custom"
+    return _PROVIDER_ALIASES.get(normalized, normalized)
+
 # Default auxiliary models for direct API-key providers (cheap/fast for side tasks)
 _API_KEY_PROVIDER_AUX_MODELS: Dict[str, str] = {
     "gemini": "gemini-3-flash-preview",
@@ -764,7 +792,7 @@ def _read_main_provider() -> str:
         if isinstance(model_cfg, dict):
             provider = model_cfg.get("provider", "")
             if isinstance(provider, str) and provider.strip():
-                return provider.strip().lower()
+                return _normalize_aux_provider(provider)
     except Exception:
         pass
     return ""
@@ -1126,11 +1154,7 @@ def resolve_provider_client(
         (client, resolved_model) or (None, None) if auth is unavailable.
     """
     # Normalise aliases
-    provider = (provider or "auto").strip().lower()
-    if provider == "codex":
-        provider = "openai-codex"
-    if provider == "main":
-        provider = "custom"
+    provider = _normalize_aux_provider(provider)
 
     # ── Auto: try all providers in priority order ────────────────────
     if provider == "auto":
@@ -1342,12 +1366,7 @@ _VISION_AUTO_PROVIDER_ORDER = (
 
 
 def _normalize_vision_provider(provider: Optional[str]) -> str:
-    provider = (provider or "auto").strip().lower()
-    if provider == "codex":
-        return "openai-codex"
-    if provider == "main":
-        return "custom"
-    return provider
+    return _normalize_aux_provider(provider, for_vision=True)
 
 
 def _resolve_strict_vision_backend(provider: str) -> Tuple[Optional[Any], Optional[str]]:

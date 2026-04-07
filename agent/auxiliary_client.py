@@ -1840,6 +1840,23 @@ def cleanup_stale_async_clients() -> None:
             del _client_cache[key]
 
 
+def _is_openrouter_client(client: Any) -> bool:
+    for obj in (client, getattr(client, "_client", None), getattr(client, "client", None)):
+        if obj and "openrouter" in str(getattr(obj, "base_url", "") or "").lower():
+            return True
+    return False
+
+
+def _compat_model(client: Any, model: Optional[str], cached_default: Optional[str]) -> Optional[str]:
+    """Drop OpenRouter-format model slugs (with '/') for non-OpenRouter clients.
+
+    Mirrors the guard in resolve_provider_client() which is skipped on cache hits.
+    """
+    if model and "/" in model and not _is_openrouter_client(client):
+        return cached_default
+    return model or cached_default
+
+
 def _get_cached_client(
     provider: str,
     model: str = None,
@@ -1882,9 +1899,11 @@ def _get_cached_client(
                     _force_close_async_httpx(cached_client)
                     del _client_cache[cache_key]
                 else:
-                    return cached_client, model or cached_default
+                    effective = _compat_model(cached_client, model, cached_default)
+                    return cached_client, effective
             else:
-                return cached_client, model or cached_default
+                effective = _compat_model(cached_client, model, cached_default)
+                return cached_client, effective
     # Build outside the lock
     client, default_model = resolve_provider_client(
         provider,

@@ -1920,6 +1920,12 @@ class HermesCLI:
             _cprint(f"{_DIM}└{'─' * (w - 2)}┘{_RST}")
             self._reasoning_box_opened = False
 
+            # Flush any content that was deferred while reasoning was rendering.
+            deferred = getattr(self, "_deferred_content", "")
+            if deferred:
+                self._deferred_content = ""
+                self._emit_stream_text(deferred)
+
     def _stream_delta(self, text) -> None:
         """Line-buffered streaming callback for real-time token rendering.
 
@@ -2022,6 +2028,13 @@ class HermesCLI:
         if not text:
             return
 
+        # When show_reasoning is on and reasoning is still rendering,
+        # defer content until the reasoning box closes.  This ensures the
+        # reasoning block always appears BEFORE the response in the terminal.
+        if self.show_reasoning and getattr(self, "_reasoning_box_opened", False):
+            self._deferred_content = getattr(self, "_deferred_content", "") + text
+            return
+
         # Close the live reasoning box before opening the response box
         self._close_reasoning_box()
 
@@ -2088,6 +2101,7 @@ class HermesCLI:
         self._reasoning_box_opened = False
         self._reasoning_buf = ""
         self._reasoning_preview_buf = ""
+        self._deferred_content = ""
 
     def _slow_command_status(self, command: str) -> str:
         """Return a user-facing status message for slower slash commands."""

@@ -2069,6 +2069,53 @@ def _setup_matrix():
                 )
             if result.returncode == 0:
                 print_success(f"{matrix_pkg} installed")
+            elif want_e2ee:
+                # E2EE install failed — likely python-olm can't build (needs libolm).
+                stderr_text = (result.stderr or "").strip()
+                is_olm_error = "olm" in stderr_text.lower()
+                print_warning("E2EE install failed.")
+                if is_olm_error:
+                    print_info("  python-olm requires the libolm C library.")
+                    if sys.platform == "darwin":
+                        print_info("  Install it with: brew install libolm")
+                    elif sys.platform.startswith("linux"):
+                        print_info("  Install it with: apt install libolm-dev  (or your distro's equivalent)")
+                    else:
+                        print_info("  Install the libolm C library for your platform.")
+                    print_info(f"  Then retry: pip install '{matrix_pkg}'")
+                else:
+                    print_info(f"  Run manually: pip install '{matrix_pkg}'")
+                    if stderr_text:
+                        print_info(f"  Error: {stderr_text.splitlines()[-1]}")
+                print()
+                # Offer plain matrix-nio fallback so the user isn't stuck.
+                if prompt_yes_no("Install matrix-nio without E2EE instead? (you can add E2EE later)", True):
+                    fallback_pkg = "matrix-nio"
+                    print_info(f"Installing {fallback_pkg}...")
+                    if uv_bin:
+                        fb_result = subprocess.run(
+                            [uv_bin, "pip", "install", "--python", sys.executable, fallback_pkg],
+                            capture_output=True, text=True,
+                        )
+                    else:
+                        fb_result = subprocess.run(
+                            [sys.executable, "-m", "pip", "install", fallback_pkg],
+                            capture_output=True, text=True,
+                        )
+                    if fb_result.returncode == 0:
+                        print_success(f"{fallback_pkg} installed (without E2EE)")
+                        save_env_value("MATRIX_ENCRYPTION", "false")
+                        print_info("  E2EE disabled. Re-run 'hermes setup' after installing libolm to enable it.")
+                    else:
+                        # Fallback also failed — disable E2EE so gateway doesn't try it.
+                        save_env_value("MATRIX_ENCRYPTION", "false")
+                        print_warning(f"Install failed — run manually: pip install '{fallback_pkg}'")
+                        if fb_result.stderr:
+                            print_info(f"  Error: {fb_result.stderr.strip().splitlines()[-1]}")
+                else:
+                    # User declined fallback — disable E2EE since the install failed.
+                    save_env_value("MATRIX_ENCRYPTION", "false")
+                    print_info("  E2EE disabled. Install libolm and re-run 'hermes setup' to enable it.")
             else:
                 print_warning(f"Install failed — run manually: pip install '{matrix_pkg}'")
                 if result.stderr:

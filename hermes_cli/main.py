@@ -1195,13 +1195,14 @@ def _model_flow_nous(config, current_model="", args=None):
     # Already logged in — use curated model list (same as OpenRouter defaults).
     # The live /models endpoint returns hundreds of models; the curated list
     # shows only agentic models users recognize from OpenRouter.
-    from hermes_cli.models import _PROVIDER_MODELS, get_pricing_for_provider
+    from hermes_cli.models import (
+        _PROVIDER_MODELS, get_pricing_for_provider, filter_nous_free_models,
+        check_nous_free_tier, partition_nous_models_by_tier,
+    )
     model_ids = _PROVIDER_MODELS.get("nous", [])
     if not model_ids:
         print("No curated models available for Nous Portal.")
         return
-
-    print(f"Showing {len(model_ids)} curated models — use \"Enter custom model name\" for others.")
 
     # Verify credentials are still valid (catches expired sessions early)
     try:
@@ -1228,7 +1229,44 @@ def _model_flow_nous(config, current_model="", args=None):
     # Fetch live pricing (non-blocking — returns empty dict on failure)
     pricing = get_pricing_for_provider("nous")
 
-    selected = _prompt_model_selection(model_ids, current_model=current_model, pricing=pricing)
+    # Check if user is on free tier
+    free_tier = check_nous_free_tier()
+
+    # For both tiers: apply the allowlist filter first (removes non-allowlisted
+    # free models and allowlist models that aren't actually free).
+    # Then for free users: partition remaining models into selectable/unavailable.
+    model_ids = filter_nous_free_models(model_ids, pricing)
+    unavailable_models: list[str] = []
+    if free_tier:
+        model_ids, unavailable_models = partition_nous_models_by_tier(model_ids, pricing, free_tier=True)
+
+    if not model_ids and not unavailable_models:
+        print("No models available for Nous Portal after filtering.")
+        return
+
+    # Resolve portal URL for upgrade links (may differ on staging)
+    _nous_portal_url = ""
+    try:
+        _nous_state = get_provider_auth_state("nous")
+        if _nous_state:
+            _nous_portal_url = _nous_state.get("portal_base_url", "")
+    except Exception:
+        pass
+
+    if free_tier and not model_ids:
+        print("No free models currently available.")
+        if unavailable_models:
+            from hermes_cli.auth import DEFAULT_NOUS_PORTAL_URL
+            _url = (_nous_portal_url or DEFAULT_NOUS_PORTAL_URL).rstrip("/")
+            print(f"Upgrade at {_url} to access paid models.")
+        return
+
+    print(f"Showing {len(model_ids)} curated models — use \"Enter custom model name\" for others.")
+
+    selected = _prompt_model_selection(
+        model_ids, current_model=current_model, pricing=pricing,
+        unavailable_models=unavailable_models, portal_url=_nous_portal_url,
+    )
     if selected:
         _save_model_choice(selected)
         # Reactivate Nous as the provider and update config

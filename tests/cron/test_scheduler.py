@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
 
-from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_result, run_job, SILENT_MARKER, _build_job_prompt
+from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_result, _send_media_via_adapter, run_job, SILENT_MARKER, _build_job_prompt
 
 
 class TestResolveOrigin:
@@ -1044,3 +1044,57 @@ class TestTickAdvanceBeforeRun:
         adv_mock.assert_called_once_with("test-advance")
         # advance must happen before run
         assert call_order == [("advance", "test-advance"), ("run", "test-advance")]
+
+
+class TestSendMediaViaAdapter:
+    """Unit tests for _send_media_via_adapter — routes files to typed adapter methods."""
+
+    @staticmethod
+    def _run_with_loop(adapter, chat_id, media_files, metadata, job):
+        """Helper: run _send_media_via_adapter with a real running event loop."""
+        import asyncio
+        import threading
+
+        loop = asyncio.new_event_loop()
+        t = threading.Thread(target=loop.run_forever, daemon=True)
+        t.start()
+        try:
+            _send_media_via_adapter(adapter, chat_id, media_files, metadata, loop, job)
+        finally:
+            loop.call_soon_threadsafe(loop.stop)
+            t.join(timeout=5)
+            loop.close()
+
+    def test_video_dispatched_to_send_video(self):
+        adapter = MagicMock()
+        adapter.send_video = AsyncMock()
+        media_files = [("/tmp/clip.mp4", False)]
+        self._run_with_loop(adapter, "123", media_files, None, {"id": "j1"})
+        adapter.send_video.assert_called_once()
+        assert adapter.send_video.call_args[1]["video_path"] == "/tmp/clip.mp4"
+
+    def test_unknown_ext_dispatched_to_send_document(self):
+        adapter = MagicMock()
+        adapter.send_document = AsyncMock()
+        media_files = [("/tmp/report.pdf", False)]
+        self._run_with_loop(adapter, "123", media_files, None, {"id": "j2"})
+        adapter.send_document.assert_called_once()
+        assert adapter.send_document.call_args[1]["file_path"] == "/tmp/report.pdf"
+
+    def test_multiple_media_files_all_delivered(self):
+        adapter = MagicMock()
+        adapter.send_voice = AsyncMock()
+        adapter.send_image_file = AsyncMock()
+        media_files = [("/tmp/voice.mp3", False), ("/tmp/photo.jpg", False)]
+        self._run_with_loop(adapter, "123", media_files, None, {"id": "j3"})
+        adapter.send_voice.assert_called_once()
+        adapter.send_image_file.assert_called_once()
+
+    def test_single_failure_does_not_block_others(self):
+        adapter = MagicMock()
+        adapter.send_voice = AsyncMock(side_effect=RuntimeError("network error"))
+        adapter.send_image_file = AsyncMock()
+        media_files = [("/tmp/voice.ogg", False), ("/tmp/photo.png", False)]
+        self._run_with_loop(adapter, "123", media_files, None, {"id": "j4"})
+        adapter.send_voice.assert_called_once()
+        adapter.send_image_file.assert_called_once()

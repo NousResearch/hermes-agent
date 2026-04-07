@@ -631,6 +631,12 @@ def check_command_security(command: str) -> dict:
     timeout = cfg["tirith_timeout"]
     fail_open = cfg["tirith_fail_open"]
 
+    if tirith_path is None:
+        logger.warning("tirith path resolved to None; scanning disabled")
+        if fail_open:
+            return {"action": "allow", "findings": [], "summary": "tirith path unavailable"}
+        return {"action": "block", "findings": [], "summary": "tirith path unavailable (fail-closed)"}
+
     try:
         result = subprocess.run(
             [tirith_path, "check", "--json", "--non-interactive",

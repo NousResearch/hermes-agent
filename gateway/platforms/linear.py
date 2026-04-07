@@ -69,6 +69,17 @@ DEDUP_MAX_SIZE = 10_000
 DEFAULT_DEBOUNCE_SECONDS = 30
 MAX_COMMENT_LENGTH = 10_000  # Linear comment character limit
 
+# Linear's webhook source IPs (https://linear.app/developers/webhooks)
+# Linear notes: "We may occasionally update this list to add new IP addresses."
+LINEAR_WEBHOOK_IPS = frozenset({
+    "35.231.147.226",
+    "35.243.134.228",
+    "34.140.253.14",
+    "34.38.87.206",
+    "34.134.222.122",
+    "35.222.25.142",
+})
+
 
 def check_linear_requirements() -> bool:
     """Check if Linear adapter dependencies are available."""
@@ -164,6 +175,13 @@ class LinearAdapter(BasePlatformAdapter):
         self._debounce_seconds: float = float(
             extra.get("debounce_seconds", DEFAULT_DEBOUNCE_SECONDS)
         )
+
+        # IP allowlist — enabled by default, can be disabled for testing
+        enforce_ip = extra.get(
+            "enforce_ip_allowlist",
+            os.getenv("LINEAR_ENFORCE_IP_ALLOWLIST", "true"),
+        )
+        self._enforce_ip_allowlist: bool = str(enforce_ip).lower() not in ("false", "0", "no")
 
         # State
         self._runner = None
@@ -274,6 +292,21 @@ class LinearAdapter(BasePlatformAdapter):
         if request.method != "POST":
             return web.Response(status=405, text="Method Not Allowed")
 
+        # IP allowlist check — reject requests not from Linear's servers
+        if self._enforce_ip_allowlist:
+            # Support X-Forwarded-For for reverse proxies (Caddy, nginx, etc.)
+            forwarded_for = request.headers.get("X-Forwarded-For", "")
+            if forwarded_for:
+                # X-Forwarded-For: client, proxy1, proxy2 — take the leftmost
+                source_ip = forwarded_for.split(",")[0].strip()
+            else:
+                source_ip = request.remote or ""
+            if source_ip not in LINEAR_WEBHOOK_IPS:
+                logger.warning(
+                    "[linear] Rejected webhook from non-Linear IP: %s", source_ip
+                )
+                return web.Response(status=403, text="Forbidden")
+
         # Check content length
         content_length = request.content_length or 0
         if content_length > MAX_BODY_BYTES:
@@ -309,6 +342,17 @@ class LinearAdapter(BasePlatformAdapter):
                 logger.info("[linear] Duplicate delivery skipped: %s", delivery_id)
                 return web.Response(status=200, text="OK")
             self._processed_deliveries[delivery_id] = time.time()
+
+        # Check webhook timestamp to guard against replay attacks (within 60s)
+        webhook_ts = payload.get("webhookTimestamp")
+        if webhook_ts is not None:
+            try:
+                ts_ms = int(webhook_ts)
+                if abs(time.time() * 1000 - ts_ms) > 60_000:
+                    logger.warning("[linear] Rejected stale webhook (timestamp drift > 60s)")
+                    return web.Response(status=401, text="Stale webhook")
+            except (ValueError, TypeError):
+                pass  # If timestamp is malformed, skip check
 
         # Always return 200 to prevent Linear retry storms
         # Process event asynchronously

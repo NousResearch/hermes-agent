@@ -741,8 +741,77 @@ class WhatsAppAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         **kwargs,
     ) -> SendResult:
-        """Send an audio file as a native WhatsApp voice message via bridge."""
-        return await self._send_media_to_bridge(chat_id, audio_path, "audio", caption)
+        """Send an audio file as a native WhatsApp voice message via bridge.
+
+        WhatsApp bridge sets ptt=true (voice bubble) only for .ogg/.opus files.
+        If the file is not already ogg/opus, attempt ffmpeg conversion so it
+        lands as a playable voice note rather than a file attachment.
+        """
+        import shutil
+        import tempfile
+        import asyncio
+
+        ext = os.path.splitext(audio_path)[1].lower()
+        final_path = audio_path
+
+        # WhatsApp bridge only renders as voice bubble for ogg/opus
+        if ext not in (".ogg", ".opus"):
+            ffmpeg_bin = shutil.which("ffmpeg")
+            if ffmpeg_bin:
+                try:
+                    # Create temp file for converted audio
+                    fd, converted_path = tempfile.mkstemp(suffix=".ogg")
+                    os.close(fd)
+
+                    # Convert to opus in ogg container (WhatsApp-compatible voice format)
+                    proc = await asyncio.create_subprocess_exec(
+                        ffmpeg_bin,
+                        "-y",  # Overwrite output
+                        "-i", audio_path,
+                        "-c:a", "libopus",
+                        "-b:a", "32k",  # Low bitrate for voice
+                        "-ar", "48000",  # Opus standard sample rate
+                        "-ac", "1",  # Mono for voice
+                        "-application", "voip",  # Optimize for speech
+                        converted_path,
+                        stdout=asyncio.subprocess.DEVNULL,
+                        stderr=asyncio.subprocess.DEVNULL,
+                    )
+                    await asyncio.wait_for(proc.wait(), timeout=30.0)
+
+                    if proc.returncode == 0 and os.path.exists(converted_path):
+                        final_path = converted_path
+                        logger.debug(
+                            "Converted %s to opus for WhatsApp voice bubble",
+                            audio_path,
+                        )
+                    else:
+                        # Conversion failed, clean up and use original
+                        if os.path.exists(converted_path):
+                            os.unlink(converted_path)
+                        logger.debug(
+                            "ffmpeg conversion failed for %s, sending as-is",
+                            audio_path,
+                        )
+                except asyncio.TimeoutError:
+                    logger.warning("ffmpeg conversion timed out for %s", audio_path)
+                except Exception as e:
+                    logger.debug("ffmpeg conversion error for %s: %s", audio_path, e)
+            else:
+                logger.debug(
+                    "ffmpeg not available, sending %s as-is (may not render as voice bubble)",
+                    audio_path,
+                )
+
+        try:
+            return await self._send_media_to_bridge(chat_id, final_path, "audio", caption)
+        finally:
+            # Clean up converted file if we created one
+            if final_path != audio_path and os.path.exists(final_path):
+                try:
+                    os.unlink(final_path)
+                except Exception:
+                    pass
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """Send typing indicator via bridge."""

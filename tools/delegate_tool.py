@@ -279,6 +279,12 @@ def _build_child_agent(
     # Set delegation depth so children can't spawn grandchildren
     child._delegate_depth = getattr(parent_agent, '_delegate_depth', 0) + 1
 
+    # Share a credential pool with the child when possible so subagents can
+    # rotate credentials on rate limits instead of getting pinned to one key.
+    child_pool = _resolve_child_credential_pool(effective_provider, parent_agent)
+    if child_pool is not None:
+        child._credential_pool = child_pool
+
     # Register child for interrupt propagation
     if hasattr(parent_agent, '_active_children'):
         lock = getattr(parent_agent, '_active_children_lock', None)
@@ -311,6 +317,18 @@ def _run_single_child(
     import model_tools
     _saved_tool_names = getattr(child, "_delegate_saved_tool_names",
                                 list(model_tools._last_resolved_tool_names))
+
+    child_pool = getattr(child, '_credential_pool', None)
+    leased_cred_id = None
+    if child_pool is not None:
+        leased_cred_id = child_pool.acquire_lease()
+        if leased_cred_id is not None:
+            try:
+                leased_entry = child_pool.current()
+                if leased_entry is not None and hasattr(child, '_swap_credential'):
+                    child._swap_credential(leased_entry)
+            except Exception as exc:
+                logger.debug("Failed to bind child to leased credential: %s", exc)
 
     try:
         result = child.run_conversation(user_message=goal)
@@ -422,6 +440,12 @@ def _run_single_child(
         }
 
     finally:
+        if child_pool is not None and leased_cred_id is not None:
+            try:
+                child_pool.release_lease(leased_cred_id)
+            except Exception as exc:
+                logger.debug("Failed to release credential lease: %s", exc)
+
         # Restore the parent's tool names so the process-global is correct
         # for any subsequent execute_code calls or other consumers.
         import model_tools
@@ -429,6 +453,8 @@ def _run_single_child(
         saved_tool_names = getattr(child, "_delegate_saved_tool_names", None)
         if isinstance(saved_tool_names, list):
             model_tools._last_resolved_tool_names = list(saved_tool_names)
+
+        # Remove child from active tracking
 
         # Unregister child from interrupt propagation
         if hasattr(parent_agent, '_active_children'):
@@ -624,6 +650,38 @@ def delegate_task(
         "results": results,
         "total_duration_seconds": total_duration,
     }, ensure_ascii=False)
+
+
+def _resolve_child_credential_pool(effective_provider: Optional[str], parent_agent):
+    """Resolve a credential pool for the child agent.
+
+    Rules:
+    1. Same provider as the parent -> share the parent's pool so cooldown state
+       and rotation stay synchronized.
+    2. Different provider -> try to load that provider's own pool.
+    3. No pool available -> return None and let the child keep the inherited
+       fixed credential behavior.
+    """
+    if not effective_provider:
+        return getattr(parent_agent, "_credential_pool", None)
+
+    parent_provider = getattr(parent_agent, "provider", None) or ""
+    parent_pool = getattr(parent_agent, "_credential_pool", None)
+    if parent_pool is not None and effective_provider == parent_provider:
+        return parent_pool
+
+    try:
+        from agent.credential_pool import load_pool
+        pool = load_pool(effective_provider)
+        if pool is not None and pool.has_credentials():
+            return pool
+    except Exception as exc:
+        logger.debug(
+            "Could not load credential pool for child provider '%s': %s",
+            effective_provider,
+            exc,
+        )
+    return None
 
 
 def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:

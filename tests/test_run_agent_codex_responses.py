@@ -374,6 +374,34 @@ def test_run_codex_stream_fallback_parses_create_stream_events(monkeypatch):
     assert response.output[0].content[0].text == "streamed create ok"
 
 
+def test_run_codex_stream_uses_terminal_event_response_when_final_response_is_empty(monkeypatch):
+    agent = _build_agent(monkeypatch)
+
+    terminal_response = _codex_message_response("terminal event ok")
+    empty_final = SimpleNamespace(output=[], status="completed", model="gpt-5-codex")
+
+    mock_stream = MagicMock()
+    mock_stream.__enter__ = MagicMock(return_value=mock_stream)
+    mock_stream.__exit__ = MagicMock(return_value=False)
+    mock_stream.__iter__ = MagicMock(
+        return_value=iter(
+            [
+                SimpleNamespace(type="response.created"),
+                SimpleNamespace(type="response.completed", response=terminal_response),
+            ]
+        )
+    )
+    mock_stream.get_final_response.return_value = empty_final
+
+    mock_client = MagicMock()
+    mock_client.responses.stream.return_value = mock_stream
+
+    response = agent._run_codex_stream(_codex_request_kwargs(), client=mock_client)
+
+    assert response is terminal_response
+    assert response.output[0].content[0].text == "terminal event ok"
+
+
 def test_run_conversation_codex_plain_text(monkeypatch):
     agent = _build_agent(monkeypatch)
     monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: _codex_message_response("OK"))

@@ -3868,6 +3868,7 @@ class AIAgent:
         has_tool_calls = False
         first_delta_fired = False
         self._reasoning_deltas_fired = False
+        terminal_response = None
         # Accumulate streamed text so we can recover if get_final_response()
         # returns empty output (e.g. chatgpt.com backend-api sends
         # response.incomplete instead of response.completed).
@@ -3911,8 +3912,10 @@ class AIAgent:
                             if done_item is not None:
                                 collected_output_items.append(done_item)
                         # Log non-completed terminal events for diagnostics
-                        elif event_type in ("response.incomplete", "response.failed"):
+                        elif event_type in ("response.completed", "response.incomplete", "response.failed"):
                             resp_obj = getattr(event, "response", None)
+                            if resp_obj is not None:
+                                terminal_response = resp_obj
                             status = getattr(resp_obj, "status", None) if resp_obj else None
                             incomplete_details = getattr(resp_obj, "incomplete_details", None) if resp_obj else None
                             logger.warning(
@@ -3923,6 +3926,15 @@ class AIAgent:
                                 self._client_log_context(),
                             )
                     final_response = stream.get_final_response()
+                    if terminal_response is not None:
+                        _final_output = getattr(final_response, "output", None)
+                        _terminal_output = getattr(terminal_response, "output", None)
+                        if (
+                            isinstance(_terminal_output, list)
+                            and _terminal_output
+                            and (not isinstance(_final_output, list) or not _final_output)
+                        ):
+                            final_response = terminal_response
                     # PATCH: ChatGPT Codex backend streams valid output items
                     # but get_final_response() can return an empty output list.
                     # Backfill from collected items or synthesize from deltas.

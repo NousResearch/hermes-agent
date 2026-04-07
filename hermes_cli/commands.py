@@ -138,9 +138,15 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("update", "Update Hermes Agent to the latest version", "Info",
                gateway_only=True),
 
+    # Hierarchy
+    CommandDef("talk", "Talk directly to a hierarchy profile", "Hierarchy",
+               gateway_only=True, args_hint="<profile>"),
+    CommandDef("done", "Return to CEO from a /talk session", "Hierarchy",
+               gateway_only=True, aliases=("exit",)),
+
     # Exit
     CommandDef("quit", "Exit the CLI", "Exit",
-               cli_only=True, aliases=("exit", "q")),
+               cli_only=True, aliases=("q",)),
 ]
 
 

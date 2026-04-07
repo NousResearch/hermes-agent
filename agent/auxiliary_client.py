@@ -253,30 +253,60 @@ class _CodexCompletionsAdapter:
         usage = None
 
         try:
+            final = None
             with self._client.responses.stream(**resp_kwargs) as stream:
                 for _event in stream:
-                    pass
-                final = stream.get_final_response()
+                    # Collect text deltas directly — get_final_response() returns
+                    # empty output in openai>=2.x when the Responses API streams
+                    # without store=True, so we accumulate from events instead.
+                    etype = type(_event).__name__
+                    if etype == "ResponseTextDeltaEvent":
+                        delta = getattr(_event, "delta", "")
+                        if delta:
+                            text_parts.append(delta)
+                    elif etype == "ResponseOutputItemDoneEvent":
+                        item = getattr(_event, "item", None)
+                        if item and getattr(item, "type", None) == "function_call":
+                            tool_calls_raw.append(SimpleNamespace(
+                                id=getattr(item, "call_id", ""),
+                                type="function",
+                                function=SimpleNamespace(
+                                    name=getattr(item, "name", ""),
+                                    arguments=getattr(item, "arguments", "{}"),
+                                ),
+                            ))
+                    elif etype == "ResponseCompletedEvent":
+                        final = getattr(_event, "response", None)
 
-            # Extract text and tool calls from the Responses output
-            for item in getattr(final, "output", []):
-                item_type = getattr(item, "type", None)
-                if item_type == "message":
-                    for part in getattr(item, "content", []):
-                        ptype = getattr(part, "type", None)
-                        if ptype in ("output_text", "text"):
-                            text_parts.append(getattr(part, "text", ""))
-                elif item_type == "function_call":
-                    tool_calls_raw.append(SimpleNamespace(
-                        id=getattr(item, "call_id", ""),
-                        type="function",
-                        function=SimpleNamespace(
-                            name=getattr(item, "name", ""),
-                            arguments=getattr(item, "arguments", "{}"),
-                        ),
-                    ))
+                # Fall back to get_final_response() for usage/metadata if we
+                # didn't capture a ResponseCompletedEvent.
+                if final is None:
+                    try:
+                        final = stream.get_final_response()
+                    except Exception:
+                        pass
 
-            resp_usage = getattr(final, "usage", None)
+            # If text was captured from events, skip output-item parsing.
+            # If not (e.g. future openai fix), fall back to output items.
+            if not text_parts and final is not None:
+                for item in getattr(final, "output", []):
+                    item_type = getattr(item, "type", None)
+                    if item_type == "message":
+                        for part in getattr(item, "content", []):
+                            ptype = getattr(part, "type", None)
+                            if ptype in ("output_text", "text"):
+                                text_parts.append(getattr(part, "text", ""))
+                    elif item_type == "function_call":
+                        tool_calls_raw.append(SimpleNamespace(
+                            id=getattr(item, "call_id", ""),
+                            type="function",
+                            function=SimpleNamespace(
+                                name=getattr(item, "name", ""),
+                                arguments=getattr(item, "arguments", "{}"),
+                            ),
+                        ))
+
+            resp_usage = getattr(final, "usage", None) if final is not None else None
             if resp_usage:
                 usage = SimpleNamespace(
                     prompt_tokens=getattr(resp_usage, "input_tokens", 0),

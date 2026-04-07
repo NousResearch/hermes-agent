@@ -3596,6 +3596,8 @@ class AIAgent:
         for attempt in range(max_stream_retries + 1):
             try:
                 with active_client.responses.stream(**api_kwargs) as stream:
+                    _completed_response = None
+                    _output_items_done = []
                     for event in stream:
                         if self._interrupt_requested:
                             break
@@ -3620,7 +3622,29 @@ class AIAgent:
                             reasoning_text = getattr(event, "delta", "")
                             if reasoning_text:
                                 self._fire_reasoning_delta(reasoning_text)
-                    return stream.get_final_response()
+                        # Capture completed output items and the terminal response.
+                        # get_final_response() returns empty output in openai>=2.x
+                        # when streaming from the Codex endpoint, so we collect
+                        # items from events directly as a reliable fallback.
+                        elif type(event).__name__ == "ResponseOutputItemDoneEvent":
+                            item = getattr(event, "item", None)
+                            if item is not None:
+                                _output_items_done.append(item)
+                        elif type(event).__name__ == "ResponseCompletedEvent":
+                            _completed_response = getattr(event, "response", None)
+
+                    final = stream.get_final_response()
+                    # Patch output if get_final_response() returned empty list
+                    # but we captured items from stream events.
+                    if _output_items_done and not getattr(final, "output", None):
+                        try:
+                            object.__setattr__(final, "output", _output_items_done)
+                        except (AttributeError, TypeError):
+                            pass
+                    # If final still has no output, fall back to the completed event
+                    if not getattr(final, "output", None) and _completed_response is not None:
+                        final = _completed_response
+                    return final
             except (_httpx.RemoteProtocolError, _httpx.ReadTimeout, _httpx.ConnectError, ConnectionError) as exc:
                 if attempt < max_stream_retries:
                     logger.debug(

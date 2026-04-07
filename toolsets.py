@@ -68,6 +68,13 @@ _HERMES_CORE_TOOLS = [
 # Core toolset definitions
 # These can include individual tools or reference other toolsets
 TOOLSETS = {
+    # Hierarchical Agent Architecture — inter-profile communication
+    "hierarchy": {
+        "description": "Hierarchical agent organization tools — delegate tasks, check inbox, org chart, worker management",
+        "tools": ["send_to_profile", "check_inbox", "org_chart", "profile_status", "spawn_tracked_worker", "get_project_status"],
+        "includes": []
+    },
+
     # Basic toolsets - individual tool categories
     "web": {
         "description": "Web research and content extraction tools",

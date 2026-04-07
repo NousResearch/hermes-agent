@@ -513,6 +513,16 @@ class GatewayRunner:
         # Key: session_key, Value: {"command": str, "pattern_key": str, ...}
         self._pending_approvals: Dict[str, Dict[str, Any]] = {}
 
+        # Session focus targets for /talk — routes messages to a hierarchy
+        # profile instead of the CEO agent.
+        # Key: session_key, Value: profile name (e.g. "pm-discord-poker")
+        self._session_focus: Dict[str, str] = {}
+
+        # Session focus targets for /talk — routes messages directly to a
+        # hierarchy profile instead of the CEO agent.
+        # Key: session_key, Value: profile_name
+        self._focus_targets: Dict[str, str] = {}
+
         # Track platforms that failed to connect for background reconnection.
         # Key: Platform enum, Value: {"config": platform_config, "attempts": int, "next_retry": float}
         self._failed_platforms: Dict[Platform, Dict[str, Any]] = {}
@@ -1880,9 +1890,18 @@ class GatewayRunner:
                 self._pending_messages[_quick_key] = event.text
             return None
 
-        # Check for commands
+        # --- Session focus: route messages to a focused profile ---
+        # When /talk is active, non-command messages go directly to the
+        # target profile. /exit and other commands still go through the
+        # normal dispatch so the user can escape.
         command = event.get_command()
-        
+        if (
+            _quick_key in self._focus_targets
+            and not command  # Let commands through normally
+        ):
+            return await self._route_to_focused_profile(event, _quick_key)
+
+
         # Emit command:* hook for any recognized slash command.
         # GATEWAY_KNOWN_COMMANDS is derived from the central COMMAND_REGISTRY
         # in hermes_cli/commands.py — no hardcoded set to maintain here.
@@ -2005,6 +2024,12 @@ class GatewayRunner:
         if canonical == "voice":
             return await self._handle_voice_command(event)
 
+        if canonical == "talk":
+            return await self._handle_talk_command(event)
+
+        if canonical == "done":
+            return await self._handle_exit_command(event)
+
         # User-defined quick commands (bypass agent loop, no LLM call)
         if command:
             if isinstance(self.config, dict):
@@ -2101,6 +2126,13 @@ class GatewayRunner:
         # Pending exec approvals are handled by /approve and /deny commands above.
         # No bare text matching — "yes" in normal conversation must not trigger
         # execution of a dangerous command.
+
+        # ── Session focus: route to a hierarchy profile ────────────────
+        # When /talk is active, plain messages (not commands) are routed
+        # directly to the focused profile via send_to_profile instead of
+        # going to the CEO agent.
+        if not command and _quick_key in self._session_focus:
+            return await self._route_to_focused_profile(event, _quick_key)
 
         # ── Claim this session before any await ───────────────────────
         # Between here and _run_agent registering the real AIAgent, there
@@ -3469,6 +3501,138 @@ class GatewayRunner:
             return raw.guild.id
         return None
 
+    async def _handle_talk_command(self, event: MessageEvent) -> str:
+        """Handle /talk <profile> — route messages directly to a hierarchy profile.
+
+        When active, plain messages bypass the CEO agent and are sent
+        directly to the target profile via send_to_profile.  The profile
+        processes the message and the result is delivered back to this
+        chat via the hierarchy delivery hook.
+
+        Use /exit to return to normal CEO routing.
+        """
+        profile = event.get_command_args().strip()
+        if not profile:
+            return (
+                "Usage: /talk <profile-name>\n"
+                "Routes your messages directly to that profile.\n"
+                "Use /exit to return to Hermes (CEO)."
+            )
+
+        # Validate the profile exists in the hierarchy registry
+        try:
+            import sys as _sys
+            _proj = str(Path.home() / "hermes_work" / "projects" / "hierarchical-architecture")
+            if _proj not in _sys.path:
+                _sys.path.insert(0, _proj)
+            from core.registry.profile_registry import ProfileRegistry
+            _reg_db = str(Path.home() / ".hermes" / "hierarchy" / "registry.db")
+            reg = ProfileRegistry(_reg_db)
+            prof = reg.get_profile(profile)
+            reg.close()
+            if prof is None:
+                return f"Profile '{profile}' not found in the hierarchy."
+        except Exception as e:
+            logger.warning("Could not validate profile '%s': %s", profile, e)
+            # Allow anyway — the profile might exist even if we can't check
+
+        source = event.source
+        _quick_key = self._session_key_for_source(source)
+        self._session_focus[_quick_key] = profile
+        logger.info("Session %s focused on profile '%s'", _quick_key, profile)
+        return (
+            f"Now talking directly to **{profile}**.\n"
+            f"Your messages will be routed to them.\n"
+            f"Use /exit to return to Hermes."
+        )
+
+    async def _handle_exit_command(self, event: MessageEvent) -> str:
+        """Handle /exit — return to normal CEO routing after /talk."""
+        source = event.source
+        _quick_key = self._session_key_for_source(source)
+        old_target = self._session_focus.pop(_quick_key, None)
+        if old_target:
+            logger.info("Session %s exited focus on '%s'", _quick_key, old_target)
+            return f"Back to Hermes (CEO). No longer routing to {old_target}."
+        return "You're already talking to Hermes (CEO)."
+
+    async def _route_to_focused_profile(
+        self, event: MessageEvent, session_key: str
+    ) -> Optional[str]:
+        """Route a plain message to the focused hierarchy profile.
+
+        Sends the user's message via send_to_profile and delivers the
+        response back to this chat.
+        """
+        profile = self._session_focus.get(session_key)
+        if not profile:
+            return None
+
+        message_text = event.text.strip()
+        if not message_text:
+            return None
+
+        source = event.source
+        adapter = self.adapters.get(source.platform)
+
+        # Acknowledge receipt
+        if adapter:
+            try:
+                await adapter.send(
+                    source.chat_id,
+                    f"[→ {profile}] Processing...",
+                    reply_to=getattr(event, "message_id", None),
+                )
+            except Exception:
+                pass
+
+        # Send to the profile via IPC
+        try:
+            import sys as _sys
+            _proj = str(Path.home() / "hermes_work" / "projects" / "hierarchical-architecture")
+            if _proj not in _sys.path:
+                _sys.path.insert(0, _proj)
+            from core.ipc.message_bus import MessageBus
+            from core.ipc.models import MessageType
+            from core.registry.profile_registry import ProfileRegistry
+            from integrations.hermes.gateway_hook import RegistryAdapter
+
+            _hier_dir = Path.home() / ".hermes" / "hierarchy"
+            _reg_db = str(_hier_dir / "registry.db")
+            _ipc_db = str(_hier_dir / "ipc.db")
+
+            reg = ProfileRegistry(_reg_db)
+            adapter_reg = RegistryAdapter(reg)
+            bus = MessageBus(_ipc_db, profile_registry=adapter_reg)
+
+            # Include delivery metadata so the response comes back to this chat
+            payload = {
+                "task": message_text,
+                "deliver_to": "origin",
+                "origin_platform": source.platform.value if source.platform else "",
+                "origin_chat_id": source.chat_id,
+            }
+
+            bus.send(
+                from_profile="hermes",
+                to_profile=profile,
+                message_type=MessageType.TASK_REQUEST,
+                payload=payload,
+            )
+            bus.close()
+            reg.close()
+
+            logger.info(
+                "Routed focused message to '%s': %.100s",
+                profile,
+                message_text,
+            )
+            return None  # Response will arrive via delivery hook
+
+        except Exception as e:
+            logger.error("Failed to route to focused profile '%s': %s", profile, e)
+            return f"Failed to send to {profile}: {e}"
+
     async def _handle_voice_command(self, event: MessageEvent) -> str:
         """Handle /voice [on|off|tts|channel|leave|status] command."""
         args = event.get_command_args().strip().lower()
@@ -3864,6 +4028,117 @@ class GatewayRunner:
 
         except Exception as e:
             logger.warning("Post-stream media extraction failed: %s", e)
+
+    async def _handle_talk_command(self, event: MessageEvent) -> str:
+        """Handle /talk <profile> — focus this session on a hierarchy profile.
+
+        Subsequent non-command messages are routed directly to the target
+        profile via send_to_profile. Use /exit to return to the CEO.
+        """
+        source = event.source
+        session_key = self._session_key_for_source(source)
+        args = event.get_command_args().strip()
+
+        if not args:
+            # Show current focus or list available profiles
+            current = self._focus_targets.get(session_key)
+            if current:
+                return f"Currently talking to: {current}\nUse /exit to return to CEO."
+            return (
+                "Usage: /talk <profile-name>\n"
+                "Routes your messages directly to a hierarchy profile.\n"
+                "Example: /talk pm-discord-poker\n"
+                "Use /exit to return to CEO."
+            )
+
+        profile_name = args.split()[0].lower()
+
+        # Validate the profile exists in the hierarchy
+        try:
+            import sys as _sys
+            _project_root = str(__import__("pathlib").Path.home() / "hermes_work" / "projects" / "hierarchical-architecture")
+            if _project_root not in _sys.path:
+                _sys.path.insert(0, _project_root)
+            from core.registry.profile_registry import ProfileRegistry
+            _reg_path = str(__import__("pathlib").Path.home() / ".hermes" / "hierarchy" / "registry.db")
+            reg = ProfileRegistry(_reg_path)
+            try:
+                profile = reg.get_profile(profile_name)
+                if profile is None:
+                    profiles = [p.profile_name for p in reg.list_profiles()]
+                    return (
+                        f"Profile '{profile_name}' not found.\n"
+                        f"Available: {', '.join(profiles)}"
+                    )
+            finally:
+                reg.close()
+        except Exception as e:
+            logger.warning("Failed to validate profile '%s': %s", profile_name, e)
+            # Continue anyway — let send_to_profile handle errors
+
+        self._focus_targets[session_key] = profile_name
+        return (
+            f"Now talking directly to: {profile_name}\n"
+            f"Your messages will be routed to this profile.\n"
+            f"Use /exit to return to CEO."
+        )
+
+    async def _handle_exit_command(self, event: MessageEvent) -> str:
+        """Handle /exit — return to CEO from a /talk session."""
+        source = event.source
+        session_key = self._session_key_for_source(source)
+
+        previous = self._focus_targets.pop(session_key, None)
+        if previous:
+            return f"Left conversation with {previous}. Back to CEO."
+        return "Not in a /talk session. Already talking to CEO."
+
+    async def _route_to_focused_profile(
+        self, event: MessageEvent, session_key: str
+    ) -> Optional[str]:
+        """Route a message to the focused profile and deliver the response.
+
+        Sends the user's message to the target profile via send_to_profile,
+        waits for the response via the hierarchy gateway, and returns it.
+        """
+        target = self._focus_targets.get(session_key)
+        if not target:
+            return None
+
+        source = event.source
+        message_text = event.text or ""
+        if not message_text.strip():
+            return None
+
+        # Send to profile via IPC message bus directly
+        try:
+            import sys as _sys
+            import json
+            _project_root = str(__import__("pathlib").Path.home() / "hermes_work" / "projects" / "hierarchical-architecture")
+            if _project_root not in _sys.path:
+                _sys.path.insert(0, _project_root)
+            from core.ipc.message_bus import MessageBus
+            from core.ipc.models import MessageType
+            from pathlib import Path as _Path
+
+            _hier_dir = _Path.home() / ".hermes" / "hierarchy"
+            bus = MessageBus(str(_hier_dir / "ipc.db"))
+            msg_id = bus.send(
+                from_profile="hermes",
+                to_profile=target,
+                message_type=MessageType.TASK_REQUEST,
+                payload={"task": message_text},
+            )
+            bus.close()
+
+            return (
+                f"Message sent to {target}. "
+                f"Their response will be delivered here when ready."
+            )
+
+        except Exception as e:
+            logger.error("Failed to route message to %s: %s", target, e)
+            return f"Failed to send to {target}: {e}"
 
     async def _handle_rollback_command(self, event: MessageEvent) -> str:
         """Handle /rollback command — list or restore filesystem checkpoints."""

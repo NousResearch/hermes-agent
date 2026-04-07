@@ -3869,6 +3869,8 @@ class AIAgent:
         first_delta_fired = False
         self._reasoning_deltas_fired = False
         for attempt in range(max_stream_retries + 1):
+            collected_output_items = []
+            collected_text_deltas = []
             try:
                 with active_client.responses.stream(**api_kwargs) as stream:
                     for event in stream:
@@ -3878,6 +3880,8 @@ class AIAgent:
                         # Fire callbacks on text content deltas (suppress during tool calls)
                         if "output_text.delta" in event_type or event_type == "response.output_text.delta":
                             delta_text = getattr(event, "delta", "")
+                            if delta_text:
+                                collected_text_deltas.append(delta_text)
                             if delta_text and not has_tool_calls:
                                 if not first_delta_fired:
                                     first_delta_fired = True
@@ -3895,7 +3899,38 @@ class AIAgent:
                             reasoning_text = getattr(event, "delta", "")
                             if reasoning_text:
                                 self._fire_reasoning_delta(reasoning_text)
-                    return stream.get_final_response()
+                        # Collect completed output items (text messages, function calls, etc.)
+                        # This is needed because some backends (ChatGPT Codex) don't populate
+                        # the final response.output despite streaming valid items.
+                        if event_type == "response.output_item.done":
+                            done_item = getattr(event, "item", None)
+                            if done_item is not None:
+                                collected_output_items.append(done_item)
+                    final_response = stream.get_final_response()
+                    # PATCH: ChatGPT Codex backend streams valid output items via
+                    # response.output_item.done events but the SDK's get_final_response()
+                    # returns an empty output list. Backfill from collected items.
+                    resp_output = getattr(final_response, "output", None)
+                    if (not resp_output) and collected_output_items:
+                        final_response.output = list(collected_output_items)
+                        logger.debug(
+                            "Codex stream: backfilled %d output items from stream events",
+                            len(collected_output_items),
+                        )
+                    elif (not resp_output) and collected_text_deltas and not has_tool_calls:
+                        # Fallback: synthesize text message from deltas if no done items
+                        assembled = "".join(collected_text_deltas)
+                        final_response.output = [SimpleNamespace(
+                            type="message",
+                            role="assistant",
+                            status="completed",
+                            content=[SimpleNamespace(type="output_text", text=assembled)],
+                        )]
+                        logger.debug(
+                            "Codex stream: synthesized output from %d text deltas (%d chars)",
+                            len(collected_text_deltas), len(assembled),
+                        )
+                    return final_response
             except (_httpx.RemoteProtocolError, _httpx.ReadTimeout, _httpx.ConnectError, ConnectionError) as exc:
                 if attempt < max_stream_retries:
                     logger.debug(

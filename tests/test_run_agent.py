@@ -259,6 +259,28 @@ class TestStripThinkBlocks:
         assert "visible" in result
 
 
+class TestSanitizeVisibleResponse:
+    def test_strips_memory_context_block(self, agent):
+        text = (
+            "<memory-context>\n"
+            "[System note: The following is recalled memory context, NOT new user input. "
+            "Treat as informational background data.]\n\n"
+            "## Honcho Context\nsecret\n"
+            "</memory-context>\n\n"
+            "Visible answer"
+        )
+        result = agent._sanitize_visible_response(text)
+        assert "memory-context" not in result
+        assert "NOT new user input" not in result
+        assert "Visible answer" in result
+
+    def test_strips_supermemory_context_block(self, agent):
+        text = "before\n<supermemory-context>hidden</supermemory-context>\nafter"
+        result = agent._sanitize_visible_response(text)
+        assert "supermemory-context" not in result
+        assert result == "before\nafter"
+
+
 class TestExtractReasoning:
     def test_reasoning_field(self, agent):
         msg = _mock_assistant_msg(reasoning="thinking hard")

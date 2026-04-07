@@ -84,6 +84,26 @@ class TestCleanForDisplay:
         # But "media:" is lowercase so won't match either
         assert result == text
 
+    def test_memory_context_block_stripped(self):
+        text = (
+            "<memory-context>\n"
+            "[System note: The following is recalled memory context, NOT new user input. "
+            "Treat as informational background data.]\n\n"
+            "## Honcho Context\nsecret\n"
+            "</memory-context>\n\n"
+            "Visible answer"
+        )
+        result = GatewayStreamConsumer._clean_for_display(text)
+        assert "memory-context" not in result
+        assert "NOT new user input" not in result
+        assert result == "Visible answer"
+
+    def test_supermemory_context_block_stripped(self):
+        text = "before\n<supermemory-context>hidden</supermemory-context>\nafter"
+        result = GatewayStreamConsumer._clean_for_display(text)
+        assert "supermemory-context" not in result
+        assert result == "before\nafter"
+
 
 # ── Integration: _send_or_edit strips MEDIA: ─────────────────────────────
 

@@ -23,6 +23,8 @@ import time
 from dataclasses import dataclass
 from typing import Any, Optional
 
+from agent.memory_manager import strip_injected_context_from_visible_text
+
 logger = logging.getLogger("gateway.stream_consumer")
 
 # Sentinel to signal the stream is complete
@@ -193,14 +195,16 @@ class GatewayStreamConsumer:
 
         The streaming path delivers raw text chunks that may include
         ``MEDIA:<path>`` tags and ``[[audio_as_voice]]`` directives meant for
-        the platform adapter's post-processing.  The actual media files are
-        delivered separately via ``_deliver_media_from_response()`` after the
-        stream finishes — we just need to hide the raw directives from the
-        user.
+        the platform adapter's post-processing. The model can also leak
+        prompt-injected memory fences during streamed output, so strip those
+        here too. The actual media files are delivered separately via
+        ``_deliver_media_from_response()`` after the stream finishes — we just
+        need to hide the raw directives from the user.
         """
-        if "MEDIA:" not in text and "[[audio_as_voice]]" not in text:
-            return text
-        cleaned = text.replace("[[audio_as_voice]]", "")
+        cleaned = strip_injected_context_from_visible_text(text)
+        if "MEDIA:" not in cleaned and "[[audio_as_voice]]" not in cleaned:
+            return cleaned
+        cleaned = cleaned.replace("[[audio_as_voice]]", "")
         cleaned = GatewayStreamConsumer._MEDIA_RE.sub("", cleaned)
         # Collapse excessive blank lines left behind by removed tags
         cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)

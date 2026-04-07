@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -110,6 +111,13 @@ CONCLUDE_SCHEMA = {
 
 
 ALL_TOOL_SCHEMAS = [PROFILE_SCHEMA, SEARCH_SCHEMA, CONTEXT_SCHEMA, CONCLUDE_SCHEMA]
+
+_CONTEXT_STRIP_RE = re.compile(r"<memory-context>[\s\S]*?</memory-context>\s*", re.IGNORECASE)
+_SUPERMEMORY_CONTEXT_STRIP_RE = re.compile(r"<supermemory-context>[\s\S]*?</supermemory-context>\s*", re.IGNORECASE)
+_SYSTEM_NOTE_STRIP_RE = re.compile(
+    r"\[System note: The following is recalled memory context,\s*NOT new user input\. Treat as informational background data\.\]\s*",
+    re.IGNORECASE,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -512,6 +520,18 @@ class HonchoMemoryProvider(MemoryProvider):
         self._turn_count = turn_number
 
     @staticmethod
+    def _clean_text_for_capture(text: str) -> str:
+        """Strip injected memory context blocks from captured conversation text."""
+        if not text:
+            return ""
+        cleaned = _CONTEXT_STRIP_RE.sub('', text)
+        cleaned = _SUPERMEMORY_CONTEXT_STRIP_RE.sub('', cleaned)
+        cleaned = _SYSTEM_NOTE_STRIP_RE.sub('', cleaned)
+        cleaned = cleaned.replace('Caller briefing:', '')
+        cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
+        return cleaned.strip()
+
+    @staticmethod
     def _chunk_message(content: str, limit: int) -> list[str]:
         """Split content into chunks that fit within the Honcho message limit.
 
@@ -568,13 +588,15 @@ class HonchoMemoryProvider(MemoryProvider):
             return
 
         msg_limit = self._config.message_max_chars if self._config else 25000
+        clean_user_content = self._clean_text_for_capture(user_content)
+        clean_assistant_content = self._clean_text_for_capture(assistant_content)
 
         def _sync():
             try:
                 session = self._manager.get_or_create(self._session_key)
-                for chunk in self._chunk_message(user_content, msg_limit):
+                for chunk in self._chunk_message(clean_user_content, msg_limit):
                     session.add_message("user", chunk)
-                for chunk in self._chunk_message(assistant_content, msg_limit):
+                for chunk in self._chunk_message(clean_assistant_content, msg_limit):
                     session.add_message("assistant", chunk)
                 self._manager._flush_session(session)
             except Exception as e:

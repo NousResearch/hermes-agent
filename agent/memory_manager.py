@@ -43,11 +43,29 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _FENCE_TAG_RE = re.compile(r'</?\s*memory-context\s*>', re.IGNORECASE)
+_VISIBLE_CONTEXT_BLOCK_RE = re.compile(r'<memory-context>[\s\S]*?</memory-context>\s*', re.IGNORECASE)
+_VISIBLE_SUPERMEMORY_BLOCK_RE = re.compile(r'<supermemory-context>[\s\S]*?</supermemory-context>\s*', re.IGNORECASE)
+_VISIBLE_SYSTEM_NOTE_RE = re.compile(
+    r'\[System note: The following is recalled memory context,\s*NOT new user input\. Treat as informational background data\.\]\s*',
+    re.IGNORECASE,
+)
 
 
 def sanitize_context(text: str) -> str:
     """Strip fence-escape sequences from provider output."""
     return _FENCE_TAG_RE.sub('', text)
+
+
+def strip_injected_context_from_visible_text(text: str) -> str:
+    """Remove injected memory fences/notes from assistant-visible output."""
+    if not text:
+        return ""
+    cleaned = _VISIBLE_CONTEXT_BLOCK_RE.sub('', text)
+    cleaned = _VISIBLE_SUPERMEMORY_BLOCK_RE.sub('', cleaned)
+    cleaned = _VISIBLE_SYSTEM_NOTE_RE.sub('', cleaned)
+    cleaned = cleaned.replace('Caller briefing:', '')
+    cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
+    return cleaned.strip()
 
 
 def build_memory_context_block(raw_context: str) -> str:

@@ -76,7 +76,7 @@ from tools.browser_tool import cleanup_browser
 from hermes_constants import OPENROUTER_BASE_URL
 
 # Agent internals extracted to agent/ package for modularity
-from agent.memory_manager import build_memory_context_block
+from agent.memory_manager import build_memory_context_block, strip_injected_context_from_visible_text
 from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY, PLATFORM_HINTS,
     MEMORY_GUIDANCE, SESSION_SEARCH_GUIDANCE, SKILLS_GUIDANCE,
@@ -1536,6 +1536,7 @@ class AIAgent:
 
         # Remove all reasoning tag variants (must match _strip_think_blocks)
         cleaned = self._strip_think_blocks(content)
+        cleaned = self._sanitize_visible_response(cleaned)
 
         # Check if there's any non-whitespace content remaining
         return bool(cleaned.strip())
@@ -1552,6 +1553,10 @@ class AIAgent:
         content = re.sub(r'<REASONING_SCRATCHPAD>.*?</REASONING_SCRATCHPAD>', '', content, flags=re.DOTALL)
         content = re.sub(r'</?(?:think|thinking|reasoning|REASONING_SCRATCHPAD)>\s*', '', content, flags=re.IGNORECASE)
         return content
+
+    def _sanitize_visible_response(self, content: str) -> str:
+        """Remove prompt-injected memory scaffolding from model-visible output."""
+        return strip_injected_context_from_visible_text(content)
 
     def _looks_like_codex_intermediate_ack(
         self,
@@ -6825,6 +6830,7 @@ class AIAgent:
             if final_response:
                 if "<think>" in final_response:
                     final_response = re.sub(r'<think>.*?</think>\s*', '', final_response, flags=re.DOTALL).strip()
+                final_response = self._sanitize_visible_response(final_response)
                 if final_response:
                     messages.append({"role": "assistant", "content": final_response})
                 else:
@@ -6866,6 +6872,7 @@ class AIAgent:
                 if final_response:
                     if "<think>" in final_response:
                         final_response = re.sub(r'<think>.*?</think>\s*', '', final_response, flags=re.DOTALL).strip()
+                    final_response = self._sanitize_visible_response(final_response)
                     if final_response:
                         messages.append({"role": "assistant", "content": final_response})
                     else:
@@ -7699,7 +7706,9 @@ class AIAgent:
                                     restart_with_length_continuation = True
                                     break
 
-                                partial_response = self._strip_think_blocks(truncated_response_prefix).strip()
+                                partial_response = self._sanitize_visible_response(
+                                    self._strip_think_blocks(truncated_response_prefix)
+                                ).strip()
                                 self._cleanup_task_resources(effective_task_id)
                                 self._persist_session(messages, conversation_history)
                                 return {
@@ -8813,7 +8822,9 @@ class AIAgent:
                         if _all_housekeeping and self._has_stream_consumers():
                             self._mute_post_response = True
                         elif self.quiet_mode:
-                            clean = self._strip_think_blocks(turn_content).strip()
+                            clean = self._sanitize_visible_response(
+                                self._strip_think_blocks(turn_content)
+                            ).strip()
                             if clean:
                                 self._vprint(f"  ┊ 💬 {clean}")
                     
@@ -8926,7 +8937,9 @@ class AIAgent:
                                         tool_names.append(fn.get("name", "unknown"))
                                     msg["content"] = f"Calling the {', '.join(tool_names)} tool{'s' if len(tool_names) > 1 else ''}..."
                                     break
-                            final_response = self._strip_think_blocks(fallback).strip()
+                            final_response = self._sanitize_visible_response(
+                                self._strip_think_blocks(fallback)
+                            ).strip()
                             self._response_was_previewed = True
                             break
 
@@ -8987,10 +9000,13 @@ class AIAgent:
                         truncated_response_prefix = ""
                         length_continue_retries = 0
                     
-                    # Strip <think> blocks from user-facing response (keep raw in messages for trajectory)
-                    final_response = self._strip_think_blocks(final_response).strip()
+                    # Strip internal scaffolding from user-facing response (keep raw in messages for trajectory)
+                    final_response = self._sanitize_visible_response(
+                        self._strip_think_blocks(final_response)
+                    ).strip()
                     
                     final_msg = self._build_assistant_message(assistant_message, finish_reason)
+                    final_msg["content"] = final_response
                     
                     messages.append(final_msg)
                     

@@ -47,7 +47,7 @@ def resolve_active_host() -> str:
         from hermes_cli.profiles import get_active_profile_name
         profile = get_active_profile_name()
         if profile and profile not in ("default", "custom"):
-            return f"{HOST}.{profile}"
+            return f"{HOST}_{profile}"
     except Exception:
         pass
     return HOST

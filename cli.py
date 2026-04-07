@@ -5037,13 +5037,13 @@ class HermesCLI:
                     pass
                 print()
                 print("🌐 Browser disconnected from live Chrome")
-                print("   Browser tools reverted to default mode (local headless or Browserbase)")
+                print("   Browser tools reverted to default mode (local headless or cloud provider)")
                 print()
 
                 if hasattr(self, '_pending_input'):
                     self._pending_input.put(
                         "[System note: The user has disconnected the browser tools from their live Chrome. "
-                        "Browser tools are back to default mode (headless local browser or Browserbase cloud).]"
+                        "Browser tools are back to default mode (headless local browser or cloud provider).]"
                     )
             else:
                 print()
@@ -5070,10 +5070,17 @@ class HermesCLI:
                     print("   Status: ✓ reachable")
                 except (OSError, Exception):
                     print("   Status: ⚠ not reachable (Chrome may not be running)")
-            elif os.environ.get("BROWSERBASE_API_KEY"):
-                print("🌐 Browser: Browserbase (cloud)")
             else:
-                print("🌐 Browser: local headless Chromium (agent-browser)")
+                try:
+                    from tools.browser_tool import _get_cloud_provider
+                    provider = _get_cloud_provider()
+                except Exception:
+                    provider = None
+
+                if provider is not None:
+                    print(f"🌐 Browser: {provider.provider_name()} (cloud)")
+                else:
+                    print("🌐 Browser: local headless Chromium (agent-browser)")
             print()
             print("   /browser connect      — connect to your live Chrome")
             print("   /browser disconnect   — revert to default")

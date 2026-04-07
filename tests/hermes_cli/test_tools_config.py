@@ -330,7 +330,7 @@ def test_first_install_nous_auto_configures_managed_defaults(monkeypatch):
 
     assert config["web"]["backend"] == "firecrawl"
     assert config["tts"]["provider"] == "openai"
-    assert config["browser"]["cloud_provider"] == "browserbase"
+    assert config["browser"]["cloud_provider"] == "browser-use"
     assert configured == []
 
 # ── Platform / toolset consistency ────────────────────────────────────────────

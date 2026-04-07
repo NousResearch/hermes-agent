@@ -8134,6 +8134,25 @@ class HermesCLI:
                         # Periodic config watcher — auto-reload MCP on mcp_servers change
                         if not self._agent_running:
                             self._check_config_mcp_changes()
+                            # Check for background process completion notifications
+                            # while the agent is idle (user hasn't typed anything yet).
+                            try:
+                                from tools.process_registry import process_registry
+                                if not process_registry.completion_queue.empty():
+                                    completion = process_registry.completion_queue.get_nowait()
+                                    _exit = completion.get("exit_code", "?")
+                                    _cmd = completion.get("command", "unknown")
+                                    _sid = completion.get("session_id", "unknown")
+                                    _out = completion.get("output", "")
+                                    _synth = (
+                                        f"[SYSTEM: Background process {_sid} completed "
+                                        f"(exit code {_exit}).\n"
+                                        f"Command: {_cmd}\n"
+                                        f"Output:\n{_out}]"
+                                    )
+                                    self._pending_input.put(_synth)
+                            except Exception:
+                                pass
                         continue
                     
                     if not user_input:
@@ -8247,7 +8266,29 @@ class HermesCLI:
                                 except Exception as e:
                                     _cprint(f"{_DIM}Voice auto-restart failed: {e}{_RST}")
                             threading.Thread(target=_restart_recording, daemon=True).start()
-                    
+
+                        # Drain process completion notifications — any background
+                        # process that finished with notify_on_complete while the
+                        # agent was running (or before) gets auto-injected as a
+                        # new user message so the agent can react to it.
+                        try:
+                            from tools.process_registry import process_registry
+                            while not process_registry.completion_queue.empty():
+                                completion = process_registry.completion_queue.get_nowait()
+                                _exit = completion.get("exit_code", "?")
+                                _cmd = completion.get("command", "unknown")
+                                _sid = completion.get("session_id", "unknown")
+                                _out = completion.get("output", "")
+                                _synth = (
+                                    f"[SYSTEM: Background process {_sid} completed "
+                                    f"(exit code {_exit}).\n"
+                                    f"Command: {_cmd}\n"
+                                    f"Output:\n{_out}]"
+                                )
+                                self._pending_input.put(_synth)
+                        except Exception:
+                            pass  # Non-fatal — don't break the main loop
+
                 except Exception as e:
                     print(f"Error: {e}")
         

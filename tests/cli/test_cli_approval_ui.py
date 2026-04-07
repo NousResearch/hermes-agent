@@ -2,9 +2,20 @@ import queue
 import threading
 import time
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
+import cli as cli_module
 from cli import HermesCLI
+
+
+class _FakeBuffer:
+    def __init__(self, text="", cursor_position=None):
+        self.text = text
+        self.cursor_position = len(text) if cursor_position is None else cursor_position
+
+    def reset(self, append_to_history=False):
+        self.text = ""
+        self.cursor_position = 0
 
 
 def _make_cli_stub():
@@ -12,12 +23,44 @@ def _make_cli_stub():
     cli._approval_state = None
     cli._approval_deadline = 0
     cli._approval_lock = threading.Lock()
+    cli._sudo_state = None
+    cli._sudo_deadline = 0
+    cli._modal_input_snapshot = None
     cli._invalidate = MagicMock()
-    cli._app = SimpleNamespace(invalidate=MagicMock())
+    cli._app = SimpleNamespace(invalidate=MagicMock(), current_buffer=_FakeBuffer())
     return cli
 
 
 class TestCliApprovalUi:
+    def test_sudo_prompt_restores_existing_draft_after_response(self):
+        cli = _make_cli_stub()
+        cli._app.current_buffer = _FakeBuffer("draft command", cursor_position=5)
+        result = {}
+
+        def _run_callback():
+            result["value"] = cli._sudo_password_callback()
+
+        with patch.object(cli_module, "_cprint"):
+            thread = threading.Thread(target=_run_callback, daemon=True)
+            thread.start()
+
+            deadline = time.time() + 2
+            while cli._sudo_state is None and time.time() < deadline:
+                time.sleep(0.01)
+
+            assert cli._sudo_state is not None
+            assert cli._app.current_buffer.text == ""
+
+            cli._app.current_buffer.text = "secret"
+            cli._app.current_buffer.cursor_position = len("secret")
+            cli._sudo_state["response_queue"].put("secret")
+
+            thread.join(timeout=2)
+
+        assert result["value"] == "secret"
+        assert cli._app.current_buffer.text == "draft command"
+        assert cli._app.current_buffer.cursor_position == 5
+
     def test_approval_callback_includes_view_for_long_commands(self):
         cli = _make_cli_stub()
         command = "sudo dd if=/tmp/githubcli-keyring.gpg of=/usr/share/keyrings/githubcli-archive-keyring.gpg bs=4M status=progress"

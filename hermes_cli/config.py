@@ -1217,7 +1217,7 @@ OPTIONAL_ENV_VARS = {
         "category": "setting",
     },
     "SUDO_PASSWORD": {
-        "description": "Sudo password for terminal commands requiring root access",
+        "description": "Sudo password for terminal commands requiring root access; set to an explicit empty string to try empty without prompting",
         "prompt": "Sudo password",
         "url": None,
         "password": True,

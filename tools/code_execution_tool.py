@@ -269,14 +269,16 @@ def _call(tool_name, args):
     # Wait for response with adaptive polling
     deadline = time.monotonic() + 300  # 5-minute timeout per tool call
     poll_interval = 0.05  # Start at 50ms
-    while not os.path.exists(res_file):
+    while True:
         if time.monotonic() > deadline:
             raise RuntimeError(f"RPC timeout: no response for {tool_name} after 300s")
-        time.sleep(poll_interval)
-        poll_interval = min(poll_interval * 1.2, 0.25)  # Back off to 250ms
-
-    with open(res_file) as f:
-        raw = f.read()
+        try:
+            with open(res_file) as f:
+                raw = f.read()
+            break
+        except FileNotFoundError:
+            time.sleep(poll_interval)
+            poll_interval = min(poll_interval * 1.2, 0.25)  # Back off to 250ms
 
     # Clean up response file
     try:

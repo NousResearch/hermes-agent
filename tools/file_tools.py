@@ -432,7 +432,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
 
         return json.dumps(result_dict, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return tool_error(str(e))
 
 
 def get_read_files_summary(task_id: str = "default") -> list:
@@ -560,7 +560,7 @@ def write_file_tool(path: str, content: str, task_id: str = "default") -> str:
     """Write content to a file."""
     sensitive_err = _check_sensitive_path(path)
     if sensitive_err:
-        return json.dumps({"error": sensitive_err}, ensure_ascii=False)
+        return tool_error(sensitive_err)
     try:
         stale_warning = _check_file_staleness(path, task_id)
         file_ops = _get_file_ops(task_id)
@@ -577,7 +577,7 @@ def write_file_tool(path: str, content: str, task_id: str = "default") -> str:
             logger.debug("write_file expected denial: %s: %s", type(e).__name__, e)
         else:
             logger.error("write_file error: %s: %s", type(e).__name__, e, exc_info=True)
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return tool_error(str(e))
 
 
 def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
@@ -595,7 +595,7 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
     for _p in _paths_to_check:
         sensitive_err = _check_sensitive_path(_p)
         if sensitive_err:
-            return json.dumps({"error": sensitive_err}, ensure_ascii=False)
+            return tool_error(sensitive_err)
     try:
         # Check staleness for all files this patch will touch.
         stale_warnings = []
@@ -608,16 +608,16 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
         
         if mode == "replace":
             if not path:
-                return json.dumps({"error": "path required"})
+                return tool_error("path required")
             if old_string is None or new_string is None:
-                return json.dumps({"error": "old_string and new_string required"})
+                return tool_error("old_string and new_string required")
             result = file_ops.patch_replace(path, old_string, new_string, replace_all)
         elif mode == "patch":
             if not patch:
-                return json.dumps({"error": "patch content required"})
+                return tool_error("patch content required")
             result = file_ops.patch_v4a(patch)
         else:
-            return json.dumps({"error": f"Unknown mode: {mode}"})
+            return tool_error(f"Unknown mode: {mode}")
         
         result_dict = result.to_dict()
         if stale_warnings:
@@ -634,7 +634,7 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
             result_json += "\n\n[Hint: old_string not found. Use read_file to verify the current content, or search_files to locate the text.]"
         return result_json
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return tool_error(str(e))
 
 
 def search_tool(pattern: str, target: str = "content", path: str = ".",
@@ -702,7 +702,7 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
             result_json += f"\n\n[Hint: Results truncated. Use offset={next_offset} to see more, or narrow with a more specific pattern or file_glob.]"
         return result_json
     except Exception as e:
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        return tool_error(str(e))
 
 
 FILE_TOOLS = [
@@ -716,7 +716,7 @@ FILE_TOOLS = [
 # ---------------------------------------------------------------------------
 # Schemas + Registry
 # ---------------------------------------------------------------------------
-from tools.registry import registry
+from tools.registry import registry, tool_error
 
 
 def _check_file_reqs():

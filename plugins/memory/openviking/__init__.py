@@ -31,6 +31,7 @@ import threading
 from typing import Any, Dict, List, Optional
 
 from agent.memory_provider import MemoryProvider
+from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
 
@@ -461,7 +462,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
 
     def handle_tool_call(self, tool_name: str, args: dict, **kwargs) -> str:
         if not self._client:
-            return json.dumps({"error": "OpenViking server not connected"})
+            return tool_error("OpenViking server not connected")
 
         try:
             if tool_name == "viking_search":
@@ -474,9 +475,9 @@ class OpenVikingMemoryProvider(MemoryProvider):
                 return self._tool_remember(args)
             elif tool_name == "viking_add_resource":
                 return self._tool_add_resource(args)
-            return json.dumps({"error": f"Unknown tool: {tool_name}"})
+            return tool_error(f"Unknown tool: {tool_name}")
         except Exception as e:
-            return json.dumps({"error": str(e)})
+            return tool_error(str(e))
 
     def shutdown(self) -> None:
         # Wait for background threads to finish
@@ -493,7 +494,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
     def _tool_search(self, args: dict) -> str:
         query = args.get("query", "")
         if not query:
-            return json.dumps({"error": "query is required"})
+            return tool_error("query is required")
 
         payload: Dict[str, Any] = {"query": query}
         mode = args.get("mode", "auto")
@@ -530,7 +531,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
     def _tool_read(self, args: dict) -> str:
         uri = args.get("uri", "")
         if not uri:
-            return json.dumps({"error": "uri is required"})
+            return tool_error("uri is required")
 
         level = args.get("level", "overview")
         # Map our level names to OpenViking GET endpoints
@@ -582,7 +583,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
     def _tool_remember(self, args: dict) -> str:
         content = args.get("content", "")
         if not content:
-            return json.dumps({"error": "content is required"})
+            return tool_error("content is required")
 
         # Store as a session message that will be extracted during commit.
         # The category hint helps OpenViking's extraction classify correctly.
@@ -606,7 +607,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
     def _tool_add_resource(self, args: dict) -> str:
         url = args.get("url", "")
         if not url:
-            return json.dumps({"error": "url is required"})
+            return tool_error("url is required")
 
         payload: Dict[str, Any] = {"path": url}
         if args.get("reason"):

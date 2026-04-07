@@ -584,19 +584,19 @@ def skill_manage(
     """
     if action == "create":
         if not content:
-            return json.dumps({"success": False, "error": "content is required for 'create'. Provide the full SKILL.md text (frontmatter + body)."}, ensure_ascii=False)
+            return tool_error("content is required for 'create'. Provide the full SKILL.md text (frontmatter + body).", success=False)
         result = _create_skill(name, content, category)
 
     elif action == "edit":
         if not content:
-            return json.dumps({"success": False, "error": "content is required for 'edit'. Provide the full updated SKILL.md text."}, ensure_ascii=False)
+            return tool_error("content is required for 'edit'. Provide the full updated SKILL.md text.", success=False)
         result = _edit_skill(name, content)
 
     elif action == "patch":
         if not old_string:
-            return json.dumps({"success": False, "error": "old_string is required for 'patch'. Provide the text to find."}, ensure_ascii=False)
+            return tool_error("old_string is required for 'patch'. Provide the text to find.", success=False)
         if new_string is None:
-            return json.dumps({"success": False, "error": "new_string is required for 'patch'. Use empty string to delete matched text."}, ensure_ascii=False)
+            return tool_error("new_string is required for 'patch'. Use empty string to delete matched text.", success=False)
         result = _patch_skill(name, old_string, new_string, file_path, replace_all)
 
     elif action == "delete":
@@ -604,14 +604,14 @@ def skill_manage(
 
     elif action == "write_file":
         if not file_path:
-            return json.dumps({"success": False, "error": "file_path is required for 'write_file'. Example: 'references/api-guide.md'"}, ensure_ascii=False)
+            return tool_error("file_path is required for 'write_file'. Example: 'references/api-guide.md'", success=False)
         if file_content is None:
-            return json.dumps({"success": False, "error": "file_content is required for 'write_file'."}, ensure_ascii=False)
+            return tool_error("file_content is required for 'write_file'.", success=False)
         result = _write_file(name, file_path, file_content)
 
     elif action == "remove_file":
         if not file_path:
-            return json.dumps({"success": False, "error": "file_path is required for 'remove_file'."}, ensure_ascii=False)
+            return tool_error("file_path is required for 'remove_file'.", success=False)
         result = _remove_file(name, file_path)
 
     else:
@@ -722,7 +722,7 @@ SKILL_MANAGE_SCHEMA = {
 
 
 # --- Registry ---
-from tools.registry import registry
+from tools.registry import registry, tool_error
 
 registry.register(
     name="skill_manage",

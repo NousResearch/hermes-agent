@@ -16,6 +16,7 @@ import logging
 from typing import Any, Dict, List
 
 from agent.memory_provider import MemoryProvider
+from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
 
@@ -92,7 +93,7 @@ class BuiltinMemoryProvider(MemoryProvider):
 
     def handle_tool_call(self, tool_name: str, args: Dict[str, Any], **kwargs) -> str:
         """Not used — the memory tool is intercepted in run_agent.py."""
-        return json.dumps({"error": "Built-in memory tool is handled by the agent loop"})
+        return tool_error("Built-in memory tool is handled by the agent loop")
 
     def shutdown(self) -> None:
         """No cleanup needed — files are saved on every write."""

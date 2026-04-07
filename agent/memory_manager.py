@@ -34,6 +34,7 @@ import re
 from typing import Any, Dict, List, Optional
 
 from agent.memory_provider import MemoryProvider
+from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
 
@@ -249,7 +250,7 @@ class MemoryManager:
         """
         provider = self._tool_to_provider.get(tool_name)
         if provider is None:
-            return json.dumps({"error": f"No memory provider handles tool '{tool_name}'"})
+            return tool_error(f"No memory provider handles tool '{tool_name}'")
         try:
             return provider.handle_tool_call(tool_name, args, **kwargs)
         except Exception as e:
@@ -257,7 +258,7 @@ class MemoryManager:
                 "Memory provider '%s' handle_tool_call(%s) failed: %s",
                 provider.name, tool_name, e,
             )
-            return json.dumps({"error": f"Memory tool '{tool_name}' failed: {e}"})
+            return tool_error(f"Memory tool '{tool_name}' failed: {e}")
 
     # -- Lifecycle hooks -----------------------------------------------------
 

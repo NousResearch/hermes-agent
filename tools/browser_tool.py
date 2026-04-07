@@ -617,7 +617,7 @@ BROWSER_TOOL_SCHEMAS = [
     },
     {
         "name": "browser_close",
-        "description": "Close the browser session and release resources. Call this when done with browser tasks to free up Browserbase session quota.",
+        "description": "Close the browser session and release resources. Call this when done with browser tasks to free local or cloud browser resources.",
         "parameters": {
             "type": "object",
             "properties": {},

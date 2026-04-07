@@ -3,10 +3,10 @@
 Browser Tool Module
 
 This module provides browser automation tools using agent-browser CLI.  It
-supports two backends — **Browserbase** (cloud) and **local Chromium** — with
-identical agent-facing behaviour.  The backend is auto-detected: if
-``BROWSERBASE_API_KEY`` is set the cloud service is used; otherwise a local
-headless Chromium instance is launched automatically.
+supports multiple backends — **Browser Use** (cloud, default for Nous
+subscribers), **Browserbase** (cloud, direct credentials), and **local
+Chromium** — with identical agent-facing behaviour.  The backend is
+auto-detected from config and available credentials.
 
 The tool uses agent-browser's accessibility tree (ariaSnapshot) for text-based
 page representation, making it ideal for LLM agents without vision capabilities.
@@ -17,8 +17,7 @@ Features:
   ``agent-browser install`` (downloads Chromium) or
   ``agent-browser install --with-deps`` (also installs system libraries for
   Debian/Ubuntu/Docker).
-- **Cloud mode**: Browserbase cloud execution with stealth features, proxies,
-  and CAPTCHA solving.  Activated when BROWSERBASE_API_KEY is set.
+- **Cloud mode**: Browserbase or Browser Use cloud execution when configured.
 - Session isolation per task ID
 - Text-based page snapshots using accessibility tree
 - Element interaction via ref selectors (@e1, @e2, etc.)
@@ -26,8 +25,9 @@ Features:
 - Automatic cleanup of browser sessions
 
 Environment Variables:
-- BROWSERBASE_API_KEY: API key for Browserbase (enables cloud mode)
-- BROWSERBASE_PROJECT_ID: Project ID for Browserbase (required for cloud mode)
+- BROWSERBASE_API_KEY: API key for direct Browserbase cloud mode
+- BROWSERBASE_PROJECT_ID: Project ID for direct Browserbase cloud mode
+- BROWSER_USE_API_KEY: API key for direct Browser Use cloud mode
 - BROWSERBASE_PROXIES: Enable/disable residential proxies (default: "true")
 - BROWSERBASE_ADVANCED_STEALTH: Enable advanced stealth mode with custom Chromium,
   requires Scale Plan (default: "false")
@@ -280,21 +280,17 @@ def _get_cloud_provider() -> Optional[CloudBrowserProvider]:
         logger.debug("Could not read cloud_provider from config: %s", e)
 
     if _cached_cloud_provider is None:
-        fallback_provider = BrowserbaseProvider()
+        # Prefer Browser Use (managed Nous gateway or direct API key),
+        # fall back to Browserbase (direct credentials only).
+        fallback_provider = BrowserUseProvider()
         if fallback_provider.is_configured():
             _cached_cloud_provider = fallback_provider
+        else:
+            fallback_provider = BrowserbaseProvider()
+            if fallback_provider.is_configured():
+                _cached_cloud_provider = fallback_provider
 
     return _cached_cloud_provider
-
-
-def _get_browserbase_config_or_none() -> Optional[Dict[str, Any]]:
-    """Return Browserbase direct or managed config, or None when unavailable."""
-    return BrowserbaseProvider()._get_config_or_none()
-
-
-def _get_browserbase_config() -> Dict[str, Any]:
-    """Return Browserbase config or raise when neither direct nor managed mode is available."""
-    return BrowserbaseProvider()._get_config()
 
 
 def _is_local_mode() -> bool:
@@ -615,7 +611,15 @@ BROWSER_TOOL_SCHEMAS = [
             "required": ["key"]
         }
     },
-
+    {
+        "name": "browser_close",
+        "description": "Close the browser session and release resources. Call this when done with browser tasks to free up cloud browser session quota.",
+        "parameters": {
+            "type": "object",
+            "properties": {},
+            "required": []
+        }
+    },
     {
         "name": "browser_get_images",
         "description": "Get a list of all images on the current page with their URLs and alt text. Useful for finding images to analyze with the vision tool. Requires browser_navigate to be called first.",
@@ -736,6 +740,11 @@ def _get_session_info(task_id: Optional[str] = None) -> Dict[str, str]:
             session_info = _create_local_session(task_id)
         else:
             session_info = provider.create_session(task_id)
+            if session_info.get("cdp_url"):
+                # Some cloud providers (including Browser-Use v3) return an HTTP
+                # CDP discovery URL instead of a raw websocket endpoint.
+                session_info = dict(session_info)
+                session_info["cdp_url"] = _resolve_cdp_override(str(session_info["cdp_url"]))
     
     with _cleanup_lock:
         # Double-check: another thread may have created a session while we
@@ -1947,7 +1956,7 @@ def cleanup_browser(task_id: Optional[str] = None) -> None:
             camofox_close(task_id)
         except Exception as e:
             logger.debug("Camofox cleanup for task %s: %s", task_id, e)
-    
+
     logger.debug("cleanup_browser called for task_id: %s", task_id)
     logger.debug("Active sessions: %s", list(_active_sessions.keys()))
     

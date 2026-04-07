@@ -280,21 +280,21 @@ TOOL_CATEGORIES = {
         "icon": "🌐",
         "providers": [
             {
-                "name": "Nous Subscription (Browserbase cloud)",
-                "tag": "Managed Browserbase billed to your subscription",
+                "name": "Nous Subscription (Browser Use cloud)",
+                "tag": "Managed Browser Use billed to your subscription",
                 "env_vars": [],
-                "browser_provider": "browserbase",
+                "browser_provider": "browser-use",
                 "requires_nous_auth": True,
                 "managed_nous_feature": "browser",
-                "override_env_vars": ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID"],
-                "post_setup": "browserbase",
+                "override_env_vars": ["BROWSER_USE_API_KEY"],
+                "post_setup": "agent_browser",
             },
             {
                 "name": "Local Browser",
                 "tag": "Free headless Chromium (no API key needed)",
                 "env_vars": [],
                 "browser_provider": "local",
-                "post_setup": "browserbase",  # Same npm install for agent-browser
+                "post_setup": "agent_browser",
             },
             {
                 "name": "Browserbase",
@@ -304,7 +304,7 @@ TOOL_CATEGORIES = {
                     {"key": "BROWSERBASE_PROJECT_ID", "prompt": "Browserbase project ID"},
                 ],
                 "browser_provider": "browserbase",
-                "post_setup": "browserbase",
+                "post_setup": "agent_browser",
             },
             {
                 "name": "Browser Use",
@@ -313,7 +313,7 @@ TOOL_CATEGORIES = {
                     {"key": "BROWSER_USE_API_KEY", "prompt": "Browser Use API key", "url": "https://browser-use.com"},
                 ],
                 "browser_provider": "browser-use",
-                "post_setup": "browserbase",
+                "post_setup": "agent_browser",
             },
             {
                 "name": "Firecrawl",
@@ -322,7 +322,7 @@ TOOL_CATEGORIES = {
                     {"key": "FIRECRAWL_API_KEY", "prompt": "Firecrawl API key", "url": "https://firecrawl.dev"},
                 ],
                 "browser_provider": "firecrawl",
-                "post_setup": "browserbase",
+                "post_setup": "agent_browser",
             },
             {
                 "name": "Camofox",
@@ -381,7 +381,7 @@ TOOLSET_ENV_REQUIREMENTS = {
 def _run_post_setup(post_setup_key: str):
     """Run post-setup hooks for tools that need extra installation steps."""
     import shutil
-    if post_setup_key == "browserbase":
+    if post_setup_key in ("agent_browser", "browserbase"):
         node_modules = PROJECT_ROOT / "node_modules" / "agent-browser"
         if not node_modules.exists() and shutil.which("npm"):
             _print_info("    Installing Node.js dependencies for browser tools...")

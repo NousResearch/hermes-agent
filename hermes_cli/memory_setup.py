@@ -171,16 +171,27 @@ def _install_dependencies(provider_name: str) -> None:
     print(f"\n  Installing dependencies: {', '.join(missing)}")
 
     import shutil
+    import subprocess
+    import sys
+
     uv_path = shutil.which("uv")
-    if not uv_path:
-        print(f"  ⚠ uv not found — cannot install dependencies")
-        print(f"  Install uv: curl -LsSf https://astral.sh/uv/install.sh | sh")
-        print(f"  Then re-run: hermes memory setup")
-        return
+    if uv_path:
+        install_cmd = [uv_path, "pip", "install", "--python", sys.executable, "--quiet"] + missing
+        manual_cmd = f"uv pip install --python {sys.executable} {' '.join(missing)}"
+    else:
+        pip_cmd = shutil.which("pip3") or shutil.which("pip")
+        if not pip_cmd:
+            print(f"  ⚠ uv not found — cannot install dependencies")
+            print(f"  Install uv: curl -LsSf https://astral.sh/uv/install.sh | sh")
+            print(f"  Then re-run: hermes memory setup")
+            return
+        print(f"  ⚠ uv not found. Falling back to standard pip...")
+        install_cmd = [sys.executable, "-m", "pip", "install", "--quiet"] + missing
+        manual_cmd = f"{sys.executable} -m pip install {' '.join(missing)}"
 
     try:
         subprocess.run(
-            [uv_path, "pip", "install", "--python", sys.executable, "--quiet"] + missing,
+            install_cmd,
             check=True, timeout=120,
             capture_output=True,
         )
@@ -190,10 +201,10 @@ def _install_dependencies(provider_name: str) -> None:
         stderr = (e.stderr or b"").decode()[:200]
         if stderr:
             print(f"    {stderr}")
-        print(f"  Run manually: uv pip install --python {sys.executable} {' '.join(missing)}")
+        print(f"  Run manually: {manual_cmd}")
     except Exception as e:
         print(f"  ⚠ Install failed: {e}")
-        print(f"  Run manually: uv pip install --python {sys.executable} {' '.join(missing)}")
+        print(f"  Run manually: {manual_cmd}")
 
     # Also show external dependencies (non-pip) if any
     ext_deps = meta.get("external_dependencies", [])

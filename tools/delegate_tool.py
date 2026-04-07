@@ -520,9 +520,8 @@ def delegate_task(
     """
     Spawn one or more child agents to handle delegated tasks.
 
-    Supports two modes:
-      - Single: provide goal (+ optional context, toolsets)
-      - Batch:  provide tasks array [{goal, context, toolsets}, ...]
+    Primary interface: provide tasks=[{goal, context, toolsets}, ...]
+    Legacy interface: provide goal (+ optional context, toolsets) — normalized to tasks internally.
 
     Returns JSON with results array, one entry per task.
     """
@@ -842,89 +841,70 @@ def _load_config() -> dict:
 DELEGATE_TASK_SCHEMA = {
     "name": "delegate_task",
     "description": (
-        "Spawn one or more subagents to work on tasks in isolated contexts. "
+        "Spawn subagents to work on tasks in isolated contexts. "
         "Each subagent gets its own conversation, terminal session, and toolset. "
         "Only the final summary is returned -- intermediate tool results "
         "never enter your context window.\n\n"
-        "TWO MODES (one of 'goal' or 'tasks' is required):\n"
-        "1. Single task: provide 'goal' (+ optional context, toolsets)\n"
-        "2. Batch (parallel): provide 'tasks' array with up to 3 items. "
-        "All run concurrently and results are returned together.\n\n"
-        "WHEN TO USE delegate_task:\n"
-        "- Reasoning-heavy subtasks (debugging, code review, research synthesis)\n"
-        "- Tasks that would flood your context with intermediate data\n"
-        "- Parallel independent workstreams (research A and B simultaneously)\n\n"
-        "WHEN NOT TO USE (use these instead):\n"
-        "- Mechanical multi-step work with no reasoning needed -> use execute_code\n"
-        "- Single tool call -> just call the tool directly\n"
-        "- Tasks needing user interaction -> subagents cannot use clarify\n\n"
+        "Provide a 'tasks' array with 1-3 items. "
+        "Each task needs a 'goal' and optional 'context' and 'toolsets'. "
+        "Multiple tasks run in parallel.\n\n"
+        "USE FOR: reasoning-heavy subtasks, context-heavy work, parallel independent workstreams.\n"
+        "DO NOT USE FOR: single tool calls (call directly), mechanical multi-step work (use execute_code), "
+        "tasks needing user interaction (subagents cannot use clarify).\n\n"
         "IMPORTANT:\n"
         "- Subagents have NO memory of your conversation. Pass all relevant "
-        "info (file paths, error messages, constraints) via the 'context' field.\n"
-        "- Subagents CANNOT call: delegate_task, clarify, memory, send_message, "
-        "execute_code.\n"
-        "- Each subagent gets its own terminal session (separate working directory and state).\n"
+        "info via 'context'.\n"
+        "- Subagents CANNOT call: delegate_task, clarify, memory, send_message, execute_code.\n"
         "- Results are always returned as an array, one entry per task."
     ),
     "parameters": {
         "type": "object",
         "properties": {
-            "goal": {
-                "type": "string",
-                "description": (
-                    "What the subagent should accomplish. Be specific and "
-                    "self-contained -- the subagent knows nothing about your "
-                    "conversation history."
-                ),
-            },
-            "context": {
-                "type": "string",
-                "description": (
-                    "Background information the subagent needs: file paths, "
-                    "error messages, project structure, constraints. The more "
-                    "specific you are, the better the subagent performs."
-                ),
-            },
-            "toolsets": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": (
-                    "Toolsets to enable for this subagent. "
-                    "Default: inherits your enabled toolsets. "
-                    "Common patterns: ['terminal', 'file'] for code work, "
-                    "['web'] for research, ['terminal', 'file', 'web'] for "
-                    "full-stack tasks."
-                ),
-            },
             "tasks": {
                 "type": "array",
                 "items": {
                     "type": "object",
                     "properties": {
-                        "goal": {"type": "string", "description": "Task goal"},
-                        "context": {"type": "string", "description": "Task-specific context"},
+                        "goal": {
+                            "type": "string",
+                            "description": (
+                                "What the subagent should accomplish. Be specific and "
+                                "self-contained -- the subagent knows nothing about your "
+                                "conversation history."
+                            ),
+                        },
+                        "context": {
+                            "type": "string",
+                            "description": (
+                                "Background information the subagent needs: file paths, "
+                                "error messages, project structure, constraints."
+                            ),
+                        },
                         "toolsets": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "description": "Toolsets for this specific task. Use 'web' for network access, 'terminal' for shell.",
+                            "description": (
+                                "Toolsets for this task. Default: inherits parent toolsets. "
+                                "Use 'web' for network access, 'terminal' for shell."
+                            ),
                         },
                         "acp_command": {
                             "type": "string",
-                            "description": "Per-task ACP command override (e.g. 'claude'). Overrides the top-level acp_command for this task only.",
+                            "description": "ACP command override (e.g. 'claude', 'copilot').",
                         },
                         "acp_args": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "description": "Per-task ACP args override.",
+                            "description": "ACP command arguments override.",
                         },
                     },
                     "required": ["goal"],
                 },
+                "minItems": 1,
                 "maxItems": 3,
                 "description": (
-                    "Batch mode: up to 3 tasks to run in parallel. Each gets "
-                    "its own subagent with isolated context and terminal session. "
-                    "When provided, top-level goal/context/toolsets are ignored."
+                    "1-3 tasks to delegate. Each gets its own subagent with "
+                    "isolated context and terminal session. Multiple tasks run in parallel."
                 ),
             },
             "max_iterations": {
@@ -934,25 +914,8 @@ DELEGATE_TASK_SCHEMA = {
                     "Only set lower for simple tasks."
                 ),
             },
-            "acp_command": {
-                "type": "string",
-                "description": (
-                    "Override ACP command for child agents (e.g. 'claude', 'copilot'). "
-                    "When set, children use ACP subprocess transport instead of inheriting "
-                    "the parent's transport. Enables spawning Claude Code (claude --acp --stdio) "
-                    "or other ACP-capable agents from any parent, including Discord/Telegram/CLI."
-                ),
-            },
-            "acp_args": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": (
-                    "Arguments for the ACP command (default: ['--acp', '--stdio']). "
-                    "Only used when acp_command is set. Example: ['--acp', '--stdio', '--model', 'claude-opus-4-6']"
-                ),
-            },
         },
-        "required": [],
+        "required": ["tasks"],
     },
 }
 
@@ -965,13 +928,8 @@ registry.register(
     toolset="delegation",
     schema=DELEGATE_TASK_SCHEMA,
     handler=lambda args, **kw: delegate_task(
-        goal=args.get("goal"),
-        context=args.get("context"),
-        toolsets=args.get("toolsets"),
         tasks=args.get("tasks"),
         max_iterations=args.get("max_iterations"),
-        acp_command=args.get("acp_command"),
-        acp_args=args.get("acp_args"),
         parent_agent=kw.get("parent_agent")),
     check_fn=check_delegate_requirements,
     emoji="🔀",

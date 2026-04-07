@@ -61,12 +61,20 @@ class TestDelegateRequirements(unittest.TestCase):
     def test_schema_valid(self):
         self.assertEqual(DELEGATE_TASK_SCHEMA["name"], "delegate_task")
         props = DELEGATE_TASK_SCHEMA["parameters"]["properties"]
-        self.assertIn("goal", props)
         self.assertIn("tasks", props)
-        self.assertIn("context", props)
-        self.assertIn("toolsets", props)
         self.assertIn("max_iterations", props)
         self.assertEqual(props["tasks"]["maxItems"], 3)
+        self.assertEqual(props["tasks"]["minItems"], 1)
+        # Top-level goal/context/toolsets removed from schema (unified into tasks)
+        self.assertNotIn("goal", props)
+        self.assertNotIn("context", props)
+        self.assertNotIn("toolsets", props)
+        # Per-task items have goal, context, toolsets
+        task_props = props["tasks"]["items"]["properties"]
+        self.assertIn("goal", task_props)
+        self.assertIn("context", task_props)
+        self.assertIn("toolsets", task_props)
+        self.assertEqual(DELEGATE_TASK_SCHEMA["parameters"]["required"], ["tasks"])
 
 
 class TestChildSystemPrompt(unittest.TestCase):

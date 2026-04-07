@@ -277,6 +277,188 @@ class TestDeliverResultWrapping:
         # Media files should be forwarded separately
         assert kwargs["media_files"] == [("/tmp/test-voice.ogg", False)]
 
+    def test_live_adapter_sends_media_as_attachments(self):
+        """When a live adapter is available, MEDIA files should be sent as native
+        platform attachments (e.g., Discord voice, Telegram audio) rather than
+        as literal 'MEDIA:/path' text."""
+        from gateway.config import Platform
+        from concurrent.futures import Future
+
+        adapter = AsyncMock()
+        adapter.send.return_value = MagicMock(success=True)
+        adapter.send_voice.return_value = MagicMock(success=True)
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.DISCORD: pconfig}
+
+        loop = MagicMock()
+        loop.is_running.return_value = True
+
+        # run_coroutine_threadsafe returns concurrent.futures.Future (has timeout kwarg)
+        def fake_run_coro(coro, _loop):
+            future = Future()
+            future.set_result(MagicMock(success=True))
+            coro.close()
+            return future
+
+        job = {
+            "id": "tts-job",
+            "deliver": "origin",
+            "origin": {"platform": "discord", "chat_id": "9876"},
+        }
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro):
+            _deliver_result(
+                job,
+                "Here is TTS\nMEDIA:/tmp/cron-voice.mp3",
+                adapters={Platform.DISCORD: adapter},
+                loop=loop,
+            )
+
+        # Text should be sent without the MEDIA tag
+        adapter.send.assert_called_once()
+        text_sent = adapter.send.call_args[0][1]
+        assert "MEDIA:" not in text_sent
+        assert "Here is TTS" in text_sent
+
+        # Audio file should be sent as a voice attachment
+        adapter.send_voice.assert_called_once()
+        voice_call = adapter.send_voice.call_args
+        assert voice_call[1]["audio_path"] == "/tmp/cron-voice.mp3"
+
+    def test_live_adapter_routes_image_to_send_image_file(self):
+        """Image MEDIA files should be routed to send_image_file, not send_voice."""
+        from gateway.config import Platform
+        from concurrent.futures import Future
+
+        adapter = AsyncMock()
+        adapter.send.return_value = MagicMock(success=True)
+        adapter.send_image_file.return_value = MagicMock(success=True)
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.DISCORD: pconfig}
+
+        loop = MagicMock()
+        loop.is_running.return_value = True
+
+        def fake_run_coro(coro, _loop):
+            future = Future()
+            future.set_result(MagicMock(success=True))
+            coro.close()
+            return future
+
+        job = {
+            "id": "img-job",
+            "deliver": "origin",
+            "origin": {"platform": "discord", "chat_id": "1234"},
+        }
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro):
+            _deliver_result(
+                job,
+                "Chart attached\nMEDIA:/tmp/chart.png",
+                adapters={Platform.DISCORD: adapter},
+                loop=loop,
+            )
+
+        adapter.send_image_file.assert_called_once()
+        assert adapter.send_image_file.call_args[1]["image_path"] == "/tmp/chart.png"
+        adapter.send_voice.assert_not_called()
+
+    def test_live_adapter_media_only_no_text(self):
+        """When content is ONLY a MEDIA tag with no text, media should still be sent."""
+        from gateway.config import Platform
+        from concurrent.futures import Future
+
+        adapter = AsyncMock()
+        adapter.send_voice.return_value = MagicMock(success=True)
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        loop = MagicMock()
+        loop.is_running.return_value = True
+
+        def fake_run_coro(coro, _loop):
+            future = Future()
+            future.set_result(MagicMock(success=True))
+            coro.close()
+            return future
+
+        job = {
+            "id": "voice-only",
+            "deliver": "origin",
+            "origin": {"platform": "telegram", "chat_id": "999"},
+        }
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro):
+            _deliver_result(
+                job,
+                "MEDIA:/tmp/voice.ogg",
+                adapters={Platform.TELEGRAM: adapter},
+                loop=loop,
+            )
+
+        # Text send should NOT be called (no text after stripping MEDIA tag)
+        adapter.send.assert_not_called()
+        # Audio should still be delivered
+        adapter.send_voice.assert_called_once()
+
+    def test_live_adapter_sends_cleaned_text_not_raw(self):
+        """The live adapter path must send cleaned text (MEDIA tags stripped),
+        not the raw delivery_content with embedded MEDIA: tags."""
+        from gateway.config import Platform
+        from concurrent.futures import Future
+
+        adapter = AsyncMock()
+        adapter.send.return_value = MagicMock(success=True)
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        loop = MagicMock()
+        loop.is_running.return_value = True
+
+        def fake_run_coro(coro, _loop):
+            future = Future()
+            future.set_result(MagicMock(success=True))
+            coro.close()
+            return future
+
+        job = {
+            "id": "img-job",
+            "deliver": "origin",
+            "origin": {"platform": "telegram", "chat_id": "555"},
+        }
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro):
+            _deliver_result(
+                job,
+                "Report\nMEDIA:/tmp/chart.png",
+                adapters={Platform.TELEGRAM: adapter},
+                loop=loop,
+            )
+
+        text_sent = adapter.send.call_args[0][1]
+        assert "MEDIA:" not in text_sent
+        assert "Report" in text_sent
+
     def test_no_mirror_to_session_call(self):
         """Cron deliveries should NOT mirror into the gateway session."""
         from gateway.config import Platform

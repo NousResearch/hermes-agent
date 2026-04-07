@@ -540,6 +540,14 @@ try:
 except Exception:
     pass
 
+# Rich-based response highlighting (syntax highlight fenced code blocks)
+try:
+    from agent.rich_output import StreamingCodeBlockHighlighter as _CodeBlockHL
+    from agent.rich_output import format_response as _format_response
+    _RICH_RESPONSE = True
+except ImportError:
+    _RICH_RESPONSE = False
+
 # Neuter AsyncHttpxClientWrapper.__del__ before any AsyncOpenAI clients are
 # created.  The SDK's __del__ schedules aclose() on asyncio.get_running_loop()
 # which, during CLI idle time, finds prompt_toolkit's event loop and tries to
@@ -900,7 +908,20 @@ def _rich_text_from_ansi(text: str) -> _RichText:
     Using Rich Text.from_ansi preserves literal bracketed text like
     ``[not markup]`` while still interpreting real ANSI color codes.
     """
-    return _RichText.from_ansi(text or "")
+    return _RichText.from_ansi(_normalize_ansi_c1(text or ""))
+
+
+def _normalize_ansi_c1(text: str) -> str:
+    """Normalize 8-bit C1 CSI controls to ESC-prefixed ANSI sequences.
+
+    Some tools emit CSI as the single-byte C1 control ``\x9b`` instead of the
+    more common ``\x1b[`` form. prompt_toolkit / Rich do not reliably treat that
+    form as ANSI in every environment, which can leak visible ``?[...m`` text
+    into the CLI. Converting it up front keeps the rendering path stable.
+    """
+    if "\x9b" not in text:
+        return text
+    return text.replace("\x9b", "\x1b[")
 
 
 def _cprint(text: str):
@@ -910,7 +931,16 @@ def _cprint(text: str):
     StdoutProxy.  Routing through print_formatted_text(ANSI(...)) lets
     prompt_toolkit parse the escapes and render real colors.
     """
-    _pt_print(_PT_ANSI(text))
+    _pt_print(_PT_ANSI(_normalize_ansi_c1(text)))
+
+
+def _dim_lines(text: str) -> list[str]:
+    """Return lines wrapped in DIM/RESET individually.
+
+    Per-line wrapping keeps reasoning blocks consistently dim even when a
+    line contains its own reset sequence.
+    """
+    return [f"{_DIM}{line}{_RST}" for line in text.splitlines()]
 
 
 # ---------------------------------------------------------------------------
@@ -1250,12 +1280,18 @@ class HermesCLI:
         # Inline diff previews for write actions (display.inline_diffs in config.yaml)
         self._inline_diffs_enabled = CLI_CONFIG["display"].get("inline_diffs", True)
 
+        # Syntax-highlighted code preview for execute_code (display.code_highlight in config.yaml)
+        self._code_highlight_enabled = CLI_CONFIG["display"].get("code_highlight", True)
+        from agent.display import set_code_highlight_active
+        set_code_highlight_active(self._code_highlight_enabled)
+
         # Streaming display state
         self._stream_buf = ""        # Partial line buffer for line-buffered rendering
         self._stream_started = False  # True once first delta arrives
         self._stream_box_opened = False  # True once the response box header is printed
         self._reasoning_stream_started = False  # True once live reasoning starts streaming
         self._reasoning_preview_buf = ""  # Coalesce tiny reasoning chunks for [thinking] output
+        self._stream_code_hl = _CodeBlockHL() if _RICH_RESPONSE else None
         self._pending_edit_snapshots = {}
         
         # Configuration - priority: CLI args > env vars > config file
@@ -1903,9 +1939,9 @@ class HermesCLI:
         # reasoning is visible in real-time even without newlines.
         while "\n" in self._reasoning_buf:
             line, self._reasoning_buf = self._reasoning_buf.split("\n", 1)
-            _cprint(f"{_DIM}{line}{_RST}")
+            _cprint(_dim_lines(line)[0])
         if len(self._reasoning_buf) > 80:
-            _cprint(f"{_DIM}{self._reasoning_buf}{_RST}")
+            _cprint(_dim_lines(self._reasoning_buf)[0])
             self._reasoning_buf = ""
 
     def _close_reasoning_box(self) -> None:
@@ -1914,7 +1950,7 @@ class HermesCLI:
             # Flush remaining reasoning buffer
             buf = getattr(self, "_reasoning_buf", "")
             if buf:
-                _cprint(f"{_DIM}{buf}{_RST}")
+                _cprint(_dim_lines(buf)[0])
                 self._reasoning_buf = ""
             w = shutil.get_terminal_size().columns
             _cprint(f"{_DIM}└{'─' * (w - 2)}┘{_RST}")
@@ -2059,7 +2095,22 @@ class HermesCLI:
         _tc = getattr(self, "_stream_text_ansi", "")
         while "\n" in self._stream_buf:
             line, self._stream_buf = self._stream_buf.split("\n", 1)
-            _cprint(f"{_tc}{line}{_RST}" if _tc else line)
+            if _RICH_RESPONSE:
+                out = self._stream_code_hl.process_line(line)
+                if out is None:
+                    continue  # buffering a code block
+                if out is line:
+                    # Plain text — preserve response text colour
+                    _cprint(f"{_tc}{out}{_RST}" if _tc else out)
+                elif "\n" in out:
+                    # Multi-line highlighted block — has its own ANSI colours
+                    for hl_line in out.splitlines():
+                        _cprint(hl_line)
+                else:
+                    # Single-line highlighted block
+                    _cprint(out)
+            else:
+                _cprint(f"{_tc}{line}{_RST}" if _tc else line)
 
     def _flush_stream(self) -> None:
         """Emit any remaining partial line from the stream buffer and close the box."""
@@ -2068,7 +2119,20 @@ class HermesCLI:
 
         if self._stream_buf:
             _tc = getattr(self, "_stream_text_ansi", "")
-            _cprint(f"{_tc}{self._stream_buf}{_RST}" if _tc else self._stream_buf)
+            if _RICH_RESPONSE:
+                buf = self._stream_buf
+                out = self._stream_code_hl.process_line(buf)
+                if out is not None:
+                    if out is buf:
+                        _cprint(f"{_tc}{out}{_RST}" if _tc else out)
+                    else:
+                        _cprint(out)
+                # Flush any open code block (unclosed fence at end of response)
+                tail = self._stream_code_hl.flush()
+                if tail:
+                    _cprint(tail)
+            else:
+                _cprint(f"{_tc}{self._stream_buf}{_RST}" if _tc else self._stream_buf)
             self._stream_buf = ""
 
         # Close the response box
@@ -2088,6 +2152,8 @@ class HermesCLI:
         self._reasoning_box_opened = False
         self._reasoning_buf = ""
         self._reasoning_preview_buf = ""
+        if _RICH_RESPONSE:
+            self._stream_code_hl.reset()
 
     def _slow_command_status(self, command: str) -> str:
         """Return a user-facing status message for slower slash commands."""
@@ -2149,7 +2215,7 @@ class HermesCLI:
             )
         except Exception as exc:
             message = format_runtime_provider_error(exc)
-            self.console.print(f"[bold red]{message}[/]")
+            self._print_cli_markup(f"[bold red]{message}[/]")
             return False
 
         api_key = runtime.get("api_key")
@@ -2209,6 +2275,13 @@ class HermesCLI:
             self._active_agent_route_signature = None
 
         return True
+
+    def _print_cli_markup(self, markup: str) -> None:
+        """Render Rich markup safely inside the interactive prompt_toolkit UI."""
+        if self._app:
+            ChatConsole().print(markup)
+            return
+        self.console.print(markup)
 
     def _resolve_turn_agent_config(self, user_message: str) -> dict:
         """Resolve model/runtime overrides for a single user turn."""
@@ -5141,6 +5214,17 @@ class HermesCLI:
         }
         _cprint(labels.get(self.tool_progress_mode, ""))
 
+    def _toggle_code_highlight(self):
+        """Toggle syntax-highlighted code preview for execute_code."""
+        self._code_highlight_enabled = not self._code_highlight_enabled
+        from agent.display import set_code_highlight_active
+        set_code_highlight_active(self._code_highlight_enabled)
+        from hermes_cli.colors import Colors as _Colors
+        if self._code_highlight_enabled:
+            _cprint(f"{_Colors.GREEN}Code highlight: ON{_Colors.RESET} — execute_code will show syntax-highlighted Python.")
+        else:
+            _cprint(f"{_Colors.DIM}Code highlight: OFF{_Colors.RESET} — execute_code preview disabled.")
+
     def _toggle_yolo(self):
         """Toggle YOLO mode — skip all dangerous command approval prompts."""
         import os
@@ -5581,8 +5665,16 @@ class HermesCLI:
             logger.debug("Edit snapshot capture failed for %s", function_name, exc_info=True)
 
     def _on_tool_complete(self, tool_call_id: str, function_name: str, function_args: dict, function_result: str):
-        """Render file edits with inline diff after write-capable tools complete."""
+        """Render file edits with inline diff / code preview after tools complete.
+
+        Both features are suppressed when tool_progress_mode is "off" — that
+        mode promises "silent, just the final response".
+        """
         snapshot = self._pending_edit_snapshots.pop(tool_call_id, None)
+
+        if self.tool_progress_mode == "off":
+            return
+
         try:
             from agent.display import render_edit_diff_with_delta
 
@@ -5595,6 +5687,24 @@ class HermesCLI:
             )
         except Exception:
             logger.debug("Edit diff preview failed for %s", function_name, exc_info=True)
+
+        if self._code_highlight_enabled:
+            try:
+                from agent.display import (
+                    _result_succeeded,
+                    render_execute_code_preview,
+                    render_read_file_preview,
+                    render_terminal_preview,
+                )
+                if function_name == "execute_code":
+                    if _result_succeeded(function_result):
+                        render_execute_code_preview(function_args.get("code", ""), print_fn=_cprint)
+                elif function_name == "read_file":
+                    render_read_file_preview(function_args.get("path", ""), function_result, print_fn=_cprint)
+                elif function_name == "terminal":
+                    render_terminal_preview(function_args.get("command", ""), function_result, print_fn=_cprint)
+            except Exception:
+                logger.debug("%s highlight failed", function_name, exc_info=True)
 
     # ====================================================================
     # Voice mode methods
@@ -6609,10 +6719,11 @@ class HermesCLI:
                     lines = reasoning.strip().splitlines()
                     if len(lines) > 10:
                         display_reasoning = "\n".join(lines[:10])
-                        display_reasoning += f"\n{_DIM}  ... ({len(lines) - 10} more lines){_RST}"
+                        display_reasoning += f"\n  ... ({len(lines) - 10} more lines)"
                     else:
                         display_reasoning = reasoning.strip()
-                    _cprint(f"\n{r_top}\n{_DIM}{display_reasoning}{_RST}\n{r_bot}")
+                    rendered_reasoning = "\n".join(_dim_lines(display_reasoning))
+                    _cprint(f"\n{r_top}\n{rendered_reasoning}\n{r_bot}")
 
             if response and not response_previewed:
                 # Use skin engine for label/color with fallback
@@ -6639,8 +6750,11 @@ class HermesCLI:
                     pass
                 else:
                     _chat_console = ChatConsole()
+                    _rendered_response = (
+                        _format_response(response) if _RICH_RESPONSE else response
+                    )
                     _chat_console.print(Panel(
-                        _rich_text_from_ansi(response),
+                        _rich_text_from_ansi(_rendered_response),
                         title=f"[{_resp_color} bold]{label}[/]",
                         title_align="left",
                         border_style=_resp_color,

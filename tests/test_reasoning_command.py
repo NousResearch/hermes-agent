@@ -259,6 +259,26 @@ class TestReasoningCollapse(unittest.TestCase):
         self.assertIn("7 more lines", preview_lines[-1])
 
 
+class TestReasoningDimRendering(unittest.TestCase):
+    def test_dim_lines_wraps_each_line_independently(self):
+        from cli import _DIM, _RST, _dim_lines
+
+        rendered = _dim_lines("alpha\nbeta")
+
+        self.assertEqual(rendered, [f"{_DIM}alpha{_RST}", f"{_DIM}beta{_RST}"])
+
+    def test_dim_lines_handles_truncation_suffix_without_outer_wrapper(self):
+        from cli import _DIM, _RST, _dim_lines
+
+        display_reasoning = "Line 1\n  ... (5 more lines)"
+        rendered = _dim_lines(display_reasoning)
+
+        self.assertEqual(
+            rendered,
+            [f"{_DIM}Line 1{_RST}", f"{_DIM}  ... (5 more lines){_RST}"],
+        )
+
+
 # ---------------------------------------------------------------------------
 # Reasoning callback
 # ---------------------------------------------------------------------------
@@ -723,6 +743,7 @@ class TestReasoningShownThisTurnFlag(unittest.TestCase):
         cli._stream_prefilt = ""
         cli._in_reasoning_block = False
         cli._reasoning_preview_buf = ""
+        cli._stream_code_hl = SimpleNamespace(reset=lambda: None)
         return cli
 
     @patch("cli._cprint")

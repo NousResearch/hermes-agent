@@ -5435,6 +5435,13 @@ class AIAgent:
         if _is_nous:
             extra_body["tags"] = ["product=hermes-agent"]
 
+        # Finetune adapter routing: if a LoRA adapter was selected by the
+        # finetune routing hook, inject it for local llama.cpp providers.
+        # The env var is set by the routing hook and cleared after use.
+        _ft_adapter = os.environ.pop("_HERMES_FINETUNE_ADAPTER", "")
+        if _ft_adapter and not _is_openrouter and not _is_nous and not _is_github_models:
+            extra_body["lora_adapters"] = [{"path": _ft_adapter, "scale": 1.0}]
+
         if extra_body:
             api_kwargs["extra_body"] = extra_body
 

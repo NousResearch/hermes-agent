@@ -1,0 +1,40 @@
+env:
+  enabled_toolsets: ["terminal", "file"]
+  # Docker backend is REQUIRED — Tier 3 cases scaffold/refactor files and
+  # would otherwise scribble in the host filesystem. The bench env mounts
+  # /tmp/finetune-bench from host into the container at the same path so
+  # the per-case working dirs created by _rollout_case are visible inside
+  # the sandbox.
+  terminal_backend: docker
+  max_agent_turns: 15
+  agent_temperature: 0.1
+  terminal_timeout: 60
+  terminal_lifetime: 600
+  tool_pool_size: 32
+  # Per-response output cap. 2048 is too small — write_file calls with
+  # long content (shell scripts, multi-class Python files) get truncated
+  # mid-string and produce unparseable JSON tool calls, manifesting as
+  # format_compliance regressions. 4096 gives Tier 3 scaffolding cases
+  # enough headroom while staying well under typical server context limits.
+  max_token_length: 4096
+
+  # Benchmark-specific
+  prompt_bank_path: environments/benchmarks/finetune_bench/prompt_bank.yaml
+  custom_cases_dir: ~/.hermes/finetune/bench/custom
+  regression_threshold_tool_selection: 0.03
+  regression_threshold_execution: 0.05
+  regression_threshold_completion: 0.05
+  format_compliance_minimum: 0.95
+
+  # Eval config
+  eval_handling: STOP_TRAIN
+  steps_per_eval: 1
+  total_steps: 1
+  group_size: 1
+  num_rollouts_per_group_for_logging: 1
+
+setup:
+  - model_name: carnice
+    base_url: http://localhost:8008/v1
+    api_key: none
+    num_requests_for_eval: 1

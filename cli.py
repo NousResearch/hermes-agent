@@ -3913,6 +3913,94 @@ class HermesCLI:
             print("  Usage: /personality <name>")
             print()
     
+    def _handle_finetune_command(self, cmd: str):
+        """Handle the /finetune command — runs scripts from the finetune skill."""
+        import shlex
+        import subprocess
+        import sys as _sys
+        from pathlib import Path
+
+        # Locate the skill scripts directory.
+        # Prefer the bundled optional-skills location; fall back to ~/.hermes/skills.
+        repo_root = Path(__file__).resolve().parent
+        candidates = [
+            repo_root / "optional-skills" / "mlops" / "finetune" / "scripts",
+            Path.home() / ".hermes" / "skills" / "mlops" / "finetune" / "scripts",
+        ]
+        scripts_dir = next((p for p in candidates if p.exists()), None)
+        if scripts_dir is None:
+            _cprint("Finetune skill not found. Expected at optional-skills/mlops/finetune/scripts/")
+            return
+
+        # Parse subcommand + args
+        parts = shlex.split(cmd)
+        if len(parts) < 2:
+            _cprint("Usage: /finetune <subcommand> [args]")
+            _cprint("Subcommands: status, extract, score, cluster, train, eval, bench, retro, promote, rollback, route, run, cron, gc")
+            _cprint("  /finetune run             — full pipeline, auto-promote (no gate)")
+            _cprint("  /finetune run --with-bench — full pipeline, gate promote on bench, auto-rollback on regression")
+            _cprint("  /finetune bench           — run benchmark against current active model")
+            _cprint("  /finetune retro list      — show priority queue of unlabeled sessions")
+            _cprint("  /finetune retro show <id> — show a session's full conversation")
+            _cprint("  /finetune retro good <id> [turns] — label session/turns as good")
+            return
+
+        subcommand = parts[1]
+        rest = parts[2:]
+
+        # Map subcommand → script
+        script_map = {
+            "status":   ("manage.py", ["status"]),
+            "run":      ("manage.py", ["run"]),
+            "bench":    ("manage.py", ["bench"]),
+            "promote":  ("manage.py", ["promote"]),
+            "rollback": ("manage.py", ["rollback"]),
+            "cron":     ("manage.py", ["cron"]),
+            "gc":       ("manage.py", ["gc"]),
+            "extract":  ("extract.py", []),
+            "score":    ("score.py", []),
+            "cluster":  ("cluster.py", []),
+            "train":    ("train.py", []),
+            "eval":     ("eval.py", []),
+            "route":    ("route.py", []),
+            "retro":    ("retro.py", []),
+        }
+
+        if subcommand not in script_map:
+            _cprint(f"Unknown finetune subcommand: {subcommand}")
+            return
+
+        script_name, base_args = script_map[subcommand]
+        script_path = scripts_dir / script_name
+        if not script_path.exists():
+            _cprint(f"Script not found: {script_path}")
+            return
+
+        cmd_args = [_sys.executable, str(script_path)] + base_args + rest
+        _cprint(f"Running: {' '.join(cmd_args)}")
+
+        try:
+            with self._busy_command(f"finetune {subcommand}..."):
+                result = subprocess.run(
+                    cmd_args,
+                    cwd=str(scripts_dir),
+                    capture_output=True,
+                    text=True,
+                    timeout=3600,
+                )
+            if result.stdout:
+                for line in result.stdout.rstrip("\n").split("\n"):
+                    _cprint(line)
+            if result.stderr:
+                for line in result.stderr.rstrip("\n").split("\n"):
+                    _cprint(line)
+            if result.returncode != 0:
+                _cprint(f"Command exited with code {result.returncode}")
+        except subprocess.TimeoutExpired:
+            _cprint("Command timed out after 1h")
+        except Exception as e:
+            _cprint(f"Error running finetune command: {e}")
+
     def _handle_cron_command(self, cmd: str):
         """Handle the /cron command to manage scheduled tasks."""
         import shlex
@@ -4375,6 +4463,8 @@ class HermesCLI:
             self.save_conversation()
         elif canonical == "cron":
             self._handle_cron_command(cmd_original)
+        elif canonical == "finetune":
+            self._handle_finetune_command(cmd_original)
         elif canonical == "skills":
             with self._busy_command(self._slow_command_status(cmd_original)):
                 self._handle_skills_command(cmd_original)
@@ -6837,6 +6927,48 @@ class HermesCLI:
             The main input widget, for wrappers that need to inspect or
             manipulate user input from a keybinding handler.
         """
+        # Finetune feedback keybindings (Ctrl+Y = thumbs up, Ctrl+N = thumbs down)
+        try:
+            from hermes_cli.config import load_config as _load_cfg
+            _ft_cfg = _load_cfg().get("finetune", {})
+            if _ft_cfg.get("feedback", {}).get("cli_keybindings"):
+                self._register_finetune_feedback_keybindings(kb)
+        except Exception:
+            pass
+
+    def _register_finetune_feedback_keybindings(self, kb) -> None:
+        """Register Ctrl+Y / Ctrl+N for finetune quality feedback."""
+        cli_self = self
+
+        @kb.add("c-y")
+        def _thumbs_up(event):
+            cli_self._record_finetune_feedback(1.0, "thumbs_up")
+
+        @kb.add("c-n")
+        def _thumbs_down(event):
+            cli_self._record_finetune_feedback(0.0, "thumbs_down")
+
+    def _record_finetune_feedback(self, score: float, signal: str) -> None:
+        """Write a feedback record for the current session."""
+        import json
+        from pathlib import Path
+        from datetime import datetime
+
+        feedback_path = Path.home() / ".hermes" / "finetune" / "feedback.jsonl"
+        feedback_path.parent.mkdir(parents=True, exist_ok=True)
+
+        record = {
+            "session_id": getattr(self, "session_id", ""),
+            "score": score,
+            "signal": signal,
+            "timestamp": datetime.now().isoformat(),
+        }
+        try:
+            with open(feedback_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(record) + "\n")
+            _cprint(f"  {'👍' if score > 0.5 else '👎'} Feedback recorded")
+        except Exception:
+            pass
 
     def _build_tui_layout_children(
         self,

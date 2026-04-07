@@ -545,6 +545,51 @@ DEFAULT_CONFIG = {
         "backup_count": 3,     # Number of rotated backup files to keep
     },
 
+    # Fine-tuning pipeline — optional, used by the finetune skill.
+    # All sub-keys are ignored if absent.
+    "finetune": {
+        "enabled": False,
+        "extract": {
+            "min_turns": 2,
+            "exclude_sources": [],
+        },
+        "scoring": {
+            "weights": {
+                "conversation_signal": 0.3,
+                "turn_signal": 0.4,
+                "sentiment_modifier": 0.1,
+                "judge_score": 0.2,
+            },
+            "thresholds": {
+                "good": 0.7,
+                "neutral": 0.4,
+            },
+        },
+        "clustering": {
+            "embedding_model": "all-MiniLM-L6-v2",
+            "min_cluster_size": 30,
+            "confidence_threshold": 0.6,
+        },
+        "training": {
+            "base_model": "~/programs/carnice/Carnice-9b-Q8_0.gguf",
+            "chat_template": "chatml",
+            "quantization": "Q5_K_M",
+            "terminal_backend": "local",
+        },
+        "routing": {
+            "enabled": False,
+            "providers": ["local", "llama-cpp", "custom"],
+        },
+        "retraining": {
+            "data_growth_trigger": 0.2,
+            "schedule": "weekly",
+        },
+        "feedback": {
+            "cli_keybindings": False,
+            "gateway_reactions": False,
+        },
+    },
+
     # Config schema version - bump this when adding new required fields
     "_config_version": 12,
 }
@@ -1329,7 +1374,7 @@ _KNOWN_ROOT_KEYS = {
     "_config_version", "model", "providers", "fallback_model",
     "fallback_providers", "credential_pool_strategies", "toolsets",
     "agent", "terminal", "display", "compression", "delegation",
-    "auxiliary", "custom_providers", "memory", "gateway",
+    "auxiliary", "custom_providers", "memory", "gateway", "finetune",
 }
 
 # Valid fields inside a custom_providers list entry

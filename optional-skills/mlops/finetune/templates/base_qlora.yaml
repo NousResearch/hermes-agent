@@ -1,0 +1,42 @@
+base_model: ~/programs/carnice/Carnice-9b-Q8_0.gguf
+model_type: AutoModelForCausalLM
+tokenizer_type: AutoTokenizer
+chat_template: chatml
+
+load_in_4bit: true
+adapter: qlora
+lora_r: 16
+lora_alpha: 32
+lora_dropout: 0.05
+lora_target_modules:
+  - q_proj
+  - k_proj
+  - v_proj
+  - o_proj
+  - gate_proj
+  - up_proj
+  - down_proj
+
+sequence_len: 2048
+sample_packing: true
+pad_to_sequence_len: true
+
+num_epochs: 3
+learning_rate: 0.0001
+warmup_ratio: 0.05
+gradient_accumulation_steps: 4
+micro_batch_size: 2
+
+weight_decay: 0.01
+max_grad_norm: 1.0
+
+eval_steps: 50
+save_steps: 50
+save_strategy: steps
+logging_steps: 10
+early_stopping_patience: 3
+metric_for_best_model: eval_loss
+greater_is_better: false
+
+bf16: auto
+tf32: true

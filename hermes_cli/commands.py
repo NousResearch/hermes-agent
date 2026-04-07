@@ -124,6 +124,11 @@ COMMAND_REGISTRY: list[CommandDef] = [
                subcommands=("connect", "disconnect", "status")),
     CommandDef("plugins", "List installed plugins and their status",
                "Tools & Skills", cli_only=True),
+    CommandDef("finetune", "Personal model fine-tuning pipeline",
+               "Tools & Skills", args_hint="[subcommand]",
+               subcommands=("status", "extract", "score", "cluster", "train",
+                            "eval", "bench", "retro", "promote", "rollback",
+                            "route", "run", "cron")),
 
     # Info
     CommandDef("commands", "Browse all commands and skills (paginated)", "Info",

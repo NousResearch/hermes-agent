@@ -253,16 +253,25 @@ class _CodexCompletionsAdapter:
         usage = None
 
         try:
+            # The Codex backend requires streaming. Also, in practice it may emit
+            # response.output_text.delta events while returning an empty
+            # final.output array. So we must collect deltas during the stream.
             with self._client.responses.stream(**resp_kwargs) as stream:
-                for _event in stream:
-                    pass
+                for event in stream:
+                    etype = getattr(event, "type", None)
+                    if etype == "response.output_text.delta":
+                        delta = getattr(event, "delta", "")
+                        if delta:
+                            text_parts.append(delta)
                 final = stream.get_final_response()
 
-            # Extract text and tool calls from the Responses output
-            for item in getattr(final, "output", []):
+            # Extract tool calls from the final Responses output (if present).
+            # Only use final.output message parts if we didn't already collect
+            # streamed text deltas (prevents duplication when both are present).
+            for item in getattr(final, "output", []) or []:
                 item_type = getattr(item, "type", None)
-                if item_type == "message":
-                    for part in getattr(item, "content", []):
+                if item_type == "message" and not text_parts:
+                    for part in getattr(item, "content", []) or []:
                         ptype = getattr(part, "type", None)
                         if ptype in ("output_text", "text"):
                             text_parts.append(getattr(part, "text", ""))

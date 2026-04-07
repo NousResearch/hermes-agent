@@ -29,6 +29,11 @@ All config via environment variables in `.env`:
 | `OPENVIKING_ENDPOINT` | `http://127.0.0.1:1933` | Server URL |
 | `OPENVIKING_API_KEY` | (none) | API key (optional) |
 
+## Behavior notes
+
+- Session-backed memory extraction still depends on the configured OpenViking LLM/VLM.
+- Hermes explicit `memory(add, ...)` writes are also stored as deterministic fallback resources under `viking://resources/hermes_explicit_memories/...` so they are not lost even when extraction is degraded.
+
 ## Tools
 
 | Tool | Description |

@@ -47,7 +47,7 @@ FACT_STORE_SCHEMA = {
         "• reason — Compositional: facts connected to MULTIPLE entities simultaneously.\n"
         "• contradict — Memory hygiene: find facts making conflicting claims.\n"
         "• update/remove/list — CRUD operations.\n\n"
-        "IMPORTANT: Before answering questions about the user, ALWAYS probe or reason first."
+        "IMPORTANT: Before answering questions about the user, their projects, tools, or any topic likely stored here, ALWAYS probe or reason first. Use fact_feedback to rate facts after using them — this trains trust scores."
     ),
     "parameters": {
         "type": "object",
@@ -198,7 +198,8 @@ class HolographicMemoryProvider(MemoryProvider):
             f"# Holographic Memory\n"
             f"Active. {total} facts stored with entity resolution and trust scoring.\n"
             f"Use fact_store to search, probe entities, reason across entities, or add facts.\n"
-            f"Use fact_feedback to rate facts after using them (trains trust scores)."
+            f"Use fact_feedback to rate facts after using them (trains trust scores).\n"
+            f"IMPORTANT: Before answering questions about the user, their projects, tools, or any topic likely stored here, ALWAYS probe or reason first."
         )
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:

@@ -1858,6 +1858,11 @@ class GatewayRunner:
         if _quick_key in self._running_agents and _stale_ts:
             _stale_age = time.time() - _stale_ts
             _stale_agent = self._running_agents.get(_quick_key)
+            # Never evict the pending sentinel — it was just placed moments
+            # ago during the async setup phase before the real agent is
+            # created.  Sentinels have no get_activity_summary(), so the
+            # idle check below would always evaluate to inf >= timeout and
+            # immediately evict them, racing with the setup path.
             _stale_idle = float("inf")  # assume idle if we can't check
             _stale_detail = ""
             if _stale_agent and hasattr(_stale_agent, "get_activity_summary"):
@@ -1876,8 +1881,11 @@ class GatewayRunner:
             # cases where the agent object was garbage-collected).
             _wall_ttl = max(_raw_stale_timeout * 10, 7200) if _raw_stale_timeout > 0 else float("inf")
             _should_evict = (
-                (_raw_stale_timeout > 0 and _stale_idle >= _raw_stale_timeout)
-                or _stale_age > _wall_ttl
+                _stale_agent is not _AGENT_PENDING_SENTINEL
+                and (
+                    (_raw_stale_timeout > 0 and _stale_idle >= _raw_stale_timeout)
+                    or _stale_age > _wall_ttl
+                )
             )
             if _should_evict:
                 logger.warning(

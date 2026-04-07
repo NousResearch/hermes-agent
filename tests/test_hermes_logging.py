@@ -14,14 +14,29 @@ import hermes_logging
 @pytest.fixture(autouse=True)
 def _reset_logging_state():
     """Reset the module-level sentinel and clean up root logger handlers
-    added by setup_logging() so tests don't leak state."""
+    added by setup_logging() so tests don't leak state.
+
+    Under xdist (-n auto) other test modules may have called setup_logging()
+    in the same worker process, leaving RotatingFileHandlers on the root
+    logger.  We strip ALL RotatingFileHandlers before each test so the count
+    assertions are stable regardless of test ordering.
+    """
     hermes_logging._logging_initialized = False
     root = logging.getLogger()
-    original_handlers = list(root.handlers)
+    # Strip ALL RotatingFileHandlers — not just the ones we added — so that
+    # handlers leaked from other test modules in the same xdist worker don't
+    # pollute our counts.
+    pre_existing = []
+    for h in list(root.handlers):
+        if isinstance(h, RotatingFileHandler):
+            root.removeHandler(h)
+            h.close()
+        else:
+            pre_existing.append(h)
     yield
     # Restore — remove any handlers added during the test.
     for h in list(root.handlers):
-        if h not in original_handlers:
+        if h not in pre_existing:
             root.removeHandler(h)
             h.close()
     hermes_logging._logging_initialized = False

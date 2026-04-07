@@ -556,6 +556,18 @@ def load_gateway_config() -> GatewayConfig:
                     os.environ["DISCORD_AUTO_THREAD"] = str(discord_cfg["auto_thread"]).lower()
                 if "reactions" in discord_cfg and not os.getenv("DISCORD_REACTIONS"):
                     os.environ["DISCORD_REACTIONS"] = str(discord_cfg["reactions"]).lower()
+                # ignored_channels: channels where bot never responds (even when mentioned)
+                ic = discord_cfg.get("ignored_channels")
+                if ic is not None and not os.getenv("DISCORD_IGNORED_CHANNELS"):
+                    if isinstance(ic, list):
+                        ic = ",".join(str(v) for v in ic)
+                    os.environ["DISCORD_IGNORED_CHANNELS"] = str(ic)
+                # no_thread_channels: channels where bot responds directly without creating thread
+                ntc = discord_cfg.get("no_thread_channels")
+                if ntc is not None and not os.getenv("DISCORD_NO_THREAD_CHANNELS"):
+                    if isinstance(ntc, list):
+                        ntc = ",".join(str(v) for v in ntc)
+                    os.environ["DISCORD_NO_THREAD_CHANNELS"] = str(ntc)
 
             # Telegram settings → env vars (env vars take precedence)
             telegram_cfg = yaml_cfg.get("telegram", {})

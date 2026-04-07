@@ -92,11 +92,6 @@ VALID_NAME_RE = re.compile(r'^[a-z0-9][a-z0-9._-]*$')
 ALLOWED_SUBDIRS = {"references", "templates", "scripts", "assets"}
 
 
-def check_skill_manage_requirements() -> bool:
-    """Skill management has no external requirements -- always available."""
-    return True
-
-
 # =============================================================================
 # Validation helpers
 # =============================================================================

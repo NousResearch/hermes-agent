@@ -142,12 +142,6 @@ from tools.approval import (
 )
 
 
-def _check_dangerous_command(command: str, env_type: str) -> dict:
-    """Delegate to the consolidated approval module, passing the CLI callback."""
-    return _check_dangerous_command_impl(command, env_type,
-                                         approval_callback=_approval_callback)
-
-
 def _check_all_guards(command: str, env_type: str) -> dict:
     """Delegate to consolidated guard (tirith + dangerous cmd) with CLI callback."""
     return _check_all_guards_impl(command, env_type,

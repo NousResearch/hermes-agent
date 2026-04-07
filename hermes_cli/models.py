@@ -1131,10 +1131,6 @@ def _payload_items(payload: Any) -> list[dict[str, Any]]:
     return []
 
 
-def _extract_model_ids(payload: Any) -> list[str]:
-    return [item.get("id", "") for item in _payload_items(payload) if item.get("id")]
-
-
 def copilot_default_headers() -> dict[str, str]:
     """Standard headers for Copilot API requests.
 

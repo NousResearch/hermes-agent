@@ -387,10 +387,6 @@ def _coerce_required_int(value: Any, default: int, min_value: int = 0) -> int:
     return default if parsed is None else parsed
 
 
-def _is_loop_ready(loop: Optional[asyncio.AbstractEventLoop]) -> bool:
-    return loop is not None and not bool(getattr(loop, "is_closed", lambda: False)())
-
-
 # ---------------------------------------------------------------------------
 # Post payload builders and parsers
 # ---------------------------------------------------------------------------

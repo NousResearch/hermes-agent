@@ -501,11 +501,6 @@ def check_cronjob_requirements() -> bool:
     )
 
 
-def get_cronjob_tool_definitions():
-    """Return tool definitions for cronjob management."""
-    return [CRONJOB_SCHEMA]
-
-
 # --- Registry ---
 from tools.registry import registry
 

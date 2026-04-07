@@ -344,18 +344,6 @@ def get_label(provider_id: str) -> str:
     return canonical
 
 
-# Build LABELS dict for backward compat
-def _build_labels() -> Dict[str, str]:
-    """Build labels dict from overlays + overrides. Lazy, cached."""
-    labels: Dict[str, str] = {}
-    for pid in HERMES_OVERLAYS:
-        labels[pid] = get_label(pid)
-    labels.update(_LABEL_OVERRIDES)
-    return labels
-
-# Lazy-built on first access
-_labels_cache: Optional[Dict[str, str]] = None
-
 # For direct import compat, expose as module-level dict
 # Built on demand by get_label() calls
 LABELS: Dict[str, str] = {

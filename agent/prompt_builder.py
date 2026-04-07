@@ -301,6 +301,13 @@ PLATFORM_HINTS = {
         "files arrive as downloadable documents. You can also include image "
         "URLs in markdown format ![alt](url) and they will be sent as photos."
     ),
+    "imessage": (
+        "You are on iMessage. Keep messages concise and conversational. "
+        "Do not use markdown as it does not render in Messages.app. "
+        "You can send media files: include MEDIA:/absolute/path/to/file "
+        "in your response. Images and documents are sent as native "
+        "iMessage attachments."
+    ),
     "email": (
         "You are communicating via email. Write clear, well-structured responses "
         "suitable for email. Use plain text formatting (no markdown). "

@@ -45,7 +45,7 @@ logger = logging.getLogger(__name__)
 _KNOWN_DELIVERY_PLATFORMS = frozenset({
     "telegram", "discord", "slack", "whatsapp", "signal",
     "matrix", "mattermost", "homeassistant", "dingtalk", "feishu",
-    "wecom", "sms", "email", "webhook",
+    "wecom", "imessage", "sms", "email", "webhook",
 })
 
 from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_run
@@ -197,6 +197,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> None:
         "dingtalk": Platform.DINGTALK,
         "feishu": Platform.FEISHU,
         "wecom": Platform.WECOM,
+        "imessage": Platform.IMESSAGE,
         "email": Platform.EMAIL,
         "sms": Platform.SMS,
     }

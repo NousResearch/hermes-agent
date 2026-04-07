@@ -63,6 +63,7 @@ class Platform(Enum):
     WEBHOOK = "webhook"
     FEISHU = "feishu"
     WECOM = "wecom"
+    IMESSAGE = "imessage"
 
 
 @dataclass
@@ -925,6 +926,22 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 platform=Platform.WECOM,
                 chat_id=wecom_home,
                 name=os.getenv("WECOM_HOME_CHANNEL_NAME", "Home"),
+            )
+
+    # iMessage (via imsg CLI)
+    imessage_enabled = os.getenv("IMESSAGE_ENABLED", "").lower() in ("true", "1", "yes")
+    if imessage_enabled:
+        if Platform.IMESSAGE not in config.platforms:
+            config.platforms[Platform.IMESSAGE] = PlatformConfig()
+        config.platforms[Platform.IMESSAGE].enabled = True
+        imsg_path = os.getenv("IMESSAGE_IMSG_PATH", "imsg")
+        config.platforms[Platform.IMESSAGE].extra["imsg_path"] = imsg_path
+        imessage_home = os.getenv("IMESSAGE_HOME_CHANNEL")
+        if imessage_home:
+            config.platforms[Platform.IMESSAGE].home_channel = HomeChannel(
+                platform=Platform.IMESSAGE,
+                chat_id=imessage_home,
+                name=os.getenv("IMESSAGE_HOME_CHANNEL_NAME", "Home"),
             )
 
     # Session settings

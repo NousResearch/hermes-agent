@@ -1648,6 +1648,13 @@ class GatewayRunner:
             adapter.gateway_runner = self  # For cross-platform delivery
             return adapter
 
+        elif platform == Platform.IMESSAGE:
+            from gateway.platforms.imessage import iMessageAdapter, check_imessage_requirements
+            if not check_imessage_requirements():
+                logger.warning("iMessage: IMESSAGE_ENABLED not set or imsg CLI not found")
+                return None
+            return iMessageAdapter(config)
+
         return None
     
     def _is_user_authorized(self, source: SessionSource) -> bool:
@@ -1686,6 +1693,7 @@ class GatewayRunner:
             Platform.DINGTALK: "DINGTALK_ALLOWED_USERS",
             Platform.FEISHU: "FEISHU_ALLOWED_USERS",
             Platform.WECOM: "WECOM_ALLOWED_USERS",
+            Platform.IMESSAGE: "IMESSAGE_ALLOWED_USERS",
         }
         platform_allow_all_map = {
             Platform.TELEGRAM: "TELEGRAM_ALLOW_ALL_USERS",
@@ -1700,6 +1708,7 @@ class GatewayRunner:
             Platform.DINGTALK: "DINGTALK_ALLOW_ALL_USERS",
             Platform.FEISHU: "FEISHU_ALLOW_ALL_USERS",
             Platform.WECOM: "WECOM_ALLOW_ALL_USERS",
+            Platform.IMESSAGE: "IMESSAGE_ALLOW_ALL_USERS",
         }
 
         # Per-platform allow-all flag (e.g., DISCORD_ALLOW_ALL_USERS=true)

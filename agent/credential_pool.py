@@ -101,6 +101,14 @@ class PooledCredential:
     last_error_reason: Optional[str] = None
     last_error_message: Optional[str] = None
     last_error_reset_at: Optional[float] = None
+    cooldown_until: Optional[float] = None
+    last_retry_after_seconds: Optional[float] = None
+    last_error_category: Optional[str] = None
+    last_success_at: Optional[float] = None
+    consecutive_failures: int = 0
+    consecutive_429s: int = 0
+    transient_error_count: int = 0
+    structural_error_count: int = 0
     base_url: Optional[str] = None
     expires_at: Optional[str] = None
     expires_at_ms: Optional[int] = None
@@ -191,6 +199,14 @@ def _exhausted_ttl(error_code: Optional[int]) -> int:
     if error_code == 429:
         return EXHAUSTED_TTL_429_SECONDS
     return EXHAUSTED_TTL_DEFAULT_SECONDS
+
+
+def _is_structural_error(error_code: Optional[int]) -> bool:
+    return error_code in {401, 402, 403}
+
+
+def _is_transient_error(error_code: Optional[int]) -> bool:
+    return error_code in {408, 409, 425, 429, 500, 502, 503, 504, 529}
 
 
 def _parse_absolute_timestamp(value: Any) -> Optional[float]:
@@ -349,12 +365,16 @@ def get_pool_strategy(provider: str) -> str:
 
 
 class CredentialPool:
+    DEFAULT_MAX_CONCURRENT_PER_CREDENTIAL = 2
+
     def __init__(self, provider: str, entries: List[PooledCredential]):
         self.provider = provider
         self._entries = sorted(entries, key=lambda entry: entry.priority)
         self._current_id: Optional[str] = None
         self._strategy = get_pool_strategy(provider)
         self._lock = threading.Lock()
+        self._active_leases: Dict[str, int] = {}
+        self._max_concurrent: int = self.DEFAULT_MAX_CONCURRENT_PER_CREDENTIAL
 
     def has_credentials(self) -> bool:
         return bool(self._entries)
@@ -389,16 +409,34 @@ class CredentialPool:
         entry: PooledCredential,
         status_code: Optional[int],
         error_context: Optional[Dict[str, Any]] = None,
+        retry_after_seconds: Optional[float] = None,
+        error_category: Optional[str] = None,
     ) -> PooledCredential:
         normalized_error = _normalize_error_context(error_context)
+        now = time.time()
+        cooldown_until = None
+        if retry_after_seconds is not None:
+            try:
+                retry_after_seconds = max(0.0, float(retry_after_seconds))
+            except (TypeError, ValueError):
+                retry_after_seconds = None
+        if retry_after_seconds is not None:
+            cooldown_until = now + retry_after_seconds
         updated = replace(
             entry,
             last_status=STATUS_EXHAUSTED,
-            last_status_at=time.time(),
+            last_status_at=now,
             last_error_code=status_code,
             last_error_reason=normalized_error.get("reason"),
             last_error_message=normalized_error.get("message"),
             last_error_reset_at=normalized_error.get("reset_at"),
+            last_error_category=error_category,
+            cooldown_until=cooldown_until,
+            last_retry_after_seconds=retry_after_seconds,
+            consecutive_failures=entry.consecutive_failures + 1,
+            consecutive_429s=(entry.consecutive_429s + 1) if status_code == 429 else 0,
+            transient_error_count=entry.transient_error_count + (1 if _is_transient_error(status_code) else 0),
+            structural_error_count=entry.structural_error_count + (1 if _is_structural_error(status_code) else 0),
         )
         self._replace_entry(entry, updated)
         self._persist()
@@ -643,6 +681,19 @@ class CredentialPool:
         with self._lock:
             return self._select_unlocked()
 
+    def _entry_health_score(self, entry: PooledCredential, *, now: Optional[float] = None) -> float:
+        """Compute a health score for an entry. Higher is better."""
+        now = time.time() if now is None else now
+        score = 100.0
+        score -= min(entry.consecutive_failures * 8.0, 40.0)
+        score -= min(entry.consecutive_429s * 12.0, 36.0)
+        score -= min(entry.transient_error_count * 2.5, 20.0)
+        score -= min(entry.structural_error_count * 10.0, 50.0)
+        if entry.last_success_at:
+            age = max(0.0, now - entry.last_success_at)
+            score += max(0.0, 8.0 - min(age / 60.0, 8.0))
+        return score
+
     def _available_entries(self, *, clear_expired: bool = False, refresh: bool = False) -> List[PooledCredential]:
         """Return entries not currently in exhaustion cooldown.
 
@@ -674,8 +725,16 @@ class CredentialPool:
                     entry = synced
                     cleared_any = True
             if entry.last_status == STATUS_EXHAUSTED:
-                exhausted_until = _exhausted_until(entry)
-                if exhausted_until is not None and now < exhausted_until:
+                # 1. Check dynamic cooldown_until first (from Retry-After headers)
+                if entry.cooldown_until is not None and now < entry.cooldown_until:
+                    continue
+                # 2. Check explicit reset_at from error context (e.g. provider-reported weekly reset)
+                reset_at = _parse_absolute_timestamp(getattr(entry, "last_error_reset_at", None))
+                if reset_at is not None and now < reset_at:
+                    continue
+                # 3. Fallback to fixed TTL
+                ttl = _exhausted_ttl(entry.last_error_code)
+                if entry.last_status_at and now - entry.last_status_at < ttl:
                     continue
                 if clear_expired:
                     cleared = replace(
@@ -686,6 +745,8 @@ class CredentialPool:
                         last_error_reason=None,
                         last_error_message=None,
                         last_error_reset_at=None,
+                        cooldown_until=None,
+                        last_retry_after_seconds=None,
                     )
                     self._replace_entry(entry, cleared)
                     entry = cleared
@@ -707,18 +768,27 @@ class CredentialPool:
             logger.info("credential pool: no available entries (all exhausted or empty)")
             return None
 
+        now = time.time()
+        # Sort by health score descending, then priority, then request_count
+        prioritized = sorted(
+            available,
+            key=lambda e: (-self._entry_health_score(e, now=now), e.priority, e.request_count),
+        )
+
         if self._strategy == STRATEGY_RANDOM:
-            entry = random.choice(available)
+            best_score = self._entry_health_score(prioritized[0], now=now)
+            candidates = [e for e in prioritized if self._entry_health_score(e, now=now) == best_score]
+            entry = random.choice(candidates)
             self._current_id = entry.id
             return entry
 
-        if self._strategy == STRATEGY_LEAST_USED and len(available) > 1:
-            entry = min(available, key=lambda e: e.request_count)
+        if self._strategy == STRATEGY_LEAST_USED and len(prioritized) > 1:
+            entry = min(prioritized, key=lambda e: (-self._entry_health_score(e, now=now), e.request_count, e.priority))
             self._current_id = entry.id
             return entry
 
-        if self._strategy == STRATEGY_ROUND_ROBIN and len(available) > 1:
-            entry = available[0]
+        if self._strategy == STRATEGY_ROUND_ROBIN and len(prioritized) > 1:
+            entry = prioritized[0]
             rotated = [candidate for candidate in self._entries if candidate.id != entry.id]
             rotated.append(replace(entry, priority=len(self._entries) - 1))
             self._entries = [replace(candidate, priority=idx) for idx, candidate in enumerate(rotated)]
@@ -726,9 +796,13 @@ class CredentialPool:
             self._current_id = entry.id
             return self.current() or entry
 
-        entry = available[0]
+        entry = prioritized[0]
         self._current_id = entry.id
         return entry
+
+    def size(self) -> int:
+        """Return the total number of entries in the pool."""
+        return len(self._entries)
 
     def peek(self) -> Optional[PooledCredential]:
         current = self.current()
@@ -742,6 +816,8 @@ class CredentialPool:
         *,
         status_code: Optional[int],
         error_context: Optional[Dict[str, Any]] = None,
+        retry_after_seconds: Optional[float] = None,
+        error_category: Optional[str] = None,
     ) -> Optional[PooledCredential]:
         with self._lock:
             entry = self.current() or self._select_unlocked()
@@ -752,13 +828,87 @@ class CredentialPool:
                 "credential pool: marking %s exhausted (status=%s), rotating",
                 _label, status_code,
             )
-            self._mark_exhausted(entry, status_code, error_context)
+            self._mark_exhausted(
+                entry, status_code, error_context,
+                retry_after_seconds=retry_after_seconds,
+                error_category=error_category,
+            )
             self._current_id = None
             next_entry = self._select_unlocked()
             if next_entry:
                 _next_label = next_entry.label or next_entry.id[:8]
                 logger.info("credential pool: rotated to %s", _next_label)
             return next_entry
+
+    def acquire_lease(self, credential_id: Optional[str] = None) -> Optional[str]:
+        """Acquire a lease on a credential, preferring the least-leased available entry.
+
+        If *credential_id* is given, lease that specific entry.
+        Otherwise, select the best available entry considering both availability
+        and current lease count. Returns the leased credential ID, or None.
+        """
+        with self._lock:
+            if credential_id:
+                self._active_leases[credential_id] = self._active_leases.get(credential_id, 0) + 1
+                return credential_id
+
+            available = self._available_entries(clear_expired=True, refresh=True)
+            if not available:
+                return None
+
+            below_cap = [e for e in available if self._active_leases.get(e.id, 0) < self._max_concurrent]
+            candidates = below_cap if below_cap else available
+
+            chosen = min(
+                candidates,
+                key=lambda e: (
+                    self._active_leases.get(e.id, 0),
+                    -self._entry_health_score(e),
+                    e.priority,
+                ),
+            )
+            self._active_leases[chosen.id] = self._active_leases.get(chosen.id, 0) + 1
+            self._current_id = chosen.id
+            return chosen.id
+
+    def release_lease(self, credential_id: str) -> None:
+        """Release a lease on a credential."""
+        with self._lock:
+            count = self._active_leases.get(credential_id, 0)
+            if count <= 1:
+                self._active_leases.pop(credential_id, None)
+            else:
+                self._active_leases[credential_id] = count - 1
+
+    def active_lease_count(self, credential_id: str) -> int:
+        """Return the number of active leases on a credential (thread-safe)."""
+        with self._lock:
+            return self._active_leases.get(credential_id, 0)
+
+    def mark_success(self, credential_id: Optional[str] = None) -> None:
+        """Record a successful request, resetting error counters and updating last_success_at.
+
+        Call this after any request that completes without an API error so the
+        health score reflects current credential health rather than stale history.
+        If *credential_id* is None, the current credential is used.
+        """
+        with self._lock:
+            target_id = credential_id or self._current_id
+            if not target_id:
+                return
+            for idx, entry in enumerate(self._entries):
+                if entry.id != target_id:
+                    continue
+                updated = replace(
+                    entry,
+                    last_success_at=time.time(),
+                    last_status=STATUS_OK,
+                    consecutive_failures=0,
+                    consecutive_429s=0,
+                )
+                self._entries[idx] = updated
+                self._persist()
+                return
 
     def try_refresh_current(self) -> Optional[PooledCredential]:
         with self._lock:

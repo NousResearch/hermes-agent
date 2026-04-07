@@ -168,6 +168,7 @@ def _build_child_agent(
     override_base_url: Optional[str] = None,
     override_api_key: Optional[str] = None,
     override_api_mode: Optional[str] = None,
+    override_reasoning_effort: Optional[str] = None,
     # ACP transport overrides — lets a non-ACP parent spawn ACP child agents
     override_acp_command: Optional[str] = None,
     override_acp_args: Optional[List[str]] = None,
@@ -245,6 +246,19 @@ def _build_child_agent(
     effective_acp_command = override_acp_command or getattr(parent_agent, "acp_command", None)
     effective_acp_args = list(override_acp_args if override_acp_args is not None else (getattr(parent_agent, "acp_args", []) or []))
 
+    effective_reasoning_config = getattr(parent_agent, "reasoning_config", None)
+    if override_reasoning_effort is not None:
+        effort = str(override_reasoning_effort).strip().lower()
+        if effort == "none":
+            effective_reasoning_config = {"enabled": False, "effort": "none"}
+        elif effort:
+            if isinstance(effective_reasoning_config, dict):
+                effective_reasoning_config = dict(effective_reasoning_config)
+            else:
+                effective_reasoning_config = {}
+            effective_reasoning_config["enabled"] = True
+            effective_reasoning_config["effort"] = effort
+
     child = AIAgent(
         base_url=effective_base_url,
         api_key=effective_api_key,
@@ -255,7 +269,7 @@ def _build_child_agent(
         acp_args=effective_acp_args,
         max_iterations=max_iterations,
         max_tokens=getattr(parent_agent, "max_tokens", None),
-        reasoning_config=getattr(parent_agent, "reasoning_config", None),
+        reasoning_config=effective_reasoning_config,
         prefill_messages=getattr(parent_agent, "prefill_messages", None),
         enabled_toolsets=child_toolsets,
         quiet_mode=True,
@@ -278,6 +292,12 @@ def _build_child_agent(
     child._print_fn = getattr(parent_agent, '_print_fn', None)
     # Set delegation depth so children can't spawn grandchildren
     child._delegate_depth = getattr(parent_agent, '_delegate_depth', 0) + 1
+
+    # Share the parent's credential pool with the child so it can rotate
+    # credentials on 429/402 instead of being stuck on a single fixed key.
+    _child_pool = _resolve_child_credential_pool(effective_provider, parent_agent)
+    if _child_pool is not None:
+        child._credential_pool = _child_pool
 
     # Register child for interrupt propagation
     if hasattr(parent_agent, '_active_children'):
@@ -311,6 +331,21 @@ def _run_single_child(
     import model_tools
     _saved_tool_names = getattr(child, "_delegate_saved_tool_names",
                                 list(model_tools._last_resolved_tool_names))
+
+    # Acquire a lease on the child's credential pool so parallel subagents
+    # don't stampede the same account. Let the pool choose the least-leased
+    # available credential instead of pinning to current.
+    _child_pool = getattr(child, '_credential_pool', None)
+    _leased_cred_id = None
+    if _child_pool is not None:
+        _leased_cred_id = _child_pool.acquire_lease()
+        if _leased_cred_id is not None:
+            try:
+                _leased_entry = _child_pool.current()
+                if _leased_entry is not None and hasattr(child, '_swap_credential'):
+                    child._swap_credential(_leased_entry)
+            except Exception as exc:
+                logger.debug("Failed to bind child to leased credential: %s", exc)
 
     try:
         result = child.run_conversation(user_message=goal)
@@ -422,6 +457,13 @@ def _run_single_child(
         }
 
     finally:
+        # Release the credential lease so the pool knows this slot is free.
+        if _child_pool is not None and _leased_cred_id is not None:
+            try:
+                _child_pool.release_lease(_leased_cred_id)
+            except Exception as exc:
+                logger.debug("Failed to release credential lease: %s", exc)
+
         # Restore the parent's tool names so the process-global is correct
         # for any subsequent execute_code calls or other consumers.
         import model_tools
@@ -448,6 +490,7 @@ def delegate_task(
     toolsets: Optional[List[str]] = None,
     tasks: Optional[List[Dict[str, Any]]] = None,
     max_iterations: Optional[int] = None,
+    tier: Optional[str] = None,
     acp_command: Optional[str] = None,
     acp_args: Optional[List[str]] = None,
     parent_agent=None,
@@ -474,8 +517,9 @@ def delegate_task(
             )
         })
 
-    # Load config
-    cfg = _load_config()
+    # Load config and resolve tier
+    raw_cfg = _load_config()
+    cfg = resolve_tier_config(raw_cfg, tier=tier)
     default_max_iter = cfg.get("max_iterations", DEFAULT_MAX_ITERATIONS)
     effective_max_iter = max_iterations or default_max_iter
 
@@ -524,13 +568,21 @@ def delegate_task(
     children = []
     try:
         for i, t in enumerate(task_list):
+            task_tier = t.get("tier") or tier
+            task_cfg = resolve_tier_config(raw_cfg, tier=task_tier)
+            task_max_iter = max_iterations or task_cfg.get("max_iterations", DEFAULT_MAX_ITERATIONS)
+            try:
+                task_creds = _resolve_delegation_credentials(task_cfg, parent_agent)
+            except ValueError:
+                task_creds = creds
             child = _build_child_agent(
                 task_index=i, goal=t["goal"], context=t.get("context"),
-                toolsets=t.get("toolsets") or toolsets, model=creds["model"],
-                max_iterations=effective_max_iter, parent_agent=parent_agent,
-                override_provider=creds["provider"], override_base_url=creds["base_url"],
-                override_api_key=creds["api_key"],
-                override_api_mode=creds["api_mode"],
+                toolsets=t.get("toolsets") or toolsets, model=task_creds["model"],
+                max_iterations=task_max_iter, parent_agent=parent_agent,
+                override_provider=task_creds["provider"], override_base_url=task_creds["base_url"],
+                override_api_key=task_creds["api_key"],
+                override_api_mode=task_creds["api_mode"],
+                override_reasoning_effort=task_creds.get("reasoning_effort"),
                 override_acp_command=t.get("acp_command") or acp_command,
                 override_acp_args=t.get("acp_args") or acp_args,
             )
@@ -626,6 +678,84 @@ def delegate_task(
     }, ensure_ascii=False)
 
 
+def _resolve_child_credential_pool(effective_provider: Optional[str], parent_agent):
+    """Resolve a credential pool for the child agent.
+
+    Strategy:
+    1. Same provider as parent -> share parent's pool (synchronized cooldown state).
+    2. Different provider -> try to load a pool for that provider.
+    3. No pool available -> return None (graceful fallback, fixed credential).
+    """
+    if not effective_provider:
+        return getattr(parent_agent, '_credential_pool', None)
+
+    parent_provider = getattr(parent_agent, 'provider', None) or ''
+    parent_pool = getattr(parent_agent, '_credential_pool', None)
+
+    if parent_pool is not None and effective_provider == parent_provider:
+        return parent_pool
+
+    try:
+        from agent.credential_pool import load_pool
+        pool = load_pool(effective_provider)
+        if pool is not None and pool.size() > 0:
+            return pool
+    except Exception as exc:
+        logger.debug("Could not load credential pool for child provider '%s': %s",
+                     effective_provider, exc)
+    return None
+
+
+# --- Task Profile / Tier Resolution ---
+
+SUPPORTED_TIERS = frozenset({"light", "heavy", "review", "planning", "research"})
+
+
+def resolve_tier_config(cfg: dict, tier: Optional[str] = None) -> dict:
+    """Resolve a delegation tier into an effective config dict.
+
+    Resolution order:
+    1. If tier is given and exists in tiers{}, use that tier's config merged
+       over the flat delegation config (tier values win).
+    2. If tier is not given, use default_tier from config if set.
+    3. If no tiers section exists at all, return the flat config unchanged.
+    """
+    tiers = cfg.get("tiers")
+    if not isinstance(tiers, dict) or not tiers:
+        return cfg
+
+    effective_tier = tier
+    if not effective_tier:
+        effective_tier = str(cfg.get("default_tier") or "").strip().lower() or None
+
+    if not effective_tier or effective_tier not in tiers:
+        return cfg
+
+    tier_cfg = tiers[effective_tier]
+    if not isinstance(tier_cfg, dict):
+        return cfg
+
+    merged = dict(cfg)
+    merged.pop("tiers", None)
+    merged.pop("default_tier", None)
+    merged.update(tier_cfg)
+
+    # Guardrails: heavier tiers must not silently degrade to weak reasoning.
+    tier_reasoning_floor = {
+        "heavy": "medium",
+        "research": "medium",
+        "planning": "high",
+        "review": "high",
+    }
+    floor = tier_reasoning_floor.get(effective_tier)
+    if floor:
+        current = str(merged.get("reasoning_effort") or "").strip().lower()
+        order = {"none": 0, "low": 1, "medium": 2, "high": 3, "max": 4, "xhigh": 4}
+        if order.get(current, 0) < order[floor]:
+            merged["reasoning_effort"] = floor
+    return merged
+
+
 def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     """Resolve credentials for subagent delegation.
 
@@ -645,6 +775,7 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     configured_provider = str(cfg.get("provider") or "").strip() or None
     configured_base_url = str(cfg.get("base_url") or "").strip() or None
     configured_api_key = str(cfg.get("api_key") or "").strip() or None
+    configured_reasoning_effort = str(cfg.get("reasoning_effort") or "").strip() or None
 
     if configured_base_url:
         api_key = (
@@ -673,6 +804,7 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
             "base_url": configured_base_url,
             "api_key": api_key,
             "api_mode": api_mode,
+            "reasoning_effort": configured_reasoning_effort,
         }
 
     if not configured_provider:
@@ -683,6 +815,7 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
             "base_url": None,
             "api_key": None,
             "api_mode": None,
+            "reasoning_effort": configured_reasoning_effort,
         }
 
     # Provider is configured — resolve full credentials
@@ -710,6 +843,7 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
         "base_url": runtime.get("base_url"),
         "api_key": api_key,
         "api_mode": runtime.get("api_mode"),
+        "reasoning_effort": configured_reasoning_effort,
         "command": runtime.get("command"),
         "args": list(runtime.get("args") or []),
     }
@@ -806,6 +940,11 @@ DELEGATE_TASK_SCHEMA = {
                     "properties": {
                         "goal": {"type": "string", "description": "Task goal"},
                         "context": {"type": "string", "description": "Task-specific context"},
+                        "tier": {
+                            "type": "string",
+                            "enum": ["light", "heavy", "review", "planning", "research"],
+                            "description": "Task-specific tier override for this batch item",
+                        },
                         "toolsets": {
                             "type": "array",
                             "items": {"type": "string"},
@@ -835,6 +974,16 @@ DELEGATE_TASK_SCHEMA = {
                 "description": (
                     "Max tool-calling turns per subagent (default: 50). "
                     "Only set lower for simple tasks."
+                ),
+            },
+            "tier": {
+                "type": "string",
+                "enum": ["light", "heavy", "review", "planning", "research"],
+                "description": (
+                    "Task complexity tier. Controls which model, reasoning effort, "
+                    "and iteration budget the subagent uses. Tiers are defined in "
+                    "config.yaml under delegation.tiers. When omitted, uses "
+                    "delegation.default_tier or the flat delegation config."
                 ),
             },
             "acp_command": {
@@ -873,6 +1022,7 @@ registry.register(
         toolsets=args.get("toolsets"),
         tasks=args.get("tasks"),
         max_iterations=args.get("max_iterations"),
+        tier=args.get("tier"),
         acp_command=args.get("acp_command"),
         acp_args=args.get("acp_args"),
         parent_agent=kw.get("parent_agent")),

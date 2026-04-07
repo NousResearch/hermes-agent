@@ -27,6 +27,8 @@ from tools.delegate_tool import (
     _build_child_system_prompt,
     _strip_blocked_tools,
     _resolve_delegation_credentials,
+    _resolve_child_credential_pool,
+    resolve_tier_config,
 )
 
 
@@ -928,6 +930,359 @@ class TestDelegationProviderIntegration(unittest.TestCase):
             # But provider/base_url/api_key should inherit from parent
             self.assertEqual(kwargs["provider"], parent.provider)
             self.assertEqual(kwargs["base_url"], parent.base_url)
+
+
+class TestDelegationReasoningEffort(unittest.TestCase):
+    def test_resolve_delegation_credentials_includes_reasoning_effort(self):
+        parent = _make_mock_parent(depth=0)
+        cfg = {"model": "gpt-5.4-mini", "provider": "", "reasoning_effort": "low"}
+        creds = _resolve_delegation_credentials(cfg, parent)
+        self.assertEqual(creds["reasoning_effort"], "low")
+
+    def test_build_child_agent_applies_override_reasoning_effort(self):
+        parent = _make_mock_parent(depth=0)
+        parent.reasoning_config = {"enabled": True, "effort": "xhigh"}
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            MockAgent.return_value = mock_child
+
+            _build_child_agent(
+                task_index=0,
+                goal="Test child",
+                context=None,
+                toolsets=["terminal"],
+                model="gpt-5.4-mini",
+                max_iterations=10,
+                parent_agent=parent,
+                override_provider="openai-codex",
+                override_base_url="https://chatgpt.com/backend-api/codex",
+                override_api_key="test-key",
+                override_api_mode="codex_responses",
+                override_reasoning_effort="low",
+            )
+
+            _, kwargs = MockAgent.call_args
+            self.assertEqual(kwargs["reasoning_config"]["effort"], "low")
+            self.assertTrue(kwargs["reasoning_config"]["enabled"])
+
+
+class TestChildCredentialPoolResolution(unittest.TestCase):
+    """Tests for _resolve_child_credential_pool — ensuring subagents participate
+    in the credential pool for rate-limit recovery."""
+
+    def test_same_provider_shares_parent_pool(self):
+        """When child uses the same provider as parent, share the parent's pool."""
+        parent = _make_mock_parent()
+        parent.provider = "openrouter"
+        mock_pool = MagicMock()
+        parent._credential_pool = mock_pool
+
+        result = _resolve_child_credential_pool("openrouter", parent)
+        self.assertIs(result, mock_pool)
+
+    def test_no_provider_inherits_parent_pool(self):
+        """When no explicit provider is set, child inherits the parent's pool."""
+        parent = _make_mock_parent()
+        mock_pool = MagicMock()
+        parent._credential_pool = mock_pool
+
+        result = _resolve_child_credential_pool(None, parent)
+        self.assertIs(result, mock_pool)
+
+    def test_no_provider_no_parent_pool_returns_none(self):
+        """When no explicit provider and parent has no pool, return None."""
+        parent = _make_mock_parent()
+        parent._credential_pool = None
+
+        result = _resolve_child_credential_pool(None, parent)
+        self.assertIsNone(result)
+
+    def test_different_provider_loads_own_pool(self):
+        """When child uses a different provider, try to load its own pool."""
+        parent = _make_mock_parent()
+        parent.provider = "openrouter"
+        parent._credential_pool = MagicMock()
+
+        mock_pool = MagicMock()
+        mock_pool.size.return_value = 2
+
+        with patch("agent.credential_pool.load_pool", return_value=mock_pool):
+            result = _resolve_child_credential_pool("anthropic", parent)
+
+        self.assertIs(result, mock_pool)
+
+    def test_different_provider_empty_pool_returns_none(self):
+        """When child's provider has an empty pool, return None (graceful fallback)."""
+        parent = _make_mock_parent()
+        parent.provider = "openrouter"
+        parent._credential_pool = MagicMock()
+
+        mock_pool = MagicMock()
+        mock_pool.size.return_value = 0
+
+        with patch("agent.credential_pool.load_pool", return_value=mock_pool):
+            result = _resolve_child_credential_pool("anthropic", parent)
+
+        self.assertIsNone(result)
+
+    def test_different_provider_load_failure_returns_none(self):
+        """When loading a pool for the child's provider fails, return None gracefully."""
+        parent = _make_mock_parent()
+        parent.provider = "openrouter"
+        parent._credential_pool = MagicMock()
+
+        with patch("agent.credential_pool.load_pool", side_effect=Exception("disk error")):
+            result = _resolve_child_credential_pool("anthropic", parent)
+
+        self.assertIsNone(result)
+
+    def test_child_agent_gets_pool_assigned(self):
+        """Integration: _build_child_agent assigns pool to the constructed child."""
+        parent = _make_mock_parent()
+        mock_pool = MagicMock()
+        parent._credential_pool = mock_pool
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            MockAgent.return_value = mock_child
+
+            _build_child_agent(
+                task_index=0,
+                goal="Test pool assignment",
+                context=None,
+                toolsets=["terminal"],
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+            )
+
+            # The child should have gotten the parent's pool assigned
+            self.assertEqual(mock_child._credential_pool, mock_pool)
+
+
+class TestChildCredentialLeasing(unittest.TestCase):
+    def test_run_single_child_releases_lease_even_when_task_uses_different_tier_lane(self):
+        from tools.delegate_tool import _run_single_child
+
+        leased_entry = MagicMock()
+        leased_entry.id = "cred-review"
+
+        child = MagicMock()
+        child._credential_pool = MagicMock()
+        child._credential_pool.acquire_lease.return_value = "cred-review"
+        child._credential_pool.current.return_value = leased_entry
+        child.run_conversation.return_value = {
+            "final_response": "done",
+            "completed": True,
+            "interrupted": False,
+            "api_calls": 1,
+            "messages": [],
+        }
+        child.reasoning_effort = "high"
+        child.model = "gpt-5.4"
+
+        result = _run_single_child(
+            task_index=1,
+            goal="Deep review",
+            child=child,
+            parent_agent=_make_mock_parent(),
+        )
+
+        self.assertEqual(result["status"], "completed")
+        child._credential_pool.acquire_lease.assert_called_once_with()
+        child._swap_credential.assert_called_once_with(leased_entry)
+        child._credential_pool.release_lease.assert_called_once_with("cred-review")
+
+    def test_run_single_child_uses_least_leased_pool_entry_and_swaps_child(self):
+        from tools.delegate_tool import _run_single_child
+
+        leased_entry = MagicMock()
+        leased_entry.id = "cred-b"
+
+        child = MagicMock()
+        child._credential_pool = MagicMock()
+        child._credential_pool.acquire_lease.return_value = "cred-b"
+        child._credential_pool.current.return_value = leased_entry
+        child.run_conversation.return_value = {
+            "final_response": "done",
+            "completed": True,
+            "interrupted": False,
+            "api_calls": 1,
+            "messages": [],
+        }
+
+        result = _run_single_child(
+            task_index=0,
+            goal="Investigate rate limits",
+            child=child,
+            parent_agent=_make_mock_parent(),
+        )
+
+        self.assertEqual(result["status"], "completed")
+        child._credential_pool.acquire_lease.assert_called_once_with()
+        child._swap_credential.assert_called_once_with(leased_entry)
+        child._credential_pool.release_lease.assert_called_once_with("cred-b")
+
+
+class TestTierResolution(unittest.TestCase):
+    """Tests for resolve_tier_config — task profile selection."""
+
+    def test_no_tiers_returns_flat_config(self):
+        cfg = {"model": "gpt-5.4-mini", "reasoning_effort": "low"}
+        result = resolve_tier_config(cfg, tier="heavy")
+        self.assertEqual(result, cfg)
+
+    def test_explicit_tier_overrides_flat(self):
+        cfg = {
+            "model": "gpt-5.4-mini",
+            "reasoning_effort": "low",
+            "max_iterations": 25,
+            "tiers": {
+                "heavy": {
+                    "model": "claude-opus-4-6",
+                    "reasoning_effort": "medium",
+                    "max_iterations": 50,
+                },
+            },
+        }
+        result = resolve_tier_config(cfg, tier="heavy")
+        self.assertEqual(result["model"], "claude-opus-4-6")
+        self.assertEqual(result["reasoning_effort"], "medium")
+        self.assertEqual(result["max_iterations"], 50)
+        self.assertNotIn("tiers", result)
+        self.assertNotIn("default_tier", result)
+
+    def test_default_tier_used_when_no_explicit_tier(self):
+        cfg = {
+            "model": "gpt-5.4-mini",
+            "reasoning_effort": "low",
+            "default_tier": "review",
+            "tiers": {
+                "review": {
+                    "model": "claude-opus-4-6",
+                    "reasoning_effort": "high",
+                },
+            },
+        }
+        result = resolve_tier_config(cfg, tier=None)
+        self.assertEqual(result["model"], "claude-opus-4-6")
+        self.assertEqual(result["reasoning_effort"], "high")
+
+    def test_unknown_tier_falls_back_to_flat(self):
+        cfg = {
+            "model": "gpt-5.4-mini",
+            "tiers": {
+                "light": {"model": "gpt-5.4-mini"},
+            },
+        }
+        result = resolve_tier_config(cfg, tier="nonexistent")
+        self.assertEqual(result["model"], "gpt-5.4-mini")
+
+    def test_tier_preserves_flat_keys_not_overridden(self):
+        cfg = {
+            "model": "gpt-5.4-mini",
+            "provider": "openai-codex",
+            "reasoning_effort": "low",
+            "tiers": {
+                "heavy": {
+                    "model": "claude-opus-4-6",
+                    "reasoning_effort": "high",
+                },
+            },
+        }
+        result = resolve_tier_config(cfg, tier="heavy")
+        self.assertEqual(result["model"], "claude-opus-4-6")
+        self.assertEqual(result["reasoning_effort"], "high")
+        # provider not overridden by tier — should be preserved from flat config
+        self.assertEqual(result["provider"], "openai-codex")
+
+    def test_schema_includes_tier_field(self):
+        props = DELEGATE_TASK_SCHEMA["parameters"]["properties"]
+        self.assertIn("tier", props)
+        self.assertEqual(props["tier"]["type"], "string")
+        self.assertIn("light", props["tier"]["enum"])
+        self.assertIn("heavy", props["tier"]["enum"])
+        self.assertIn("review", props["tier"]["enum"])
+
+    def test_batch_task_schema_includes_tier_field(self):
+        task_props = DELEGATE_TASK_SCHEMA["parameters"]["properties"]["tasks"]["items"]["properties"]
+        self.assertIn("tier", task_props)
+        self.assertIn("planning", task_props["tier"]["enum"])
+
+    def test_review_tier_never_degrades_below_high_reasoning(self):
+        cfg = {
+            "model": "gpt-5.4-mini",
+            "reasoning_effort": "low",
+            "tiers": {
+                "review": {
+                    "model": "gpt-5.4-mini",
+                    "reasoning_effort": "low",
+                },
+            },
+        }
+        result = resolve_tier_config(cfg, tier="review")
+        self.assertEqual(result["reasoning_effort"], "high")
+
+    def test_batch_tasks_can_override_tier_independently(self):
+        parent = _make_mock_parent()
+        cfg = {
+            "model": "gpt-5.4-mini",
+            "provider": "openai-codex",
+            "reasoning_effort": "low",
+            "max_iterations": 25,
+            "default_tier": "light",
+            "tiers": {
+                "light": {
+                    "model": "gpt-5.4-mini",
+                    "provider": "openai-codex",
+                    "reasoning_effort": "low",
+                    "max_iterations": 25,
+                },
+                "review": {
+                    "model": "gpt-5.4",
+                    "provider": "openai-codex",
+                    "reasoning_effort": "high",
+                    "max_iterations": 60,
+                },
+            },
+        }
+
+        with patch("tools.delegate_tool._load_config", return_value=cfg), \
+             patch("tools.delegate_tool._resolve_delegation_credentials", side_effect=lambda resolved_cfg, _parent: {
+                 "model": resolved_cfg.get("model"),
+                 "provider": resolved_cfg.get("provider"),
+                 "base_url": None,
+                 "api_key": None,
+                 "api_mode": None,
+                 "reasoning_effort": resolved_cfg.get("reasoning_effort"),
+             }), \
+             patch("tools.delegate_tool._run_single_child") as mock_run, \
+             patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": "ok", "completed": True, "api_calls": 1
+            }
+            MockAgent.return_value = mock_child
+            mock_run.return_value = {
+                "task_index": 0, "status": "completed", "summary": "ok", "api_calls": 1, "duration_seconds": 0.1
+            }
+
+            delegate_task(
+                tasks=[
+                    {"goal": "Quick inspect", "tier": "light"},
+                    {"goal": "Deep review", "tier": "review"},
+                ],
+                parent_agent=parent,
+            )
+
+            calls = MockAgent.call_args_list
+            self.assertEqual(calls[0].kwargs["model"], "gpt-5.4-mini")
+            self.assertEqual(calls[0].kwargs["reasoning_config"]["effort"], "low")
+            self.assertEqual(calls[0].kwargs["max_iterations"], 25)
+            self.assertEqual(calls[1].kwargs["model"], "gpt-5.4")
+            self.assertEqual(calls[1].kwargs["reasoning_config"]["effort"], "high")
+            self.assertEqual(calls[1].kwargs["max_iterations"], 60)
 
 
 if __name__ == "__main__":

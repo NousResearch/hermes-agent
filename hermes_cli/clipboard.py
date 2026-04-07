@@ -117,18 +117,16 @@ def _macos_osascript(dest: Path) -> bool:
     return False
 
 
-# ── Native Windows ────────────────────────────────────────────────────────
+# ── Shared PowerShell scripts (native Windows + WSL2) ─────────────────────
 
-# PowerShell scripts for native Windows.
-# Same .NET approach as the WSL path but called directly (not via powershell.exe
-# cross-call).  ``powershell`` resolves to Windows PowerShell 5.1 (always present);
-# ``pwsh`` would be PowerShell 7+ (optional).  We try ``powershell`` first.
-_WIN_PS_CHECK = (
+# .NET System.Windows.Forms.Clipboard — used by both native Windows (powershell)
+# and WSL2 (powershell.exe) paths.
+_PS_CHECK_IMAGE = (
     "Add-Type -AssemblyName System.Windows.Forms;"
     "[System.Windows.Forms.Clipboard]::ContainsImage()"
 )
 
-_WIN_PS_EXTRACT = (
+_PS_EXTRACT_IMAGE = (
     "Add-Type -AssemblyName System.Windows.Forms;"
     "Add-Type -AssemblyName System.Drawing;"
     "$img = [System.Windows.Forms.Clipboard]::GetImage();"
@@ -137,6 +135,12 @@ _WIN_PS_EXTRACT = (
     "$img.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png);"
     "[System.Convert]::ToBase64String($ms.ToArray())"
 )
+
+
+# ── Native Windows ────────────────────────────────────────────────────────
+
+# Native Windows uses ``powershell`` (Windows PowerShell 5.1, always present)
+# or ``pwsh`` (PowerShell 7+, optional).  Discovery is cached per-process.
 
 
 def _find_powershell() -> str | None:
@@ -174,7 +178,7 @@ def _windows_has_image() -> bool:
         return False
     try:
         r = subprocess.run(
-            [ps, "-NoProfile", "-NonInteractive", "-Command", _WIN_PS_CHECK],
+            [ps, "-NoProfile", "-NonInteractive", "-Command", _PS_CHECK_IMAGE],
             capture_output=True, text=True, timeout=5,
         )
         return r.returncode == 0 and "True" in r.stdout
@@ -191,7 +195,7 @@ def _windows_save(dest: Path) -> bool:
         return False
     try:
         r = subprocess.run(
-            [ps, "-NoProfile", "-NonInteractive", "-Command", _WIN_PS_EXTRACT],
+            [ps, "-NoProfile", "-NonInteractive", "-Command", _PS_EXTRACT_IMAGE],
             capture_output=True, text=True, timeout=15,
         )
         if r.returncode != 0:
@@ -241,24 +245,7 @@ def _linux_save(dest: Path) -> bool:
 
 
 # ── WSL2 (powershell.exe) ────────────────────────────────────────────────
-
-# PowerShell script: get clipboard image as base64-encoded PNG on stdout.
-# Using .NET System.Windows.Forms.Clipboard — always available on Windows.
-_PS_CHECK_IMAGE = (
-    "Add-Type -AssemblyName System.Windows.Forms;"
-    "[System.Windows.Forms.Clipboard]::ContainsImage()"
-)
-
-_PS_EXTRACT_IMAGE = (
-    "Add-Type -AssemblyName System.Windows.Forms;"
-    "Add-Type -AssemblyName System.Drawing;"
-    "$img = [System.Windows.Forms.Clipboard]::GetImage();"
-    "if ($null -eq $img) { exit 1 }"
-    "$ms = New-Object System.IO.MemoryStream;"
-    "$img.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png);"
-    "[System.Convert]::ToBase64String($ms.ToArray())"
-)
-
+# Reuses _PS_CHECK_IMAGE / _PS_EXTRACT_IMAGE defined above.
 
 def _wsl_has_image() -> bool:
     """Check if Windows clipboard has an image (via powershell.exe)."""

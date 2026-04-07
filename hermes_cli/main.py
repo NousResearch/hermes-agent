@@ -1587,10 +1587,12 @@ def _remove_custom_provider(config):
 def _model_flow_named_custom(config, provider_info):
     """Handle a named custom provider from config.yaml custom_providers list.
 
-    If the entry has a saved model name, activates it immediately.
-    Otherwise probes the endpoint's /models API to let the user pick one.
+    If a model is already saved for this provider, the user is offered a
+    choice: re-activate the saved model immediately, or probe the endpoint
+    and browse the full model list.  This keeps the quick-switch convenient
+    while still letting users see what's available.
     """
-    from hermes_cli.auth import _save_model_choice, deactivate_provider
+    from hermes_cli.auth import _save_model_choice, _prompt_model_selection, deactivate_provider
     from hermes_cli.config import save_env_value, load_config, save_config
     from hermes_cli.models import fetch_api_models
 
@@ -1599,81 +1601,73 @@ def _model_flow_named_custom(config, provider_info):
     api_key = provider_info.get("api_key", "")
     saved_model = provider_info.get("model", "")
 
-    # If a model is saved, just activate immediately — no probing needed
-    if saved_model:
-        _save_model_choice(saved_model)
-
-        cfg = load_config()
-        model = cfg.get("model")
-        if not isinstance(model, dict):
-            model = {"default": model} if model else {}
-            cfg["model"] = model
-        model["provider"] = "custom"
-        model["base_url"] = base_url
-        if api_key:
-            model["api_key"] = api_key
-        save_config(cfg)
-        deactivate_provider()
-
-        print(f"✅ Switched to: {saved_model}")
-        print(f"   Provider: {name} ({base_url})")
-        return
-
-    # No saved model — probe endpoint and let user pick
     print(f"  Provider: {name}")
     print(f"  URL:      {base_url}")
+    if saved_model:
+        print(f"  Model:    {saved_model} (saved)")
     print()
-    print("No model saved for this provider. Fetching available models...")
-    models = fetch_api_models(api_key, base_url, timeout=8.0)
 
-    if models:
-        print(f"Found {len(models)} model(s):\n")
+    # If a saved model exists, let the user choose: reuse or browse
+    browse = True
+    if saved_model:
         try:
             from simple_term_menu import TerminalMenu
-            menu_items = [f"  {m}" for m in models] + ["  Cancel"]
+            choices = [
+                f"  Use saved model ({saved_model})",
+                "  Browse available models",
+                "  Cancel",
+            ]
             menu = TerminalMenu(
-                menu_items, cursor_index=0,
+                choices, cursor_index=0,
                 menu_cursor="-> ", menu_cursor_style=("fg_green", "bold"),
                 menu_highlight_style=("fg_green",),
                 cycle_cursor=True, clear_screen=False,
-                title=f"Select model from {name}:",
             )
             idx = menu.show()
             print()
-            if idx is None or idx >= len(models):
-                print("Cancelled.")
+            if idx is None or idx == 2:
+                print("No change.")
                 return
-            model_name = models[idx]
+            browse = (idx == 1)
         except (ImportError, NotImplementedError):
-            for i, m in enumerate(models, 1):
-                print(f"  {i}. {m}")
-            print(f"  {len(models) + 1}. Cancel")
+            print("  1. Use saved model")
+            print("  2. Browse available models")
+            print("  3. Cancel")
             print()
             try:
-                val = input(f"Choice [1-{len(models) + 1}]: ").strip()
-                if not val:
-                    print("Cancelled.")
+                val = input("Choice [1-3]: ").strip()
+                if val == "3" or not val:
+                    print("No change.")
                     return
-                idx = int(val) - 1
-                if idx < 0 or idx >= len(models):
-                    print("Cancelled.")
-                    return
-                model_name = models[idx]
-            except (ValueError, KeyboardInterrupt, EOFError):
+                browse = (val == "2")
+            except (KeyboardInterrupt, EOFError):
                 print("\nCancelled.")
                 return
-    else:
-        print("Could not fetch models from endpoint. Enter model name manually.")
-        try:
-            model_name = input("Model name: ").strip()
-        except (KeyboardInterrupt, EOFError):
-            print("\nCancelled.")
-            return
-        if not model_name:
-            print("No model specified. Cancelled.")
-            return
 
-    # Activate and save the model to the custom_providers entry
+    if browse:
+        print("Fetching available models...")
+        models = fetch_api_models(api_key, base_url, timeout=8.0)
+
+        if models:
+            print(f"Found {len(models)} model(s):\n")
+            model_name = _prompt_model_selection(models, current_model=saved_model)
+            if not model_name:
+                print("No change.")
+                return
+        else:
+            print("Could not fetch models from endpoint. Enter model name manually.")
+            try:
+                model_name = input("Model name: ").strip()
+            except (KeyboardInterrupt, EOFError):
+                print("\nCancelled.")
+                return
+            if not model_name:
+                print("No model specified. Cancelled.")
+                return
+    else:
+        model_name = saved_model
+
+    # Activate and save the model
     _save_model_choice(model_name)
 
     cfg = load_config()
@@ -4952,6 +4946,73 @@ For more help on a command:
             tools_command(args)
 
     tools_parser.set_defaults(func=cmd_tools)
+
+    # =========================================================================
+    # mcp command
+    # =========================================================================
+    mcp_parser = subparsers.add_parser(
+        "mcp",
+        help="Manage MCP server connections",
+        description=(
+            "Add, remove, list, test, and configure MCP server connections.\n\n"
+            "MCP servers provide additional tools via the Model Context Protocol.\n"
+            "Use 'hermes mcp add' to connect to a new server with interactive\n"
+            "tool discovery and selection.\n\n"
+            "Run 'hermes mcp' with no subcommand to list configured servers."
+        ),
+    )
+    mcp_sub = mcp_parser.add_subparsers(dest="mcp_action")
+
+    # hermes mcp add <name> --url <url> | --command <cmd>
+    mcp_add_p = mcp_sub.add_parser(
+        "add",
+        help="Add an MCP server (discovery-first install)",
+    )
+    mcp_add_p.add_argument("name", help="Server name (used as config key)")
+    mcp_add_p.add_argument("--url", help="HTTP/SSE endpoint URL")
+    mcp_add_p.add_argument("--command", help="Stdio command (e.g. npx)")
+    mcp_add_p.add_argument(
+        "--args", nargs="*", metavar="ARG",
+        help="Command arguments for stdio transport",
+    )
+    mcp_add_p.add_argument(
+        "--auth", choices=["oauth", "header"],
+        help="Authentication type (default: prompt for header/API key)",
+    )
+
+    # hermes mcp remove <name>
+    mcp_remove_p = mcp_sub.add_parser(
+        "remove", aliases=["rm"],
+        help="Remove an MCP server from config",
+    )
+    mcp_remove_p.add_argument("name", help="Server name to remove")
+
+    # hermes mcp list
+    mcp_sub.add_parser(
+        "list", aliases=["ls"],
+        help="List configured MCP servers",
+    )
+
+    # hermes mcp test <name>
+    mcp_test_p = mcp_sub.add_parser(
+        "test",
+        help="Test MCP server connection and discover tools",
+    )
+    mcp_test_p.add_argument("name", help="Server name to test")
+
+    # hermes mcp configure <name>
+    mcp_configure_p = mcp_sub.add_parser(
+        "configure", aliases=["config"],
+        help="Reconfigure which tools are enabled for a server",
+    )
+    mcp_configure_p.add_argument("name", help="Server name to configure")
+
+    def cmd_mcp(args):
+        from hermes_cli.mcp_config import mcp_command
+        mcp_command(args)
+
+    mcp_parser.set_defaults(func=cmd_mcp)
+
     # =========================================================================
     # mcp command — manage MCP server connections
     # =========================================================================
@@ -5521,6 +5582,13 @@ Examples:
         cmd_chat(args)
         return
     
+    # Execute the command — check for func first because nested subparsers
+    # (e.g. "hermes mcp add") may set func correctly while leaving
+    # args.command as None (known argparse quirk with nested subparsers).
+    if hasattr(args, 'func'):
+        args.func(args)
+        return
+
     # Default to chat if no command specified
     if args.command is None:
         args.query = None
@@ -5534,12 +5602,8 @@ Examples:
             args.worktree = False
         cmd_chat(args)
         return
-    
-    # Execute the command
-    if hasattr(args, 'func'):
-        args.func(args)
-    else:
-        parser.print_help()
+
+    parser.print_help()
 
 
 if __name__ == "__main__":

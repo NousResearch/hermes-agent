@@ -52,6 +52,7 @@ hermes [global-options] <command> [subcommand/options]
 | `hermes mcp` | Manage MCP server configurations and run Hermes as an MCP server. |
 | `hermes plugins` | Manage Hermes Agent plugins (install, enable, disable, remove). |
 | `hermes tools` | Configure enabled tools per platform. |
+| `hermes mcp` | Manage MCP server connections (add, remove, list, test, configure). |
 | `hermes sessions` | Browse, export, prune, rename, and delete sessions. |
 | `hermes insights` | Show token/cost/activity analytics. |
 | `hermes claw` | OpenClaw migration helpers. |
@@ -468,6 +469,53 @@ hermes tools [--summary]
 | `--summary` | Print the current enabled-tools summary and exit. |
 
 Without `--summary`, this launches the interactive per-platform tool configuration UI.
+
+## `hermes mcp`
+
+```bash
+hermes mcp <subcommand>
+```
+
+Manage MCP server connections — add, remove, list, test, and reconfigure.
+
+Subcommands:
+
+| Subcommand | Description |
+|------------|-------------|
+| `add <name>` | Add an MCP server with interactive tool discovery. |
+| `remove <name>` / `rm` | Remove a server and clean up tokens. |
+| `list` / `ls` | List configured servers with status. |
+| `test <name>` | Test connection and discover tools. |
+| `configure <name>` / `config` | Reconfigure which tools are enabled. |
+
+### `hermes mcp add`
+
+```bash
+hermes mcp add <name> --url <endpoint>            # HTTP server
+hermes mcp add <name> --command <cmd> --args ...   # Stdio server
+hermes mcp add <name> --url <endpoint> --auth oauth  # OAuth server
+```
+
+| Option | Description |
+|--------|-------------|
+| `--url <url>` | HTTP/SSE endpoint URL. |
+| `--command <cmd>` | Stdio command (e.g. `npx`). |
+| `--args <arg...>` | Arguments for stdio transport. |
+| `--auth <type>` | Authentication: `oauth` or `header`. |
+
+The command connects to the server, discovers tools, and presents an interactive selection before saving.
+
+Examples:
+
+```bash
+hermes mcp add ink --url "https://mcp.ml.ink/mcp"
+hermes mcp add github --command npx --args -y @modelcontextprotocol/server-github
+hermes mcp add my-api --url "https://api.example.com/mcp" --auth oauth
+hermes mcp list
+hermes mcp test ink
+hermes mcp configure ink
+hermes mcp remove ink
+```
 
 ## `hermes sessions`
 

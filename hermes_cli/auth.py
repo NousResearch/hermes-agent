@@ -2237,19 +2237,20 @@ def _prompt_model_selection(
     current_model: str = "",
     pricing: Optional[Dict[str, Dict[str, str]]] = None,
 ) -> Optional[str]:
-    """Interactive model selection. Puts current_model first with a marker. Returns chosen model ID or None.
+    """Interactive model selection. Marks current_model with a visual indicator but
+    preserves the original list order. Cursor starts at the top. Returns chosen model ID or None.
 
     If *pricing* is provided (``{model_id: {prompt, completion}}``), a compact
     price indicator is shown next to each model in aligned columns.
     """
     from hermes_cli.models import _format_price_per_mtok
 
-    # Reorder: current model first, then the rest (deduplicated)
+    # Preserve original order, just deduplicate
+    seen = set()
     ordered = []
-    if current_model and current_model in model_ids:
-        ordered.append(current_model)
     for mid in model_ids:
-        if mid not in ordered:
+        if mid not in seen:
+            seen.add(mid)
             ordered.append(mid)
 
     # Column-aligned labels when pricing is available

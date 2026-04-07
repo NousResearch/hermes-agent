@@ -1547,7 +1547,7 @@ class TestRunConversation:
         assert any(m.get("reasoning") for m in assistant_msgs)
 
     def test_reasoning_only_local_resumed_no_compression_triggered(self, agent):
-        """Reasoning-only responses no longer trigger compression — accepted immediately."""
+        """Reasoning-only responses no longer trigger compression — prefill then accepted."""
         self._setup_agent(agent)
         agent.base_url = "http://127.0.0.1:1234/v1"
         agent.compression_enabled = True
@@ -1561,8 +1561,9 @@ class TestRunConversation:
             {"role": "assistant", "content": "old answer"},
         ]
 
+        # 3 responses: original + 2 prefill continuations (structured reasoning triggers prefill)
         with (
-            patch.object(agent, "_interruptible_api_call", side_effect=[empty_resp]),
+            patch.object(agent, "_interruptible_api_call", side_effect=[empty_resp, empty_resp, empty_resp]),
             patch.object(agent, "_compress_context") as mock_compress,
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
@@ -1573,17 +1574,18 @@ class TestRunConversation:
         mock_compress.assert_not_called()  # no compression triggered
         assert result["completed"] is True
         assert result["final_response"] == "(empty)"
-        assert result["api_calls"] == 1
+        assert result["api_calls"] == 3  # 1 original + 2 prefill continuations
 
-    def test_reasoning_only_response_accepted_without_retry(self, agent):
-        """Reasoning-only response should be accepted with (empty) content, no retries."""
+    def test_reasoning_only_response_prefill_then_empty(self, agent):
+        """Structured reasoning-only triggers prefill continuation (up to 2), then falls through to (empty)."""
         self._setup_agent(agent)
         empty_resp = _mock_response(
             content=None,
             finish_reason="stop",
             reasoning_content="structured reasoning answer",
         )
-        agent.client.chat.completions.create.side_effect = [empty_resp]
+        # 3 responses: original + 2 prefill continuations, all reasoning-only
+        agent.client.chat.completions.create.side_effect = [empty_resp, empty_resp, empty_resp]
         with (
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
@@ -1592,7 +1594,35 @@ class TestRunConversation:
             result = agent.run_conversation("answer me")
         assert result["completed"] is True
         assert result["final_response"] == "(empty)"
-        assert result["api_calls"] == 1  # no retries
+        assert result["api_calls"] == 3  # 1 original + 2 prefill continuations
+
+    def test_reasoning_only_prefill_succeeds_on_continuation(self, agent):
+        """When prefill continuation produces content, it becomes the final response."""
+        self._setup_agent(agent)
+        empty_resp = _mock_response(
+            content=None,
+            finish_reason="stop",
+            reasoning_content="structured reasoning answer",
+        )
+        content_resp = _mock_response(
+            content="Here is the actual answer.",
+            finish_reason="stop",
+        )
+        agent.client.chat.completions.create.side_effect = [empty_resp, content_resp]
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("answer me")
+        assert result["completed"] is True
+        assert result["final_response"] == "Here is the actual answer."
+        assert result["api_calls"] == 2  # 1 original + 1 prefill continuation
+        # Prefill message should be cleaned up — no consecutive assistant messages
+        roles = [m.get("role") for m in result["messages"]]
+        for i in range(len(roles) - 1):
+            if roles[i] == "assistant" and roles[i + 1] == "assistant":
+                raise AssertionError("Consecutive assistant messages found in history")
 
     def test_truly_empty_response_accepted_without_retry(self, agent):
         """Truly empty response (no content, no reasoning) should still complete with (empty)."""

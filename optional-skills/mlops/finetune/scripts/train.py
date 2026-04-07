@@ -188,10 +188,22 @@ class TrainingOrchestrator:
                         cluster_id, version, train_size)
             return config_path.parent
 
-        # Launch training
+        # Launch training. accelerate ships as a console script in
+        # venv/bin/accelerate — it can't be invoked via `python -m accelerate`
+        # because the package doesn't define __main__. We resolve the binary
+        # in the same venv as the current Python interpreter so virtual envs
+        # work correctly.
         log_path = LOGS_DIR / f"train_{cluster_id}_{version}_{datetime.now():%Y%m%d_%H%M%S}.log"
+        accelerate_bin = Path(sys.executable).parent / "accelerate"
+        if not accelerate_bin.exists():
+            logger.error(
+                "accelerate not found at %s — install with: pip install accelerate axolotl",
+                accelerate_bin,
+            )
+            return None
+
         cmd = [
-            sys.executable, "-m", "accelerate", "launch",
+            str(accelerate_bin), "launch",
             "-m", "axolotl.cli.train",
             str(config_path),
         ]

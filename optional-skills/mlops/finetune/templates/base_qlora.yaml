@@ -1,4 +1,7 @@
-base_model: ~/programs/carnice/Carnice-9b-Q8_0.gguf
+# HuggingFace safetensors source for training. The GGUF at
+# ~/programs/carnice/Carnice-9b-Q8_0.gguf is for inference (llama.cpp serving)
+# only — Axolotl trains against the original safetensors.
+base_model: kai-os/Carnice-9b
 model_type: AutoModelForCausalLM
 tokenizer_type: AutoTokenizer
 chat_template: chatml
@@ -17,15 +20,18 @@ lora_target_modules:
   - up_proj
   - down_proj
 
-sequence_len: 2048
+# VRAM-conservative settings for a single 12GB consumer GPU (e.g. RTX 4070).
+# A 9B model at QLoRA needs ~10.5-11.5 GB peak VRAM at these settings, leaving
+# ~0.5-1.5 GB headroom. If you OOM, drop sequence_len to 768 and lora_r to 8.
+sequence_len: 1024
 sample_packing: true
 pad_to_sequence_len: true
 
 num_epochs: 3
 learning_rate: 0.0001
 warmup_ratio: 0.05
-gradient_accumulation_steps: 4
-micro_batch_size: 2
+gradient_accumulation_steps: 8
+micro_batch_size: 1
 
 weight_decay: 0.01
 max_grad_norm: 1.0

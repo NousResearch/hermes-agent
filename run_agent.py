@@ -1449,20 +1449,53 @@ class AIAgent:
         
 
 
-        # Memory provider plugin (external — one at a time, alongside built-in)
-        # Reads memory.provider from config to select which plugin to activate.
+        # Memory provider plugins (external — one or more, alongside built-in)
+        # Reads memory.providers list from config to select which plugins to activate.
         self._memory_manager = None
         if not skip_memory:
             try:
-                _mem_provider_name = mem_config.get("provider", "") if mem_config else ""
+                # Read providers list; fall back to legacy single-string field
+                _mem_provider_names = (mem_config.get("providers", []) or []) if mem_config else []
+                if not _mem_provider_names and mem_config:
+                    _legacy = mem_config.get("provider", "")
+                    if _legacy:
+                        _mem_provider_names = [_legacy]
 
-                if _mem_provider_name:
+                # Auto-migrate: if Honcho was actively configured (enabled +
+                # credentials) but memory.providers is not set, activate the
+                # honcho plugin automatically.  Just having the config file
+                # is not enough — the user may have disabled Honcho or the
+                # file may be from a different tool.
+                if not _mem_provider_names:
+                    try:
+                        from plugins.memory.honcho.client import HonchoClientConfig as _HCC
+                        _hcfg = _HCC.from_global_config()
+                        if _hcfg.enabled and (_hcfg.api_key or _hcfg.base_url):
+                            _mem_provider_names = ["honcho"]
+                            # Persist so this only auto-migrates once
+                            try:
+                                from hermes_cli.config import load_config as _lc, save_config as _sc
+                                _cfg = _lc()
+                                _cfg.setdefault("memory", {})["providers"] = ["honcho"]
+                                _sc(_cfg)
+                            except Exception:
+                                pass
+                            if not self.quiet_mode:
+                                print("  ✓ Auto-migrated Honcho to memory provider plugin.")
+                                print("    Your config and data are preserved.\n")
+                    except Exception:
+                        pass
+
+                if _mem_provider_names:
                     from agent.memory_manager import MemoryManager as _MemoryManager
                     from plugins.memory import load_memory_provider as _load_mem
                     self._memory_manager = _MemoryManager()
-                    _mp = _load_mem(_mem_provider_name)
-                    if _mp and _mp.is_available():
-                        self._memory_manager.add_provider(_mp)
+                    for _mpn in _mem_provider_names:
+                        _mp = _load_mem(_mpn)
+                        if _mp and _mp.is_available():
+                            self._memory_manager.add_provider(_mp)
+                        else:
+                            logger.debug("Memory provider '%s' not found or not available", _mpn)
                     if self._memory_manager.providers:
                         _init_kwargs = {
                             "session_id": self.session_id,
@@ -1504,9 +1537,8 @@ class AIAgent:
                         except Exception:
                             pass
                         self._memory_manager.initialize_all(**_init_kwargs)
-                        logger.info("Memory provider '%s' activated", _mem_provider_name)
+                        logger.info("Memory providers %s activated", self._memory_manager.provider_names)
                     else:
-                        logger.debug("Memory provider '%s' not found or not available", _mem_provider_name)
                         self._memory_manager = None
             except Exception as _mpe:
                 logger.warning("Memory provider plugin init failed: %s", _mpe)

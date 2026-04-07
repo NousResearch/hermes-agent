@@ -212,7 +212,13 @@ def cmd_setup_provider(provider_name: str) -> None:
         return
 
     # Fallback: generic schema-based setup (same as cmd_setup)
-    config["memory"]["provider"] = name
+    providers_list = config["memory"].get("providers", [])
+    if not isinstance(providers_list, list):
+        providers_list = []
+    if name not in providers_list:
+        providers_list.append(name)
+    config["memory"]["providers"] = providers_list
+    config["memory"].pop("provider", None)
     save_config(config)
     print(f"\n  Memory provider: {name}")
     print(f"  Activation saved to config.yaml\n")
@@ -244,7 +250,8 @@ def cmd_setup(args) -> None:
 
     # Built-in only
     if selected >= len(providers) or selected < 0:
-        config["memory"]["provider"] = ""
+        config["memory"]["providers"] = []
+        config["memory"].pop("provider", None)
         save_config(config)
         print("\n  ✓ Memory provider: built-in only")
         print("  Saved to config.yaml\n")
@@ -330,8 +337,14 @@ def cmd_setup(args) -> None:
                     if env_var and env_var not in env_writes:
                         env_writes[env_var] = val
 
-    # Write activation key to config.yaml
-    config["memory"]["provider"] = name
+    # Write activation to config.yaml (append to providers list, deduped)
+    providers_list = config["memory"].get("providers", [])
+    if not isinstance(providers_list, list):
+        providers_list = []
+    if name not in providers_list:
+        providers_list.append(name)
+    config["memory"]["providers"] = providers_list
+    config["memory"].pop("provider", None)
     save_config(config)
 
     # Write non-secret config to provider's native location
@@ -390,29 +403,36 @@ def cmd_status(args) -> None:
 
     config = load_config()
     mem_config = config.get("memory", {})
-    provider_name = mem_config.get("provider", "")
+    # Read providers list with backward compat for legacy single string
+    active_names = mem_config.get("providers", [])
+    if not active_names:
+        legacy = mem_config.get("provider", "")
+        active_names = [legacy] if legacy else []
 
     print(f"\nMemory status\n" + "─" * 40)
-    print(f"  Built-in:  always active")
-    print(f"  Provider:  {provider_name or '(none — built-in only)'}")
+    print(f"  Built-in:   always active")
+    if active_names:
+        print(f"  Providers:  {', '.join(active_names)}")
+    else:
+        print(f"  Providers:  (none — built-in only)")
 
-    if provider_name:
+    for provider_name in active_names:
         provider_config = mem_config.get(provider_name, {})
         if provider_config:
             print(f"\n  {provider_name} config:")
             for key, val in provider_config.items():
                 print(f"    {key}: {val}")
 
-        providers = _get_available_providers()
-        found = any(name == provider_name for name, _, _ in providers)
+        available_providers = _get_available_providers()
+        found = any(name == provider_name for name, _, _ in available_providers)
         if found:
-            print(f"\n  Plugin:    installed ✓")
-            for pname, _, p in providers:
+            print(f"\n  {provider_name} plugin:  installed ✓")
+            for pname, _, p in available_providers:
                 if pname == provider_name:
                     if p.is_available():
-                        print(f"  Status:    available ✓")
+                        print(f"  {provider_name} status: available ✓")
                     else:
-                        print(f"  Status:    not available ✗")
+                        print(f"  {provider_name} status: not available ✗")
                         schema = p.get_config_schema() if hasattr(p, "get_config_schema") else []
                         # Check all fields that have env_var (both secret and non-secret)
                         required_fields = [f for f in schema if f.get("env_var")]
@@ -429,14 +449,14 @@ def cmd_status(args) -> None:
                                 print(line)
                     break
         else:
-            print(f"\n  Plugin:    NOT installed ✗")
+            print(f"\n  {provider_name} plugin:  NOT installed ✗")
             print(f"  Install the '{provider_name}' memory plugin to ~/.hermes/plugins/")
 
-    providers = _get_available_providers()
-    if providers:
+    available_providers = _get_available_providers()
+    if available_providers:
         print(f"\n  Installed plugins:")
-        for pname, desc, _ in providers:
-            active = " ← active" if pname == provider_name else ""
+        for pname, desc, _ in available_providers:
+            active = " ← active" if pname in active_names else ""
             print(f"    • {pname}  ({desc}){active}")
 
     print()

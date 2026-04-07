@@ -16,13 +16,10 @@ Usage in execute_code:
 """
 
 import os
-import sys
 import json
 import time
-import re
 import yaml
 from pathlib import Path
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 try:
     from openai import OpenAI

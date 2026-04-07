@@ -20,7 +20,6 @@ Usage:
     response = agent.run_conversation("Tell me about the latest Python updates")
 """
 
-import atexit
 import asyncio
 import base64
 import concurrent.futures
@@ -36,7 +35,6 @@ import sys
 import tempfile
 import time
 import threading
-import weakref
 from types import SimpleNamespace
 import uuid
 from typing import List, Dict, Any, Optional
@@ -654,7 +652,7 @@ class AIAgent:
         self.stream_delta_callback = stream_delta_callback
         self.status_callback = status_callback
         self.tool_gen_callback = tool_gen_callback
-        self._last_reported_tool = None  # Track for "new tool" mode
+
         
         # Tool execution state — allows _vprint during tool execution
         # even when stream consumers are registered (no tokens streaming then)
@@ -2702,20 +2700,7 @@ class AIAgent:
 
         if not _soul_loaded:
             # Fallback to hardcoded identity
-            _ai_peer_name = (
-                None
-                if False
-                else None
-            )
-            if _ai_peer_name:
-                _identity = DEFAULT_AGENT_IDENTITY.replace(
-                    "You are Hermes Agent",
-                    f"You are {_ai_peer_name}",
-                    1,
-                )
-            else:
-                _identity = DEFAULT_AGENT_IDENTITY
-            prompt_parts = [_identity]
+            prompt_parts = [DEFAULT_AGENT_IDENTITY]
 
         # Tool-aware behavioral guidance: only inject when the tools are loaded
         tool_guidance = []
@@ -3400,7 +3385,7 @@ class AIAgent:
         elif "stream" in api_kwargs:
             raise ValueError("Codex Responses stream flag is only allowed in fallback streaming requests.")
 
-        unexpected = sorted(key for key in api_kwargs.keys() if key not in allowed_keys)
+        unexpected = sorted(key for key in api_kwargs if key not in allowed_keys)
         if unexpected:
             raise ValueError(
                 f"Codex Responses request has unsupported field(s): {', '.join(unexpected)}."
@@ -5908,7 +5893,7 @@ class AIAgent:
                         args = json.loads(tc.function.arguments)
                         flush_target = args.get("target", "memory")
                         from tools.memory_tool import memory_tool as _memory_tool
-                        result = _memory_tool(
+                        _memory_tool(
                             action=args.get("action"),
                             target=flush_target,
                             content=args.get("content"),
@@ -7468,7 +7453,7 @@ class AIAgent:
                         elif not isinstance(output_items, list):
                             response_invalid = True
                             error_details.append("response.output is not a list")
-                        elif len(output_items) == 0:
+                        elif not output_items:
                             # If we reach here, _run_codex_stream's backfill
                             # from output_item.done events and text-delta
                             # synthesis both failed to populate output.
@@ -7491,11 +7476,11 @@ class AIAgent:
                         elif not isinstance(content_blocks, list):
                             response_invalid = True
                             error_details.append("response.content is not a list")
-                        elif len(content_blocks) == 0:
+                        elif not content_blocks:
                             response_invalid = True
                             error_details.append("response.content is empty")
                     else:
-                        if response is None or not hasattr(response, 'choices') or response.choices is None or len(response.choices) == 0:
+                        if response is None or not hasattr(response, 'choices') or response.choices is None or not response.choices:
                             response_invalid = True
                             if response is None:
                                 error_details.append("response is None")
@@ -9033,7 +9018,6 @@ class AIAgent:
                                     "content": f"Error executing tool: {error_msg}",
                                 }
                                 messages.append(err_msg)
-                        pending_handled = True
                     break
                 
                 # Non-tool errors don't need a synthetic message injected.

@@ -85,7 +85,7 @@ class TodoStore:
 
     def has_items(self) -> bool:
         """Check if there are any items in the list."""
-        return len(self._items) > 0
+        return bool(self._items)
 
     def format_for_injection(self) -> Optional[str]:
         """

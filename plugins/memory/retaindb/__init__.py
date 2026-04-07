@@ -20,7 +20,6 @@ Config (env vars or hermes config.yaml under retaindb:):
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import os
@@ -189,7 +188,7 @@ class _Client:
             "Content-Type": "application/json",
             "x-sdk-runtime": "hermes-plugin",
         }
-        if path.startswith("/v1/memory") or path.startswith("/v1/context"):
+        if path.startswith(("/v1/memory", "/v1/context")):
             h["X-API-Key"] = token
         return h
 

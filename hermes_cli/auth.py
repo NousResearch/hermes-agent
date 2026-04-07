@@ -2839,7 +2839,6 @@ def _login_nous(args, pconfig: ProviderConfig) -> None:
         )
 
         inference_base_url = auth_state["inference_base_url"]
-        verify: bool | str = False if insecure else (ca_bundle if ca_bundle else True)
 
         with _auth_store_lock():
             auth_store = _load_auth_store()

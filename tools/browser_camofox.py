@@ -27,9 +27,7 @@ import json
 import logging
 import os
 import threading
-import time
 import uuid
-from pathlib import Path
 from typing import Any, Dict, Optional
 
 import requests
@@ -445,7 +443,7 @@ def camofox_get_images(task_id: Optional[str] = None) -> str:
         lines = snapshot.split("\n")
         for i, line in enumerate(lines):
             stripped = line.strip()
-            if stripped.startswith("- img ") or stripped.startswith("img "):
+            if stripped.startswith(("- img ", "img ")):
                 alt_match = re.search(r'img\s+"([^"]*)"', stripped)
                 alt = alt_match.group(1) if alt_match else ""
                 # Look for URL on the next line

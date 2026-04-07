@@ -16,7 +16,7 @@ import re
 import secrets
 import time
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict
 
 from hermes_constants import display_hermes_home
 

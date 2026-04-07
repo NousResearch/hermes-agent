@@ -12,7 +12,8 @@ import shlex
 import threading
 import uuid
 import warnings
-from typing import Optional
+from pathlib import Path
+from typing import Dict, Optional
 
 from tools.environments.base import BaseEnvironment
 from tools.interrupt import is_interrupted

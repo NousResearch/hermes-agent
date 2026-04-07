@@ -188,9 +188,7 @@ def _requires_bearer_auth(base_url: str | None) -> bool:
     if not base_url:
         return False
     normalized = base_url.rstrip("/").lower()
-    return normalized.startswith("https://api.minimax.io/anthropic") or normalized.startswith(
-        "https://api.minimaxi.com/anthropic"
-    )
+    return normalized.startswith(("https://api.minimax.io/anthropic", "https://api.minimaxi.com/anthropic"))
 
 
 def build_anthropic_client(api_key: str, base_url: str = None):
@@ -847,7 +845,7 @@ def _convert_openai_image_part_to_anthropic(part: Dict[str, Any]) -> Optional[Di
                 },
             }
 
-    if url.startswith("http://") or url.startswith("https://"):
+    if url.startswith(("http://", "https://")):
         return {
             "type": "image",
             "source": {

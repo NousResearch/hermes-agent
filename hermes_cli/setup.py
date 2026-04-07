@@ -21,7 +21,6 @@ from typing import Optional, Dict, Any
 
 from hermes_cli.nous_subscription import (
     apply_nous_provider_defaults,
-    get_nous_subscription_explainer_lines,
     get_nous_subscription_features,
 )
 from tools.tool_backend_helpers import managed_nous_tools_enabled
@@ -1347,8 +1346,6 @@ def setup_terminal_backend(config: dict):
     keep_current_idx = next_idx
     terminal_choices.append(f"Keep current ({current_backend})")
     idx_to_backend[keep_current_idx] = current_backend
-
-    default_terminal = backend_to_idx.get(current_backend, 0)
 
     terminal_idx = prompt_choice(
         "Select terminal backend:", terminal_choices, keep_current_idx

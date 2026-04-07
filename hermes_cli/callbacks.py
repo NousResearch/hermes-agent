@@ -25,7 +25,7 @@ def clarify_callback(cli, question, choices):
 
     timeout = CLI_CONFIG.get("clarify", {}).get("timeout", 120)
     response_queue = queue.Queue()
-    is_open_ended = not choices or len(choices) == 0
+    is_open_ended = not choices
 
     cli._clarify_state = {
         "question": question,

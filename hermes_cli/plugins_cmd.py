@@ -294,7 +294,7 @@ def cmd_install(identifier: str, force: bool = False) -> None:
         sys.exit(1)
 
     # Warn about insecure / local URL schemes
-    if git_url.startswith("http://") or git_url.startswith("file://"):
+    if git_url.startswith(("http://", "file://")):
         console.print(
             "[yellow]Warning:[/yellow] Using insecure/local URL scheme. "
             "Consider using https:// or git@ for production installs."

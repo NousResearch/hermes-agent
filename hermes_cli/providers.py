@@ -20,8 +20,7 @@ Other modules import from this file.  No parallel registries.
 from __future__ import annotations
 
 import logging
-import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
@@ -356,14 +355,6 @@ def _build_labels() -> Dict[str, str]:
 
 # Lazy-built on first access
 _labels_cache: Optional[Dict[str, str]] = None
-
-@property
-def LABELS() -> Dict[str, str]:
-    """Backward-compatible labels dict."""
-    global _labels_cache
-    if _labels_cache is None:
-        _labels_cache = _build_labels()
-    return _labels_cache
 
 # For direct import compat, expose as module-level dict
 # Built on demand by get_label() calls

@@ -60,7 +60,6 @@ try:
         CreateMessageRequestBody,
         GetChatRequest,
         GetMessageRequest,
-        GetImageRequest,
         GetMessageResourceRequest,
         P2ImMessageMessageReadV1,
         ReplyMessageRequest,

@@ -693,7 +693,6 @@ def _execute_remote(
     the remote environment, and tool calls are proxied through a polling
     thread that communicates via request/response files.
     """
-    from tools.terminal_tool import _interrupt_event
 
     _cfg = _load_config()
     timeout = _cfg.get("timeout", DEFAULT_TIMEOUT)

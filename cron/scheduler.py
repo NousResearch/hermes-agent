@@ -25,7 +25,6 @@ except ImportError:
         import msvcrt
     except ImportError:
         msvcrt = None
-import time
 from pathlib import Path
 from typing import Optional
 

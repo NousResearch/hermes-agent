@@ -1057,7 +1057,7 @@ class MatrixAdapter(BasePlatformAdapter):
 
         # Message type.
         msg_type = MessageType.TEXT
-        if body.startswith("!") or body.startswith("/"):
+        if body.startswith(("!", "/")):
             msg_type = MessageType.COMMAND
 
         source = self.build_source(

@@ -47,6 +47,7 @@ Creative content generation — ASCII art, hand-drawn style diagrams, and visual
 | `ascii-art` | Generate ASCII art using pyfiglet (571 fonts), cowsay, boxes, toilet, image-to-ascii, remote APIs (asciified, ascii.co.uk), and LLM fallback. No API keys required. | `creative/ascii-art` |
 | `ascii-video` | "Production pipeline for ASCII art video — any format. Converts video/audio/images/generative input into colored ASCII character video output (MP4, GIF, image sequence). Covers: video-to-ASCII conversion, audio-reactive music visualizers, generative ASCII art animations, hybrid… | `creative/ascii-video` |
 | `excalidraw` | Create hand-drawn style diagrams using Excalidraw JSON format. Generate .excalidraw files for architecture diagrams, flowcharts, sequence diagrams, concept maps, and more. Files can be opened at excalidraw.com or uploaded for shareable links. | `creative/excalidraw` |
+| `p5js` | Production pipeline for interactive and generative visual art using p5.js. Create sketches, render them to images/video via headless browser, and serve live previews. Supports canvas animations, data visualizations, and creative coding experiments. | `creative/p5js` |
 
 ## devops
 

@@ -3997,11 +3997,22 @@ class AIAgent:
             return stream_or_response
 
         terminal_response = None
+        _accumulated_output_items = []
         try:
             for event in stream_or_response:
                 event_type = getattr(event, "type", None)
                 if not event_type and isinstance(event, dict):
                     event_type = event.get("type")
+
+                # Capture completed output items for backfilling — same
+                # ChatGPT Codex backend quirk handled in _run_codex_stream.
+                if event_type == "response.output_item.done":
+                    item = getattr(event, "item", None)
+                    if item is None and isinstance(event, dict):
+                        item = event.get("item")
+                    if item is not None:
+                        _accumulated_output_items.append(item)
+
                 if event_type not in {"response.completed", "response.incomplete", "response.failed"}:
                     continue
 
@@ -4009,6 +4020,10 @@ class AIAgent:
                 if terminal_response is None and isinstance(event, dict):
                     terminal_response = event.get("response")
                 if terminal_response is not None:
+                    # Backfill empty output from collected stream items.
+                    _out = getattr(terminal_response, "output", None)
+                    if _accumulated_output_items and isinstance(_out, list) and not _out:
+                        terminal_response.output = list(_accumulated_output_items)
                     return terminal_response
         finally:
             close_fn = getattr(stream_or_response, "close", None)

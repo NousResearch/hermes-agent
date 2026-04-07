@@ -37,6 +37,7 @@ import json
 import logging
 import os
 import re
+import ssl
 import subprocess
 import time
 from datetime import datetime
@@ -183,6 +184,14 @@ class LinearAdapter(BasePlatformAdapter):
         )
         self._enforce_ip_allowlist: bool = str(enforce_ip).lower() not in ("false", "0", "no")
 
+        # TLS — serve HTTPS directly (no reverse proxy needed)
+        self._tls_cert: str = extra.get(
+            "tls_cert", os.getenv("LINEAR_TLS_CERT", "")
+        )
+        self._tls_key: str = extra.get(
+            "tls_key", os.getenv("LINEAR_TLS_KEY", "")
+        )
+
         # State
         self._runner = None
         self._http_session: Optional[Any] = None  # aiohttp.ClientSession — lazy init
@@ -210,8 +219,22 @@ class LinearAdapter(BasePlatformAdapter):
         self._runner = web.AppRunner(app)
         await self._runner.setup()
 
+        # Set up TLS if cert and key are provided
+        ssl_context = None
+        if self._tls_cert and self._tls_key:
+            ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            try:
+                ssl_context.load_cert_chain(self._tls_cert, self._tls_key)
+            except Exception as exc:
+                logger.error("[linear] Failed to load TLS cert/key: %s", exc)
+                await self._runner.cleanup()
+                self._runner = None
+                return False
+
         try:
-            site = web.TCPSite(self._runner, self._host, self._port)
+            site = web.TCPSite(
+                self._runner, self._host, self._port, ssl_context=ssl_context
+            )
             await site.start()
         except OSError as exc:
             logger.error("[linear] Port %d in use: %s", self._port, exc)
@@ -219,9 +242,11 @@ class LinearAdapter(BasePlatformAdapter):
             self._runner = None
             return False
 
+        proto = "https" if ssl_context else "http"
         self._running = True
         logger.info(
-            "[linear] Webhook server listening on %s:%d/hooks/linear",
+            "[linear] Webhook server listening on %s://%s:%d/hooks/linear",
+            proto,
             self._host,
             self._port,
         )

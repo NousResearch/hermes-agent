@@ -3566,7 +3566,7 @@ def cmd_update(args):
         try:
             from hermes_cli.profiles import list_profiles, get_active_profile_name, seed_profile_skills
             active = get_active_profile_name()
-            other_profiles = [p for p in list_profiles() if not p.is_default and p.name != active]
+            other_profiles = [p for p in list_profiles() if p.name != active]
             if other_profiles:
                 print()
                 print("→ Syncing bundled skills to other profiles...")

@@ -330,6 +330,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     }
     if _feishu_available:
         _MAX_LENGTHS[Platform.FEISHU] = FeishuAdapter.MAX_MESSAGE_LENGTH
+    _MAX_LENGTHS[Platform.LINEAR] = 10_000  # Linear comment limit
 
     # Smart-chunk the message to fit within platform limits.
     # For short messages or platforms without a known limit this is a no-op.
@@ -397,6 +398,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             result = await _send_feishu(pconfig, chat_id, chunk, thread_id=thread_id)
         elif platform == Platform.WECOM:
             result = await _send_wecom(pconfig.extra, chat_id, chunk)
+        elif platform == Platform.LINEAR:
+            result = await _send_linear(pconfig.extra, chat_id, chunk)
         else:
             result = {"error": f"Direct sending not yet implemented for {platform.value}"}
 
@@ -869,6 +872,65 @@ async def _send_wecom(extra, chat_id, message):
             await adapter.disconnect()
     except Exception as e:
         return _error(f"WeCom send failed: {e}")
+
+
+async def _send_linear(extra, chat_id, message):
+    """Send a comment to a Linear issue via the GraphQL API.
+
+    chat_id is the issue identifier (e.g. 'AI-123').
+    """
+    try:
+        import aiohttp
+    except ImportError:
+        return {"error": "aiohttp not installed"}
+
+    api_key = extra.get("api_key") or os.getenv("LINEAR_API_KEY", "")
+    if not api_key:
+        return {"error": "LINEAR_API_KEY not configured."}
+
+    try:
+        headers = {
+            "Authorization": api_key,
+            "Content-Type": "application/json",
+        }
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as session:
+            # Resolve issue identifier to UUID
+            resolve_resp = await session.post(
+                "https://api.linear.app/graphql",
+                json={
+                    "query": 'query($id: String!) { issue(id: $id) { id } }',
+                    "variables": {"id": chat_id},
+                },
+                headers=headers,
+            )
+            resolve_data = await resolve_resp.json()
+            issue = (resolve_data.get("data") or {}).get("issue")
+            if not issue:
+                errors = resolve_data.get("errors", [])
+                return _error(f"Linear issue {chat_id} not found: {errors[0]['message'] if errors else 'unknown'}")
+
+            # Post comment
+            comment_resp = await session.post(
+                "https://api.linear.app/graphql",
+                json={
+                    "query": (
+                        'mutation($input: CommentCreateInput!) { '
+                        'commentCreate(input: $input) { success comment { id } } }'
+                    ),
+                    "variables": {"input": {"issueId": issue["id"], "body": message}},
+                },
+                headers=headers,
+            )
+            comment_data = await comment_resp.json()
+            create = (comment_data.get("data") or {}).get("commentCreate", {})
+            if create.get("success"):
+                comment_id = create.get("comment", {}).get("id", "")
+                return {"success": True, "platform": "linear", "chat_id": chat_id, "message_id": comment_id}
+
+            errors = comment_data.get("errors", [])
+            return _error(f"Linear comment failed: {errors[0]['message'] if errors else 'unknown'}")
+    except Exception as e:
+        return _error(f"Linear send failed: {e}")
 
 
 async def _send_feishu(pconfig, chat_id, message, media_files=None, thread_id=None):

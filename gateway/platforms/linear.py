@@ -185,6 +185,7 @@ class LinearAdapter(BasePlatformAdapter):
 
         # State
         self._runner = None
+        self._http_session: Optional[Any] = None  # aiohttp.ClientSession — lazy init
         self._processed_deliveries: Dict[str, float] = {}
         self._debounce_buffer: Dict[str, List[dict]] = {}  # agent_key -> events
         self._debounce_tasks: Dict[str, asyncio.Task] = {}
@@ -234,6 +235,10 @@ class LinearAdapter(BasePlatformAdapter):
             task.cancel()
         self._debounce_tasks.clear()
         self._debounce_buffer.clear()
+
+        if self._http_session and not self._http_session.closed:
+            await self._http_session.close()
+            self._http_session = None
 
         if self._runner:
             await self._runner.cleanup()
@@ -598,6 +603,15 @@ class LinearAdapter(BasePlatformAdapter):
         # Fallback: use linear CLI
         return await self._post_comment_cli(issue_identifier, body)
 
+    async def _get_http_session(self):
+        """Get or create a persistent aiohttp ClientSession."""
+        import aiohttp
+        if self._http_session is None or self._http_session.closed:
+            self._http_session = aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=15),
+            )
+        return self._http_session
+
     async def _graphql(self, query: str, variables: Optional[dict] = None) -> dict:
         """Make a GraphQL request to the Linear API using aiohttp."""
         payload = {"query": query}
@@ -609,18 +623,16 @@ class LinearAdapter(BasePlatformAdapter):
             "Content-Type": "application/json",
         }
 
-        import aiohttp
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                "https://api.linear.app/graphql",
-                json=payload,
-                headers=headers,
-                timeout=aiohttp.ClientTimeout(total=15),
-            ) as resp:
-                if resp.status != 200:
-                    text = await resp.text()
-                    raise RuntimeError(f"Linear API HTTP {resp.status}: {text}")
-                return await resp.json()
+        session = await self._get_http_session()
+        async with session.post(
+            "https://api.linear.app/graphql",
+            json=payload,
+            headers=headers,
+        ) as resp:
+            if resp.status != 200:
+                text = await resp.text()
+                raise RuntimeError(f"Linear API HTTP {resp.status}: {text}")
+            return await resp.json()
 
     async def _post_comment_graphql(self, issue_identifier: str, body: str) -> SendResult:
         """Post a comment via Linear GraphQL API."""

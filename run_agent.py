@@ -3443,8 +3443,8 @@ class AIAgent:
     def _normalize_codex_response(self, response: Any) -> tuple[Any, str]:
         """Normalize a Responses API object to an assistant_message-like object."""
         output = getattr(response, "output", None)
-        if not isinstance(output, list) or not output:
-            raise RuntimeError("Responses API returned no output items")
+        if not isinstance(output, list):
+            output = []
 
         response_status = getattr(response, "status", None)
         if isinstance(response_status, str):
@@ -3563,6 +3563,10 @@ class AIAgent:
             out_text = getattr(response, "output_text", "")
             if isinstance(out_text, str):
                 final_text = out_text.strip()
+        if not final_text:
+            streamed_text = getattr(self, "_latest_codex_stream_text", "")
+            if isinstance(streamed_text, str):
+                final_text = streamed_text.strip()
 
         assistant_message = SimpleNamespace(
             content=final_text,
@@ -3868,6 +3872,7 @@ class AIAgent:
         has_tool_calls = False
         first_delta_fired = False
         self._reasoning_deltas_fired = False
+        self._latest_codex_stream_text = ""
         for attempt in range(max_stream_retries + 1):
             try:
                 with active_client.responses.stream(**api_kwargs) as stream:
@@ -3879,6 +3884,7 @@ class AIAgent:
                         if "output_text.delta" in event_type or event_type == "response.output_text.delta":
                             delta_text = getattr(event, "delta", "")
                             if delta_text and not has_tool_calls:
+                                self._latest_codex_stream_text += delta_text
                                 if not first_delta_fired:
                                     first_delta_fired = True
                                     if on_first_delta:
@@ -7359,13 +7365,18 @@ class AIAgent:
                     error_details = []
                     if self.api_mode == "codex_responses":
                         output_items = getattr(response, "output", None) if response is not None else None
+                        output_text = getattr(response, "output_text", None) if response is not None else None
+                        streamed_text = getattr(self, "_latest_codex_stream_text", "")
+                        has_output_text = isinstance(output_text, str) and bool(output_text.strip())
+                        has_streamed_text = isinstance(streamed_text, str) and bool(streamed_text.strip())
                         if response is None:
                             response_invalid = True
                             error_details.append("response is None")
                         elif not isinstance(output_items, list):
-                            response_invalid = True
-                            error_details.append("response.output is not a list")
-                        elif len(output_items) == 0:
+                            if not has_output_text and not has_streamed_text:
+                                response_invalid = True
+                                error_details.append("response.output is not a list")
+                        elif len(output_items) == 0 and not has_output_text and not has_streamed_text:
                             response_invalid = True
                             error_details.append("response.output is empty")
                     elif self.api_mode == "anthropic_messages":

@@ -374,6 +374,24 @@ def test_run_codex_stream_fallback_parses_create_stream_events(monkeypatch):
     assert response.output[0].content[0].text == "streamed create ok"
 
 
+def test_normalize_codex_response_accepts_streamed_text_when_final_output_is_empty(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    agent._latest_codex_stream_text = "Hello world"
+
+    empty_final_response = SimpleNamespace(
+        output=[],
+        output_text="",
+        usage=SimpleNamespace(input_tokens=5, output_tokens=3, total_tokens=8),
+        status="completed",
+        model="gpt-5-codex",
+    )
+
+    assistant_message, finish_reason = agent._normalize_codex_response(empty_final_response)
+
+    assert finish_reason == "stop"
+    assert assistant_message.content == "Hello world"
+
+
 def test_run_conversation_codex_plain_text(monkeypatch):
     agent = _build_agent(monkeypatch)
     monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: _codex_message_response("OK"))

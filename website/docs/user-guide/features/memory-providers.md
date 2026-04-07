@@ -1,12 +1,12 @@
 ---
 sidebar_position: 4
 title: "Memory Providers"
-description: "External memory provider plugins — Honcho, OpenViking, Mem0, Hindsight, Holographic, RetainDB, ByteRover"
+description: "External memory provider plugins — Honcho, OpenViking, Mem0, Hindsight, Holographic, RetainDB, ByteRover, Enzyme"
 ---
 
 # Memory Providers
 
-Hermes Agent ships with 7 external memory provider plugins that give the agent persistent, cross-session knowledge beyond the built-in MEMORY.md and USER.md. Only **one** external provider can be active at a time — the built-in memory is always active alongside it.
+Hermes Agent ships with 8 external memory provider plugins that give the agent persistent, cross-session knowledge beyond the built-in MEMORY.md and USER.md. Only **one** external provider can be active at a time — the built-in memory is always active alongside it.
 
 ## Quick Start
 
@@ -20,7 +20,7 @@ Or set manually in `~/.hermes/config.yaml`:
 
 ```yaml
 memory:
-  provider: openviking   # or honcho, mem0, hindsight, holographic, retaindb, byterover
+  provider: openviking   # or honcho, mem0, hindsight, holographic, retaindb, byterover, enzyme
 ```
 
 ## How It Works
@@ -251,6 +251,35 @@ hermes config set memory.provider byterover
 
 ---
 
+### Enzyme
+
+Compile-time semantic memory for agent workspaces. Reads your markdown vault once, embeds locally, pre-computes thematic questions (catalysts), and serves 8ms queries with zero runtime LLM calls or API keys.
+
+| | |
+|---|---|
+| **Best for** | Users with Obsidian/markdown vaults who want their notes as long-term memory |
+| **Requires** | `pip install enzyme-python-package` |
+| **Data storage** | Local (indexes alongside the vault) |
+| **Cost** | Free |
+
+**Tools:** `enzyme_petri` (vault landscape + catalysts), `enzyme_catalyze` (concept search — reaches content keyword search misses, with `explore`/`continuity`/`reference` registers), `enzyme_refresh` (re-index), `enzyme_status` (vault stats), `enzyme_init` (initialize with guide)
+
+**Setup:**
+```bash
+hermes memory setup    # select "enzyme"
+# Or manually:
+hermes config set memory.provider enzyme
+```
+
+**Key features:**
+- Compile-once, query-forever — no runtime LLM calls or vector search
+- Indexes existing notes, not conversation facts
+- Catalyst-based search bridges semantic gaps between user vocabulary and vault content
+- System prompt includes vault landscape from turn zero
+- Session-end refresh so notes written during the session are immediately indexed
+
+---
+
 ## Provider Comparison
 
 | Provider | Storage | Cost | Tools | Dependencies | Unique Feature |
@@ -262,12 +291,13 @@ hermes config set memory.provider byterover
 | **Holographic** | Local | Free | 2 | None | HRR algebra + trust scoring |
 | **RetainDB** | Cloud | $20/mo | 5 | `requests` | Delta compression |
 | **ByteRover** | Local/Cloud | Free/Paid | 3 | `brv` CLI | Pre-compression extraction |
+| **Enzyme** | Local | Free | 5 | `enzyme-python-package` | Compile-time catalyst search — 8ms, no runtime LLM |
 
 ## Profile Isolation
 
 Each provider's data is isolated per [profile](/docs/user-guide/profiles):
 
-- **Local storage providers** (Holographic, ByteRover) use `$HERMES_HOME/` paths which differ per profile
+- **Local storage providers** (Holographic, ByteRover, Enzyme) use `$HERMES_HOME/` paths which differ per profile
 - **Config file providers** (Honcho, Mem0, Hindsight) store config in `$HERMES_HOME/` so each profile has its own credentials
 - **Cloud providers** (RetainDB) auto-derive profile-scoped project names
 - **Env var providers** (OpenViking) are configured via each profile's `.env` file

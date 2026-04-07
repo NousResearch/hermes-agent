@@ -8,7 +8,7 @@ Config in $HERMES_HOME/config.yaml:
   memory:
     provider: enzyme
     enzyme:
-      vault_path: /path/to/vault    # or ENZYME_VAULT_ROOT env var
+      vault_path: /path/to/vault
 """
 
 from __future__ import annotations
@@ -242,12 +242,18 @@ class EnzymeMemoryProvider(MemoryProvider):
         return True
 
     def get_config_schema(self) -> list:
-        return []
+        return [
+            {
+                "key": "vault_path",
+                "description": "Path to markdown vault",
+                "secret": False,
+            },
+        ]
 
     def initialize(self, session_id: str, **kwargs) -> None:
         """Ensure the vault is indexed. Run init or refresh as needed."""
-        # Vault path: ENZYME_VAULT_ROOT env var, or cwd (enzyme's default)
-        self._vault_path = os.environ.get("ENZYME_VAULT_ROOT") or None
+        # Vault path from config.yaml, or None (enzyme defaults to cwd)
+        self._vault_path = kwargs.get("provider_config", {}).get("vault_path") or None
 
         # If pip package is installed but binary isn't downloaded yet, do it now
         if not _find_enzyme_bin():

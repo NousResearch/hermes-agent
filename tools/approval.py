@@ -871,3 +871,7 @@ def check_all_command_guards(command: str, env_type: str,
 
     return {"approved": True, "message": None,
             "user_approved": True, "description": combined_desc}
+
+
+# Load permanent allowlist from config on module import
+load_permanent_allowlist()

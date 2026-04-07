@@ -130,10 +130,12 @@ def build_agent_card(port: int) -> "AgentCard":
         for s in (skills_raw or [agent_name])
     ]
 
+    public_url = os.getenv("A2A_PUBLIC_URL", f"http://localhost:{port}")
+
     return AgentCard(
         name=agent_name,
         description=os.getenv("AGENT_DESCRIPTION", f"{agent_name} — Hermes agent"),
-        url=f"http://localhost:{port}",
+        url=public_url,
         version="1.0.0",
         capabilities=AgentCapabilities(streaming=True),
         skills=skills,

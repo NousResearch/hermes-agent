@@ -138,6 +138,10 @@ Chat with Hermes from your phone or other surfaces via Telegram, Discord, Slack,
 hermes gateway setup    # Interactive platform configuration
 ```
 
+### Read the opinionated first-run guide
+
+If you want a more structured setup path after Quickstart, read [Hermes First 30 Minutes](/docs/guides/hermes-first-30-minutes). It covers the common failure modes, recovery commands, and the cleanest path from install to a working chat.
+
 ### Add voice mode
 
 Want microphone input in the CLI or spoken replies in messaging?

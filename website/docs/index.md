@@ -25,8 +25,8 @@ It's not a coding copilot tethered to an IDE or a chatbot wrapper around a singl
 |---|---|
 | 🚀 **[Installation](/docs/getting-started/installation)** | Install in 60 seconds on Linux, macOS, or WSL2 |
 | 📖 **[Quickstart Tutorial](/docs/getting-started/quickstart)** | Your first conversation and key features to try |
+| 🏁 **[Hermes First 30 Minutes](/docs/guides/hermes-first-30-minutes)** | The opinionated first-run playbook for a working setup |
 | 🗺️ **[Learning Path](/docs/getting-started/learning-path)** | Find the right docs for your experience level |
-| ⚙️ **[Configuration](/docs/user-guide/configuration)** | Config file, providers, models, and options |
 | 💬 **[Messaging Gateway](/docs/user-guide/messaging)** | Set up Telegram, Discord, Slack, or WhatsApp |
 | 🔧 **[Tools & Toolsets](/docs/user-guide/features/tools)** | 47 built-in tools and how to configure them |
 | 🧠 **[Memory System](/docs/user-guide/features/memory)** | Persistent memory that grows across sessions |

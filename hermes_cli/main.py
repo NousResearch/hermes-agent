@@ -1294,12 +1294,21 @@ def _model_flow_openai_codex(config, current_model=""):
             return
 
     _codex_token = None
+    # Prefer credential pool (where `hermes auth` stores device_code tokens),
+    # fall back to legacy provider state.
     try:
-        from hermes_cli.auth import resolve_codex_runtime_credentials
-        _codex_creds = resolve_codex_runtime_credentials()
-        _codex_token = _codex_creds.get("api_key")
+        _codex_status = get_codex_auth_status()
+        if _codex_status.get("logged_in"):
+            _codex_token = _codex_status.get("api_key")
     except Exception:
         pass
+    if not _codex_token:
+        try:
+            from hermes_cli.auth import resolve_codex_runtime_credentials
+            _codex_creds = resolve_codex_runtime_credentials()
+            _codex_token = _codex_creds.get("api_key")
+        except Exception:
+            pass
 
     codex_models = get_codex_model_ids(access_token=_codex_token)
 

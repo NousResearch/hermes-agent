@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from agent.memory_provider import MemoryProvider
+from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
 
@@ -587,7 +588,7 @@ class SupermemoryMemoryProvider(MemoryProvider):
     def _tool_store(self, args: dict) -> str:
         content = str(args.get("content") or "").strip()
         if not content:
-            return json.dumps({"error": "content is required"})
+            return tool_error("content is required")
         metadata = args.get("metadata") or {}
         if not isinstance(metadata, dict):
             metadata = {}
@@ -598,12 +599,12 @@ class SupermemoryMemoryProvider(MemoryProvider):
             preview = content[:80] + ("..." if len(content) > 80 else "")
             return json.dumps({"saved": True, "id": result.get("id", ""), "preview": preview})
         except Exception as exc:
-            return json.dumps({"error": f"Failed to store memory: {exc}"})
+            return tool_error(f"Failed to store memory: {exc}")
 
     def _tool_search(self, args: dict) -> str:
         query = str(args.get("query") or "").strip()
         if not query:
-            return json.dumps({"error": "query is required"})
+            return tool_error("query is required")
         try:
             limit = max(1, min(20, int(args.get("limit", 5) or 5)))
         except Exception:
@@ -621,20 +622,20 @@ class SupermemoryMemoryProvider(MemoryProvider):
                 formatted.append(entry)
             return json.dumps({"results": formatted, "count": len(formatted)})
         except Exception as exc:
-            return json.dumps({"error": f"Search failed: {exc}"})
+            return tool_error(f"Search failed: {exc}")
 
     def _tool_forget(self, args: dict) -> str:
         memory_id = str(args.get("id") or "").strip()
         query = str(args.get("query") or "").strip()
         if not memory_id and not query:
-            return json.dumps({"error": "Provide either id or query"})
+            return tool_error("Provide either id or query")
         try:
             if memory_id:
                 self._client.forget_memory(memory_id)
                 return json.dumps({"forgotten": True, "id": memory_id})
             return json.dumps(self._client.forget_by_query(query))
         except Exception as exc:
-            return json.dumps({"error": f"Forget failed: {exc}"})
+            return tool_error(f"Forget failed: {exc}")
 
     def _tool_profile(self, args: dict) -> str:
         query = str(args.get("query") or "").strip() or None
@@ -651,11 +652,11 @@ class SupermemoryMemoryProvider(MemoryProvider):
                 "dynamic_count": len(profile["dynamic"]),
             })
         except Exception as exc:
-            return json.dumps({"error": f"Profile failed: {exc}"})
+            return tool_error(f"Profile failed: {exc}")
 
     def handle_tool_call(self, tool_name: str, args: Dict[str, Any], **kwargs) -> str:
         if not self._active or not self._client:
-            return json.dumps({"error": "Supermemory is not configured"})
+            return tool_error("Supermemory is not configured")
         if tool_name == "supermemory_store":
             return self._tool_store(args)
         if tool_name == "supermemory_search":
@@ -664,7 +665,7 @@ class SupermemoryMemoryProvider(MemoryProvider):
             return self._tool_forget(args)
         if tool_name == "supermemory_profile":
             return self._tool_profile(args)
-        return json.dumps({"error": f"Unknown tool: {tool_name}"})
+        return tool_error(f"Unknown tool: {tool_name}")
 
 
 def register(ctx):

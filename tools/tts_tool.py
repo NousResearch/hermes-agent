@@ -466,7 +466,7 @@ def text_to_speech_tool(
         str: JSON result with success, file_path, and optionally MEDIA tag.
     """
     if not text or not text.strip():
-        return json.dumps({"success": False, "error": "Text is required"}, ensure_ascii=False)
+        return tool_error("Text is required", success=False)
 
     # Truncate very long text with a warning
     if len(text) > MAX_TEXT_LENGTH:
@@ -607,17 +607,17 @@ def text_to_speech_tool(
         # Configuration errors (missing API keys, etc.)
         error_msg = f"TTS configuration error ({provider}): {e}"
         logger.error("%s", error_msg)
-        return json.dumps({"success": False, "error": error_msg}, ensure_ascii=False)
+        return tool_error(error_msg, success=False)
     except FileNotFoundError as e:
         # Missing dependencies or files
         error_msg = f"TTS dependency missing ({provider}): {e}"
         logger.error("%s", error_msg, exc_info=True)
-        return json.dumps({"success": False, "error": error_msg}, ensure_ascii=False)
+        return tool_error(error_msg, success=False)
     except Exception as e:
         # Unexpected errors
         error_msg = f"TTS generation failed ({provider}): {e}"
         logger.error("%s", error_msg, exc_info=True)
-        return json.dumps({"success": False, "error": error_msg}, ensure_ascii=False)
+        return tool_error(error_msg, success=False)
 
 
 # ===========================================================================
@@ -950,7 +950,7 @@ if __name__ == "__main__":
 # ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
-from tools.registry import registry
+from tools.registry import registry, tool_error
 
 TTS_SCHEMA = {
     "name": "text_to_speech",

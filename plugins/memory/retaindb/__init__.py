@@ -34,6 +34,7 @@ from typing import Any, Dict, List
 from urllib.parse import quote
 
 from agent.memory_provider import MemoryProvider
+from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
 
@@ -649,11 +650,11 @@ class RetainDBMemoryProvider(MemoryProvider):
 
     def handle_tool_call(self, tool_name: str, args: dict, **kwargs) -> str:
         if not self._client:
-            return json.dumps({"error": "RetainDB not initialized"})
+            return tool_error("RetainDB not initialized")
         try:
             return json.dumps(self._dispatch(tool_name, args))
         except Exception as exc:
-            return json.dumps({"error": str(exc)})
+            return tool_error(str(exc))
 
     def _dispatch(self, tool_name: str, args: dict) -> Any:
         c = self._client

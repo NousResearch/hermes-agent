@@ -1618,7 +1618,7 @@ def _camofox_eval(expression: str, task_id: Optional[str] = None) -> str:
                 "error": "JavaScript evaluation is not supported by this Camofox server. "
                          "Use browser_snapshot or browser_vision to inspect page state.",
             })
-        return json.dumps({"success": False, "error": error_msg})
+        return tool_error(error_msg, success=False)
 
 
 def _maybe_start_recording(task_id: str):
@@ -2102,7 +2102,7 @@ if __name__ == "__main__":
 # ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
-from tools.registry import registry
+from tools.registry import registry, tool_error
 
 _BROWSER_SCHEMA_MAP = {s["name"]: s for s in BROWSER_TOOL_SCHEMAS}
 

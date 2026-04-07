@@ -66,6 +66,13 @@ class ContextCompressor(ContextEngine):
     def name(self) -> str:
         return "compressor"
 
+    def on_session_reset(self) -> None:
+        """Reset all per-session state for /new or /reset."""
+        super().on_session_reset()
+        self._context_probed = False
+        self._context_probe_persistable = False
+        self._previous_summary = None
+
     def __init__(
         self,
         model: str,

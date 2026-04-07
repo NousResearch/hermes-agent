@@ -815,9 +815,11 @@ class APIServerAdapter(BasePlatformAdapter):
         else:
             return web.json_response(_openai_error("'input' must be a string or array"), status=400)
 
-        # Reconstruct conversation history from previous_response_id
-        conversation_history: List[Dict[str, str]] = []
-        if previous_response_id:
+        # Accept conversation_history from the request body (allows external
+        # clients to supply their own history instead of relying on server-side
+        # response chaining via previous_response_id).
+        conversation_history: List[Dict[str, str]] = body.get("conversation_history", [])
+        if not conversation_history and previous_response_id:
             stored = self._response_store.get(previous_response_id)
             if stored is None:
                 return web.json_response(_openai_error(f"Previous response not found: {previous_response_id}"), status=404)
@@ -1403,8 +1405,11 @@ class APIServerAdapter(BasePlatformAdapter):
 
         instructions = body.get("instructions")
         previous_response_id = body.get("previous_response_id")
-        conversation_history: List[Dict[str, str]] = []
-        if previous_response_id:
+        # Accept conversation_history from the request body (allows external
+        # clients to supply their own history instead of relying on server-side
+        # response chaining via previous_response_id).
+        conversation_history: List[Dict[str, str]] = body.get("conversation_history", [])
+        if not conversation_history and previous_response_id:
             stored = self._response_store.get(previous_response_id)
             if stored:
                 conversation_history = list(stored.get("conversation_history", []))

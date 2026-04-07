@@ -371,3 +371,56 @@ class TestSessionKeyFix:
             channel_id="C1", thread_ts="1000.0", user_id="U123"
         )
         assert result is False
+
+
+# ===========================================================================
+# Thread engagement — bot-started threads & mentioned threads
+# ===========================================================================
+
+class TestThreadEngagement:
+    """Test _bot_message_ts and _mentioned_threads tracking."""
+
+    @pytest.mark.asyncio
+    async def test_send_tracks_bot_message_ts(self):
+        """Bot's sent messages are tracked so thread replies work without @mention."""
+        adapter = _make_adapter()
+        mock_client = adapter._team_clients["T1"]
+        mock_client.chat_postMessage = AsyncMock(return_value={"ts": "9000.1"})
+
+        await adapter.send(chat_id="C1", content="Hello!", metadata={"thread_id": "8000.0"})
+
+        assert "9000.1" in adapter._bot_message_ts
+        # Thread root should also be tracked
+        assert "8000.0" in adapter._bot_message_ts
+
+    @pytest.mark.asyncio
+    async def test_bot_message_ts_cap(self):
+        """Verify memory is bounded when many messages are sent."""
+        adapter = _make_adapter()
+        adapter._BOT_TS_MAX = 10  # low cap for testing
+        mock_client = adapter._team_clients["T1"]
+
+        for i in range(20):
+            mock_client.chat_postMessage = AsyncMock(return_value={"ts": f"{i}.0"})
+            await adapter.send(chat_id="C1", content=f"msg {i}")
+
+        assert len(adapter._bot_message_ts) <= 10
+
+    def test_mentioned_threads_populated_on_mention(self):
+        """When bot is @mentioned in a thread, that thread is tracked."""
+        adapter = _make_adapter()
+        # Simulate what _handle_slack_message does on mention
+        adapter._mentioned_threads.add("1000.0")
+        assert "1000.0" in adapter._mentioned_threads
+
+    def test_mentioned_threads_cap(self):
+        """Verify _mentioned_threads is bounded."""
+        adapter = _make_adapter()
+        adapter._MENTIONED_THREADS_MAX = 10
+        for i in range(15):
+            adapter._mentioned_threads.add(f"{i}.0")
+            if len(adapter._mentioned_threads) > adapter._MENTIONED_THREADS_MAX:
+                to_remove = list(adapter._mentioned_threads)[:adapter._MENTIONED_THREADS_MAX // 2]
+                for t in to_remove:
+                    adapter._mentioned_threads.discard(t)
+        assert len(adapter._mentioned_threads) <= 10

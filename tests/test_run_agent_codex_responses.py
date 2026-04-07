@@ -375,6 +375,42 @@ def test_run_codex_stream_fallback_parses_create_stream_events(monkeypatch):
     assert response.output[0].content[0].text == "streamed create ok"
 
 
+def test_run_codex_stream_fallback_rehydrates_text_when_terminal_output_is_empty(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    create_stream = _FakeCreateStream(
+        [
+            SimpleNamespace(type="response.created"),
+            SimpleNamespace(type="response.output_text.delta", delta="po"),
+            SimpleNamespace(type="response.output_text.delta", delta="ng"),
+            SimpleNamespace(
+                type="response.completed",
+                response=SimpleNamespace(
+                    output=[],
+                    usage=SimpleNamespace(input_tokens=5, output_tokens=3, total_tokens=8),
+                    status="completed",
+                    model="gpt-5.4",
+                ),
+            ),
+        ]
+    )
+
+    def _fake_stream(**kwargs):
+        return _FakeResponsesStream(
+            final_error=RuntimeError("Didn't receive a `response.completed` event.")
+        )
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(
+            stream=_fake_stream,
+            create=lambda **kwargs: create_stream,
+        )
+    )
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+    assert create_stream.closed is True
+    assert response.output[0].content[0].text == "pong"
+
+
 def test_run_codex_stream_rehydrates_text_when_final_output_is_empty(monkeypatch):
     agent = _build_agent(monkeypatch)
 
@@ -402,6 +438,42 @@ def test_run_codex_stream_rehydrates_text_when_final_output_is_empty(monkeypatch
     response = agent._run_codex_stream(_codex_request_kwargs())
     assert response.output[0].type == "message"
     assert response.output[0].content[0].text == "pong"
+
+
+def test_run_codex_stream_rehydrates_function_calls_when_final_output_is_empty(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    function_item = SimpleNamespace(
+        type="function_call",
+        id="fc_1",
+        call_id="call_1",
+        name="memory",
+        arguments='{"action":"add","target":"memory","content":"x"}',
+        status="completed",
+    )
+
+    def _fake_stream(**kwargs):
+        return _FakeResponsesStream(
+            events=[
+                SimpleNamespace(type="response.output_item.added", item=SimpleNamespace(type="reasoning")),
+                SimpleNamespace(type="response.output_item.done", item=function_item),
+            ],
+            final_response=SimpleNamespace(
+                output=[],
+                usage=SimpleNamespace(input_tokens=5, output_tokens=3, total_tokens=8),
+                status="completed",
+                model="gpt-5.4",
+            ),
+        )
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(
+            stream=_fake_stream,
+            create=lambda **kwargs: _codex_message_response("fallback"),
+        )
+    )
+
+    response = agent._run_codex_stream(_codex_request_kwargs())
+    assert response.output == [function_item]
 
 
 def test_run_conversation_codex_plain_text(monkeypatch):

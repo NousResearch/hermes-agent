@@ -3868,6 +3868,7 @@ class AIAgent:
         has_tool_calls = False
         first_delta_fired = False
         streamed_text_parts: List[str] = []
+        streamed_output_items: List[Any] = []
         self._reasoning_deltas_fired = False
         for attempt in range(max_stream_retries + 1):
             try:
@@ -3892,6 +3893,11 @@ class AIAgent:
                         # Track tool calls to suppress text streaming
                         elif "function_call" in event_type:
                             has_tool_calls = True
+                        elif event_type == "response.output_item.done":
+                            item = getattr(event, "item", None)
+                            if getattr(item, "type", None) == "function_call":
+                                has_tool_calls = True
+                                streamed_output_items.append(item)
                         # Fire reasoning callbacks
                         elif "reasoning" in event_type and "delta" in event_type:
                             reasoning_text = getattr(event, "delta", "")
@@ -3918,6 +3924,12 @@ class AIAgent:
                                 content=[SimpleNamespace(type="output_text", text=streamed_text)],
                             )
                         ]
+                    elif (
+                        isinstance(output_items, list)
+                        and len(output_items) == 0
+                        and streamed_output_items
+                    ):
+                        final_response.output = list(streamed_output_items)
                     return final_response
             except (_httpx.RemoteProtocolError, _httpx.ReadTimeout, _httpx.ConnectError, ConnectionError) as exc:
                 if attempt < max_stream_retries:
@@ -3969,11 +3981,27 @@ class AIAgent:
             return stream_or_response
 
         terminal_response = None
+        streamed_text_parts: List[str] = []
+        streamed_output_items: List[Any] = []
         try:
             for event in stream_or_response:
                 event_type = getattr(event, "type", None)
                 if not event_type and isinstance(event, dict):
                     event_type = event.get("type")
+                if event_type == "response.output_text.delta":
+                    delta_text = getattr(event, "delta", None)
+                    if delta_text is None and isinstance(event, dict):
+                        delta_text = event.get("delta")
+                    if isinstance(delta_text, str) and delta_text:
+                        streamed_text_parts.append(delta_text)
+                    continue
+                if event_type == "response.output_item.done":
+                    item = getattr(event, "item", None)
+                    if item is None and isinstance(event, dict):
+                        item = event.get("item")
+                    if getattr(item, "type", None) == "function_call":
+                        streamed_output_items.append(item)
+                    continue
                 if event_type not in {"response.completed", "response.incomplete", "response.failed"}:
                     continue
 
@@ -3981,6 +4009,26 @@ class AIAgent:
                 if terminal_response is None and isinstance(event, dict):
                     terminal_response = event.get("response")
                 if terminal_response is not None:
+                    output_items = getattr(terminal_response, "output", None)
+                    streamed_text = "".join(streamed_text_parts).strip()
+                    if (
+                        isinstance(output_items, list)
+                        and len(output_items) == 0
+                        and streamed_text
+                    ):
+                        terminal_response.output = [
+                            SimpleNamespace(
+                                type="message",
+                                status="completed",
+                                content=[SimpleNamespace(type="output_text", text=streamed_text)],
+                            )
+                        ]
+                    elif (
+                        isinstance(output_items, list)
+                        and len(output_items) == 0
+                        and streamed_output_items
+                    ):
+                        terminal_response.output = list(streamed_output_items)
                     return terminal_response
         finally:
             close_fn = getattr(stream_or_response, "close", None)
@@ -4603,6 +4651,15 @@ class AIAgent:
                         if self.api_mode == "anthropic_messages":
                             self._try_refresh_anthropic_client_credentials()
                             result["response"] = _call_anthropic()
+                        elif self.api_mode == "codex_responses":
+                            request_client_holder["client"] = self._create_request_openai_client(
+                                reason="codex_stream_request"
+                            )
+                            result["response"] = self._run_codex_stream(
+                                api_kwargs,
+                                client=request_client_holder["client"],
+                                on_first_delta=on_first_delta,
+                            )
                         else:
                             result["response"] = _call_chat_completions()
                         return  # success

@@ -384,7 +384,7 @@ platforms:
 In addition to tokens in the environment or config, Hermes also loads tokens from an **OAuth token file** at:
 
 ```
-~/.hermes/platforms/slack/slack_tokens.json
+~/.hermes/slack_tokens.json
 ```
 
 This file is a JSON object mapping team IDs to token entries:

@@ -215,9 +215,6 @@ Pool state is stored in `~/.hermes/auth.json` under the `credential_pool` key:
       }
     ]
   },
-  "credential_pool_strategies": {
-    "openrouter": "round_robin"
-  }
 }
 ```
 

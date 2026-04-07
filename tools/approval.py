@@ -384,7 +384,20 @@ def prompt_dangerous_approval(command: str, description: str,
         try:
             return approval_callback(command, description,
                                      allow_permanent=allow_permanent)
-        except Exception:
+        except Exception as e:
+            # Surface the failure instead of silently denying. A swallowed
+            # exception here produces the canonical "BLOCKED: User denied.
+            # Do NOT retry." string with no visible prompt and no log line,
+            # which is impossible to debug from the outside. Common cause:
+            # the prompt_toolkit callback is invoked while the outer event
+            # loop is paused inside a tool call (e.g. after smart-approval
+            # escalates a flagged command), and the callback raises. Log
+            # full traceback so the next occurrence is diagnosable.
+            logger.exception(
+                "Approval callback raised; treating as deny. "
+                "command=%r description=%r error=%s",
+                command[:200], description, e,
+            )
             return "deny"
 
     os.environ["HERMES_SPINNER_PAUSE"] = "1"

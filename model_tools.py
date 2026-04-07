@@ -152,6 +152,7 @@ def _discover_tools():
         "tools.memory_tool",
         "tools.session_search_tool",
         "tools.clarify_tool",
+        "tools.self_nudge_tool",
         "tools.code_execution_tool",
         "tools.delegate_tool",
         "tools.process_registry",
@@ -235,6 +236,7 @@ def get_tool_definitions(
     enabled_toolsets: List[str] = None,
     disabled_toolsets: List[str] = None,
     quiet_mode: bool = False,
+    platform: str | None = None,
 ) -> List[Dict[str, Any]]:
     """
     Get tool definitions for model API calls with toolset-based filtering.
@@ -301,6 +303,26 @@ def get_tool_definitions(
     # Ask the registry for schemas (only returns tools whose check_fn passes)
     filtered_tools = registry.get_definitions(tools_to_include, quiet=quiet_mode)
 
+    gateway_self_nudge_platforms = {
+        "discord",
+        "dingtalk",
+        "email",
+        "feishu",
+        "homeassistant",
+        "matrix",
+        "mattermost",
+        "signal",
+        "slack",
+        "telegram",
+        "wecom",
+        "whatsapp",
+    }
+    if platform not in gateway_self_nudge_platforms:
+        filtered_tools = [
+            td for td in filtered_tools
+            if td.get("function", {}).get("name") != "self_nudge"
+        ]
+
     # The set of tool names that actually passed check_fn filtering.
     # Use this (not tools_to_include) for any downstream schema that references
     # other tools by name — otherwise the model sees tools mentioned in
@@ -361,7 +383,7 @@ def get_tool_definitions(
 # because they need agent-level state (TodoStore, MemoryStore, etc.).
 # The registry still holds their schemas; dispatch just returns a stub error
 # so if something slips through, the LLM sees a sensible message.
-_AGENT_LOOP_TOOLS = {"todo", "memory", "session_search", "delegate_task"}
+_AGENT_LOOP_TOOLS = {"todo", "memory", "session_search", "delegate_task", "self_nudge"}
 _READ_SEARCH_TOOLS = {"read_file", "search_files"}
 
 

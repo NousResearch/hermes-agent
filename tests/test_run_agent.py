@@ -925,6 +925,17 @@ class TestBuildAssistantMessage:
         result = agent._build_assistant_message(msg, "tool_calls")
         assert "extra_content" not in result["tool_calls"][0]
 
+    def test_self_nudge_tool_call_redacts_private_note(self, agent):
+        tc = _mock_tool_call(
+            name="self_nudge",
+            arguments='{"delay_seconds":300,"note":"Check prod credentials."}',
+            call_id="call-1",
+        )
+        msg = _mock_assistant_msg(content="", tool_calls=[tc])
+        result = agent._build_assistant_message(msg, "tool_calls")
+        persisted_args = result["tool_calls"][0]["function"]["arguments"]
+        assert json.loads(persisted_args) == {"delay_seconds": 300}
+
 
 class TestFormatToolsForSystemMessage:
     def test_no_tools_returns_empty_array(self, agent):
@@ -1035,6 +1046,21 @@ class TestConcurrentToolExecution:
         """Batch containing clarify should use sequential path."""
         tc1 = _mock_tool_call(name="web_search", arguments='{}', call_id="c1")
         tc2 = _mock_tool_call(name="clarify", arguments='{"question":"ok?"}', call_id="c2")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
+        messages = []
+        with patch.object(agent, "_execute_tool_calls_sequential") as mock_seq:
+            with patch.object(agent, "_execute_tool_calls_concurrent") as mock_con:
+                agent._execute_tool_calls(mock_msg, messages, "task-1")
+                mock_seq.assert_called_once()
+                mock_con.assert_not_called()
+
+    def test_self_nudge_forces_sequential(self, agent):
+        tc1 = _mock_tool_call(name="web_search", arguments='{}', call_id="c1")
+        tc2 = _mock_tool_call(
+            name="self_nudge",
+            arguments='{"delay_seconds":300,"note":"Check the deploy status."}',
+            call_id="c2",
+        )
         mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
         messages = []
         with patch.object(agent, "_execute_tool_calls_sequential") as mock_seq:
@@ -1307,6 +1333,36 @@ class TestConcurrentToolExecution:
             result = agent._invoke_tool("todo", {"todos": []}, "task-1")
             mock_todo.assert_called_once()
         assert "ok" in result
+
+    def test_invoke_tool_self_nudge_uses_callback(self, agent):
+        cb = MagicMock(return_value={"armed": True, "delay_seconds": 300})
+        agent.self_nudge_callback = cb
+
+        result = json.loads(
+            agent._invoke_tool(
+                "self_nudge",
+                {"delay_seconds": 300, "note": "Check the deploy output."},
+                "task-1",
+            )
+        )
+
+        cb.assert_called_once_with(300, "Check the deploy output.")
+        assert result["armed"] is True
+        assert agent._self_nudge_armed_this_turn is True
+
+    def test_invoke_tool_self_nudge_errors_without_callback(self, agent):
+        agent.self_nudge_callback = None
+
+        result = json.loads(
+            agent._invoke_tool(
+                "self_nudge",
+                {"delay_seconds": 60},
+                "task-1",
+            )
+        )
+
+        assert "error" in result
+        assert "not available" in result["error"].lower()
 
 
 class TestPathsOverlap:

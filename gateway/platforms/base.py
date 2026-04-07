@@ -392,6 +392,9 @@ class MessageEvent:
     
     # Auto-loaded skill for topic/channel bindings (e.g., Telegram DM Topics)
     auto_skill: Optional[str] = None
+
+    # Optional transcript-safe substitute for internal/hidden user turns.
+    persist_user_message: Optional[str] = None
     
     # Timestamps
     timestamp: datetime = field(default_factory=datetime.now)

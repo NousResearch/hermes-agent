@@ -208,7 +208,7 @@ class IterationBudget:
 
 # Tools that must never run concurrently (interactive / user-facing).
 # When any of these appear in a batch, we fall back to sequential execution.
-_NEVER_PARALLEL_TOOLS = frozenset({"clarify"})
+_NEVER_PARALLEL_TOOLS = frozenset({"clarify", "self_nudge"})
 
 # Read-only tools with no shared mutable session state.
 _PARALLEL_SAFE_TOOLS = frozenset({
@@ -650,6 +650,7 @@ class AIAgent:
         self.clarify_callback = clarify_callback
         self.step_callback = step_callback
         self.stream_delta_callback = stream_delta_callback
+        self.self_nudge_callback = None
         self.status_callback = status_callback
         self.tool_gen_callback = tool_gen_callback
 
@@ -667,6 +668,7 @@ class AIAgent:
         self._delegate_depth = 0        # 0 = top-level agent, incremented for children
         self._active_children = []      # Running child AIAgents (for interrupt propagation)
         self._active_children_lock = threading.Lock()
+        self._self_nudge_armed_this_turn = False
         
         # Store OpenRouter provider preferences
         self.providers_allowed = providers_allowed
@@ -909,6 +911,7 @@ class AIAgent:
             enabled_toolsets=enabled_toolsets,
             disabled_toolsets=disabled_toolsets,
             quiet_mode=self.quiet_mode,
+            platform=self.platform,
         )
         
         # Show tool configuration and store valid tool names for validation
@@ -1490,6 +1493,45 @@ class AIAgent:
                 self.status_callback("lifecycle", message)
             except Exception:
                 logger.debug("status_callback error in _emit_status", exc_info=True)
+
+    def _emit_self_nudge(self, delay_seconds: int, note: str = "") -> str:
+        """Arm a one-shot hidden follow-up timer for the current session."""
+        try:
+            seconds = int(delay_seconds)
+        except (TypeError, ValueError):
+            return json.dumps(
+                {"error": "delay_seconds must be an integer number of seconds."},
+                ensure_ascii=False,
+            )
+
+        if seconds <= 0:
+            return json.dumps(
+                {"error": "delay_seconds must be greater than zero."},
+                ensure_ascii=False,
+            )
+
+        callback = getattr(self, "self_nudge_callback", None)
+        if not callback:
+            return json.dumps(
+                {"error": "self_nudge is not available in this execution context."},
+                ensure_ascii=False,
+            )
+
+        try:
+            payload = callback(seconds, str(note or ""))
+        except Exception as exc:
+            return json.dumps(
+                {"error": f"Failed to arm self-nudge: {exc}"},
+                ensure_ascii=False,
+            )
+
+        if isinstance(payload, dict) and payload.get("armed"):
+            self._self_nudge_armed_this_turn = True
+            return json.dumps(payload, ensure_ascii=False)
+
+        if isinstance(payload, dict):
+            return json.dumps(payload, ensure_ascii=False)
+        return json.dumps({"error": "Failed to arm self-nudge."}, ensure_ascii=False)
 
     def _is_direct_openai_url(self, base_url: str = None) -> bool:
         """Return True when a base URL targets OpenAI's native API."""
@@ -5702,7 +5744,10 @@ class AIAgent:
                     "type": tool_call.type,
                     "function": {
                         "name": tool_call.function.name,
-                        "arguments": tool_call.function.arguments
+                        "arguments": self._sanitize_private_tool_arguments(
+                            tool_call.function.name,
+                            tool_call.function.arguments,
+                        ),
                     },
                 }
                 # Preserve extra_content (e.g. Gemini thought_signature) so it
@@ -5717,6 +5762,21 @@ class AIAgent:
             msg["tool_calls"] = tool_calls
 
         return msg
+
+    @staticmethod
+    def _sanitize_private_tool_arguments(function_name: str, raw_arguments: Any) -> Any:
+        """Redact private tool-call fields before persisting/replaying history."""
+        if function_name != "self_nudge" or not isinstance(raw_arguments, str):
+            return raw_arguments
+        try:
+            parsed = json.loads(raw_arguments)
+        except Exception:
+            return raw_arguments
+        if not isinstance(parsed, dict) or "note" not in parsed:
+            return raw_arguments
+        parsed = dict(parsed)
+        parsed.pop("note", None)
+        return json.dumps(parsed, ensure_ascii=False)
 
     @staticmethod
     def _sanitize_tool_calls_for_strict_api(api_msg: dict) -> dict:
@@ -6090,6 +6150,11 @@ class AIAgent:
                 choices=function_args.get("choices"),
                 callback=self.clarify_callback,
             )
+        elif function_name == "self_nudge":
+            return self._emit_self_nudge(
+                function_args.get("delay_seconds", 0),
+                function_args.get("note", ""),
+            )
         elif function_name == "delegate_task":
             from tools.delegate_tool import delegate_task as _delegate_task
             return _delegate_task(
@@ -6459,6 +6524,14 @@ class AIAgent:
                 tool_duration = time.time() - tool_start_time
                 if self.quiet_mode:
                     self._vprint(f"  {_get_cute_tool_message_impl('clarify', function_args, tool_duration, result=function_result)}")
+            elif function_name == "self_nudge":
+                function_result = self._emit_self_nudge(
+                    function_args.get("delay_seconds", 0),
+                    function_args.get("note", ""),
+                )
+                tool_duration = time.time() - tool_start_time
+                if self.quiet_mode:
+                    self._vprint(f"  {_get_cute_tool_message_impl('self_nudge', function_args, tool_duration, result=function_result)}")
             elif function_name == "delegate_task":
                 from tools.delegate_tool import delegate_task as _delegate_task
                 tasks_arg = function_args.get("tasks")
@@ -6913,6 +6986,7 @@ class AIAgent:
         self._stream_callback = stream_callback
         self._persist_user_message_idx = None
         self._persist_user_message_override = persist_user_message
+        self._self_nudge_armed_this_turn = False
         # Generate unique task_id if not provided to isolate VMs between concurrent tasks
         effective_task_id = task_id or str(uuid.uuid4())
         

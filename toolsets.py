@@ -52,6 +52,8 @@ _HERMES_CORE_TOOLS = [
     "session_search",
     # Clarifying questions
     "clarify",
+    # One-shot hidden follow-up timer for gateway sessions
+    "self_nudge",
     # Code execution + delegation
     "execute_code", "delegate_task",
     # Cronjob management
@@ -179,6 +181,12 @@ TOOLSETS = {
         "tools": ["clarify"],
         "includes": []
     },
+
+    "user_updates": {
+        "description": "Arm one-shot hidden follow-up nudges for the current gateway session",
+        "tools": ["self_nudge"],
+        "includes": []
+    },
     
     "code_execution": {
         "description": "Run Python scripts that call tools programmatically (reduces LLM round trips)",
@@ -243,7 +251,7 @@ TOOLSETS = {
     },
 
     "hermes-api-server": {
-        "description": "OpenAI-compatible API server — full agent tools accessible via HTTP (no interactive UI tools like clarify or send_message)",
+        "description": "OpenAI-compatible API server — full agent tools accessible via HTTP (no interactive UI tools like clarify, self_nudge, or send_message)",
         "tools": [
             # Web
             "web_search", "web_extract",

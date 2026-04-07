@@ -8,6 +8,7 @@ import pytest
 from model_tools import (
     handle_function_call,
     get_all_tool_names,
+    get_tool_definitions,
     get_toolset_for_tool,
     _AGENT_LOOP_TOOLS,
     _LEGACY_TOOLSET_MAP,
@@ -85,10 +86,32 @@ class TestAgentLoopTools:
         assert "memory" in _AGENT_LOOP_TOOLS
         assert "session_search" in _AGENT_LOOP_TOOLS
         assert "delegate_task" in _AGENT_LOOP_TOOLS
+        assert "self_nudge" in _AGENT_LOOP_TOOLS
 
     def test_no_regular_tools_in_set(self):
         assert "web_search" not in _AGENT_LOOP_TOOLS
         assert "terminal" not in _AGENT_LOOP_TOOLS
+
+    def test_self_nudge_only_exposed_on_gateway_platforms(self):
+        telegram_tools = get_tool_definitions(
+            enabled_toolsets=["user_updates"],
+            quiet_mode=True,
+            platform="telegram",
+        )
+        cli_tools = get_tool_definitions(
+            enabled_toolsets=["user_updates"],
+            quiet_mode=True,
+            platform="cli",
+        )
+        api_tools = get_tool_definitions(
+            enabled_toolsets=["user_updates"],
+            quiet_mode=True,
+            platform="api_server",
+        )
+
+        assert [t["function"]["name"] for t in telegram_tools] == ["self_nudge"]
+        assert cli_tools == []
+        assert api_tools == []
 
 
 # =========================================================================

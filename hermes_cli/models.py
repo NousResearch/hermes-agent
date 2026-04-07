@@ -265,6 +265,202 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     ],
 }
 
+# ---------------------------------------------------------------------------
+# Nous Portal free-model filtering
+# ---------------------------------------------------------------------------
+# Models that are ALLOWED to appear when priced as free on Nous Portal.
+# Any other free model is hidden — prevents promotional/temporary free models
+# from cluttering the selection when users are paying subscribers.
+# Models in this list are ALSO filtered out if they are NOT free (i.e. they
+# should only appear in the menu when they are genuinely free).
+_NOUS_ALLOWED_FREE_MODELS: frozenset[str] = frozenset({
+    "xiaomi/mimo-v2-pro",
+    "xiaomi/mimo-v2-omni",
+})
+
+
+def _is_model_free(model_id: str, pricing: dict[str, dict[str, str]]) -> bool:
+    """Return True if *model_id* has zero-cost prompt AND completion pricing."""
+    p = pricing.get(model_id)
+    if not p:
+        return False
+    try:
+        return float(p.get("prompt", "1")) == 0 and float(p.get("completion", "1")) == 0
+    except (TypeError, ValueError):
+        return False
+
+
+def filter_nous_free_models(
+    model_ids: list[str],
+    pricing: dict[str, dict[str, str]],
+) -> list[str]:
+    """Filter the Nous Portal model list according to free-model policy.
+
+    Rules:
+      • Paid models that are NOT in the allowlist → keep (normal case).
+      • Free models that are NOT in the allowlist → drop.
+      • Allowlist models that ARE free → keep.
+      • Allowlist models that are NOT free → drop.
+    """
+    if not pricing:
+        return model_ids  # no pricing data — can't filter, show everything
+
+    result: list[str] = []
+    for mid in model_ids:
+        free = _is_model_free(mid, pricing)
+        if mid in _NOUS_ALLOWED_FREE_MODELS:
+            # Allowlist model: only show when it's actually free
+            if free:
+                result.append(mid)
+        else:
+            # Regular model: keep only when it's NOT free
+            if not free:
+                result.append(mid)
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Nous Portal account tier detection
+# ---------------------------------------------------------------------------
+
+def fetch_nous_account_tier(access_token: str, portal_base_url: str = "") -> dict[str, Any]:
+    """Fetch the user's Nous Portal account/subscription info.
+
+    Calls ``<portal>/api/oauth/account`` with the OAuth access token.
+
+    Returns the parsed JSON dict on success, e.g.::
+
+        {
+            "subscription": {
+                "plan": "Plus",
+                "tier": 2,
+                "monthly_charge": 20,
+                "credits_remaining": 1686.60,
+                ...
+            },
+            ...
+        }
+
+    Returns an empty dict on any failure (network, auth, parse).
+    """
+    base = (portal_base_url or "https://portal.nousresearch.com").rstrip("/")
+    url = f"{base}/api/oauth/account"
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Accept": "application/json",
+    }
+    try:
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            return json.loads(resp.read().decode())
+    except Exception:
+        return {}
+
+
+def is_nous_free_tier(account_info: dict[str, Any]) -> bool:
+    """Return True if the account info indicates a free (unpaid) tier.
+
+    Checks ``subscription.monthly_charge == 0``.  Returns False when
+    the field is missing or unparseable (assumes paid — don't block users).
+    """
+    sub = account_info.get("subscription")
+    if not isinstance(sub, dict):
+        return False
+    charge = sub.get("monthly_charge")
+    if charge is None:
+        return False
+    try:
+        return float(charge) == 0
+    except (TypeError, ValueError):
+        return False
+
+
+def partition_nous_models_by_tier(
+    model_ids: list[str],
+    pricing: dict[str, dict[str, str]],
+    free_tier: bool,
+) -> tuple[list[str], list[str]]:
+    """Split Nous models into (selectable, unavailable) based on user tier.
+
+    For paid-tier users: all models are selectable, none unavailable
+    (free-model filtering is handled separately by ``filter_nous_free_models``).
+
+    For free-tier users: only free models are selectable; paid models
+    are returned as unavailable (shown grayed out in the menu).
+    """
+    if not free_tier:
+        return (model_ids, [])
+
+    if not pricing:
+        return (model_ids, [])  # can't determine, show everything
+
+    selectable: list[str] = []
+    unavailable: list[str] = []
+    for mid in model_ids:
+        if _is_model_free(mid, pricing):
+            selectable.append(mid)
+        else:
+            unavailable.append(mid)
+    return (selectable, unavailable)
+
+
+# ---------------------------------------------------------------------------
+# TTL cache for free-tier detection — avoids repeated API calls within a
+# session while still picking up upgrades quickly.
+# ---------------------------------------------------------------------------
+_FREE_TIER_CACHE_TTL: int = 180  # seconds (3 minutes)
+_free_tier_cache: tuple[bool, float] | None = None  # (result, timestamp)
+
+
+def clear_nous_free_tier_cache() -> None:
+    """Invalidate the cached free-tier result (e.g. after login/logout)."""
+    global _free_tier_cache
+    _free_tier_cache = None
+
+
+def check_nous_free_tier() -> bool:
+    """Check if the current Nous Portal user is on a free (unpaid) tier.
+
+    Results are cached for ``_FREE_TIER_CACHE_TTL`` seconds to avoid
+    hitting the Portal API on every call.  The cache is short-lived so
+    that an account upgrade is reflected within a few minutes.
+
+    Returns False (assume paid) on any error — never blocks paying users.
+    """
+    global _free_tier_cache
+    import time
+
+    now = time.monotonic()
+    if _free_tier_cache is not None:
+        cached_result, cached_at = _free_tier_cache
+        if now - cached_at < _FREE_TIER_CACHE_TTL:
+            return cached_result
+
+    try:
+        from hermes_cli.auth import get_provider_auth_state, resolve_nous_runtime_credentials
+
+        # Ensure we have a fresh token (triggers refresh if needed)
+        resolve_nous_runtime_credentials(min_key_ttl_seconds=60)
+
+        state = get_provider_auth_state("nous")
+        if not state:
+            _free_tier_cache = (False, now)
+            return False
+        access_token = state.get("access_token", "")
+        portal_url = state.get("portal_base_url", "")
+        if not access_token:
+            _free_tier_cache = (False, now)
+            return False
+
+        account_info = fetch_nous_account_tier(access_token, portal_url)
+        result = is_nous_free_tier(account_info)
+        _free_tier_cache = (result, now)
+        return result
+    except Exception:
+        _free_tier_cache = (False, now)
+        return False  # default to paid on error — don't block users
+
+
 _PROVIDER_LABELS = {
     "openrouter": "OpenRouter",
     "openai-codex": "OpenAI Codex",

@@ -292,3 +292,100 @@ def test_gateway_setup_has_linear():
     src = open(mod.__file__).read()
     assert '"linear"' in src
     assert "LINEAR_WEBHOOK_SECRET" in src
+
+
+# ── Webhook Handler (async) ────────────────────────────────────────
+
+
+@pytest.fixture
+def linear_adapter(monkeypatch):
+    """Create a LinearAdapter for testing."""
+    monkeypatch.setenv("LINEAR_WEBHOOK_SECRET", "test-secret")
+    monkeypatch.setenv("LINEAR_API_KEY", "lin_api_test")
+
+    from gateway.platforms.linear import LinearAdapter
+
+    config = PlatformConfig(
+        enabled=True,
+        extra={
+            "webhook_secret": "test-secret",
+            "api_key": "lin_api_test",
+            "agent_user_id": "agent-uuid-123",
+            "enforce_ip_allowlist": False,  # Disable for testing
+        },
+    )
+    return LinearAdapter(config)
+
+
+def _sign_body(body: str, secret: str = "test-secret") -> str:
+    """Compute HMAC-SHA256 signature for a webhook body."""
+    return hmac.new(secret.encode(), body.encode(), hashlib.sha256).hexdigest()
+
+
+def test_webhook_rejects_bad_signature(linear_adapter):
+    """Webhook handler rejects requests with invalid signatures."""
+    import asyncio
+    from unittest.mock import AsyncMock, MagicMock
+
+    request = MagicMock()
+    request.method = "POST"
+    request.content_length = 100
+    request.headers = {"Linear-Signature": "invalid"}
+    request.remote = "35.231.147.226"
+    request.text = AsyncMock(return_value='{"type":"Comment","action":"create","data":{}}')
+
+    resp = asyncio.get_event_loop().run_until_complete(
+        linear_adapter._handle_webhook(request)
+    )
+    assert resp.status == 400
+
+
+def test_webhook_rejects_get_method(linear_adapter):
+    """Webhook handler rejects non-POST methods."""
+    import asyncio
+    from unittest.mock import MagicMock
+
+    request = MagicMock()
+    request.method = "GET"
+
+    resp = asyncio.get_event_loop().run_until_complete(
+        linear_adapter._handle_webhook(request)
+    )
+    assert resp.status == 405
+
+
+def test_ip_allowlist_contains_known_ips():
+    """LINEAR_WEBHOOK_IPS contains the documented Linear IPs."""
+    from gateway.platforms.linear import LINEAR_WEBHOOK_IPS
+
+    expected = {
+        "35.231.147.226",
+        "35.243.134.228",
+        "34.140.253.14",
+        "34.38.87.206",
+        "34.134.222.122",
+        "35.222.25.142",
+    }
+    assert LINEAR_WEBHOOK_IPS == expected
+
+
+def test_adapter_ip_allowlist_configurable(monkeypatch):
+    """IP allowlist can be disabled via config."""
+    monkeypatch.setenv("LINEAR_WEBHOOK_SECRET", "test")
+    monkeypatch.setenv("LINEAR_API_KEY", "test")
+
+    from gateway.platforms.linear import LinearAdapter
+
+    # Enabled by default
+    adapter = LinearAdapter(PlatformConfig(
+        enabled=True,
+        extra={"webhook_secret": "s", "api_key": "k"},
+    ))
+    assert adapter._enforce_ip_allowlist is True
+
+    # Disabled via config
+    adapter = LinearAdapter(PlatformConfig(
+        enabled=True,
+        extra={"webhook_secret": "s", "api_key": "k", "enforce_ip_allowlist": "false"},
+    ))
+    assert adapter._enforce_ip_allowlist is False

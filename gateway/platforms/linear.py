@@ -598,34 +598,38 @@ class LinearAdapter(BasePlatformAdapter):
         # Fallback: use linear CLI
         return await self._post_comment_cli(issue_identifier, body)
 
+    async def _graphql(self, query: str, variables: Optional[dict] = None) -> dict:
+        """Make a GraphQL request to the Linear API using aiohttp."""
+        payload = {"query": query}
+        if variables:
+            payload["variables"] = variables
+
+        headers = {
+            "Authorization": self._api_key,
+            "Content-Type": "application/json",
+        }
+
+        import aiohttp
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                "https://api.linear.app/graphql",
+                json=payload,
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=15),
+            ) as resp:
+                if resp.status != 200:
+                    text = await resp.text()
+                    raise RuntimeError(f"Linear API HTTP {resp.status}: {text}")
+                return await resp.json()
+
     async def _post_comment_graphql(self, issue_identifier: str, body: str) -> SendResult:
         """Post a comment via Linear GraphQL API."""
         # First resolve the issue UUID from identifier
-        resolve_query = json.dumps({
-            "query": (
-                'query($id: String!) { issue(id: $id) { id identifier } }'
-            ),
-            "variables": {"id": issue_identifier},
-        })
-
-        loop = asyncio.get_event_loop()
-
-        def _do_resolve():
-            import urllib.request
-            req = urllib.request.Request(
-                "https://api.linear.app/graphql",
-                data=resolve_query.encode("utf-8"),
-                headers={
-                    "Authorization": self._api_key,
-                    "Content-Type": "application/json",
-                },
-                method="POST",
-            )
-            with urllib.request.urlopen(req, timeout=15) as resp:
-                return json.loads(resp.read().decode())
-
         try:
-            result = await loop.run_in_executor(None, _do_resolve)
+            result = await self._graphql(
+                'query($id: String!) { issue(id: $id) { id identifier } }',
+                {"id": issue_identifier},
+            )
         except Exception as exc:
             logger.error("[linear] Failed to resolve issue %s: %s", issue_identifier, exc)
             return SendResult(success=False, error=f"Failed to resolve issue: {exc}")
@@ -639,36 +643,13 @@ class LinearAdapter(BasePlatformAdapter):
         issue_uuid = issue_data["id"]
 
         # Now post the comment
-        mutation = json.dumps({
-            "query": (
+        try:
+            result = await self._graphql(
                 'mutation($input: CommentCreateInput!) { '
                 'commentCreate(input: $input) { '
-                'success comment { id body } } }'
-            ),
-            "variables": {
-                "input": {
-                    "issueId": issue_uuid,
-                    "body": body,
-                }
-            },
-        })
-
-        def _do_comment():
-            import urllib.request
-            req = urllib.request.Request(
-                "https://api.linear.app/graphql",
-                data=mutation.encode("utf-8"),
-                headers={
-                    "Authorization": self._api_key,
-                    "Content-Type": "application/json",
-                },
-                method="POST",
+                'success comment { id body } } }',
+                {"input": {"issueId": issue_uuid, "body": body}},
             )
-            with urllib.request.urlopen(req, timeout=15) as resp:
-                return json.loads(resp.read().decode())
-
-        try:
-            result = await loop.run_in_executor(None, _do_comment)
         except Exception as exc:
             logger.error("[linear] GraphQL comment failed: %s", exc)
             return SendResult(success=False, error=str(exc))

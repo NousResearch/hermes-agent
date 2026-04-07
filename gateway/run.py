@@ -6044,6 +6044,11 @@ class GatewayRunner:
 
         if enriched_parts:
             prefix = "\n\n".join(enriched_parts)
+            # Strip the empty-content placeholder from the Discord adapter
+            # when we successfully transcribed the audio — it's redundant.
+            _placeholder = "(The user sent a message with no text content)"
+            if user_text and user_text.strip() == _placeholder:
+                return prefix
             if user_text:
                 return f"{prefix}\n\n{user_text}"
             return prefix

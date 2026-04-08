@@ -84,6 +84,7 @@ _PASSTHROUGH_PROVIDERS: frozenset[str] = frozenset({
     "minimax",
     "minimax-cn",
     "alibaba",
+    "qwen-oauth",
     "huggingface",
     "openai-codex",
     "custom",

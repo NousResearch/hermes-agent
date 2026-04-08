@@ -413,6 +413,27 @@ def _strip_budget_warnings_from_history(messages: list) -> None:
 # =========================================================================
 
 
+# =========================================================================
+# Qwen Portal headers — mimics QwenCode CLI for portal.qwen.ai compatibility.
+# Extracted as a module-level helper so both __init__ and
+# _apply_client_headers_for_base_url can share it.
+# =========================================================================
+_QWEN_CODE_VERSION = "0.14.1"
+
+
+def _qwen_portal_headers() -> dict:
+    """Return default HTTP headers required by Qwen Portal API."""
+    import platform as _plat
+
+    _ua = f"QwenCode/{_QWEN_CODE_VERSION} ({_plat.system().lower()}; {_plat.machine()})"
+    return {
+        "User-Agent": _ua,
+        "X-DashScope-CacheControl": "enable",
+        "X-DashScope-UserAgent": _ua,
+        "X-DashScope-AuthType": "qwen-oauth",
+    }
+
+
 class AIAgent:
     """
     AI Agent with tool calling capabilities.
@@ -756,6 +777,8 @@ class AIAgent:
                     client_kwargs["default_headers"] = {
                         "User-Agent": "KimiCLI/1.3",
                     }
+                elif "portal.qwen.ai" in effective_base.lower():
+                    client_kwargs["default_headers"] = _qwen_portal_headers()
             else:
                 # No explicit creds — use the centralized provider router
                 from agent.auxiliary_client import resolve_provider_client
@@ -4080,6 +4103,8 @@ class AIAgent:
             self._client_kwargs["default_headers"] = copilot_default_headers()
         elif "api.kimi.com" in normalized:
             self._client_kwargs["default_headers"] = {"User-Agent": "KimiCLI/1.3"}
+        elif "portal.qwen.ai" in normalized:
+            self._client_kwargs["default_headers"] = _qwen_portal_headers()
         else:
             self._client_kwargs.pop("default_headers", None)
 
@@ -5226,6 +5251,71 @@ class AIAgent:
         base = (getattr(self, "base_url", "") or "").lower()
         return "dashscope" in base or "aliyuncs" in base or "opencode.ai/zen/go" in base
 
+    def _is_qwen_portal(self) -> bool:
+        """Return True when the base URL targets Qwen Portal."""
+        return "portal.qwen.ai" in self._base_url_lower
+
+    def _qwen_prepare_chat_messages(self, api_messages: list) -> list:
+        prepared = copy.deepcopy(api_messages)
+        if not prepared:
+            return prepared
+
+        for msg in prepared:
+            if not isinstance(msg, dict):
+                continue
+            content = msg.get("content")
+            if isinstance(content, str):
+                msg["content"] = [{"type": "text", "text": content}]
+            elif isinstance(content, list):
+                # Normalize: convert bare strings to text dicts, keep dicts as-is.
+                # deepcopy already created independent copies, no need for dict().
+                normalized_parts = []
+                for part in content:
+                    if isinstance(part, str):
+                        normalized_parts.append({"type": "text", "text": part})
+                    elif isinstance(part, dict):
+                        normalized_parts.append(part)
+                if normalized_parts:
+                    msg["content"] = normalized_parts
+
+        # Inject cache_control on the last part of the system message.
+        for msg in prepared:
+            if isinstance(msg, dict) and msg.get("role") == "system":
+                content = msg.get("content")
+                if isinstance(content, list) and content and isinstance(content[-1], dict):
+                    content[-1]["cache_control"] = {"type": "ephemeral"}
+                break
+
+        return prepared
+
+    def _qwen_prepare_chat_messages_inplace(self, messages: list) -> None:
+        """In-place variant — mutates an already-copied message list."""
+        if not messages:
+            return
+
+        for msg in messages:
+            if not isinstance(msg, dict):
+                continue
+            content = msg.get("content")
+            if isinstance(content, str):
+                msg["content"] = [{"type": "text", "text": content}]
+            elif isinstance(content, list):
+                normalized_parts = []
+                for part in content:
+                    if isinstance(part, str):
+                        normalized_parts.append({"type": "text", "text": part})
+                    elif isinstance(part, dict):
+                        normalized_parts.append(part)
+                if normalized_parts:
+                    msg["content"] = normalized_parts
+
+        for msg in messages:
+            if isinstance(msg, dict) and msg.get("role") == "system":
+                content = msg.get("content")
+                if isinstance(content, list) and content and isinstance(content[-1], dict):
+                    content[-1]["cache_control"] = {"type": "ephemeral"}
+                break
+
     def _build_api_kwargs(self, api_messages: list) -> dict:
         """Build the keyword arguments dict for the active API mode."""
         if self.api_mode == "anthropic_messages":
@@ -5337,6 +5427,17 @@ class AIAgent:
                             tool_call.pop("call_id", None)
                             tool_call.pop("response_item_id", None)
 
+        # Qwen portal: normalize content to list-of-dicts, inject cache_control.
+        # Must run AFTER codex sanitization so we transform the final messages.
+        # If sanitization already deepcopied, reuse that copy (in-place).
+        if self._is_qwen_portal():
+            if sanitized_messages is api_messages:
+                # No sanitization was done — we need our own copy.
+                sanitized_messages = self._qwen_prepare_chat_messages(sanitized_messages)
+            else:
+                # Already a deepcopy — transform in place to avoid a second deepcopy.
+                self._qwen_prepare_chat_messages_inplace(sanitized_messages)
+
         # GPT-5 and Codex models respond better to 'developer' than 'system'
         # for instruction-following.  Swap the role at the API boundary so
         # internal message representation stays uniform ("system").
@@ -5369,11 +5470,17 @@ class AIAgent:
             "messages": sanitized_messages,
             "timeout": float(os.getenv("HERMES_API_TIMEOUT", 1800.0)),
         }
+        if self._is_qwen_portal():
+            api_kwargs["metadata"] = {
+                "sessionId": self.session_id or "hermes",
+                "promptId": str(uuid.uuid4()),
+            }
         if self.tools:
             api_kwargs["tools"] = self.tools
 
         if self.max_tokens is not None:
-            api_kwargs.update(self._max_tokens_param(self.max_tokens))
+            if not self._is_qwen_portal():
+                api_kwargs.update(self._max_tokens_param(self.max_tokens))
         elif self._is_openrouter_url() and "claude" in (self.model or "").lower():
             # OpenRouter translates requests to Anthropic's Messages API,
             # which requires max_tokens as a mandatory field.  When we omit
@@ -5437,6 +5544,9 @@ class AIAgent:
             options = extra_body.get("options", {})
             options["num_ctx"] = self._ollama_num_ctx
             extra_body["options"] = options
+
+        if self._is_qwen_portal():
+            extra_body["vl_high_resolution_images"] = True
 
         if extra_body:
             api_kwargs["extra_body"] = extra_body

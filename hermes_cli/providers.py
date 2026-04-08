@@ -58,6 +58,12 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         auth_type="oauth_external",
         base_url_override="https://chatgpt.com/backend-api/codex",
     ),
+    "qwen-oauth": HermesOverlay(
+        transport="openai_chat",
+        auth_type="oauth_external",
+        base_url_override="https://portal.qwen.ai/v1",
+        base_url_env_var="HERMES_QWEN_BASE_URL",
+    ),
     "copilot-acp": HermesOverlay(
         transport="codex_responses",
         auth_type="external_process",

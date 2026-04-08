@@ -235,6 +235,7 @@ class HindsightMemoryProvider(MemoryProvider):
             {"key": "api_key", "description": "Hindsight Cloud API key", "secret": True, "env_var": "HINDSIGHT_API_KEY", "url": "https://ui.hindsight.vectorize.io", "when": {"mode": "cloud"}},
             {"key": "llm_provider", "description": "LLM provider for local mode", "default": "openai", "choices": ["openai", "anthropic", "gemini", "groq", "minimax", "ollama"], "when": {"mode": "local"}},
             {"key": "llm_api_key", "description": "LLM API key for local Hindsight", "secret": True, "env_var": "HINDSIGHT_LLM_API_KEY", "when": {"mode": "local"}},
+            {"key": "llm_base_url", "description": "LLM Base URL (e.g. for OpenRouter)", "default": "", "env_var": "HINDSIGHT_API_LLM_BASE_URL", "when": {"mode": "local"}},
             {"key": "llm_model", "description": "LLM model for local mode", "default": "gpt-4o-mini", "default_from": {"field": "llm_provider", "map": _PROVIDER_DEFAULT_MODELS}, "when": {"mode": "local"}},
             {"key": "bank_id", "description": "Memory bank name", "default": "hermes"},
             {"key": "budget", "description": "Recall thoroughness", "default": "mid", "choices": ["low", "mid", "high"]},
@@ -251,12 +252,16 @@ class HindsightMemoryProvider(MemoryProvider):
                 # different loop" errors during GC — we handle cleanup in
                 # shutdown() instead.
                 HindsightEmbedded.__del__ = lambda self: None
-                self._client = HindsightEmbedded(
+                kwargs = dict(
                     profile=self._config.get("profile", "hermes"),
                     llm_provider=self._config.get("llm_provider", ""),
-                    llm_api_key=self._config.get("llmApiKey") or os.environ.get("HINDSIGHT_LLM_API_KEY", ""),
+                    llm_api_key=self._config.get("llm_api_key") or os.environ.get("HINDSIGHT_LLM_API_KEY", ""),
                     llm_model=self._config.get("llm_model", ""),
                 )
+                base_url = self._config.get("llm_base_url") or os.environ.get("HINDSIGHT_API_LLM_BASE_URL", "")
+                if base_url:
+                    kwargs["llm_base_url"] = base_url
+                self._client = HindsightEmbedded(**kwargs)
             else:
                 from hindsight_client import Hindsight
                 kwargs = {"base_url": self._api_url, "timeout": 30.0}
@@ -311,9 +316,10 @@ class HindsightMemoryProvider(MemoryProvider):
                     # If the config changed and the daemon is running, stop it.
                     from pathlib import Path as _Path
                     profile_env = _Path.home() / ".hindsight" / "profiles" / f"{profile}.env"
-                    current_key = self._config.get("llmApiKey") or os.environ.get("HINDSIGHT_LLM_API_KEY", "")
+                    current_key = self._config.get("llm_api_key") or os.environ.get("HINDSIGHT_LLM_API_KEY", "")
                     current_provider = self._config.get("llm_provider", "")
                     current_model = self._config.get("llm_model", "")
+                    current_base_url = self._config.get("llm_base_url") or os.environ.get("HINDSIGHT_API_LLM_BASE_URL", "")
 
                     # Read saved profile config
                     saved = {}
@@ -326,18 +332,22 @@ class HindsightMemoryProvider(MemoryProvider):
                     config_changed = (
                         saved.get("HINDSIGHT_API_LLM_PROVIDER") != current_provider or
                         saved.get("HINDSIGHT_API_LLM_MODEL") != current_model or
-                        saved.get("HINDSIGHT_API_LLM_API_KEY") != current_key
+                        saved.get("HINDSIGHT_API_LLM_API_KEY") != current_key or
+                        saved.get("HINDSIGHT_API_LLM_BASE_URL", "") != current_base_url
                     )
 
                     if config_changed:
                         # Write updated profile .env
                         profile_env.parent.mkdir(parents=True, exist_ok=True)
-                        profile_env.write_text(
+                        env_lines = (
                             f"HINDSIGHT_API_LLM_PROVIDER={current_provider}\n"
                             f"HINDSIGHT_API_LLM_API_KEY={current_key}\n"
                             f"HINDSIGHT_API_LLM_MODEL={current_model}\n"
                             f"HINDSIGHT_API_LOG_LEVEL=info\n"
                         )
+                        if current_base_url:
+                            env_lines += f"HINDSIGHT_API_LLM_BASE_URL={current_base_url}\n"
+                        profile_env.write_text(env_lines)
                         if client._manager.is_running(profile):
                             with open(log_path, "a") as f:
                                 f.write("\n=== Config changed, restarting daemon ===\n")

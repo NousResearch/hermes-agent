@@ -3567,8 +3567,22 @@ def cmd_update(args):
         print()
         print("✓ Code updated!")
         
-        # After git pull, source files on disk are newer than cached Python
-        # modules in this process.  Reload hermes_constants so that any lazy
+        # After git pull, source files on disk are newer than cached .pyc
+        # bytecode files.  Stale .pyc can cause TypeError / ImportError
+        # when new signatures don't match the cached compiled modules.
+        # Clear all __pycache__ dirs under the project root.
+        try:
+            import shutil as _shutil_pyc
+            _pyc_count = 0
+            for _cache_dir in PROJECT_ROOT.rglob("__pycache__"):
+                _shutil_pyc.rmtree(_cache_dir, ignore_errors=True)
+                _pyc_count += 1
+            if _pyc_count:
+                print(f"  ✓ Cleared {_pyc_count} __pycache__ directories")
+        except Exception:
+            pass  # non-fatal — worst case a stale .pyc causes a restart
+
+        # Reload hermes_constants so that any lazy
         # import executed below (skills sync, gateway restart) sees new
         # attributes like display_hermes_home() added since the last release.
         try:

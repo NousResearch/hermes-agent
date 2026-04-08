@@ -1041,17 +1041,42 @@ class TestDiscordVoiceChannelMethods:
 
     def test_is_allowed_user_empty_list(self):
         adapter = self._make_adapter()
-        assert adapter._is_allowed_user("42") is True
+        with patch.dict("os.environ", {}, clear=False):
+            os.environ.pop("DISCORD_ALLOW_ALL_USERS", None)
+            assert adapter._is_allowed_user("42") is True
 
     def test_is_allowed_user_in_list(self):
         adapter = self._make_adapter()
         adapter._allowed_user_ids = {"42", "99"}
-        assert adapter._is_allowed_user("42") is True
+        with patch.dict("os.environ", {}, clear=False):
+            os.environ.pop("DISCORD_ALLOW_ALL_USERS", None)
+            assert adapter._is_allowed_user("42") is True
 
     def test_is_allowed_user_not_in_list(self):
         adapter = self._make_adapter()
         adapter._allowed_user_ids = {"99"}
-        assert adapter._is_allowed_user("42") is False
+        with patch.dict("os.environ", {}, clear=False):
+            os.environ.pop("DISCORD_ALLOW_ALL_USERS", None)
+            assert adapter._is_allowed_user("42") is False
+
+    def test_is_allowed_user_honors_allow_all_env(self):
+        adapter = self._make_adapter()
+        adapter._allowed_user_ids = {"99"}
+        with patch.dict("os.environ", {"DISCORD_ALLOW_ALL_USERS": "true"}, clear=False):
+            assert adapter._is_allowed_user("42") is True
+
+    @pytest.mark.asyncio
+    async def test_resolve_allowed_usernames_skips_when_members_intent_disabled(self):
+        adapter = self._make_adapter()
+        adapter._allowed_user_ids = {"timerway", "42"}
+        adapter._client = MagicMock()
+        adapter._client.intents = SimpleNamespace(members=False)
+        adapter._client.guilds = [MagicMock()]
+
+        await adapter._resolve_allowed_usernames()
+
+        assert adapter._allowed_user_ids == {"timerway", "42"}
+        adapter._client.guilds[0].fetch_members.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_process_voice_input_success(self):

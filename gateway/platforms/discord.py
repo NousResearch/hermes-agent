@@ -512,16 +512,14 @@ class DiscordAdapter(BasePlatformAdapter):
 
             # Set up intents.
             # Message Content is required for normal text replies.
-            # Server Members is only needed when the allowlist contains usernames
-            # that must be resolved to numeric IDs. Requesting privileged intents
-            # that aren't enabled in the Discord Developer Portal can prevent the
-            # bot from coming online at all, so avoid requesting members intent
-            # unless it is actually necessary.
+            # Members intent is optional and often disabled in the Discord portal.
+            # Default to off unless explicitly enabled by env so the bot can still
+            # connect on setups where privileged intents are not enabled.
             intents = Intents.default()
             intents.message_content = True
             intents.dm_messages = True
             intents.guild_messages = True
-            intents.members = any(not entry.isdigit() for entry in self._allowed_user_ids)
+            intents.members = os.getenv("DISCORD_ENABLE_MEMBERS_INTENT", "false").lower() in {"1", "true", "yes", "on"}
             intents.voice_states = True
 
             # Resolve proxy (DISCORD_PROXY > generic env vars > macOS system proxy)
@@ -1285,7 +1283,9 @@ class DiscordAdapter(BasePlatformAdapter):
                 pass
 
     def _is_allowed_user(self, user_id: str) -> bool:
-        """Check if user is in DISCORD_ALLOWED_USERS."""
+        """Check Discord adapter-level authorization."""
+        if os.getenv("DISCORD_ALLOW_ALL_USERS", "").lower() in ("true", "1", "yes"):
+            return True
         if not self._allowed_user_ids:
             return True
         return user_id in self._allowed_user_ids
@@ -1518,6 +1518,13 @@ class DiscordAdapter(BasePlatformAdapter):
                 to_resolve.add(entry.lower())
 
         if not to_resolve:
+            return
+
+        if not getattr(getattr(self._client, "intents", None), "members", False):
+            logger.info(
+                "[%s] Skipping username resolution for DISCORD_ALLOWED_USERS because members intent is disabled",
+                self.name,
+            )
             return
 
         print(f"[{self.name}] Resolving {len(to_resolve)} username(s): {', '.join(to_resolve)}")

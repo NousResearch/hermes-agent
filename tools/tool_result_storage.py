@@ -20,14 +20,13 @@ Defense against context-window overflow operates at three levels:
    where many medium-sized results combine to overflow context.
 """
 
-import json
 import logging
 import uuid
 
 from tools.budget_config import (
-    DEFAULT_RESULT_SIZE_CHARS as DEFAULT_MAX_RESULT_SIZE_CHARS,
-    DEFAULT_TURN_BUDGET_CHARS as MAX_TURN_BUDGET_CHARS,
-    DEFAULT_PREVIEW_SIZE_CHARS as PREVIEW_SIZE_CHARS,
+    DEFAULT_PREVIEW_SIZE_CHARS,
+    BudgetConfig,
+    DEFAULT_BUDGET,
 )
 
 logger = logging.getLogger(__name__)
@@ -38,7 +37,7 @@ HEREDOC_MARKER = "HERMES_PERSIST_EOF"
 _BUDGET_TOOL_NAME = "__budget_enforcement__"
 
 
-def generate_preview(content: str, max_chars: int = PREVIEW_SIZE_CHARS) -> tuple[str, bool]:
+def generate_preview(content: str, max_chars: int = DEFAULT_PREVIEW_SIZE_CHARS) -> tuple[str, bool]:
     """Truncate at last newline within max_chars. Returns (preview, has_more)."""
     if len(content) <= max_chars:
         return content, False
@@ -54,21 +53,6 @@ def _heredoc_marker(content: str) -> str:
     if HEREDOC_MARKER not in content:
         return HEREDOC_MARKER
     return f"HERMES_PERSIST_{uuid.uuid4().hex[:8]}"
-
-
-def _extract_raw_output(content: str) -> str:
-    """Extract the 'output' field from JSON tool results for cleaner persistence.
-
-    Tool handlers return json.dumps({"output": ..., "exit_code": ...}) for the
-    API, but persisted files should contain readable text, not a JSON blob.
-    """
-    try:
-        data = json.loads(content)
-        if isinstance(data, dict) and "output" in data:
-            return data["output"]
-    except (json.JSONDecodeError, TypeError):
-        pass
-    return content
 
 
 def _write_to_sandbox(content: str, remote_path: str, env) -> bool:
@@ -113,8 +97,8 @@ def maybe_persist_tool_result(
     tool_name: str,
     tool_use_id: str,
     env=None,
+    config: BudgetConfig = DEFAULT_BUDGET,
     threshold: int | float | None = None,
-    preview_size: int = PREVIEW_SIZE_CHARS,
 ) -> str:
     """Layer 2: persist oversized result into the sandbox, return preview + path.
 
@@ -127,32 +111,26 @@ def maybe_persist_tool_result(
         tool_name: Name of the tool (used for threshold lookup).
         tool_use_id: Unique ID for this tool call (used as filename).
         env: The active BaseEnvironment instance, or None.
-        threshold: Override threshold; if None, looked up from registry.
-        preview_size: Max chars for the inline preview after persistence.
+        config: BudgetConfig controlling thresholds and preview size.
+        threshold: Explicit override; takes precedence over config resolution.
 
     Returns:
         Original content if small, or <persisted-output> replacement.
     """
-    if threshold is None:
-        from tools.registry import registry
-        threshold = registry.get_max_result_size(tool_name)
+    effective_threshold = threshold if threshold is not None else config.resolve_threshold(tool_name)
 
-    # Infinity means never persist (e.g. read_file)
-    if threshold == float("inf"):
+    if effective_threshold == float("inf"):
         return content
 
-    if len(content) <= threshold:
+    if len(content) <= effective_threshold:
         return content
 
     remote_path = f"{STORAGE_DIR}/{tool_use_id}.txt"
-    # Write raw output (not JSON wrapper) so read_file returns readable text
-    file_content = _extract_raw_output(content)
-    preview, has_more = generate_preview(file_content, max_chars=preview_size)
+    preview, has_more = generate_preview(content, max_chars=config.preview_size)
 
-    # Try writing into the sandbox
     if env is not None:
         try:
-            if _write_to_sandbox(file_content, remote_path, env):
+            if _write_to_sandbox(content, remote_path, env):
                 logger.info(
                     "Persisted large tool result: %s (%s, %d chars -> %s)",
                     tool_name, tool_use_id, len(content), remote_path,
@@ -161,7 +139,6 @@ def maybe_persist_tool_result(
         except Exception as exc:
             logger.warning("Sandbox write failed for %s: %s", tool_use_id, exc)
 
-    # Fallback: inline truncation (no sandbox available or write failed)
     logger.info(
         "Inline-truncating large tool result: %s (%d chars, no sandbox write)",
         tool_name, len(content),
@@ -176,8 +153,7 @@ def maybe_persist_tool_result(
 def enforce_turn_budget(
     tool_messages: list[dict],
     env=None,
-    budget: int = MAX_TURN_BUDGET_CHARS,
-    preview_size: int = PREVIEW_SIZE_CHARS,
+    config: BudgetConfig = DEFAULT_BUDGET,
 ) -> list[dict]:
     """Layer 3: enforce aggregate budget across all tool results in a turn.
 
@@ -196,14 +172,13 @@ def enforce_turn_budget(
         if PERSISTED_OUTPUT_TAG not in content:
             candidates.append((i, size))
 
-    if total_size <= budget:
+    if total_size <= config.turn_budget:
         return tool_messages
 
-    # Sort candidates by size descending — persist largest first
     candidates.sort(key=lambda x: x[1], reverse=True)
 
     for idx, size in candidates:
-        if total_size <= budget:
+        if total_size <= config.turn_budget:
             break
         msg = tool_messages[idx]
         content = msg["content"]
@@ -214,8 +189,8 @@ def enforce_turn_budget(
             tool_name=_BUDGET_TOOL_NAME,
             tool_use_id=tool_use_id,
             env=env,
+            config=config,
             threshold=0,
-            preview_size=preview_size,
         )
         if replacement != content:
             total_size -= size

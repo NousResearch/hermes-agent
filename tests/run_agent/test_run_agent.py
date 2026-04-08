@@ -1011,10 +1011,9 @@ class TestExecuteToolCalls:
         big_result = "x" * 150_000
         with patch("run_agent.handle_function_call", return_value=big_result):
             agent._execute_tool_calls(mock_msg, messages, "task-1")
-        # Content should be replaced with preview + file path
+        # Content should be replaced with persisted-output or truncation
         assert len(messages[0]["content"]) < 150_000
-        assert "Large tool response" in messages[0]["content"]
-        assert "Full output saved to:" in messages[0]["content"]
+        assert ("Truncated" in messages[0]["content"] or "<persisted-output>" in messages[0]["content"])
 
 
 class TestConcurrentToolExecution:
@@ -1249,8 +1248,7 @@ class TestConcurrentToolExecution:
         assert len(messages) == 2
         for m in messages:
             assert len(m["content"]) < 150_000
-            assert "Large tool response" in m["content"]
-            assert "Full output saved to:" in m["content"]
+            assert ("Truncated" in m["content"] or "<persisted-output>" in m["content"])
 
     def test_invoke_tool_dispatches_to_handle_function_call(self, agent):
         """_invoke_tool should route regular tools through handle_function_call."""

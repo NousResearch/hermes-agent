@@ -3,16 +3,18 @@
 import pytest
 from unittest.mock import MagicMock, patch
 
+from tools.budget_config import (
+    DEFAULT_RESULT_SIZE_CHARS,
+    DEFAULT_TURN_BUDGET_CHARS,
+    DEFAULT_PREVIEW_SIZE_CHARS,
+    BudgetConfig,
+)
 from tools.tool_result_storage import (
-    DEFAULT_MAX_RESULT_SIZE_CHARS,
     HEREDOC_MARKER,
-    MAX_TURN_BUDGET_CHARS,
     PERSISTED_OUTPUT_TAG,
     PERSISTED_OUTPUT_CLOSING_TAG,
-    PREVIEW_SIZE_CHARS,
     STORAGE_DIR,
     _build_persisted_message,
-    _extract_raw_output,
     _heredoc_marker,
     _write_to_sandbox,
     enforce_turn_budget,
@@ -56,33 +58,10 @@ class TestGeneratePreview:
         assert has_more is False
 
     def test_exact_boundary(self):
-        text = "x" * PREVIEW_SIZE_CHARS
+        text = "x" * DEFAULT_PREVIEW_SIZE_CHARS
         preview, has_more = generate_preview(text)
         assert preview == text
         assert has_more is False
-
-
-# ── _extract_raw_output ────────────────────────────────────────────────
-
-class TestExtractRawOutput:
-    def test_extracts_output_from_terminal_json(self):
-        import json
-        content = json.dumps({"output": "hello world\nline2", "exit_code": 0, "error": None})
-        assert _extract_raw_output(content) == "hello world\nline2"
-
-    def test_passes_through_non_json(self):
-        assert _extract_raw_output("plain text output") == "plain text output"
-
-    def test_passes_through_json_without_output_key(self):
-        import json
-        content = json.dumps({"result": "something", "status": "ok"})
-        assert _extract_raw_output(content) == content
-
-    def test_extracts_large_output(self):
-        import json
-        big = "x\n" * 30_000
-        content = json.dumps({"output": big, "exit_code": 0, "error": None})
-        assert _extract_raw_output(content) == big
 
 
 # ── _heredoc_marker ───────────────────────────────────────────────────
@@ -206,8 +185,8 @@ class TestMaybePersistToolResult:
         assert len(result) < len(content)
         env.execute.assert_called_once()
 
-    def test_persists_raw_output_not_json_wrapper(self):
-        """When content is JSON with 'output' key, file should contain raw output."""
+    def test_persists_full_content_as_is(self):
+        """Content is persisted verbatim — no JSON extraction."""
         import json
         env = MagicMock()
         env.execute.return_value = {"output": "", "returncode": 0}
@@ -221,10 +200,9 @@ class TestMaybePersistToolResult:
             threshold=30_000,
         )
         assert PERSISTED_OUTPUT_TAG in result
-        # The heredoc written to sandbox should contain raw text, not JSON
+        # The heredoc written to sandbox should contain the full JSON blob
         cmd = env.execute.call_args[0][0]
-        assert "line1\nline2\n" in cmd
-        assert '"exit_code"' not in cmd
+        assert '"exit_code"' in cmd
 
     def test_above_threshold_no_env_truncates_inline(self):
         content = "x" * 60_000
@@ -386,7 +364,7 @@ class TestEnforceTurnBudget:
             {"role": "tool", "tool_call_id": "t1", "content": "small"},
             {"role": "tool", "tool_call_id": "t2", "content": "also small"},
         ]
-        result = enforce_turn_budget(msgs, env=None, budget=200_000)
+        result = enforce_turn_budget(msgs, env=None, config=BudgetConfig(turn_budget=200_000))
         assert result[0]["content"] == "small"
         assert result[1]["content"] == "also small"
 
@@ -398,7 +376,7 @@ class TestEnforceTurnBudget:
             {"role": "tool", "tool_call_id": "t2", "content": "b" * 130_000},
         ]
         # Total 210K > 200K budget
-        enforce_turn_budget(msgs, env=env, budget=200_000)
+        enforce_turn_budget(msgs, env=env, config=BudgetConfig(turn_budget=200_000))
         # The larger one (130K) should be persisted first
         assert PERSISTED_OUTPUT_TAG in msgs[1]["content"]
 
@@ -410,7 +388,7 @@ class TestEnforceTurnBudget:
              "content": f"{PERSISTED_OUTPUT_TAG}\nalready persisted\n{PERSISTED_OUTPUT_CLOSING_TAG}"},
             {"role": "tool", "tool_call_id": "t2", "content": "x" * 250_000},
         ]
-        enforce_turn_budget(msgs, env=env, budget=200_000)
+        enforce_turn_budget(msgs, env=env, config=BudgetConfig(turn_budget=200_000))
         # t1 should be untouched (already persisted)
         assert msgs[0]["content"].startswith(PERSISTED_OUTPUT_TAG)
         # t2 should be persisted
@@ -425,7 +403,7 @@ class TestEnforceTurnBudget:
             {"role": "tool", "tool_call_id": f"t{i}", "content": "x" * 42_000}
             for i in range(6)
         ]
-        enforce_turn_budget(msgs, env=env, budget=200_000)
+        enforce_turn_budget(msgs, env=env, config=BudgetConfig(turn_budget=200_000))
         # At least some results should be persisted to get under 200K
         persisted_count = sum(
             1 for m in msgs if PERSISTED_OUTPUT_TAG in m["content"]
@@ -436,17 +414,17 @@ class TestEnforceTurnBudget:
         msgs = [
             {"role": "tool", "tool_call_id": "t1", "content": "x" * 250_000},
         ]
-        enforce_turn_budget(msgs, env=None, budget=200_000)
+        enforce_turn_budget(msgs, env=None, config=BudgetConfig(turn_budget=200_000))
         # Should be truncated (no sandbox available)
         assert "Truncated" in msgs[0]["content"] or PERSISTED_OUTPUT_TAG in msgs[0]["content"]
 
     def test_returns_same_list(self):
         msgs = [{"role": "tool", "tool_call_id": "t1", "content": "ok"}]
-        result = enforce_turn_budget(msgs, env=None, budget=200_000)
+        result = enforce_turn_budget(msgs, env=None, config=BudgetConfig(turn_budget=200_000))
         assert result is msgs
 
     def test_empty_messages(self):
-        result = enforce_turn_budget([], env=None, budget=200_000)
+        result = enforce_turn_budget([], env=None, config=BudgetConfig(turn_budget=200_000))
         assert result == []
 
 
@@ -463,7 +441,7 @@ class TestPerToolThresholds:
         from tools.registry import registry
         # Unknown tool should return the default
         val = registry.get_max_result_size("nonexistent_tool_xyz")
-        assert val == DEFAULT_MAX_RESULT_SIZE_CHARS
+        assert val == DEFAULT_RESULT_SIZE_CHARS
 
     def test_terminal_threshold(self):
         from tools.registry import registry

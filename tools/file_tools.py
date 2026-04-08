@@ -26,6 +26,8 @@ _EXPECTED_WRITE_ERRNOS = {errno.EACCES, errno.EPERM, errno.EROFS}
 # Configurable via config.yaml:  file_read_max_chars: 200000
 # ---------------------------------------------------------------------------
 _DEFAULT_MAX_READ_CHARS = 100_000
+_PRE_READ_MAX_BYTES = 256_000  # reject full-file reads on files larger than this
+_DEFAULT_READ_LIMIT = 500
 _max_read_chars_cached: int | None = None
 
 
@@ -277,7 +279,7 @@ def clear_file_ops_cache(task_id: str = None):
             _file_ops_cache.clear()
 
 
-def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = "default") -> str:
+def read_file_tool(path: str, offset: int = 1, limit: int | None = None, task_id: str = "default") -> str:
     """Read a file with pagination and line numbers."""
     try:
         # ── Device path guard ─────────────────────────────────────────
@@ -291,9 +293,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
                 ),
             })
 
-        # Resolve path once for all guards below
-        import pathlib as _pathlib
-        _resolved = _pathlib.Path(path).expanduser().resolve()
+        _resolved = Path(path).expanduser().resolve()
 
         # ── Binary file guard ─────────────────────────────────────────
         # Block binary files by extension (no I/O).
@@ -328,25 +328,26 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
                 pass
 
         # ── Pre-read file size guard ──────────────────────────────────
-        # Stat the file before reading.  If it's large and the model
-        # didn't request a narrow range, block and tell it to use
-        # offset/limit — cheaper than reading 200K chars then rejecting.
-        _PRE_READ_MAX_BYTES = 100_000
-        _NARROW_LIMIT = 200
-        try:
-            _fsize = os.path.getsize(str(_resolved))
-        except OSError:
-            _fsize = 0
-        if _fsize > _PRE_READ_MAX_BYTES and limit > _NARROW_LIMIT:
-            return json.dumps({
-                "error": (
-                    f"File is too large to read in full ({_fsize:,} bytes). "
-                    f"Use offset and limit parameters to read specific sections "
-                    f"(e.g. offset=1, limit=100 for the first 100 lines)."
-                ),
-                "path": path,
-                "file_size": _fsize,
-            }, ensure_ascii=False)
+        # Guard only when the caller omits limit; an explicit limit means
+        # the caller knows what slice it wants.
+        if limit is None:
+            try:
+                _fsize = os.path.getsize(str(_resolved))
+            except OSError:
+                _fsize = 0
+            if _fsize > _PRE_READ_MAX_BYTES:
+                return json.dumps({
+                    "error": (
+                        f"File is too large to read in full ({_fsize:,} bytes). "
+                        f"Use offset and limit parameters to read specific sections "
+                        f"(e.g. offset=1, limit=100 for the first 100 lines)."
+                    ),
+                    "path": path,
+                    "file_size": _fsize,
+                }, ensure_ascii=False)
+
+        if limit is None:
+            limit = _DEFAULT_READ_LIMIT
 
         # ── Dedup check ───────────────────────────────────────────────
         # If we already read this exact (path, offset, limit) and the
@@ -761,7 +762,7 @@ def _check_file_reqs():
 
 READ_FILE_SCHEMA = {
     "name": "read_file",
-    "description": "Read a text file with line numbers and pagination. Use this instead of cat/head/tail in terminal. Output format: 'LINE_NUM|CONTENT'. Suggests similar filenames if not found. When you already know which part of the file you need, only read that part using offset and limit — this is important for larger files. Files over 100KB will be rejected unless you specify a narrow range (limit <= 200). NOTE: Cannot read images or binary files — use vision_analyze for images.",
+    "description": "Read a text file with line numbers and pagination. Use this instead of cat/head/tail in terminal. Output format: 'LINE_NUM|CONTENT'. Suggests similar filenames if not found. When you already know which part of the file you need, only read that part using offset and limit — this is important for larger files. Files over 256KB will be rejected unless you provide a limit parameter. NOTE: Cannot read images or binary files — use vision_analyze for images.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -825,7 +826,7 @@ SEARCH_FILES_SCHEMA = {
 
 def _handle_read_file(args, **kw):
     tid = kw.get("task_id") or "default"
-    return read_file_tool(path=args.get("path", ""), offset=args.get("offset", 1), limit=args.get("limit", 500), task_id=tid)
+    return read_file_tool(path=args.get("path", ""), offset=args.get("offset", 1), limit=args.get("limit"), task_id=tid)
 
 
 def _handle_write_file(args, **kw):

@@ -455,17 +455,13 @@ class HermesAgentLoop:
                             pass
 
                     tc_id = tc.get("id", "") if isinstance(tc, dict) else tc.id
-                    try:
-                        tool_result = maybe_persist_tool_result(
-                            content=tool_result,
-                            tool_name=tool_name,
-                            tool_use_id=tc_id,
-                            env=get_active_env(self.task_id),
-                            threshold=self.budget_config.resolve_threshold(tool_name),
-                            preview_size=self.budget_config.preview_size,
-                        )
-                    except Exception:
-                        pass  # Persistence is best-effort in eval path
+                    tool_result = maybe_persist_tool_result(
+                        content=tool_result,
+                        tool_name=tool_name,
+                        tool_use_id=tc_id,
+                        env=get_active_env(self.task_id),
+                        config=self.budget_config,
+                    )
 
                     messages.append(
                         {
@@ -475,17 +471,13 @@ class HermesAgentLoop:
                         }
                     )
 
-                try:
-                    num_tcs = len(assistant_msg.tool_calls)
-                    if num_tcs > 0:
-                        enforce_turn_budget(
-                            messages[-num_tcs:],
-                            env=get_active_env(self.task_id),
-                            budget=self.budget_config.turn_budget,
-                            preview_size=self.budget_config.preview_size,
-                        )
-                except Exception:
-                    pass
+                num_tcs = len(assistant_msg.tool_calls)
+                if num_tcs > 0:
+                    enforce_turn_budget(
+                        messages[-num_tcs:],
+                        env=get_active_env(self.task_id),
+                        config=self.budget_config,
+                    )
 
                 turn_elapsed = _time.monotonic() - turn_start
                 logger.info(

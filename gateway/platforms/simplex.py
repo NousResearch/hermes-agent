@@ -135,6 +135,11 @@ class SimplexAdapter(BasePlatformAdapter):
         self._pending_responses: Dict[str, asyncio.Future] = {}
         self._corr_counter = 0
 
+        # File transfers awaiting rcvFileComplete (keyed by fileId). Populated
+        # when a newChatItems event carries a rcvFileTransfer, consumed when
+        # the file finishes downloading.
+        self._pending_file_transfers: Dict[int, dict] = {}
+
         logger.info(
             "SimpleX adapter initialized: ws_url=%s auto_accept=%s groups=%s",
             self.ws_url,

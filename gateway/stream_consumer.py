@@ -74,6 +74,7 @@ class GatewayStreamConsumer:
         self._edit_supported = True  # Disabled on first edit failure (Signal/Email/HA)
         self._last_edit_time = 0.0
         self._last_sent_text = ""   # Track last-sent text to skip redundant edits
+        self._final_suffix = ""
 
     @property
     def already_sent(self) -> bool:
@@ -92,6 +93,10 @@ class GatewayStreamConsumer:
             self._queue.put(text)
         elif text is None:
             self._queue.put(_NEW_SEGMENT)
+
+    def set_final_suffix(self, suffix: str | None) -> None:
+        """Set text to append only on the final streamed message edit/send."""
+        self._final_suffix = suffix or ""
 
     def finish(self) -> None:
         """Signal that the stream is complete."""
@@ -149,16 +154,23 @@ class GatewayStreamConsumer:
                         self._last_sent_text = ""
 
                     display_text = self._accumulated
-                    if not got_done and not got_segment_break:
+                    if got_done and self._final_suffix and self._final_suffix not in display_text:
+                        display_text = f"{display_text.rstrip()}{self._final_suffix}"
+                    elif not got_done and not got_segment_break:
                         display_text += self.cfg.cursor
 
                     await self._send_or_edit(display_text)
                     self._last_edit_time = time.monotonic()
 
                 if got_done:
-                    # Final edit without cursor
+                    # Final edit without cursor. Preserve any configured final
+                    # suffix so the stream doesn't overwrite the footer it just
+                    # added during the last flush.
                     if self._accumulated and self._message_id:
-                        await self._send_or_edit(self._accumulated)
+                        final_text = self._accumulated
+                        if self._final_suffix and self._final_suffix not in final_text:
+                            final_text = f"{final_text.rstrip()}{self._final_suffix}"
+                        await self._send_or_edit(final_text)
                     return
 
                 # Tool boundary: the should_edit block above already flushed

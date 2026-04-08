@@ -234,6 +234,10 @@ from gateway.session import (
 )
 from gateway.delivery import DeliveryRouter
 from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType
+from gateway.telegram_status_footer import (
+    build_telegram_status_footer,
+    maybe_append_telegram_status_footer,
+)
 
 
 def _normalize_whatsapp_identifier(value: str) -> str:
@@ -310,6 +314,32 @@ def _resolve_runtime_agent_kwargs() -> dict:
         "args": list(runtime.get("args") or []),
         "credential_pool": runtime.get("credential_pool"),
     }
+
+
+def _resolve_reasoning_effort_label(reasoning_config: dict | None) -> str | None:
+    """Return the user-facing reasoning label for footer display."""
+    if not isinstance(reasoning_config, dict):
+        return None
+    if reasoning_config.get("enabled") is False:
+        return "none"
+    effort = str(reasoning_config.get("effort", "") or "").strip()
+    return effort or None
+
+
+def _resolve_context_window_for_footer(agent: Any) -> int:
+    """Best-effort context window lookup for Telegram footer display."""
+    if not agent:
+        return 0
+    try:
+        from agent.model_metadata import get_model_context_length
+        return int(get_model_context_length(
+            getattr(agent, "model", "") or "",
+            base_url=getattr(agent, "base_url", "") or "",
+            api_key=getattr(agent, "api_key", "") or "",
+            provider=getattr(agent, "provider", "") or "",
+        ) or 0)
+    except Exception:
+        return 0
 
 
 def _build_media_placeholder(event) -> str:
@@ -6859,10 +6889,6 @@ class GatewayRunner:
                 reset_current_session_key(_approval_session_token)
             result_holder[0] = result
 
-            # Signal the stream consumer that the agent is done
-            if _stream_consumer is not None:
-                _stream_consumer.finish()
-            
             # Return final response, or a message if something went wrong
             final_response = result.get("final_response")
 
@@ -6876,6 +6902,29 @@ class GatewayRunner:
                 _input_toks = getattr(_agent, "session_prompt_tokens", 0)
                 _output_toks = getattr(_agent, "session_completion_tokens", 0)
             _resolved_model = getattr(_agent, "model", None) if _agent else None
+            _resolved_reasoning = _resolve_reasoning_effort_label(reasoning_config)
+            _resolved_context_window = _resolve_context_window_for_footer(_agent)
+            _footer_current_tokens = _last_prompt_toks or int(result.get("total_tokens", 0) or 0)
+            _final_footer_suffix = ""
+            if (
+                final_response
+                and source.platform == Platform.TELEGRAM
+                and source.chat_type == "dm"
+                and "────────────" not in final_response
+            ):
+                _final_footer_suffix = "\n\n" + build_telegram_status_footer(
+                    model=_resolved_model,
+                    reasoning_effort=_resolved_reasoning,
+                    current_tokens=_footer_current_tokens,
+                    context_window=_resolved_context_window,
+                )
+
+            # Signal the stream consumer that the agent is done.
+            # For streaming sessions, append the footer during the final edit so
+            # the user sees it in the streamed message instead of a duplicate send.
+            if _stream_consumer is not None:
+                _stream_consumer.set_final_suffix(_final_footer_suffix)
+                _stream_consumer.finish()
 
             if not final_response:
                 error_msg = f"⚠️ {result['error']}" if result.get("error") else "(No response generated)"
@@ -6909,7 +6958,7 @@ class GatewayRunner:
                         content = msg.get("content", "")
                         if "MEDIA:" in content:
                             for match in re.finditer(r'MEDIA:(\S+)', content):
-                                path = match.group(1).strip().rstrip('",}')
+                                path = match.group(1).strip().rstrip('\",}')
                                 if path and path not in _history_media_paths:
                                     media_tags.append(f"MEDIA:{path}")
                             if "[[audio_as_voice]]" in content:
@@ -6925,9 +6974,19 @@ class GatewayRunner:
                     if has_voice_directive:
                         unique_tags.insert(0, "[[audio_as_voice]]")
                     final_response = final_response + "\n" + "\n".join(unique_tags)
+
+            final_response = maybe_append_telegram_status_footer(
+                final_response,
+                platform=source.platform,
+                chat_type=source.chat_type,
+                model=_resolved_model,
+                reasoning_effort=_resolved_reasoning,
+                current_tokens=_footer_current_tokens,
+                context_window=_resolved_context_window,
+            )
             
             # Sync session_id: the agent may have created a new session during
-            # mid-run context compression (_compress_context splits sessions).
+
             # If so, update the session store entry so the NEXT message loads
             # the compressed transcript, not the stale pre-compression one.
             agent = agent_holder[0]

@@ -324,3 +324,33 @@ class TestSegmentBreakOnToolBoundary:
         await consumer.run()
 
         assert consumer.already_sent
+
+
+class TestFinalSuffix:
+    """Verify streaming can append a final footer/status suffix on completion."""
+
+    @pytest.mark.asyncio
+    async def test_final_suffix_appended_on_finish(self):
+        adapter = MagicMock()
+        send_result = SimpleNamespace(success=True, message_id="msg_1")
+        edit_result = SimpleNamespace(success=True)
+        adapter.send = AsyncMock(return_value=send_result)
+        adapter.edit_message = AsyncMock(return_value=edit_result)
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        config = StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5)
+        consumer = GatewayStreamConsumer(adapter, "chat_123", config)
+
+        consumer.on_delta("Hello from stream")
+        consumer.set_final_suffix("\n\n────────────\n🧠 gpt-5.4 · 💨 low\n📊 45k / 128k · 35%")
+        consumer.finish()
+
+        await consumer.run()
+
+        final_texts = [call[1]["content"] for call in adapter.edit_message.call_args_list]
+        if not final_texts:
+            final_texts = [call[1]["content"] for call in adapter.send.call_args_list]
+
+        assert final_texts
+        assert final_texts[-1].endswith("📊 45k / 128k · 35%")
+        assert "🧠 gpt-5.4 · 💨 low" in final_texts[-1]

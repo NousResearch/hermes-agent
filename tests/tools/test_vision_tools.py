@@ -677,6 +677,22 @@ class TestTildeExpansion:
         data = json.loads(result)
         assert data["success"] is False
 
+    @pytest.mark.asyncio
+    async def test_empty_after_retry_returns_failure(self, tmp_path):
+        """An empty vision response after retry must fail closed, not success-open."""
+        image_path = tmp_path / "test.png"
+        image_path.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 8)
+
+        with (
+            patch("tools.vision_tools.async_call_llm", new=AsyncMock(return_value=MagicMock())),
+            patch("tools.vision_tools.extract_content_or_reasoning", return_value=""),
+        ):
+            result = await vision_analyze_tool(str(image_path), "describe this", "test/model")
+
+        data = json.loads(result)
+        assert data["success"] is False
+        assert "empty content" in data["error"].lower()
+
 
 # ---------------------------------------------------------------------------
 # file:// URI support

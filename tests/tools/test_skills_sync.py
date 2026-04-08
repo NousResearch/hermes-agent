@@ -116,10 +116,10 @@ class TestDiscoverBundledSkills:
         (tmp_path / "not-a-skill" / "README.md").write_text("Not a skill")
 
         skills = _discover_bundled_skills(tmp_path)
-        skill_names = {name for name, _ in skills}
-        assert "skill-a" in skill_names
-        assert "skill-b" in skill_names
-        assert "not-a-skill" not in skill_names
+        skill_ids = {skill_id for skill_id, _, _ in skills}
+        assert "category/skill-a" in skill_ids
+        assert "skill-b" in skill_ids
+        assert "not-a-skill" not in skill_ids
 
     def test_ignores_git_directories(self, tmp_path):
         (tmp_path / ".git" / "hooks").mkdir(parents=True)
@@ -194,10 +194,10 @@ class TestSyncSkills:
             sync_skills(quiet=True)
             manifest = _read_manifest()
 
-        assert "new-skill" in manifest
+        assert "category/new-skill" in manifest
         assert "old-skill" in manifest
         # Hashes should be non-empty MD5 strings
-        assert len(manifest["new-skill"]) == 32
+        assert len(manifest["category/new-skill"]) == 32
         assert len(manifest["old-skill"]) == 32
 
     def test_user_deleted_skill_not_re_added(self, tmp_path):
@@ -213,7 +213,7 @@ class TestSyncSkills:
         with self._patches(bundled, skills_dir, manifest_file):
             result = sync_skills(quiet=True)
 
-        assert "new-skill" in result["copied"]
+        assert "category/new-skill" in result["copied"]
         assert "old-skill" not in result["copied"]
         assert "old-skill" not in result.get("updated", [])
         assert not (skills_dir / "old-skill").exists()
@@ -399,18 +399,18 @@ class TestSyncSkills:
                 result = sync_skills(quiet=True)
 
             # new-skill should NOT be in copied (it failed)
-            assert "new-skill" not in result["copied"]
+            assert "category/new-skill" not in result["copied"]
 
             # Critical: new-skill must NOT be in the manifest
             manifest = _read_manifest()
-            assert "new-skill" not in manifest, (
+            assert "category/new-skill" not in manifest, (
                 "Failed copy was recorded in manifest — next sync will "
                 "treat it as 'user deleted' and never retry"
             )
 
             # Now run sync again (copytree works this time) — it should retry
             result2 = sync_skills(quiet=True)
-            assert "new-skill" in result2["copied"]
+            assert "category/new-skill" in result2["copied"]
             assert (skills_dir / "category" / "new-skill" / "SKILL.md").exists()
 
     def test_failed_update_does_not_destroy_user_copy(self, tmp_path):

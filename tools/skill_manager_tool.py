@@ -40,7 +40,7 @@ import shutil
 import tempfile
 from pathlib import Path
 from hermes_constants import get_hermes_home
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 
 logger = logging.getLogger(__name__)
 
@@ -203,19 +203,39 @@ def _resolve_skill_dir(name: str, category: str = None) -> Path:
 
 def _find_skill(name: str) -> Optional[Dict[str, Any]]:
     """
-    Find a skill by name across all skill directories.
+    Find a skill by path or name across all skill directories.
 
-    Searches the local skills dir (~/.hermes/skills/) first, then any
-    external dirs configured via skills.external_dirs.  Returns
-    {"path": Path} or None.
+    Matching precedence:
+    1) Exact relative path match (e.g. "mlops/axolotl")
+    2) Unique basename match (e.g. "axolotl")
+
+    Returns {"path": Path} or None.
     """
     from agent.skill_utils import get_all_skills_dirs
+
+    exact_matches: List[Path] = []
+    basename_matches: List[Path] = []
+
     for skills_dir in get_all_skills_dirs():
         if not skills_dir.exists():
             continue
         for skill_md in skills_dir.rglob("SKILL.md"):
-            if skill_md.parent.name == name:
-                return {"path": skill_md.parent}
+            skill_dir = skill_md.parent
+            try:
+                rel = skill_dir.relative_to(skills_dir).as_posix()
+            except ValueError:
+                rel = skill_dir.name
+            if rel == name:
+                exact_matches.append(skill_dir)
+            if skill_dir.name == name:
+                basename_matches.append(skill_dir)
+
+    if exact_matches:
+        return {"path": exact_matches[0]}
+
+    if len(basename_matches) == 1:
+        return {"path": basename_matches[0]}
+
     return None
 
 

@@ -5,8 +5,9 @@ Skills Sync -- Manifest-based seeding and updating of bundled skills.
 Copies bundled skills from the repo's skills/ directory into ~/.hermes/skills/
 and uses a manifest to track which skills have been synced and their origin hash.
 
-Manifest format (v2): each line is "skill_name:origin_hash" where origin_hash
-is the MD5 of the bundled skill at the time it was last synced to the user dir.
+Manifest format (v2): each line is "skill_id:origin_hash" where skill_id is
+its relative path under skills/ (e.g. "mlops/axolotl"). origin_hash is the MD5
+of the bundled skill at the time it was last synced to the user dir.
 Old v1 manifests (plain names without hashes) are auto-migrated.
 
 Update logic:
@@ -51,7 +52,7 @@ def _get_bundled_dir() -> Path:
 
 def _read_manifest() -> Dict[str, str]:
     """
-    Read the manifest as a dict of {skill_name: origin_hash}.
+    Read the manifest as a dict of {skill_id: origin_hash}.
 
     Handles both v1 (plain names) and v2 (name:hash) formats.
     v1 entries get an empty hash string which triggers migration on next sync.
@@ -109,12 +110,17 @@ def _write_manifest(entries: Dict[str, str]):
         logger.debug("Failed to write skills manifest %s: %s", MANIFEST_FILE, e, exc_info=True)
 
 
-def _discover_bundled_skills(bundled_dir: Path) -> List[Tuple[str, Path]]:
+def _skill_id_for_path(skill_dir: Path, bundled_dir: Path) -> str:
+    """Stable identifier for a bundled skill (category-aware relative path)."""
+    return skill_dir.relative_to(bundled_dir).as_posix()
+
+
+def _discover_bundled_skills(bundled_dir: Path) -> List[Tuple[str, str, Path]]:
     """
     Find all SKILL.md files in the bundled directory.
-    Returns list of (skill_name, skill_directory_path) tuples.
+    Returns list of (skill_id, skill_name, skill_directory_path) tuples.
     """
-    skills = []
+    skills: List[Tuple[str, str, Path]] = []
     if not bundled_dir.exists():
         return skills
 
@@ -124,7 +130,8 @@ def _discover_bundled_skills(bundled_dir: Path) -> List[Tuple[str, Path]]:
             continue
         skill_dir = skill_md.parent
         skill_name = skill_dir.name
-        skills.append((skill_name, skill_dir))
+        skill_id = _skill_id_for_path(skill_dir, bundled_dir)
+        skills.append((skill_id, skill_name, skill_dir))
 
     return skills
 
@@ -170,57 +177,71 @@ def sync_skills(quiet: bool = False) -> dict:
     SKILLS_DIR.mkdir(parents=True, exist_ok=True)
     manifest = _read_manifest()
     bundled_skills = _discover_bundled_skills(bundled_dir)
-    bundled_names = {name for name, _ in bundled_skills}
+    # Migrate old v2 entries keyed by bare skill name to path-based keys when unique.
+    if manifest and any("/" not in key for key in manifest.keys()):
+        name_to_ids: Dict[str, List[str]] = {}
+        for skill_id, skill_name, _ in bundled_skills:
+            name_to_ids.setdefault(skill_name, []).append(skill_id)
+        migrated: Dict[str, str] = {}
+        for key, value in manifest.items():
+            if "/" in key:
+                migrated[key] = value
+                continue
+            ids = name_to_ids.get(key, [])
+            if len(ids) == 1:
+                migrated[ids[0]] = value
+            elif key not in migrated:
+                # Ambiguous legacy entry — keep as-is to avoid destructive remap.
+                migrated[key] = value
+        manifest = migrated
+
+    bundled_ids = {skill_id for skill_id, _, _ in bundled_skills}
 
     copied = []
     updated = []
     user_modified = []
     skipped = 0
 
-    for skill_name, skill_src in bundled_skills:
+    for skill_id, skill_name, skill_src in bundled_skills:
         dest = _compute_relative_dest(skill_src, bundled_dir)
         bundled_hash = _dir_hash(skill_src)
 
-        if skill_name not in manifest:
+        if skill_id not in manifest:
             # ── New skill — never offered before ──
             try:
                 if dest.exists():
-                    # User already has a skill with the same name — don't overwrite
+                    # User already has a skill at this path — don't overwrite
                     skipped += 1
-                    manifest[skill_name] = bundled_hash
+                    manifest[skill_id] = bundled_hash
                 else:
                     dest.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copytree(skill_src, dest)
-                    copied.append(skill_name)
-                    manifest[skill_name] = bundled_hash
+                    copied.append(skill_id)
+                    manifest[skill_id] = bundled_hash
                     if not quiet:
-                        print(f"  + {skill_name}")
+                        print(f"  + {skill_id}")
             except (OSError, IOError) as e:
                 if not quiet:
-                    print(f"  ! Failed to copy {skill_name}: {e}")
+                    print(f"  ! Failed to copy {skill_id}: {e}")
                 # Do NOT add to manifest — next sync should retry
 
         elif dest.exists():
             # ── Existing skill — in manifest AND on disk ──
-            origin_hash = manifest.get(skill_name, "")
+            origin_hash = manifest.get(skill_id, "")
             user_hash = _dir_hash(dest)
 
             if not origin_hash:
-                # v1 migration: no origin hash recorded. Set baseline from
+                # migration: no origin hash recorded. Set baseline from
                 # user's current copy so future syncs can detect modifications.
-                manifest[skill_name] = user_hash
-                if user_hash == bundled_hash:
-                    skipped += 1  # already in sync
-                else:
-                    # Can't tell if user modified or bundled changed — be safe
-                    skipped += 1
+                manifest[skill_id] = user_hash
+                skipped += 1
                 continue
 
             if user_hash != origin_hash:
                 # User modified this skill — don't overwrite their changes
-                user_modified.append(skill_name)
+                user_modified.append(skill_id)
                 if not quiet:
-                    print(f"  ~ {skill_name} (user-modified, skipping)")
+                    print(f"  ~ {skill_id} (user-modified, skipping)")
                 continue
 
             # User copy matches origin — check if bundled has a newer version
@@ -231,10 +252,10 @@ def sync_skills(quiet: bool = False) -> dict:
                     shutil.move(str(dest), str(backup))
                     try:
                         shutil.copytree(skill_src, dest)
-                        manifest[skill_name] = bundled_hash
-                        updated.append(skill_name)
+                        manifest[skill_id] = bundled_hash
+                        updated.append(skill_id)
                         if not quiet:
-                            print(f"  ↑ {skill_name} (updated)")
+                            print(f"  ↑ {skill_id} (updated)")
                         # Remove backup after successful copy
                         shutil.rmtree(backup, ignore_errors=True)
                     except (OSError, IOError):
@@ -244,7 +265,7 @@ def sync_skills(quiet: bool = False) -> dict:
                         raise
                 except (OSError, IOError) as e:
                     if not quiet:
-                        print(f"  ! Failed to update {skill_name}: {e}")
+                        print(f"  ! Failed to update {skill_id}: {e}")
             else:
                 skipped += 1  # bundled unchanged, user unchanged
 
@@ -253,7 +274,7 @@ def sync_skills(quiet: bool = False) -> dict:
             skipped += 1
 
     # Clean stale manifest entries (skills removed from bundled dir)
-    cleaned = sorted(set(manifest.keys()) - bundled_names)
+    cleaned = sorted(set(manifest.keys()) - bundled_ids)
     for name in cleaned:
         del manifest[name]
 

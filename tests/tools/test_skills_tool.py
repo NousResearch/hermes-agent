@@ -327,6 +327,29 @@ class TestSkillView:
         assert "not found" in result["error"].lower()
         assert "available_skills" in result
 
+    def test_view_ambiguous_basename_requires_path_qualified_name(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "deploy", category="devops")
+            _make_skill(tmp_path, "deploy", category="mlops")
+            raw = skill_view("deploy")
+
+        result = json.loads(raw)
+        assert result["success"] is False
+        assert "ambiguous" in result["error"].lower()
+        assert "candidates" in result
+        assert "devops/deploy" in result["candidates"]
+        assert "mlops/deploy" in result["candidates"]
+
+    def test_view_path_qualified_name_resolves_ambiguity(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "deploy", category="devops", body="Use terraform")
+            _make_skill(tmp_path, "deploy", category="mlops", body="Use kubeflow")
+            raw = skill_view("mlops/deploy")
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert "kubeflow" in result["content"]
+
     def test_view_reference_file(self, tmp_path):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
             skill_dir = _make_skill(tmp_path, "my-skill")

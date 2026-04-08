@@ -829,16 +829,35 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
                 skill_md = direct_path.with_suffix(".md")
                 break
 
-        # Search by directory name across all dirs
+        # Search by directory name across all dirs (only if unique)
         if not skill_md:
+            basename_matches = []
             for search_dir in all_dirs:
                 for found_skill_md in search_dir.rglob("SKILL.md"):
                     if found_skill_md.parent.name == name:
-                        skill_dir = found_skill_md.parent
-                        skill_md = found_skill_md
-                        break
-                if skill_md:
-                    break
+                        basename_matches.append(found_skill_md)
+
+            if len(basename_matches) == 1:
+                skill_md = basename_matches[0]
+                skill_dir = skill_md.parent
+            elif len(basename_matches) > 1:
+                candidates = []
+                for match in basename_matches[:10]:
+                    for root in all_dirs:
+                        try:
+                            candidates.append(match.parent.relative_to(root).as_posix())
+                            break
+                        except ValueError:
+                            continue
+                return json.dumps(
+                    {
+                        "success": False,
+                        "error": f"Skill name '{name}' is ambiguous.",
+                        "hint": "Use a path-qualified name (e.g. category/skill).",
+                        "candidates": sorted(set(candidates)),
+                    },
+                    ensure_ascii=False,
+                )
 
         # Legacy: flat .md files
         if not skill_md:

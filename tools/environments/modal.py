@@ -9,16 +9,16 @@ import logging
 import shlex
 import threading
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 from hermes_constants import get_hermes_home
 from tools.environments.base import (
     BaseEnvironment,
     _ThreadedProcessHandle,
-    _file_mtime_key,
     _load_json_store,
     _save_json_store,
 )
+from tools.environments.file_sync import FileSyncManager, iter_sync_files, quoted_rm_command
 
 logger = logging.getLogger(__name__)
 
@@ -150,7 +150,7 @@ class ModalEnvironment(BaseEnvironment):
         image: str,
         cwd: str = "/root",
         timeout: int = 60,
-        modal_sandbox_kwargs: Optional[Dict[str, Any]] = None,
+        modal_sandbox_kwargs: Optional[dict[str, Any]] = None,
         persistent_filesystem: bool = True,
         task_id: str = "default",
     ):
@@ -162,8 +162,7 @@ class ModalEnvironment(BaseEnvironment):
         self._sandbox = None
         self._app = None
         self._worker = _AsyncWorker()
-        self._synced_files: Dict[str, tuple] = {}
-        self._last_sync_time: float = 0
+        self._sync_manager: FileSyncManager | None = None  # initialized after sandbox creation
 
         sandbox_kwargs = dict(modal_sandbox_kwargs or {})
 
@@ -256,26 +255,24 @@ class ModalEnvironment(BaseEnvironment):
             raise
 
         logger.info("Modal: sandbox created (task=%s)", self._task_id)
+
+        self._sync_manager = FileSyncManager(
+            get_files_fn=lambda: iter_sync_files("/root/.hermes"),
+            upload_fn=self._modal_upload,
+            delete_fn=self._modal_delete,
+        )
+        self._sync_manager.sync(force=True)
         self.init_session()
 
-    def _push_file_to_sandbox(self, host_path: str, container_path: str) -> bool:
-        """Push a single file into the sandbox if changed."""
-        file_key = _file_mtime_key(host_path)
-        if file_key is None:
-            return False
-        if self._synced_files.get(container_path) == file_key:
-            return False
-        try:
-            content = Path(host_path).read_bytes()
-        except Exception:
-            return False
-
+    def _modal_upload(self, host_path: str, remote_path: str) -> None:
+        """Upload a single file via base64-over-exec."""
         import base64
+        content = Path(host_path).read_bytes()
         b64 = base64.b64encode(content).decode("ascii")
-        container_dir = str(Path(container_path).parent)
+        container_dir = str(Path(remote_path).parent)
         cmd = (
             f"mkdir -p {shlex.quote(container_dir)} && "
-            f"echo {shlex.quote(b64)} | base64 -d > {shlex.quote(container_path)}"
+            f"echo {shlex.quote(b64)} | base64 -d > {shlex.quote(remote_path)}"
         )
 
         async def _write():
@@ -283,25 +280,24 @@ class ModalEnvironment(BaseEnvironment):
             await proc.wait.aio()
 
         self._worker.run_coroutine(_write(), timeout=15)
-        self._synced_files[container_path] = file_key
-        return True
 
-    def _sync_files(self) -> None:
-        """Push credential, skill, and cache files into the running sandbox."""
-        try:
-            from tools.credential_files import (
-                get_credential_file_mounts,
-                iter_skills_files,
-                iter_cache_files,
-            )
-            for entry in get_credential_file_mounts():
-                self._push_file_to_sandbox(entry["host_path"], entry["container_path"])
-            for entry in iter_skills_files():
-                self._push_file_to_sandbox(entry["host_path"], entry["container_path"])
-            for entry in iter_cache_files():
-                self._push_file_to_sandbox(entry["host_path"], entry["container_path"])
-        except Exception as e:
-            logger.debug("Modal: file sync failed: %s", e)
+    def _modal_delete(self, remote_paths: list[str]) -> None:
+        """Batch-delete remote files via exec."""
+        rm_cmd = quoted_rm_command(remote_paths)
+
+        async def _rm():
+            proc = await self._sandbox.exec.aio("bash", "-c", rm_cmd)
+            await proc.wait.aio()
+
+        self._worker.run_coroutine(_rm(), timeout=15)
+
+    def _before_execute(self) -> None:
+        """Sync files to sandbox via FileSyncManager (rate-limited internally)."""
+        self._sync_manager.sync()
+
+    # ------------------------------------------------------------------
+    # Execution
+    # ------------------------------------------------------------------
 
     def _run_bash(self, cmd_string: str, *, login: bool = False,
                   timeout: int = 120,

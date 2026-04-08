@@ -293,14 +293,8 @@ def _resolve_config_gates() -> set[str]:
     if not gated:
         return set()
     try:
-        import yaml
-        from hermes_constants import get_hermes_home
-        config_path = str(get_hermes_home() / "config.yaml")
-        if os.path.exists(config_path):
-            with open(config_path, encoding="utf-8") as f:
-                cfg = yaml.safe_load(f) or {}
-        else:
-            cfg = {}
+        from hermes_cli.config import read_raw_config
+        cfg = read_raw_config()
     except Exception:
         return set()
     result: set[str] = set()

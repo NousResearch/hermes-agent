@@ -146,15 +146,11 @@ def _get_command_timeout() -> int:
     ``DEFAULT_COMMAND_TIMEOUT`` (30s) if unset or unreadable.
     """
     try:
-        hermes_home = get_hermes_home()
-        config_path = hermes_home / "config.yaml"
-        if config_path.exists():
-            import yaml
-            with open(config_path) as f:
-                cfg = yaml.safe_load(f) or {}
-            val = cfg.get("browser", {}).get("command_timeout")
-            if val is not None:
-                return max(int(val), 5)  # Floor at 5s to avoid instant kills
+        from hermes_cli.config import read_raw_config
+        cfg = read_raw_config()
+        val = cfg.get("browser", {}).get("command_timeout")
+        if val is not None:
+            return max(int(val), 5)  # Floor at 5s to avoid instant kills
     except Exception as e:
         logger.debug("Could not read command_timeout from config: %s", e)
     return DEFAULT_COMMAND_TIMEOUT
@@ -259,23 +255,19 @@ def _get_cloud_provider() -> Optional[CloudBrowserProvider]:
 
     _cloud_provider_resolved = True
     try:
-        hermes_home = get_hermes_home()
-        config_path = hermes_home / "config.yaml"
-        if config_path.exists():
-            import yaml
-            with open(config_path) as f:
-                cfg = yaml.safe_load(f) or {}
-            browser_cfg = cfg.get("browser", {})
-            provider_key = None
-            if isinstance(browser_cfg, dict) and "cloud_provider" in browser_cfg:
-                provider_key = normalize_browser_cloud_provider(
-                    browser_cfg.get("cloud_provider")
-                )
-                if provider_key == "local":
-                    _cached_cloud_provider = None
-                    return None
-            if provider_key and provider_key in _PROVIDER_REGISTRY:
-                _cached_cloud_provider = _PROVIDER_REGISTRY[provider_key]()
+        from hermes_cli.config import read_raw_config
+        cfg = read_raw_config()
+        browser_cfg = cfg.get("browser", {})
+        provider_key = None
+        if isinstance(browser_cfg, dict) and "cloud_provider" in browser_cfg:
+            provider_key = normalize_browser_cloud_provider(
+                browser_cfg.get("cloud_provider")
+            )
+            if provider_key == "local":
+                _cached_cloud_provider = None
+                return None
+        if provider_key and provider_key in _PROVIDER_REGISTRY:
+            _cached_cloud_provider = _PROVIDER_REGISTRY[provider_key]()
     except Exception as e:
         logger.debug("Could not read cloud_provider from config: %s", e)
 
@@ -326,13 +318,9 @@ def _allow_private_urls() -> bool:
     _allow_private_urls_resolved = True
     _cached_allow_private_urls = False  # safe default
     try:
-        hermes_home = get_hermes_home()
-        config_path = hermes_home / "config.yaml"
-        if config_path.exists():
-            import yaml
-            with open(config_path) as f:
-                cfg = yaml.safe_load(f) or {}
-            _cached_allow_private_urls = bool(cfg.get("browser", {}).get("allow_private_urls"))
+        from hermes_cli.config import read_raw_config
+        cfg = read_raw_config()
+        _cached_allow_private_urls = bool(cfg.get("browser", {}).get("allow_private_urls"))
     except Exception as e:
         logger.debug("Could not read allow_private_urls from config: %s", e)
     return _cached_allow_private_urls
@@ -1626,14 +1614,10 @@ def _maybe_start_recording(task_id: str):
     if task_id in _recording_sessions:
         return
     try:
+        from hermes_cli.config import read_raw_config
         hermes_home = get_hermes_home()
-        config_path = hermes_home / "config.yaml"
-        record_enabled = False
-        if config_path.exists():
-            import yaml
-            with open(config_path) as f:
-                cfg = yaml.safe_load(f) or {}
-            record_enabled = cfg.get("browser", {}).get("record_sessions", False)
+        cfg = read_raw_config()
+        record_enabled = cfg.get("browser", {}).get("record_sessions", False)
         
         if not record_enabled:
             return

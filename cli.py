@@ -760,7 +760,10 @@ def _setup_worktree(repo_root: str = None) -> Optional[Dict[str, str]]:
 def _cleanup_worktree(info: Dict[str, str] = None) -> None:
     """Remove a worktree and its branch on exit.
 
-    If the worktree has uncommitted changes, warn and keep it.
+    Preserves the worktree only if it has unpushed commits (real work
+    that hasn't been pushed to any remote).  Uncommitted changes alone
+    (untracked files, test artifacts) are not enough to keep it — agent
+    work lives in commits/PRs, not the working tree.
     """
     global _active_worktree
     info = info or _active_worktree
@@ -776,23 +779,27 @@ def _cleanup_worktree(info: Dict[str, str] = None) -> None:
     if not Path(wt_path).exists():
         return
 
-    # Check for uncommitted changes
+    # Check for unpushed commits — commits reachable from HEAD but not
+    # from any remote branch.  These represent real work the agent did
+    # but didn't push.
+    has_unpushed = False
     try:
-        status = subprocess.run(
-            ["git", "status", "--porcelain"],
+        result = subprocess.run(
+            ["git", "log", "--oneline", "HEAD", "--not", "--remotes"],
             capture_output=True, text=True, timeout=10, cwd=wt_path,
         )
-        has_changes = bool(status.stdout.strip())
+        has_unpushed = bool(result.stdout.strip())
     except Exception:
-        has_changes = True  # Assume dirty on error — don't delete
+        has_unpushed = True  # Assume unpushed on error — don't delete
 
-    if has_changes:
-        print(f"\n\033[33m⚠ Worktree has uncommitted changes, keeping: {wt_path}\033[0m")
-        print(f"  To clean up manually: git worktree remove {wt_path}")
+    if has_unpushed:
+        print(f"\n\033[33m⚠ Worktree has unpushed commits, keeping: {wt_path}\033[0m")
+        print(f"  To clean up manually: git worktree remove --force {wt_path}")
         _active_worktree = None
         return
 
-    # Remove worktree
+    # Remove worktree (even if working tree is dirty — uncommitted
+    # changes without unpushed commits are just artifacts)
     try:
         subprocess.run(
             ["git", "worktree", "remove", wt_path, "--force"],
@@ -801,7 +808,7 @@ def _cleanup_worktree(info: Dict[str, str] = None) -> None:
     except Exception as e:
         logger.debug("Failed to remove worktree: %s", e)
 
-    # Delete the branch (only if it was never pushed / has no upstream)
+    # Delete the branch
     try:
         subprocess.run(
             ["git", "branch", "-D", branch],
@@ -815,19 +822,27 @@ def _cleanup_worktree(info: Dict[str, str] = None) -> None:
 
 
 def _prune_stale_worktrees(repo_root: str, max_age_hours: int = 24) -> None:
-    """Remove worktrees older than max_age_hours that have no uncommitted changes.
+    """Remove stale worktrees and orphaned branches on startup.
 
-    Runs silently on startup to clean up after crashed/killed sessions.
+    Age-based tiers:
+    - Under max_age_hours (24h): skip — session may still be active.
+    - 24h–72h: remove if no unpushed commits.
+    - Over 72h: force remove regardless (nothing should sit this long).
+
+    Also prunes orphaned ``hermes/*`` and ``pr-*`` local branches that
+    have no corresponding worktree.
     """
     import subprocess
     import time
 
     worktrees_dir = Path(repo_root) / ".worktrees"
     if not worktrees_dir.exists():
+        _prune_orphaned_branches(repo_root)
         return
 
     now = time.time()
-    cutoff = now - (max_age_hours * 3600)
+    soft_cutoff = now - (max_age_hours * 3600)       # 24h default
+    hard_cutoff = now - (max_age_hours * 3 * 3600)   # 72h default
 
     for entry in worktrees_dir.iterdir():
         if not entry.is_dir() or not entry.name.startswith("hermes-"):
@@ -836,21 +851,24 @@ def _prune_stale_worktrees(repo_root: str, max_age_hours: int = 24) -> None:
         # Check age
         try:
             mtime = entry.stat().st_mtime
-            if mtime > cutoff:
+            if mtime > soft_cutoff:
                 continue  # Too recent — skip
         except Exception:
             continue
 
-        # Check for uncommitted changes
-        try:
-            status = subprocess.run(
-                ["git", "status", "--porcelain"],
-                capture_output=True, text=True, timeout=5, cwd=str(entry),
-            )
-            if status.stdout.strip():
-                continue  # Has changes — skip
-        except Exception:
-            continue  # Can't check — skip
+        force = mtime <= hard_cutoff  # Over 72h — force remove
+
+        if not force:
+            # 24h–72h tier: only remove if no unpushed commits
+            try:
+                result = subprocess.run(
+                    ["git", "log", "--oneline", "HEAD", "--not", "--remotes"],
+                    capture_output=True, text=True, timeout=5, cwd=str(entry),
+                )
+                if result.stdout.strip():
+                    continue  # Has unpushed commits — skip
+            except Exception:
+                continue  # Can't check — skip
 
         # Safe to remove
         try:
@@ -869,9 +887,80 @@ def _prune_stale_worktrees(repo_root: str, max_age_hours: int = 24) -> None:
                     ["git", "branch", "-D", branch],
                     capture_output=True, text=True, timeout=10, cwd=repo_root,
                 )
-            logger.debug("Pruned stale worktree: %s", entry.name)
+            logger.debug("Pruned stale worktree: %s (force=%s)", entry.name, force)
         except Exception as e:
             logger.debug("Failed to prune worktree %s: %s", entry.name, e)
+
+    _prune_orphaned_branches(repo_root)
+
+
+def _prune_orphaned_branches(repo_root: str) -> None:
+    """Delete local ``hermes/hermes-*`` and ``pr-*`` branches with no worktree.
+
+    These are auto-generated by ``hermes -w`` sessions and PR review
+    workflows respectively.  Once their worktree is gone they serve no
+    purpose and just accumulate.
+    """
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ["git", "branch", "--format=%(refname:short)"],
+            capture_output=True, text=True, timeout=10, cwd=repo_root,
+        )
+        if result.returncode != 0:
+            return
+        all_branches = [b.strip() for b in result.stdout.strip().split("\n") if b.strip()]
+    except Exception:
+        return
+
+    # Collect branches that are actively checked out in a worktree
+    active_branches: set = set()
+    try:
+        wt_result = subprocess.run(
+            ["git", "worktree", "list", "--porcelain"],
+            capture_output=True, text=True, timeout=10, cwd=repo_root,
+        )
+        for line in wt_result.stdout.split("\n"):
+            if line.startswith("branch refs/heads/"):
+                active_branches.add(line.split("branch refs/heads/", 1)[-1].strip())
+    except Exception:
+        return  # Can't determine active branches — bail
+
+    # Also protect the currently checked-out branch and main
+    try:
+        head_result = subprocess.run(
+            ["git", "branch", "--show-current"],
+            capture_output=True, text=True, timeout=5, cwd=repo_root,
+        )
+        current = head_result.stdout.strip()
+        if current:
+            active_branches.add(current)
+    except Exception:
+        pass
+    active_branches.add("main")
+
+    orphaned = [
+        b for b in all_branches
+        if b not in active_branches
+        and (b.startswith("hermes/hermes-") or b.startswith("pr-"))
+    ]
+
+    if not orphaned:
+        return
+
+    # Delete in batches
+    for i in range(0, len(orphaned), 50):
+        batch = orphaned[i:i + 50]
+        try:
+            subprocess.run(
+                ["git", "branch", "-D"] + batch,
+                capture_output=True, text=True, timeout=30, cwd=repo_root,
+            )
+        except Exception as e:
+            logger.debug("Failed to prune orphaned branches: %s", e)
+
+    logger.debug("Pruned %d orphaned branches", len(orphaned))
 
 # ============================================================================
 # ASCII Art & Branding

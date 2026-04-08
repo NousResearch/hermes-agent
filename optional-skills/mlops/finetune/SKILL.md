@@ -2,8 +2,9 @@
 name: finetune
 description: >
   Personal model fine-tuning pipeline. Extract sessions from the Hermes DB,
-  score quality, discover usage domains, train QLoRA adapters, and manage
-  versioned adapters with rollback.
+  score quality at the assistant-turn level, discover usage domains, train
+  QLoRA adapters on individual high-quality turns, and manage versioned
+  adapters with rollback.
 version: 0.1.0
 author: Ivy Darling
 license: MIT
@@ -24,15 +25,16 @@ metadata:
 
 # Fine-Tune: Personal Model Training Pipeline
 
-Train QLoRA adapters from your own Hermes session history. The pipeline extracts conversations, scores quality automatically, discovers usage domains via clustering, trains per-domain adapters, and routes inference to the best adapter.
+Train QLoRA adapters from your own Hermes session history. The pipeline extracts conversations from the Hermes session DB, scores each assistant turn for quality, discovers usage domains via clustering, trains per-domain adapters on individual high-quality turns (not whole sessions), and routes inference to the best adapter.
 
 ## When to Use
 
 - User asks to fine-tune, train, or personalize their model
 - User wants to improve model performance on their specific tasks
 - User asks about adapter management, training status, or rollback
-- User wants to score or review session quality
-- Trigger phrases: "fine-tune", "train adapter", "finetune status", "model training"
+- User wants to score or review the quality of their conversation history
+- User wants to label specific turns as good or bad for training
+- Trigger phrases: "fine-tune", "train adapter", "finetune status", "model training", "label turn"
 
 ## Quick Reference
 
@@ -57,6 +59,44 @@ Train QLoRA adapters from your own Hermes session history. The pipeline extracts
 | `/finetune run` | **Full pipeline, no bench gate** — fast, auto-promotes |
 | `/finetune run --with-bench` | **Full pipeline + bench gate** — auto-rollback on regression |
 | `/finetune cron` | Schedule recurring retraining |
+
+## How training data is built
+
+**The pipeline trains on individual assistant turns, not whole sessions.** This is the most important thing to understand about how the skill thinks about your data.
+
+A Hermes session might be 50 turns long and contain a mix of great answers and mediocre ones. Treating it as a single training example would force one quality label across the whole thing and produce records that are far too long for typical training context windows. Instead, the pipeline walks through each session and emits **one training example per assistant turn that meets the quality bar**, with a sliding window of preceding context (default: 8 turns).
+
+### What this means in practice
+
+- A 12-turn conversation with 6 assistant responses produces **up to 6 training examples**, not one
+- A 50-turn conversation with 25 assistant responses produces **up to 25 examples**
+- Each example is bounded to its own context window (default ~8 turns), so it fits comfortably in any reasonable `sequence_len`
+- Only assistant turns whose **per-turn score** meets `min_turn_score` (default 0.7) are emitted — bad and neutral turns are skipped, not down-weighted
+
+### Where the per-turn scores come from
+
+In priority order:
+
+1. **Retro labels** you set with `/finetune retro good <id> 2,4` — explicit ground truth, override everything else
+2. **Automated per-turn scores** from `/finetune score` — heuristic signals (affirmation, correction, follow-up depth, etc.)
+3. **Session-level composite score** as a fallback when no per-turn data exists
+
+### Tuning the granularity
+
+Two knobs in `~/.hermes/config.yaml` control this:
+
+```yaml
+finetune:
+  training:
+    context_window_turns: 8      # max preceding turns per training example
+    min_turn_score: 0.7          # only emit turns scoring at least this
+```
+
+Lowering `min_turn_score` to 0.45 produces dramatically more examples at lower average quality — useful for a first end-to-end run when you don't have many retro labels yet. Raising it produces fewer but stricter examples.
+
+For 184 typical Hermes sessions, the default `min_turn_score: 0.7` typically produces ~250 training examples. Lowering to 0.45 produces ~750. The same dataset under the old session-based approach produced ~7.
+
+---
 
 ## Two Workflows
 
@@ -144,13 +184,16 @@ Results land in `~/.hermes/finetune/bench/results/bench_<timestamp>.json` and th
 
 ## Retroactive Labeling
 
-The automated quality scorer is conservative — early in the pipeline you'll likely see most sessions land in the **neutral** bucket (composite 0.4–0.7), which means they don't contribute to the **good** bucket the trainer needs. The retro flow lets you go back and label historical sessions and turns by hand, seeding real positive/negative signal.
+The automated quality scorer is conservative — early in the pipeline you'll likely see most assistant turns score around 0.5, which means they fall below the default `min_turn_score: 0.7` threshold and don't contribute to training. The retro flow lets you go back and label specific turns by hand, seeding real ground-truth signal that the trainer will then prefer.
+
+Because the trainer operates on individual turns (see "How training data is built" above), labeling **just the good turns** of a session is exactly the right granularity — there's no need to commit to a verdict on the whole conversation.
 
 ### When to use retro
 
-- After your first `/finetune extract` and `/finetune score` run, when the heuristic scorer hasn't found enough "good" sessions to train on
+- After your first `/finetune extract` and `/finetune score` run, when not enough turns clear the `min_turn_score` threshold to leave the embryonic stage
 - Periodically as new sessions accumulate, to maintain fresh ground-truth signal
-- After a regression, to label the bad cases that the scorer missed
+- After a regression, to flag the bad turns that the scorer missed
+- When you remember a specific session that produced a great answer worth training on
 
 ### The flow
 
@@ -182,7 +225,7 @@ The queue is **not chronological**. Sessions are ranked by how much a human labe
 
 ### Turn-level labels
 
-Most sessions contain a mix of quality. A 12-turn session might have 8 great turns and 4 mediocre ones. Training on all 12 dilutes the signal. Use the turn syntax to target specific turns:
+Most sessions contain a mix of quality. A 12-turn session might have 8 great turns and 4 mediocre ones. Because each assistant turn becomes its own training example, you should label only the turns worth learning from — not the whole session. Use the turn syntax to target specific turns:
 
 | Syntax | Meaning |
 |---|---|
@@ -197,14 +240,16 @@ Turn numbers are 1-based and count only assistant turns (system, user, and tool 
 
 ### How retro labels affect training
 
-After labeling, the next `/finetune score` run honors your labels. The scorer applies them in priority order:
+After labeling, the next `/finetune score` run honors your labels. The scorer applies them in priority order to compute each turn's effective score:
 
 1. **Per-turn retro labels** — highest priority. Override the automated turn score directly.
-2. **Session-level retro labels** — apply to every assistant turn that doesn't have a turn-level label.
+2. **Session-level retro labels** — apply to every assistant turn in the session that doesn't have a turn-level label.
 3. **In-the-moment feedback** — `Ctrl+Y`/`Ctrl+N` from the CLI, gateway emoji reactions.
 4. **Automated heuristic** — falls through if nothing above applies.
 
-You can use `/finetune retro` independently of the rest of the pipeline. The labels just sit in `feedback.jsonl` until the next `/finetune score` consumes them.
+The trainer then includes a turn in the training set if and only if its effective score meets `min_turn_score`. A `good` retro label maps to 1.0; a `bad` label maps to 0.0; anything labeled `bad` is therefore guaranteed to be excluded.
+
+You can use `/finetune retro` independently of the rest of the pipeline. The labels just sit in `feedback.jsonl` until the next `/finetune score` (or `/finetune run`) consumes them.
 
 ### Tip: prefix matching
 
@@ -251,10 +296,13 @@ pip install axolotl accelerate
 
 ## Pitfalls
 
-- **Small datasets**: With fewer than ~100 good sessions, the `_general` adapter is all you get. Domain-specific adapters need density — don't force clusters.
+- **Small datasets**: With fewer than ~50 trainable assistant turns (after `min_turn_score` filtering), the `_general` cluster stays embryonic and training is skipped. Run `/finetune retro` to label more turns explicitly, or temporarily lower `finetune.training.min_turn_score` to 0.45 to admit more automated-score turns.
+- **Sparse clusters**: With fewer than ~30 sessions in a domain, HDBSCAN won't form a dedicated cluster — everything goes to `_general`. This is correct for most personal use cases. Domain-specific adapters become useful at 500+ sessions.
 - **Chat template mismatch**: Training data MUST use the same chat template as inference. Verify `chat_template` in config matches your model.
+- **GGUF base model**: Axolotl trains against HuggingFace safetensors, NOT GGUF. Set `finetune.training.base_model` to the HF repo ID (e.g. `kai-os/Carnice-9b`), not the GGUF path. The GGUF path is only for inference-time serving via llama.cpp.
 - **Quantization degradation**: If a merged GGUF performs worse than LoRA-on-base, try a higher quant level (Q6_K, Q8_0) or use unmerged LoRA loading.
 - **Catastrophic forgetting**: The canary test set catches this. If canary scores drop, the adapter is blocked from promotion regardless of other metrics.
+- **VRAM tightness on 12GB cards**: Training a 9B model with QLoRA needs ~10-11GB peak VRAM at `sequence_len: 1024`, `micro_batch_size: 1`. Stop any other CUDA processes (including any local llama.cpp serving the same GPU) before launching training. The default template settings target 12GB cards.
 
 ## Verification
 

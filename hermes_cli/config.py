@@ -575,6 +575,9 @@ DEFAULT_CONFIG = {
             "chat_template": "chatml",
             "quantization": "Q5_K_M",
             "terminal_backend": "local",
+            # Per-turn extraction (see format.py::extract_training_turns)
+            "context_window_turns": 8,
+            "min_turn_score": 0.7,
         },
         "routing": {
             "enabled": False,

@@ -101,19 +101,32 @@ class TrainingOrchestrator:
         train_path = data_dir / "train.jsonl"
         eval_path = data_dir / "eval.jsonl"
 
+        # Modern axolotl deprecated `type: sharegpt` in favor of
+        # `type: chat_template`. Our format.py emits ShareGPT-style records
+        # ({"conversations": [{"from": "human", "value": "..."}, ...]}) so we
+        # tell axolotl how to map those fields onto its expected schema:
+        #   - field_messages: which JSONL key holds the turn list
+        #   - message_property_mappings: which turn keys map to role/content
+        # The default `roles` mapping in axolotl already aliases ShareGPT
+        # role names (human → user, gpt → assistant), so we don't override it.
         template["datasets"] = [{
             "path": str(train_path),
-            "type": "sharegpt",
-            "conversation": "chatml",
+            "type": "chat_template",
+            "chat_template": template.get("chat_template", "chatml"),
+            "field_messages": "conversations",
+            "message_property_mappings": {
+                "role": "from",
+                "content": "value",
+            },
         }]
 
-        if eval_path.exists():
-            template["val_set_size"] = 0  # We provide our own eval split
-            template["datasets_eval"] = [{
-                "path": str(eval_path),
-                "type": "sharegpt",
-                "conversation": "chatml",
-            }]
+        # Have axolotl carve a 10% eval split from train.jsonl internally.
+        # We still write our own eval.jsonl to disk via format.py for the
+        # lightweight eval gate (eval.py), but axolotl's training loop
+        # uses its own internal split. This avoids the val_set_size==0 +
+        # eval_steps validation conflict in modern axolotl, where
+        # `datasets_eval` is not a recognized key.
+        template["val_set_size"] = 0.1
 
         # Set output path
         output_dir = ADAPTERS_DIR / cluster_id / version
@@ -208,6 +221,14 @@ class TrainingOrchestrator:
             str(config_path),
         ]
 
+        # Disable axolotl telemetry. Beyond the privacy concern, current
+        # axolotl wheels ship with a broken telemetry whitelist path that
+        # crashes on import unless telemetry is explicitly disabled. Setting
+        # both env vars covers older and newer axolotl versions.
+        train_env = os.environ.copy()
+        train_env["AXOLOTL_DO_NOT_TRACK"] = "1"
+        train_env["DO_NOT_TRACK"] = "1"
+
         logger.info("Launching training: %s", " ".join(cmd))
         logger.info("Log: %s", log_path)
 
@@ -218,6 +239,7 @@ class TrainingOrchestrator:
                     stdout=log_file,
                     stderr=subprocess.STDOUT,
                     cwd=str(SKILL_DIR),
+                    env=train_env,
                     timeout=3600 * 24,  # 24h max
                 )
 

@@ -28,11 +28,13 @@
 ### 1.3 Training data formatter (`scripts/format.py`)
 
 - Convert extracted JSONL to Axolotl `chat_template` dataset format
+- **Per-turn extraction**: emit one training record per qualifying assistant turn, not one per session. Each record is a (context, target) pair where context = system prompt + sliding window of preceding turns and target = a single assistant turn the model should learn to produce. See design spec §1.2 for the rationale.
+- Filter by per-turn effective score against `min_turn_score` (default 0.7). The effective score consults: (1) per-turn retro labels first, (2) automated per-turn scores second, (3) session-level composite as a fallback.
 - Reuse reasoning markup normalization from `agent/trajectory.py` (`convert_scratchpad_to_think`)
 - Ensure correct ChatML tokenization (`<|im_start|>` / `<|im_end|>`) and tool-call block formatting
 - Canonicalize system prompts (strip ephemeral injections, normalize skill sections)
-- Deterministic train/eval split by session ID hash (10-15% held out)
-- Never split sessions mid-conversation
+- Deterministic train/eval split by session ID hash (10-15% held out). All turns from a single session land in the same split — no context leakage across the boundary.
+- Each training example must end on a `gpt` turn so axolotl has a clear loss target
 
 ### 1.4 Create `~/.hermes/finetune/` directory layout
 

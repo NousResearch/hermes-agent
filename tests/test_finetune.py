@@ -669,16 +669,190 @@ class TestRetro:
     def test_load_all_scored_dedupes_by_id(self, tmp_hermes):
         """Re-scoring a session shouldn't duplicate it in the queue."""
         from retro import load_all_scored
-        from common import SCORED_DIR, append_jsonl
+        import common
 
         s1 = {"session_id": "dup", "started_at": "2026-01-01T00:00:00",
               "turns": [], "metadata": {}, "scoring": {"composite_score": 0.4}}
         s2 = {"session_id": "dup", "started_at": "2026-01-01T00:00:00",
               "turns": [], "metadata": {}, "scoring": {"composite_score": 0.7}}
 
-        append_jsonl(SCORED_DIR / "scored_a.jsonl", [s1])
-        append_jsonl(SCORED_DIR / "scored_b.jsonl", [s2])
+        common.append_jsonl(common.SCORED_DIR / "scored_a.jsonl", [s1])
+        common.append_jsonl(common.SCORED_DIR / "scored_b.jsonl", [s2])
 
         result = load_all_scored()
         ids = [s["session_id"] for s in result]
         assert ids.count("dup") == 1
+
+
+# ============================================================================
+# Turn-based extraction tests (replaces session-as-atomic-unit model)
+# ============================================================================
+
+class TestTurnExtraction:
+    def _session_with_turn_scores(self, sid, turns, turn_scores=None):
+        """Build a scored session with explicit per-turn scores."""
+        return {
+            "session_id": sid,
+            "started_at": "2026-01-01T00:00:00",
+            "turns": turns,
+            "metadata": {"source": "cli", "model": "test", "tool_call_count": 0, "total_tokens": 100},
+            "scoring": {
+                "composite_score": 0.5,
+                "bucket": "neutral",
+                "turn_scores": turn_scores or [],
+            },
+        }
+
+    def test_one_assistant_turn_one_example(self, tmp_hermes):
+        from format import extract_training_turns
+
+        session = self._session_with_turn_scores("s1", [
+            {"role": "system", "content": "You are helpful."},
+            {"role": "user", "content": "Hello"},
+            {"role": "assistant", "content": "Hi there"},
+        ], turn_scores=[(2, 0.9)])
+
+        examples = extract_training_turns(session, min_turn_score=0.7)
+        assert len(examples) == 1
+        # The single example should have system + user + assistant
+        convs = examples[0]["conversations"]
+        assert convs[0]["from"] == "system"
+        assert convs[1]["from"] == "human"
+        assert convs[2]["from"] == "gpt"
+        assert convs[2]["value"] == "Hi there"
+
+    def test_multiple_assistant_turns_multiple_examples(self, tmp_hermes):
+        from format import extract_training_turns
+
+        # 3 user/assistant exchanges, all scored good
+        session = self._session_with_turn_scores("s2", [
+            {"role": "system", "content": "You are helpful."},
+            {"role": "user", "content": "Q1"},
+            {"role": "assistant", "content": "A1"},
+            {"role": "user", "content": "Q2"},
+            {"role": "assistant", "content": "A2"},
+            {"role": "user", "content": "Q3"},
+            {"role": "assistant", "content": "A3"},
+        ], turn_scores=[(2, 0.9), (4, 0.9), (6, 0.9)])
+
+        examples = extract_training_turns(session, min_turn_score=0.7)
+        # Should produce 3 training examples, one per assistant turn
+        assert len(examples) == 3
+
+        # Each example must end on a gpt turn
+        for ex in examples:
+            assert ex["conversations"][-1]["from"] == "gpt"
+
+        # The targets should be A1, A2, A3 in order
+        targets = [ex["conversations"][-1]["value"] for ex in examples]
+        assert targets == ["A1", "A2", "A3"]
+
+    def test_low_score_turns_filtered_out(self, tmp_hermes):
+        from format import extract_training_turns
+
+        # Two assistant turns, only one is good
+        session = self._session_with_turn_scores("s3", [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "Q1"},
+            {"role": "assistant", "content": "A1 (bad)"},
+            {"role": "user", "content": "Q2"},
+            {"role": "assistant", "content": "A2 (good)"},
+        ], turn_scores=[(2, 0.2), (4, 0.9)])
+
+        examples = extract_training_turns(session, min_turn_score=0.7)
+        assert len(examples) == 1
+        assert examples[0]["conversations"][-1]["value"] == "A2 (good)"
+
+    def test_context_window_truncation(self, tmp_hermes):
+        from format import extract_training_turns
+
+        # Long session — 10 user/assistant exchanges
+        turns = [{"role": "system", "content": "sys"}]
+        for i in range(10):
+            turns.append({"role": "user", "content": f"Q{i}"})
+            turns.append({"role": "assistant", "content": f"A{i}"})
+
+        scores = [(i, 0.9) for i, t in enumerate(turns) if t["role"] == "assistant"]
+        session = self._session_with_turn_scores("s4", turns, turn_scores=scores)
+
+        # Use a small window
+        examples = extract_training_turns(session, context_window_turns=4, min_turn_score=0.7)
+        assert len(examples) == 10
+
+        # The LAST example should have system + last few turns + target
+        last = examples[-1]
+        # Should always have system at position 0
+        assert last["conversations"][0]["from"] == "system"
+        # Window of 4 means at most 4 preceding turns + target = 5 + system = 6 total
+        assert len(last["conversations"]) <= 6
+        # The target should be the final assistant turn
+        assert last["conversations"][-1]["value"] == "A9"
+
+    def test_target_must_have_content(self, tmp_hermes):
+        from format import extract_training_turns
+
+        # Empty assistant turn — not trainable
+        session = self._session_with_turn_scores("s5", [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "Q"},
+            {"role": "assistant", "content": ""},
+        ], turn_scores=[(2, 0.9)])
+
+        examples = extract_training_turns(session, min_turn_score=0.7)
+        assert len(examples) == 0
+
+    def test_must_have_user_in_context(self, tmp_hermes):
+        from format import extract_training_turns
+
+        # Assistant turn with no preceding user — not a valid example
+        session = self._session_with_turn_scores("s6", [
+            {"role": "system", "content": "sys"},
+            {"role": "assistant", "content": "Spontaneous"},
+        ], turn_scores=[(1, 0.9)])
+
+        examples = extract_training_turns(session, min_turn_score=0.7)
+        assert len(examples) == 0
+
+    def test_train_eval_split_keeps_session_together(self, tmp_hermes):
+        """All turns from the same session should land in the same split."""
+        from format import TrainingFormatter
+
+        # 20 sessions, each with 3 trainable turns
+        sessions = []
+        for i in range(20):
+            turns = [{"role": "system", "content": "sys"}]
+            for j in range(3):
+                turns.append({"role": "user", "content": f"Q{i}.{j}"})
+                turns.append({"role": "assistant", "content": f"A{i}.{j}"})
+            sessions.append(self._session_with_turn_scores(
+                f"sess-{i}",
+                turns,
+                turn_scores=[(idx, 0.9) for idx, t in enumerate(turns) if t["role"] == "assistant"],
+            ))
+
+        formatter = TrainingFormatter(eval_ratio=0.2)
+        counts = formatter.format_for_cluster(sessions, "_general", min_score=0.7)
+
+        # Each session produces 3 examples, total 60 records
+        assert counts["train"] + counts["eval"] == 60
+
+        # Verify session_id grouping: read back the JSONL files and check
+        # no session_id appears in both train and eval
+        from common import CLUSTERS_DIR, read_jsonl
+        train_sids = {r["session_id"] for r in read_jsonl(CLUSTERS_DIR / "_general" / "train.jsonl")}
+        eval_sids = {r["session_id"] for r in read_jsonl(CLUSTERS_DIR / "_general" / "eval.jsonl")}
+        assert not (train_sids & eval_sids), "Session IDs leaked across train/eval splits"
+
+    def test_per_session_count_in_record(self, tmp_hermes):
+        """Each record should know which session and turn it came from."""
+        from format import extract_training_turns
+
+        session = self._session_with_turn_scores("trace-test", [
+            {"role": "user", "content": "Q1"},
+            {"role": "assistant", "content": "A1"},
+        ], turn_scores=[(1, 0.9)])
+
+        examples = extract_training_turns(session, min_turn_score=0.7)
+        assert examples[0]["session_id"] == "trace-test"
+        assert "turn_index_in_session" in examples[0]
+        assert examples[0]["score"] == 0.9

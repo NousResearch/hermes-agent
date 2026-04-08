@@ -78,11 +78,41 @@ Normalized session format:
 
 ### 1.2 Formatting
 
-Extracted sessions are converted to training-ready JSONL compatible with Axolotl's `chat_template` dataset type. This step ensures the training data matches the inference-time chat template exactly — for ChatML/Hermes models, the correct `<|im_start|>` / `<|im_end|>` tokenization, tool-use block formatting, and a canonical system prompt.
+**The atomic unit of training is the assistant turn, not the session.**
 
-Hermes's existing trajectory normalization in `agent/trajectory.py` handles reasoning markup and tool-call XML formatting. The formatter extends this rather than replacing it, adding system prompt canonicalization and train/eval splitting.
+This is a deliberate departure from a naive "one record per session" pipeline. Hermes sessions vary by four orders of magnitude in length (observed range: 39 to 414,432 tokens) and almost always contain a mix of high- and low-quality turns. Treating a session as the unit forces a single label across that mix and produces training records that don't fit any reasonable `sequence_len`. The pipeline instead emits **one training record per qualifying assistant turn**, with a sliding window of preceding context.
 
-Validation split is deterministic by session ID hash (10–15% held out). Sessions are never split mid-conversation.
+Each training record is a (context, target) pair:
+
+- **target** = a single assistant turn (the thing the model should learn to produce)
+- **context** = the system prompt + up to N preceding turns (default: 8) leading up to the target
+
+A 12-turn session that has 6 assistant responses produces up to 6 training records. A 414K-token session produces dozens of bounded ~1-3K-token records instead of one untrainable monster.
+
+**Selection criteria**: only assistant turns whose **effective per-turn score** meets `finetune.training.min_turn_score` (default: 0.7) are emitted. The effective score is, in priority order:
+
+1. Per-turn retro label (set via `/finetune retro good <id> 2,4`) — explicit ground truth
+2. Per-turn automated score (from §2.2 turn-level signals) — heuristic
+3. Session-level composite score (from §2.5) — fallback when no per-turn data exists
+
+Bad and neutral turns are skipped entirely, not down-weighted. The trainer only sees turns the user (or the heuristic) considers worth learning from.
+
+**Output format**: ShareGPT-style records compatible with Axolotl's `chat_template` dataset type. Each record's conversation list ends on a `gpt` turn so the trainer has a clear loss target. The shared system prompt and tool-call block formatting reuse Hermes's existing `agent/trajectory.py` normalization, plus reasoning-tag conversion (`<REASONING_SCRATCHPAD>` → `<think>`).
+
+**Train/eval split**: deterministic by `session_id` hash (10–15% held out). All turns from a single session land in the same split — this prevents context leakage where earlier turns in a session would otherwise act as a near-duplicate prompt for later turns in the held-out set. Within a split, individual turns from the same session can appear in different orders due to packing, but they never cross the split boundary.
+
+**Why this matters**: with the old session-based approach, a user with 184 conversations would produce maybe 7 training examples that fit a 1024-token window. With the turn-based approach, the same data produces 250–800 training examples depending on the score threshold — a roughly 30–100× increase in usable training signal from identical raw data.
+
+**Configuration knobs** (under `finetune.training` in `config.yaml`):
+
+```yaml
+finetune:
+  training:
+    context_window_turns: 8    # max preceding turns per training example
+    min_turn_score: 0.7        # only emit turns scoring at least this
+```
+
+Lowering `min_turn_score` produces more examples at lower average quality. Raising it produces fewer but stricter. Lowering `context_window_turns` produces shorter records (faster training, less context-dependent learning); raising it teaches the model to use longer histories at the cost of more VRAM per example.
 
 ### 1.3 External Imports (Optional)
 
@@ -198,9 +228,9 @@ After clustering, a human-readable label is generated from the top TF-IDF terms 
 
 Transitions trigger automatic retraining. Clusters can regress if data is deleted or re-scored below threshold.
 
-### 3.8 Session Segmentation (Optional)
+### 3.8 Session Segmentation (Obsolete — see §1.2)
 
-Default routing is per-session. If a session's intra-turn embedding variance exceeds 1.5× the assigned cluster's median variance, it is split at the maximum embedding discontinuity. Each segment is routed independently. This is optional and can be disabled.
+This section originally proposed splitting high-variance sessions at embedding discontinuities. The turn-based formatting in §1.2 supersedes this entirely: each assistant turn becomes its own training record with its own context window, so within-session topic shifts are handled implicitly. Clustering still operates at the session level for routing purposes, but training granularity is per-turn.
 
 ### 3.9 User Overrides (Power User)
 
@@ -310,7 +340,7 @@ The merged GGUF is tested against the unmerged LoRA-on-base model. If quantizati
 
 Every new adapter must pass evaluation before promotion. The harness runs automatically after training.
 
-**Held-out test set:** Per cluster, 10–15% of sessions are reserved at extraction time (deterministic by session ID hash). When a new cluster forms, its held-out set is established automatically.
+**Held-out test set:** Per cluster, 10–15% of *sessions* are reserved at format time (deterministic by `session_id` hash, see §1.2). All turns extracted from those sessions go into the eval split together — turns from the same session never cross the boundary, which prevents context leakage. When a new cluster forms, its held-out set is established automatically.
 
 **Metrics:**
 

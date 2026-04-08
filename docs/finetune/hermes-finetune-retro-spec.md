@@ -16,6 +16,12 @@ The deeper problem is volume. Even if users want to retroactively label sessions
 
 `/finetune retro` solves both problems: it lets users label historical sessions and turns, and it presents them in an order that maximizes the value of each label.
 
+### Why turn-level labeling matters specifically
+
+The training pipeline (see `hermes-finetune-design-spec.md` §1.2) emits **one training example per qualifying assistant turn**, not per session. A 50-turn session that contains 8 great answers and 17 mediocre ones produces only 8 training examples — provided you label the right turns. Without retro, the scorer's automated per-turn scores are the only filter, and they're conservative enough that most turns land in neutral and get excluded.
+
+Retro labels are the primary mechanism for directing the trainer at specific examples. A `good` retro label on a single turn maps to a turn score of 1.0, which is guaranteed to clear any reasonable `min_turn_score` threshold. A `bad` label maps to 0.0, guaranteed to be excluded. The session-level vs turn-level distinction matters: session-level labels apply to every assistant turn in the session uniformly (useful when the whole conversation was great), while turn-level labels target specific exchanges (the common case).
+
 ---
 
 ## Priority-Ranked Session Surfacing

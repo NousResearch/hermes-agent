@@ -16,6 +16,7 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
+import common
 from common import (
     EXTRACTED_DIR, SCORED_DIR, FEEDBACK_PATH,
     ensure_dirs, load_config, read_jsonl, append_jsonl, logger,
@@ -100,7 +101,7 @@ class QualityScorer:
         Skip records (signal=skip) are excluded so they don't override scores.
         """
         overrides = {}
-        for record in read_jsonl(FEEDBACK_PATH):
+        for record in read_jsonl(common.FEEDBACK_PATH):
             sid = record.get("session_id")
             if not sid or "score" not in record:
                 continue
@@ -118,7 +119,7 @@ class QualityScorer:
         Used by _score_turns to apply retro labels at turn granularity.
         """
         turn_overrides: Dict[str, Dict[int, float]] = {}
-        for record in read_jsonl(FEEDBACK_PATH):
+        for record in read_jsonl(common.FEEDBACK_PATH):
             sid = record.get("session_id")
             turn_idx = record.get("turn_index")
             if not sid or turn_idx is None or "score" not in record:

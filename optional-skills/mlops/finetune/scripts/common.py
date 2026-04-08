@@ -113,6 +113,13 @@ def load_config() -> dict:
             "chat_template": "chatml",
             "quantization": "Q5_K_M",
             "terminal_backend": "local",
+            # Per-turn extraction (see format.py::extract_training_turns).
+            # context_window_turns: how many preceding turns to include as
+            # context for each training example. min_turn_score: only emit
+            # assistant turns whose effective score (automated or retro
+            # override) meets this threshold.
+            "context_window_turns": 8,
+            "min_turn_score": 0.7,
         },
         "routing": {
             "enabled": True,

@@ -29,6 +29,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
+import common
 from common import (
     FEEDBACK_PATH, SCORED_DIR,
     load_config, read_jsonl, append_jsonl, logger,
@@ -101,7 +102,7 @@ def compute_priority(session: Dict) -> float:
 
 def load_feedback() -> List[Dict]:
     """Load all feedback records."""
-    return read_jsonl(FEEDBACK_PATH)
+    return read_jsonl(common.FEEDBACK_PATH)
 
 
 def labeled_session_ids(feedback: List[Dict]) -> Set[str]:
@@ -160,7 +161,7 @@ def write_label(
         record["turn_index"] = turn_index
     if note:
         record["note"] = note
-    append_jsonl(FEEDBACK_PATH, [record])
+    append_jsonl(common.FEEDBACK_PATH, [record])
 
 
 # ── Session loading ──────────────────────────────────────────────────────
@@ -168,7 +169,7 @@ def write_label(
 def load_all_scored() -> List[Dict]:
     """Load every scored session from disk."""
     sessions = []
-    for path in sorted(SCORED_DIR.glob("scored_*.jsonl")):
+    for path in sorted(common.SCORED_DIR.glob("scored_*.jsonl")):
         sessions.extend(read_jsonl(path))
     # De-dup by session_id, keeping the most recently scored copy
     by_id: Dict[str, Dict] = {}

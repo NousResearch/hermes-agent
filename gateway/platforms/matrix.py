@@ -40,6 +40,7 @@ from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
     MessageType,
+    ProcessingOutcome,
     SendResult,
 )
 
@@ -1479,7 +1480,7 @@ class MatrixAdapter(BasePlatformAdapter):
             await self._send_reaction(room_id, msg_id, "\U0001f440")
 
     async def on_processing_complete(
-        self, event: MessageEvent, success: bool,
+        self, event: MessageEvent, outcome: ProcessingOutcome,
     ) -> None:
         """Replace eyes with checkmark (success) or cross (failure)."""
         if not self._reactions_enabled:
@@ -1488,11 +1489,15 @@ class MatrixAdapter(BasePlatformAdapter):
         room_id = event.source.chat_id
         if not msg_id or not room_id:
             return
+        if outcome == ProcessingOutcome.CANCELLED:
+            return
         # Note: Matrix doesn't support removing a specific reaction easily
         # without tracking the reaction event_id. We send the new reaction;
         # the eyes stays (acceptable UX — both are visible).
         await self._send_reaction(
-            room_id, msg_id, "\u2705" if success else "\u274c",
+            room_id,
+            msg_id,
+            "\u2705" if outcome == ProcessingOutcome.SUCCESS else "\u274c",
         )
 
     async def _on_reaction(self, room: Any, event: Any) -> None:

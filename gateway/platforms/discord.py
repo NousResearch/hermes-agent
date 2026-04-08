@@ -49,6 +49,7 @@ from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
     MessageType,
+    ProcessingOutcome,
     SendResult,
     cache_image_from_url,
     cache_audio_from_url,
@@ -754,14 +755,17 @@ class DiscordAdapter(BasePlatformAdapter):
         if hasattr(message, "add_reaction"):
             await self._add_reaction(message, "👀")
 
-    async def on_processing_complete(self, event: MessageEvent, success: bool) -> None:
+    async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
         """Swap the in-progress reaction for a final success/failure reaction."""
         if not self._reactions_enabled():
             return
         message = event.raw_message
         if hasattr(message, "add_reaction"):
             await self._remove_reaction(message, "👀")
-            await self._add_reaction(message, "✅" if success else "❌")
+            if outcome == ProcessingOutcome.SUCCESS:
+                await self._add_reaction(message, "✅")
+            elif outcome == ProcessingOutcome.FAILURE:
+                await self._add_reaction(message, "❌")
 
     async def send(
         self,

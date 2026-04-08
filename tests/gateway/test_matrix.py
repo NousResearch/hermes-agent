@@ -1980,7 +1980,7 @@ class TestMatrixReactions:
 
     @pytest.mark.asyncio
     async def test_on_processing_complete_sends_check(self):
-        from gateway.platforms.base import MessageEvent, MessageType
+        from gateway.platforms.base import MessageEvent, MessageType, ProcessingOutcome
 
         self.adapter._reactions_enabled = True
         self.adapter._send_reaction = AsyncMock(return_value=True)
@@ -1994,8 +1994,27 @@ class TestMatrixReactions:
             raw_message={},
             message_id="$msg1",
         )
-        await self.adapter.on_processing_complete(event, success=True)
+        await self.adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
         self.adapter._send_reaction.assert_called_once_with("!room:ex", "$msg1", "✅")
+
+    @pytest.mark.asyncio
+    async def test_on_processing_complete_cancelled_sends_no_terminal_reaction(self):
+        from gateway.platforms.base import MessageEvent, MessageType, ProcessingOutcome
+
+        self.adapter._reactions_enabled = True
+        self.adapter._send_reaction = AsyncMock(return_value=True)
+
+        source = MagicMock()
+        source.chat_id = "!room:ex"
+        event = MessageEvent(
+            text="hello",
+            message_type=MessageType.TEXT,
+            source=source,
+            raw_message={},
+            message_id="$msg1",
+        )
+        await self.adapter.on_processing_complete(event, ProcessingOutcome.CANCELLED)
+        self.adapter._send_reaction.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_reactions_disabled(self):

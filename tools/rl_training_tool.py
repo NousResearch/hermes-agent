@@ -45,6 +45,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from hermes_constants import get_hermes_home
+from tools.environments.local import _sanitize_subprocess_env
 
 logger = logging.getLogger(__name__)
 
@@ -363,7 +364,12 @@ async def _spawn_training_run(run_state: RunState, config_path: Path):
             stdout=trainer_log_file,
             stderr=subprocess.STDOUT,
             cwd=str(TINKER_ATROPOS_ROOT),
-            env={**os.environ, "TINKER_API_KEY": os.getenv("TINKER_API_KEY", "")},
+            env=_sanitize_subprocess_env(os.environ, {
+                # Force-preserve the RL-training credentials the trainer
+                # subprocess requires (both are on the sanitizer blocklist).
+                "_HERMES_FORCE_TINKER_API_KEY": os.getenv("TINKER_API_KEY", ""),
+                "_HERMES_FORCE_WANDB_API_KEY": os.getenv("WANDB_API_KEY", ""),
+            }),
         )
         
         # Wait for trainer to initialize (it starts FastAPI inference server on 8001)

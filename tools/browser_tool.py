@@ -81,6 +81,7 @@ from tools.browser_providers.browserbase import BrowserbaseProvider
 from tools.browser_providers.browser_use import BrowserUseProvider
 from tools.browser_providers.firecrawl import FirecrawlProvider
 from tools.tool_backend_helpers import normalize_browser_cloud_provider
+from tools.environments.local import _sanitize_subprocess_env
 
 # Camofox local anti-detection browser backend (optional).
 # When CAMOFOX_URL is set, all browser operations route through the
@@ -924,7 +925,22 @@ def _run_browser_command(
         logger.debug("browser cmd=%s task=%s socket_dir=%s (%d chars)",
                      command, task_id, task_socket_dir, len(task_socket_dir))
         
-        browser_env = {**os.environ}
+        # Sanitize provider keys out of the subprocess environment, but
+        # force-preserve the browser-backend credentials the agent-browser CLI
+        # legitimately needs when configured for cloud mode.
+        _browser_force = {
+            f"_HERMES_FORCE_{k}": os.environ[k]
+            for k in (
+                "BROWSERBASE_API_KEY",
+                "BROWSERBASE_PROJECT_ID",
+                "BROWSER_USE_API_KEY",
+                "FIRECRAWL_API_KEY",
+                "FIRECRAWL_API_URL",
+                "FIRECRAWL_BROWSER_TTL",
+            )
+            if k in os.environ
+        }
+        browser_env = _sanitize_subprocess_env(os.environ, _browser_force)
 
         # Ensure PATH includes Hermes-managed Node first, Homebrew versioned
         # node dirs (for macOS ``brew install node@24``), then standard system dirs.

@@ -174,6 +174,8 @@ class SessionContext:
     session_id: str = ""
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
+    shared_session: bool = False
+    shared_session_kind: Optional[str] = None
     
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -255,19 +257,16 @@ def build_session_context_prompt(
         lines.append(f"**Channel Topic:** {context.source.chat_topic}")
 
     # User identity.
-    # In shared thread sessions (non-DM with thread_id), multiple users
-    # contribute to the same conversation.  Don't pin a single user name
-    # in the system prompt — it changes per-turn and would bust the prompt
-    # cache.  Instead, note that this is a multi-user thread; individual
-    # sender names are prefixed on each user message by the gateway.
-    _is_shared_thread = (
-        context.source.chat_type != "dm"
-        and context.source.thread_id
-    )
-    if _is_shared_thread:
+    # In shared sessions, multiple users contribute to the same conversation.
+    # Don't pin a single user name in the system prompt — it changes per-turn
+    # and would bust the prompt cache. Instead, note that this is a shared
+    # session; individual sender names/IDs are prefixed on each user message
+    # by the gateway.
+    if context.shared_session:
+        session_kind = "Multi-user thread" if context.shared_session_kind == "thread" else "Shared room"
         lines.append(
-            "**Session type:** Multi-user thread — messages are prefixed "
-            "with [sender name]. Multiple users may participate."
+            f"**Session type:** {session_kind} — messages are prefixed "
+            "with [sender name | sender id]. Multiple users may participate."
         )
     elif context.source.user_name:
         lines.append(f"**User:** {context.source.user_name}")
@@ -1071,6 +1070,13 @@ def build_session_context(
         connected_platforms=connected,
         home_channels=home_channels,
     )
+    if source.chat_type != "dm":
+        if source.thread_id and not getattr(config, "thread_sessions_per_user", False):
+            context.shared_session = True
+            context.shared_session_kind = "thread"
+        elif not source.thread_id and not getattr(config, "group_sessions_per_user", True):
+            context.shared_session = True
+            context.shared_session_kind = "room"
     
     if session_entry:
         context.session_key = session_entry.session_key

@@ -232,6 +232,7 @@ from gateway.session import (
     build_session_context,
     build_session_context_prompt,
     build_session_key,
+    _hash_sender_id,
 )
 from gateway.delivery import DeliveryRouter
 from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType
@@ -246,6 +247,44 @@ def _normalize_whatsapp_identifier(value: str) -> str:
         .split(":", 1)[0]
         .split("@", 1)[0]
     )
+
+
+def _prefix_shared_session_sender(
+    message_text: str,
+    source: SessionSource,
+    *,
+    group_sessions_per_user: bool,
+    thread_sessions_per_user: bool,
+) -> str:
+    """Prefix shared-session messages with stable sender attribution."""
+    is_shared_session = (
+        source.chat_type != "dm"
+        and (
+            (
+                source.thread_id
+                and not thread_sessions_per_user
+            )
+            or (
+                not source.thread_id
+                and not group_sessions_per_user
+            )
+        )
+    )
+    if not is_shared_session:
+        return message_text
+
+    sender_id = source.user_id_alt or source.user_id
+    sender_parts = []
+    if source.user_name:
+        sender_parts.append(source.user_name)
+    if sender_id:
+        hashed_sender_id = _hash_sender_id(str(sender_id))
+        if hashed_sender_id not in sender_parts:
+            sender_parts.append(hashed_sender_id)
+    if not sender_parts:
+        return message_text
+
+    return f"[{' | '.join(sender_parts)}] {message_text}"
 
 
 def _expand_whatsapp_auth_aliases(identifier: str) -> set:
@@ -2716,20 +2755,19 @@ class GatewayRunner:
         message_text = event.text or ""
 
         # -----------------------------------------------------------------
-        # Sender attribution for shared thread sessions.
+        # Sender attribution for shared sessions.
         #
-        # When multiple users share a single thread session (the default for
-        # threads), prefix each message with [sender name] so the agent can
-        # tell participants apart.  Skip for DMs (single-user by nature) and
-        # when per-user thread isolation is explicitly enabled.
+        # When multiple users share a single room/thread session, prefix each
+        # message with [sender name | sender id] so the agent can tell
+        # participants apart across the retained transcript. Skip for DMs
+        # (single-user by nature) and when per-user isolation is enabled.
         # -----------------------------------------------------------------
-        _is_shared_thread = (
-            source.chat_type != "dm"
-            and source.thread_id
-            and not getattr(self.config, "thread_sessions_per_user", False)
+        message_text = _prefix_shared_session_sender(
+            message_text,
+            source,
+            group_sessions_per_user=getattr(self.config, "group_sessions_per_user", True),
+            thread_sessions_per_user=getattr(self.config, "thread_sessions_per_user", False),
         )
-        if _is_shared_thread and source.user_name:
-            message_text = f"[{source.user_name}] {message_text}"
 
         if event.media_urls:
             image_paths = []

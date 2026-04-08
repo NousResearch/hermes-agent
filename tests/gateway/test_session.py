@@ -310,7 +310,7 @@ class TestBuildSessionContextPrompt:
         prompt = build_session_context_prompt(ctx)
 
         assert "Multi-user thread" in prompt
-        assert "[sender name]" in prompt
+        assert "[sender name | sender id]" in prompt
         # Should NOT show a specific **User:** line (would bust cache)
         assert "**User:** Alice" not in prompt
 
@@ -333,6 +333,29 @@ class TestBuildSessionContextPrompt:
 
         assert "**User:** Alice" in prompt
         assert "Multi-user thread" not in prompt
+
+    def test_shared_non_thread_group_hides_user_line(self):
+        """Shared non-thread group sessions should avoid pinning one user."""
+        config = GatewayConfig(
+            platforms={
+                Platform.TELEGRAM: PlatformConfig(enabled=True, token="fake"),
+            },
+            group_sessions_per_user=False,
+        )
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-1002285219667",
+            chat_name="Test Group",
+            chat_type="group",
+            user_id="12345",
+            user_name="Alice",
+        )
+        ctx = build_session_context(source, config)
+        prompt = build_session_context_prompt(ctx)
+
+        assert "Shared room" in prompt
+        assert "[sender name | sender id]" in prompt
+        assert "**User:** Alice" not in prompt
 
     def test_dm_thread_shows_user_not_multi(self):
         """DM threads are single-user and should show User, not multi-user note."""

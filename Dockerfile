@@ -19,7 +19,6 @@ RUN python3 -m venv .venv && \
     .venv/bin/pip install --no-cache-dir -e ".[all]" && \
     .venv/bin/pip install --no-cache-dir -e ".[matrix]" && \
     npm install --prefer-offline --no-audit && \
-    npx playwright install chromium --only-shell && \
     cd /opt/hermes/scripts/whatsapp-bridge && \
     npm install --prefer-offline --no-audit && \
     npm cache clean --force

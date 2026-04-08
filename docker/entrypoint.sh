@@ -7,6 +7,8 @@ INSTALL_DIR="/opt/hermes"
 
 source ${INSTALL_DIR}/.venv/bin/activate
 
+npx playwright install chromium --only-shell
+
 # Create essential directory structure.  Cache and platform directories
 # (cache/images, cache/audio, platforms/whatsapp, etc.) are created on
 # demand by the application — don't pre-create them here so new installs

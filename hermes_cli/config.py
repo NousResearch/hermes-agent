@@ -157,7 +157,14 @@ def get_project_root() -> Path:
     return Path(__file__).parent.parent.resolve()
 
 def _secure_dir(path):
-    """Set directory to owner-only access (0700). No-op on Windows."""
+    """Set directory to owner-only access (0700). No-op on Windows.
+
+    Skipped in managed mode — the NixOS module sets group-readable
+    permissions (0750) so interactive users in the hermes group can
+    share state with the gateway service.
+    """
+    if is_managed():
+        return
     try:
         os.chmod(path, 0o700)
     except (OSError, NotImplementedError):
@@ -165,7 +172,13 @@ def _secure_dir(path):
 
 
 def _secure_file(path):
-    """Set file to owner-only read/write (0600). No-op on Windows."""
+    """Set file to owner-only read/write (0600). No-op on Windows.
+
+    Skipped in managed mode — the NixOS activation script sets
+    group-readable permissions (0640) on config files.
+    """
+    if is_managed():
+        return
     try:
         if os.path.exists(str(path)):
             os.chmod(path, 0o600)

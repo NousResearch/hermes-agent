@@ -1,7 +1,7 @@
 import { Text, useInput } from 'ink'
 import { useEffect, useRef, useState } from 'react'
 
-function wl(s: string, p: number) {
+function wordLeft(s: string, p: number) {
   let i = p - 1
 
   while (i > 0 && /\s/.test(s[i]!)) {
@@ -15,7 +15,7 @@ function wl(s: string, p: number) {
   return Math.max(0, i)
 }
 
-function wr(s: string, p: number) {
+function wordRight(s: string, p: number) {
   let i = p
 
   while (i < s.length && !/\s/.test(s[i]!)) {
@@ -29,7 +29,7 @@ function wr(s: string, p: number) {
   return i
 }
 
-const ESC = String.fromCharCode(0x1b)
+const ESC = '\x1b'
 const INV = ESC + '[7m'
 const INV_OFF = ESC + '[27m'
 const DIM = ESC + '[2m'
@@ -63,6 +63,16 @@ export function TextInput({ value, onChange, onPaste, onSubmit, placeholder = ''
     }
   }, [value])
 
+  const commit = (v: string, c: number) => {
+    c = Math.max(0, Math.min(c, v.length))
+    setCur(c)
+
+    if (v !== value) {
+      selfChange.current = true
+      onChange(v)
+    }
+  }
+
   const flushPaste = () => {
     const pasted = pasteBuf.current
     const at = pastePos.current
@@ -85,9 +95,8 @@ export function TextInput({ value, onChange, onPaste, onSubmit, placeholder = ''
     }
 
     if (pasted.length && PRINTABLE.test(pasted)) {
-      const nv = v.slice(0, at) + pasted + v.slice(at)
       selfChange.current = true
-      onChange(nv)
+      onChange(v.slice(0, at) + pasted + v.slice(at))
       setCur(at + pasted.length)
     }
   }
@@ -113,9 +122,8 @@ export function TextInput({ value, onChange, onPaste, onSubmit, placeholder = ''
         return
       }
 
-      let c = cur,
-        v = value
-
+      let c = cur
+      let v = value
       const mod = k.ctrl || k.meta
 
       if (k.home || (k.ctrl && inp === 'a')) {
@@ -123,12 +131,12 @@ export function TextInput({ value, onChange, onPaste, onSubmit, placeholder = ''
       } else if (k.end || (k.ctrl && inp === 'e')) {
         c = v.length
       } else if (k.leftArrow) {
-        c = mod ? wl(v, c) : Math.max(0, c - 1)
+        c = mod ? wordLeft(v, c) : Math.max(0, c - 1)
       } else if (k.rightArrow) {
-        c = mod ? wr(v, c) : Math.min(v.length, c + 1)
+        c = mod ? wordRight(v, c) : Math.min(v.length, c + 1)
       } else if ((k.backspace || k.delete) && c > 0) {
         if (mod) {
-          const t = wl(v, c)
+          const t = wordLeft(v, c)
           v = v.slice(0, t) + v.slice(c)
           c = t
         } else {
@@ -136,7 +144,7 @@ export function TextInput({ value, onChange, onPaste, onSubmit, placeholder = ''
           c--
         }
       } else if (k.ctrl && inp === 'w' && c > 0) {
-        const t = wl(v, c)
+        const t = wordLeft(v, c)
         v = v.slice(0, t) + v.slice(c)
         c = t
       } else if (k.ctrl && inp === 'u') {
@@ -145,9 +153,9 @@ export function TextInput({ value, onChange, onPaste, onSubmit, placeholder = ''
       } else if (k.ctrl && inp === 'k') {
         v = v.slice(0, c)
       } else if (k.meta && inp === 'b') {
-        c = wl(v, c)
+        c = wordLeft(v, c)
       } else if (k.meta && inp === 'f') {
-        c = wr(v, c)
+        c = wordRight(v, c)
       } else if (inp.length > 0) {
         const raw = inp.replace(BRACKET_PASTE, '').replace(/\r\n/g, '\n').replace(/\r/g, '\n')
 
@@ -155,9 +163,7 @@ export function TextInput({ value, onChange, onPaste, onSubmit, placeholder = ''
           return
         }
 
-        const isMultiChar = raw.length > 1 || raw.includes('\n')
-
-        if (isMultiChar) {
+        if (raw.length > 1 || raw.includes('\n')) {
           if (!pasteBuf.current) {
             pastePos.current = c
           }
@@ -183,13 +189,7 @@ export function TextInput({ value, onChange, onPaste, onSubmit, placeholder = ''
         return
       }
 
-      c = Math.max(0, Math.min(c, v.length))
-      setCur(c)
-
-      if (v !== value) {
-        selfChange.current = true
-        onChange(v)
-      }
+      commit(v, c)
     },
     { isActive: focus }
   )

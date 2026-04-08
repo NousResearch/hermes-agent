@@ -9,19 +9,19 @@ import type { ActiveTool } from '../types.js'
 const THINK_POOL: BrailleSpinnerName[] = ['helix', 'breathe', 'orbit', 'dna', 'waverows', 'snake', 'pulse']
 const TOOL_POOL: BrailleSpinnerName[] = ['cascade', 'scan', 'diagswipe', 'fillsweep', 'rain', 'columns', 'sparkle']
 
-const pick = <T,>(arr: T[]) => arr[Math.floor(Math.random() * arr.length)]!
+const pick = <T,>(a: T[]) => a[Math.floor(Math.random() * a.length)]!
 
 function Spinner({ color, variant = 'think' }: { color: string; variant?: 'think' | 'tool' }) {
   const [spin] = useState(() => spinners[pick(variant === 'tool' ? TOOL_POOL : THINK_POOL)])
-  const [i, setI] = useState(0)
+  const [frame, setFrame] = useState(0)
 
   useEffect(() => {
-    const id = setInterval(() => setI(p => (p + 1) % spin.frames.length), spin.interval)
+    const id = setInterval(() => setFrame(f => (f + 1) % spin.frames.length), spin.interval)
 
     return () => clearInterval(id)
   }, [spin])
 
-  return <Text color={color}>{spin.frames[i]}</Text>
+  return <Text color={color}>{spin.frames[frame]}</Text>
 }
 
 export const Thinking = memo(function Thinking({
@@ -36,9 +36,7 @@ export const Thinking = memo(function Thinking({
   const [tick, setTick] = useState(0)
 
   useEffect(() => {
-    const id = setInterval(() => {
-      setTick(v => v + 1)
-    }, 1100)
+    const id = setInterval(() => setTick(v => v + 1), 1100)
 
     return () => clearInterval(id)
   }, [])

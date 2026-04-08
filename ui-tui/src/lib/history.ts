@@ -9,10 +9,16 @@ const file = join(dir, '.hermes_history')
 let cache: string[] | null = null
 
 export function load(): string[] {
-  if (cache) return cache
+  if (cache) {
+    return cache
+  }
 
   try {
-    if (!existsSync(file)) { cache = []; return cache }
+    if (!existsSync(file)) {
+      cache = []
+
+      return cache
+    }
 
     const lines = readFileSync(file, 'utf8').split('\n')
     const entries: string[] = []
@@ -26,7 +32,10 @@ export function load(): string[] {
         current = []
       }
     }
-    if (current.length) entries.push(current.join('\n'))
+
+    if (current.length) {
+      entries.push(current.join('\n'))
+    }
 
     cache = entries.slice(-MAX)
   } catch {
@@ -38,21 +47,37 @@ export function load(): string[] {
 
 export function append(line: string): void {
   const trimmed = line.trim()
-  if (!trimmed) return
+
+  if (!trimmed) {
+    return
+  }
 
   const items = load()
-  if (items.at(-1) === trimmed) return
+
+  if (items.at(-1) === trimmed) {
+    return
+  }
 
   items.push(trimmed)
-  if (items.length > MAX) items.splice(0, items.length - MAX)
+
+  if (items.length > MAX) {
+    items.splice(0, items.length - MAX)
+  }
 
   try {
-    if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
+    if (!existsSync(dir)) {
+      mkdirSync(dir, { recursive: true })
+    }
 
     const ts = new Date().toISOString().replace('T', ' ').replace('Z', '')
-    const encoded = trimmed.split('\n').map(l => '+' + l).join('\n')
+    const encoded = trimmed
+      .split('\n')
+      .map(l => '+' + l)
+      .join('\n')
     appendFileSync(file, `\n# ${ts}\n${encoded}\n`)
-  } catch { /* ignore */ }
+  } catch {
+    /* ignore */
+  }
 }
 
 export function all(): string[] {

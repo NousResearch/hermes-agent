@@ -23,7 +23,11 @@ function MdInline({ t, text }: { t: Theme; text: string }) {
         </Text>
       )
     } else if (m[4]) {
-      parts.push(<Text bold key={parts.length}>{m[4]}</Text>)
+      parts.push(
+        <Text bold key={parts.length}>
+          {m[4]}
+        </Text>
+      )
     } else if (m[5]) {
       parts.push(
         <Text color={t.color.amber} dimColor key={parts.length}>
@@ -31,7 +35,11 @@ function MdInline({ t, text }: { t: Theme; text: string }) {
         </Text>
       )
     } else if (m[6]) {
-      parts.push(<Text italic key={parts.length}>{m[6]}</Text>)
+      parts.push(
+        <Text italic key={parts.length}>
+          {m[6]}
+        </Text>
+      )
     } else if (m[7]) {
       parts.push(
         <Text color={t.color.amber} key={parts.length} underline>
@@ -58,7 +66,7 @@ export function Md({ compact, t, text }: { compact?: boolean; t: Theme; text: st
 
   const gap = () => {
     if (nodes.length && prevKind !== 'blank') {
-      nodes.push(<Text key={`gap-${nodes.length}`}>{' '}</Text>)
+      nodes.push(<Text key={`gap-${nodes.length}`}> </Text>)
       prevKind = 'blank'
     }
   }
@@ -67,6 +75,7 @@ export function Md({ compact, t, text }: { compact?: boolean; t: Theme; text: st
     if (prevKind && prevKind !== 'blank' && prevKind !== kind) {
       gap()
     }
+
     prevKind = kind
   }
 
@@ -104,9 +113,7 @@ export function Md({ compact, t, text }: { compact?: boolean; t: Theme; text: st
           {lang && !isDiff && <Text color={t.color.dim}>{'─ ' + lang}</Text>}
           {block.map((l, j) => (
             <Text
-              color={
-                isDiff && l.startsWith('+') ? '#a6e3a1' : isDiff && l.startsWith('-') ? '#f38ba8' : undefined
-              }
+              color={isDiff && l.startsWith('+') ? '#a6e3a1' : isDiff && l.startsWith('-') ? '#f38ba8' : undefined}
               dimColor={isDiff && !l.startsWith('+') && !l.startsWith('-') && l.startsWith(' ')}
               key={j}
             >

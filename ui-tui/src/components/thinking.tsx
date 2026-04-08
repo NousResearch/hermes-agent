@@ -11,6 +11,7 @@ function Spinner({ color }: { color: string }) {
 
   useEffect(() => {
     const id = setInterval(() => setI(p => (p + 1) % SPINNER.length), 80)
+
     return () => clearInterval(id)
   }, [])
 
@@ -18,15 +19,23 @@ function Spinner({ color }: { color: string }) {
 }
 
 export const Thinking = memo(function Thinking({
-  reasoning, t, tools
+  reasoning,
+  t,
+  tools
 }: {
-  reasoning: string; t: Theme; tools: ActiveTool[]
+  reasoning: string
+  t: Theme
+  tools: ActiveTool[]
 }) {
   const [verb, setVerb] = useState(() => pick(VERBS))
   const [face, setFace] = useState(() => pick(FACES))
 
   useEffect(() => {
-    const id = setInterval(() => { setVerb(pick(VERBS)); setFace(pick(FACES)) }, 1100)
+    const id = setInterval(() => {
+      setVerb(pick(VERBS))
+      setFace(pick(FACES))
+    }, 1100)
+
     return () => clearInterval(id)
   }, [])
 
@@ -47,7 +56,11 @@ export const Thinking = memo(function Thinking({
         </Text>
       )}
 
-      {tail && <Text color={t.color.dim} dimColor wrap="truncate-end">💭 {tail}</Text>}
+      {tail && (
+        <Text color={t.color.dim} dimColor wrap="truncate-end">
+          💭 {tail}
+        </Text>
+      )}
     </>
   )
 })

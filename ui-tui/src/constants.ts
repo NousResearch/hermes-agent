@@ -35,7 +35,7 @@ export const HOTKEYS: [string, string][] = [
   ['Home/End', 'start / end of line'],
   ['\\+Enter', 'multi-line continuation'],
   ['!cmd', 'run shell command'],
-  ['{!cmd}', 'interpolate shell output inline'],
+  ['{!cmd}', 'interpolate shell output inline']
 ]
 
 export const INTERPOLATION_RE = /\{!(.+?)\}/g

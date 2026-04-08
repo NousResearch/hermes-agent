@@ -75,7 +75,11 @@ export function SessionPanel({ info, sid, t }: { info: SessionInfo; sid?: string
             <Text color={t.color.cornsilk}>{truncLine(strip(k) + ': ', vs)}</Text>
           </Text>
         ))}
-        {overflow > 0 && <Text color={t.color.dim}>(and {overflow} {overflowLabel})</Text>}
+        {overflow > 0 && (
+          <Text color={t.color.dim}>
+            (and {overflow} {overflowLabel})
+          </Text>
+        )}
       </Box>
     )
   }
@@ -90,13 +94,17 @@ export function SessionPanel({ info, sid, t }: { info: SessionInfo; sid?: string
             {info.model.split('/').pop()}
             <Text color={t.color.dim}> · Nous Research</Text>
           </Text>
-          <Text color={t.color.dim} wrap="truncate-end">{cwd}</Text>
+          <Text color={t.color.dim} wrap="truncate-end">
+            {cwd}
+          </Text>
           {sid && <Text color={t.color.dim}>Session: {sid}</Text>}
         </Box>
       )}
       <Box flexDirection="column" width={w}>
         <Box justifyContent="center" marginBottom={1}>
-          <Text bold color={t.color.gold}>{title}</Text>
+          <Text bold color={t.color.gold}>
+            {title}
+          </Text>
         </Box>
         {section('Tools', info.tools, 8, 'more toolsets…')}
         {section('Skills', info.skills)}
@@ -110,9 +118,17 @@ export function SessionPanel({ info, sid, t }: { info: SessionInfo; sid?: string
         {typeof info.update_behind === 'number' && info.update_behind > 0 && (
           <Text bold color="yellow">
             ⚠ {info.update_behind} {info.update_behind === 1 ? 'commit' : 'commits'} behind
-            <Text bold={false} color="yellow" dimColor> — run </Text>
-            <Text bold color="yellow">{info.update_command || 'hermes update'}</Text>
-            <Text bold={false} color="yellow" dimColor> to update</Text>
+            <Text bold={false} color="yellow" dimColor>
+              {' '}
+              — run{' '}
+            </Text>
+            <Text bold color="yellow">
+              {info.update_command || 'hermes update'}
+            </Text>
+            <Text bold={false} color="yellow" dimColor>
+              {' '}
+              to update
+            </Text>
           </Text>
         )}
       </Box>

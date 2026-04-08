@@ -82,6 +82,7 @@ export function App({ gw }: { gw: GatewayClient }) {
     if (!stdout) {
       return
     }
+
     const sync = () => setCols(stdout.columns ?? 80)
     stdout.on('resize', sync)
 
@@ -197,6 +198,7 @@ export function App({ gw }: { gw: GatewayClient }) {
     if (input === compInputRef.current) {
       return
     }
+
     compInputRef.current = input
 
     const isSlash = input.startsWith('/')
@@ -225,6 +227,7 @@ export function App({ gw }: { gw: GatewayClient }) {
           if (compInputRef.current !== input) {
             return
           }
+
           setCompletions(r?.items ?? [])
           setCompIdx(0)
           setCompReplace(isSlash ? (r?.replace_from ?? 1) : input.length - (pathWord?.length ?? 0))
@@ -880,6 +883,7 @@ export function App({ gw }: { gw: GatewayClient }) {
           if (!sid) {
             return true
           }
+
           rpc('session.undo', { session_id: sid }).then((r: any) => {
             if (r.removed > 0) {
               setMessages(prev => {
@@ -913,6 +917,7 @@ export function App({ gw }: { gw: GatewayClient }) {
           if (sid) {
             gw.request('session.undo', { session_id: sid }).catch(() => {})
           }
+
           setMessages(prev => {
             const q = [...prev]
 
@@ -1174,6 +1179,7 @@ export function App({ gw }: { gw: GatewayClient }) {
                   if (r.info) {
                     appendHistory(introMsg(r.info))
                   }
+
                   setUsage(ZERO)
                   lastStatusNoteRef.current = ''
                   protocolWarnedRef.current = false

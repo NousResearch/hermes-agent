@@ -5223,6 +5223,13 @@ class GatewayRunner:
             )
             tmp_agent._print_fn = lambda *a, **kw: None
 
+            compressor = tmp_agent.context_compressor
+            compress_start = compressor.protect_first_n
+            compress_start = compressor._align_boundary_forward(msgs, compress_start)
+            compress_end = compressor._find_tail_cut_by_tokens(msgs, compress_start)
+            if compress_start >= compress_end:
+                return "Nothing to compress yet (the transcript is still all protected context)."
+
             loop = asyncio.get_event_loop()
             compressed, _ = await loop.run_in_executor(
                 None,
@@ -5248,7 +5255,7 @@ class GatewayRunner:
 
             return (
                 f"🗜️ Compressed: {original_count} → {new_count} messages\n"
-                f"~{approx_tokens:,} → ~{new_tokens:,} tokens"
+                f"Rough transcript estimate: ~{approx_tokens:,} → ~{new_tokens:,} tokens"
             )
         except Exception as e:
             logger.warning("Manual compress failed: %s", e)

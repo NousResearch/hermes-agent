@@ -30,6 +30,8 @@ export interface ThemeBrand {
 export interface Theme {
   color: ThemeColors
   brand: ThemeBrand
+  bannerLogo: string
+  bannerHero: string
 }
 
 export const DEFAULT_THEME: Theme = {
@@ -60,10 +62,18 @@ export const DEFAULT_THEME: Theme = {
     welcome: 'Type your message or /help for commands.',
     goodbye: 'Goodbye! ⚕',
     tool: '┊'
-  }
+  },
+
+  bannerLogo: '',
+  bannerHero: ''
 }
 
-export function fromSkin(colors: Record<string, string>, branding: Record<string, string>): Theme {
+export function fromSkin(
+  colors: Record<string, string>,
+  branding: Record<string, string>,
+  bannerLogo = '',
+  bannerHero = ''
+): Theme {
   const d = DEFAULT_THEME
   const c = (k: string) => colors[k]
 
@@ -95,6 +105,9 @@ export function fromSkin(colors: Record<string, string>, branding: Record<string
       welcome: branding.welcome ?? d.brand.welcome,
       goodbye: branding.goodbye ?? d.brand.goodbye,
       tool: d.brand.tool
-    }
+    },
+
+    bannerLogo,
+    bannerHero
   }
 }

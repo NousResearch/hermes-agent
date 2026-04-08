@@ -1957,6 +1957,14 @@ class DiscordAdapter(BasePlatformAdapter):
         """
         # Build a short thread name from the message
         content = (message.content or "").strip()
+        # Strip Discord mention syntax so thread names don't show raw IDs:
+        # - <@123> (user mention), <@!123> (user mention with nickname)
+        # - <@&456> (role mention)
+        # - <#789> (channel mention)
+        content = re.sub(r'<@!?\d+>', '', content)   # user mentions
+        content = re.sub(r'<@&\d+>', '', content)    # role mentions
+        content = re.sub(r'<#\d+>', '', content)    # channel mentions
+        content = content.strip()
         thread_name = content[:80] if content else "Hermes"
         if len(content) > 80:
             thread_name = thread_name[:77] + "..."

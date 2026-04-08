@@ -7479,6 +7479,57 @@ class GatewayRunner:
                     "failed": True,
                 }
 
+            # ── Finalize Matrix thinking fields ─────────────────────────
+            if _matrix_thinking_active and _status_adapter:
+                _final_model_label = _model_label_holder[0] or ""
+                _is_error = (response or {}).get("failed") or (response or {}).get("error")
+
+                if _thinking_started[0]:
+                    try:
+                        if _is_error:
+                            asyncio.run_coroutine_threadsafe(
+                                _status_adapter.abort_thinking(
+                                    _thinking_task_id,
+                                    str((response or {}).get("error", "Agent error")),
+                                    model_label=_final_model_label,
+                                ),
+                                _loop_for_step,
+                            ).result(timeout=10)
+                        else:
+                            asyncio.run_coroutine_threadsafe(
+                                _status_adapter.finalize_thinking(
+                                    _thinking_task_id,
+                                    "Complete",
+                                    model_label=_final_model_label,
+                                ),
+                                _loop_for_step,
+                            ).result(timeout=10)
+                    except Exception as _e:
+                        logger.debug("thinking finalize error: %s", _e)
+
+                if _tool_field_started[0]:
+                    try:
+                        if _is_error:
+                            asyncio.run_coroutine_threadsafe(
+                                _status_adapter.abort_tool_activity(
+                                    _thinking_task_id,
+                                    str((response or {}).get("error", "Agent error")),
+                                    model_label=_final_model_label,
+                                ),
+                                _loop_for_step,
+                            ).result(timeout=10)
+                        else:
+                            asyncio.run_coroutine_threadsafe(
+                                _status_adapter.finalize_tool_activity(
+                                    _thinking_task_id,
+                                    "Complete",
+                                    model_label=_final_model_label,
+                                ),
+                                _loop_for_step,
+                            ).result(timeout=10)
+                    except Exception as _e:
+                        logger.debug("tool_activity finalize error: %s", _e)
+
             # Track fallback model state: if the agent switched to a
             # fallback model during this run, persist it so /model shows
             # the actually-active model instead of the config default.

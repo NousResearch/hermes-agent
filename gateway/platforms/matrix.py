@@ -172,6 +172,18 @@ class MatrixAdapter(BasePlatformAdapter):
             "MATRIX_REACTIONS", "true"
         ).lower() not in ("false", "0", "no")
 
+        # Thinking / agentic collapsible fields
+        self._thinking_enabled: bool = config.extra.get(
+            "thinking_fields_enabled",
+            os.getenv("MATRIX_THINKING_FIELDS_ENABLED", "true").lower()
+            in ("true", "1", "yes"),
+        )
+        self._thinking_manager: Optional[Any] = None
+
+        # Pending approval and model picker state (keyed by event_id)
+        self._approval_state: Dict[str, Dict[str, Any]] = {}
+        self._model_picker_state: Dict[str, Dict[str, Any]] = {}
+
     def _is_duplicate_event(self, event_id) -> bool:
         """Return True if this event was already processed. Tracks the ID otherwise."""
         if not event_id:
@@ -393,6 +405,13 @@ class MatrixAdapter(BasePlatformAdapter):
     async def disconnect(self) -> None:
         """Disconnect from Matrix."""
         self._closing = True
+
+        # Abort any active thinking fields before shutdown.
+        if self._thinking_manager:
+            try:
+                await self._thinking_manager.abort_all("Gateway restarting")
+            except Exception as exc:
+                logger.debug("Matrix: could not abort active introspection fields: %s", exc)
 
         if self._sync_task and not self._sync_task.done():
             self._sync_task.cancel()
@@ -1410,18 +1429,52 @@ class MatrixAdapter(BasePlatformAdapter):
         )
 
     async def _on_reaction(self, room: Any, event: Any) -> None:
-        """Handle incoming reaction events."""
+        """Handle incoming reaction events.
+
+        Dispatches to approval and model picker state machines when the
+        reacted-to event has pending interactive state.  Otherwise logs.
+        """
         if event.sender == self._user_id:
             return
         if self._is_duplicate_event(getattr(event, "event_id", None)):
             return
-        # Log for now; future: trigger agent actions based on emoji.
+
         reacts_to = getattr(event, "reacts_to", "")
         key = getattr(event, "key", "")
         logger.info(
             "Matrix: reaction %s from %s on %s in %s",
             key, event.sender, reacts_to, room.room_id,
         )
+
+        # Dispatch: approval buttons
+        if reacts_to in self._approval_state and key in self._APPROVAL_REACTIONS:
+            state = self._approval_state.pop(reacts_to)
+            choice = self._APPROVAL_REACTIONS[key]
+            try:
+                from tools.approval import resolve_gateway_approval
+                resolve_gateway_approval(state["session_key"], choice)
+                # Edit the approval message to show the decision
+                choice_labels = {
+                    "once": "✅ Allowed once",
+                    "session": "🔁 Allowed for session",
+                    "always": "♾️ Allowed always",
+                    "deny": "❌ Denied",
+                }
+                label = choice_labels.get(choice, choice)
+                await self.edit_message(
+                    state["chat_id"], reacts_to,
+                    f"{label} by {event.sender}\n\n```\n{state['command']}\n```",
+                )
+            except Exception as exc:
+                logger.error("Matrix: approval resolution failed: %s", exc)
+            return
+
+        # Dispatch: model picker
+        if reacts_to in self._model_picker_state:
+            await self._handle_model_picker_reaction(
+                reacts_to, key, room.room_id, event.sender,
+            )
+            return
 
     async def _on_unknown_event(self, room: Any, event: Any) -> None:
         """Fallback handler for events not natively parsed by matrix-nio.
@@ -1706,6 +1759,294 @@ class MatrixAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=str(resp))
         except Exception as exc:
             return SendResult(success=False, error=str(exc))
+
+    # ------------------------------------------------------------------
+    # Thinking / introspection fields
+    # ------------------------------------------------------------------
+
+    def _get_thinking_manager(self):
+        """Lazy-init the ThinkingManager."""
+        if self._thinking_manager is None:
+            from gateway.platforms.matrix_thinking import ThinkingManager
+            self._thinking_manager = ThinkingManager(self)
+        return self._thinking_manager
+
+    async def start_thinking(
+        self, room_id: str, task_id: str,
+        initial_summary: str = "Processing request...",
+        *, model_label: str = "", initial_content_md: str = "",
+    ) -> Optional[str]:
+        """Start a collapsible thinking field in a Matrix room."""
+        if not self._thinking_enabled:
+            return None
+        return await self._get_thinking_manager().start(
+            room_id, task_id, initial_summary,
+            field_kind="thinking", model_label=model_label,
+            initial_content_md=initial_content_md,
+        )
+
+    async def update_thinking(
+        self, task_id: str, step_info: str, content_md: str = "",
+        *, model_label: Optional[str] = None, append_line: bool = True,
+    ) -> None:
+        """Update the active thinking field with new content."""
+        if not self._thinking_enabled or not self._thinking_manager:
+            return
+        await self._thinking_manager.update(
+            task_id, step_info, content_md, field_kind="thinking",
+            model_label=model_label, append_line=append_line,
+        )
+
+    async def finalize_thinking(
+        self, task_id: str, final_summary: str = "Task complete",
+        collapse: bool = True, *, model_label: Optional[str] = None,
+    ) -> None:
+        """Finalize and collapse the thinking field."""
+        if not self._thinking_enabled or not self._thinking_manager:
+            return
+        await self._thinking_manager.finalize(
+            task_id, final_summary, collapse,
+            field_kind="thinking", model_label=model_label,
+        )
+
+    async def abort_thinking(
+        self, task_id: str, reason: str = "Aborted",
+        *, model_label: Optional[str] = None,
+    ) -> None:
+        """Abort the thinking field, preserving buffered content."""
+        if not self._thinking_enabled or not self._thinking_manager:
+            return
+        await self._thinking_manager.abort(
+            task_id, reason, field_kind="thinking", model_label=model_label,
+        )
+
+    async def start_tool_activity(
+        self, room_id: str, task_id: str,
+        initial_summary: str = "Running tools...",
+        *, model_label: str = "", initial_content_md: str = "",
+    ) -> Optional[str]:
+        """Start a collapsible tool activity field in a Matrix room."""
+        if not self._thinking_enabled:
+            return None
+        return await self._get_thinking_manager().start(
+            room_id, task_id, initial_summary,
+            field_kind="tools", model_label=model_label,
+            initial_content_md=initial_content_md,
+        )
+
+    async def update_tool_activity(
+        self, task_id: str, step_info: str, content_md: str = "",
+        *, model_label: Optional[str] = None, append_line: bool = True,
+    ) -> None:
+        """Update the active tool activity field with new content."""
+        if not self._thinking_enabled or not self._thinking_manager:
+            return
+        await self._thinking_manager.update(
+            task_id, step_info, content_md, field_kind="tools",
+            model_label=model_label, append_line=append_line,
+        )
+
+    async def finalize_tool_activity(
+        self, task_id: str, final_summary: str = "Tools complete",
+        collapse: bool = True, *, model_label: Optional[str] = None,
+    ) -> None:
+        """Finalize and collapse the tool activity field."""
+        if not self._thinking_enabled or not self._thinking_manager:
+            return
+        await self._thinking_manager.finalize(
+            task_id, final_summary, collapse,
+            field_kind="tools", model_label=model_label,
+        )
+
+    async def abort_tool_activity(
+        self, task_id: str, reason: str = "Aborted",
+        *, model_label: Optional[str] = None,
+    ) -> None:
+        """Abort the tool activity field, preserving buffered content."""
+        if not self._thinking_enabled or not self._thinking_manager:
+            return
+        await self._thinking_manager.abort(
+            task_id, reason, field_kind="tools", model_label=model_label,
+        )
+
+    # ------------------------------------------------------------------
+    # Approval buttons via reactions
+    # ------------------------------------------------------------------
+
+    _APPROVAL_REACTIONS = {
+        "✅": "once",
+        "🔁": "session",
+        "♾️": "always",
+        "❌": "deny",
+    }
+
+    async def send_exec_approval(
+        self, chat_id: str, command: str, session_key: str,
+        description: str = "dangerous command",
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> "SendResult":
+        """Send an interactive approval prompt using reactions.
+
+        Posts a message describing the command, then reacts with the 4
+        approval emoji.  When the user reacts back, ``_on_reaction``
+        resolves the approval via the gateway's approval mechanism.
+        """
+        prompt_lines = [
+            f"⚠️ **Approval Required** — {description}",
+            "",
+            f"```\n{command}\n```",
+            "",
+            "React to approve:",
+            "✅ Allow once · 🔁 Allow for session · ♾️ Allow always · ❌ Deny",
+        ]
+        result = await self.send(chat_id, "\n".join(prompt_lines), metadata=metadata)
+        if not result.success:
+            return result
+
+        msg_id = result.message_id
+        for emoji in self._APPROVAL_REACTIONS:
+            try:
+                await self._send_reaction(chat_id, msg_id, emoji)
+            except Exception as exc:
+                logger.debug("Matrix: approval reaction %s failed: %s", emoji, exc)
+
+        self._approval_state[msg_id] = {
+            "session_key": session_key,
+            "command": command,
+            "chat_id": chat_id,
+        }
+        return result
+
+    # ------------------------------------------------------------------
+    # Interactive model picker via reactions
+    # ------------------------------------------------------------------
+
+    async def send_model_picker(
+        self, chat_id: str, providers: list, current_model: str,
+        current_provider: str, session_key: str, on_model_selected,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> "SendResult":
+        """Send an interactive model picker using numbered reactions.
+
+        Shows a numbered list of providers.  The user reacts with the
+        corresponding number emoji to select.  Then the message is edited
+        to show models for that provider with a second set of numbers.
+        """
+        _NUM_EMOJI = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣"]
+        display_providers = providers[:9]
+        lines = [
+            f"🔄 **Model Picker** (current: `{current_model}` on `{current_provider}`)",
+            "", "Select a provider:",
+        ]
+        for i, p in enumerate(display_providers):
+            name = p.get("name", p.get("slug", "unknown"))
+            lines.append(f"{_NUM_EMOJI[i]} {name}")
+        lines.extend(["", "❌ Cancel"])
+
+        result = await self.send(chat_id, "\n".join(lines), metadata=metadata)
+        if not result.success:
+            return result
+
+        msg_id = result.message_id
+        for i in range(len(display_providers)):
+            try:
+                await self._send_reaction(chat_id, msg_id, _NUM_EMOJI[i])
+            except Exception:
+                pass
+        try:
+            await self._send_reaction(chat_id, msg_id, "❌")
+        except Exception:
+            pass
+
+        self._model_picker_state[msg_id] = {
+            "stage": "provider", "providers": display_providers,
+            "session_key": session_key, "chat_id": chat_id,
+            "on_model_selected": on_model_selected,
+            "current_model": current_model, "current_provider": current_provider,
+            "metadata": metadata,
+        }
+        return result
+
+    async def _handle_model_picker_reaction(
+        self, event_id: str, emoji: str, room_id: str, sender: str,
+    ) -> None:
+        """Process a reaction on a model picker message."""
+        _NUM_EMOJI = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣"]
+        state = self._model_picker_state.get(event_id)
+        if not state:
+            return
+
+        if emoji == "❌":
+            self._model_picker_state.pop(event_id, None)
+            try:
+                await self.edit_message(state["chat_id"], event_id, "🔄 Model selection cancelled.")
+            except Exception:
+                pass
+            return
+
+        idx = _NUM_EMOJI.index(emoji) if emoji in _NUM_EMOJI else -1
+        if idx < 0:
+            return
+
+        if state["stage"] == "provider":
+            providers = state["providers"]
+            if idx >= len(providers):
+                return
+            selected = providers[idx]
+            models = selected.get("models", [])
+            if not models:
+                self._model_picker_state.pop(event_id, None)
+                try:
+                    await self.edit_message(
+                        state["chat_id"], event_id,
+                        f"❌ No models available for {selected.get('name', '?')}.",
+                    )
+                except Exception:
+                    pass
+                return
+
+            display_models = models[:9]
+            state["stage"] = "model"
+            state["selected_provider"] = selected
+            state["display_models"] = display_models
+
+            lines = [f"🔄 **Select model** from {selected.get('name', '?')}:", ""]
+            for i, m in enumerate(display_models):
+                mid = m.get("id", m) if isinstance(m, dict) else str(m)
+                lines.append(f"{_NUM_EMOJI[i]} `{mid}`")
+            lines.extend(["", "❌ Cancel"])
+            try:
+                await self.edit_message(state["chat_id"], event_id, "\n".join(lines))
+            except Exception:
+                pass
+
+        elif state["stage"] == "model":
+            display_models = state.get("display_models", [])
+            if idx >= len(display_models):
+                return
+            sel = display_models[idx]
+            model_id = sel.get("id", sel) if isinstance(sel, dict) else str(sel)
+            provider_slug = state["selected_provider"].get(
+                "slug", state["selected_provider"].get("name", ""),
+            )
+            self._model_picker_state.pop(event_id, None)
+            callback = state.get("on_model_selected")
+            if callback:
+                try:
+                    msg = await callback(state["chat_id"], model_id, provider_slug)
+                    await self.edit_message(
+                        state["chat_id"], event_id,
+                        msg or f"✅ Switched to `{model_id}`",
+                    )
+                except Exception as exc:
+                    logger.error("Matrix: model picker callback failed: %s", exc)
+                    try:
+                        await self.edit_message(
+                            state["chat_id"], event_id,
+                            f"❌ Failed to switch model: {exc}",
+                        )
+                    except Exception:
+                        pass
 
     # ------------------------------------------------------------------
     # Helpers

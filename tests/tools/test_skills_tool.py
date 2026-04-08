@@ -1046,3 +1046,105 @@ Do the legacy thing.
         assert result["setup_needed"] is False
         assert result["missing_required_environment_variables"] == []
         assert result["readiness_status"] == "available"
+
+
+class TestSkillViewLocalPrecedence:
+    """Regression tests for skill_view resolution order.
+
+    The local skills dir must always win over external dirs by name,
+    including when the local skill is nested under a category dir and
+    the external skill sits at the top level of its dir. Previously
+    skill_view ran the direct-path strategy across all dirs before the
+    recursive strategy, which meant a top-level external skill could
+    beat a nested local skill of the same name.
+    """
+
+    def _patch_dirs(self, local_dir, external_dirs):
+        """Patch SKILLS_DIR (module-level) and get_external_skills_dirs at source."""
+        return (
+            patch("tools.skills_tool.SKILLS_DIR", local_dir),
+            patch(
+                "agent.skill_utils.get_external_skills_dirs",
+                return_value=list(external_dirs),
+            ),
+        )
+
+    def test_nested_local_skill_beats_top_level_external(self, tmp_path):
+        local_dir = tmp_path / "local"
+        external_dir = tmp_path / "external"
+        local_dir.mkdir()
+        external_dir.mkdir()
+
+        # Local: nested under a category
+        _make_skill(
+            local_dir,
+            "explore-codebase",
+            category="foundations/runtime",
+            body="LOCAL VERSION",
+        )
+        # External: top-level, same name
+        _make_skill(external_dir, "explore-codebase", body="EXTERNAL VERSION")
+
+        p1, p2 = self._patch_dirs(local_dir, [external_dir])
+        with p1, p2:
+            raw = skill_view("explore-codebase")
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert "LOCAL VERSION" in result["content"]
+        assert "EXTERNAL VERSION" not in result["content"]
+
+    def test_top_level_local_still_beats_external(self, tmp_path):
+        local_dir = tmp_path / "local"
+        external_dir = tmp_path / "external"
+        local_dir.mkdir()
+        external_dir.mkdir()
+
+        _make_skill(local_dir, "shared-name", body="LOCAL VERSION")
+        _make_skill(external_dir, "shared-name", body="EXTERNAL VERSION")
+
+        p1, p2 = self._patch_dirs(local_dir, [external_dir])
+        with p1, p2:
+            raw = skill_view("shared-name")
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert "LOCAL VERSION" in result["content"]
+
+    def test_external_skill_still_resolvable_when_no_local_collision(
+        self, tmp_path
+    ):
+        local_dir = tmp_path / "local"
+        external_dir = tmp_path / "external"
+        local_dir.mkdir()
+        external_dir.mkdir()
+
+        _make_skill(external_dir, "external-only", body="EXTERNAL BODY")
+
+        p1, p2 = self._patch_dirs(local_dir, [external_dir])
+        with p1, p2:
+            raw = skill_view("external-only")
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert "EXTERNAL BODY" in result["content"]
+
+    def test_first_external_dir_wins_between_externals(self, tmp_path):
+        local_dir = tmp_path / "local"
+        ext_a = tmp_path / "ext_a"
+        ext_b = tmp_path / "ext_b"
+        local_dir.mkdir()
+        ext_a.mkdir()
+        ext_b.mkdir()
+
+        _make_skill(ext_a, "pr", body="EXT_A VERSION")
+        _make_skill(ext_b, "pr", body="EXT_B VERSION")
+
+        p1, p2 = self._patch_dirs(local_dir, [ext_a, ext_b])
+        with p1, p2:
+            raw = skill_view("pr")
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert "EXT_A VERSION" in result["content"]
+        assert "EXT_B VERSION" not in result["content"]

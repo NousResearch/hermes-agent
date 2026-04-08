@@ -819,7 +819,13 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
         skill_dir = None
         skill_md = None
 
-        # Search all dirs: local first, then external (first match wins)
+        # Search all dirs in order (local first, then external). Within each
+        # dir, try direct path → recursive by parent-dir name → legacy flat
+        # .md, so a nested local skill always wins over a top-level external
+        # skill of the same name. Previously the three strategies were run
+        # phase-by-phase across all dirs, which meant a top-level skill in an
+        # external dir could beat a nested local skill and break the
+        # local-first precedence promised by _find_all_skills.
         for search_dir in all_dirs:
             # Try direct path first (e.g., "mlops/axolotl")
             direct_path = search_dir / name
@@ -827,30 +833,26 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
                 skill_dir = direct_path
                 skill_md = direct_path / "SKILL.md"
                 break
-            elif direct_path.with_suffix(".md").exists():
+            if direct_path.with_suffix(".md").exists():
                 skill_md = direct_path.with_suffix(".md")
                 break
 
-        # Search by directory name across all dirs
-        if not skill_md:
-            for search_dir in all_dirs:
-                for found_skill_md in search_dir.rglob("SKILL.md"):
-                    if found_skill_md.parent.name == name:
-                        skill_dir = found_skill_md.parent
-                        skill_md = found_skill_md
-                        break
-                if skill_md:
+            # Recursive search by directory name within this dir
+            for found_skill_md in search_dir.rglob("SKILL.md"):
+                if found_skill_md.parent.name == name:
+                    skill_dir = found_skill_md.parent
+                    skill_md = found_skill_md
                     break
+            if skill_md:
+                break
 
-        # Legacy: flat .md files
-        if not skill_md:
-            for search_dir in all_dirs:
-                for found_md in search_dir.rglob(f"{name}.md"):
-                    if found_md.name != "SKILL.md":
-                        skill_md = found_md
-                        break
-                if skill_md:
+            # Legacy: flat .md files within this dir
+            for found_md in search_dir.rglob(f"{name}.md"):
+                if found_md.name != "SKILL.md":
+                    skill_md = found_md
                     break
+            if skill_md:
+                break
 
         if not skill_md or not skill_md.exists():
             available = [s["name"] for s in _find_all_skills()[:20]]

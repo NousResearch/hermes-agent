@@ -70,6 +70,7 @@ DEFAULT_CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex"
 DEFAULT_GITHUB_MODELS_BASE_URL = "https://api.githubcopilot.com"
 DEFAULT_COPILOT_ACP_BASE_URL = "acp://copilot"
 DEFAULT_GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai"
+DEFAULT_CEREBRAS_BASE_URL = "https://api.cerebras.ai/v1"
 CODEX_OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 CODEX_OAUTH_TOKEN_URL = "https://auth.openai.com/oauth/token"
 CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120
@@ -232,6 +233,14 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         inference_base_url="https://router.huggingface.co/v1",
         api_key_env_vars=("HF_TOKEN",),
         base_url_env_var="HF_BASE_URL",
+    ),
+    "cerebras": ProviderConfig(
+        id="cerebras",
+        name="Cerebras",
+        auth_type="api_key",
+        inference_base_url=DEFAULT_CEREBRAS_BASE_URL,
+        api_key_env_vars=("CEREBRAS_API_KEY",),
+        base_url_env_var="CEREBRAS_BASE_URL",
     ),
 }
 
@@ -820,6 +829,7 @@ def resolve_provider(
         "hf": "huggingface", "hugging-face": "huggingface", "huggingface-hub": "huggingface",
         "go": "opencode-go", "opencode-go-sub": "opencode-go",
         "kilo": "kilocode", "kilo-code": "kilocode", "kilo-gateway": "kilocode",
+        "cerebras-cloud": "cerebras", "cs": "cerebras",
         # Local server aliases — route through the generic custom provider
         "lmstudio": "custom", "lm-studio": "custom", "lm_studio": "custom",
         "ollama": "custom", "vllm": "custom", "llamacpp": "custom",

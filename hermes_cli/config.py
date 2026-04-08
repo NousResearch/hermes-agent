@@ -771,6 +771,22 @@ OPTIONAL_ENV_VARS = {
         "category": "provider",
         "advanced": True,
     },
+    "CEREBRAS_API_KEY": {
+        "description": "Cerebras Cloud API key (ultra-fast wafer-scale inference)",
+        "prompt": "Cerebras API key",
+        "url": "https://cloud.cerebras.ai/",
+        "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
+    "CEREBRAS_BASE_URL": {
+        "description": "Cerebras API base URL override (default: https://api.cerebras.ai/v1)",
+        "prompt": "Cerebras base URL (leave empty for default)",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
 
     # ── Tool API keys ──
     "EXA_API_KEY": {

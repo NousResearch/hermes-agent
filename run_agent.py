@@ -85,6 +85,7 @@ from agent.model_metadata import (
     estimate_tokens_rough, estimate_messages_tokens_rough, estimate_request_tokens_rough,
     get_next_probe_tier, parse_context_limit_from_error,
     save_context_length, is_local_endpoint,
+    query_ollama_num_ctx,
 )
 from agent.context_compressor import ContextCompressor
 from agent.subdirectory_hints import SubdirectoryHintTracker
@@ -1216,6 +1217,33 @@ class AIAgent:
         self.session_cost_status = "unknown"
         self.session_cost_source = "none"
         
+        # ── Ollama num_ctx injection ──
+        # Ollama defaults to 2048 context regardless of the model's capabilities.
+        # When running against an Ollama server, detect the model's max context
+        # and pass num_ctx on every chat request so the full window is used.
+        # User override: set model.ollama_num_ctx in config.yaml to cap VRAM use.
+        self._ollama_num_ctx: int | None = None
+        _ollama_num_ctx_override = None
+        if isinstance(_model_cfg, dict):
+            _ollama_num_ctx_override = _model_cfg.get("ollama_num_ctx")
+        if _ollama_num_ctx_override is not None:
+            try:
+                self._ollama_num_ctx = int(_ollama_num_ctx_override)
+            except (TypeError, ValueError):
+                logger.debug("Invalid ollama_num_ctx config value: %r", _ollama_num_ctx_override)
+        if self._ollama_num_ctx is None and self.base_url and is_local_endpoint(self.base_url):
+            try:
+                _detected = query_ollama_num_ctx(self.model, self.base_url)
+                if _detected and _detected > 0:
+                    self._ollama_num_ctx = _detected
+            except Exception as exc:
+                logger.debug("Ollama num_ctx detection failed: %s", exc)
+        if self._ollama_num_ctx and not self.quiet_mode:
+            logger.info(
+                "Ollama num_ctx: will request %d tokens (model max from /api/show)",
+                self._ollama_num_ctx,
+            )
+
         if not self.quiet_mode:
             if compression_enabled:
                 print(f"📊 Context limit: {self.context_compressor.context_length:,} tokens (compress at {int(compression_threshold*100)}% = {self.context_compressor.threshold_tokens:,})")
@@ -5455,6 +5483,15 @@ class AIAgent:
         # Nous Portal product attribution
         if _is_nous:
             extra_body["tags"] = ["product=hermes-agent"]
+
+        # Ollama num_ctx: override the 2048 default so the model actually
+        # uses the context window it was trained for.  Passed via the OpenAI
+        # SDK's extra_body → options.num_ctx, which Ollama's OpenAI-compat
+        # endpoint forwards to the runner as --ctx-size.
+        if self._ollama_num_ctx:
+            options = extra_body.get("options", {})
+            options["num_ctx"] = self._ollama_num_ctx
+            extra_body["options"] = options
 
         if extra_body:
             api_kwargs["extra_body"] = extra_body

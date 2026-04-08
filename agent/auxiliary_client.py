@@ -59,6 +59,41 @@ from hermes_constants import OPENROUTER_BASE_URL
 
 logger = logging.getLogger(__name__)
 
+_PROVIDER_ALIASES = {
+    "google": "gemini",
+    "google-gemini": "gemini",
+    "google-ai-studio": "gemini",
+    "glm": "zai",
+    "z-ai": "zai",
+    "z.ai": "zai",
+    "zhipu": "zai",
+    "kimi": "kimi-coding",
+    "moonshot": "kimi-coding",
+    "minimax-china": "minimax-cn",
+    "minimax_cn": "minimax-cn",
+    "claude": "anthropic",
+    "claude-code": "anthropic",
+}
+
+
+def _normalize_aux_provider(provider: Optional[str], *, for_vision: bool = False) -> str:
+    normalized = (provider or "auto").strip().lower()
+    if normalized.startswith("custom:"):
+        suffix = normalized.split(":", 1)[1].strip()
+        if not suffix:
+            return "custom"
+        normalized = suffix if not for_vision else "custom"
+    if normalized == "codex":
+        return "openai-codex"
+    if normalized == "main":
+        # Resolve to the user's actual main provider so named custom providers
+        # and non-aggregator providers (DeepSeek, Alibaba, etc.) work correctly.
+        main_prov = _read_main_provider()
+        if main_prov and main_prov not in ("auto", "main", ""):
+            return main_prov
+        return "custom"
+    return _PROVIDER_ALIASES.get(normalized, normalized)
+
 # Default auxiliary models for direct API-key providers (cheap/fast for side tasks)
 _API_KEY_PROVIDER_AUX_MODELS: Dict[str, str] = {
     "gemini": "gemini-3-flash-preview",
@@ -104,6 +139,23 @@ _AUTH_JSON_PATH = get_hermes_home() / "auth.json"
 # vision via Responses.
 _CODEX_AUX_MODEL = "gpt-5.2-codex"
 _CODEX_AUX_BASE_URL = "https://chatgpt.com/backend-api/codex"
+
+
+def _to_openai_base_url(base_url: str) -> str:
+    """Normalize an Anthropic-style base URL to OpenAI-compatible format.
+
+    Some providers (MiniMax, MiniMax-CN) expose an ``/anthropic`` endpoint for
+    the Anthropic Messages API and a separate ``/v1`` endpoint for OpenAI chat
+    completions.  The auxiliary client uses the OpenAI SDK, so it must hit the
+    ``/v1`` surface.  Passing the raw ``inference_base_url`` causes requests to
+    land on ``/anthropic/chat/completions`` — a 404.
+    """
+    url = str(base_url or "").strip().rstrip("/")
+    if url.endswith("/anthropic"):
+        rewritten = url[: -len("/anthropic")] + "/v1"
+        logger.debug("Auxiliary client: rewrote base URL %s → %s", url, rewritten)
+        return rewritten
+    return url
 
 
 def _select_pool_entry(provider: str) -> Tuple[bool, Optional[Any]]:
@@ -635,7 +687,9 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
             if not api_key:
                 continue
 
-            base_url = _pool_runtime_base_url(entry, pconfig.inference_base_url) or pconfig.inference_base_url
+            base_url = _to_openai_base_url(
+                _pool_runtime_base_url(entry, pconfig.inference_base_url) or pconfig.inference_base_url
+            )
             model = _API_KEY_PROVIDER_AUX_MODELS.get(provider_id, "default")
             logger.debug("Auxiliary text client: %s (%s) via pool", pconfig.name, model)
             extra = {}
@@ -652,7 +706,9 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
         if not api_key:
             continue
 
-        base_url = str(creds.get("base_url", "")).strip().rstrip("/") or pconfig.inference_base_url
+        base_url = _to_openai_base_url(
+            str(creds.get("base_url", "")).strip().rstrip("/") or pconfig.inference_base_url
+        )
         model = _API_KEY_PROVIDER_AUX_MODELS.get(provider_id, "default")
         logger.debug("Auxiliary text client: %s (%s)", pconfig.name, model)
         extra = {}
@@ -778,7 +834,7 @@ def _read_main_provider() -> str:
         if isinstance(model_cfg, dict):
             provider = model_cfg.get("provider", "")
             if isinstance(provider, str) and provider.strip():
-                return provider.strip().lower()
+                return _normalize_aux_provider(provider)
     except Exception:
         pass
     return ""
@@ -1140,17 +1196,7 @@ def resolve_provider_client(
         (client, resolved_model) or (None, None) if auth is unavailable.
     """
     # Normalise aliases
-    provider = (provider or "auto").strip().lower()
-    if provider == "codex":
-        provider = "openai-codex"
-    if provider == "main":
-        # Resolve to the user's actual main provider so named custom providers
-        # and non-aggregator providers (DeepSeek, Alibaba, etc.) work correctly.
-        main_prov = _read_main_provider()
-        if main_prov and main_prov not in ("auto", "main", ""):
-            provider = main_prov
-        else:
-            provider = "custom"
+    provider = _normalize_aux_provider(provider)
 
     # ── Auto: try all providers in priority order ────────────────────
     if provider == "auto":
@@ -1300,7 +1346,9 @@ def resolve_provider_client(
                          provider, ", ".join(tried_sources))
             return None, None
 
-        base_url = str(creds.get("base_url", "")).strip().rstrip("/") or pconfig.inference_base_url
+        base_url = _to_openai_base_url(
+            str(creds.get("base_url", "")).strip().rstrip("/") or pconfig.inference_base_url
+        )
 
         default_model = _API_KEY_PROVIDER_AUX_MODELS.get(provider, "")
         final_model = model or default_model
@@ -1384,17 +1432,7 @@ _VISION_AUTO_PROVIDER_ORDER = (
 
 
 def _normalize_vision_provider(provider: Optional[str]) -> str:
-    provider = (provider or "auto").strip().lower()
-    if provider == "codex":
-        return "openai-codex"
-    if provider == "main":
-        # Resolve to actual main provider — named custom providers and
-        # non-aggregator providers need to pass through as their real name.
-        main_prov = _read_main_provider()
-        if main_prov and main_prov not in ("auto", "main", ""):
-            return main_prov
-        return "custom"
-    return provider
+    return _normalize_aux_provider(provider, for_vision=True)
 
 
 def _resolve_strict_vision_backend(provider: str) -> Tuple[Optional[Any], Optional[str]]:

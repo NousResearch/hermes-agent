@@ -471,6 +471,23 @@ class TestExplicitProviderRouting:
             client, model = resolve_provider_client("zai")
             assert client is not None
 
+    def test_explicit_google_alias_uses_gemini_credentials(self):
+        """provider='google' should route through the gemini API-key provider."""
+        with (
+            patch("hermes_cli.auth.resolve_api_key_provider_credentials", return_value={
+                "api_key": "gemini-key",
+                "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+            }),
+            patch("agent.auxiliary_client.OpenAI") as mock_openai,
+        ):
+            mock_openai.return_value = MagicMock()
+            client, model = resolve_provider_client("google", model="gemini-3.1-pro-preview")
+
+        assert client is not None
+        assert model == "gemini-3.1-pro-preview"
+        assert mock_openai.call_args.kwargs["api_key"] == "gemini-key"
+        assert mock_openai.call_args.kwargs["base_url"] == "https://generativelanguage.googleapis.com/v1beta/openai"
+
     def test_explicit_unknown_returns_none(self, monkeypatch):
         """Unknown provider should return None."""
         client, model = resolve_provider_client("nonexistent-provider")
@@ -821,6 +838,31 @@ class TestAuxiliaryPoolAwareness:
             client, model = get_vision_auxiliary_client()
         assert model == "google/gemini-3-flash-preview"
         assert client is not None
+
+    def test_vision_config_google_provider_uses_gemini_credentials(self, monkeypatch):
+        config = {
+            "auxiliary": {
+                "vision": {
+                    "provider": "google",
+                    "model": "gemini-3.1-pro-preview",
+                }
+            }
+        }
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: config)
+        with (
+            patch("hermes_cli.auth.resolve_api_key_provider_credentials", return_value={
+                "api_key": "gemini-key",
+                "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+            }),
+            patch("agent.auxiliary_client.OpenAI") as mock_openai,
+        ):
+            resolved_provider, client, model = resolve_vision_provider_client()
+
+        assert resolved_provider == "gemini"
+        assert client is not None
+        assert model == "gemini-3.1-pro-preview"
+        assert mock_openai.call_args.kwargs["api_key"] == "gemini-key"
+        assert mock_openai.call_args.kwargs["base_url"] == "https://generativelanguage.googleapis.com/v1beta/openai"
 
     def test_vision_forced_main_uses_custom_endpoint(self, monkeypatch):
         """When explicitly forced to 'main', vision CAN use custom endpoint."""

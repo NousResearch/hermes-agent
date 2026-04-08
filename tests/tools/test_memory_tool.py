@@ -1,8 +1,10 @@
 """Tests for tools/memory_tool.py — MemoryStore, security scanning, and tool dispatcher."""
 
+import ast
 import json
-import pytest
 from pathlib import Path
+
+import pytest
 
 from tools.memory_tool import (
     MemoryStore,
@@ -210,6 +212,20 @@ class TestMemoryStorePersistence:
         store.load_from_disk()
         assert len(store.memory_entries) == 2
 
+    def test_add_works_without_platform_lock_modules(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("tools.memory_tool.MEMORY_DIR", tmp_path)
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        monkeypatch.setattr("tools.memory_tool.fcntl", None)
+        monkeypatch.setattr("tools.memory_tool.msvcrt", None)
+
+        store = MemoryStore()
+        store.load_from_disk()
+
+        result = store.add("memory", "portable memory entry")
+
+        assert result["success"] is True
+        assert "portable memory entry" in store.memory_entries
+
 
 class TestMemoryStoreSnapshot:
     def test_snapshot_frozen_at_load(self, store):
@@ -258,3 +274,24 @@ class TestMemoryToolDispatcher:
     def test_remove_requires_old_text(self, store):
         result = json.loads(memory_tool(action="remove", store=store))
         assert result["success"] is False
+
+
+class TestMemoryToolWindowsCompatibility:
+    def test_fcntl_import_is_guarded(self):
+        source_path = Path(__file__).resolve().parents[2] / "tools" / "memory_tool.py"
+        tree = ast.parse(source_path.read_text(encoding="utf-8"), filename=str(source_path))
+
+        guarded_fcntl_import = False
+        for node in tree.body:
+            if not isinstance(node, ast.Try):
+                continue
+            for stmt in node.body:
+                if not isinstance(stmt, ast.Import):
+                    continue
+                if any(alias.name == "fcntl" for alias in stmt.names):
+                    guarded_fcntl_import = True
+                    break
+            if guarded_fcntl_import:
+                break
+
+        assert guarded_fcntl_import, "memory_tool.py should guard fcntl imports for Windows compatibility"

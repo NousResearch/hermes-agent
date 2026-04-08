@@ -176,8 +176,8 @@ class ToolRegistry:
             return entry.max_result_size_chars
         if default is not None:
             return default
-        from tools.tool_result_storage import DEFAULT_MAX_RESULT_SIZE_CHARS
-        return DEFAULT_MAX_RESULT_SIZE_CHARS
+        from tools.budget_config import DEFAULT_RESULT_SIZE_CHARS
+        return DEFAULT_RESULT_SIZE_CHARS
 
     def get_all_tool_names(self) -> List[str]:
         """Return sorted list of all registered tool names."""

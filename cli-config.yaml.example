@@ -299,6 +299,29 @@ compression:
   # Options: "auto", "openrouter", "nous", "main"
   # summary_provider: "auto"
 
+# ── Tool Search (progressive tool loading) ────────────────────────────────
+# When tool definitions exceed a threshold fraction of the model's context
+# window, tool_search replaces full schemas with a compact catalog and
+# two meta-tools (tool_search, tool_details) that load schemas on demand.
+# This can save 90%+ of tool token overhead on smaller-context models.
+tool_search:
+  # Mode: "auto" activates when tool tokens exceed threshold, "always" forces
+  # deferred loading, "never" disables the feature entirely.
+  mode: auto
+
+  # When mode=auto, activate deferred loading if tool definition tokens exceed
+  # this fraction of the model's context window (default: 0.10 = 10%)
+  threshold: 0.10
+
+  # Tools that are always loaded with full schemas (bypass search).
+  # Use for tools the model needs on every turn (e.g. read_file, terminal).
+  pinned_tools: []
+
+  # Evict dynamically loaded tools that haven't been called in this many
+  # API turns. Eviction runs when context compression fires. Evicted tools
+  # remain in the catalog and can be re-loaded via tool_search. (default: 10)
+  evict_after_turns: 10
+
 # =============================================================================
 # Auxiliary Models (Advanced — Experimental)
 # =============================================================================

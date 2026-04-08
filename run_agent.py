@@ -6809,6 +6809,9 @@ class AIAgent:
                 except Exception as cb_err:
                     logging.debug(f"Tool complete callback error: {cb_err}")
 
+            # Capture raw result before post-processing for tool_search parsing
+            _raw_result = function_result
+
             function_result = maybe_persist_tool_result(
                 content=function_result,
                 tool_name=function_name,
@@ -6832,7 +6835,7 @@ class AIAgent:
             if self._tool_search_active:
                 if function_name in ("tool_search", "tool_details"):
                     try:
-                        data = json.loads(function_result)
+                        data = json.loads(_raw_result)
                         for schema in data.get("tools", []):
                             tn = schema.get("function", {}).get("name")
                             if tn and tn not in self.valid_tool_names:

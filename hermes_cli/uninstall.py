@@ -11,6 +11,7 @@ import subprocess
 from pathlib import Path
 
 from hermes_constants import get_hermes_home
+from hermes_cli.profiles import _get_profiles_root
 
 from hermes_cli.colors import Colors, color
 
@@ -286,16 +287,26 @@ def run_uninstall(args):
         log_warn(f"Could not fully remove {project_root}: {e}")
         log_info("You may need to manually remove it")
     
-    # 5. Optionally remove ~/.hermes/ data directory
+    # 5. Optionally remove Hermes data directories
     if full_uninstall:
         log_info("Removing configuration and data...")
-        try:
-            if hermes_home.exists():
-                shutil.rmtree(hermes_home)
-                log_success(f"Removed {hermes_home}")
-        except Exception as e:
-            log_warn(f"Could not fully remove {hermes_home}: {e}")
-            log_info("You may need to manually remove it")
+        paths_to_remove = []
+        seen = set()
+        for candidate in (hermes_home, _get_profiles_root()):
+            resolved = candidate.resolve(strict=False)
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            paths_to_remove.append(candidate)
+
+        for path in paths_to_remove:
+            try:
+                if path.exists():
+                    shutil.rmtree(path)
+                    log_success(f"Removed {path}")
+            except Exception as e:
+                log_warn(f"Could not fully remove {path}: {e}")
+                log_info("You may need to manually remove it")
     else:
         log_info(f"Keeping configuration and data in {hermes_home}")
     

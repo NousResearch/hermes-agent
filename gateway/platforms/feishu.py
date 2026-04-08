@@ -2109,6 +2109,10 @@ class FeishuAdapter(BasePlatformAdapter):
         default_ext: str,
         preferred_name: str,
     ) -> tuple[str, str]:
+        from tools.url_safety import is_safe_url
+        if not is_safe_url(file_url):
+            raise ValueError(f"Blocked unsafe URL (SSRF protection): {file_url[:80]}")
+
         import httpx
 
         async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:

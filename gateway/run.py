@@ -2047,6 +2047,9 @@ class GatewayRunner:
         if canonical == "help":
             return await self._handle_help_command(event)
 
+        if canonical == "memstatus":
+            return await self._handle_memstatus_command(event)
+
         if canonical == "commands":
             return await self._handle_commands_command(event)
         
@@ -3331,6 +3334,41 @@ class GatewayRunner:
             return f"{header}\n\n{session_info}"
         return header
     
+    async def _handle_memstatus_command(self, event: MessageEvent) -> str:
+        """Handle /memstatus — run ~/bin/hermes-memory-status and return output."""
+        import asyncio
+        import re
+        from pathlib import Path
+
+        script = Path.home() / "bin" / "hermes-memory-status"
+        if not script.exists():
+            return f"❌ `hermes-memory-status` not found at `{script}`"
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                str(script),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+            )
+            try:
+                stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=30)
+            except asyncio.TimeoutError:
+                proc.kill()
+                return "❌ `hermes-memory-status` timed out after 30s"
+            output = (stdout or b"").decode("utf-8", errors="replace")
+        except Exception as e:
+            return f"❌ Error running hermes-memory-status: {e}"
+
+        # Strip ANSI color codes (Discord doesn't render them)
+        output = re.sub(r"\x1b\[[0-9;]*m", "", output).rstrip()
+        if not output:
+            output = "(no output)"
+
+        # Wrap in code block for Discord; truncate if too long
+        MAX = 1900
+        if len(output) > MAX:
+            output = output[:MAX] + "\n... (truncated)"
+        return f"```\n{output}\n```"
+
     async def _handle_profile_command(self, event: MessageEvent) -> str:
         """Handle /profile — show active profile name and home directory."""
         from hermes_constants import get_hermes_home, display_hermes_home

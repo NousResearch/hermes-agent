@@ -3226,6 +3226,25 @@ class HermesCLI:
         print("  Example: python cli.py --toolsets web,terminal")
         print()
     
+    def _handle_memstatus(self):
+        """Run hermes-memory-status and print its output."""
+        import subprocess
+        script = Path.home() / "bin" / "hermes-memory-status"
+        try:
+            result = subprocess.run(
+                [str(script)], capture_output=True, text=True, timeout=30
+            )
+            if result.stdout:
+                print(result.stdout, end="" if result.stdout.endswith("\n") else "\n")
+            if result.stderr:
+                print(result.stderr, end="" if result.stderr.endswith("\n") else "\n")
+            if result.returncode != 0:
+                print(f"[memstatus exited {result.returncode}]")
+        except FileNotFoundError:
+            print(f"hermes-memory-status not found at {script}")
+        except Exception as e:
+            print(f"Error running hermes-memory-status: {e}")
+
     def _handle_profile_command(self):
         """Display active profile name and home directory."""
         from hermes_constants import get_hermes_home, display_hermes_home
@@ -4446,6 +4465,8 @@ class HermesCLI:
             return False
         elif canonical == "help":
             self.show_help()
+        elif canonical == "memstatus":
+            self._handle_memstatus()
         elif canonical == "profile":
             self._handle_profile_command()
         elif canonical == "tools":

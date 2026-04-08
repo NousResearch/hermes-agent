@@ -1634,6 +1634,10 @@ class DiscordAdapter(BasePlatformAdapter):
         async def slash_help(interaction: discord.Interaction):
             await self._run_simple_slash(interaction, "/help")
 
+        @tree.command(name="memstatus", description="Show Hermes memory health report")
+        async def slash_memstatus(interaction: discord.Interaction):
+            await self._run_simple_slash(interaction, "/memstatus", "Done")
+
         @tree.command(name="insights", description="Show usage insights and analytics")
         @discord.app_commands.describe(days="Number of days to analyze (default: 7)")
         async def slash_insights(interaction: discord.Interaction, days: int = 7):

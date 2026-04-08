@@ -476,7 +476,7 @@ export function App({ gw }: { gw: GatewayClient }) {
       switch (ev.type) {
         case 'gateway.ready':
           if (p?.skin) {
-            setTheme(fromSkin(p.skin.colors ?? {}, p.skin.branding ?? {}))
+            setTheme(fromSkin(p.skin.colors ?? {}, p.skin.branding ?? {}, p.skin.banner_logo ?? '', p.skin.banner_hero ?? ''))
           }
 
           rpc('commands.catalog', {})

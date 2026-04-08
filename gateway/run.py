@@ -6567,48 +6567,6 @@ class GatewayRunner:
                     f"{model_name} via {provider_name}" if provider_name else model_name
                 )
 
-        def _matrix_tool_progress_sync(tool_name: str, preview: str = None, args: dict = None, **kwargs):
-            """Route tool progress into Matrix collapsible tool-activity field."""
-            if not (_matrix_thinking_active and _status_adapter):
-                return
-            event_type = kwargs.get("event_type", "tool.started")
-            if event_type not in ("tool.started",):
-                return
-            try:
-                from agent.display import get_tool_emoji
-                emoji = get_tool_emoji(tool_name, default="⚙️")
-                if preview:
-                    msg = f"{emoji} {tool_name}: \"{preview}\""
-                elif args:
-                    msg = f"{emoji} {tool_name}({list(args.keys())})"
-                else:
-                    msg = f"{emoji} {tool_name}"
-
-                if not _tool_field_started[0]:
-                    _tool_field_started[0] = True
-                    asyncio.run_coroutine_threadsafe(
-                        _status_adapter.start_tool_activity(
-                            _status_chat_id,
-                            _thinking_task_id,
-                            "Tool activity",
-                            model_label=_model_label_holder[0] or "",
-                            initial_content_md=msg,
-                        ),
-                        _loop_for_step,
-                    ).result(timeout=10)
-                else:
-                    asyncio.run_coroutine_threadsafe(
-                        _status_adapter.update_tool_activity(
-                            _thinking_task_id,
-                            tool_name,
-                            msg,
-                            model_label=_model_label_holder[0],
-                        ),
-                        _loop_for_step,
-                    )
-            except Exception as _e:
-                logger.debug("matrix_tool_progress error: %s", _e)
-
         def _status_callback_sync(event_type: str, message: str) -> None:
             if not _status_adapter:
                 return
@@ -6651,19 +6609,15 @@ class GatewayRunner:
             except Exception as _e:
                 logger.debug("status_callback error (%s): %s", event_type, _e)
 
-        # ── Matrix thinking field state ────────────────────────────────
-        _thinking_started = [False]
-        _tool_field_started = [False]
-        _thinking_task_id = session_key or session_id or ""
-        _model_label_holder = [None]
-
         def _matrix_tool_progress_sync(tool_name: str, preview: str = None, args: dict = None, **kw):
             """Tool progress callback that renders into Matrix <details> blocks."""
             if not (_matrix_thinking_active and _status_adapter):
                 return
+            event_type = kw.get("event_type", "tool.started")
+            if event_type not in ("tool.started",):
+                return
             try:
                 from agent.display import get_tool_emoji
-                import json as _json
 
                 emoji = get_tool_emoji(tool_name, default="⚙️")
                 if args:
@@ -7478,57 +7432,6 @@ class GatewayRunner:
                     "history_offset": 0,
                     "failed": True,
                 }
-
-            # ── Finalize Matrix thinking fields ─────────────────────────
-            if _matrix_thinking_active and _status_adapter:
-                _final_model_label = _model_label_holder[0] or ""
-                _is_error = (response or {}).get("failed") or (response or {}).get("error")
-
-                if _thinking_started[0]:
-                    try:
-                        if _is_error:
-                            asyncio.run_coroutine_threadsafe(
-                                _status_adapter.abort_thinking(
-                                    _thinking_task_id,
-                                    str((response or {}).get("error", "Agent error")),
-                                    model_label=_final_model_label,
-                                ),
-                                _loop_for_step,
-                            ).result(timeout=10)
-                        else:
-                            asyncio.run_coroutine_threadsafe(
-                                _status_adapter.finalize_thinking(
-                                    _thinking_task_id,
-                                    "Complete",
-                                    model_label=_final_model_label,
-                                ),
-                                _loop_for_step,
-                            ).result(timeout=10)
-                    except Exception as _e:
-                        logger.debug("thinking finalize error: %s", _e)
-
-                if _tool_field_started[0]:
-                    try:
-                        if _is_error:
-                            asyncio.run_coroutine_threadsafe(
-                                _status_adapter.abort_tool_activity(
-                                    _thinking_task_id,
-                                    str((response or {}).get("error", "Agent error")),
-                                    model_label=_final_model_label,
-                                ),
-                                _loop_for_step,
-                            ).result(timeout=10)
-                        else:
-                            asyncio.run_coroutine_threadsafe(
-                                _status_adapter.finalize_tool_activity(
-                                    _thinking_task_id,
-                                    "Complete",
-                                    model_label=_final_model_label,
-                                ),
-                                _loop_for_step,
-                            ).result(timeout=10)
-                    except Exception as _e:
-                        logger.debug("tool_activity finalize error: %s", _e)
 
             # Track fallback model state: if the agent switched to a
             # fallback model during this run, persist it so /model shows

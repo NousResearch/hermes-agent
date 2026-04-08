@@ -7,14 +7,7 @@ export function useInputHistory() {
   const [historyIdx, setHistoryIdx] = useState<number | null>(null)
   const historyDraftRef = useRef('')
 
-  const pushHistory = (text: string) => {
-    const trimmed = text.trim()
-
-    if (trimmed && historyRef.current.at(-1) !== trimmed) {
-      historyRef.current.push(trimmed)
-      inputHistory.append(trimmed)
-    }
-  }
+  const pushHistory = (text: string) => inputHistory.append(text)
 
   return { historyRef, historyIdx, setHistoryIdx, historyDraftRef, pushHistory }
 }

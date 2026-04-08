@@ -568,15 +568,17 @@ export function App({ gw }: { gw: GatewayClient }) {
           break
         }
 
-        case 'tool.complete':
+        case 'tool.complete': {
+          const mark = p.error ? '✗' : '✓'
           setTools(prev => {
             const done = prev.find(t => t.id === p.tool_id)
             const label = TOOL_VERBS[done?.name ?? p.name] ?? done?.name ?? p.name
-            const ctx = done?.context || ''
-            appendMessage({ role: 'tool', text: `${label}${ctx ? ': ' + ctx : ''} ✓` })
+            const ctx = (p.error as string) || done?.context || ''
+            appendMessage({ role: 'tool', text: `${label}${ctx ? ': ' + ctx : ''} ${mark}` })
 
             return prev.filter(t => t.id !== p.tool_id)
           })
+        }
 
           break
 

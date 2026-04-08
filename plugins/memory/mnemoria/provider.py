@@ -2,11 +2,7 @@
 
 Wraps mnemoria/store.py MnemoriaStore as a pluggable hermes-agent
 memory provider. Uses threading.local() for per-thread store instances.
-
-Benchmarks: 97.2% on cognitive memory suite (vs 87.5% baseline).
 """
-
-from __future__ import annotations
 
 import logging
 import os

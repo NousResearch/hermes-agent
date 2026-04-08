@@ -1,7 +1,6 @@
-"""Mnemoria — Mnemoria cognitive memory system plugin.
+"""Mnemoria — cognitive memory system plugin for hermes-agent.
 
 Wraps the mnemoria package as a pluggable memory provider for hermes-agent.
-Benchmarks: 97.2% on cognitive memory suite (vs 87.5% baseline, 95.9% cognitive-only).
 
 Config env vars:
     HERMES_MEMORY_MNEMORIA_ENABLED  (bool)  Enable this provider

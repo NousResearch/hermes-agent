@@ -3,7 +3,8 @@ version: 0.1.0
 description: |
   Mnemoria cognitive memory system — combines ACT-R activation scoring, Hebbian link formation,
   RL Q-value reranking with structured memory (typed facts, scopes, supersession, gauge pressure).
-  Benchmarks: 97.2% on cognitive memory suite vs 87.5% flat-baseline.
+pip_dependencies:
+  - mnemoria
 provider: mnemoria
 memory_provider: true
 

@@ -463,6 +463,40 @@ platforms:
 You usually don't need to configure this manually. The auto-discovery via DoH handles most restricted-network scenarios. The `TELEGRAM_FALLBACK_IPS` env var is only needed if DoH is also blocked on your network.
 :::
 
+## Proxy Support
+
+If your network requires an HTTP proxy to reach the internet (common in corporate environments), the Telegram adapter automatically reads standard proxy environment variables and routes all connections through the proxy.
+
+### Supported variables
+
+The adapter checks these environment variables in order, using the first one that is set:
+
+1. `HTTPS_PROXY`
+2. `HTTP_PROXY`
+3. `ALL_PROXY`
+4. `https_proxy` / `http_proxy` / `all_proxy` (lowercase variants)
+
+### Configuration
+
+Set the proxy in your environment before starting the gateway:
+
+```bash
+export HTTPS_PROXY=http://proxy.example.com:8080
+hermes gateway
+```
+
+Or add it to `~/.hermes/.env`:
+
+```bash
+HTTPS_PROXY=http://proxy.example.com:8080
+```
+
+The proxy applies to both the primary transport and all fallback IP transports. No additional Hermes configuration is needed — if the environment variable is set, it's used automatically.
+
+:::note
+This covers the custom fallback transport layer that Hermes uses for Telegram connections. The standard `httpx` client used elsewhere already respects proxy env vars natively.
+:::
+
 ## Message Reactions
 
 The bot can add emoji reactions to messages as visual processing feedback:

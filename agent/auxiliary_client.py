@@ -1542,10 +1542,22 @@ def resolve_vision_provider_client(
             ordered.remove(preferred)
             ordered.insert(0, preferred)
 
+        main_provider = _read_main_provider()
+        main_model = _read_main_model()
+        if main_provider and main_provider not in ("auto", "") and main_provider not in ordered:
+            client, final_model = resolve_provider_client(
+                main_provider,
+                model=main_model or resolved_model,
+                async_mode=async_mode,
+            )
+            if client is not None:
+                return main_provider, client, final_model or main_model
+
         for candidate in ordered:
             sync_client, default_model = _resolve_strict_vision_backend(candidate)
             if sync_client is not None:
                 return _finalize(candidate, sync_client, default_model)
+
         logger.debug("Auxiliary vision client: none available")
         return None, None, None
 

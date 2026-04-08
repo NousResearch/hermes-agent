@@ -1,89 +1,168 @@
-"""Tests for acp_adapter.permissions — ACP approval bridging."""
+"""Tests for acp_adapter.permissions."""
 
 import asyncio
+import inspect
 from concurrent.futures import Future
-from unittest.mock import MagicMock, patch
-
-import pytest
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from acp.schema import (
     AllowedOutcome,
     DeniedOutcome,
     RequestPermissionResponse,
 )
+
 from acp_adapter.permissions import make_approval_callback
+from tools.approval import prompt_dangerous_approval
 
 
 def _make_response(outcome):
-    """Helper to build a RequestPermissionResponse with the given outcome."""
     return RequestPermissionResponse(outcome=outcome)
 
 
-def _setup_callback(outcome, timeout=60.0):
-    """
-    Create a callback wired to a mock request_permission coroutine
-    that resolves to the given outcome.
-
-    Returns:
-        (callback, mock_request_permission_fn)
-    """
+def _invoke_callback(
+    outcome,
+    *,
+    allow_permanent=True,
+    timeout=60.0,
+    use_prompt_path=False,
+):
     loop = MagicMock(spec=asyncio.AbstractEventLoop)
-    mock_rp = MagicMock(name="request_permission")
-
-    response = _make_response(outcome)
-
-    # Patch asyncio.run_coroutine_threadsafe so it returns a future
-    # that immediately yields the response.
+    request_permission = AsyncMock(name="request_permission")
     future = MagicMock(spec=Future)
-    future.result.return_value = response
+    future.result.return_value = _make_response(outcome)
 
-    with patch("acp_adapter.permissions.asyncio.run_coroutine_threadsafe", return_value=future):
-        cb = make_approval_callback(mock_rp, loop, session_id="s1", timeout=timeout)
-        result = cb("rm -rf /", "dangerous command")
+    scheduled = {}
 
-    return result
+    def _schedule(coro, passed_loop):
+        scheduled["coro"] = coro
+        scheduled["loop"] = passed_loop
+        return future
+
+    with patch("acp_adapter.permissions.asyncio.run_coroutine_threadsafe", side_effect=_schedule):
+        cb = make_approval_callback(request_permission, loop, session_id="s1", timeout=timeout)
+        if use_prompt_path:
+            result = prompt_dangerous_approval(
+                "rm -rf /",
+                "dangerous command",
+                allow_permanent=allow_permanent,
+                approval_callback=cb,
+            )
+        else:
+            result = cb(
+                "rm -rf /",
+                "dangerous command",
+                allow_permanent=allow_permanent,
+            )
+
+    scheduled["coro"].close()
+    _, kwargs = request_permission.call_args
+    return result, kwargs, scheduled, future, loop
 
 
-class TestApprovalMapping:
-    def test_approval_allow_once_maps_correctly(self):
-        outcome = AllowedOutcome(option_id="allow_once", outcome="selected")
-        result = _setup_callback(outcome)
+class TestApprovalBridge:
+    def test_bridge_schedules_request_on_the_given_loop(self):
+        result, kwargs, scheduled, _, loop = _invoke_callback(
+            AllowedOutcome(option_id="allow_once", outcome="selected"),
+        )
+
+        tool_call = kwargs["tool_call"]
+        option_ids = [option.option_id for option in kwargs["options"]]
+
         assert result == "once"
+        assert scheduled["loop"] is loop
+        assert inspect.iscoroutine(scheduled["coro"])
+        assert kwargs["session_id"] == "s1"
+        assert tool_call.session_update == "tool_call_update"
+        assert tool_call.tool_call_id.startswith("perm-check-")
+        assert tool_call.kind == "execute"
+        assert tool_call.status == "pending"
+        assert tool_call.title == "dangerous command"
+        assert tool_call.raw_input == {
+            "command": "rm -rf /",
+            "description": "dangerous command",
+        }
+        assert option_ids == ["allow_once", "allow_session", "allow_always", "deny"]
 
-    def test_approval_allow_always_maps_correctly(self):
-        outcome = AllowedOutcome(option_id="allow_always", outcome="selected")
-        result = _setup_callback(outcome)
+    def test_tool_call_ids_are_unique(self):
+        _, first_kwargs, _, _, _ = _invoke_callback(
+            AllowedOutcome(option_id="allow_once", outcome="selected"),
+        )
+        _, second_kwargs, _, _, _ = _invoke_callback(
+            AllowedOutcome(option_id="allow_once", outcome="selected"),
+        )
+
+        assert first_kwargs["tool_call"].tool_call_id != second_kwargs["tool_call"].tool_call_id
+
+    def test_prompt_path_keeps_session_option_when_permanent_disabled(self):
+        result, kwargs, _, _, _ = _invoke_callback(
+            AllowedOutcome(option_id="allow_session", outcome="selected"),
+            allow_permanent=False,
+            use_prompt_path=True,
+        )
+
+        option_ids = [option.option_id for option in kwargs["options"]]
+
+        assert result == "session"
+        assert option_ids == ["allow_once", "allow_session", "deny"]
+
+    def test_allow_always_maps_correctly(self):
+        result, _, _, _, _ = _invoke_callback(
+            AllowedOutcome(option_id="allow_always", outcome="selected"),
+            use_prompt_path=True,
+        )
+
         assert result == "always"
 
-    def test_approval_deny_maps_correctly(self):
-        outcome = DeniedOutcome(outcome="cancelled")
-        result = _setup_callback(outcome)
-        assert result == "deny"
+    def test_denied_and_unknown_outcomes_deny(self):
+        denied_result, _, _, _, _ = _invoke_callback(DeniedOutcome(outcome="cancelled"))
+        unknown_result, _, _, _, _ = _invoke_callback(
+            AllowedOutcome(option_id="unexpected", outcome="selected"),
+        )
 
-    def test_approval_timeout_returns_deny(self):
-        """When the future times out, the callback should return 'deny'."""
+        assert denied_result == "deny"
+        assert unknown_result == "deny"
+
+    def test_timeout_returns_deny_and_cancels_future(self):
         loop = MagicMock(spec=asyncio.AbstractEventLoop)
-        mock_rp = MagicMock(name="request_permission")
-
+        request_permission = AsyncMock(name="request_permission")
         future = MagicMock(spec=Future)
         future.result.side_effect = TimeoutError("timed out")
 
-        with patch("acp_adapter.permissions.asyncio.run_coroutine_threadsafe", return_value=future):
-            cb = make_approval_callback(mock_rp, loop, session_id="s1", timeout=0.01)
-            result = cb("rm -rf /", "dangerous")
+        scheduled = {}
+
+        def _schedule(coro, passed_loop):
+            scheduled["coro"] = coro
+            scheduled["loop"] = passed_loop
+            return future
+
+        with patch("acp_adapter.permissions.asyncio.run_coroutine_threadsafe", side_effect=_schedule):
+            cb = make_approval_callback(request_permission, loop, session_id="s1", timeout=0.01)
+            result = cb("rm -rf /", "dangerous command")
+
+        scheduled["coro"].close()
 
         assert result == "deny"
+        assert scheduled["loop"] is loop
+        assert future.cancel.call_count == 1
 
-    def test_approval_none_response_returns_deny(self):
-        """When request_permission resolves to None, the callback should return 'deny'."""
+    def test_none_response_returns_deny(self):
+        """When request_permission resolves to None, the callback returns 'deny'."""
         loop = MagicMock(spec=asyncio.AbstractEventLoop)
-        mock_rp = MagicMock(name="request_permission")
-
+        request_permission = AsyncMock(name="request_permission")
         future = MagicMock(spec=Future)
         future.result.return_value = None
 
-        with patch("acp_adapter.permissions.asyncio.run_coroutine_threadsafe", return_value=future):
-            cb = make_approval_callback(mock_rp, loop, session_id="s1", timeout=1.0)
+        scheduled = {}
+
+        def _schedule(coro, passed_loop):
+            scheduled["coro"] = coro
+            scheduled["loop"] = passed_loop
+            return future
+
+        with patch("acp_adapter.permissions.asyncio.run_coroutine_threadsafe", side_effect=_schedule):
+            cb = make_approval_callback(request_permission, loop, session_id="s1", timeout=1.0)
             result = cb("echo hi", "demo")
+
+        scheduled["coro"].close()
 
         assert result == "deny"

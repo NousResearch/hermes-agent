@@ -249,11 +249,11 @@ File upload routing is automatic based on extension:
 - `.pdf`, `.doc(x)`, `.xls(x)`, `.ppt(x)` → uploaded with their document type
 - Everything else → uploaded as a generic stream file
 
-## Markdown Rendering and Post Fallback
+## Markdown Rendering and Card Fallback
 
-When outbound text contains markdown formatting (headings, bold, lists, code blocks, links, etc.), the adapter automatically sends it as a Feishu **post** message with an embedded `md` tag rather than as plain text. This enables rich rendering in the Feishu client.
+When outbound text contains markdown formatting (headings, bold, lists, code blocks, tables, links, etc.), the adapter automatically sends it as a Feishu **Card 2.0** (`interactive`) message with an embedded `markdown` element rather than as plain text. Card 2.0 provides broader markdown support than the legacy `post` format — including tables and richer layout.
 
-If the Feishu API rejects the post payload (e.g., due to unsupported markdown constructs), the adapter automatically falls back to sending as plain text with markdown stripped. This two-stage fallback ensures messages are always delivered.
+If the Feishu API rejects the card payload (error code 230099 — "Failed to create card content"), the adapter automatically falls back to sending as plain text with markdown stripped. This two-stage fallback ensures messages are always delivered.
 
 Plain text messages (no markdown detected) are sent as the simple `text` message type.
 
@@ -409,7 +409,7 @@ WebSocket and per-group ACL settings are configured via `config.yaml` under `pla
 | Bot doesn't respond in groups | Ensure the bot is @mentioned, check `FEISHU_GROUP_POLICY`, and verify the sender is in `FEISHU_ALLOWED_USERS` if policy is `allowlist` |
 | `Webhook rejected: invalid verification token` | Ensure `FEISHU_VERIFICATION_TOKEN` matches the token in your Feishu app's Event Subscriptions config |
 | `Webhook rejected: invalid signature` | Ensure `FEISHU_ENCRYPT_KEY` matches the encrypt key in your Feishu app config |
-| Post messages show as plain text | The Feishu API rejected the post payload; this is normal fallback behavior. Check logs for details. |
+| Card messages show as plain text | The Feishu API rejected the card payload (error 230099); this is normal fallback behavior. Check logs for details. |
 | Images/files not received by bot | Grant `im:message` and `im:resource` permission scopes to your Feishu app |
 | Bot identity not auto-detected | Grant `admin:app.info:readonly` scope, or set `FEISHU_BOT_OPEN_ID` / `FEISHU_BOT_NAME` manually |
 | `Webhook rate limit exceeded` | More than 120 requests/minute from the same IP. This is usually a misconfiguration or loop. |

@@ -4,12 +4,14 @@ Inspired by claw-code's Rust retry architecture (splitmix64 jitter,
 centralized is_retryable_status, structured failure classification).
 """
 
-import hashlib
-import os
+import logging
 import random
+import re
 import threading
 import time
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 # HTTP status codes that warrant a retry attempt.
 # Transient server errors + rate limits.  Client errors (4xx except 429/408/413)
@@ -27,11 +29,59 @@ TRANSIENT_TRANSPORT_PHRASES = frozenset({
     "peer closed", "broken pipe", "upstream connect error",
 })
 
+_RETRY_AFTER_TEXT_RE = re.compile(
+    r"retry\s+(?:after\s+)?(\d+(?:\.\d+)?)\s*(?:sec|secs|seconds|s\b)",
+    re.IGNORECASE,
+)
+
 # Monotonic counter for jitter seed uniqueness within the same process.
 # Protected by a lock to avoid race conditions in concurrent retry paths
 # (e.g. multiple sessions retrying simultaneously via the gateway).
 _jitter_counter = 0
 _jitter_lock = threading.Lock()
+
+
+def _transient_exception_types() -> tuple[type[BaseException], ...]:
+    """Best-effort import of common transient transport exception classes."""
+    exc_types: list[type[BaseException]] = []
+
+    try:
+        import httpx
+
+        exc_types.extend(
+            [
+                httpx.ConnectError,
+                httpx.ConnectTimeout,
+                httpx.PoolTimeout,
+                httpx.ReadError,
+                httpx.ReadTimeout,
+                httpx.RemoteProtocolError,
+                httpx.WriteError,
+            ]
+        )
+    except Exception:
+        pass
+
+    try:
+        import requests
+
+        exc_types.extend(
+            [
+                requests.exceptions.ConnectionError,
+                requests.exceptions.ConnectTimeout,
+                requests.exceptions.ReadTimeout,
+                requests.exceptions.Timeout,
+                requests.exceptions.ChunkedEncodingError,
+            ]
+        )
+    except Exception:
+        pass
+
+    # Deduplicate while preserving deterministic order.
+    return tuple(dict.fromkeys(exc_types))
+
+
+_TRANSIENT_EXCEPTION_TYPES = _transient_exception_types()
 
 
 def is_retryable_status(status_code: Optional[int]) -> bool:
@@ -51,7 +101,16 @@ def is_transient_transport_error(error: Exception) -> bool:
     These are worth retrying with a fresh connection (rebuild client, clear
     connection pool) rather than backing off on the same dead connection.
     """
-    error_str = str(error).lower()
+    if _TRANSIENT_EXCEPTION_TYPES and isinstance(error, _TRANSIENT_EXCEPTION_TYPES):
+        return True
+
+    # Prefer the first argument as the message payload; str(error) can include
+    # wrapper/context text in some exception implementations.
+    if error.args:
+        error_str = str(error.args[0]).lower()
+    else:
+        error_str = str(error).lower()
+
     return any(phrase in error_str for phrase in TRANSIENT_TRANSPORT_PHRASES)
 
 
@@ -96,7 +155,7 @@ def jittered_backoff(
 
     # Additive jitter: uniform in [0, jitter_ratio * delay]
     # Seed from time + counter for decorrelation even with coarse clocks
-    seed = (time.time_ns() ^ (_jitter_counter * 0x9E3779B9)) & 0xFFFFFFFF
+    seed = (time.time_ns() ^ (tick * 0x9E3779B9)) & 0xFFFFFFFF
     rng = random.Random(seed)
     jitter = rng.uniform(0, jitter_ratio * delay)
 
@@ -116,23 +175,22 @@ def extract_retry_after(error: Exception) -> Optional[float]:
     # Check HTTP response headers
     response = getattr(error, "response", None)
     headers = getattr(response, "headers", None) if response else None
-    if headers:
+    if headers and hasattr(headers, "get"):
         for key in ("retry-after", "Retry-After"):
             val = headers.get(key)
             if val:
                 try:
                     return float(val)
                 except (TypeError, ValueError):
-                    pass
+                    logger.debug("Could not parse %s header value as float: %r", key, val)
         # Some providers use x-ratelimit-reset (epoch timestamp)
         reset = headers.get("x-ratelimit-reset")
         if reset:
             try:
                 remaining = float(reset) - time.time()
-                if remaining > 0:
-                    return remaining
+                return max(0.0, remaining)
             except (TypeError, ValueError):
-                pass
+                logger.debug("Could not parse x-ratelimit-reset header value as float: %r", reset)
 
     # Check error body JSON
     body = getattr(error, "body", None)
@@ -142,16 +200,11 @@ def extract_retry_after(error: Exception) -> Optional[float]:
             try:
                 return float(retry_after)
             except (TypeError, ValueError):
-                pass
+                logger.debug("Could not parse body retry_after as float: %r", retry_after)
 
     # Parse from error message text
-    import re
     msg = str(error)
-    match = re.search(
-        r"retry\s+(?:after\s+)?(\d+(?:\.\d+)?)\s*(?:sec|secs|seconds|s\b)",
-        msg,
-        re.IGNORECASE,
-    )
+    match = _RETRY_AFTER_TEXT_RE.search(msg)
     if match:
         return float(match.group(1))
 

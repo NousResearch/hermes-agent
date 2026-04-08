@@ -60,8 +60,6 @@ export const ROLE: Record<Role, (t: Theme) => { body: string; glyph: string; pre
   user: t => ({ body: t.color.label, glyph: t.brand.prompt, prefix: t.color.label })
 }
 
-export const SPINNER = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
-
 export const TOOL_VERBS: Record<string, string> = {
   browser: '🌐 browsing',
   clarify: '❓ asking',

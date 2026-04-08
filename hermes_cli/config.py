@@ -230,6 +230,10 @@ DEFAULT_CONFIG = {
         # (force on/off for all models), or a list of model-name substrings
         # to match (e.g. ["gpt", "codex", "gemini", "qwen"]).
         "tool_use_enforcement": "auto",
+        # Staged inactivity warning: send a warning to the user at this
+        # threshold before escalating to a full timeout.  The warning fires
+        # once per run and does not interrupt the agent.  0 = disable warning.
+        "gateway_timeout_warning": 900,
     },
     
     "terminal": {

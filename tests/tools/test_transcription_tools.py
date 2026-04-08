@@ -1363,3 +1363,45 @@ class TestTranscribeAudioXAIDispatch:
             transcribe_audio(sample_ogg, model="custom-stt")
 
         assert mock_xai.call_args[0][1] == "custom-stt"
+
+
+# ============================================================================
+# Shell safety — shlex.split on auto-detected templates
+# ============================================================================
+class TestShellSafety:
+    def test_auto_detected_template_is_shlex_safe(self, monkeypatch):
+        """Auto-detected whisper command should be safely splittable."""
+        import shlex
+        monkeypatch.delenv("HERMES_LOCAL_STT_COMMAND", raising=False)
+        monkeypatch.setattr(
+            "tools.transcription_tools._find_whisper_binary",
+            lambda: "/usr/bin/whisper",
+        )
+        from tools.transcription_tools import _get_local_command_template
+        template = _get_local_command_template()
+        assert template is not None
+        cmd = template.format(
+            input_path=shlex.quote("/tmp/test.wav"),
+            output_dir=shlex.quote("/tmp/out"),
+            language=shlex.quote("en"),
+            model=shlex.quote("base"),
+        )
+        parts = shlex.split(cmd)
+        assert parts[0] == "/usr/bin/whisper"
+        assert "/tmp/test.wav" in parts
+
+    def test_env_var_template_uses_shell_path(self, monkeypatch):
+        """When HERMES_LOCAL_STT_COMMAND is set, use_shell should be True."""
+        import os
+        from tools.transcription_tools import LOCAL_STT_COMMAND_ENV
+        monkeypatch.setenv(LOCAL_STT_COMMAND_ENV, "whisper {input_path} | tee log.txt")
+        use_shell = bool(os.getenv(LOCAL_STT_COMMAND_ENV, "").strip())
+        assert use_shell is True
+
+    def test_no_env_var_uses_list_mode(self, monkeypatch):
+        """When no env var is set, use_shell should be False."""
+        import os
+        from tools.transcription_tools import LOCAL_STT_COMMAND_ENV
+        monkeypatch.delenv(LOCAL_STT_COMMAND_ENV, raising=False)
+        use_shell = bool(os.getenv(LOCAL_STT_COMMAND_ENV, "").strip())
+        assert use_shell is False

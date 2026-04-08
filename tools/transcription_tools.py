@@ -505,7 +505,13 @@ def _transcribe_local_command(file_path: str, model_name: str) -> Dict[str, Any]
                 language=shlex.quote(language),
                 model=shlex.quote(normalized_model),
             )
-            subprocess.run(command, shell=True, check=True, capture_output=True, text=True)
+            # User-provided templates (env var) may contain shell syntax; auto-detected commands are safe for list mode.
+            use_shell = bool(os.getenv(LOCAL_STT_COMMAND_ENV, "").strip())
+            if use_shell:
+                subprocess.run(command, shell=True, check=True, capture_output=True, text=True)
+            else:
+                subprocess.run(shlex.split(command), check=True, capture_output=True, text=True)
+            
 
             txt_files = sorted(Path(output_dir).glob("*.txt"))
             if not txt_files:

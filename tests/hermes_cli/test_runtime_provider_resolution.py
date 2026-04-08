@@ -143,6 +143,82 @@ def test_resolve_runtime_provider_codex(monkeypatch):
     assert resolved["requested_provider"] == "openai-codex"
 
 
+def test_resolve_runtime_provider_qwen_oauth(monkeypatch):
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "qwen-oauth")
+    monkeypatch.setattr(
+        rp,
+        "resolve_qwen_runtime_credentials",
+        lambda: {
+            "provider": "qwen-oauth",
+            "base_url": "https://portal.qwen.ai/v1",
+            "api_key": "qwen-token",
+            "source": "qwen-cli",
+            "expires_at_ms": 1775640710946,
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="qwen-oauth")
+
+    assert resolved["provider"] == "qwen-oauth"
+    assert resolved["api_mode"] == "chat_completions"
+    assert resolved["base_url"] == "https://portal.qwen.ai/v1"
+    assert resolved["api_key"] == "qwen-token"
+    assert resolved["requested_provider"] == "qwen-oauth"
+
+
+def test_resolve_runtime_provider_uses_qwen_pool_entry(monkeypatch):
+    class _Entry:
+        access_token = "pool-qwen-token"
+        source = "manual:qwen_cli"
+        base_url = "https://portal.qwen.ai/v1"
+
+    class _Pool:
+        def has_credentials(self):
+            return True
+
+        def select(self):
+            return _Entry()
+
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "qwen-oauth")
+    monkeypatch.setattr(rp, "load_pool", lambda provider: _Pool())
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {"provider": "qwen-oauth", "default": "coder-model"})
+
+    resolved = rp.resolve_runtime_provider(requested="qwen-oauth")
+
+    assert resolved["provider"] == "qwen-oauth"
+    assert resolved["api_mode"] == "chat_completions"
+    assert resolved["base_url"] == "https://portal.qwen.ai/v1"
+    assert resolved["api_key"] == "pool-qwen-token"
+    assert resolved["source"] == "manual:qwen_cli"
+
+
+def test_resolve_provider_alias_qwen(monkeypatch):
+    monkeypatch.setattr(rp.auth_mod, "_load_auth_store", lambda: {})
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    assert rp.resolve_provider("qwen-portal") == "qwen-oauth"
+    assert rp.resolve_provider("qwen-cli") == "qwen-oauth"
+
+
+def test_qwen_oauth_auto_fallthrough_on_auth_failure(monkeypatch):
+    """When requested_provider is 'auto' and Qwen creds fail, fall through."""
+    from hermes_cli.auth import AuthError
+
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "qwen-oauth")
+    monkeypatch.setattr(
+        rp,
+        "resolve_qwen_runtime_credentials",
+        lambda **kw: (_ for _ in ()).throw(AuthError("stale", provider="qwen-oauth", code="qwen_auth_missing")),
+    )
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-or-key")
+
+    # Should NOT raise — falls through to OpenRouter
+    resolved = rp.resolve_runtime_provider(requested="auto")
+    # The fallthrough means it won't be qwen-oauth
+    assert resolved["provider"] != "qwen-oauth"
+
+
 def test_resolve_runtime_provider_ai_gateway(monkeypatch):
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "ai-gateway")
     monkeypatch.setattr(rp, "_get_model_config", lambda: {})

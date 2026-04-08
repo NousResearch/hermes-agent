@@ -14,11 +14,13 @@ from agent.credential_pool import CredentialPool, PooledCredential, get_custom_p
 from hermes_cli.auth import (
     AuthError,
     DEFAULT_CODEX_BASE_URL,
+    DEFAULT_QWEN_BASE_URL,
     PROVIDER_REGISTRY,
     format_auth_error,
     resolve_provider,
     resolve_nous_runtime_credentials,
     resolve_codex_runtime_credentials,
+    resolve_qwen_runtime_credentials,
     resolve_api_key_provider_credentials,
     resolve_external_process_provider_credentials,
     has_usable_secret,
@@ -148,6 +150,9 @@ def _resolve_runtime_from_pool_entry(
     if provider == "openai-codex":
         api_mode = "codex_responses"
         base_url = base_url or DEFAULT_CODEX_BASE_URL
+    elif provider == "qwen-oauth":
+        api_mode = "chat_completions"
+        base_url = base_url or DEFAULT_QWEN_BASE_URL
     elif provider == "anthropic":
         api_mode = "anthropic_messages"
         cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
@@ -689,6 +694,24 @@ def resolve_runtime_provider(
             # Auto-detected Codex but credentials are stale/revoked —
             # fall through to env-var providers (e.g. OpenRouter).
             logger.info("Auto-detected Codex provider but credentials failed; "
+                        "falling through to next provider.")
+
+    if provider == "qwen-oauth":
+        try:
+            creds = resolve_qwen_runtime_credentials()
+            return {
+                "provider": "qwen-oauth",
+                "api_mode": "chat_completions",
+                "base_url": creds.get("base_url", "").rstrip("/"),
+                "api_key": creds.get("api_key", ""),
+                "source": creds.get("source", "qwen-cli"),
+                "expires_at_ms": creds.get("expires_at_ms"),
+                "requested_provider": requested_provider,
+            }
+        except AuthError:
+            if requested_provider != "auto":
+                raise
+            logger.info("Qwen OAuth credentials failed; "
                         "falling through to next provider.")
 
     if provider == "copilot-acp":

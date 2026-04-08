@@ -559,9 +559,18 @@ def _launch_tui():
     tui_dir = PROJECT_ROOT / "ui-tui"
 
     if not (tui_dir / "node_modules").exists():
-        print("TUI dependencies not installed.")
-        print(f"  cd {tui_dir} && npm install")
-        sys.exit(1)
+        npm = shutil.which("npm")
+        if not npm:
+            print("npm not found — install Node.js to use the TUI.")
+            sys.exit(1)
+        print("Installing TUI dependencies…")
+        result = subprocess.run(
+            [npm, "install", "--silent"],
+            cwd=str(tui_dir), capture_output=True, text=True,
+        )
+        if result.returncode != 0:
+            print(f"npm install failed:\n{result.stderr}")
+            sys.exit(1)
 
     tsx = tui_dir / "node_modules" / ".bin" / "tsx"
     if tsx.exists():

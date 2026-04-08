@@ -2231,6 +2231,13 @@ def _update_config_for_provider(
         # Clear stale base_url to prevent contamination when switching providers
         model_cfg.pop("base_url", None)
 
+    # Switching away from custom endpoints must clear any endpoint-specific
+    # credentials and protocol hints that were persisted under model.*.
+    # Built-in providers resolve credentials and API mode at runtime; keeping a
+    # stale custom api_key/api_mode in config.yaml is both confusing and risky.
+    model_cfg.pop("api_key", None)
+    model_cfg.pop("api_mode", None)
+
     # When switching to a non-OpenRouter provider, ensure model.default is
     # valid for the new provider.  An OpenRouter-formatted name like
     # "anthropic/claude-opus-4.6" will fail on direct-API providers.

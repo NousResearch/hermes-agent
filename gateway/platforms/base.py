@@ -407,6 +407,10 @@ class MessageEvent:
     # Auto-loaded skill for topic/channel bindings (e.g., Telegram DM Topics)
     auto_skill: Optional[str] = None
     
+    # Internal flag — set for synthetic events (e.g. background process
+    # completion notifications) that must bypass user authorization checks.
+    internal: bool = False
+
     # Timestamps
     timestamp: datetime = field(default_factory=datetime.now)
     

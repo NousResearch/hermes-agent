@@ -426,13 +426,15 @@ export function App({ gw }: { gw: GatewayClient }) {
         interruptedRef.current = true
         gw.request('session.interrupt', { session_id: sid }).catch(() => {})
 
-        if (buf.current.trim()) {
-          appendMessage({ role: 'assistant' as const, text: buf.current.trimStart() })
+        const partial = (streaming || buf.current).trimStart()
+        if (partial) {
+          appendMessage({ role: 'assistant' as const, text: partial + '\n\n*[interrupted]*' })
+        } else {
+          sys('interrupted')
         }
 
         idle()
         setStatus('interrupted')
-        sys('interrupted by user')
         setTimeout(() => setStatus('ready'), 1500)
       } else if (input || inputBuf.length) {
         clearIn()
@@ -626,18 +628,19 @@ export function App({ gw }: { gw: GatewayClient }) {
 
           break
         case 'message.complete': {
+          const wasInterrupted = interruptedRef.current
           idle()
           setStreaming('')
-          appendMessage({ role: 'assistant' as const, text: (p?.rendered ?? p?.text ?? buf.current).trimStart() })
+
+          if (!wasInterrupted) {
+            appendMessage({ role: 'assistant' as const, text: (p?.rendered ?? p?.text ?? buf.current).trimStart() })
+          }
+
           buf.current = ''
           setStatus('ready')
 
           if (p?.usage) {
             setUsage(p.usage)
-          }
-
-          if (p?.status === 'interrupted') {
-            sys('response interrupted')
           }
 
           if (queueEditRef.current !== null) {
@@ -839,6 +842,153 @@ export function App({ gw }: { gw: GatewayClient }) {
           })
           send(lastUserMsg)
 
+          return true
+
+        case 'background':
+        case 'bg':
+          if (!arg) {
+            sys('/background <prompt>')
+            return true
+          }
+          rpc('prompt.background', { session_id: sid, text: arg }).then((r: any) => sys(`bg ${r.task_id} started`))
+          return true
+
+        case 'btw':
+          if (!arg) {
+            sys('/btw <question>')
+            return true
+          }
+          rpc('prompt.btw', { session_id: sid, text: arg }).then(() => sys('btw running…'))
+          return true
+
+        case 'model':
+          if (!arg) {
+            rpc('config.get', { key: 'provider' }).then((r: any) => sys(`${r.model} (${r.provider})`))
+          } else {
+            rpc('config.set', { key: 'model', value: arg.replace('--global', '').trim() }).then((r: any) => {
+              sys(`model → ${r.value}`)
+              setInfo(prev => (prev ? { ...prev, model: r.value } : prev))
+            })
+          }
+          return true
+
+        case 'yolo':
+          rpc('config.set', { key: 'yolo' }).then((r: any) => sys(`yolo ${r.value === '1' ? 'on' : 'off'}`))
+          return true
+
+        case 'reasoning':
+          rpc('config.set', { key: 'reasoning', value: arg || 'medium' }).then((r: any) => sys(`reasoning: ${r.value}`))
+          return true
+
+        case 'verbose':
+          rpc('config.set', { key: 'verbose', value: arg || 'cycle' }).then((r: any) => sys(`verbose: ${r.value}`))
+          return true
+
+        case 'personality':
+          rpc('config.set', { key: 'personality', value: arg }).then((r: any) =>
+            sys(`personality: ${r.value || 'default'}`)
+          )
+          return true
+
+        case 'compress':
+          rpc('session.compress', { session_id: sid }).then((r: any) =>
+            sys(`compressed${r.usage?.total ? ' · ' + fmtK(r.usage.total) + ' tok' : ''}`)
+          )
+          return true
+
+        case 'stop':
+          rpc('process.stop', {}).then((r: any) => sys(`killed ${r.killed ?? 0} process(es)`))
+          return true
+
+        case 'branch':
+        case 'fork':
+          rpc('session.branch', { session_id: sid, name: arg }).then((r: any) => {
+            if (r?.session_id) {
+              setSid(r.session_id)
+              setMessages([])
+              sys(`branched → ${r.title}`)
+            }
+          })
+          return true
+
+        case 'reload-mcp':
+        case 'reload_mcp':
+          rpc('reload.mcp', { session_id: sid }).then(() => sys('MCP reloaded'))
+          return true
+
+        case 'title':
+          rpc('session.title', { session_id: sid, ...(arg ? { title: arg } : {}) }).then((r: any) =>
+            sys(`title: ${r.title || '(none)'}`)
+          )
+          return true
+
+        case 'usage':
+          rpc('session.usage', { session_id: sid }).then((r: any) => {
+            if (r) setUsage({ input: r.input ?? 0, output: r.output ?? 0, total: r.total ?? 0, calls: r.calls ?? 0 })
+            sys(`${fmtK(r?.input ?? 0)} in · ${fmtK(r?.output ?? 0)} out · ${fmtK(r?.total ?? 0)} total · ${r?.calls ?? 0} calls`)
+          })
+          return true
+
+        case 'save':
+          rpc('session.save', { session_id: sid }).then((r: any) => sys(`saved: ${r.file}`))
+          return true
+
+        case 'history':
+          rpc('session.history', { session_id: sid }).then((r: any) => sys(`${r.count} messages`))
+          return true
+
+        case 'profile':
+          rpc('config.get', { key: 'profile' }).then((r: any) => sys(r.display || r.home))
+          return true
+
+        case 'provider':
+          rpc('config.get', { key: 'provider' }).then((r: any) => sys(`${r.model} (${r.provider})`))
+          return true
+
+        case 'voice':
+          if (arg === 'on' || arg === 'off') {
+            rpc('voice.toggle', { action: arg }).then((r: any) => sys(`voice ${r.enabled ? 'on' : 'off'}`))
+          } else {
+            rpc('voice.toggle', { action: 'status' }).then((r: any) => sys(`voice: ${r.enabled ? 'on' : 'off'}`))
+          }
+          return true
+
+        case 'insights':
+          rpc('insights.get', { days: parseInt(arg) || 30 }).then((r: any) =>
+            sys(`${r.days}d: ${r.sessions} sessions, ${r.messages} messages`)
+          )
+          return true
+
+        case 'rollback': {
+          const [sub, ...rArgs] = (arg || 'list').split(/\s+/)
+          if (!sub || sub === 'list') {
+            rpc('rollback.list', { session_id: sid }).then((r: any) => {
+              if (!r.checkpoints?.length) return sys('no checkpoints')
+              sys(r.checkpoints.map((c: any, i: number) => `  ${i} ${c.hash?.slice(0, 8)} ${c.message}`).join('\n'))
+            })
+          } else {
+            const hash = sub === 'restore' || sub === 'diff' ? rArgs[0] : sub
+            rpc(sub === 'diff' ? 'rollback.diff' : 'rollback.restore', { session_id: sid, hash }).then((r: any) =>
+              sys(r.rendered || r.diff || r.message || 'done')
+            )
+          }
+          return true
+        }
+
+        case 'browser': {
+          const action = arg || 'status'
+          const [act, ...bArgs] = action.split(/\s+/)
+          rpc('browser.manage', { action: act, ...(bArgs[0] ? { url: bArgs[0] } : {}) }).then((r: any) =>
+            sys(r.connected ? `browser: ${r.url}` : 'browser: disconnected')
+          )
+          return true
+        }
+
+        case 'plugins':
+          rpc('plugins.list', {}).then((r: any) => {
+            if (!r.plugins?.length) return sys('no plugins')
+            sys(r.plugins.map((p: any) => `  ${p.name} v${p.version}${p.enabled ? '' : ' (disabled)'}`).join('\n'))
+          })
           return true
 
         default:

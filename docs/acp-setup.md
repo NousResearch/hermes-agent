@@ -53,7 +53,8 @@ Open your VS Code settings (`Ctrl+,` → click the `{}` icon for JSON) and add:
 ```
 
 Replace `/path/to/hermes-agent` with the actual path to your Hermes Agent
-installation (e.g. `~/.hermes/hermes-agent`).
+source checkout (the default install location is `~/.hermes/hermes-agent`,
+but it may differ if you set `HERMES_INSTALL_DIR` or installed elsewhere).
 
 Alternatively, if `hermes` is on your PATH, the ACP Client can discover it
 automatically via the registry directory.

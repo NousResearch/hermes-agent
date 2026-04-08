@@ -963,7 +963,7 @@ quick_commands:
     command: df -h /
   update:
     type: exec
-    command: cd ~/.hermes/hermes-agent && git pull && pip install -e .
+    command: cd "$HERMES_INSTALL_DIR" && git pull && pip install -e .  # defaults to ~/.hermes/hermes-agent
   gpu:
     type: exec
     command: nvidia-smi --query-gpu=name,utilization.gpu,memory.used,memory.total --format=csv,noheader

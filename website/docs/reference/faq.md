@@ -432,7 +432,7 @@ hermes chat --continue
 **Solution:**
 ```bash
 # Ensure MCP dependencies are installed (already included in standard install)
-cd ~/.hermes/hermes-agent && uv pip install -e ".[mcp]"
+cd /path/to/hermes-agent && uv pip install -e ".[mcp]"   # your Hermes repo checkout (default: ~/.hermes/hermes-agent)
 
 # For npm-based servers, ensure Node.js is available
 node --version
@@ -659,7 +659,7 @@ Skills with very long descriptions are truncated to 40 characters in the Telegra
 
 3. On the new machine, run `hermes setup` to verify API keys and provider config are working. Re-authenticate any messaging platforms (especially WhatsApp, which uses QR pairing).
 
-The `~/.hermes/` directory contains everything: `config.yaml`, `.env`, `SOUL.md`, `memories/`, `skills/`, `state.db` (sessions), `cron/`, and any custom plugins. The code itself lives in `~/.hermes/hermes-agent/` and is installed fresh.
+The `~/.hermes/` directory contains everything: `config.yaml`, `.env`, `SOUL.md`, `memories/`, `skills/`, `state.db` (sessions), `cron/`, and any custom plugins. The code itself lives in your configured install directory (by default `~/.hermes/hermes-agent/`, or whatever `HERMES_INSTALL_DIR` is set to) and is installed fresh.
 
 ### Permission denied when reloading shell after install
 

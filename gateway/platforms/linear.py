@@ -270,12 +270,17 @@ class LinearAdapter(BasePlatformAdapter):
             self._runner = None
 
     async def send(
-        self, chat_id: str, text: str, **kwargs
+        self,
+        chat_id: str,
+        content: str,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send a message as a Linear comment on an issue.
 
         chat_id is the issue identifier (e.g., 'AI-123').
         """
+        text = content
         if not text or not text.strip():
             return SendResult(success=True)
 
@@ -290,7 +295,7 @@ class LinearAdapter(BasePlatformAdapter):
             logger.error("[linear] Failed to post comment to %s: %s", chat_id, exc)
             return SendResult(success=False, error=str(exc))
 
-    async def send_typing(self, chat_id: str) -> None:
+    async def send_typing(self, chat_id: str, metadata=None) -> None:
         """No typing indicator in Linear."""
         pass
 

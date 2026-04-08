@@ -1202,6 +1202,7 @@ from agent.skill_commands import (
     scan_skill_commands,
     build_skill_invocation_message,
     build_plan_path,
+    build_plan_runtime_note,
     build_preloaded_skills_prompt,
 )
 
@@ -4764,10 +4765,7 @@ class HermesCLI:
             "/plan",
             user_instruction,
             task_id=self.session_id,
-            runtime_note=(
-                "Save the markdown plan with write_file to this exact relative path "
-                f"inside the active workspace/backend cwd: {plan_path}"
-            ),
+            runtime_note=build_plan_runtime_note(plan_path),
         )
 
         if not msg:
@@ -6592,7 +6590,14 @@ class HermesCLI:
                 if _msn:
                     agent_message = _msn + "\n\n" + agent_message
                     self._pending_model_switch_note = None
+                plan_write_target = None
                 try:
+                    from agent.skill_commands import extract_plan_write_target
+                    from tools.file_tools import clear_exact_write_target, register_exact_write_target
+
+                    plan_write_target = extract_plan_write_target(agent_message)
+                    if plan_write_target:
+                        register_exact_write_target(self.session_id, plan_write_target)
                     result = self.agent.run_conversation(
                         user_message=agent_message,
                         conversation_history=self.conversation_history[:-1],  # Exclude the message we just added
@@ -6611,6 +6616,9 @@ class HermesCLI:
                         "failed": True,
                         "error": _summary,
                     }
+                finally:
+                    if plan_write_target:
+                        clear_exact_write_target(self.session_id)
 
             # Start agent in background thread
             agent_thread = threading.Thread(target=run_agent)

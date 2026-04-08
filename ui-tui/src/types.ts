@@ -4,6 +4,12 @@ export interface ActiveTool {
   context?: string
 }
 
+export interface ActivityItem {
+  id: number
+  text: string
+  tone: 'error' | 'info' | 'warn'
+}
+
 export interface ApprovalReq {
   command: string
   description: string
@@ -51,6 +57,19 @@ export interface SecretReq {
   envVar: string
   prompt: string
   requestId: string
+}
+
+export type PasteKind = 'code' | 'log' | 'text'
+export type PasteMode = 'attach' | 'excerpt' | 'inline'
+
+export interface PendingPaste {
+  charCount: number
+  createdAt: number
+  id: number
+  kind: PasteKind
+  lineCount: number
+  mode: PasteMode
+  text: string
 }
 
 /** From `commands.catalog` — mirrors hermes_cli.commands COMMANDS + SUBCOMMANDS + skills. */

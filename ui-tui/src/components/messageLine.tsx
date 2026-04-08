@@ -53,9 +53,7 @@ export const MessageLine = memo(function MessageLine({
   })()
 
   return (
-    <Box flexDirection="column">
-      {(msg.role === 'user' || msg.role === 'assistant') && <Text> </Text>}
-
+    <Box flexDirection="column" marginTop={msg.role === 'user' ? 1 : 0}>
       <Box>
         <Box flexShrink={0} width={3}>
           <Text bold={msg.role === 'user'} color={prefix}>

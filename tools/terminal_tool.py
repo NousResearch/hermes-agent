@@ -611,9 +611,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
     docker_env = cc.get("docker_env", {})
 
     if env_type == "local":
-        lc = local_config or {}
-        return _LocalEnvironment(cwd=cwd, timeout=timeout,
-                                 persistent=lc.get("persistent", False))
+        return _LocalEnvironment(cwd=cwd, timeout=timeout)
     
     elif env_type == "docker":
         return _DockerEnvironment(
@@ -705,7 +703,6 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
             key_path=ssh_config.get("key", ""),
             cwd=cwd,
             timeout=timeout,
-            persistent=ssh_config.get("persistent", False),
         )
 
     else:

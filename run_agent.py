@@ -5744,7 +5744,8 @@ class AIAgent:
 
             # Use auxiliary client for the flush call when available --
             # it's cheaper and avoids Codex Responses API incompatibility.
-            from agent.auxiliary_client import call_llm as _call_llm
+            from agent.auxiliary_client import call_llm as _call_llm, _get_task_timeout as _get_aux_timeout
+            flush_timeout = _get_aux_timeout("flush_memories")
             _aux_available = True
             try:
                 response = _call_llm(
@@ -5753,7 +5754,7 @@ class AIAgent:
                     tools=[memory_tool_def],
                     temperature=0.3,
                     max_tokens=5120,
-                    timeout=30.0,
+                    timeout=flush_timeout,
                 )
             except RuntimeError:
                 _aux_available = False
@@ -5785,7 +5786,9 @@ class AIAgent:
                     "temperature": 0.3,
                     **self._max_tokens_param(5120),
                 }
-                response = self._ensure_primary_openai_client(reason="flush_memories").chat.completions.create(**api_kwargs, timeout=30.0)
+                response = self._ensure_primary_openai_client(
+                    reason="flush_memories"
+                ).chat.completions.create(**api_kwargs, timeout=flush_timeout)
 
             # Extract tool calls from the response, handling all API formats
             tool_calls = []

@@ -113,6 +113,22 @@ class TestFlushMemoriesUsesAuxiliaryClient:
         call_kwargs = mock_call.call_args
         assert call_kwargs.kwargs.get("task") == "flush_memories"
 
+    def test_flush_uses_configured_timeout_for_auxiliary(self, monkeypatch):
+        agent = _make_agent(monkeypatch, api_mode="chat_completions", provider="openrouter")
+        mock_response = _chat_response_with_memory_call()
+
+        with patch("agent.auxiliary_client._get_task_timeout", return_value=123.0), \
+             patch("agent.auxiliary_client.call_llm", return_value=mock_response) as mock_call, \
+             patch("tools.memory_tool.memory_tool", return_value="Saved."):
+            messages = [
+                {"role": "user", "content": "Hello"},
+                {"role": "assistant", "content": "Hi there"},
+                {"role": "user", "content": "Remember this"},
+            ]
+            agent.flush_memories(messages)
+
+        assert mock_call.call_args.kwargs["timeout"] == 123.0
+
     def test_flush_uses_main_client_when_no_auxiliary(self, monkeypatch):
         """Non-Codex mode with no auxiliary falls back to self.client."""
         agent = _make_agent(monkeypatch, api_mode="chat_completions", provider="openrouter")
@@ -129,6 +145,25 @@ class TestFlushMemoriesUsesAuxiliaryClient:
                 agent.flush_memories(messages)
 
         agent.client.chat.completions.create.assert_called_once()
+
+    def test_flush_uses_configured_timeout_for_direct_chat_fallback(self, monkeypatch):
+        """Direct chat-completions fallback should use the same configured timeout."""
+        agent = _make_agent(monkeypatch, api_mode="chat_completions", provider="openrouter")
+        agent.client = MagicMock()
+        agent.client.chat.completions.create.return_value = _chat_response_with_memory_call()
+
+        with patch("agent.auxiliary_client._get_task_timeout", return_value=77.0), \
+             patch("agent.auxiliary_client.call_llm", side_effect=RuntimeError("no provider")), \
+             patch.object(agent, "_ensure_primary_openai_client", return_value=agent.client), \
+             patch("tools.memory_tool.memory_tool", return_value="Saved."):
+            messages = [
+                {"role": "user", "content": "Hello"},
+                {"role": "assistant", "content": "Hi there"},
+                {"role": "user", "content": "Save this"},
+            ]
+            agent.flush_memories(messages)
+
+        assert agent.client.chat.completions.create.call_args.kwargs["timeout"] == 77.0
 
     def test_flush_executes_memory_tool_calls(self, monkeypatch):
         """Verify that memory tool calls from the flush response actually get executed."""

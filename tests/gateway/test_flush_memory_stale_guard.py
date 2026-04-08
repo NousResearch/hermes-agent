@@ -152,6 +152,31 @@ class TestMemoryInjection:
 class TestFlushAgentSilenced:
     """The flush agent must not produce any terminal output."""
 
+    def test_flush_agent_enables_builtin_memory(self, tmp_path, monkeypatch):
+        """Gateway flush agent should initialize built-in memory so memory tool writes can persist."""
+        runner = _make_runner()
+        runner.session_store.load_transcript.return_value = _TRANSCRIPT_4_MSGS
+
+        captured_kwargs = {}
+
+        def _fake_ai_agent(*args, **kwargs):
+            captured_kwargs.update(kwargs)
+            agent = MagicMock()
+            return agent
+
+        fake_run_agent = types.ModuleType("run_agent")
+        fake_run_agent.AIAgent = _fake_ai_agent
+        monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+        with (
+            patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "k"}),
+            patch("gateway.run._resolve_gateway_model", return_value="test-model"),
+            patch.dict("sys.modules", {"tools.memory_tool": MagicMock(get_memory_dir=lambda: tmp_path)}),
+        ):
+            runner._flush_memories_for_session("session_memory_enabled")
+
+        assert captured_kwargs["skip_memory"] is False
+
     def test_print_fn_set_to_noop(self, tmp_path, monkeypatch):
         """_print_fn on the flush agent must be a no-op so tool output never leaks."""
         runner = _make_runner()

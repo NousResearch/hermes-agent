@@ -21,6 +21,8 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set
 
 from model_tools import handle_function_call
+from tools.terminal_tool import get_active_env
+from tools.tool_result_storage import maybe_persist_tool_result, enforce_turn_budget
 
 # Thread pool for running sync tool calls that internally use asyncio.run()
 # (e.g., the Modal/Docker/Daytona terminal backends). Running them in a separate
@@ -446,8 +448,17 @@ class HermesAgentLoop:
                         except (json.JSONDecodeError, TypeError):
                             pass
 
-                    # Add tool response to conversation
                     tc_id = tc.get("id", "") if isinstance(tc, dict) else tc.id
+                    try:
+                        tool_result = maybe_persist_tool_result(
+                            content=tool_result,
+                            tool_name=tool_name,
+                            tool_use_id=tc_id,
+                            env=get_active_env(self.task_id),
+                        )
+                    except Exception:
+                        pass  # Persistence is best-effort in eval path
+
                     messages.append(
                         {
                             "role": "tool",
@@ -455,6 +466,13 @@ class HermesAgentLoop:
                             "content": tool_result,
                         }
                     )
+
+                try:
+                    num_tcs = len(assistant_msg.tool_calls)
+                    if num_tcs > 0:
+                        enforce_turn_budget(messages[-num_tcs:], env=get_active_env(self.task_id))
+                except Exception:
+                    pass
 
                 turn_elapsed = _time.monotonic() - turn_start
                 logger.info(

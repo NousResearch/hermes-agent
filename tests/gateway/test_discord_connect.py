@@ -138,3 +138,47 @@ async def test_connect_releases_token_lock_on_timeout(monkeypatch):
     assert ok is False
     assert released == [("discord-bot-token", "test-token")]
     assert adapter._token_lock_identity is None
+
+
+@pytest.mark.asyncio
+async def test_connect_succeeds_even_if_slash_sync_is_slow(monkeypatch):
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+
+    monkeypatch.setattr("gateway.status.acquire_scoped_lock", lambda scope, identity, metadata=None: (True, None))
+    monkeypatch.setattr("gateway.status.release_scoped_lock", lambda scope, identity: None)
+
+    intents = SimpleNamespace(message_content=False, dm_messages=False, guild_messages=False, members=False, voice_states=False)
+    monkeypatch.setattr(discord_platform.Intents, "default", lambda: intents)
+
+    created = {}
+    sync_release = asyncio.Event()
+
+    def fake_bot_factory(*, command_prefix, intents):
+        bot = FakeBot(intents=intents)
+
+        async def slow_sync():
+            await sync_release.wait()
+            return []
+
+        bot.tree.sync = AsyncMock(side_effect=slow_sync)
+        created["bot"] = bot
+        return bot
+
+    monkeypatch.setattr(discord_platform.commands, "Bot", fake_bot_factory)
+    monkeypatch.setattr(adapter, "_resolve_allowed_usernames", AsyncMock())
+
+    real_wait_for = asyncio.wait_for
+
+    async def short_wait_for(awaitable, timeout):
+        return await real_wait_for(awaitable, timeout=0.05)
+
+    monkeypatch.setattr(discord_platform.asyncio, "wait_for", short_wait_for)
+
+    ok = await adapter.connect()
+
+    assert ok is True
+    assert created["bot"].tree.sync.await_count == 1
+
+    sync_release.set()
+    await asyncio.wait_for(adapter._bot_task, timeout=0.2)
+    await adapter.disconnect()

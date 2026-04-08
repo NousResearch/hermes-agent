@@ -240,6 +240,24 @@ _SERVICE_BASE = "hermes-gateway"
 SERVICE_DESCRIPTION = "Hermes Agent Gateway - Messaging Platform Integration"
 
 
+def _current_named_profile() -> str | None:
+    """Return the current profile name when HERMES_HOME is ~/.hermes/profiles/<name>."""
+    import re
+    from pathlib import Path as _Path
+
+    home = get_hermes_home().resolve()
+    default = (_Path.home() / ".hermes").resolve()
+    profiles_root = (default / "profiles").resolve()
+    try:
+        rel = home.relative_to(profiles_root)
+        parts = rel.parts
+        if len(parts) == 1 and re.match(r"^[a-z0-9][a-z0-9_-]{0,63}$", parts[0]):
+            return parts[0]
+    except ValueError:
+        return None
+    return None
+
+
 def _profile_suffix() -> str:
     """Derive a service-name suffix from the current HERMES_HOME.
 
@@ -248,21 +266,14 @@ def _profile_suffix() -> str:
     HERMES_HOME path.
     """
     import hashlib
-    import re
     from pathlib import Path as _Path
     home = get_hermes_home().resolve()
     default = (_Path.home() / ".hermes").resolve()
     if home == default:
         return ""
-    # Detect ~/.hermes/profiles/<name> pattern → use the profile name
-    profiles_root = (default / "profiles").resolve()
-    try:
-        rel = home.relative_to(profiles_root)
-        parts = rel.parts
-        if len(parts) == 1 and re.match(r"^[a-z0-9][a-z0-9_-]{0,63}$", parts[0]):
-            return parts[0]
-    except ValueError:
-        pass
+    profile_name = _current_named_profile()
+    if profile_name:
+        return profile_name
     # Fallback: short hash for arbitrary HERMES_HOME paths
     return hashlib.sha256(str(home).encode()).hexdigest()[:8]
 

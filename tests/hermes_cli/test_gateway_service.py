@@ -154,6 +154,21 @@ class TestGatewayStopCleanup:
         assert kill_calls == [False]
 
 
+class TestLaunchdPlistGeneration:
+    def test_named_profile_launchd_plist_includes_profile_arg(self, monkeypatch):
+        monkeypatch.setattr(
+            gateway_cli,
+            "get_hermes_home",
+            lambda: Path.home() / ".hermes" / "profiles" / "dexter",
+        )
+
+        plist = gateway_cli.generate_launchd_plist()
+
+        assert "<string>--profile</string>" in plist
+        assert "<string>dexter</string>" in plist
+        assert "<string>gateway</string>" in plist
+
+
 class TestLaunchdServiceRecovery:
     def test_launchd_install_repairs_outdated_plist_without_force(self, tmp_path, monkeypatch):
         plist_path = tmp_path / "ai.hermes.gateway.plist"

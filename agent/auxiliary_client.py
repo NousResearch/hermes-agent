@@ -1377,6 +1377,7 @@ _VISION_AUTO_PROVIDER_ORDER = (
     "nous",
     "openai-codex",
     "anthropic",
+    "kimi-coding",
     "custom",
 )
 
@@ -1405,6 +1406,8 @@ def _resolve_strict_vision_backend(provider: str) -> Tuple[Optional[Any], Option
         return _try_codex()
     if provider == "anthropic":
         return _try_anthropic()
+    if provider == "kimi-coding":
+        return resolve_provider_client("kimi-coding", model="kimi-k2.5")
     if provider == "custom":
         return _try_custom_endpoint()
     return None, None

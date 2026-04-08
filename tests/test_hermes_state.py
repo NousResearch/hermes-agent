@@ -76,6 +76,30 @@ class TestSessionLifecycle:
         session = db.get_session("s1")
         assert session["model"] == "anthropic/claude-opus-4.6"
 
+    def test_get_session_token_totals_sums_all_columns(self, db):
+        db.create_session(session_id="s1", source="cli")
+        db.set_token_counts(
+            "s1",
+            input_tokens=10,
+            output_tokens=20,
+            cache_read_tokens=3,
+            cache_write_tokens=4,
+            reasoning_tokens=5,
+        )
+
+        totals = db.get_session_token_totals("s1")
+        assert totals == {
+            "input_tokens": 10,
+            "output_tokens": 20,
+            "cache_read_tokens": 3,
+            "cache_write_tokens": 4,
+            "reasoning_tokens": 5,
+            "total_tokens": 42,
+        }
+
+    def test_get_session_token_totals_returns_none_for_missing_session(self, db):
+        assert db.get_session_token_totals("missing") is None
+
     def test_parent_session(self, db):
         db.create_session(session_id="parent", source="cli")
         db.create_session(session_id="child", source="cli", parent_session_id="parent")

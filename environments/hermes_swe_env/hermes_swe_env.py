@@ -29,6 +29,7 @@ Usage:
         --env.terminal_backend modal
 """
 
+import json
 import logging
 import sys
 import time
@@ -157,6 +158,33 @@ class HermesSweEnv(HermesAgentBaseEnv):
 
         return prompt
 
+    @staticmethod
+    def _write_verifier_file(
+        ctx: ToolContext,
+        path: str,
+        content: str,
+    ) -> Dict[str, Any]:
+        """Persist verifier code without embedding it into a shell command."""
+        write_fn = getattr(ctx, "write_file", None)
+        if callable(write_fn):
+            return write_fn(path, content)
+
+        call_tool = getattr(ctx, "call_tool", None)
+        if callable(call_tool):
+            raw_result = call_tool("write_file", {"path": path, "content": content})
+            if isinstance(raw_result, dict):
+                return raw_result
+            if isinstance(raw_result, str):
+                try:
+                    parsed = json.loads(raw_result)
+                except json.JSONDecodeError:
+                    return {"error": raw_result}
+                if isinstance(parsed, dict):
+                    return parsed
+                return {"error": str(parsed)}
+
+        return {"error": "No safe file-write API available for verifier execution"}
+
     async def compute_reward(
         self, item: Dict[str, Any], result: AgentResult, ctx: ToolContext
     ) -> float:
@@ -174,10 +202,29 @@ class HermesSweEnv(HermesAgentBaseEnv):
         test_code = item.get("test", item.get("test_code", item.get("tests", "")))
 
         if test_code:
-            # Run the test in the model's sandbox
-            test_result = ctx.terminal(
-                f'cd /workspace && python3 -c "{test_code}"', timeout=60
-            )
+            verifier_path = "/workspace/.hermes_reward_test.py"
+            write_result = self._write_verifier_file(ctx, verifier_path, test_code)
+
+            if write_result.get("error"):
+                logger.warning(
+                    "Failed to write verifier script: %s",
+                    write_result["error"],
+                )
+                test_result = {
+                    "exit_code": 1,
+                    "output": write_result["error"],
+                }
+            else:
+                try:
+                    test_result = ctx.terminal(
+                        "cd /workspace && python3 .hermes_reward_test.py",
+                        timeout=60,
+                    )
+                finally:
+                    ctx.terminal(
+                        f"rm -f {verifier_path}",
+                        timeout=10,
+                    )
 
             if test_result["exit_code"] == 0:
                 self.reward_buffer.append(1.0)

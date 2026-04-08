@@ -29,6 +29,7 @@ from hermes_cli.providers import (
     get_label,
     is_aggregator,
     resolve_provider_full,
+    resolve_user_provider,
 )
 from hermes_cli.model_normalize import (
     normalize_model_for_provider,
@@ -500,10 +501,45 @@ def switch_model(
     # PATH B: No explicit provider — resolve from model input
     # =================================================================
     else:
-        # --- Step a: Try alias resolution on current provider ---
-        alias_result = resolve_alias(raw_input, current_provider)
+        # --- Step 0: "<provider>/<model>" prefix for custom/user providers ---
+        # If the input begins with the slug of a user-defined (config.yaml
+        # ``providers:``) provider, split it off and route to that provider.
+        # This mirrors the ``--provider`` flag behaviour for the slash
+        # syntax (see issue #6242). We only match against user_providers
+        # here to avoid interfering with legitimate ``vendor/model`` slugs
+        # used by aggregators like OpenRouter on the current provider.
+        _user_prefix_matched = False
+        _slash = raw_input.find("/")
+        if _slash > 0 and user_providers:
+            _prefix = raw_input[:_slash].strip()
+            _remainder = raw_input[_slash + 1:].strip()
+            if _prefix and _remainder:
+                _user_pdef = resolve_user_provider(
+                    _prefix.lower(), user_providers
+                )
+                if _user_pdef is not None:
+                    target_provider = _user_pdef.id
+                    new_model = _remainder
+                    # Resolve alias on the TARGET provider, if any
+                    _alias_result = resolve_alias(new_model, target_provider)
+                    if _alias_result is not None:
+                        _, new_model, resolved_alias = _alias_result
+                    # Treat like an explicit provider for credential resolve
+                    explicit_provider = _user_pdef.id
+                    _user_prefix_matched = True
+                    logger.debug(
+                        "Routed '%s' to user provider '%s' with model '%s'",
+                        raw_input, target_provider, new_model,
+                    )
 
-        if alias_result is not None:
+        # --- Step a: Try alias resolution on current provider ---
+        alias_result = None if _user_prefix_matched else resolve_alias(
+            raw_input, current_provider
+        )
+
+        if _user_prefix_matched:
+            pass
+        elif alias_result is not None:
             target_provider, new_model, resolved_alias = alias_result
             logger.debug(
                 "Alias '%s' resolved to %s on %s",
@@ -550,7 +586,11 @@ def switch_model(
                         )
 
         # --- Step d: Aggregator catalog search ---
-        if is_aggregator(target_provider) and not resolved_alias:
+        if (
+            is_aggregator(target_provider)
+            and not resolved_alias
+            and not _user_prefix_matched
+        ):
             catalog = list_provider_models(target_provider)
             if catalog:
                 new_model_lower = new_model.lower()
@@ -576,6 +616,7 @@ def switch_model(
             target_provider == current_provider
             and not is_custom
             and not resolved_alias
+            and not _user_prefix_matched
         ):
             detected = detect_provider_for_model(new_model, current_provider)
             if detected:

@@ -252,7 +252,7 @@ The `--deliver` flag controls where results go:
 
 **Use scripts for data collection.** The `script` parameter lets a Python script handle the boring parts (HTTP requests, file I/O, state tracking). The agent only sees the script's stdout and applies reasoning to it. This is cheaper and more reliable than having the agent do the fetching itself.
 
-**Test with `/cron run`.** Before waiting for the schedule to trigger, use `/cron run <job_id>` to execute immediately and verify the output looks right.
+**Test with `/cron run`.** This marks the job due for the next scheduler tick. In gateway mode it runs on the next background tick; outside gateway mode run `hermes cron tick` to execute due jobs immediately.
 
 **Schedule expressions.** Human-readable formats like `every 2h`, `30m`, and `daily at 9am` all work alongside standard cron expressions like `0 9 * * *`.
 

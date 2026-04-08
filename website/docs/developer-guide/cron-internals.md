@@ -95,7 +95,7 @@ tick()
 
 In gateway mode, the scheduler tick is integrated into the gateway's main event loop. The gateway calls `scheduler.tick()` on its periodic maintenance cycle, which runs alongside message handling.
 
-In CLI mode, cron jobs only fire when `hermes cron` commands are run or during active CLI sessions.
+Outside gateway mode, cron jobs fire only when a scheduler tick is executed (for example `hermes cron tick` or command paths that invoke `cron.scheduler.tick()`). Interactive CLI chat sessions by themselves do not run the cron scheduler.
 
 ### Fresh Session Isolation
 

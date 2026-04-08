@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
 
-from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_result, run_job, SILENT_MARKER, _build_job_prompt
+from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_result, run_job, SILENT_MARKER, _build_job_prompt, _cleanup_timeout_worker
 
 
 class TestResolveOrigin:
@@ -172,6 +172,53 @@ class TestResolveDeliveryTarget:
             "chat_id": "-2002",
             "thread_id": None,
         }
+
+    def test_origin_delivery_missing_origin_is_local_only_by_default(self, monkeypatch):
+        monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "-2002")
+        monkeypatch.delenv("HERMES_CRON_ORIGIN_FALLBACK", raising=False)
+        job = {"deliver": "origin", "origin": None}
+        assert _resolve_delivery_target(job) is None
+
+    def test_origin_delivery_missing_origin_can_opt_in_to_home_fallback(self, monkeypatch):
+        monkeypatch.setenv("HERMES_CRON_ORIGIN_FALLBACK", "1")
+        monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "-2002")
+        job = {"deliver": "origin", "origin": None}
+        assert _resolve_delivery_target(job) == {
+            "platform": "telegram",
+            "chat_id": "-2002",
+            "thread_id": None,
+        }
+
+
+class TestTimeoutCleanup:
+    def test_cleanup_interrupts_and_cancels_future(self, monkeypatch):
+        import concurrent.futures
+
+        class DummyAgent:
+            def __init__(self):
+                self.interrupted = False
+
+            def interrupt(self, _msg):
+                self.interrupted = True
+
+        agent = DummyAgent()
+        future = concurrent.futures.Future()
+
+        class DummyPool:
+            def __init__(self):
+                self.calls = []
+
+            def shutdown(self, wait=False, cancel_futures=False):
+                self.calls.append((wait, cancel_futures))
+
+        pool = DummyPool()
+        monkeypatch.setattr("cron.scheduler._CRON_TIMEOUT_CLEANUP_WAIT", 0.0)
+
+        _cleanup_timeout_worker("job-1", agent, future, pool)
+
+        assert agent.interrupted is True
+        assert future.cancelled() is True
+        assert pool.calls[-1] == (False, True)
 
 
 class TestDeliverResultWrapping:

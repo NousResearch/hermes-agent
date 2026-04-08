@@ -74,6 +74,13 @@ def _resolve_origin(job: dict) -> Optional[dict]:
     return None
 
 
+def _origin_fallback_opted_in() -> bool:
+    """Whether deliver=origin may fall back to HOME_CHANNEL when origin is missing."""
+    raw = (os.getenv("HERMES_CRON_ORIGIN_FALLBACK") or "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+
 def _resolve_delivery_target(job: dict) -> Optional[dict]:
     """Resolve the concrete auto-delivery target for a cron job, if any."""
     deliver = job.get("deliver", "local")
@@ -89,13 +96,22 @@ def _resolve_delivery_target(job: dict) -> Optional[dict]:
                 "chat_id": str(origin["chat_id"]),
                 "thread_id": origin.get("thread_id"),
             }
-        # Origin missing (e.g. job created via API/script) — try each
-        # platform's home channel as a fallback instead of silently dropping.
+
+        # Missing origin is now explicit by default: do not silently fan out
+        # to arbitrary home channels unless the user explicitly opted in.
+        if not _origin_fallback_opted_in():
+            logger.warning(
+                "Job '%s' has deliver=origin but no origin metadata; skipping auto-delivery "
+                "(local-only). Set HERMES_CRON_ORIGIN_FALLBACK=1 to opt into HOME_CHANNEL fallback.",
+                job.get("name", job.get("id", "?")),
+            )
+            return None
+
         for platform_name in ("matrix", "telegram", "discord", "slack"):
             chat_id = os.getenv(f"{platform_name.upper()}_HOME_CHANNEL", "")
             if chat_id:
                 logger.info(
-                    "Job '%s' has deliver=origin but no origin; falling back to %s home channel",
+                    "Job '%s' has deliver=origin but no origin; opted-in fallback to %s home channel",
                     job.get("name", job.get("id", "?")),
                     platform_name,
                 )
@@ -291,6 +307,34 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> None:
 
 
 _SCRIPT_TIMEOUT = 120  # seconds
+_CRON_TIMEOUT_CLEANUP_WAIT = 10.0  # seconds
+
+
+def _cleanup_timeout_worker(job_name: str, agent, future, pool) -> None:
+    """Best-effort cleanup for timed-out cron worker thread and in-flight tools."""
+    try:
+        if hasattr(agent, "interrupt"):
+            agent.interrupt("Cron job timed out (inactivity)")
+    except Exception:
+        pass
+
+    try:
+        future.cancel()
+    except Exception:
+        pass
+
+    done, _ = concurrent.futures.wait({future}, timeout=_CRON_TIMEOUT_CLEANUP_WAIT)
+    if not done:
+        logger.warning(
+            "Job '%s' timeout cleanup exceeded %.1fs; worker thread still running in background",
+            job_name,
+            _CRON_TIMEOUT_CLEANUP_WAIT,
+        )
+
+    try:
+        pool.shutdown(wait=False, cancel_futures=True)
+    except Exception:
+        pass
 
 
 def _run_job_script(script_path: str) -> tuple[bool, str]:
@@ -629,6 +673,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         _cron_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         _cron_future = _cron_pool.submit(agent.run_conversation, prompt)
         _inactivity_timeout = False
+        _pool_shutdown = False
         try:
             if _cron_inactivity_limit is None:
                 # Unlimited — just wait for the result.
@@ -655,9 +700,11 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                         break
         except Exception:
             _cron_pool.shutdown(wait=False, cancel_futures=True)
+            _pool_shutdown = True
             raise
         finally:
-            _cron_pool.shutdown(wait=False)
+            if not _pool_shutdown:
+                _cron_pool.shutdown(wait=False)
 
         if _inactivity_timeout:
             # Build diagnostic summary from the agent's activity tracker.
@@ -680,8 +727,8 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 _last_desc, _iter_n, _iter_max,
                 _cur_tool or "none",
             )
-            if hasattr(agent, "interrupt"):
-                agent.interrupt("Cron job timed out (inactivity)")
+            _cleanup_timeout_worker(job_name, agent, _cron_future, _cron_pool)
+            _pool_shutdown = True
             raise TimeoutError(
                 f"Cron job '{job_name}' idle for "
                 f"{int(_secs_ago)}s (limit {int(_cron_inactivity_limit)}s) "

@@ -512,3 +512,69 @@ class TestRunBrowserCommandPathConstruction:
         result_path = captured_env.get("PATH", "")
         assert "/data/data/com.termux/files/usr/bin" in result_path
         assert "/data/data/com.termux/files/usr/sbin" in result_path
+
+
+class TestBrowserSubprocessEnvSanitization:
+    """Verify browser subprocesses keep only the minimum required secrets."""
+
+    def test_cloud_browser_keys_preserved_but_provider_keys_stripped(self, tmp_path):
+        captured_env = {}
+
+        mock_proc = MagicMock()
+        mock_proc.returncode = 0
+        mock_proc.wait.return_value = 0
+
+        def capture_popen(cmd, **kwargs):
+            captured_env.update(kwargs.get("env", {}))
+            return mock_proc
+
+        fake_session = {
+            "session_name": "test-session",
+            "session_id": "test-id",
+            "cdp_url": "wss://browserbase.example/ws",
+        }
+        fake_json = json.dumps({"success": True})
+
+        real_isdir = os.path.isdir
+
+        def selective_isdir(p):
+            if p.startswith(str(tmp_path)):
+                return True
+            if "/opt/homebrew/" in p:
+                return True
+            return real_isdir(p)
+
+        with patch("tools.browser_tool._find_agent_browser", return_value="/usr/local/bin/agent-browser"), \
+             patch("tools.browser_tool._get_session_info", return_value=fake_session), \
+             patch("tools.browser_tool._socket_safe_tmpdir", return_value=str(tmp_path)), \
+             patch("tools.browser_tool._discover_homebrew_node_dirs", return_value=[]), \
+             patch("os.path.isdir", side_effect=selective_isdir), \
+             patch("subprocess.Popen", side_effect=capture_popen), \
+             patch("os.open", return_value=99), \
+             patch("os.close"), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch.dict(
+                 os.environ,
+                 {
+                     "PATH": "/usr/bin:/bin",
+                     "HOME": "/home/test",
+                     "OPENAI_API_KEY": "sk-secret-should-not-leak",
+                     "BROWSERBASE_API_KEY": "bb-key",
+                     "BROWSERBASE_PROJECT_ID": "bb-project",
+                     "BROWSER_USE_API_KEY": "browser-use-key",
+                     "FIRECRAWL_API_KEY": "firecrawl-key",
+                     "FIRECRAWL_API_URL": "https://firecrawl.example",
+                     "FIRECRAWL_BROWSER_TTL": "600",
+                 },
+                 clear=True,
+             ):
+            with patch("builtins.open", mock_open(read_data=fake_json)):
+                _run_browser_command("test-task", "navigate", ["https://example.com"])
+
+        assert captured_env["BROWSERBASE_API_KEY"] == "bb-key"
+        assert captured_env["BROWSERBASE_PROJECT_ID"] == "bb-project"
+        assert captured_env["BROWSER_USE_API_KEY"] == "browser-use-key"
+        assert captured_env["FIRECRAWL_API_KEY"] == "firecrawl-key"
+        assert captured_env["FIRECRAWL_API_URL"] == "https://firecrawl.example"
+        assert captured_env["FIRECRAWL_BROWSER_TTL"] == "600"
+        assert "OPENAI_API_KEY" not in captured_env

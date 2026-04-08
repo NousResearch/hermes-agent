@@ -155,6 +155,24 @@ class TestBlockingGatewayApproval:
         assert not e2.event.is_set()
         assert len(_gateway_queues[session_key]) == 1
 
+    def test_resolve_specific_request_id(self):
+        """Interactive buttons should resolve the intended queued approval."""
+        from tools.approval import (
+            resolve_gateway_approval, pending_approval_count,
+            _ApprovalEntry, _gateway_queues,
+        )
+        session_key = "test-targeted"
+        e1 = _ApprovalEntry({"command": "first", "request_id": "req-first"})
+        e2 = _ApprovalEntry({"command": "second", "request_id": "req-second"})
+        _gateway_queues[session_key] = [e1, e2]
+
+        count = resolve_gateway_approval(session_key, "deny", request_id="req-second")
+        assert count == 1
+        assert not e1.event.is_set()
+        assert e2.event.is_set()
+        assert e2.result == "deny"
+        assert pending_approval_count(session_key) == 1
+
     def test_unregister_signals_all_entries(self):
         """unregister_gateway_notify signals all waiting entries to prevent hangs."""
         from tools.approval import (

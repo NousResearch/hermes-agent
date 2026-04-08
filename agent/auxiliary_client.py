@@ -92,6 +92,7 @@ auxiliary_is_nous: bool = False
 _OPENROUTER_MODEL = "google/gemini-3-flash-preview"
 _NOUS_MODEL = "google/gemini-3-flash-preview"
 _NOUS_FREE_TIER_VISION_MODEL = "xiaomi/mimo-v2-omni"
+_NOUS_FREE_TIER_AUX_MODEL = "xiaomi/mimo-v2-pro"
 _NOUS_DEFAULT_BASE_URL = "https://inference-api.nousresearch.com/v1"
 _ANTHROPIC_DEFAULT_BASE_URL = "https://api.anthropic.com"
 _AUTH_JSON_PATH = get_hermes_home() / "auth.json"
@@ -713,7 +714,7 @@ def _try_openrouter() -> Tuple[Optional[OpenAI], Optional[str]]:
                    default_headers=_OR_HEADERS), _OPENROUTER_MODEL
 
 
-def _try_nous() -> Tuple[Optional[OpenAI], Optional[str]]:
+def _try_nous(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
     nous = _read_nous_auth()
     if not nous:
         return None, None
@@ -725,12 +726,13 @@ def _try_nous() -> Tuple[Optional[OpenAI], Optional[str]]:
     else:
         model = _NOUS_MODEL
     # Free-tier users can't use paid auxiliary models — use the free
-    # multimodal model instead so vision/browser-vision still works.
+    # models instead: mimo-v2-omni for vision, mimo-v2-pro for text tasks.
     try:
         from hermes_cli.models import check_nous_free_tier
         if check_nous_free_tier():
-            model = _NOUS_FREE_TIER_VISION_MODEL
-            logger.debug("Free-tier Nous account — using %s for auxiliary/vision", model)
+            model = _NOUS_FREE_TIER_VISION_MODEL if vision else _NOUS_FREE_TIER_AUX_MODEL
+            logger.debug("Free-tier Nous account — using %s for auxiliary/%s",
+                         model, "vision" if vision else "text")
     except Exception:
         pass
     return (
@@ -1400,7 +1402,7 @@ def _resolve_strict_vision_backend(provider: str) -> Tuple[Optional[Any], Option
     if provider == "openrouter":
         return _try_openrouter()
     if provider == "nous":
-        return _try_nous()
+        return _try_nous(vision=True)
     if provider == "openai-codex":
         return _try_codex()
     if provider == "anthropic":

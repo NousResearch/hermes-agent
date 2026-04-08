@@ -44,6 +44,7 @@ def _make_dummy_env(**kwargs):
         network=kwargs.get("network", True),
         host_cwd=kwargs.get("host_cwd"),
         auto_mount_cwd=kwargs.get("auto_mount_cwd", False),
+        env=kwargs.get("env"),
     )
 
 
@@ -239,6 +240,7 @@ def _make_execute_only_env(forward_env=None):
     env.cwd = "/root"
     env.timeout = 60
     env._forward_env = forward_env or []
+    env._env = {}
     env._prepare_command = lambda command: (command, None)
     env._timeout_result = lambda timeout: {"output": f"timed out after {timeout}", "returncode": 124}
     env._container_id = "test-container"
@@ -280,3 +282,120 @@ def test_execute_prefers_shell_env_over_hermes_dotenv(monkeypatch):
 
     assert "GITHUB_TOKEN=value_from_shell" in popen_calls[0]
     assert "GITHUB_TOKEN=value_from_dotenv" not in popen_calls[0]
+
+
+# ── docker_env tests ──────────────────────────────────────────────
+
+
+def test_docker_env_appears_in_run_command(monkeypatch):
+    """Explicit docker_env values should be passed via -e at docker run time."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    calls = _mock_subprocess_run(monkeypatch)
+
+    _make_dummy_env(env={"SSH_AUTH_SOCK": "/run/user/1000/ssh-agent.sock", "GNUPGHOME": "/root/.gnupg"})
+
+    run_calls = [c for c in calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"]
+    assert run_calls, "docker run should have been called"
+    run_args = run_calls[0][0]
+    run_args_str = " ".join(run_args)
+    assert "SSH_AUTH_SOCK=/run/user/1000/ssh-agent.sock" in run_args_str
+    assert "GNUPGHOME=/root/.gnupg" in run_args_str
+
+
+def test_docker_env_appears_in_exec_command(monkeypatch):
+    """Explicit docker_env values should also be passed via -e at docker exec time."""
+    env = _make_execute_only_env()
+    env._env = {"MY_VAR": "my_value"}
+    popen_calls = []
+
+    def _fake_popen(cmd, **kwargs):
+        popen_calls.append(cmd)
+        return _FakePopen(cmd, **kwargs)
+
+    monkeypatch.setattr(docker_env.subprocess, "Popen", _fake_popen)
+
+    env.execute("echo hi")
+
+    assert popen_calls, "Popen should have been called"
+    assert "MY_VAR=my_value" in popen_calls[0]
+
+
+def test_forward_env_overrides_docker_env(monkeypatch):
+    """docker_forward_env should override docker_env for the same key."""
+    env = _make_execute_only_env(forward_env=["MY_KEY"])
+    env._env = {"MY_KEY": "static_value"}
+    popen_calls = []
+
+    def _fake_popen(cmd, **kwargs):
+        popen_calls.append(cmd)
+        return _FakePopen(cmd, **kwargs)
+
+    monkeypatch.setenv("MY_KEY", "dynamic_value")
+    monkeypatch.setattr(docker_env, "_load_hermes_env_vars", lambda: {})
+    monkeypatch.setattr(docker_env.subprocess, "Popen", _fake_popen)
+
+    env.execute("echo hi")
+
+    cmd_str = " ".join(popen_calls[0])
+    assert "MY_KEY=dynamic_value" in cmd_str
+    assert "MY_KEY=static_value" not in cmd_str
+
+
+def test_docker_env_and_forward_env_merge(monkeypatch):
+    """docker_env and docker_forward_env with different keys should both appear."""
+    env = _make_execute_only_env(forward_env=["TOKEN"])
+    env._env = {"SSH_AUTH_SOCK": "/run/user/1000/agent.sock"}
+    popen_calls = []
+
+    def _fake_popen(cmd, **kwargs):
+        popen_calls.append(cmd)
+        return _FakePopen(cmd, **kwargs)
+
+    monkeypatch.setenv("TOKEN", "secret123")
+    monkeypatch.setattr(docker_env, "_load_hermes_env_vars", lambda: {})
+    monkeypatch.setattr(docker_env.subprocess, "Popen", _fake_popen)
+
+    env.execute("echo hi")
+
+    cmd_str = " ".join(popen_calls[0])
+    assert "SSH_AUTH_SOCK=/run/user/1000/agent.sock" in cmd_str
+    assert "TOKEN=secret123" in cmd_str
+
+
+def test_normalize_env_dict_filters_invalid_keys():
+    """_normalize_env_dict should reject invalid variable names."""
+    result = docker_env._normalize_env_dict({
+        "VALID_KEY": "ok",
+        "123bad": "rejected",
+        "": "rejected",
+        "also valid": "rejected",  # spaces invalid
+        "GOOD": "ok",
+    })
+    assert result == {"VALID_KEY": "ok", "GOOD": "ok"}
+
+
+def test_normalize_env_dict_coerces_scalars():
+    """_normalize_env_dict should coerce int/float/bool to str."""
+    result = docker_env._normalize_env_dict({
+        "PORT": 8080,
+        "DEBUG": True,
+        "RATIO": 0.5,
+    })
+    assert result == {"PORT": "8080", "DEBUG": "True", "RATIO": "0.5"}
+
+
+def test_normalize_env_dict_rejects_non_dict():
+    """_normalize_env_dict should return empty dict for non-dict input."""
+    assert docker_env._normalize_env_dict("not a dict") == {}
+    assert docker_env._normalize_env_dict(None) == {}
+    assert docker_env._normalize_env_dict([]) == {}
+
+
+def test_normalize_env_dict_rejects_complex_values():
+    """_normalize_env_dict should reject list/dict values."""
+    result = docker_env._normalize_env_dict({
+        "GOOD": "string",
+        "BAD_LIST": [1, 2, 3],
+        "BAD_DICT": {"nested": True},
+    })
+    assert result == {"GOOD": "string"}

@@ -61,7 +61,8 @@ class TestProbeMcpServerTools:
         async def fake_connect(name, cfg):
             return mock_server
 
-        with patch("tools.mcp_tool._load_mcp_config", return_value=config), \
+        with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+             patch("tools.mcp_tool._load_mcp_config", return_value=config), \
              patch("tools.mcp_tool._connect_server", side_effect=fake_connect), \
              patch("tools.mcp_tool._ensure_mcp_loop"), \
              patch("tools.mcp_tool._run_on_mcp_loop") as mock_run, \
@@ -102,7 +103,8 @@ class TestProbeMcpServerTools:
                 raise ConnectionError("Server not found")
             return mock_server
 
-        with patch("tools.mcp_tool._load_mcp_config", return_value=config), \
+        with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+             patch("tools.mcp_tool._load_mcp_config", return_value=config), \
              patch("tools.mcp_tool._connect_server", side_effect=fake_connect), \
              patch("tools.mcp_tool._ensure_mcp_loop"), \
              patch("tools.mcp_tool._run_on_mcp_loop") as mock_run, \
@@ -135,7 +137,8 @@ class TestProbeMcpServerTools:
         async def fake_connect(name, cfg):
             return mock_server
 
-        with patch("tools.mcp_tool._load_mcp_config", return_value=config), \
+        with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+             patch("tools.mcp_tool._load_mcp_config", return_value=config), \
              patch("tools.mcp_tool._connect_server", side_effect=fake_connect), \
              patch("tools.mcp_tool._ensure_mcp_loop"), \
              patch("tools.mcp_tool._run_on_mcp_loop") as mock_run, \
@@ -159,7 +162,8 @@ class TestProbeMcpServerTools:
         """_stop_mcp_loop is called even when probe fails."""
         config = {"github": {"command": "npx", "connect_timeout": 5}}
 
-        with patch("tools.mcp_tool._load_mcp_config", return_value=config), \
+        with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+             patch("tools.mcp_tool._load_mcp_config", return_value=config), \
              patch("tools.mcp_tool._ensure_mcp_loop"), \
              patch("tools.mcp_tool._run_on_mcp_loop", side_effect=RuntimeError("boom")), \
              patch("tools.mcp_tool._stop_mcp_loop") as mock_stop:
@@ -187,7 +191,8 @@ class TestProbeMcpServerTools:
             connect_calls.append(name)
             return mock_server
 
-        with patch("tools.mcp_tool._load_mcp_config", return_value=config), \
+        with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+             patch("tools.mcp_tool._load_mcp_config", return_value=config), \
              patch("tools.mcp_tool._connect_server", side_effect=fake_connect), \
              patch("tools.mcp_tool._ensure_mcp_loop"), \
              patch("tools.mcp_tool._run_on_mcp_loop") as mock_run, \

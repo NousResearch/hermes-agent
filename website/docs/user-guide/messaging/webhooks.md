@@ -15,7 +15,7 @@ The agent processes the event and can respond by posting comments on PRs, sendin
 ## Quick Start
 
 1. Enable via `hermes gateway setup` or environment variables
-2. Define webhook routes in `config.yaml`
+2. Define routes in `config.yaml` **or** create them dynamically with `hermes webhook subscribe`
 3. Point your service at `http://your-server:8644/webhooks/<route-name>`
 
 ---
@@ -70,7 +70,7 @@ Routes define how different webhook sources are handled. Each route is a named e
 | `secret` | **Yes** | HMAC secret for signature validation. Falls back to the global `secret` if not set on the route. Set to `"INSECURE_NO_AUTH"` for testing only (skips validation). |
 | `prompt` | No | Template string with dot-notation payload access (e.g. `{pull_request.title}`). If omitted, the full JSON payload is dumped into the prompt. |
 | `skills` | No | List of skill names to load for the agent run. |
-| `deliver` | No | Where to send the response: `github_comment`, `telegram`, `discord`, `slack`, `signal`, `sms`, or `log` (default). |
+| `deliver` | No | Where to send the response: `github_comment`, `telegram`, `discord`, `slack`, `signal`, `matrix`, `mattermost`, `email`, `sms`, `dingtalk`, `feishu`, `wecom`, or `log` (default). |
 | `deliver_extra` | No | Additional delivery config — keys depend on `deliver` type (e.g. `repo`, `pr_number`, `chat_id`). Values support the same `{dot.notation}` templates as `prompt`. |
 
 ### Full example
@@ -112,12 +112,37 @@ Prompts use dot-notation to access nested fields in the webhook payload:
 
 - `{pull_request.title}` resolves to `payload["pull_request"]["title"]`
 - `{repository.full_name}` resolves to `payload["repository"]["full_name"]`
+- `{__raw__}` — special token that dumps the **entire payload** as indented JSON (truncated at 4000 characters). Useful for monitoring alerts or generic webhooks where the agent needs the full context.
 - Missing keys are left as the literal `{key}` string (no error)
 - Nested dicts and lists are JSON-serialized and truncated at 2000 characters
+
+You can mix `{__raw__}` with regular template variables:
+
+```yaml
+prompt: "PR #{pull_request.number} by {pull_request.user.login}: {__raw__}"
+```
 
 If no `prompt` template is configured for a route, the entire payload is dumped as indented JSON (truncated at 4000 characters).
 
 The same dot-notation templates work in `deliver_extra` values.
+
+### Forum Topic Delivery
+
+When delivering webhook responses to Telegram, you can target a specific forum topic by including `message_thread_id` (or `thread_id`) in `deliver_extra`:
+
+```yaml
+webhooks:
+  routes:
+    alerts:
+      events: ["alert"]
+      prompt: "Alert: {__raw__}"
+      deliver: "telegram"
+      deliver_extra:
+        chat_id: "-1001234567890"
+        message_thread_id: "42"
+```
+
+If `chat_id` is not provided in `deliver_extra`, the delivery falls back to the home channel configured for the target platform.
 
 ---
 
@@ -202,6 +227,56 @@ The `deliver` field controls where the agent's response goes after processing th
 | `sms` | Routes the response to SMS via Twilio. Uses the home channel, or specify `chat_id` in `deliver_extra`. |
 
 For cross-platform delivery (telegram, discord, slack, signal, sms), the target platform must also be enabled and connected in the gateway. If no `chat_id` is provided in `deliver_extra`, the response is sent to that platform's configured home channel.
+
+---
+
+## Dynamic Subscriptions (CLI) {#dynamic-subscriptions}
+
+In addition to static routes in `config.yaml`, you can create webhook subscriptions dynamically using the `hermes webhook` CLI command. This is especially useful when the agent itself needs to set up event-driven triggers.
+
+### Create a subscription
+
+```bash
+hermes webhook subscribe github-issues \
+  --events "issues" \
+  --prompt "New issue #{issue.number}: {issue.title}\nBy: {issue.user.login}\n\n{issue.body}" \
+  --deliver telegram \
+  --deliver-chat-id "-100123456789" \
+  --description "Triage new GitHub issues"
+```
+
+This returns the webhook URL and an auto-generated HMAC secret. Configure your service to POST to that URL.
+
+### List subscriptions
+
+```bash
+hermes webhook list
+```
+
+### Remove a subscription
+
+```bash
+hermes webhook remove github-issues
+```
+
+### Test a subscription
+
+```bash
+hermes webhook test github-issues
+hermes webhook test github-issues --payload '{"issue": {"number": 42, "title": "Test"}}'
+```
+
+### How dynamic subscriptions work
+
+- Subscriptions are stored in `~/.hermes/webhook_subscriptions.json`
+- The webhook adapter hot-reloads this file on each incoming request (mtime-gated, negligible overhead)
+- Static routes from `config.yaml` always take precedence over dynamic ones with the same name
+- Dynamic subscriptions use the same route format and capabilities as static routes (events, prompt templates, skills, delivery)
+- No gateway restart required — subscribe and it's immediately live
+
+### Agent-driven subscriptions
+
+The agent can create subscriptions via the terminal tool when guided by the `webhook-subscriptions` skill. Ask the agent to "set up a webhook for GitHub issues" and it will run the appropriate `hermes webhook subscribe` command.
 
 ---
 

@@ -24,6 +24,13 @@ PLATFORMS = {
     "whatsapp": "📱 WhatsApp",
     "signal":   "📡 Signal",
     "email":    "📧 Email",
+    "homeassistant": "🏠 Home Assistant",
+    "mattermost": "💬 Mattermost",
+    "matrix":   "💬 Matrix",
+    "dingtalk": "💬 DingTalk",
+    "feishu": "🪽 Feishu",
+    "wecom": "💬 WeCom",
+    "webhook": "🔗 Webhook",
 }
 
 # ─── Config Helpers ───────────────────────────────────────────────────────────

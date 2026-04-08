@@ -391,12 +391,17 @@ class LocalEnvironment(PersistentShellMixin, BaseEnvironment):
             effective_stdin = stdin_data
 
         user_shell = _find_bash()
+        # Newline-separated wrapper (not `cmd; __hermes_rc=...` on one line).
+        # A trailing `; __hermes_rc` glued to `<<EOF` / a closing `EOF` line breaks
+        # heredoc parsing: the delimiter must be alone on its line, otherwise the
+        # rest of this script becomes heredoc body and leaks into stdout (e.g. gh
+        # issue/PR flows that use here-documents for bodies).
         fenced_cmd = (
-            f"printf '{_OUTPUT_FENCE}';"
-            f" {exec_command};"
-            f" __hermes_rc=$?;"
-            f" printf '{_OUTPUT_FENCE}';"
-            f" exit $__hermes_rc"
+            f"printf '{_OUTPUT_FENCE}'\n"
+            f"{exec_command}\n"
+            f"__hermes_rc=$?\n"
+            f"printf '{_OUTPUT_FENCE}'\n"
+            f"exit $__hermes_rc\n"
         )
         run_env = _make_run_env(self.env)
 
@@ -468,7 +473,12 @@ class LocalEnvironment(PersistentShellMixin, BaseEnvironment):
                 except (ProcessLookupError, PermissionError):
                     proc.kill()
                 reader.join(timeout=2)
-                return self._timeout_result(effective_timeout)
+                partial = "".join(_output_chunks)
+                timeout_msg = f"\n[Command timed out after {effective_timeout}s]"
+                return {
+                    "output": partial + timeout_msg if partial else timeout_msg.lstrip(),
+                    "returncode": 124,
+                }
             time.sleep(0.2)
 
         reader.join(timeout=5)

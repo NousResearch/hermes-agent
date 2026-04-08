@@ -70,12 +70,15 @@ class DeliveryTarget:
         if target == "local":
             return cls(platform=Platform.LOCAL)
         
-        # Check for platform:chat_id format
+        # Check for platform:chat_id or platform:chat_id:thread_id format
         if ":" in target:
-            platform_str, chat_id = target.split(":", 1)
+            parts = target.split(":", 2)
+            platform_str = parts[0]
+            chat_id = parts[1] if len(parts) > 1 else None
+            thread_id = parts[2] if len(parts) > 2 else None
             try:
                 platform = Platform(platform_str)
-                return cls(platform=platform, chat_id=chat_id, is_explicit=True)
+                return cls(platform=platform, chat_id=chat_id, thread_id=thread_id, is_explicit=True)
             except ValueError:
                 # Unknown platform, treat as local
                 return cls(platform=Platform.LOCAL)
@@ -94,6 +97,8 @@ class DeliveryTarget:
             return "origin"
         if self.platform == Platform.LOCAL:
             return "local"
+        if self.chat_id and self.thread_id:
+            return f"{self.platform.value}:{self.chat_id}:{self.thread_id}"
         if self.chat_id:
             return f"{self.platform.value}:{self.chat_id}"
         return self.platform.value
@@ -309,38 +314,4 @@ def parse_deliver_spec(
     return deliver
 
 
-def build_delivery_context_for_tool(
-    config: GatewayConfig,
-    origin: Optional[SessionSource] = None
-) -> Dict[str, Any]:
-    """
-    Build context for the unified cronjob tool to understand delivery options.
-    
-    This is passed to the tool so it can validate and explain delivery targets.
-    """
-    connected = config.get_connected_platforms()
-    
-    options = {
-        "origin": {
-            "description": "Back to where this job was created",
-            "available": origin is not None,
-        },
-        "local": {
-            "description": "Save to local files only",
-            "available": True,
-        }
-    }
-    
-    for platform in connected:
-        home = config.get_home_channel(platform)
-        options[platform.value] = {
-            "description": f"{platform.value.title()} home channel",
-            "available": True,
-            "home_channel": home.to_dict() if home else None,
-        }
-    
-    return {
-        "origin": origin.to_dict() if origin else None,
-        "options": options,
-        "always_log_local": config.always_log_local,
-    }
+

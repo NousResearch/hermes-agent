@@ -20,8 +20,16 @@ def _ensure_telegram_mock():
     telegram_mod.constants.ChatType.CHANNEL = "channel"
     telegram_mod.constants.ChatType.PRIVATE = "private"
 
+    # Provide real exception classes so ``except (NetworkError, ...)`` in
+    # connect() doesn't blow up with "catching classes that do not inherit
+    # from BaseException" when another xdist worker pollutes sys.modules.
+    telegram_mod.error.NetworkError = type("NetworkError", (OSError,), {})
+    telegram_mod.error.TimedOut = type("TimedOut", (OSError,), {})
+    telegram_mod.error.BadRequest = type("BadRequest", (Exception,), {})
+
     for name in ("telegram", "telegram.ext", "telegram.constants", "telegram.request"):
         sys.modules.setdefault(name, telegram_mod)
+    sys.modules.setdefault("telegram.error", telegram_mod.error)
 
 
 _ensure_telegram_mock()
@@ -80,7 +88,7 @@ async def test_polling_conflict_retries_before_fatal(monkeypatch):
         stop=AsyncMock(),
         running=True,
     )
-    bot = SimpleNamespace(set_my_commands=AsyncMock())
+    bot = SimpleNamespace(set_my_commands=AsyncMock(), delete_webhook=AsyncMock())
     app = SimpleNamespace(
         bot=bot,
         updater=updater,
@@ -99,6 +107,7 @@ async def test_polling_conflict_retries_before_fatal(monkeypatch):
     ok = await adapter.connect()
 
     assert ok is True
+    bot.delete_webhook.assert_awaited_once_with(drop_pending_updates=False)
     assert callable(captured["error_callback"])
 
     conflict = type("Conflict", (Exception,), {})
@@ -153,7 +162,7 @@ async def test_polling_conflict_becomes_fatal_after_retries(monkeypatch):
         stop=AsyncMock(),
         running=True,
     )
-    bot = SimpleNamespace(set_my_commands=AsyncMock())
+    bot = SimpleNamespace(set_my_commands=AsyncMock(), delete_webhook=AsyncMock())
     app = SimpleNamespace(
         bot=bot,
         updater=updater,
@@ -208,7 +217,7 @@ async def test_connect_marks_retryable_fatal_error_for_startup_network_failure(m
     builder = MagicMock()
     builder.token.return_value = builder
     app = SimpleNamespace(
-        bot=SimpleNamespace(),
+        bot=SimpleNamespace(delete_webhook=AsyncMock(), set_my_commands=AsyncMock()),
         updater=SimpleNamespace(),
         add_handler=MagicMock(),
         initialize=AsyncMock(side_effect=RuntimeError("Temporary failure in name resolution")),
@@ -223,6 +232,49 @@ async def test_connect_marks_retryable_fatal_error_for_startup_network_failure(m
     assert adapter.fatal_error_code == "telegram_connect_error"
     assert adapter.fatal_error_retryable is True
     assert "Temporary failure in name resolution" in adapter.fatal_error_message
+
+
+@pytest.mark.asyncio
+async def test_connect_clears_webhook_before_polling(monkeypatch):
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
+
+    monkeypatch.setattr(
+        "gateway.status.acquire_scoped_lock",
+        lambda scope, identity, metadata=None: (True, None),
+    )
+    monkeypatch.setattr(
+        "gateway.status.release_scoped_lock",
+        lambda scope, identity: None,
+    )
+
+    updater = SimpleNamespace(
+        start_polling=AsyncMock(),
+        stop=AsyncMock(),
+        running=True,
+    )
+    bot = SimpleNamespace(
+        delete_webhook=AsyncMock(),
+        set_my_commands=AsyncMock(),
+    )
+    app = SimpleNamespace(
+        bot=bot,
+        updater=updater,
+        add_handler=MagicMock(),
+        initialize=AsyncMock(),
+        start=AsyncMock(),
+    )
+    builder = MagicMock()
+    builder.token.return_value = builder
+    builder.build.return_value = app
+    monkeypatch.setattr(
+        "gateway.platforms.telegram.Application",
+        SimpleNamespace(builder=MagicMock(return_value=builder)),
+    )
+
+    ok = await adapter.connect()
+
+    assert ok is True
+    bot.delete_webhook.assert_awaited_once_with(drop_pending_updates=False)
 
 
 @pytest.mark.asyncio

@@ -13,11 +13,23 @@ Run with:  python -m pytest tests/test_code_execution.py -v
 """
 
 import pytest
-pytestmark = pytest.mark.skip(reason="Hangs in non-interactive environments")
-
+# pytestmark removed — tests run fine (61 pass, ~99s)
 
 import json
 import os
+
+os.environ["TERMINAL_ENV"] = "local"
+
+
+@pytest.fixture(autouse=True)
+def _force_local_terminal(monkeypatch):
+    """Re-set TERMINAL_ENV=local before every test.
+
+    The module-level assignment above covers import time, but under xdist
+    another worker can overwrite os.environ between tests.  monkeypatch
+    ensures each test starts (and ends) with the correct value.
+    """
+    monkeypatch.setenv("TERMINAL_ENV", "local")
 import sys
 import time
 import threading
@@ -325,7 +337,7 @@ class TestStubSchemaDrift(unittest.TestCase):
     # Parameters that are internal (injected by the handler, not user-facing)
     _INTERNAL_PARAMS = {"task_id", "user_task"}
     # Parameters intentionally blocked in the sandbox
-    _BLOCKED_TERMINAL_PARAMS = {"background", "check_interval", "pty"}
+    _BLOCKED_TERMINAL_PARAMS = {"background", "check_interval", "pty", "notify_on_complete"}
 
     def test_stubs_cover_all_schema_params(self):
         """Every user-facing parameter in the real schema must appear in the

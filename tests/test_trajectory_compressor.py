@@ -405,12 +405,13 @@ class TestGenerateSummary:
     @pytest.mark.asyncio
     async def test_generate_summary_async_handles_none_content(self):
         tc = _make_compressor()
-        tc.async_client = MagicMock()
-        tc.async_client.chat.completions.create = AsyncMock(
+        mock_client = MagicMock()
+        mock_client.chat.completions.create = AsyncMock(
             return_value=SimpleNamespace(
                 choices=[SimpleNamespace(message=SimpleNamespace(content=None))]
             )
         )
+        tc._get_async_client = MagicMock(return_value=mock_client)
         metrics = TrajectoryMetrics()
 
         summary = await tc._generate_summary_async("Turn content", metrics)

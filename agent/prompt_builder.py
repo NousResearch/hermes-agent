@@ -18,6 +18,7 @@ from typing import Optional
 from agent.skill_utils import (
     extract_skill_conditions,
     extract_skill_description,
+    get_all_skills_dirs,
     get_disabled_skill_names,
     iter_skill_index_files,
     parse_frontmatter,
@@ -168,6 +169,94 @@ SKILLS_GUIDANCE = (
     "patch it immediately with skill_manage(action='patch') — don't wait to be asked. "
     "Skills that aren't maintained become liabilities."
 )
+
+TOOL_USE_ENFORCEMENT_GUIDANCE = (
+    "# Tool-use enforcement\n"
+    "You MUST use your tools to take action — do not describe what you would do "
+    "or plan to do without actually doing it. When you say you will perform an "
+    "action (e.g. 'I will run the tests', 'Let me check the file', 'I will create "
+    "the project'), you MUST immediately make the corresponding tool call in the same "
+    "response. Never end your turn with a promise of future action — execute it now.\n"
+    "Keep working until the task is actually complete. Do not stop with a summary of "
+    "what you plan to do next time. If you have tools available that can accomplish "
+    "the task, use them instead of telling the user what you would do.\n"
+    "Every response should either (a) contain tool calls that make progress, or "
+    "(b) deliver a final result to the user. Responses that only describe intentions "
+    "without acting are not acceptable."
+)
+
+# Model name substrings that trigger tool-use enforcement guidance.
+# Add new patterns here when a model family needs explicit steering.
+TOOL_USE_ENFORCEMENT_MODELS = ("gpt", "codex", "gemini", "gemma", "grok")
+
+# OpenAI GPT/Codex-specific execution guidance.  Addresses known failure modes
+# where GPT models abandon work on partial results, skip prerequisite lookups,
+# hallucinate instead of using tools, and declare "done" without verification.
+# Inspired by patterns from OpenAI's GPT-5.4 prompting guide & OpenClaw PR #38953.
+OPENAI_MODEL_EXECUTION_GUIDANCE = (
+    "# Execution discipline\n"
+    "<tool_persistence>\n"
+    "- Use tools whenever they improve correctness, completeness, or grounding.\n"
+    "- Do not stop early when another tool call would materially improve the result.\n"
+    "- If a tool returns empty or partial results, retry with a different query or "
+    "strategy before giving up.\n"
+    "- Keep calling tools until: (1) the task is complete, AND (2) you have verified "
+    "the result.\n"
+    "</tool_persistence>\n"
+    "\n"
+    "<prerequisite_checks>\n"
+    "- Before taking an action, check whether prerequisite discovery, lookup, or "
+    "context-gathering steps are needed.\n"
+    "- Do not skip prerequisite steps just because the final action seems obvious.\n"
+    "- If a task depends on output from a prior step, resolve that dependency first.\n"
+    "</prerequisite_checks>\n"
+    "\n"
+    "<verification>\n"
+    "Before finalizing your response:\n"
+    "- Correctness: does the output satisfy every stated requirement?\n"
+    "- Grounding: are factual claims backed by tool outputs or provided context?\n"
+    "- Formatting: does the output match the requested format or schema?\n"
+    "- Safety: if the next step has side effects (file writes, commands, API calls), "
+    "confirm scope before executing.\n"
+    "</verification>\n"
+    "\n"
+    "<missing_context>\n"
+    "- If required context is missing, do NOT guess or hallucinate an answer.\n"
+    "- Use the appropriate lookup tool when missing information is retrievable "
+    "(search_files, web_search, read_file, etc.).\n"
+    "- Ask a clarifying question only when the information cannot be retrieved by tools.\n"
+    "- If you must proceed with incomplete information, label assumptions explicitly.\n"
+    "</missing_context>"
+)
+
+# Gemini/Gemma-specific operational guidance, adapted from OpenCode's gemini.txt.
+# Injected alongside TOOL_USE_ENFORCEMENT_GUIDANCE when the model is Gemini or Gemma.
+GOOGLE_MODEL_OPERATIONAL_GUIDANCE = (
+    "# Google model operational directives\n"
+    "Follow these operational rules strictly:\n"
+    "- **Absolute paths:** Always construct and use absolute file paths for all "
+    "file system operations. Combine the project root with relative paths.\n"
+    "- **Verify first:** Use read_file/search_files to check file contents and "
+    "project structure before making changes. Never guess at file contents.\n"
+    "- **Dependency checks:** Never assume a library is available. Check "
+    "package.json, requirements.txt, Cargo.toml, etc. before importing.\n"
+    "- **Conciseness:** Keep explanatory text brief — a few sentences, not "
+    "paragraphs. Focus on actions and results over narration.\n"
+    "- **Parallel tool calls:** When you need to perform multiple independent "
+    "operations (e.g. reading several files), make all the tool calls in a "
+    "single response rather than sequentially.\n"
+    "- **Non-interactive commands:** Use flags like -y, --yes, --non-interactive "
+    "to prevent CLI tools from hanging on prompts.\n"
+    "- **Keep going:** Work autonomously until the task is fully resolved. "
+    "Don't stop with a plan — execute it.\n"
+)
+
+# Model name substrings that should use the 'developer' role instead of
+# 'system' for the system prompt.  OpenAI's newer models (GPT-5, Codex)
+# give stronger instruction-following weight to the 'developer' role.
+# The swap happens at the API boundary in _build_api_kwargs() so internal
+# message representation stays consistent ("system" everywhere).
+DEVELOPER_ROLE_MODELS = ("gpt-5", "codex")
 
 PLATFORM_HINTS = {
     "whatsapp": (
@@ -425,18 +514,33 @@ def build_skills_system_prompt(
          mtime/size manifest — survives process restarts
 
     Falls back to a full filesystem scan when both layers miss.
+
+    External skill directories (``skills.external_dirs`` in config.yaml) are
+    scanned alongside the local ``~/.hermes/skills/`` directory.  External dirs
+    are read-only — they appear in the index but new skills are always created
+    in the local dir.  Local skills take precedence when names collide.
     """
     hermes_home = get_hermes_home()
     skills_dir = hermes_home / "skills"
+    external_dirs = get_all_skills_dirs()[1:]  # skip local (index 0)
 
-    if not skills_dir.exists():
+    if not skills_dir.exists() and not external_dirs:
         return ""
 
     # ── Layer 1: in-process LRU cache ─────────────────────────────────
+    # Include the resolved platform so per-platform disabled-skill lists
+    # produce distinct cache entries (gateway serves multiple platforms).
+    _platform_hint = (
+        os.environ.get("HERMES_PLATFORM")
+        or os.environ.get("HERMES_SESSION_PLATFORM")
+        or ""
+    )
     cache_key = (
         str(skills_dir.resolve()),
+        tuple(str(d) for d in external_dirs),
         tuple(sorted(str(t) for t in (available_tools or set()))),
         tuple(sorted(str(ts) for ts in (available_toolsets or set()))),
+        _platform_hint,
     )
     with _SKILLS_PROMPT_CACHE_LOCK:
         cached = _SKILLS_PROMPT_CACHE.get(cache_key)
@@ -521,6 +625,56 @@ def build_skills_system_prompt(
             category_descriptions,
         )
 
+    # ── External skill directories ─────────────────────────────────────
+    # Scan external dirs directly (no snapshot caching — they're read-only
+    # and typically small).  Local skills already in skills_by_category take
+    # precedence: we track seen names and skip duplicates from external dirs.
+    seen_skill_names: set[str] = set()
+    for cat_skills in skills_by_category.values():
+        for name, _desc in cat_skills:
+            seen_skill_names.add(name)
+
+    for ext_dir in external_dirs:
+        if not ext_dir.exists():
+            continue
+        for skill_file in iter_skill_index_files(ext_dir, "SKILL.md"):
+            try:
+                is_compatible, frontmatter, desc = _parse_skill_file(skill_file)
+                if not is_compatible:
+                    continue
+                entry = _build_snapshot_entry(skill_file, ext_dir, frontmatter, desc)
+                skill_name = entry["skill_name"]
+                if skill_name in seen_skill_names:
+                    continue
+                if entry["frontmatter_name"] in disabled or skill_name in disabled:
+                    continue
+                if not _skill_should_show(
+                    extract_skill_conditions(frontmatter),
+                    available_tools,
+                    available_toolsets,
+                ):
+                    continue
+                seen_skill_names.add(skill_name)
+                skills_by_category.setdefault(entry["category"], []).append(
+                    (skill_name, entry["description"])
+                )
+            except Exception as e:
+                logger.debug("Error reading external skill %s: %s", skill_file, e)
+
+        # External category descriptions
+        for desc_file in iter_skill_index_files(ext_dir, "DESCRIPTION.md"):
+            try:
+                content = desc_file.read_text(encoding="utf-8")
+                fm, _ = parse_frontmatter(content)
+                cat_desc = fm.get("description")
+                if not cat_desc:
+                    continue
+                rel = desc_file.relative_to(ext_dir)
+                cat = "/".join(rel.parts[:-1]) if len(rel.parts) > 1 else "general"
+                category_descriptions.setdefault(cat, str(cat_desc).strip().strip("'\""))
+            except Exception as e:
+                logger.debug("Could not read external skill description %s: %s", desc_file, e)
+
     if not skills_by_category:
         result = ""
     else:
@@ -566,6 +720,72 @@ def build_skills_system_prompt(
             _SKILLS_PROMPT_CACHE.popitem(last=False)
 
     return result
+
+
+def build_nous_subscription_prompt(valid_tool_names: "set[str] | None" = None) -> str:
+    """Build a compact Nous subscription capability block for the system prompt."""
+    try:
+        from hermes_cli.nous_subscription import get_nous_subscription_features
+        from tools.tool_backend_helpers import managed_nous_tools_enabled
+    except Exception as exc:
+        logger.debug("Failed to import Nous subscription helper: %s", exc)
+        return ""
+
+    if not managed_nous_tools_enabled():
+        return ""
+
+    valid_names = set(valid_tool_names or set())
+    relevant_tool_names = {
+        "web_search",
+        "web_extract",
+        "browser_navigate",
+        "browser_snapshot",
+        "browser_click",
+        "browser_type",
+        "browser_scroll",
+        "browser_console",
+        "browser_press",
+        "browser_get_images",
+        "browser_vision",
+        "image_generate",
+        "text_to_speech",
+        "terminal",
+        "process",
+        "execute_code",
+    }
+
+    if valid_names and not (valid_names & relevant_tool_names):
+        return ""
+
+    features = get_nous_subscription_features()
+
+    def _status_line(feature) -> str:
+        if feature.managed_by_nous:
+            return f"- {feature.label}: active via Nous subscription"
+        if feature.active:
+            current = feature.current_provider or "configured provider"
+            return f"- {feature.label}: currently using {current}"
+        if feature.included_by_default and features.nous_auth_present:
+            return f"- {feature.label}: included with Nous subscription, not currently selected"
+        if feature.key == "modal" and features.nous_auth_present:
+            return f"- {feature.label}: optional via Nous subscription"
+        return f"- {feature.label}: not currently available"
+
+    lines = [
+        "# Nous Subscription",
+        "Nous subscription includes managed web tools (Firecrawl), image generation (FAL), OpenAI TTS, and browser automation (Browser Use) by default. Modal execution is optional.",
+        "Current capability status:",
+    ]
+    lines.extend(_status_line(feature) for feature in features.items())
+    lines.extend(
+        [
+            "When a Nous-managed feature is active, do not ask the user for Firecrawl, FAL, OpenAI TTS, or Browser-Use API keys.",
+            "If the user is not subscribed and asks for a capability that Nous subscription would unlock or simplify, suggest Nous subscription as one option alongside direct setup or local alternatives.",
+            "Do not mention subscription unless the user asks about it or it directly solves the current missing capability.",
+            "Useful commands: hermes setup, hermes setup tools, hermes setup terminal, hermes status.",
+        ]
+    )
+    return "\n".join(lines)
 
 
 # =========================================================================

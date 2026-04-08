@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from gateway.channel_directory import (
+    build_channel_directory,
     resolve_channel_name,
     format_directory_for_display,
     load_directory,
@@ -43,6 +44,27 @@ class TestLoadDirectory:
         with patch("gateway.channel_directory.DIRECTORY_PATH", cache_file):
             result = load_directory()
         assert result["updated_at"] is None
+
+
+class TestBuildChannelDirectoryWrites:
+    def test_failed_write_preserves_previous_cache(self, tmp_path, monkeypatch):
+        cache_file = _write_directory(tmp_path, {
+            "telegram": [{"id": "123", "name": "Alice", "type": "dm"}]
+        })
+        previous = json.loads(cache_file.read_text())
+
+        def broken_dump(data, fp, *args, **kwargs):
+            fp.write('{"updated_at":')
+            fp.flush()
+            raise OSError("disk full")
+
+        monkeypatch.setattr(json, "dump", broken_dump)
+
+        with patch("gateway.channel_directory.DIRECTORY_PATH", cache_file):
+            build_channel_directory({})
+            result = load_directory()
+
+        assert result == previous
 
 
 class TestResolveChannelName:
@@ -118,6 +140,19 @@ class TestResolveChannelName:
         }
         with self._setup(tmp_path, platforms):
             assert resolve_channel_name("telegram", "Coaching Chat / topic 17585") == "-1001:17585"
+
+    def test_display_label_with_type_suffix_resolves(self, tmp_path):
+        platforms = {
+            "telegram": [
+                {"id": "123", "name": "Alice", "type": "dm"},
+                {"id": "456", "name": "Dev Group", "type": "group"},
+                {"id": "-1001:17585", "name": "Coaching Chat / topic 17585", "type": "group"},
+            ]
+        }
+        with self._setup(tmp_path, platforms):
+            assert resolve_channel_name("telegram", "Alice (dm)") == "123"
+            assert resolve_channel_name("telegram", "Dev Group (group)") == "456"
+            assert resolve_channel_name("telegram", "Coaching Chat / topic 17585 (group)") == "-1001:17585"
 
 
 class TestBuildFromSessions:

@@ -16,6 +16,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from hermes_constants import get_hermes_home
+
 logger = logging.getLogger(__name__)
 
 # Minimum manifest version this installer understands.
@@ -26,8 +28,7 @@ _SUPPORTED_MANIFEST_VERSION = 1
 
 def _plugins_dir() -> Path:
     """Return the user plugins directory, creating it if needed."""
-    hermes_home = os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes"))
-    plugins = Path(hermes_home) / "plugins"
+    plugins = get_hermes_home() / "plugins"
     plugins.mkdir(parents=True, exist_ok=True)
     return plugins
 
@@ -41,6 +42,11 @@ def _sanitize_plugin_name(name: str, plugins_dir: Path) -> Path:
     if not name:
         raise ValueError("Plugin name must not be empty.")
 
+    if name in (".", ".."):
+        raise ValueError(
+            f"Invalid plugin name '{name}': must not reference the plugins directory itself."
+        )
+
     # Reject obvious traversal characters
     for bad in ("/", "\\", ".."):
         if bad in name:
@@ -49,10 +55,14 @@ def _sanitize_plugin_name(name: str, plugins_dir: Path) -> Path:
     target = (plugins_dir / name).resolve()
     plugins_resolved = plugins_dir.resolve()
 
-    if (
-        not str(target).startswith(str(plugins_resolved) + os.sep)
-        and target != plugins_resolved
-    ):
+    if target == plugins_resolved:
+        raise ValueError(
+            f"Invalid plugin name '{name}': resolves to the plugins directory itself."
+        )
+
+    try:
+        target.relative_to(plugins_resolved)
+    except ValueError:
         raise ValueError(
             f"Invalid plugin name '{name}': resolves outside the plugins directory."
         )
@@ -138,6 +148,82 @@ def _copy_example_files(plugin_dir: Path, console) -> None:
                 )
 
 
+def _prompt_plugin_env_vars(manifest: dict, console) -> None:
+    """Prompt for required environment variables declared in plugin.yaml.
+
+    ``requires_env`` accepts two formats:
+
+    Simple list (backwards-compatible)::
+
+        requires_env:
+          - MY_API_KEY
+
+    Rich list with metadata::
+
+        requires_env:
+          - name: MY_API_KEY
+            description: "API key for Acme service"
+            url: "https://acme.com/keys"
+            secret: true
+
+    Already-set variables are skipped.  Values are saved to the user's ``.env``.
+    """
+    requires_env = manifest.get("requires_env") or []
+    if not requires_env:
+        return
+
+    from hermes_cli.config import get_env_value, save_env_value  # noqa: F811
+    from hermes_constants import display_hermes_home
+
+    # Normalise to list-of-dicts
+    env_specs: list[dict] = []
+    for entry in requires_env:
+        if isinstance(entry, str):
+            env_specs.append({"name": entry})
+        elif isinstance(entry, dict) and entry.get("name"):
+            env_specs.append(entry)
+
+    # Filter to only vars that aren't already set
+    missing = [s for s in env_specs if not get_env_value(s["name"])]
+    if not missing:
+        return
+
+    plugin_name = manifest.get("name", "this plugin")
+    console.print(f"\n[bold]{plugin_name}[/bold] requires the following environment variables:\n")
+
+    for spec in missing:
+        name = spec["name"]
+        desc = spec.get("description", "")
+        url = spec.get("url", "")
+        secret = spec.get("secret", False)
+
+        label = f"  {name}"
+        if desc:
+            label += f" — {desc}"
+        console.print(label)
+        if url:
+            console.print(f"  [dim]Get yours at: {url}[/dim]")
+
+        try:
+            if secret:
+                import getpass
+                value = getpass.getpass(f"  {name}: ").strip()
+            else:
+                value = input(f"  {name}: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            console.print(f"\n[dim]  Skipped (you can set these later in {display_hermes_home()}/.env)[/dim]")
+            return
+
+        if value:
+            save_env_value(name, value)
+            os.environ[name] = value
+            console.print(f"  [green]✓[/green] Saved to {display_hermes_home()}/.env")
+        else:
+            console.print(f"  [dim]  Skipped (set {name} in {display_hermes_home()}/.env later)[/dim]")
+
+    console.print()
+
+
 def _display_after_install(plugin_dir: Path, identifier: str) -> None:
     """Show after-install.md if it exists, otherwise a default message."""
     from rich.console import Console
@@ -209,7 +295,7 @@ def cmd_install(identifier: str, force: bool = False) -> None:
         sys.exit(1)
 
     # Warn about insecure / local URL schemes
-    if git_url.startswith("http://") or git_url.startswith("file://"):
+    if git_url.startswith(("http://", "file://")):
         console.print(
             "[yellow]Warning:[/yellow] Using insecure/local URL scheme. "
             "Consider using https:// or git@ for production installs."
@@ -265,10 +351,11 @@ def cmd_install(identifier: str, force: bool = False) -> None:
                 )
                 sys.exit(1)
             if mv_int > _SUPPORTED_MANIFEST_VERSION:
+                from hermes_cli.config import recommended_update_command
                 console.print(
                     f"[red]Error:[/red] Plugin '{plugin_name}' requires manifest_version "
                     f"{mv}, but this installer only supports up to {_SUPPORTED_MANIFEST_VERSION}.\n"
-                    f"Run [bold]hermes update[/bold] to get a newer installer."
+                    f"Run [bold]{recommended_update_command()}[/bold] to get a newer installer."
                 )
                 sys.exit(1)
 
@@ -295,6 +382,12 @@ def cmd_install(identifier: str, force: bool = False) -> None:
 
     # Copy .example files to their real names (e.g. config.yaml.example → config.yaml)
     _copy_example_files(target, console)
+
+    # Re-read manifest from installed location (for env var prompting)
+    installed_manifest = _read_manifest(target)
+
+    # Prompt for required environment variables before showing after-install docs
+    _prompt_plugin_env_vars(installed_manifest, console)
 
     _display_after_install(target, identifier)
 
@@ -374,6 +467,73 @@ def cmd_remove(name: str) -> None:
     _display_removed(name, plugins_dir)
 
 
+def _get_disabled_set() -> set:
+    """Read the disabled plugins set from config.yaml."""
+    try:
+        from hermes_cli.config import load_config
+        config = load_config()
+        disabled = config.get("plugins", {}).get("disabled", [])
+        return set(disabled) if isinstance(disabled, list) else set()
+    except Exception:
+        return set()
+
+
+def _save_disabled_set(disabled: set) -> None:
+    """Write the disabled plugins list to config.yaml."""
+    from hermes_cli.config import load_config, save_config
+    config = load_config()
+    if "plugins" not in config:
+        config["plugins"] = {}
+    config["plugins"]["disabled"] = sorted(disabled)
+    save_config(config)
+
+
+def cmd_enable(name: str) -> None:
+    """Enable a previously disabled plugin."""
+    from rich.console import Console
+
+    console = Console()
+    plugins_dir = _plugins_dir()
+
+    # Verify the plugin exists
+    target = plugins_dir / name
+    if not target.is_dir():
+        console.print(f"[red]Plugin '{name}' is not installed.[/red]")
+        sys.exit(1)
+
+    disabled = _get_disabled_set()
+    if name not in disabled:
+        console.print(f"[dim]Plugin '{name}' is already enabled.[/dim]")
+        return
+
+    disabled.discard(name)
+    _save_disabled_set(disabled)
+    console.print(f"[green]✓[/green] Plugin [bold]{name}[/bold] enabled. Takes effect on next session.")
+
+
+def cmd_disable(name: str) -> None:
+    """Disable a plugin without removing it."""
+    from rich.console import Console
+
+    console = Console()
+    plugins_dir = _plugins_dir()
+
+    # Verify the plugin exists
+    target = plugins_dir / name
+    if not target.is_dir():
+        console.print(f"[red]Plugin '{name}' is not installed.[/red]")
+        sys.exit(1)
+
+    disabled = _get_disabled_set()
+    if name in disabled:
+        console.print(f"[dim]Plugin '{name}' is already disabled.[/dim]")
+        return
+
+    disabled.add(name)
+    _save_disabled_set(disabled)
+    console.print(f"[yellow]⊘[/yellow] Plugin [bold]{name}[/bold] disabled. Takes effect on next session.")
+
+
 def cmd_list() -> None:
     """List installed plugins."""
     from rich.console import Console
@@ -393,8 +553,11 @@ def cmd_list() -> None:
         console.print("[dim]Install with:[/dim] hermes plugins install owner/repo")
         return
 
+    disabled = _get_disabled_set()
+
     table = Table(title="Installed Plugins", show_lines=False)
     table.add_column("Name", style="bold")
+    table.add_column("Status")
     table.add_column("Version", style="dim")
     table.add_column("Description")
     table.add_column("Source", style="dim")
@@ -420,11 +583,86 @@ def cmd_list() -> None:
         if (d / ".git").exists():
             source = "git"
 
-        table.add_row(name, str(version), description, source)
+        is_disabled = name in disabled or d.name in disabled
+        status = "[red]disabled[/red]" if is_disabled else "[green]enabled[/green]"
+        table.add_row(name, status, str(version), description, source)
 
     console.print()
     console.print(table)
     console.print()
+    console.print("[dim]Interactive toggle:[/dim] hermes plugins")
+    console.print("[dim]Enable/disable:[/dim] hermes plugins enable/disable <name>")
+
+
+def cmd_toggle() -> None:
+    """Interactive curses checklist to enable/disable installed plugins."""
+    from rich.console import Console
+
+    try:
+        import yaml
+    except ImportError:
+        yaml = None
+
+    console = Console()
+    plugins_dir = _plugins_dir()
+
+    dirs = sorted(d for d in plugins_dir.iterdir() if d.is_dir())
+    if not dirs:
+        console.print("[dim]No plugins installed.[/dim]")
+        console.print("[dim]Install with:[/dim] hermes plugins install owner/repo")
+        return
+
+    disabled = _get_disabled_set()
+
+    # Build items list: "name — description" for display
+    names = []
+    labels = []
+    selected = set()
+
+    for i, d in enumerate(dirs):
+        manifest_file = d / "plugin.yaml"
+        name = d.name
+        description = ""
+
+        if manifest_file.exists() and yaml:
+            try:
+                with open(manifest_file) as f:
+                    manifest = yaml.safe_load(f) or {}
+                name = manifest.get("name", d.name)
+                description = manifest.get("description", "")
+            except Exception:
+                pass
+
+        names.append(name)
+        label = f"{name} — {description}" if description else name
+        labels.append(label)
+
+        if name not in disabled and d.name not in disabled:
+            selected.add(i)
+
+    from hermes_cli.curses_ui import curses_checklist
+
+    result = curses_checklist(
+        title="Plugins — toggle enabled/disabled",
+        items=labels,
+        selected=selected,
+    )
+
+    # Compute new disabled set from deselected items
+    new_disabled = set()
+    for i, name in enumerate(names):
+        if i not in result:
+            new_disabled.add(name)
+
+    if new_disabled != disabled:
+        _save_disabled_set(new_disabled)
+        enabled_count = len(names) - len(new_disabled)
+        console.print(
+            f"\n[green]✓[/green] {enabled_count} enabled, {len(new_disabled)} disabled. "
+            f"Takes effect on next session."
+        )
+    else:
+        console.print("\n[dim]No changes.[/dim]")
 
 
 def plugins_command(args) -> None:
@@ -437,8 +675,14 @@ def plugins_command(args) -> None:
         cmd_update(args.name)
     elif action in ("remove", "rm", "uninstall"):
         cmd_remove(args.name)
-    elif action in ("list", "ls") or action is None:
+    elif action == "enable":
+        cmd_enable(args.name)
+    elif action == "disable":
+        cmd_disable(args.name)
+    elif action in ("list", "ls"):
         cmd_list()
+    elif action is None:
+        cmd_toggle()
     else:
         from rich.console import Console
 

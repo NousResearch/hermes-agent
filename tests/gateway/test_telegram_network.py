@@ -315,6 +315,24 @@ class TestFallbackTransportInit:
         transport = tnet.TelegramFallbackTransport(["149.154.167.220", "not-an-ip"])
         assert transport._fallback_ips == ["149.154.167.220"]
 
+    def test_uses_proxy_env_for_primary_and_fallback_transports(self, monkeypatch):
+        seen_kwargs = []
+
+        def factory(**kwargs):
+            seen_kwargs.append(kwargs.copy())
+            return FakeTransport([], {})
+
+        for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy", "http_proxy", "all_proxy"):
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setenv("HTTPS_PROXY", "http://proxy.example:8080")
+        monkeypatch.setattr(tnet.httpx, "AsyncHTTPTransport", factory)
+
+        transport = tnet.TelegramFallbackTransport(["149.154.167.220"])
+
+        assert transport._fallback_ips == ["149.154.167.220"]
+        assert len(seen_kwargs) == 2
+        assert all(kwargs["proxy"] == "http://proxy.example:8080" for kwargs in seen_kwargs)
+
 
 class TestFallbackTransportClose:
     @pytest.mark.asyncio

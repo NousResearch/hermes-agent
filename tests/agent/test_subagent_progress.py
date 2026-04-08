@@ -96,7 +96,7 @@ class TestBuildChildProgressCallback:
         cb = _build_child_progress_callback(0, parent)
         assert cb is not None
         
-        cb("web_search", "quantum computing")
+        cb("tool.started", "web_search", "quantum computing", {})
         output = buf.getvalue()
         assert "web_search" in output
         assert "quantum computing" in output
@@ -131,11 +131,11 @@ class TestBuildChildProgressCallback:
         
         # Send 4 tool calls — shouldn't flush yet (BATCH_SIZE = 5)
         for i in range(4):
-            cb(f"tool_{i}", f"arg_{i}")
+            cb("tool.started", f"tool_{i}", f"arg_{i}", {})
         parent_cb.assert_not_called()
         
         # 5th call should trigger flush
-        cb("tool_4", "arg_4")
+        cb("tool.started", "tool_4", "arg_4", {})
         parent_cb.assert_called_once()
         call_args = parent_cb.call_args
         assert "tool_0" in call_args[0][1]
@@ -207,7 +207,7 @@ class TestBuildChildProgressCallback:
         parent.tool_progress_callback = None
         
         cb = _build_child_progress_callback(0, parent, task_count=1)
-        cb("web_search", "test")
+        cb("tool.started", "web_search", "test", {})
         
         output = buf.getvalue()
         assert "[" not in output
@@ -330,9 +330,9 @@ class TestBatchFlush:
         cb = _build_child_progress_callback(0, parent)
 
         # Send 3 tools (below batch size of 5)
-        cb("web_search", "query1")
-        cb("read_file", "file.txt")
-        cb("write_file", "out.txt")
+        cb("tool.started", "web_search", "query1", {})
+        cb("tool.started", "read_file", "file.txt", {})
+        cb("tool.started", "write_file", "out.txt", {})
         parent_cb.assert_not_called()
 
         # Flush should send the remaining 3
@@ -365,7 +365,7 @@ class TestBatchFlush:
         parent.tool_progress_callback = None
 
         cb = _build_child_progress_callback(0, parent)
-        cb("web_search", "test")
+        cb("tool.started", "web_search", "test", {})
         cb._flush()  # Should not crash
 
 

@@ -15,7 +15,6 @@ Usage::
 
 import asyncio
 import logging
-import os
 import sys
 from pathlib import Path
 from hermes_constants import get_hermes_home
@@ -74,7 +73,7 @@ def main() -> None:
 
     agent = HermesACPAgent()
     try:
-        asyncio.run(acp.run_agent(agent))
+        asyncio.run(acp.run_agent(agent, use_unstable_protocol=True))
     except KeyboardInterrupt:
         logger.info("Shutting down (KeyboardInterrupt)")
     except Exception:

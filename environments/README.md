@@ -101,21 +101,11 @@ Available methods:
 
 ### Patches (`patches.py`)
 
-**Problem**: Some hermes-agent tools use `asyncio.run()` internally (e.g., the Modal backend via SWE-ReX). This crashes when called from inside Atropos's event loop because `asyncio.run()` cannot be nested.
+**Problem**: Some hermes-agent tools use `asyncio.run()` internally (e.g., the Modal backend). This crashes when called from inside Atropos's event loop because `asyncio.run()` cannot be nested.
 
-**Solution**: `patches.py` monkey-patches `SwerexModalEnvironment` to use a dedicated background thread (`_AsyncWorker`) with its own event loop. The calling code sees the same sync interface, but internally the async work happens on a separate thread that doesn't conflict with Atropos's loop.
+**Solution**: `ModalEnvironment` uses a dedicated `_AsyncWorker` background thread with its own event loop. The calling code sees a sync interface, but internally all async Modal SDK calls happen on the worker thread so they don't conflict with Atropos's loop. This is built directly into `tools/environments/modal.py` — no monkey-patching required.
 
-What gets patched:
-- `SwerexModalEnvironment.__init__` -- creates Modal deployment on a background thread
-- `SwerexModalEnvironment.execute` -- runs commands on the same background thread
-- `SwerexModalEnvironment.stop` -- stops deployment on the background thread
-
-The patches are:
-- **Idempotent** -- calling `apply_patches()` multiple times is safe
-- **Transparent** -- same interface and behavior, only the internal async execution changes
-- **Universal** -- works identically in normal CLI use (no running event loop)
-
-Applied automatically at import time by `hermes_base_env.py`.
+`patches.py` is now a no-op (kept for backward compatibility with imports).
 
 ### Tool Call Parsers (`tool_call_parsers/`)
 

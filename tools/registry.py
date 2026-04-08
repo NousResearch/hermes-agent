@@ -87,6 +87,23 @@ class ToolRegistry:
         if check_fn and toolset not in self._toolset_checks:
             self._toolset_checks[toolset] = check_fn
 
+    def deregister(self, name: str) -> None:
+        """Remove a tool from the registry.
+
+        Also cleans up the toolset check if no other tools remain in the
+        same toolset.  Used by MCP dynamic tool discovery to nuke-and-repave
+        when a server sends ``notifications/tools/list_changed``.
+        """
+        entry = self._tools.pop(name, None)
+        if entry is None:
+            return
+        # Drop the toolset check if this was the last tool in that toolset
+        if entry.toolset in self._toolset_checks and not any(
+            e.toolset == entry.toolset for e in self._tools.values()
+        ):
+            self._toolset_checks.pop(entry.toolset, None)
+        logger.debug("Deregistered tool: %s", name)
+
     # ------------------------------------------------------------------
     # Schema retrieval
     # ------------------------------------------------------------------
@@ -115,7 +132,9 @@ class ToolRegistry:
                     if not quiet:
                         logger.debug("Tool %s unavailable (check failed)", name)
                     continue
-            result.append({"type": "function", "function": entry.schema})
+            # Ensure schema always has a "name" field — use entry.name as fallback
+            schema_with_name = {**entry.schema, "name": entry.name}
+            result.append({"type": "function", "function": schema_with_name})
         return result
 
     # ------------------------------------------------------------------
@@ -148,6 +167,15 @@ class ToolRegistry:
     def get_all_tool_names(self) -> List[str]:
         """Return sorted list of all registered tool names."""
         return sorted(self._tools.keys())
+
+    def get_schema(self, name: str) -> Optional[dict]:
+        """Return a tool's raw schema dict, bypassing check_fn filtering.
+
+        Useful for token estimation and introspection where availability
+        doesn't matter — only the schema content does.
+        """
+        entry = self._tools.get(name)
+        return entry.schema if entry else None
 
     def get_toolset_for_tool(self, name: str) -> Optional[str]:
         """Return the toolset a tool belongs to, or None."""
@@ -245,3 +273,48 @@ class ToolRegistry:
 
 # Module-level singleton
 registry = ToolRegistry()
+
+
+# ---------------------------------------------------------------------------
+# Helpers for tool response serialization
+# ---------------------------------------------------------------------------
+# Every tool handler must return a JSON string.  These helpers eliminate the
+# boilerplate ``json.dumps({"error": msg}, ensure_ascii=False)`` that appears
+# hundreds of times across tool files.
+#
+# Usage:
+#   from tools.registry import registry, tool_error, tool_result
+#
+#   return tool_error("something went wrong")
+#   return tool_error("not found", code=404)
+#   return tool_result(success=True, data=payload)
+#   return tool_result(items)            # pass a dict directly
+
+
+def tool_error(message, **extra) -> str:
+    """Return a JSON error string for tool handlers.
+
+    >>> tool_error("file not found")
+    '{"error": "file not found"}'
+    >>> tool_error("bad input", success=False)
+    '{"error": "bad input", "success": false}'
+    """
+    result = {"error": str(message)}
+    if extra:
+        result.update(extra)
+    return json.dumps(result, ensure_ascii=False)
+
+
+def tool_result(data=None, **kwargs) -> str:
+    """Return a JSON result string for tool handlers.
+
+    Accepts a dict positional arg *or* keyword arguments (not both):
+
+    >>> tool_result(success=True, count=42)
+    '{"success": true, "count": 42}'
+    >>> tool_result({"key": "value"})
+    '{"key": "value"}'
+    """
+    if data is not None:
+        return json.dumps(data, ensure_ascii=False)
+    return json.dumps(kwargs, ensure_ascii=False)

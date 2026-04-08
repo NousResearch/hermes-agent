@@ -5,6 +5,7 @@ toggleable list of items.  Falls back to a numbered text UI when
 curses is unavailable (Windows without curses, piped stdin, etc.).
 """
 
+import sys
 from typing import List, Set
 
 from hermes_cli.colors import Colors, color
@@ -26,6 +27,10 @@ def curses_checklist(
         The indices the user confirmed as checked.  On cancel (ESC/q),
         returns ``pre_selected`` unchanged.
     """
+    # Safety: return defaults when stdin is not a terminal.
+    if not sys.stdin.isatty():
+        return set(pre_selected)
+
     try:
         import curses
         selected = set(pre_selected)

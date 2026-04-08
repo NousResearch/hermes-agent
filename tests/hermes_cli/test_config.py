@@ -13,6 +13,7 @@ from hermes_cli.config import (
     load_config,
     load_env,
     migrate_config,
+    remove_env_value,
     save_config,
     save_env_value,
     save_env_value_secure,
@@ -147,6 +148,49 @@ class TestSaveEnvValueSecure:
             save_env_value("TENOR_API_KEY", "sk-test-secret")
             env_mode = (tmp_path / ".env").stat().st_mode & 0o777
             assert env_mode == 0o600
+
+
+class TestRemoveEnvValue:
+    def test_removes_key_from_env_file(self, tmp_path):
+        env_path = tmp_path / ".env"
+        env_path.write_text("KEY_A=value_a\nKEY_B=value_b\nKEY_C=value_c\n")
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path), "KEY_B": "value_b"}):
+            result = remove_env_value("KEY_B")
+            assert result is True
+            content = env_path.read_text()
+            assert "KEY_B" not in content
+            assert "KEY_A=value_a" in content
+            assert "KEY_C=value_c" in content
+
+    def test_clears_os_environ(self, tmp_path):
+        env_path = tmp_path / ".env"
+        env_path.write_text("MY_KEY=my_value\n")
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path), "MY_KEY": "my_value"}):
+            remove_env_value("MY_KEY")
+            assert "MY_KEY" not in os.environ
+
+    def test_returns_false_when_key_not_found(self, tmp_path):
+        env_path = tmp_path / ".env"
+        env_path.write_text("OTHER_KEY=value\n")
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            result = remove_env_value("MISSING_KEY")
+            assert result is False
+            # File should be untouched
+            assert env_path.read_text() == "OTHER_KEY=value\n"
+
+    def test_handles_missing_env_file(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path), "GHOST_KEY": "ghost"}):
+            result = remove_env_value("GHOST_KEY")
+            assert result is False
+            # os.environ should still be cleared
+            assert "GHOST_KEY" not in os.environ
+
+    def test_clears_os_environ_even_when_not_in_file(self, tmp_path):
+        env_path = tmp_path / ".env"
+        env_path.write_text("OTHER=stuff\n")
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path), "ORPHAN_KEY": "orphan"}):
+            remove_env_value("ORPHAN_KEY")
+            assert "ORPHAN_KEY" not in os.environ
 
 
 class TestSaveConfigAtomicity:

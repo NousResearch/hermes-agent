@@ -1,11 +1,15 @@
 """Tests for gateway configuration management."""
 
+import os
+from unittest.mock import patch
+
 from gateway.config import (
     GatewayConfig,
     HomeChannel,
     Platform,
     PlatformConfig,
     SessionResetPolicy,
+    _apply_env_overrides,
     load_gateway_config,
 )
 
@@ -105,6 +109,7 @@ class TestGatewayConfigRoundtrip:
             reset_triggers=["/new"],
             quick_commands={"limits": {"type": "exec", "command": "echo ok"}},
             group_sessions_per_user=False,
+            thread_sessions_per_user=True,
         )
         d = config.to_dict()
         restored = GatewayConfig.from_dict(d)
@@ -114,6 +119,7 @@ class TestGatewayConfigRoundtrip:
         assert restored.reset_triggers == ["/new"]
         assert restored.quick_commands == {"limits": {"type": "exec", "command": "echo ok"}}
         assert restored.group_sessions_per_user is False
+        assert restored.thread_sessions_per_user is True
 
     def test_roundtrip_preserves_unauthorized_dm_behavior(self):
         config = GatewayConfig(
@@ -163,6 +169,30 @@ class TestLoadGatewayConfig:
 
         assert config.group_sessions_per_user is False
 
+    def test_bridges_thread_sessions_per_user_from_config_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text("thread_sessions_per_user: true\n", encoding="utf-8")
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.thread_sessions_per_user is True
+
+    def test_thread_sessions_per_user_defaults_to_false(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text("{}\n", encoding="utf-8")
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.thread_sessions_per_user is False
+
     def test_invalid_quick_commands_in_config_yaml_are_ignored(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
@@ -192,3 +222,75 @@ class TestLoadGatewayConfig:
 
         assert config.unauthorized_dm_behavior == "ignore"
         assert config.platforms[Platform.WHATSAPP].extra["unauthorized_dm_behavior"] == "pair"
+
+
+class TestHomeChannelEnvOverrides:
+    """Home channel env vars should apply even when the platform was already
+    configured via config.yaml (not just when credential env vars create it)."""
+
+    def test_existing_platform_configs_accept_home_channel_env_overrides(self):
+        cases = [
+            (
+                Platform.SLACK,
+                PlatformConfig(enabled=True, token="xoxb-from-config"),
+                {"SLACK_HOME_CHANNEL": "C123", "SLACK_HOME_CHANNEL_NAME": "Ops"},
+                ("C123", "Ops"),
+            ),
+            (
+                Platform.SIGNAL,
+                PlatformConfig(
+                    enabled=True,
+                    extra={"http_url": "http://localhost:9090", "account": "+15551234567"},
+                ),
+                {"SIGNAL_HOME_CHANNEL": "+1555000", "SIGNAL_HOME_CHANNEL_NAME": "Phone"},
+                ("+1555000", "Phone"),
+            ),
+            (
+                Platform.MATTERMOST,
+                PlatformConfig(
+                    enabled=True,
+                    token="mm-token",
+                    extra={"url": "https://mm.example.com"},
+                ),
+                {"MATTERMOST_HOME_CHANNEL": "ch_abc123", "MATTERMOST_HOME_CHANNEL_NAME": "General"},
+                ("ch_abc123", "General"),
+            ),
+            (
+                Platform.MATRIX,
+                PlatformConfig(
+                    enabled=True,
+                    token="syt_abc123",
+                    extra={"homeserver": "https://matrix.example.org"},
+                ),
+                {"MATRIX_HOME_ROOM": "!room123:example.org", "MATRIX_HOME_ROOM_NAME": "Bot Room"},
+                ("!room123:example.org", "Bot Room"),
+            ),
+            (
+                Platform.EMAIL,
+                PlatformConfig(
+                    enabled=True,
+                    extra={
+                        "address": "hermes@test.com",
+                        "imap_host": "imap.test.com",
+                        "smtp_host": "smtp.test.com",
+                    },
+                ),
+                {"EMAIL_HOME_ADDRESS": "user@test.com", "EMAIL_HOME_ADDRESS_NAME": "Inbox"},
+                ("user@test.com", "Inbox"),
+            ),
+            (
+                Platform.SMS,
+                PlatformConfig(enabled=True, api_key="token_abc"),
+                {"SMS_HOME_CHANNEL": "+15559876543", "SMS_HOME_CHANNEL_NAME": "My Phone"},
+                ("+15559876543", "My Phone"),
+            ),
+        ]
+
+        for platform, platform_config, env, expected in cases:
+            config = GatewayConfig(platforms={platform: platform_config})
+            with patch.dict(os.environ, env, clear=True):
+                _apply_env_overrides(config)
+
+            home = config.platforms[platform].home_channel
+            assert home is not None, f"{platform.value}: home_channel should not be None"
+            assert (home.chat_id, home.name) == expected, platform.value

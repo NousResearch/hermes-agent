@@ -27,7 +27,16 @@ class FakeCredentials:
             "token_uri": "https://oauth2.googleapis.com/token",
             "client_id": "client-id",
             "client_secret": "client-secret",
-            "scopes": ["scope-a"],
+            "scopes": [
+                "https://www.googleapis.com/auth/gmail.readonly",
+                "https://www.googleapis.com/auth/gmail.send",
+                "https://www.googleapis.com/auth/gmail.modify",
+                "https://www.googleapis.com/auth/calendar",
+                "https://www.googleapis.com/auth/drive.readonly",
+                "https://www.googleapis.com/auth/contacts.readonly",
+                "https://www.googleapis.com/auth/spreadsheets",
+                "https://www.googleapis.com/auth/documents.readonly",
+            ],
         }
 
     def to_json(self):
@@ -201,3 +210,28 @@ class TestExchangeAuthCode:
         assert "token exchange failed" in out.lower()
         assert setup_module.PENDING_AUTH_PATH.exists()
         assert not setup_module.TOKEN_PATH.exists()
+
+    def test_refuses_to_overwrite_existing_token_with_narrower_scopes(self, setup_module, capsys):
+        setup_module.PENDING_AUTH_PATH.write_text(
+            json.dumps({"state": "saved-state", "code_verifier": "saved-verifier"})
+        )
+        setup_module.TOKEN_PATH.write_text(json.dumps({"token": "existing-token", "scopes": setup_module.SCOPES}))
+        FakeFlow.credentials_payload = {
+            "token": "narrow-token",
+            "refresh_token": "refresh-token",
+            "token_uri": "https://oauth2.googleapis.com/token",
+            "client_id": "client-id",
+            "client_secret": "client-secret",
+            "scopes": [
+                "https://www.googleapis.com/auth/drive.readonly",
+                "https://www.googleapis.com/auth/spreadsheets",
+            ],
+        }
+
+        with pytest.raises(SystemExit):
+            setup_module.exchange_auth_code("4/test-auth-code")
+
+        out = capsys.readouterr().out
+        assert "refusing to save incomplete google workspace token" in out.lower()
+        assert json.loads(setup_module.TOKEN_PATH.read_text())["token"] == "existing-token"
+        assert setup_module.PENDING_AUTH_PATH.exists()

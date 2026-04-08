@@ -168,9 +168,7 @@ So a server that exposes callable tools but no resources/prompts will not get th
 
 ## Per-server filtering
 
-This is the main feature added by the PR work.
-
-You can now control which tools each MCP server contributes to Hermes.
+You can control which tools each MCP server contributes to Hermes, allowing fine-grained management of your tool namespace.
 
 ### Disable a server entirely
 
@@ -277,6 +275,14 @@ That keeps the tool list clean.
 
 Hermes discovers MCP servers at startup and registers their tools into the normal tool registry.
 
+### Dynamic Tool Discovery
+
+MCP servers can notify Hermes when their available tools change at runtime by sending a `notifications/tools/list_changed` notification. When Hermes receives this notification, it automatically re-fetches the server's tool list and updates the registry — no manual `/reload-mcp` required.
+
+This is useful for MCP servers whose capabilities change dynamically (e.g. a server that adds tools when a new database schema is loaded, or removes tools when a service goes offline).
+
+The refresh is lock-protected so rapid-fire notifications from the same server don't cause overlapping refreshes. Prompt and resource change notifications (`prompts/list_changed`, `resources/list_changed`) are received but not yet acted on.
+
 ### Reloading
 
 If you change MCP config, use:
@@ -285,7 +291,7 @@ If you change MCP config, use:
 /reload-mcp
 ```
 
-This reloads MCP servers from config and refreshes the available tool list.
+This reloads MCP servers from config and refreshes the available tool list. For runtime tool changes pushed by the server itself, see [Dynamic Tool Discovery](#dynamic-tool-discovery) above.
 
 ### Toolsets
 
@@ -402,6 +408,138 @@ Because Hermes now only registers those wrappers when both are true:
 2. the server session actually supports the capability
 
 This is intentional and keeps the tool list honest.
+
+## MCP Sampling Support
+
+MCP servers can request LLM inference from Hermes via the `sampling/createMessage` protocol. This allows an MCP server to ask Hermes to generate text on its behalf — useful for servers that need LLM capabilities but don't have their own model access.
+
+Sampling is **enabled by default** for all MCP servers (when the MCP SDK supports it). Configure it per-server under the `sampling` key:
+
+```yaml
+mcp_servers:
+  my_server:
+    command: "my-mcp-server"
+    sampling:
+      enabled: true            # Enable sampling (default: true)
+      model: "openai/gpt-4o"  # Override model for sampling requests (optional)
+      max_tokens_cap: 4096     # Max tokens per sampling response (default: 4096)
+      timeout: 30              # Timeout in seconds per request (default: 30)
+      max_rpm: 10              # Rate limit: max requests per minute (default: 10)
+      max_tool_rounds: 5       # Max tool-use rounds in sampling loops (default: 5)
+      allowed_models: []       # Allowlist of model names the server may request (empty = any)
+      log_level: "info"        # Audit log level: debug, info, or warning (default: info)
+```
+
+The sampling handler includes a sliding-window rate limiter, per-request timeouts, and tool-loop depth limits to prevent runaway usage. Metrics (request count, errors, tokens used) are tracked per server instance.
+
+To disable sampling for a specific server:
+
+```yaml
+mcp_servers:
+  untrusted_server:
+    url: "https://mcp.example.com"
+    sampling:
+      enabled: false
+```
+
+## Running Hermes as an MCP server
+
+In addition to connecting **to** MCP servers, Hermes can also **be** an MCP server. This lets other MCP-capable agents (Claude Code, Cursor, Codex, or any MCP client) use Hermes's messaging capabilities — list conversations, read message history, and send messages across all your connected platforms.
+
+### When to use this
+
+- You want Claude Code, Cursor, or another coding agent to send and read Telegram/Discord/Slack messages through Hermes
+- You want a single MCP server that bridges to all of Hermes's connected messaging platforms at once
+- You already have a running Hermes gateway with connected platforms
+
+### Quick start
+
+```bash
+hermes mcp serve
+```
+
+This starts a stdio MCP server. The MCP client (not you) manages the process lifecycle.
+
+### MCP client configuration
+
+Add Hermes to your MCP client config. For example, in Claude Code's `~/.claude/claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "hermes": {
+      "command": "hermes",
+      "args": ["mcp", "serve"]
+    }
+  }
+}
+```
+
+Or if you installed Hermes in a specific location:
+
+```json
+{
+  "mcpServers": {
+    "hermes": {
+      "command": "/home/user/.hermes/hermes-agent/venv/bin/hermes",
+      "args": ["mcp", "serve"]
+    }
+  }
+}
+```
+
+### Available tools
+
+The MCP server exposes 10 tools, matching OpenClaw's channel bridge surface plus a Hermes-specific channel browser:
+
+| Tool | Description |
+|------|-------------|
+| `conversations_list` | List active messaging conversations. Filter by platform or search by name. |
+| `conversation_get` | Get detailed info about one conversation by session key. |
+| `messages_read` | Read recent message history for a conversation. |
+| `attachments_fetch` | Extract non-text attachments (images, media) from a specific message. |
+| `events_poll` | Poll for new conversation events since a cursor position. |
+| `events_wait` | Long-poll / block until the next event arrives (near-real-time). |
+| `messages_send` | Send a message through a platform (e.g. `telegram:123456`, `discord:#general`). |
+| `channels_list` | List available messaging targets across all platforms. |
+| `permissions_list_open` | List pending approval requests observed during this bridge session. |
+| `permissions_respond` | Allow or deny a pending approval request. |
+
+### Event system
+
+The MCP server includes a live event bridge that polls Hermes's session database for new messages. This gives MCP clients near-real-time awareness of incoming conversations:
+
+```
+# Poll for new events (non-blocking)
+events_poll(after_cursor=0)
+
+# Wait for next event (blocks up to timeout)
+events_wait(after_cursor=42, timeout_ms=30000)
+```
+
+Event types: `message`, `approval_requested`, `approval_resolved`
+
+The event queue is in-memory and starts when the bridge connects. Older messages are available through `messages_read`.
+
+### Options
+
+```bash
+hermes mcp serve              # Normal mode
+hermes mcp serve --verbose    # Debug logging on stderr
+```
+
+### How it works
+
+The MCP server reads conversation data directly from Hermes's session store (`~/.hermes/sessions/sessions.json` and the SQLite database). A background thread polls the database for new messages and maintains an in-memory event queue. For sending messages, it uses the same `send_message` infrastructure as the Hermes agent itself.
+
+The gateway does NOT need to be running for read operations (listing conversations, reading history, polling events). It DOES need to be running for send operations, since the platform adapters need active connections.
+
+### Current limits
+
+- Stdio transport only (no HTTP MCP transport yet)
+- Event polling at ~200ms intervals via mtime-optimized DB polling (skips work when files are unchanged)
+- No `claude/channel` push notification protocol yet
+- Text-only sends (no media/attachment sending through `messages_send`)
 
 ## Related docs
 

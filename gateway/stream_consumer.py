@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import queue
+import re
 import time
 from dataclasses import dataclass
 from typing import Any, Optional
@@ -26,6 +27,10 @@ logger = logging.getLogger("gateway.stream_consumer")
 
 # Sentinel to signal the stream is complete
 _DONE = object()
+
+# Sentinel to signal a tool boundary — finalize current message and start a
+# new one so that subsequent text appears below tool progress messages.
+_NEW_SEGMENT = object()
 
 
 @dataclass
@@ -77,9 +82,16 @@ class GatewayStreamConsumer:
         return self._already_sent
 
     def on_delta(self, text: str) -> None:
-        """Thread-safe callback — called from the agent's worker thread."""
+        """Thread-safe callback — called from the agent's worker thread.
+
+        When *text* is ``None``, signals a tool boundary: the current message
+        is finalized and subsequent text will be sent as a new message so it
+        appears below any tool-progress messages the gateway sent in between.
+        """
         if text:
             self._queue.put(text)
+        elif text is None:
+            self._queue.put(_NEW_SEGMENT)
 
     def finish(self) -> None:
         """Signal that the stream is complete."""
@@ -95,11 +107,15 @@ class GatewayStreamConsumer:
             while True:
                 # Drain all available items from the queue
                 got_done = False
+                got_segment_break = False
                 while True:
                     try:
                         item = self._queue.get_nowait()
                         if item is _DONE:
                             got_done = True
+                            break
+                        if item is _NEW_SEGMENT:
+                            got_segment_break = True
                             break
                         self._accumulated += item
                     except queue.Empty:
@@ -110,8 +126,9 @@ class GatewayStreamConsumer:
                 elapsed = now - self._last_edit_time
                 should_edit = (
                     got_done
+                    or got_segment_break
                     or (elapsed >= self.cfg.edit_interval
-                        and len(self._accumulated) > 0)
+                        and self._accumulated)
                     or len(self._accumulated) >= self.cfg.buffer_threshold
                 )
 
@@ -132,7 +149,7 @@ class GatewayStreamConsumer:
                         self._last_sent_text = ""
 
                     display_text = self._accumulated
-                    if not got_done:
+                    if not got_done and not got_segment_break:
                         display_text += self.cfg.cursor
 
                     await self._send_or_edit(display_text)
@@ -143,6 +160,15 @@ class GatewayStreamConsumer:
                     if self._accumulated and self._message_id:
                         await self._send_or_edit(self._accumulated)
                     return
+
+                # Tool boundary: the should_edit block above already flushed
+                # accumulated text without a cursor.  Reset state so the next
+                # text chunk creates a fresh message below any tool-progress
+                # messages the gateway sent in between.
+                if got_segment_break:
+                    self._message_id = None
+                    self._accumulated = ""
+                    self._last_sent_text = ""
 
                 await asyncio.sleep(0.05)  # Small yield to not busy-loop
 
@@ -156,8 +182,39 @@ class GatewayStreamConsumer:
         except Exception as e:
             logger.error("Stream consumer error: %s", e)
 
+    # Pattern to strip MEDIA:<path> tags (including optional surrounding quotes).
+    # Matches the simple cleanup regex used by the non-streaming path in
+    # gateway/platforms/base.py for post-processing.
+    _MEDIA_RE = re.compile(r'''[`"']?MEDIA:\s*\S+[`"']?''')
+
+    @staticmethod
+    def _clean_for_display(text: str) -> str:
+        """Strip MEDIA: directives and internal markers from text before display.
+
+        The streaming path delivers raw text chunks that may include
+        ``MEDIA:<path>`` tags and ``[[audio_as_voice]]`` directives meant for
+        the platform adapter's post-processing.  The actual media files are
+        delivered separately via ``_deliver_media_from_response()`` after the
+        stream finishes — we just need to hide the raw directives from the
+        user.
+        """
+        if "MEDIA:" not in text and "[[audio_as_voice]]" not in text:
+            return text
+        cleaned = text.replace("[[audio_as_voice]]", "")
+        cleaned = GatewayStreamConsumer._MEDIA_RE.sub("", cleaned)
+        # Collapse excessive blank lines left behind by removed tags
+        cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
+        # Strip trailing whitespace/newlines but preserve leading content
+        return cleaned.rstrip()
+
     async def _send_or_edit(self, text: str) -> None:
         """Send or edit the streaming message."""
+        # Strip MEDIA: directives so they don't appear as visible text.
+        # Media files are delivered as native attachments after the stream
+        # finishes (via _deliver_media_from_response in gateway/run.py).
+        text = self._clean_for_display(text)
+        if not text.strip():
+            return
         try:
             if self._message_id is not None:
                 if self._edit_supported:
@@ -174,12 +231,12 @@ class GatewayStreamConsumer:
                         self._already_sent = True
                         self._last_sent_text = text
                     else:
-                        # Edit not supported by this adapter — stop streaming,
-                        # let the normal send path handle the final response.
-                        # Without this guard, adapters like Signal/Email would
-                        # flood the chat with a new message every edit_interval.
+                        # If an edit fails mid-stream (especially Telegram flood control),
+                        # stop progressive edits and let the normal final send path deliver
+                        # the complete answer instead of leaving the user with a partial.
                         logger.debug("Edit failed, disabling streaming for this adapter")
                         self._edit_supported = False
+                        self._already_sent = False
                 else:
                     # Editing not supported — skip intermediate updates.
                     # The final response will be sent by the normal path.

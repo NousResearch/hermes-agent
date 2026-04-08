@@ -241,7 +241,7 @@ def _list_recent_sessions(db, limit: int, current_session_id: str = None) -> str
         }, ensure_ascii=False)
     except Exception as e:
         logging.error("Error listing recent sessions: %s", e, exc_info=True)
-        return json.dumps({"success": False, "error": f"Failed to list recent sessions: {e}"}, ensure_ascii=False)
+        return tool_error(f"Failed to list recent sessions: {e}", success=False)
 
 
 def session_search(
@@ -258,7 +258,7 @@ def session_search(
     The current session is excluded from results since the agent already has that context.
     """
     if db is None:
-        return json.dumps({"success": False, "error": "Session database not available."}, ensure_ascii=False)
+        return tool_error("Session database not available.", success=False)
 
     limit = min(limit, 5)  # Cap at 5 sessions to avoid excessive LLM calls
 
@@ -392,23 +392,30 @@ def session_search(
             }, ensure_ascii=False)
 
         summaries = []
-        for (session_id, match_info, _, _), result in zip(tasks, results):
+        for (session_id, match_info, conversation_text, _), result in zip(tasks, results):
             if isinstance(result, Exception):
                 logging.warning(
                     "Failed to summarize session %s: %s",
-                    session_id,
-                    result,
-                    exc_info=True,
+                    session_id, result, exc_info=True,
                 )
-                continue
+                result = None
+
+            entry = {
+                "session_id": session_id,
+                "when": _format_timestamp(match_info.get("session_started")),
+                "source": match_info.get("source", "unknown"),
+                "model": match_info.get("model"),
+            }
+
             if result:
-                summaries.append({
-                    "session_id": session_id,
-                    "when": _format_timestamp(match_info.get("session_started")),
-                    "source": match_info.get("source", "unknown"),
-                    "model": match_info.get("model"),
-                    "summary": result,
-                })
+                entry["summary"] = result
+            else:
+                # Fallback: raw preview so matched sessions aren't silently
+                # dropped when the summarizer is unavailable (fixes #3409).
+                preview = (conversation_text[:500] + "\n…[truncated]") if conversation_text else "No preview available."
+                entry["summary"] = f"[Raw preview — summarization unavailable]\n{preview}"
+
+            summaries.append(entry)
 
         return json.dumps({
             "success": True,
@@ -420,7 +427,7 @@ def session_search(
 
     except Exception as e:
         logging.error("Session search failed: %s", e, exc_info=True)
-        return json.dumps({"success": False, "error": f"Search failed: {str(e)}"}, ensure_ascii=False)
+        return tool_error(f"Search failed: {str(e)}", success=False)
 
 
 def check_session_search_requirements() -> bool:
@@ -480,7 +487,7 @@ SESSION_SEARCH_SCHEMA = {
 
 
 # --- Registry ---
-from tools.registry import registry
+from tools.registry import registry, tool_error
 
 registry.register(
     name="session_search",

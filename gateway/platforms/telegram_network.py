@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import logging
+import os
 import socket
 from typing import Iterable, Optional
 
@@ -43,6 +44,14 @@ _DOH_PROVIDERS: list[dict] = [
 _SEED_FALLBACK_IPS: list[str] = ["149.154.167.220"]
 
 
+def _resolve_proxy_url() -> str | None:
+    for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy", "http_proxy", "all_proxy"):
+        value = (os.environ.get(key) or "").strip()
+        if value:
+            return value
+    return None
+
+
 class TelegramFallbackTransport(httpx.AsyncBaseTransport):
     """Retry Telegram Bot API requests via fallback IPs while preserving TLS/SNI.
 
@@ -54,6 +63,9 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
 
     def __init__(self, fallback_ips: Iterable[str], **transport_kwargs):
         self._fallback_ips = [ip for ip in dict.fromkeys(_normalize_fallback_ips(fallback_ips))]
+        proxy_url = _resolve_proxy_url()
+        if proxy_url and "proxy" not in transport_kwargs:
+            transport_kwargs["proxy"] = proxy_url
         self._primary = httpx.AsyncHTTPTransport(**transport_kwargs)
         self._fallbacks = {
             ip: httpx.AsyncHTTPTransport(**transport_kwargs) for ip in self._fallback_ips
@@ -122,6 +134,9 @@ def _normalize_fallback_ips(values: Iterable[str]) -> list[str]:
             continue
         if addr.version != 4:
             logger.warning("Ignoring non-IPv4 Telegram fallback IP: %s", raw)
+            continue
+        if addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_unspecified:
+            logger.warning("Ignoring private/internal Telegram fallback IP: %s", raw)
             continue
         normalized.append(str(addr))
     return normalized

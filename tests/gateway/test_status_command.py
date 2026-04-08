@@ -51,7 +51,8 @@ def _make_runner(session_entry: SessionEntry):
     runner._running_agents = {}
     runner._pending_messages = {}
     runner._pending_approvals = {}
-    runner._session_db = None
+    runner._session_db = MagicMock()
+    runner._session_db.get_session_title.return_value = None
     runner._reasoning_config = None
     runner._provider_routing = {}
     runner._fallback_model = None
@@ -82,10 +83,32 @@ async def test_status_command_reports_running_agent_without_interrupt(monkeypatc
 
     result = await runner._handle_message(_make_event("/status"))
 
+    assert "**Session ID:** `sess-1`" in result
     assert "**Tokens:** 321" in result
     assert "**Agent Running:** Yes ⚡" in result
+    assert "**Title:**" not in result
     running_agent.interrupt.assert_not_called()
     assert runner._pending_messages == {}
+
+
+@pytest.mark.asyncio
+async def test_status_command_includes_session_title_when_present():
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        total_tokens=321,
+    )
+    runner = _make_runner(session_entry)
+    runner._session_db.get_session_title.return_value = "My titled session"
+
+    result = await runner._handle_message(_make_event("/status"))
+
+    assert "**Session ID:** `sess-1`" in result
+    assert "**Title:** My titled session" in result
 
 
 @pytest.mark.asyncio
@@ -126,15 +149,63 @@ async def test_handle_message_persists_agent_token_counts(monkeypatch):
     assert result == "ok"
     runner.session_store.update_session.assert_called_once_with(
         session_entry.session_key,
-        input_tokens=120,
-        output_tokens=45,
-        cache_read_tokens=0,
-        cache_write_tokens=0,
         last_prompt_tokens=80,
-        model="openai/test-model",
-        estimated_cost_usd=None,
-        cost_status=None,
-        cost_source=None,
-        provider=None,
-        base_url=None,
     )
+
+
+
+@pytest.mark.asyncio
+async def test_status_command_bypasses_active_session_guard():
+    """When an agent is running, /status must be dispatched immediately via
+    base.handle_message — not queued or treated as an interrupt (#5046)."""
+    import asyncio
+    from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType
+    from gateway.session import build_session_key
+    from gateway.config import Platform, PlatformConfig, GatewayConfig
+
+    source = _make_source()
+    session_key = build_session_key(source)
+
+    handler_called_with = []
+
+    async def fake_handler(event):
+        handler_called_with.append(event)
+        return "📊 **Hermes Gateway Status**\n**Agent Running:** Yes ⚡"
+
+    # Concrete subclass to avoid abstract method errors
+    class _ConcreteAdapter(BasePlatformAdapter):
+        platform = Platform.TELEGRAM
+
+        async def connect(self): pass
+        async def disconnect(self): pass
+        async def send(self, chat_id, content, **kwargs): pass
+        async def get_chat_info(self, chat_id): return {}
+
+    platform_config = PlatformConfig(enabled=True, token="***")
+    adapter = _ConcreteAdapter(platform_config, Platform.TELEGRAM)
+    adapter.set_message_handler(fake_handler)
+
+    sent = []
+
+    async def fake_send_with_retry(chat_id, content, reply_to=None, metadata=None):
+        sent.append(content)
+
+    adapter._send_with_retry = fake_send_with_retry
+
+    # Simulate an active session
+    interrupt_event = asyncio.Event()
+    adapter._active_sessions[session_key] = interrupt_event
+
+    event = MessageEvent(
+        text="/status",
+        source=source,
+        message_id="m1",
+        message_type=MessageType.COMMAND,
+    )
+    await adapter.handle_message(event)
+
+    assert handler_called_with, "/status handler was never called (event was queued or dropped)"
+    assert sent, "/status response was never sent"
+    assert "Agent Running" in sent[0]
+    assert not interrupt_event.is_set(), "/status incorrectly triggered an agent interrupt"
+    assert session_key not in adapter._pending_messages, "/status was incorrectly queued"

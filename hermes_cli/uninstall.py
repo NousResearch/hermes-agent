@@ -6,7 +6,6 @@ Provides options for:
 - Keep data: Remove code but keep ~/.hermes/ (configs, sessions, logs)
 """
 
-import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -23,10 +22,6 @@ def log_success(msg: str):
 
 def log_warn(msg: str):
     print(f"{color('⚠', Colors.YELLOW)} {msg}")
-
-def log_error(msg: str):
-    print(f"{color('✗', Colors.RED)} {msg}")
-
 
 def get_project_root() -> Path:
     """Get the project installation directory."""

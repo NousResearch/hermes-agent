@@ -9,7 +9,7 @@ asserts zero contamination from shell noise via _assert_clean().
 """
 
 import pytest
-pytestmark = pytest.mark.skip(reason="Hangs in non-interactive environments")
+
 
 
 

@@ -13,8 +13,8 @@ Hermes Agent automatically discovers and loads context files that shape how it b
 | File | Purpose | Discovery |
 |------|---------|-----------| 
 | **.hermes.md** / **HERMES.md** | Project instructions (highest priority) | Walks to git root |
-| **AGENTS.md** | Project instructions, conventions, architecture | Recursive (walks subdirectories) |
-| **CLAUDE.md** | Claude Code context files (also detected) | CWD only |
+| **AGENTS.md** | Project instructions, conventions, architecture | CWD at startup + subdirectories progressively |
+| **CLAUDE.md** | Claude Code context files (also detected) | CWD at startup + subdirectories progressively |
 | **SOUL.md** | Global personality and tone customization for this Hermes instance | `HERMES_HOME/SOUL.md` only |
 | **.cursorrules** | Cursor IDE coding conventions | CWD only |
 | **.cursor/rules/*.mdc** | Cursor IDE rule modules | CWD only |
@@ -27,25 +27,29 @@ Only **one** project context type is loaded per session (first match wins): `.he
 
 `AGENTS.md` is the primary project context file. It tells the agent how your project is structured, what conventions to follow, and any special instructions.
 
-### Hierarchical Discovery
+### Progressive Subdirectory Discovery
 
-Hermes walks the directory tree starting from the working directory and loads **all** `AGENTS.md` files found, sorted by depth. This supports monorepo-style setups:
+At session start, Hermes loads the `AGENTS.md` from your working directory into the system prompt. As the agent navigates into subdirectories during the session (via `read_file`, `terminal`, `search_files`, etc.), it **progressively discovers** context files in those directories and injects them into the conversation at the moment they become relevant.
 
 ```
 my-project/
-├── AGENTS.md              ← Top-level project context
+├── AGENTS.md              ← Loaded at startup (system prompt)
 ├── frontend/
-│   └── AGENTS.md          ← Frontend-specific instructions
+│   └── AGENTS.md          ← Discovered when agent reads frontend/ files
 ├── backend/
-│   └── AGENTS.md          ← Backend-specific instructions
+│   └── AGENTS.md          ← Discovered when agent reads backend/ files
 └── shared/
-    └── AGENTS.md          ← Shared library conventions
+    └── AGENTS.md          ← Discovered when agent reads shared/ files
 ```
 
-All four files are concatenated into a single context block with relative path headers.
+This approach has two advantages over loading everything at startup:
+- **No system prompt bloat** — subdirectory hints only appear when needed
+- **Prompt cache preservation** — the system prompt stays stable across turns
+
+Each subdirectory is checked at most once per session. The discovery also walks up parent directories, so reading `backend/src/main.py` will discover `backend/AGENTS.md` even if `backend/src/` has no context file of its own.
 
 :::info
-Directories that are skipped during the walk: `.`-prefixed dirs, `node_modules`, `__pycache__`, `venv`, `.venv`.
+Subdirectory context files go through the same [security scan](#security-prompt-injection-protection) as startup context files. Malicious files are blocked.
 :::
 
 ### Example AGENTS.md
@@ -98,14 +102,27 @@ This means your existing Cursor conventions automatically apply when using Herme
 
 ## How Context Files Are Loaded
 
+### At startup (system prompt)
+
 Context files are loaded by `build_context_files_prompt()` in `agent/prompt_builder.py`:
 
-1. **At session start** — the function scans the working directory
+1. **Scan working directory** — checks for `.hermes.md` → `AGENTS.md` → `CLAUDE.md` → `.cursorrules` (first match wins)
 2. **Content is read** — each file is read as UTF-8 text
 3. **Security scan** — content is checked for prompt injection patterns
 4. **Truncation** — files exceeding 20,000 characters are head/tail truncated (70% head, 20% tail, with a marker in the middle)
 5. **Assembly** — all sections are combined under a `# Project Context` header
 6. **Injection** — the assembled content is added to the system prompt
+
+### During the session (progressive discovery)
+
+`SubdirectoryHintTracker` in `agent/subdirectory_hints.py` watches tool call arguments for file paths:
+
+1. **Path extraction** — after each tool call, file paths are extracted from arguments (`path`, `workdir`, shell commands)
+2. **Ancestor walk** — the directory and up to 5 parent directories are checked (stopping at already-visited directories)
+3. **Hint loading** — if an `AGENTS.md`, `CLAUDE.md`, or `.cursorrules` is found, it's loaded (first match per directory)
+4. **Security scan** — same prompt injection scan as startup files
+5. **Truncation** — capped at 8,000 characters per file
+6. **Injection** — appended to the tool result, so the model sees it in context naturally
 
 The final prompt section looks roughly like:
 

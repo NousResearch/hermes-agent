@@ -104,6 +104,7 @@ The adapter polls the IMAP inbox for UNSEEN messages at a configurable interval 
   - Documents (PDF, ZIP, etc.) → available for file access
 - **HTML-only emails** have tags stripped for plain text extraction
 - **Self-messages** are filtered out to prevent reply loops
+- **Automated/noreply senders** are silently ignored — `noreply@`, `mailer-daemon@`, `bounce@`, `no-reply@`, and emails with `Auto-Submitted`, `Precedence: bulk`, or `List-Unsubscribe` headers
 
 ### Sending Replies
 

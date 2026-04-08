@@ -27,6 +27,7 @@ import hashlib
 import hmac
 import json
 import logging
+import os
 import re
 import subprocess
 import time
@@ -53,6 +54,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 8644
 _INSECURE_NO_AUTH = "INSECURE_NO_AUTH"
+_DYNAMIC_ROUTES_FILENAME = "webhook_subscriptions.json"
 
 
 def check_webhook_requirements() -> bool:
@@ -68,11 +70,23 @@ class WebhookAdapter(BasePlatformAdapter):
         self._host: str = config.extra.get("host", DEFAULT_HOST)
         self._port: int = int(config.extra.get("port", DEFAULT_PORT))
         self._global_secret: str = config.extra.get("secret", "")
-        self._routes: Dict[str, dict] = config.extra.get("routes", {})
+        self._static_routes: Dict[str, dict] = config.extra.get("routes", {})
+        self._dynamic_routes: Dict[str, dict] = {}
+        self._dynamic_routes_mtime: float = 0.0
+        self._routes: Dict[str, dict] = dict(self._static_routes)
         self._runner = None
 
-        # Delivery info keyed by session chat_id — consumed by send()
+        # Delivery info keyed by session chat_id.
+        #
+        # Read by every send() invocation for the chat_id (status messages
+        # AND the final response).  Cleaned up via TTL on each POST so the
+        # dict stays bounded — see _prune_delivery_info().  Do NOT pop on
+        # send(), or interim status messages (e.g. fallback notifications,
+        # context-pressure warnings) will consume the entry before the
+        # final response arrives, causing the response to silently fall
+        # back to the "log" deliver type.
         self._delivery_info: Dict[str, dict] = {}
+        self._delivery_info_created: Dict[str, float] = {}
 
         # Reference to gateway runner for cross-platform delivery (set externally)
         self.gateway_runner = None
@@ -96,6 +110,9 @@ class WebhookAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
 
     async def connect(self) -> bool:
+        # Load agent-created subscriptions before validating
+        self._reload_dynamic_routes()
+
         # Validate routes at startup — secret is required per route
         for name, route in self._routes.items():
             secret = route.get("secret", self._global_secret)
@@ -109,6 +126,17 @@ class WebhookAdapter(BasePlatformAdapter):
         app = web.Application()
         app.router.add_get("/health", self._handle_health)
         app.router.add_post("/webhooks/{route_name}", self._handle_webhook)
+
+        # Port conflict detection — fail fast if port is already in use
+        import socket as _socket
+        try:
+            with _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM) as _s:
+                _s.settimeout(1)
+                _s.connect(('127.0.0.1', self._port))
+            logger.error('[webhook] Port %d already in use. Set a different port in config.yaml: platforms.webhook.port', self._port)
+            return False
+        except (ConnectionRefusedError, OSError):
+            pass  # port is free
 
         self._runner = web.AppRunner(app)
         await self._runner.setup()
@@ -141,10 +169,14 @@ class WebhookAdapter(BasePlatformAdapter):
     ) -> SendResult:
         """Deliver the agent's response to the configured destination.
 
-        chat_id is ``webhook:{route}:{delivery_id}`` — we pop the delivery
-        info stored during webhook receipt so it doesn't leak memory.
+        chat_id is ``webhook:{route}:{delivery_id}``.  The delivery info
+        stored during webhook receipt is read with ``.get()`` (not popped)
+        so that interim status messages emitted before the final response
+        — fallback-model notifications, context-pressure warnings, etc. —
+        do not consume the entry and silently downgrade the final response
+        to the ``log`` deliver type.  TTL cleanup happens on POST.
         """
-        delivery = self._delivery_info.pop(chat_id, {})
+        delivery = self._delivery_info.get(chat_id, {})
         deliver_type = delivery.get("deliver", "log")
 
         if deliver_type == "log":
@@ -171,6 +203,23 @@ class WebhookAdapter(BasePlatformAdapter):
             success=False, error=f"Unknown deliver type: {deliver_type}"
         )
 
+    def _prune_delivery_info(self, now: float) -> None:
+        """Drop delivery_info entries older than the idempotency TTL.
+
+        Mirrors the cleanup pattern used for ``_seen_deliveries``.  Called
+        on each POST so the dict size is bounded by ``rate_limit * TTL``
+        even if many webhooks fire and never receive a final response.
+        """
+        cutoff = now - self._idempotency_ttl
+        stale = [
+            k
+            for k, t in self._delivery_info_created.items()
+            if t < cutoff
+        ]
+        for k in stale:
+            self._delivery_info.pop(k, None)
+            self._delivery_info_created.pop(k, None)
+
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         return {"name": chat_id, "type": "webhook"}
 
@@ -182,8 +231,44 @@ class WebhookAdapter(BasePlatformAdapter):
         """GET /health — simple health check."""
         return web.json_response({"status": "ok", "platform": "webhook"})
 
+    def _reload_dynamic_routes(self) -> None:
+        """Reload agent-created subscriptions from disk if the file changed."""
+        from hermes_constants import get_hermes_home
+        hermes_home = get_hermes_home()
+        subs_path = hermes_home / _DYNAMIC_ROUTES_FILENAME
+        if not subs_path.exists():
+            if self._dynamic_routes:
+                self._dynamic_routes = {}
+                self._routes = dict(self._static_routes)
+                logger.debug("[webhook] Dynamic subscriptions file removed, cleared dynamic routes")
+            return
+        try:
+            mtime = subs_path.stat().st_mtime
+            if mtime <= self._dynamic_routes_mtime:
+                return  # No change
+            data = json.loads(subs_path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                return
+            # Merge: static routes take precedence over dynamic ones
+            self._dynamic_routes = {
+                k: v for k, v in data.items()
+                if k not in self._static_routes
+            }
+            self._routes = {**self._dynamic_routes, **self._static_routes}
+            self._dynamic_routes_mtime = mtime
+            logger.info(
+                "[webhook] Reloaded %d dynamic route(s): %s",
+                len(self._dynamic_routes),
+                ", ".join(self._dynamic_routes.keys()) or "(none)",
+            )
+        except Exception as e:
+            logger.warning("[webhook] Failed to reload dynamic routes: %s", e)
+
     async def _handle_webhook(self, request: "web.Request") -> "web.Response":
         """POST /webhooks/{route_name} — receive and process a webhook event."""
+        # Hot-reload dynamic subscriptions on each request (mtime-gated, cheap)
+        self._reload_dynamic_routes()
+
         route_name = request.match_info.get("route_name", "")
         route_config = self._routes.get(route_name)
 
@@ -327,7 +412,9 @@ class WebhookAdapter(BasePlatformAdapter):
         # same route get independent agent runs (not queued/interrupted).
         session_chat_id = f"webhook:{route_name}:{delivery_id}"
 
-        # Store delivery info for send() — consumed (popped) on delivery
+        # Store delivery info for send().  Read by every send() invocation
+        # for this chat_id (interim status messages and the final response),
+        # so we do NOT pop on send.  TTL-based cleanup keeps the dict bounded.
         deliver_config = {
             "deliver": route_config.get("deliver", "log"),
             "deliver_extra": self._render_delivery_extra(
@@ -336,6 +423,8 @@ class WebhookAdapter(BasePlatformAdapter):
             "payload": payload,
         }
         self._delivery_info[session_chat_id] = deliver_config
+        self._delivery_info_created[session_chat_id] = now
+        self._prune_delivery_info(now)
 
         # Build source and event
         source = self.build_source(
@@ -427,6 +516,10 @@ class WebhookAdapter(BasePlatformAdapter):
 
         Supports dot-notation access into nested dicts:
         ``{pull_request.title}`` → ``payload["pull_request"]["title"]``
+
+        Special token ``{__raw__}`` dumps the entire payload as indented
+        JSON (truncated to 4000 chars).  Useful for monitoring alerts or
+        any webhook where the agent needs to see the full payload.
         """
         if not template:
             truncated = json.dumps(payload, indent=2)[:4000]
@@ -437,6 +530,9 @@ class WebhookAdapter(BasePlatformAdapter):
 
         def _resolve(match: re.Match) -> str:
             key = match.group(1)
+            # Special token: dump the entire payload as JSON
+            if key == "__raw__":
+                return json.dumps(payload, indent=2)[:4000]
             value: Any = payload
             for part in key.split("."):
                 if isinstance(value, dict):
@@ -556,4 +652,10 @@ class WebhookAdapter(BasePlatformAdapter):
                     error=f"No chat_id or home channel for {platform_name}",
                 )
 
-        return await adapter.send(chat_id, content)
+        # Pass thread_id from deliver_extra so Telegram forum topics work
+        metadata = None
+        thread_id = extra.get("message_thread_id") or extra.get("thread_id")
+        if thread_id:
+            metadata = {"thread_id": thread_id}
+
+        return await adapter.send(chat_id, content, metadata=metadata)

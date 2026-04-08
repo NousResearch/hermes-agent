@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import queue
+import re
 import shlex
 import subprocess
 import threading
@@ -22,6 +23,9 @@ from typing import Any
 
 ACP_MARKER_BASE_URL = "acp://copilot"
 _DEFAULT_TIMEOUT_SECONDS = 900.0
+
+_TOOL_CALL_BLOCK_RE = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.DOTALL)
+_TOOL_CALL_JSON_RE = re.compile(r"\{\s*\"id\"\s*:\s*\"[^\"]+\"\s*,\s*\"type\"\s*:\s*\"function\"\s*,\s*\"function\"\s*:\s*\{.*?\}\s*\}", re.DOTALL)
 
 
 def _resolve_command() -> str:
@@ -50,14 +54,49 @@ def _jsonrpc_error(message_id: Any, code: int, message: str) -> dict[str, Any]:
     }
 
 
-def _format_messages_as_prompt(messages: list[dict[str, Any]], model: str | None = None) -> str:
+def _format_messages_as_prompt(
+    messages: list[dict[str, Any]],
+    model: str | None = None,
+    tools: list[dict[str, Any]] | None = None,
+    tool_choice: Any = None,
+) -> str:
     sections: list[str] = [
         "You are being used as the active ACP agent backend for Hermes.",
-        "Use your own ACP capabilities and respond directly in natural language.",
-        "Do not emit OpenAI tool-call JSON.",
+        "Use ACP capabilities to complete tasks.",
+        "IMPORTANT: If you take an action with a tool, you MUST output tool calls using <tool_call>{...}</tool_call> blocks with JSON exactly in OpenAI function-call shape.",
+        "If no tool is needed, answer normally.",
     ]
     if model:
         sections.append(f"Hermes requested model hint: {model}")
+
+    if isinstance(tools, list) and tools:
+        tool_specs: list[dict[str, Any]] = []
+        for t in tools:
+            if not isinstance(t, dict):
+                continue
+            fn = t.get("function") or {}
+            if not isinstance(fn, dict):
+                continue
+            name = fn.get("name")
+            if not isinstance(name, str) or not name.strip():
+                continue
+            tool_specs.append(
+                {
+                    "name": name.strip(),
+                    "description": fn.get("description", ""),
+                    "parameters": fn.get("parameters", {}),
+                }
+            )
+        if tool_specs:
+            sections.append(
+                "Available tools (OpenAI function schema). "
+                "When using a tool, emit ONLY <tool_call>{...}</tool_call> with one JSON object "
+                "containing id/type/function{name,arguments}. arguments must be a JSON string.\n"
+                + json.dumps(tool_specs, ensure_ascii=False)
+            )
+
+    if tool_choice is not None:
+        sections.append(f"Tool choice hint: {json.dumps(tool_choice, ensure_ascii=False)}")
 
     transcript: list[str] = []
     for message in messages:
@@ -112,6 +151,80 @@ def _render_message_content(content: Any) -> str:
                     parts.append(text.strip())
         return "\n".join(parts).strip()
     return str(content).strip()
+
+
+def _extract_tool_calls_from_text(text: str) -> tuple[list[SimpleNamespace], str]:
+    if not isinstance(text, str) or not text.strip():
+        return [], ""
+
+    extracted: list[SimpleNamespace] = []
+    consumed_spans: list[tuple[int, int]] = []
+
+    def _try_add_tool_call(raw_json: str) -> None:
+        try:
+            obj = json.loads(raw_json)
+        except Exception:
+            return
+        if not isinstance(obj, dict):
+            return
+        fn = obj.get("function")
+        if not isinstance(fn, dict):
+            return
+        fn_name = fn.get("name")
+        if not isinstance(fn_name, str) or not fn_name.strip():
+            return
+        fn_args = fn.get("arguments", "{}")
+        if not isinstance(fn_args, str):
+            fn_args = json.dumps(fn_args, ensure_ascii=False)
+        call_id = obj.get("id")
+        if not isinstance(call_id, str) or not call_id.strip():
+            call_id = f"acp_call_{len(extracted)+1}"
+
+        extracted.append(
+            SimpleNamespace(
+                id=call_id,
+                call_id=call_id,
+                response_item_id=None,
+                type="function",
+                function=SimpleNamespace(name=fn_name.strip(), arguments=fn_args),
+            )
+        )
+
+    for m in _TOOL_CALL_BLOCK_RE.finditer(text):
+        raw = m.group(1)
+        _try_add_tool_call(raw)
+        consumed_spans.append((m.start(), m.end()))
+
+    # Only try bare-JSON fallback when no XML blocks were found.
+    if not extracted:
+        for m in _TOOL_CALL_JSON_RE.finditer(text):
+            raw = m.group(0)
+            _try_add_tool_call(raw)
+            consumed_spans.append((m.start(), m.end()))
+
+    if not consumed_spans:
+        return extracted, text.strip()
+
+    consumed_spans.sort()
+    merged: list[tuple[int, int]] = []
+    for start, end in consumed_spans:
+        if not merged or start > merged[-1][1]:
+            merged.append((start, end))
+        else:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+
+    parts: list[str] = []
+    cursor = 0
+    for start, end in merged:
+        if cursor < start:
+            parts.append(text[cursor:start])
+        cursor = max(cursor, end)
+    if cursor < len(text):
+        parts.append(text[cursor:])
+
+    cleaned = "\n".join(p.strip() for p in parts if p and p.strip()).strip()
+    return extracted, cleaned
+
 
 
 def _ensure_path_within_cwd(path_text: str, cwd: str) -> Path:
@@ -190,13 +303,22 @@ class CopilotACPClient:
         model: str | None = None,
         messages: list[dict[str, Any]] | None = None,
         timeout: float | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: Any = None,
         **_: Any,
     ) -> Any:
-        prompt_text = _format_messages_as_prompt(messages or [], model=model)
+        prompt_text = _format_messages_as_prompt(
+            messages or [],
+            model=model,
+            tools=tools,
+            tool_choice=tool_choice,
+        )
         response_text, reasoning_text = self._run_prompt(
             prompt_text,
             timeout_seconds=float(timeout or _DEFAULT_TIMEOUT_SECONDS),
         )
+
+        tool_calls, cleaned_text = _extract_tool_calls_from_text(response_text)
 
         usage = SimpleNamespace(
             prompt_tokens=0,
@@ -205,13 +327,14 @@ class CopilotACPClient:
             prompt_tokens_details=SimpleNamespace(cached_tokens=0),
         )
         assistant_message = SimpleNamespace(
-            content=response_text,
-            tool_calls=[],
+            content=cleaned_text,
+            tool_calls=tool_calls,
             reasoning=reasoning_text or None,
             reasoning_content=reasoning_text or None,
             reasoning_details=None,
         )
-        choice = SimpleNamespace(message=assistant_message, finish_reason="stop")
+        finish_reason = "tool_calls" if tool_calls else "stop"
+        choice = SimpleNamespace(message=assistant_message, finish_reason=finish_reason)
         return SimpleNamespace(
             choices=[choice],
             usage=usage,

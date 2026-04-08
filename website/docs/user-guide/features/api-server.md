@@ -8,7 +8,7 @@ description: "Expose hermes-agent as an OpenAI-compatible API for any frontend"
 
 The API server exposes hermes-agent as an OpenAI-compatible HTTP endpoint. Any frontend that speaks the OpenAI format — Open WebUI, LobeChat, LibreChat, NextChat, ChatBox, and hundreds more — can connect to hermes-agent and use it as a backend.
 
-Your agent handles requests with its full toolset (terminal, file operations, web search, memory, skills) and returns the final response. Tool calls execute invisibly server-side.
+Your agent handles requests with its full toolset (terminal, file operations, web search, memory, skills) and returns the final response. When streaming, tool progress indicators appear inline so frontends can show what the agent is doing.
 
 ## Quick Start
 
@@ -85,6 +85,8 @@ Standard OpenAI Chat Completions format. Stateless — the full conversation is 
 
 **Streaming** (`"stream": true`): Returns Server-Sent Events (SSE) with token-by-token response chunks. When streaming is enabled in config, tokens are emitted live as the LLM generates them. When disabled, the full response is sent as a single SSE chunk.
 
+**Tool progress in streams**: When the agent calls tools during a streaming request, brief progress indicators are injected into the content stream as the tools start executing (e.g. `` `💻 pwd` ``, `` `🔍 Python docs` ``). These appear as inline markdown before the agent's response text, giving frontends like Open WebUI real-time visibility into tool execution.
+
 ### POST /v1/responses
 
 OpenAI Responses API format. Supports server-side conversation state via `previous_response_id` — the server stores full conversation history (including tool calls and results) so multi-turn context is preserved without the client managing it.
@@ -154,7 +156,7 @@ Lists `hermes-agent` as an available model. Required by most frontends for model
 
 ### GET /health
 
-Health check. Returns `{"status": "ok"}`.
+Health check. Returns `{"status": "ok"}`. Also available at **GET /v1/health** for OpenAI-compatible clients that expect the `/v1/` prefix.
 
 ## System Prompt Handling
 
@@ -199,6 +201,12 @@ The default bind address (`127.0.0.1`) is for local-only use. Browser access is 
 # config.yaml support coming in a future release.
 ```
 
+## Security Headers
+
+All responses include security headers:
+- `X-Content-Type-Options: nosniff` — prevents MIME type sniffing
+- `Referrer-Policy: no-referrer` — prevents referrer leakage
+
 ## CORS
 
 The API server does **not** enable browser CORS by default.
@@ -208,6 +216,11 @@ For direct browser access, set an explicit allowlist:
 ```bash
 API_SERVER_CORS_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
 ```
+
+When CORS is enabled:
+- **Preflight responses** include `Access-Control-Max-Age: 600` (10 minute cache)
+- **SSE streaming responses** include CORS headers so browser EventSource clients work correctly
+- **`Idempotency-Key`** is an allowed request header — clients can send it for deduplication (responses are cached by key for 5 minutes)
 
 Most documented frontends such as Open WebUI connect server-to-server and do not need CORS at all.
 

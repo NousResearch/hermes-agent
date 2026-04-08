@@ -16,7 +16,6 @@ Key design decisions:
 
 import json
 import logging
-import os
 import random
 import re
 import sqlite3
@@ -348,13 +347,6 @@ class SessionDB:
             cursor.executescript(FTS_SQL)
 
         self._conn.commit()
-
-    def close(self):
-        """Close the database connection."""
-        with self._lock:
-            if self._conn:
-                self._conn.close()
-                self._conn = None
 
     # =========================================================================
     # Session lifecycle
@@ -794,6 +786,7 @@ class SessionDB:
         exclude_sources: List[str] = None,
         limit: int = 20,
         offset: int = 0,
+        include_children: bool = False,
     ) -> List[Dict[str, Any]]:
         """List sessions with preview (first user message) and last active timestamp.
 
@@ -802,9 +795,15 @@ class SessionDB:
         last_active (timestamp of last message).
 
         Uses a single query with correlated subqueries instead of N+2 queries.
+
+        By default, child sessions (subagent runs, compression continuations)
+        are excluded.  Pass ``include_children=True`` to include them.
         """
         where_clauses = []
         params = []
+
+        if not include_children:
+            where_clauses.append("s.parent_session_id IS NULL")
 
         if source:
             where_clauses.append("s.source = ?")
@@ -1009,8 +1008,9 @@ class SessionDB:
         Strategy:
         - Preserve properly paired quoted phrases (``"exact phrase"``)
         - Strip unmatched FTS5-special characters that would cause errors
-        - Wrap unquoted hyphenated terms in quotes so FTS5 matches them
-          as exact phrases instead of splitting on the hyphen
+        - Wrap unquoted hyphenated and dotted terms in quotes so FTS5
+          matches them as exact phrases instead of splitting on the
+          hyphen/dot (e.g. ``chat-send``, ``P2.2``, ``my-app.config.ts``)
         """
         # Step 1: Extract balanced double-quoted phrases and protect them
         # from further processing via numbered placeholders.
@@ -1035,11 +1035,13 @@ class SessionDB:
         sanitized = re.sub(r"(?i)^(AND|OR|NOT)\b\s*", "", sanitized.strip())
         sanitized = re.sub(r"(?i)\s+(AND|OR|NOT)\s*$", "", sanitized.strip())
 
-        # Step 5: Wrap unquoted hyphenated terms (e.g. ``chat-send``) in
-        # double quotes.  FTS5's tokenizer splits on hyphens, turning
-        # ``chat-send`` into ``chat AND send``.  Quoting preserves the
-        # intended phrase match.
-        sanitized = re.sub(r"\b(\w+(?:-\w+)+)\b", r'"\1"', sanitized)
+        # Step 5: Wrap unquoted dotted and/or hyphenated terms in double
+        # quotes.  FTS5's tokenizer splits on dots and hyphens, turning
+        # ``chat-send`` into ``chat AND send`` and ``P2.2`` into ``p2 AND 2``.
+        # Quoting preserves phrase semantics.  A single pass avoids the
+        # double-quoting bug that would occur if dotted and hyphenated
+        # patterns were applied sequentially (e.g. ``my-app.config``).
+        sanitized = re.sub(r"\b(\w+(?:[.-]\w+)+)\b", r'"\1"', sanitized)
 
         # Step 6: Restore preserved quoted phrases
         for i, quoted in enumerate(_quoted_parts):
@@ -1233,22 +1235,38 @@ class SessionDB:
         self._execute_write(_do)
 
     def delete_session(self, session_id: str) -> bool:
-        """Delete a session and all its messages. Returns True if found."""
+        """Delete a session, its child sessions, and all their messages.
+
+        Child sessions (subagent runs, compression continuations) are deleted
+        first to satisfy the ``parent_session_id`` foreign key constraint.
+        Returns True if the session was found and deleted.
+        """
         def _do(conn):
             cursor = conn.execute(
                 "SELECT COUNT(*) FROM sessions WHERE id = ?", (session_id,)
             )
             if cursor.fetchone()[0] == 0:
                 return False
+            # Delete child sessions first (FK constraint)
+            child_ids = [r[0] for r in conn.execute(
+                "SELECT id FROM sessions WHERE parent_session_id = ?",
+                (session_id,),
+            ).fetchall()]
+            for cid in child_ids:
+                conn.execute("DELETE FROM messages WHERE session_id = ?", (cid,))
+                conn.execute("DELETE FROM sessions WHERE id = ?", (cid,))
+            # Delete the session itself
             conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
             conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
             return True
         return self._execute_write(_do)
 
     def prune_sessions(self, older_than_days: int = 90, source: str = None) -> int:
-        """
-        Delete sessions older than N days. Returns count of deleted sessions.
-        Only prunes ended sessions (not active ones).
+        """Delete sessions older than N days. Returns count of deleted sessions.
+
+        Only prunes ended sessions (not active ones).  Child sessions whose
+        parents are being pruned are deleted first to satisfy the
+        ``parent_session_id`` foreign key constraint.
         """
         cutoff = time.time() - (older_than_days * 86400)
 
@@ -1264,7 +1282,19 @@ class SessionDB:
                     "SELECT id FROM sessions WHERE started_at < ? AND ended_at IS NOT NULL",
                     (cutoff,),
                 )
-            session_ids = [row["id"] for row in cursor.fetchall()]
+            session_ids = set(row["id"] for row in cursor.fetchall())
+
+            # Delete children first whose parents are in the prune set
+            # (avoids FK constraint errors)
+            for sid in list(session_ids):
+                child_ids = [r[0] for r in conn.execute(
+                    "SELECT id FROM sessions WHERE parent_session_id = ?",
+                    (sid,),
+                ).fetchall()]
+                for cid in child_ids:
+                    conn.execute("DELETE FROM messages WHERE session_id = ?", (cid,))
+                    conn.execute("DELETE FROM sessions WHERE id = ?", (cid,))
+                    session_ids.discard(cid)  # don't double-delete
 
             for sid in session_ids:
                 conn.execute("DELETE FROM messages WHERE session_id = ?", (sid,))

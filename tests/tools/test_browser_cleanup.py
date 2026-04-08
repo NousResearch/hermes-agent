@@ -65,18 +65,6 @@ class TestBrowserCleanup:
         mock_stop.assert_called_once_with("task-1")
         mock_run.assert_called_once_with("task-1", "close", [], timeout=10)
 
-    def test_browser_close_delegates_to_cleanup_browser(self):
-        import json
-
-        browser_tool = self.browser_tool
-        browser_tool._active_sessions["task-2"] = {"session_name": "sess-2"}
-
-        with patch("tools.browser_tool.cleanup_browser") as mock_cleanup:
-            result = json.loads(browser_tool.browser_close("task-2"))
-
-        assert result == {"success": True, "closed": True}
-        mock_cleanup.assert_called_once_with("task-2")
-
     def test_emergency_cleanup_clears_all_tracking_state(self):
         browser_tool = self.browser_tool
         browser_tool._cleanup_done = False

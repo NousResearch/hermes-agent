@@ -197,6 +197,44 @@ class TestNonStringContent:
         assert summary is not None
         assert summary == SUMMARY_PREFIX
 
+    def test_summary_call_does_not_force_temperature(self):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "ok"
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True)
+
+        messages = [
+            {"role": "user", "content": "do something"},
+            {"role": "assistant", "content": "ok"},
+        ]
+
+        with patch("agent.context_compressor.call_llm", return_value=mock_response) as mock_call:
+            c._generate_summary(messages)
+
+        kwargs = mock_call.call_args.kwargs
+        assert "temperature" not in kwargs
+
+
+class TestSummaryFailureCooldown:
+    def test_summary_failure_enters_cooldown_and_skips_retry(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True)
+
+        messages = [
+            {"role": "user", "content": "do something"},
+            {"role": "assistant", "content": "ok"},
+        ]
+
+        with patch("agent.context_compressor.call_llm", side_effect=Exception("boom")) as mock_call:
+            first = c._generate_summary(messages)
+            second = c._generate_summary(messages)
+
+        assert first is None
+        assert second is None
+        assert mock_call.call_count == 1
+
 
 class TestSummaryPrefixNormalization:
     def test_legacy_prefix_is_replaced(self):

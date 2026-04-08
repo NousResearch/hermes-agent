@@ -65,6 +65,12 @@ const config: Config = {
       defaultMode: 'dark',
       respectPrefersColorScheme: true,
     },
+    docs: {
+      sidebar: {
+        hideable: true,
+        autoCollapseCategories: true,
+      },
+    },
     navbar: {
       title: 'Hermes Agent',
       logo: {
@@ -77,6 +83,11 @@ const config: Config = {
           sidebarId: 'docs',
           position: 'left',
           label: 'Docs',
+        },
+        {
+          to: '/skills',
+          label: 'Skills',
+          position: 'left',
         },
         {
           href: 'https://hermes-agent.nousresearch.com',

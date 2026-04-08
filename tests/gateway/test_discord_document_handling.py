@@ -34,8 +34,8 @@ def _ensure_discord_mock():
     discord_mod.Thread = type("Thread", (), {})
     discord_mod.ForumChannel = type("ForumChannel", (), {})
     discord_mod.ui = SimpleNamespace(View=object, button=lambda *a, **k: (lambda fn: fn), Button=object)
-    discord_mod.ButtonStyle = SimpleNamespace(success=1, primary=2, danger=3, green=1, blurple=2, red=3)
-    discord_mod.Color = SimpleNamespace(orange=lambda: 1, green=lambda: 2, blue=lambda: 3, red=lambda: 4)
+    discord_mod.ButtonStyle = SimpleNamespace(success=1, primary=2, secondary=2, danger=3, green=1, grey=2, blurple=2, red=3)
+    discord_mod.Color = SimpleNamespace(orange=lambda: 1, green=lambda: 2, blue=lambda: 3, red=lambda: 4, purple=lambda: 5)
     discord_mod.Interaction = object
     discord_mod.Embed = MagicMock
     discord_mod.app_commands = SimpleNamespace(
@@ -227,16 +227,19 @@ class TestIncomingDocumentHandling:
         adapter.handle_message.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_unsupported_type_skipped(self, adapter):
-        """An unsupported file type (.zip) should be skipped silently."""
+    async def test_zip_document_cached(self, adapter):
+        """A .zip file should be cached as a supported document."""
         msg = make_message([
             make_attachment(filename="archive.zip", content_type="application/zip")
         ])
-        await adapter._handle_message(msg)
+
+        with _mock_aiohttp_download(b"PK\x03\x04test"):
+            await adapter._handle_message(msg)
 
         event = adapter.handle_message.call_args[0][0]
-        assert event.media_urls == []
-        assert event.message_type == MessageType.TEXT
+        assert len(event.media_urls) == 1
+        assert event.media_types == ["application/zip"]
+        assert event.message_type == MessageType.DOCUMENT
 
     @pytest.mark.asyncio
     async def test_download_error_handled(self, adapter):

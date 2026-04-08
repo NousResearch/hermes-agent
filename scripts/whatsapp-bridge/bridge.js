@@ -26,6 +26,7 @@ import path from 'path';
 import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync } from 'fs';
 import { randomBytes } from 'crypto';
 import qrcode from 'qrcode-terminal';
+import { matchesAllowedUser, parseAllowedUsers } from './allowlist.js';
 
 // Parse CLI args
 const args = process.argv.slice(2);
@@ -47,14 +48,45 @@ const DOCUMENT_CACHE_DIR = path.join(process.env.HOME || '~', '.hermes', 'docume
 const AUDIO_CACHE_DIR = path.join(process.env.HOME || '~', '.hermes', 'audio_cache');
 const PAIR_ONLY = args.includes('--pair-only');
 const WHATSAPP_MODE = getArg('mode', process.env.WHATSAPP_MODE || 'self-chat'); // "bot" or "self-chat"
-const ALLOWED_USERS = (process.env.WHATSAPP_ALLOWED_USERS || '').split(',').map(s => s.trim()).filter(Boolean);
+const ALLOWED_USERS = parseAllowedUsers(process.env.WHATSAPP_ALLOWED_USERS || '');
 const DEFAULT_REPLY_PREFIX = '⚕ *Hermes Agent*\n────────────\n';
 const REPLY_PREFIX = process.env.WHATSAPP_REPLY_PREFIX === undefined
   ? DEFAULT_REPLY_PREFIX
   : process.env.WHATSAPP_REPLY_PREFIX.replace(/\\n/g, '\n');
 
 function formatOutgoingMessage(message) {
+  // In bot mode, messages come from a different number so the prefix is
+  // redundant — the sender identity is already clear.  Only prepend in
+  // self-chat mode where bot and user share the same number.
+  if (WHATSAPP_MODE !== 'self-chat') return message;
   return REPLY_PREFIX ? `${REPLY_PREFIX}${message}` : message;
+}
+
+function normalizeWhatsAppId(value) {
+  if (!value) return '';
+  return String(value).replace(':', '@');
+}
+
+function getMessageContent(msg) {
+  const content = msg?.message || {};
+  if (content.ephemeralMessage?.message) return content.ephemeralMessage.message;
+  if (content.viewOnceMessage?.message) return content.viewOnceMessage.message;
+  if (content.viewOnceMessageV2?.message) return content.viewOnceMessageV2.message;
+  if (content.documentWithCaptionMessage?.message) return content.documentWithCaptionMessage.message;
+  if (content.templateMessage?.hydratedTemplate) return content.templateMessage.hydratedTemplate;
+  if (content.buttonsMessage) return content.buttonsMessage;
+  if (content.listMessage) return content.listMessage;
+  return content;
+}
+
+function getContextInfo(messageContent) {
+  if (!messageContent || typeof messageContent !== 'object') return {};
+  for (const value of Object.values(messageContent)) {
+    if (value && typeof value === 'object' && value.contextInfo) {
+      return value.contextInfo;
+    }
+  }
+  return {};
 }
 
 mkdirSync(SESSION_DIR, { recursive: true });
@@ -152,6 +184,11 @@ async function startSocket() {
     // than 'notify'. Accept both and filter agent echo-backs below.
     if (type !== 'notify' && type !== 'append') return;
 
+    const botIds = Array.from(new Set([
+      normalizeWhatsAppId(sock.user?.id),
+      normalizeWhatsAppId(sock.user?.lid),
+    ].filter(Boolean)));
+
     for (const msg of messages) {
       if (!msg.message) continue;
 
@@ -190,11 +227,15 @@ async function startSocket() {
         if (!isSelfChat) continue;
       }
 
-      // Check allowlist for messages from others (resolve LID → phone if needed)
-      if (!msg.key.fromMe && ALLOWED_USERS.length > 0) {
-        const resolvedNumber = lidToPhone[senderNumber] || senderNumber;
-        if (!ALLOWED_USERS.includes(resolvedNumber)) continue;
+      // Check allowlist for messages from others (resolve LID ↔ phone aliases)
+      if (!msg.key.fromMe && !matchesAllowedUser(senderId, ALLOWED_USERS, SESSION_DIR)) {
+        continue;
       }
+
+      const messageContent = getMessageContent(msg);
+      const contextInfo = getContextInfo(messageContent);
+      const mentionedIds = Array.from(new Set((contextInfo?.mentionedJid || []).map(normalizeWhatsAppId).filter(Boolean)));
+      const quotedParticipant = normalizeWhatsAppId(contextInfo?.participant || contextInfo?.remoteJid || '');
 
       // Extract message body
       let body = '';
@@ -202,17 +243,17 @@ async function startSocket() {
       let mediaType = '';
       const mediaUrls = [];
 
-      if (msg.message.conversation) {
-        body = msg.message.conversation;
-      } else if (msg.message.extendedTextMessage?.text) {
-        body = msg.message.extendedTextMessage.text;
-      } else if (msg.message.imageMessage) {
-        body = msg.message.imageMessage.caption || '';
+      if (messageContent.conversation) {
+        body = messageContent.conversation;
+      } else if (messageContent.extendedTextMessage?.text) {
+        body = messageContent.extendedTextMessage.text;
+      } else if (messageContent.imageMessage) {
+        body = messageContent.imageMessage.caption || '';
         hasMedia = true;
         mediaType = 'image';
         try {
           const buf = await downloadMediaMessage(msg, 'buffer', {}, { logger, reuploadRequest: sock.updateMediaMessage });
-          const mime = msg.message.imageMessage.mimetype || 'image/jpeg';
+          const mime = messageContent.imageMessage.mimetype || 'image/jpeg';
           const extMap = { 'image/jpeg': '.jpg', 'image/png': '.png', 'image/webp': '.webp', 'image/gif': '.gif' };
           const ext = extMap[mime] || '.jpg';
           mkdirSync(IMAGE_CACHE_DIR, { recursive: true });
@@ -222,13 +263,13 @@ async function startSocket() {
         } catch (err) {
           console.error('[bridge] Failed to download image:', err.message);
         }
-      } else if (msg.message.videoMessage) {
-        body = msg.message.videoMessage.caption || '';
+      } else if (messageContent.videoMessage) {
+        body = messageContent.videoMessage.caption || '';
         hasMedia = true;
         mediaType = 'video';
         try {
           const buf = await downloadMediaMessage(msg, 'buffer', {}, { logger, reuploadRequest: sock.updateMediaMessage });
-          const mime = msg.message.videoMessage.mimetype || 'video/mp4';
+          const mime = messageContent.videoMessage.mimetype || 'video/mp4';
           const ext = mime.includes('mp4') ? '.mp4' : '.mkv';
           mkdirSync(DOCUMENT_CACHE_DIR, { recursive: true });
           const filePath = path.join(DOCUMENT_CACHE_DIR, `vid_${randomBytes(6).toString('hex')}${ext}`);
@@ -237,11 +278,11 @@ async function startSocket() {
         } catch (err) {
           console.error('[bridge] Failed to download video:', err.message);
         }
-      } else if (msg.message.audioMessage || msg.message.pttMessage) {
+      } else if (messageContent.audioMessage || messageContent.pttMessage) {
         hasMedia = true;
-        mediaType = msg.message.pttMessage ? 'ptt' : 'audio';
+        mediaType = messageContent.pttMessage ? 'ptt' : 'audio';
         try {
-          const audioMsg = msg.message.pttMessage || msg.message.audioMessage;
+          const audioMsg = messageContent.pttMessage || messageContent.audioMessage;
           const buf = await downloadMediaMessage(msg, 'buffer', {}, { logger, reuploadRequest: sock.updateMediaMessage });
           const mime = audioMsg.mimetype || 'audio/ogg';
           const ext = mime.includes('ogg') ? '.ogg' : mime.includes('mp4') ? '.m4a' : '.ogg';
@@ -252,11 +293,11 @@ async function startSocket() {
         } catch (err) {
           console.error('[bridge] Failed to download audio:', err.message);
         }
-      } else if (msg.message.documentMessage) {
-        body = msg.message.documentMessage.caption || '';
+      } else if (messageContent.documentMessage) {
+        body = messageContent.documentMessage.caption || '';
         hasMedia = true;
         mediaType = 'document';
-        const fileName = msg.message.documentMessage.fileName || 'document';
+        const fileName = messageContent.documentMessage.fileName || 'document';
         try {
           const buf = await downloadMediaMessage(msg, 'buffer', {}, { logger, reuploadRequest: sock.updateMediaMessage });
           mkdirSync(DOCUMENT_CACHE_DIR, { recursive: true });
@@ -305,6 +346,9 @@ async function startSocket() {
         hasMedia,
         mediaType,
         mediaUrls,
+        mentionedIds,
+        quotedParticipant,
+        botIds,
         timestamp: msg.messageTimestamp,
       };
 
@@ -515,8 +559,8 @@ if (PAIR_ONLY) {
   app.listen(PORT, '127.0.0.1', () => {
     console.log(`🌉 WhatsApp bridge listening on port ${PORT} (mode: ${WHATSAPP_MODE})`);
     console.log(`📁 Session stored in: ${SESSION_DIR}`);
-    if (ALLOWED_USERS.length > 0) {
-      console.log(`🔒 Allowed users: ${ALLOWED_USERS.join(', ')}`);
+    if (ALLOWED_USERS.size > 0) {
+      console.log(`🔒 Allowed users: ${Array.from(ALLOWED_USERS).join(', ')}`);
     } else {
       console.log(`⚠️  No WHATSAPP_ALLOWED_USERS set — all messages will be processed`);
     }

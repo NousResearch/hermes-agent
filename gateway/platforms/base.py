@@ -797,12 +797,15 @@ class BasePlatformAdapter(ABC):
         Send a video natively via the platform API.
 
         Override in subclasses to send videos as inline playable media.
-        Default falls back to sending the file path as text.
+        Default reports failure without leaking the local filesystem path
+        as message text (fixes #6249).
         """
-        text = f"🎬 Video: {video_path}"
         if caption:
-            text = f"{caption}\n{text}"
-        return await self.send(chat_id=chat_id, content=text, reply_to=reply_to)
+            await self.send(chat_id=chat_id, content=caption, reply_to=reply_to)
+        return SendResult(
+            success=False,
+            error=f"send_video not implemented for {self.name}; cannot deliver local file",
+        )
 
     async def send_document(
         self,
@@ -817,12 +820,15 @@ class BasePlatformAdapter(ABC):
         Send a document/file natively via the platform API.
 
         Override in subclasses to send files as downloadable attachments.
-        Default falls back to sending the file path as text.
+        Default reports failure without leaking the local filesystem path
+        as message text (fixes #6249).
         """
-        text = f"📎 File: {file_path}"
         if caption:
-            text = f"{caption}\n{text}"
-        return await self.send(chat_id=chat_id, content=text, reply_to=reply_to)
+            await self.send(chat_id=chat_id, content=caption, reply_to=reply_to)
+        return SendResult(
+            success=False,
+            error=f"send_document not implemented for {self.name}; cannot deliver local file",
+        )
 
     async def send_image_file(
         self,
@@ -837,12 +843,16 @@ class BasePlatformAdapter(ABC):
 
         Unlike send_image() which takes a URL, this takes a local file path.
         Override in subclasses for native photo attachments.
-        Default falls back to sending the file path as text.
+        Default reports failure without leaking the local filesystem path
+        as message text (fixes #6249) — echoing the absolute on-disk path
+        is both confusing for users and a minor information disclosure.
         """
-        text = f"🖼️ Image: {image_path}"
         if caption:
-            text = f"{caption}\n{text}"
-        return await self.send(chat_id=chat_id, content=text, reply_to=reply_to)
+            await self.send(chat_id=chat_id, content=caption, reply_to=reply_to)
+        return SendResult(
+            success=False,
+            error=f"send_image_file not implemented for {self.name}; cannot deliver local file",
+        )
 
     @staticmethod
     def extract_media(content: str) -> Tuple[List[Tuple[str, bool]], str]:

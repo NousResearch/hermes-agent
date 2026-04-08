@@ -308,6 +308,7 @@ class TestBackendSelection:
         "TOOL_GATEWAY_SCHEME",
         "TOOL_GATEWAY_USER_TOKEN",
         "TAVILY_API_KEY",
+        "SERPAPI_API_KEY",
     )
 
     def setup_method(self):
@@ -321,6 +322,19 @@ class TestBackendSelection:
             os.environ.pop(key, None)
 
     # ── Config-based selection (web.backend in config.yaml) ───────────
+
+    def test_config_serpapi(self):
+        """web.backend=serpapi in config → 'serpapi' regardless of other keys."""
+        from tools.web_tools import _get_backend
+        with patch("tools.web_tools._load_web_config", return_value={"backend": "serpapi"}):
+            assert _get_backend() == "serpapi"
+
+    def test_config_serpapi_overrides_env_keys(self):
+        """web.backend=serpapi in config → 'serpapi' even if Firecrawl key set."""
+        from tools.web_tools import _get_backend
+        with patch("tools.web_tools._load_web_config", return_value={"backend": "serpapi"}), \
+             patch.dict(os.environ, {"FIRECRAWL_API_KEY": "fc-test"}):
+            assert _get_backend() == "serpapi"
 
     def test_config_parallel(self):
         """web.backend=parallel in config → 'parallel' regardless of keys."""
@@ -425,6 +439,20 @@ class TestBackendSelection:
         with patch("tools.web_tools._load_web_config", return_value={}), \
              patch.dict(os.environ, {"FIRECRAWL_API_KEY": "fc-test"}):
             assert _get_backend() == "firecrawl"
+
+    def test_fallback_serpapi_only_key(self):
+        """Only SERPAPI_API_KEY set → 'serpapi'."""
+        from tools.web_tools import _get_backend
+        with patch("tools.web_tools._load_web_config", return_value={}), \
+             patch.dict(os.environ, {"SERPAPI_API_KEY": "serp-test"}):
+            assert _get_backend() == "serpapi"
+
+    def test_fallback_serpapi_with_firecrawl_prefers_serpapi(self):
+        """SerpAPI has highest fallback priority when its key is set."""
+        from tools.web_tools import _get_backend
+        with patch("tools.web_tools._load_web_config", return_value={}), \
+             patch.dict(os.environ, {"SERPAPI_API_KEY": "serp-test", "FIRECRAWL_API_KEY": "fc-test"}):
+            assert _get_backend() == "serpapi"
 
     def test_fallback_no_keys_defaults_to_firecrawl(self):
         """No keys, no config → 'firecrawl' (will fail at client init)."""
@@ -533,6 +561,7 @@ class TestCheckWebApiKey:
         "TOOL_GATEWAY_SCHEME",
         "TOOL_GATEWAY_USER_TOKEN",
         "TAVILY_API_KEY",
+        "SERPAPI_API_KEY",
     )
 
     def setup_method(self):
@@ -567,6 +596,11 @@ class TestCheckWebApiKey:
 
     def test_tavily_key_only(self):
         with patch.dict(os.environ, {"TAVILY_API_KEY": "tvly-test"}):
+            from tools.web_tools import check_web_api_key
+            assert check_web_api_key() is True
+
+    def test_serpapi_key_only(self):
+        with patch.dict(os.environ, {"SERPAPI_API_KEY": "serp-test"}):
             from tools.web_tools import check_web_api_key
             assert check_web_api_key() is True
 
@@ -615,3 +649,9 @@ def test_web_requires_env_includes_exa_key():
     from tools.web_tools import _web_requires_env
 
     assert "EXA_API_KEY" in _web_requires_env()
+
+
+def test_web_requires_env_includes_serpapi_key():
+    from tools.web_tools import _web_requires_env
+
+    assert "SERPAPI_API_KEY" in _web_requires_env()

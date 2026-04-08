@@ -1722,6 +1722,7 @@ class TestSendExecApprovalButtons:
             command="rm -rf /tmp/foo",
             session_key="sess-app-1",
             description="cleanup script",
+            metadata={"approval_id": "approval-from-core"},
         )
 
         assert result.success
@@ -1736,11 +1737,39 @@ class TestSendExecApprovalButtons:
         assert approve_id.startswith("appr:") and approve_id.endswith(":approve")
         assert deny_id.startswith("appr:") and deny_id.endswith(":deny")
         approval_id = approve_id.split(":")[1]
+        assert approval_id == "approval-from-core"
         assert deny_id.split(":")[1] == approval_id
         body = payload["interactive"]["body"]["text"]
         assert "rm -rf /tmp/foo" in body
         assert "cleanup script" in body
-        assert adapter._exec_approval_state[approval_id] == "sess-app-1"
+        assert adapter._exec_approval_state[approval_id] == {
+            "session_key": "sess-app-1",
+            "chat_id": "15551234567",
+        }
+
+    @pytest.mark.asyncio
+    async def test_approval_prompt_force_redacts_secret_shaped_data(self):
+        adapter = _make_adapter()
+        adapter._http_client = MagicMock()
+        adapter._http_client.post = AsyncMock(
+            return_value=_mock_httpx_response(200, {"messages": [{"id": "x"}]})
+        )
+        secret = "sk-proj-" + "W" * 40
+
+        await adapter.send_exec_approval(
+            chat_id="15551234567",
+            command=f"echo {secret}",
+            session_key="sess-secret",
+            description=f"reason {secret}",
+            metadata={"approval_id": "approval-secret"},
+        )
+
+        payload = adapter._http_client.post.call_args.kwargs["json"]
+        assert secret not in repr(payload)
+        assert {
+            button["reply"]["id"]
+            for button in payload["interactive"]["action"]["buttons"]
+        } == {"appr:approval-secret:approve", "appr:approval-secret:deny"}
 
     @pytest.mark.asyncio
     async def test_long_command_is_truncated(self):
@@ -1936,7 +1965,10 @@ class TestDispatchInteractiveReplyApproval:
     @pytest.mark.asyncio
     async def test_approve_tap_calls_resolver_and_confirms(self, monkeypatch):
         adapter = _make_adapter()
-        adapter._exec_approval_state["app1"] = "sess-app-1"
+        adapter._exec_approval_state["app1"] = {
+            "session_key": "sess-app-1",
+            "chat_id": "15551234567",
+        }
         adapter._http_client = MagicMock()
         adapter._http_client.post = AsyncMock(
             return_value=_mock_httpx_response(200, {"messages": [{"id": "x"}]})
@@ -1945,7 +1977,9 @@ class TestDispatchInteractiveReplyApproval:
         calls = []
         monkeypatch.setattr(
             "tools.approval.resolve_gateway_approval",
-            lambda session_key, choice: calls.append((session_key, choice)) or 1,
+            lambda session_key, choice, approval_id=None: calls.append(
+                (session_key, choice, approval_id)
+            ) or 1,
         )
 
         raw = {
@@ -1959,7 +1993,7 @@ class TestDispatchInteractiveReplyApproval:
         handled = await adapter._dispatch_interactive_reply(raw, {})
 
         assert handled is True
-        assert calls == [("sess-app-1", "approve")]
+        assert calls == [("sess-app-1", "once", "app1")]
         assert "app1" not in adapter._exec_approval_state
         confirm_payload = adapter._http_client.post.call_args.kwargs["json"]
         assert confirm_payload["type"] == "text"
@@ -1968,7 +2002,10 @@ class TestDispatchInteractiveReplyApproval:
     @pytest.mark.asyncio
     async def test_deny_tap_passes_deny_choice(self, monkeypatch):
         adapter = _make_adapter()
-        adapter._exec_approval_state["app2"] = "sess-app-2"
+        adapter._exec_approval_state["app2"] = {
+            "session_key": "sess-app-2",
+            "chat_id": "15551234567",
+        }
         adapter._http_client = MagicMock()
         adapter._http_client.post = AsyncMock(
             return_value=_mock_httpx_response(200, {"messages": [{"id": "x"}]})
@@ -1977,7 +2014,9 @@ class TestDispatchInteractiveReplyApproval:
         choices_seen = []
         monkeypatch.setattr(
             "tools.approval.resolve_gateway_approval",
-            lambda session_key, choice: choices_seen.append(choice) or 1,
+            lambda session_key, choice, approval_id=None: choices_seen.append(
+                (choice, approval_id)
+            ) or 1,
         )
 
         raw = {
@@ -1990,9 +2029,41 @@ class TestDispatchInteractiveReplyApproval:
         }
         await adapter._dispatch_interactive_reply(raw, {})
 
-        assert choices_seen == ["deny"]
+        assert choices_seen == [("deny", "app2")]
         confirm_payload = adapter._http_client.post.call_args.kwargs["json"]
         assert "Denied" in confirm_payload["text"]["body"]
+
+    @pytest.mark.asyncio
+    async def test_approval_tap_from_different_sender_is_consumed_and_rejected(
+        self, monkeypatch
+    ):
+        adapter = _make_adapter()
+        adapter._exec_approval_state["app-owner"] = {
+            "session_key": "sess-owner",
+            "chat_id": "15550000001",
+        }
+        calls = []
+        monkeypatch.setattr(
+            "tools.approval.resolve_gateway_approval",
+            lambda *args, **kwargs: calls.append((args, kwargs)) or 1,
+        )
+        raw = {
+            "from": "15550000002",
+            "type": "interactive",
+            "interactive": {
+                "type": "button_reply",
+                "button_reply": {
+                    "id": "appr:app-owner:approve",
+                    "title": "Approve",
+                },
+            },
+        }
+
+        handled = await adapter._dispatch_interactive_reply(raw, {})
+
+        assert handled is True
+        assert calls == []
+        assert "app-owner" in adapter._exec_approval_state
 
 
 class TestDispatchInteractiveReplySlashConfirm:

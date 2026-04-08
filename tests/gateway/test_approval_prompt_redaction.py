@@ -122,6 +122,46 @@ class TestApprovalCommandWiring:
 
         self._assert_redacts_then_uses(run, "_approval_notify_sync", "send_exec_approval")
 
+    def test_chat_platform_path_forwards_core_approval_identity(self):
+        """The notify bridge must not make adapters mint an unrelated ID."""
+        import ast
+        import inspect
+        import gateway.run as run
+
+        tree = ast.parse(inspect.getsource(run))
+        target_fn = next(
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef)
+            and node.name == "_approval_notify_sync"
+        )
+        reads_core_id = any(
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "approval_data"
+            and node.func.attr == "get"
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+            and node.args[0].value == "approval_id"
+            for node in ast.walk(target_fn)
+        )
+        writes_metadata_id = any(
+            isinstance(node, ast.Assign)
+            and any(
+                isinstance(target, ast.Subscript)
+                and isinstance(target.value, ast.Name)
+                and target.value.id == "approval_meta"
+                and isinstance(target.slice, ast.Constant)
+                and target.slice.value == "approval_id"
+                for target in node.targets
+            )
+            for node in ast.walk(target_fn)
+        )
+
+        assert reads_core_id
+        assert writes_metadata_id
+
     def test_sse_api_path_redacts_before_enqueue(self):
         from gateway.platforms import api_server
 

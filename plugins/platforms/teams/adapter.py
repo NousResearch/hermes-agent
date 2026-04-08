@@ -27,6 +27,7 @@ import html
 import json
 import logging
 import os
+import uuid
 from typing import Any, Dict, Optional
 from urllib.parse import quote
 
@@ -711,6 +712,9 @@ class TeamsAdapter(BasePlatformAdapter):
         # Maps chat_id → ConversationReference captured from incoming messages.
         # Used to send cards with the correct conversation type (personal/group/channel).
         self._conv_refs: Dict[str, Any] = {}
+        # Hermes approval_id → server-owned prompt/session data. Adaptive Card
+        # actions carry only the opaque ID, never a mutable session key.
+        self._approval_state: Dict[str, Dict[str, str]] = {}
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         # Lazy-install the Teams SDK on demand (parity with Slack/Discord/etc.),
@@ -1000,18 +1004,29 @@ class TeamsAdapter(BasePlatformAdapter):
         self, ctx: "ActivityContext[AdaptiveCardInvokeActivity]"
     ) -> "InvokeResponse[AdaptiveCardActionMessageResponse]":
         """Handle an Adaptive Card Action.Execute button click."""
-        from tools.approval import resolve_gateway_approval, has_blocking_approval
+        from tools.approval import resolve_gateway_approval
 
         action = ctx.activity.value.action
         data = action.data or {}
         hermes_action = data.get("hermes_action", "")
-        session_key = data.get("session_key", "")
+        approval_id = str(data.get("approval_id") or "")
+        approval_state = self._approval_state.get(approval_id)
 
-        if not hermes_action or not session_key:
+        if not hermes_action or not approval_id:
             return InvokeResponse(
                 status=200,
                 body=AdaptiveCardActionMessageResponse(value="Unknown action."),
             )
+        if not approval_state:
+            return InvokeResponse(
+                status=200,
+                body=AdaptiveCardActionCardResponse(
+                    value=AdaptiveCard()
+                    .with_version("1.4")
+                    .with_body([TextBlock(text="⚠️ Approval already resolved or expired.", wrap=True)])
+                ),
+            )
+        session_key = approval_state["session_key"]
 
         # Only authorized users may click approval buttons.
         # Default-deny: require either TEAMS_ALLOWED_USERS or an explicit
@@ -1056,7 +1071,13 @@ class TeamsAdapter(BasePlatformAdapter):
                 body=AdaptiveCardActionMessageResponse(value="Unknown action."),
             )
 
-        if not has_blocking_approval(session_key):
+        count = resolve_gateway_approval(
+            session_key,
+            choice,
+            approval_id=approval_id,
+        )
+        self._approval_state.pop(approval_id, None)
+        if not count:
             return InvokeResponse(
                 status=200,
                 body=AdaptiveCardActionCardResponse(
@@ -1066,16 +1087,14 @@ class TeamsAdapter(BasePlatformAdapter):
                 ),
             )
 
-        resolve_gateway_approval(session_key, choice)
-
         label_map = {
             "once": "✅ Allowed (once)",
             "session": "✅ Allowed (session)",
             "always": "✅ Always allowed",
             "deny": "❌ Denied",
         }
-        cmd = data.get("cmd", "")
-        desc = data.get("desc", "")
+        cmd = approval_state.get("cmd", "")
+        desc = approval_state.get("desc", "")
         body = []
         if cmd:
             body.append(TextBlock(text="⚠️ Command Approval Required", wrap=True, weight="Bolder"))
@@ -1103,13 +1122,13 @@ class TeamsAdapter(BasePlatformAdapter):
         if not self._app:
             return SendResult(success=False, error="Teams app not initialized")
 
+        from agent.redact import redact_sensitive_text
+
+        command = redact_sensitive_text(command, force=True)
+        description = redact_sensitive_text(description, force=True)
+        approval_id = str((metadata or {}).get("approval_id") or uuid.uuid4().hex)
         cmd_preview = command[:2000] + "..." if len(command) > 2000 else command
-        # Truncated for button data payload — just enough to reconstruct the card body.
-        btn_data_base = {
-            "session_key": session_key,
-            "cmd": command[:200] + "..." if len(command) > 200 else command,
-            "desc": description,
-        }
+        btn_data_base = {"approval_id": approval_id}
 
         card = (
             AdaptiveCard()
@@ -1148,6 +1167,11 @@ class TeamsAdapter(BasePlatformAdapter):
         try:
             result = await self._send_card(chat_id, card)
             message_id = getattr(result, "id", None) if result else None
+            self._approval_state[approval_id] = {
+                "session_key": session_key,
+                "cmd": command[:200] + "..." if len(command) > 200 else command,
+                "desc": description,
+            }
             return SendResult(success=True, message_id=message_id)
         except Exception as e:
             logger.error("[teams] send_exec_approval failed: %s", e, exc_info=True)

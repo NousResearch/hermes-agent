@@ -16,6 +16,7 @@ import os
 import html as _html
 import re
 import threading
+import uuid
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Set, Any
 
@@ -643,8 +644,9 @@ class TelegramAdapter(BasePlatformAdapter):
         )
         # Interactive model picker state per chat
         self._model_picker_state: Dict[str, dict] = {}
-        # Approval button state: message_id → session_key
-        self._approval_state: Dict[int, str] = {}
+        # Hermes approval_id → session metadata.  Callback data never embeds a
+        # session key, so late clicks cannot consume a different FIFO request.
+        self._approval_state: Dict[str, Dict[str, str]] = {}
         # Slash-confirm button state: confirm_id → session_key (for /reload-mcp
         # and any other slash-confirm prompts; see GatewayRunner._request_slash_confirm).
         self._slash_confirm_state: Dict[str, str] = {}
@@ -4578,6 +4580,10 @@ class TelegramAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         try:
+            from agent.redact import redact_sensitive_text
+
+            command = redact_sensitive_text(command, force=True)
+            description = redact_sensitive_text(description, force=True)
             cmd_preview = command[:3800] + "..." if len(command) > 3800 else command
             text = (
                 f"⚠️ <b>Command Approval Required</b>\n\n"
@@ -4588,13 +4594,7 @@ class TelegramAdapter(BasePlatformAdapter):
             # Resolve thread context for thread replies
             thread_id = self._metadata_thread_id(metadata)
 
-            # We'll use the message_id as part of callback_data to look up session_key
-            # Send a placeholder first, then update — or use a counter.
-            # Simpler: use a monotonic counter to generate short IDs.
-            import itertools
-            if not hasattr(self, "_approval_counter"):
-                self._approval_counter = itertools.count(1)
-            approval_id = next(self._approval_counter)
+            approval_id = str((metadata or {}).get("approval_id") or uuid.uuid4().hex)
 
             keyboard = InlineKeyboardMarkup([
                 [
@@ -4628,8 +4628,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
             msg = await self._send_message_with_thread_fallback(**kwargs)
 
-            # Store session_key keyed by approval_id for the callback handler
-            self._approval_state[approval_id] = session_key
+            self._approval_state[approval_id] = {"session_key": session_key}
 
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
@@ -5352,9 +5351,8 @@ class TelegramAdapter(BasePlatformAdapter):
             parts = data.split(":", 2)
             if len(parts) == 3:
                 choice = parts[1]  # once, session, always, deny
-                try:
-                    approval_id = int(parts[2])
-                except (ValueError, IndexError):
+                approval_id = parts[2].strip()
+                if not approval_id:
                     await query.answer(text="Invalid approval data.")
                     return
 
@@ -5370,9 +5368,34 @@ class TelegramAdapter(BasePlatformAdapter):
                     await query.answer(text="⛔ You are not authorized to approve commands.")
                     return
 
-                session_key = self._approval_state.pop(approval_id, None)
-                if not session_key:
+                approval_state = self._approval_state.get(approval_id)
+                if not approval_state:
                     await query.answer(text="This approval has already been resolved.")
+                    return
+                session_key = approval_state["session_key"]
+
+                # Resolve the exact approval before changing the UI.  A late
+                # callback must never fall back to the oldest session entry.
+                try:
+                    from tools.approval import resolve_gateway_approval
+                    count = resolve_gateway_approval(
+                        session_key,
+                        choice,
+                        approval_id=approval_id,
+                    )
+                    self._approval_state.pop(approval_id, None)
+                    logger.info(
+                        "Telegram button resolved %d approval(s) for session %s "
+                        "(approval_id=%s, choice=%s, user=%s)",
+                        count, session_key, approval_id, choice,
+                        getattr(query.from_user, "first_name", "User"),
+                    )
+                except Exception as exc:
+                    logger.error(
+                        "Failed to resolve gateway approval from Telegram button: %s",
+                        exc,
+                    )
+                    await query.answer(text="Approval resolution failed. Please retry.")
                     return
 
                 # Map choice to human-readable label
@@ -5383,7 +5406,11 @@ class TelegramAdapter(BasePlatformAdapter):
                     "deny": "❌ Denied",
                 }
                 user_display = getattr(query.from_user, "first_name", "User")
-                label = label_map.get(choice, "Resolved")
+                label = (
+                    label_map.get(choice, "Resolved")
+                    if count
+                    else "⚠️ Approval is no longer pending"
+                )
 
                 await query.answer(text=label)
 
@@ -5396,18 +5423,6 @@ class TelegramAdapter(BasePlatformAdapter):
                     )
                 except Exception:
                     pass  # non-fatal if edit fails
-
-                # Resolve the approval — unblocks the agent thread
-                try:
-                    from tools.approval import resolve_gateway_approval
-                    count = resolve_gateway_approval(session_key, choice)
-                    logger.info(
-                        "Telegram button resolved %d approval(s) for session %s (choice=%s, user=%s)",
-                        count, session_key, choice, user_display,
-                    )
-                except Exception as exc:
-                    logger.error("Failed to resolve gateway approval from Telegram button: %s", exc)
-                    count = 0
 
                 # Resume the typing indicator — paused when the approval was
                 # sent (gateway/run.py).  The text /approve and /deny paths

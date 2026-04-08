@@ -70,6 +70,7 @@ def _clear_approval_state():
     """Reset all module-level approval state between tests."""
     from tools import approval as mod
     mod._gateway_queues.clear()
+    mod._gateway_tombstones.clear()
     mod._gateway_notify_cbs.clear()
     mod._session_approved.clear()
     mod._permanent_approved.clear()
@@ -154,6 +155,32 @@ class TestBlockingGatewayApproval:
         assert e1.result == "once"
         assert not e2.event.is_set()
         assert len(_gateway_queues[session_key]) == 1
+
+    def test_resolve_specific_approval_id(self):
+        """Interactive buttons should resolve the intended queued approval."""
+        from tools.approval import (
+            resolve_gateway_approval, pending_approval_count,
+            _ApprovalEntry, _gateway_queues,
+        )
+        session_key = "test-targeted"
+        e1 = _ApprovalEntry(
+            {"command": "first"}, approval_id="approval-first"
+        )
+        e2 = _ApprovalEntry(
+            {"command": "second"}, approval_id="approval-second"
+        )
+        _gateway_queues[session_key] = [e1, e2]
+
+        count = resolve_gateway_approval(
+            session_key,
+            "deny",
+            approval_id="approval-second",
+        )
+        assert count == 1
+        assert not e1.event.is_set()
+        assert e2.event.is_set()
+        assert e2.result == "deny"
+        assert pending_approval_count(session_key) == 1
 
     def test_unregister_signals_all_entries(self):
         """unregister_gateway_notify signals all waiting entries to prevent hangs."""

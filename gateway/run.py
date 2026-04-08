@@ -18620,6 +18620,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
                 cmd = approval_data.get("command", "")
                 desc = approval_data.get("description", "dangerous command")
+                approval_meta = dict(_status_thread_metadata or {})
+                approval_id = approval_data.get("approval_id")
+                if approval_id:
+                    approval_meta["approval_id"] = approval_id
 
                 # Redact credentials from the command before displaying it in
                 # the approval prompt — Tirith's findings are already redacted,
@@ -18640,7 +18644,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 command=cmd,
                                 session_key=_approval_session_key,
                                 description=desc,
-                                metadata=_status_thread_metadata,
+                                metadata=approval_meta or None,
                             ),
                             _loop_for_step,
                             logger=logger,

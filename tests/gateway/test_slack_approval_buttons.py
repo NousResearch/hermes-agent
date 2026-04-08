@@ -117,9 +117,11 @@ class TestSlackExecApproval:
         assert "hermes_approve_session" in action_ids
         assert "hermes_approve_always" in action_ids
         assert "hermes_deny" in action_ids
-        # Each button carries the session key as value
-        for e in elements:
-            assert e["value"] == "agent:main:slack:group:C1:1111"
+        approval_ids = {e["value"] for e in elements}
+        assert len(approval_ids) == 1
+        approval_id = approval_ids.pop()
+        assert approval_id
+        assert adapter._approval_state[approval_id]["session_key"] == "agent:main:slack:group:C1:1111"
 
     @pytest.mark.asyncio
     async def test_sends_in_thread(self):
@@ -136,6 +138,29 @@ class TestSlackExecApproval:
 
         kwargs = mock_client.chat_postMessage.call_args[1]
         assert kwargs.get("thread_ts") == "9999.0000"
+
+    @pytest.mark.asyncio
+    async def test_uses_core_approval_id_and_force_redacts_prompt(self):
+        adapter = _make_adapter()
+        mock_client = adapter._team_clients["T1"]
+        mock_client.chat_postMessage = AsyncMock(return_value={"ts": "5.6"})
+        secret = "sk-proj-" + "S" * 40
+
+        await adapter.send_exec_approval(
+            chat_id="C1",
+            command=f"echo {secret}",
+            session_key="session-secret",
+            description=f"reason {secret}",
+            metadata={"approval_id": "approval-from-core"},
+        )
+
+        kwargs = mock_client.chat_postMessage.call_args.kwargs
+        assert secret not in repr(kwargs)
+        values = {
+            element["value"]
+            for element in kwargs["blocks"][1]["elements"]
+        }
+        assert values == {"approval-from-core"}
 
     @pytest.mark.asyncio
     async def test_not_connected(self):
@@ -175,6 +200,9 @@ class TestSlackApprovalAction:
         adapter = _make_adapter()
         _attach_auth_runner(adapter)
         adapter._approval_resolved["1234.5678"] = False
+        adapter._approval_state["req-123"] = {
+            "session_key": "agent:main:slack:group:C1:1111",
+        }
 
         ack = AsyncMock()
         body = {
@@ -190,7 +218,7 @@ class TestSlackApprovalAction:
         }
         action = {
             "action_id": "hermes_approve_once",
-            "value": "agent:main:slack:group:C1:1111",
+            "value": "req-123",
         }
 
         mock_client = adapter._team_clients["T1"]
@@ -200,7 +228,11 @@ class TestSlackApprovalAction:
             await adapter._handle_approval_action(ack, body, action)
 
         ack.assert_called_once()
-        mock_resolve.assert_called_once_with("agent:main:slack:group:C1:1111", "once")
+        mock_resolve.assert_called_once_with(
+            "agent:main:slack:group:C1:1111",
+            "once",
+            approval_id="req-123",
+        )
 
         # Message should be updated with decision
         mock_client.chat_update.assert_called_once()
@@ -212,6 +244,7 @@ class TestSlackApprovalAction:
         adapter = _make_adapter()
         _attach_auth_runner(adapter)
         adapter._approval_resolved["1234.5678"] = True  # Already resolved
+        adapter._approval_state["req-123"] = {"session_key": "some-session"}
 
         ack = AsyncMock()
         body = {
@@ -221,7 +254,7 @@ class TestSlackApprovalAction:
         }
         action = {
             "action_id": "hermes_approve_once",
-            "value": "some-session",
+            "value": "req-123",
         }
 
         with patch("tools.approval.resolve_gateway_approval") as mock_resolve:
@@ -236,6 +269,7 @@ class TestSlackApprovalAction:
         adapter = _make_adapter()
         _attach_auth_runner(adapter)
         adapter._approval_resolved["1.2"] = False
+        adapter._approval_state["req-deny"] = {"session_key": "session-key"}
 
         ack = AsyncMock()
         body = {
@@ -245,7 +279,7 @@ class TestSlackApprovalAction:
             "channel": {"id": "C1"},
             "user": {"name": "alice", "id": "U_ALICE"},
         }
-        action = {"action_id": "hermes_deny", "value": "session-key"}
+        action = {"action_id": "hermes_deny", "value": "req-deny"}
 
         mock_client = adapter._team_clients["T1"]
         mock_client.chat_update = AsyncMock()
@@ -253,7 +287,11 @@ class TestSlackApprovalAction:
         with patch("tools.approval.resolve_gateway_approval", return_value=1) as mock_resolve:
             await adapter._handle_approval_action(ack, body, action)
 
-        mock_resolve.assert_called_once_with("session-key", "deny")
+        mock_resolve.assert_called_once_with(
+            "session-key",
+            "deny",
+            approval_id="req-deny",
+        )
         update_kwargs = mock_client.chat_update.call_args[1]
         assert "Denied by alice" in update_kwargs["text"]
 

@@ -311,12 +311,12 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         # fallback path, same as after a gateway restart).
         #   _clarify_state:        clarify_id → session_key (resolves via
         #                          tools.clarify_gateway.resolve_gateway_clarify)
-        #   _exec_approval_state:  approval_id → session_key (resolves via
-        #                          tools.approval.resolve_gateway_approval)
+        #   _exec_approval_state:  approval_id → {session_key, chat_id}
+        #                          (resolves via tools.approval)
         #   _slash_confirm_state:  confirm_id → session_key (resolves via
         #                          tools.slash_confirm.resolve)
         self._clarify_state: "OrderedDict[str, str]" = OrderedDict()
-        self._exec_approval_state: "OrderedDict[str, str]" = OrderedDict()
+        self._exec_approval_state: "OrderedDict[str, Dict[str, str]]" = OrderedDict()
         self._slash_confirm_state: "OrderedDict[str, str]" = OrderedDict()
 
         # Runtime
@@ -816,6 +816,10 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         if self._http_client is None:
             return SendResult(success=False, error="Not connected")
 
+        from agent.redact import redact_sensitive_text
+
+        command = redact_sensitive_text(command, force=True)
+        description = redact_sensitive_text(description, force=True)
         # WhatsApp body caps at 1024 chars; reserve room for the
         # framing prose around the command.
         cmd = command or ""
@@ -826,7 +830,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             f"Reason: {description}"
         )
 
-        approval_id = uuid.uuid4().hex[:12]
+        approval_id = str((metadata or {}).get("approval_id") or uuid.uuid4().hex)
         reply_to = (metadata or {}).get("reply_to_message_id") if metadata else None
 
         interactive = {
@@ -848,7 +852,11 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
         result = await self._post_interactive(chat_id, interactive, reply_to=reply_to)
         if result.success:
-            self._bounded_put(self._exec_approval_state, approval_id, session_key)
+            self._bounded_put(
+                self._exec_approval_state,
+                approval_id,
+                {"session_key": session_key, "chat_id": str(chat_id)},
+            )
         return result
 
     async def send_slash_confirm(
@@ -1732,18 +1740,30 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             parts = button_id.split(":", 2)
             if len(parts) != 3:
                 return False
-            _, approval_id, choice = parts
-            session_key = self._exec_approval_state.pop(approval_id, None)
-            if not session_key:
+            _, approval_id, button_choice = parts
+            approval_state = self._exec_approval_state.get(approval_id)
+            if not approval_state:
                 logger.info(
                     "[whatsapp_cloud] approval tap with no matching state "
                     "(approval_id=%s) — likely stale; falling back to text",
                     approval_id,
                 )
                 return False
-            if choice not in ("approve", "deny"):
-                self._exec_approval_state[approval_id] = session_key
+            sender_id = str(raw_message.get("from") or "").strip()
+            expected_chat_id = str(approval_state.get("chat_id") or "").strip()
+            if not sender_id or sender_id != expected_chat_id:
+                logger.warning(
+                    "[whatsapp_cloud] rejected approval tap from unexpected "
+                    "sender (approval_id=%s)",
+                    approval_id,
+                )
+                # Consume the forged/stale button event instead of degrading
+                # it into normal user text for the agent.
+                return True
+            session_key = approval_state["session_key"]
+            if button_choice not in ("approve", "deny"):
                 return False
+            choice = "once" if button_choice == "approve" else "deny"
             try:
                 from tools.approval import resolve_gateway_approval
             except ImportError:
@@ -1751,7 +1771,12 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     "[whatsapp_cloud] approval resolver unavailable"
                 )
                 return False
-            count = resolve_gateway_approval(session_key, choice)
+            count = resolve_gateway_approval(
+                session_key,
+                choice,
+                approval_id=approval_id,
+            )
+            self._exec_approval_state.pop(approval_id, None)
             if not count:
                 logger.info(
                     "[whatsapp_cloud] approval resolver reported no waiter "
@@ -1761,7 +1786,9 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             # Send confirmation message — paralleling Telegram's UX.
             try:
                 confirm_text = (
-                    "✅ Approved." if choice == "approve" else "❌ Denied."
+                    ("✅ Approved." if choice == "once" else "❌ Denied.")
+                    if count
+                    else "⚠️ Approval is no longer pending."
                 )
                 await self.send(str(raw_message.get("from") or ""), confirm_text)
             except Exception:

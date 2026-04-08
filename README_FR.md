@@ -2,6 +2,10 @@
   <img src="assets/banner.png" alt="Hermes Agent" width="100%">
 </p>
 
+<p align="center">
+  <a href="README.md">English</a> | Français
+</p>
+
 # Hermes Agent ☤
 
 <p align="center">

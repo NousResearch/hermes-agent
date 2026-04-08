@@ -16,7 +16,9 @@ import { TextInput } from './components/textInput.js'
 import { Thinking } from './components/thinking.js'
 import { HOTKEYS, INTERPOLATION_RE, PLACEHOLDERS, TOOL_VERBS, ZERO } from './constants.js'
 import { type GatewayClient, type GatewayEvent } from './gatewayClient.js'
-import * as inputHistory from './lib/history.js'
+import { useCompletion } from './hooks/useCompletion.js'
+import { useInputHistory } from './hooks/useInputHistory.js'
+import { useQueue } from './hooks/useQueue.js'
 import { writeOsc52Clipboard } from './lib/osc52.js'
 import { fmtK, hasInterpolation, pick } from './lib/text.js'
 import { DEFAULT_THEME, fromSkin, type Theme } from './theme.js'
@@ -41,8 +43,6 @@ const introMsg = (info: SessionInfo): Msg => ({
   kind: 'intro',
   info
 })
-
-const TAB_PATH_RE = /((?:\.\.?\/|~\/|\/|@)[^\s]*)$/
 
 function StatusRule({
   cols,
@@ -113,59 +113,23 @@ export function App({ gw }: { gw: GatewayClient }) {
   const [thinkingText, setThinkingText] = useState('')
   const [statusBar, setStatusBar] = useState(true)
   const [lastUserMsg, setLastUserMsg] = useState('')
-  const [queueEditIdx, setQueueEditIdx] = useState<number | null>(null)
-  const [historyIdx, setHistoryIdx] = useState<number | null>(null)
   const [streaming, setStreaming] = useState('')
-  const [queuedDisplay, setQueuedDisplay] = useState<string[]>([])
   const [catalog, setCatalog] = useState<SlashCatalog | null>(null)
 
   const buf = useRef('')
   const interruptedRef = useRef(false)
-  const queueRef = useRef<string[]>([])
-  const historyRef = useRef<string[]>(inputHistory.load())
-  const historyDraftRef = useRef('')
-  const queueEditRef = useRef<number | null>(null)
   const lastEmptyAt = useRef(0)
   const lastStatusNoteRef = useRef('')
   const protocolWarnedRef = useRef(false)
   const pasteCounterRef = useRef(0)
 
+  const { queueRef, queueEditRef, queuedDisplay, queueEditIdx, enqueue, dequeue, replaceQ, setQueueEdit, syncQueue } =
+    useQueue()
+
+  const { historyRef, historyIdx, setHistoryIdx, historyDraftRef, pushHistory } = useInputHistory()
+
   const empty = !messages.length
   const blocked = !!(clarify || approval || sudo || secret || picker)
-
-  const syncQueue = () => setQueuedDisplay([...queueRef.current])
-
-  const setQueueEdit = (idx: number | null) => {
-    queueEditRef.current = idx
-    setQueueEditIdx(idx)
-  }
-
-  const enqueue = (text: string) => {
-    queueRef.current.push(text)
-    syncQueue()
-  }
-
-  const dequeue = () => {
-    const [head, ...rest] = queueRef.current
-    queueRef.current = rest
-    syncQueue()
-
-    return head
-  }
-
-  const replaceQ = (i: number, text: string) => {
-    queueRef.current[i] = text
-    syncQueue()
-  }
-
-  const pushHistory = (text: string) => {
-    const trimmed = text.trim()
-
-    if (trimmed && historyRef.current.at(-1) !== trimmed) {
-      historyRef.current.push(trimmed)
-      inputHistory.append(trimmed)
-    }
-  }
 
   useEffect(() => {
     if (!sid || !stdout) {
@@ -180,63 +144,7 @@ export function App({ gw }: { gw: GatewayClient }) {
     }
   }, [sid, stdout]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  const [completions, setCompletions] = useState<{ text: string; display: string; meta: string }[]>([])
-  const [compIdx, setCompIdx] = useState(0)
-  const [compReplace, setCompReplace] = useState(0)
-  const compInputRef = useRef('')
-
-  useEffect(() => {
-    if (blocked) {
-      if (completions.length) {
-        setCompletions([])
-        setCompIdx(0)
-      }
-
-      return
-    }
-
-    if (input === compInputRef.current) {
-      return
-    }
-
-    compInputRef.current = input
-
-    const isSlash = input.startsWith('/')
-    const pathWord = !isSlash ? (input.match(TAB_PATH_RE)?.[1] ?? null) : null
-
-    if (!isSlash && !pathWord) {
-      if (completions.length) {
-        setCompletions([])
-        setCompIdx(0)
-      }
-
-      return
-    }
-
-    const t = setTimeout(() => {
-      if (compInputRef.current !== input) {
-        return
-      }
-
-      const req = isSlash
-        ? gw.request('complete.slash', { text: input })
-        : gw.request('complete.path', { word: pathWord })
-
-      req
-        .then((r: any) => {
-          if (compInputRef.current !== input) {
-            return
-          }
-
-          setCompletions(r?.items ?? [])
-          setCompIdx(0)
-          setCompReplace(isSlash ? (r?.replace_from ?? 1) : input.length - (pathWord?.length ?? 0))
-        })
-        .catch(() => {})
-    }, 60)
-
-    return () => clearTimeout(t)
-  }, [input, blocked, gw]) // eslint-disable-line react-hooks/exhaustive-deps
+  const { completions, compIdx, setCompIdx, compReplace } = useCompletion(input, blocked, gw)
 
   const appendMessage = useCallback((msg: Msg) => {
     setMessages(prev => [...prev, msg])

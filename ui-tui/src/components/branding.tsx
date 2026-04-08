@@ -1,6 +1,6 @@
 import { Box, Text, useStdout } from 'ink'
 
-import { caduceus, logo, LOGO_WIDTH } from '../banner.js'
+import { artWidth, caduceus, CADUCEUS_WIDTH, logo, LOGO_WIDTH } from '../banner.js'
 import { flat } from '../lib/text.js'
 import type { Theme } from '../theme.js'
 import type { SessionInfo } from '../types.js'
@@ -19,16 +19,19 @@ export function ArtLines({ lines }: { lines: [string, string][] }) {
 
 export function Banner({ t }: { t: Theme }) {
   const cols = useStdout().stdout?.columns ?? 80
+  const logoLines = logo(t.color, t.bannerLogo || undefined)
+  const logoW = t.bannerLogo ? artWidth(logoLines) : LOGO_WIDTH
 
   return (
     <Box flexDirection="column" marginBottom={1}>
-      {cols >= LOGO_WIDTH ? (
-        <ArtLines lines={logo(t.color)} />
+      {cols >= logoW ? (
+        <ArtLines lines={logoLines} />
       ) : (
         <Text bold color={t.color.gold}>
           {t.brand.icon} NOUS HERMES
         </Text>
       )}
+
       <Text color={t.color.dim}>{t.brand.icon} Nous Research · Messenger of the Digital Gods</Text>
     </Box>
   )
@@ -36,8 +39,10 @@ export function Banner({ t }: { t: Theme }) {
 
 export function SessionPanel({ info, sid, t }: { info: SessionInfo; sid?: string | null; t: Theme }) {
   const cols = useStdout().stdout?.columns ?? 100
-  const wide = cols >= 90
-  const leftW = wide ? 34 : 0
+  const heroLines = caduceus(t.color, t.bannerHero || undefined)
+  const heroW = artWidth(heroLines) || CADUCEUS_WIDTH
+  const leftW = Math.min(heroW + 4, Math.floor(cols * 0.4))
+  const wide = cols >= 90 && leftW + 40 < cols
   const w = wide ? cols - leftW - 12 : cols - 10
   const cwd = info.cwd || process.cwd()
   const strip = (s: string) => (s.endsWith('_tools') ? s.slice(0, -6) : s)
@@ -88,7 +93,7 @@ export function SessionPanel({ info, sid, t }: { info: SessionInfo; sid?: string
     <Box borderColor={t.color.bronze} borderStyle="round" marginBottom={1} paddingX={2} paddingY={1}>
       {wide && (
         <Box flexDirection="column" marginRight={2} width={leftW}>
-          <ArtLines lines={caduceus(t.color)} />
+          <ArtLines lines={heroLines} />
           <Text />
           <Text color={t.color.amber}>
             {info.model.split('/').pop()}

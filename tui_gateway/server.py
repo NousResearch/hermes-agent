@@ -205,7 +205,13 @@ def resolve_skin() -> dict:
         from hermes_cli.skin_engine import init_skin_from_config, get_active_skin
         init_skin_from_config(_load_cfg())
         skin = get_active_skin()
-        return {"name": skin.name, "colors": skin.colors, "branding": skin.branding}
+        return {
+            "name": skin.name,
+            "colors": skin.colors,
+            "branding": skin.branding,
+            "banner_logo": skin.banner_logo,
+            "banner_hero": skin.banner_hero,
+        }
     except Exception:
         return {}
 

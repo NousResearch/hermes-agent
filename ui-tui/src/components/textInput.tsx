@@ -116,6 +116,7 @@ export function TextInput({ value, onChange, onSubmit, onLargePaste, placeholder
 
       let c = cur,
         v = value
+
       const mod = k.ctrl || k.meta
 
       if (k.home || (k.ctrl && inp === 'a')) {
@@ -161,11 +162,13 @@ export function TextInput({ value, onChange, onSubmit, onLargePaste, placeholder
           if (!pasteBuf.current) {
             pastePos.current = c
           }
+
           pasteBuf.current += raw
 
           if (pasteTimer.current) {
             clearTimeout(pasteTimer.current)
           }
+
           pasteTimer.current = setTimeout(flushPaste, 50)
 
           return

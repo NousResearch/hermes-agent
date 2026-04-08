@@ -98,12 +98,8 @@ def get_stt_model_from_config() -> Optional[str]:
     Silently returns ``None`` on any error (missing file, bad YAML, etc.).
     """
     try:
-        import yaml
-        cfg_path = get_hermes_home() / "config.yaml"
-        if cfg_path.exists():
-            with open(cfg_path) as f:
-                data = yaml.safe_load(f) or {}
-            return data.get("stt", {}).get("model")
+        from hermes_cli.config import read_raw_config
+        return read_raw_config().get("stt", {}).get("model")
     except Exception:
         pass
     return None

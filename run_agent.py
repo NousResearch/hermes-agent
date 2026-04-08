@@ -66,7 +66,8 @@ from model_tools import (
     handle_function_call,
     check_toolset_requirements,
 )
-from tools.terminal_tool import cleanup_vm
+from tools.terminal_tool import cleanup_vm, get_active_env
+from tools.tool_result_storage import maybe_persist_tool_result, enforce_turn_budget
 from tools.interrupt import set_interrupt as _set_interrupt
 from tools.browser_tool import cleanup_browser
 
@@ -410,63 +411,6 @@ def _strip_budget_warnings_from_history(messages: list) -> None:
 # =========================================================================
 # Large tool result handler — save oversized output to temp file
 # =========================================================================
-
-# Threshold at which tool results are saved to a file instead of kept inline.
-# 100K chars ≈ 25K tokens — generous for any reasonable output but prevents
-# catastrophic context explosions.
-_LARGE_RESULT_CHARS = 100_000
-
-# How many characters of the original result to include as an inline preview
-# so the model has immediate context about what the tool returned.
-_LARGE_RESULT_PREVIEW_CHARS = 1_500
-
-
-def _save_oversized_tool_result(function_name: str, function_result: str) -> str:
-    """Replace oversized tool results with a file reference + preview.
-
-    When a tool returns more than ``_LARGE_RESULT_CHARS`` characters, the full
-    content is written to a temporary file under ``HERMES_HOME/cache/tool_responses/``
-    and the result sent to the model is replaced with:
-      • a brief head preview  (first ``_LARGE_RESULT_PREVIEW_CHARS`` chars)
-      • the file path so the model can use ``read_file`` / ``search_files``
-
-    Falls back to destructive truncation if the file write fails.
-    """
-    original_len = len(function_result)
-    if original_len <= _LARGE_RESULT_CHARS:
-        return function_result
-
-    # Build the target directory
-    try:
-        response_dir = os.path.join(get_hermes_home(), "cache", "tool_responses")
-        os.makedirs(response_dir, exist_ok=True)
-
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        # Sanitize tool name for use in filename
-        safe_name = re.sub(r"[^\w\-]", "_", function_name)[:40]
-        filename = f"{safe_name}_{timestamp}.txt"
-        filepath = os.path.join(response_dir, filename)
-
-        with open(filepath, "w", encoding="utf-8") as f:
-            f.write(function_result)
-
-        preview = function_result[:_LARGE_RESULT_PREVIEW_CHARS]
-        return (
-            f"{preview}\n\n"
-            f"[Large tool response: {original_len:,} characters total — "
-            f"only the first {_LARGE_RESULT_PREVIEW_CHARS:,} shown above. "
-            f"Full output saved to: {filepath}\n"
-            f"Use read_file or search_files on that path to access the rest.]"
-        )
-    except Exception as exc:
-        # Fall back to destructive truncation if file write fails
-        logger.warning("Failed to save large tool result to file: %s", exc)
-        return (
-            function_result[:_LARGE_RESULT_CHARS]
-            + f"\n\n[Truncated: tool response was {original_len:,} chars, "
-            f"exceeding the {_LARGE_RESULT_CHARS:,} char limit. "
-            f"File save failed: {exc}]"
-        )
 
 
 class AIAgent:
@@ -6262,21 +6206,29 @@ class AIAgent:
                 except Exception as cb_err:
                     logging.debug(f"Tool complete callback error: {cb_err}")
 
-            # Save oversized results to file instead of destructive truncation
-            function_result = _save_oversized_tool_result(name, function_result)
+            function_result = maybe_persist_tool_result(
+                content=function_result,
+                tool_name=name,
+                tool_use_id=tc.id,
+                env=get_active_env(effective_task_id),
+            )
 
-            # Discover subdirectory context files from tool arguments
             subdir_hints = self._subdirectory_hints.check_tool_call(name, args)
             if subdir_hints:
                 function_result += subdir_hints
 
-            # Append tool result message in order
             tool_msg = {
                 "role": "tool",
                 "content": function_result,
                 "tool_call_id": tc.id,
             }
             messages.append(tool_msg)
+
+        # ── Per-turn aggregate budget enforcement ─────────────────────────
+        num_tools = len(parsed_calls)
+        if num_tools > 0:
+            turn_tool_msgs = messages[-num_tools:]
+            enforce_turn_budget(turn_tool_msgs, env=get_active_env(effective_task_id))
 
         # ── Budget pressure injection ────────────────────────────────────
         budget_warning = self._get_budget_warning(api_call_count)
@@ -6562,8 +6514,12 @@ class AIAgent:
                 except Exception as cb_err:
                     logging.debug(f"Tool complete callback error: {cb_err}")
 
-            # Save oversized results to file instead of destructive truncation
-            function_result = _save_oversized_tool_result(function_name, function_result)
+            function_result = maybe_persist_tool_result(
+                content=function_result,
+                tool_name=function_name,
+                tool_use_id=tool_call.id,
+                env=get_active_env(effective_task_id),
+            )
 
             # Discover subdirectory context files from tool arguments
             subdir_hints = self._subdirectory_hints.check_tool_call(function_name, function_args)
@@ -6600,6 +6556,11 @@ class AIAgent:
 
             if self.tool_delay > 0 and i < len(assistant_message.tool_calls):
                 time.sleep(self.tool_delay)
+
+        # ── Per-turn aggregate budget enforcement ─────────────────────────
+        num_tools_seq = len(assistant_message.tool_calls)
+        if num_tools_seq > 0:
+            enforce_turn_budget(messages[-num_tools_seq:], env=get_active_env(effective_task_id))
 
         # ── Budget pressure injection ─────────────────────────────────
         # After all tool calls in this turn are processed, check if we're

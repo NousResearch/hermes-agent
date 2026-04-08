@@ -27,10 +27,12 @@ class ToolEntry:
     __slots__ = (
         "name", "toolset", "schema", "handler", "check_fn",
         "requires_env", "is_async", "description", "emoji",
+        "max_result_size_chars",
     )
 
     def __init__(self, name, toolset, schema, handler, check_fn,
-                 requires_env, is_async, description, emoji):
+                 requires_env, is_async, description, emoji,
+                 max_result_size_chars=None):
         self.name = name
         self.toolset = toolset
         self.schema = schema
@@ -40,6 +42,7 @@ class ToolEntry:
         self.is_async = is_async
         self.description = description
         self.emoji = emoji
+        self.max_result_size_chars = max_result_size_chars
 
 
 class ToolRegistry:
@@ -64,6 +67,7 @@ class ToolRegistry:
         is_async: bool = False,
         description: str = "",
         emoji: str = "",
+        max_result_size_chars: int | float | None = None,
     ):
         """Register a tool.  Called at module-import time by each tool file."""
         existing = self._tools.get(name)
@@ -83,6 +87,7 @@ class ToolRegistry:
             is_async=is_async,
             description=description or schema.get("description", ""),
             emoji=emoji,
+            max_result_size_chars=max_result_size_chars,
         )
         if check_fn and toolset not in self._toolset_checks:
             self._toolset_checks[toolset] = check_fn
@@ -163,6 +168,14 @@ class ToolRegistry:
     # ------------------------------------------------------------------
     # Query helpers  (replace redundant dicts in model_tools.py)
     # ------------------------------------------------------------------
+
+    def get_max_result_size(self, name: str) -> int | float:
+        """Return per-tool max result size, or global default."""
+        from tools.tool_result_storage import DEFAULT_MAX_RESULT_SIZE_CHARS
+        entry = self._tools.get(name)
+        if entry and entry.max_result_size_chars is not None:
+            return entry.max_result_size_chars
+        return DEFAULT_MAX_RESULT_SIZE_CHARS
 
     def get_all_tool_names(self) -> List[str]:
         """Return sorted list of all registered tool names."""

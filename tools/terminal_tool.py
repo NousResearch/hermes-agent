@@ -811,6 +811,12 @@ def _stop_cleanup_thread():
             pass
 
 
+def get_active_env(task_id: str):
+    """Return the active BaseEnvironment for *task_id*, or None."""
+    with _env_lock:
+        return _active_environments.get(task_id)
+
+
 def get_active_environments_info() -> Dict[str, Any]:
     """Get information about currently active environments."""
     info = {
@@ -1617,4 +1623,5 @@ registry.register(
     handler=_handle_terminal,
     check_fn=check_terminal_requirements,
     emoji="💻",
+    max_result_size_chars=30_000,
 )

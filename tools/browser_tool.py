@@ -877,7 +877,11 @@ def _run_browser_command(
         # Local mode — launch a headless Chromium instance
         backend_args = ["--session", session_info["session_name"]]
 
-    cmd_parts = browser_cmd.split() + backend_args + [
+    # Keep concrete executable paths intact, even when they contain spaces.
+    # Only the synthetic npx fallback needs to expand into multiple argv items.
+    cmd_prefix = ["npx", "agent-browser"] if browser_cmd == "npx agent-browser" else [browser_cmd]
+
+    cmd_parts = cmd_prefix + backend_args + [
         "--json",
         command
     ] + args

@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hermes Agent Dashboard</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+</head>
+<body class="dark-theme">
+    <div id="app">
+        <!-- Sidebar -->
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <img src="/static/nous-logo.png" alt="Nous Logo" class="logo" onerror="this.src='https://hermes-agent.nousresearch.com/nous-logo.png'">
+                <h1 data-i18n="app_title">Hermes Dashboard</h1>
+            </div>
+
+            <nav class="sidebar-nav">
+                <div class="nav-section">
+                    <h2 data-i18n="sessions">Sessions</h2>
+                    <ul id="sessions-list">
+                        <!-- Sessions will be loaded here -->
+                        <li class="loading" data-i18n="loading">Loading...</li>
+                    </ul>
+                </div>
+
+                <div class="nav-section">
+                    <h2 data-i18n="tools">Tools</h2>
+                    <div class="tools-grid">
+                        <div class="tool-icon" data-tooltip="tool_terminal">⚔️</div>
+                        <div class="tool-icon" data-tooltip="tool_web_search">🔍</div>
+                        <div class="tool-icon" data-tooltip="tool_browser">🌐</div>
+                        <div class="tool-icon" data-tooltip="tool_read_file">📄</div>
+                        <div class="tool-icon" data-tooltip="tool_write_file">💾</div>
+                        <div class="tool-icon" data-tooltip="tool_patch">🛠️</div>
+                        <div class="tool-icon" data-tooltip="tool_vision">👁️</div>
+                        <div class="tool-icon" data-tooltip="tool_memory">🧠</div>
+                        <div class="tool-icon" data-tooltip="tool_skills">⚡</div>
+                    </div>
+                </div>
+            </nav>
+
+            <div class="sidebar-footer">
+                <button id="settings-btn" class="btn btn-secondary">
+                    <span class="icon">⚙️</span>
+                    <span data-i18n="settings">Settings</span>
+                </button>
+            </div>
+        </aside>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <header class="top-bar">
+                <div class="status-indicator">
+                    <span class="status-dot online"></span>
+                    <span id="status-text" data-i18n="status_online">Agent Online</span>
+                </div>
+                <div class="model-info">
+                    <span id="current-model">...</span>
+                </div>
+                <button id="new-chat-btn" class="btn btn-primary" data-i18n="new_chat">New Chat</button>
+            </header>
+
+            <div id="chat-container" class="chat-container">
+                <div class="welcome-banner">
+                    <pre class="ascii-logo">
+██╗  ██╗███████╗██████╗ ███╗   ███╗███████╗███████╗
+██║  ██║██╔════╝██╔══██╗████╗ ████║██╔════╝██╔════╝
+███████║█████╗  ██████╔╝██╔████╔██║█████╗  ███████╗
+██╔══██║██╔══╝  ██╔══██╗██║╚██╔╝██║██╔══╝  ╚════██║
+██║  ██║███████╗██║  ██║██║ ╚═╝ ██║███████╗███████║
+╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝╚═╝     ╚═╝╚══════╝╚══════╝</pre>
+                    <h2 data-i18n="welcome_msg">Welcome to Hermes Agent Dashboard!</h2>
+                </div>
+                <div id="chat-messages"></div>
+            </div>
+
+            <footer class="input-bar">
+                <div class="input-container">
+                    <textarea id="user-input" placeholder="Type your message here..." data-i18n-placeholder="input_placeholder"></textarea>
+                    <button id="send-btn" class="btn btn-primary" data-i18n="send">Send</button>
+                </div>
+            </footer>
+        </main>
+
+        <!-- Settings Modal -->
+        <div id="settings-modal" class="modal">
+            <div class="modal-content">
+                <header class="modal-header">
+                    <h2 data-i18n="settings">Settings</h2>
+                    <button class="close-modal">&times;</button>
+                </header>
+                <div class="modal-body">
+                    <div class="setting-group">
+                        <label data-i18n="theme">Theme</label>
+                        <div class="toggle-group">
+                            <button class="theme-toggle active" data-theme="dark" data-i18n="dark">Dark</button>
+                            <button class="theme-toggle" data-theme="light" data-i18n="light">Light</button>
+                        </div>
+                    </div>
+                    <div class="setting-group">
+                        <label data-i18n="language">Language</label>
+                        <select id="lang-select">
+                            <option value="en" data-i18n="english">English</option>
+                            <option value="fr" data-i18n="french">French</option>
+                        </select>
+                    </div>
+                    <div class="setting-group">
+                        <label data-i18n="model">Model</label>
+                        <input type="text" id="model-input" placeholder="anthropic/claude-sonnet-4.6">
+                    </div>
+                </div>
+                <footer class="modal-footer">
+                    <button id="save-settings" class="btn btn-primary" data-i18n="save">Save</button>
+                </footer>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/js/app.js"></script>
+</body>
+</html>

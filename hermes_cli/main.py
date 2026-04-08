@@ -39,6 +39,7 @@ Usage:
     hermes uninstall           Uninstall Hermes Agent
     hermes acp                 Run as an ACP server for editor integration
     hermes sessions browse     Interactive session picker with search
+    hermes dashboard           Launch the Web UI dashboard
 
     hermes claw migrate --dry-run  # Preview migration without changes
 """
@@ -5414,8 +5415,42 @@ For more help on a command:
     acp_parser.set_defaults(func=cmd_acp)
 
     # =========================================================================
-    # profile command
+    # dashboard command
     # =========================================================================
+    dashboard_parser = subparsers.add_parser(
+        "dashboard",
+        help="Launch the Web UI dashboard",
+        description="Start a local web server to access the Hermes Agent via a graphical interface"
+    )
+    dashboard_parser.add_argument("--host", default="127.0.0.1", help="Host to bind (default: 127.0.0.1)")
+    dashboard_parser.add_argument("--port", type=int, default=8000, help="Port to bind (default: 8000)")
+
+    def cmd_dashboard(args):
+        """Launch the Hermes Agent Web Dashboard."""
+        try:
+            import uvicorn
+            from dashboard.app import app
+
+            host = getattr(args, "host", "127.0.0.1")
+            port = getattr(args, "port", 8000)
+
+            print(f"\n🚀 Starting Hermes Dashboard at http://{host}:{port}")
+            print("   Press Ctrl+C to stop the server.\n")
+
+            uvicorn.run(app, host=host, port=port, log_level="warning")
+        except ImportError:
+            print("\nDashboard dependencies not installed.")
+            print("Install them with:  pip install fastapi uvicorn jinja2")
+            sys.exit(1)
+        except Exception as e:
+            print(f"\nError starting dashboard: {e}")
+            sys.exit(1)
+
+    dashboard_parser.set_defaults(func=cmd_dashboard)
+
+# =========================================================================
+# profile command
+# =========================================================================
     profile_parser = subparsers.add_parser(
         "profile",
         help="Manage profiles — multiple isolated Hermes instances",

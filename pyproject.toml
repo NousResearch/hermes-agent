@@ -34,6 +34,9 @@ dependencies = [
   "edge-tts>=7.2.7,<8",
   # Skills Hub (GitHub App JWT auth — optional, only needed for bot identity)
   "PyJWT[crypto]>=2.12.0,<3",  # CVE-2026-32597
+  "fastapi>=0.115.0,<1",
+  "uvicorn>=0.30.0,<1",
+  "jinja2>=3.1.0,<4",
 ]
 
 [project.optional-dependencies]

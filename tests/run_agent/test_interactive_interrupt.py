@@ -23,7 +23,7 @@ logging.basicConfig(level=logging.DEBUG, stream=sys.stderr,
                     format="%(asctime)s [%(threadName)s] %(message)s")
 log = logging.getLogger("interrupt_test")
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from unittest.mock import MagicMock, patch
 from run_agent import AIAgent, IterationBudget

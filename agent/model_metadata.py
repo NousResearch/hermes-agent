@@ -113,8 +113,15 @@ DEFAULT_CONTEXT_LENGTHS = {
     "llama": 131072,
     # Qwen
     "qwen": 131072,
-    # MiniMax
-    "minimax": 204800,
+    # MiniMax (lowercase — lookup lowercases model names at line 973)
+    "minimax-m1-256k": 1000000,
+    "minimax-m1-128k": 1000000,
+    "minimax-m1-80k": 1000000,
+    "minimax-m1-40k": 1000000,
+    "minimax-m1": 1000000,
+    "minimax-m2.5": 1048576,
+    "minimax-m2.7": 1048576,
+    "minimax": 1048576,
     # GLM
     "glm": 202752,
     # Kimi
@@ -127,7 +134,7 @@ DEFAULT_CONTEXT_LENGTHS = {
     "deepseek-ai/DeepSeek-V3.2": 65536,
     "moonshotai/Kimi-K2.5": 262144,
     "moonshotai/Kimi-K2-Thinking": 262144,
-    "MiniMaxAI/MiniMax-M2.5": 204800,
+    "minimaxai/minimax-m2.5": 1048576,
     "XiaomiMiMo/MiMo-V2-Flash": 32768,
     "mimo-v2-pro": 1048576,
     "mimo-v2-omni": 1048576,

@@ -16,6 +16,11 @@ export interface ThemeColors {
   statusWarn: string
   statusBad: string
   statusCritical: string
+
+  diffAdded: string
+  diffRemoved: string
+  diffAddedWord: string
+  diffRemovedWord: string
 }
 
 export interface ThemeBrand {
@@ -52,7 +57,12 @@ export const DEFAULT_THEME: Theme = {
     statusGood: '#8FBC8F',
     statusWarn: '#FFD700',
     statusBad: '#FF8C00',
-    statusCritical: '#FF6B6B'
+    statusCritical: '#FF6B6B',
+
+    diffAdded: 'rgb(220,255,220)',
+    diffRemoved: 'rgb(255,220,220)',
+    diffAddedWord: 'rgb(36,138,61)',
+    diffRemovedWord: 'rgb(207,34,46)',
   },
 
   brand: {
@@ -95,7 +105,12 @@ export function fromSkin(
       statusGood: c('ui_ok') ?? d.color.statusGood,
       statusWarn: c('ui_warn') ?? d.color.statusWarn,
       statusBad: d.color.statusBad,
-      statusCritical: d.color.statusCritical
+      statusCritical: d.color.statusCritical,
+
+      diffAdded: d.color.diffAdded,
+      diffRemoved: d.color.diffRemoved,
+      diffAddedWord: d.color.diffAddedWord,
+      diffRemovedWord: d.color.diffRemovedWord,
     },
 
     brand: {

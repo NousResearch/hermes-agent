@@ -147,7 +147,10 @@ Notes:
 - `Up/Down` prioritizes queued-message editing over history. History only activates when there is no queue to edit.
 - If you load a queued item into the input and resubmit plain text, that queue item is replaced, removed from the queue preview, and promoted to send next. If the agent is still busy, the edited item is moved to the front of the queue and the current run is interrupted first.
 - Completion requests are debounced by 60 ms. Input starting with `/` uses `complete.slash`. A trailing token that starts with `./`, `../`, `~/`, `/`, or `@` uses `complete.path`.
-- Large pasted blocks, defined here as 5+ lines or more than 500 characters, are written under `~/.hermes/pastes` or `HERMES_HOME/pastes` and replaced with a placeholder. Smaller multiline pastes are flattened into spaces.
+- Text pastes are captured into a local paste shelf and inserted as `[[paste:<id>]]` tokens. Nothing is newline-flattened.
+- Small pastes default to `excerpt` mode. Larger pastes default to `attach` mode.
+- Very large paste references trigger a confirmation prompt before send.
+- Pasted content is scanned for obvious secret patterns before send and redacted in the outbound payload.
 - `Ctrl+G` writes the current draft, including any multiline buffer, to a temp file, temporarily swaps screen buffers, launches `$EDITOR`, then restores the TUI and submits the saved text if the editor exits cleanly.
 - Input history is stored in `~/.hermes/.hermes_history` or under `HERMES_HOME`.
 
@@ -160,7 +163,7 @@ Assistant output is rendered in one of two ways:
 
 The Markdown renderer handles headings, lists, block quotes, tables, fenced code blocks, diff coloring, inline code, emphasis, links, and plain URLs.
 
-Tool activity is shown separately through `components/thinking.tsx` while runs are active, then collapsed into tool completion rows in the transcript.
+Tool/status activity is shown in a live activity lane. Transcript rows stay focused on user/assistant turns.
 
 ## Prompt flows
 
@@ -195,8 +198,9 @@ The local slash handler covers the built-ins that need direct client behavior:
 Notes:
 
 - `/copy` sends the selected assistant response through OSC 52.
-- `/paste` asks the gateway for clipboard image attachment state.
-- `/statusbar` currently toggles client state, but the status rule is still always rendered.
+- `/paste` with no args asks the gateway for clipboard image attachment state.
+- `/paste list|mode|drop|clear` manages text paste-shelf items.
+- `/statusbar` toggles the status rule on/off.
 
 Anything else falls through to:
 

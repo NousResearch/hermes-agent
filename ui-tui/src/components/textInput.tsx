@@ -41,12 +41,12 @@ interface Props {
   value: string
   onChange: (v: string) => void
   onSubmit?: (v: string) => void
-  onLargePaste?: (text: string) => string
+  onPaste?: (data: { cursor: number; text: string; value: string }) => { cursor: number; value: string } | null
   placeholder?: string
   focus?: boolean
 }
 
-export function TextInput({ value, onChange, onSubmit, onLargePaste, placeholder = '', focus = true }: Props) {
+export function TextInput({ value, onChange, onPaste, onSubmit, placeholder = '', focus = true }: Props) {
   const [cur, setCur] = useState(value.length)
   const vRef = useRef(value)
   const selfChange = useRef(false)
@@ -74,22 +74,21 @@ export function TextInput({ value, onChange, onSubmit, onLargePaste, placeholder
     }
 
     const v = vRef.current
+    const handled = onPaste?.({ cursor: at, text: pasted, value: v })
 
-    if (pasted.split('\n').length >= 5 || pasted.length > 500) {
-      const ph = onLargePaste?.(pasted) ?? pasted.replace(/\n/g, ' ')
-      const nv = v.slice(0, at) + ph + v.slice(at)
+    if (handled) {
+      selfChange.current = true
+      onChange(handled.value)
+      setCur(handled.cursor)
+
+      return
+    }
+
+    if (pasted.length && PRINTABLE.test(pasted)) {
+      const nv = v.slice(0, at) + pasted + v.slice(at)
       selfChange.current = true
       onChange(nv)
-      setCur(at + ph.length)
-    } else {
-      const clean = pasted.replace(/\n/g, ' ')
-
-      if (clean.length && PRINTABLE.test(clean)) {
-        const nv = v.slice(0, at) + clean + v.slice(at)
-        selfChange.current = true
-        onChange(nv)
-        setCur(at + clean.length)
-      }
+      setCur(at + pasted.length)
     }
   }
 

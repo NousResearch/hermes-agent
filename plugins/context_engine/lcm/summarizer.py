@@ -154,6 +154,28 @@ class Summarizer:
         else:
             prompt = self._build_initial_prompt(content_to_summarize, summary_budget)
 
+        # ── Layer 1: call_llm with full provider fallback chain ────────
+        # call_llm already tries OpenRouter → Nous → Custom → Codex → Anthropic
+        # etc. plus payment exhaustion fallback. If ANY provider is available,
+        # it will be used.
+        summary = self._try_llm_summarize(prompt, summary_budget)
+        if summary is not None:
+            return self._with_summary_prefix(summary)
+
+        # ── Layer 2: Deterministic extractive fallback ─────────────────
+        # No LLM available at all. Build a structured summary by extracting
+        # key information from the turns directly. Not as good as LLM but
+        # preserves critical context (file paths, commands, decisions).
+        logger.info("LCM: Using deterministic extractive fallback for summary")
+        summary = self._deterministic_summary(turns, prev)
+        if summary is not None:
+            self._previous_summary = summary
+            return self._with_summary_prefix(summary)
+
+        return None
+
+    def _try_llm_summarize(self, prompt: str, summary_budget: int) -> Optional[str]:
+        """Try to summarize using call_llm with the full provider chain."""
         try:
             call_kwargs = {
                 "task": "compression",
@@ -173,21 +195,148 @@ class Summarizer:
                 content = str(content) if content else ""
 
             summary = content.strip()
-
-            # Store for iterative updates on next compaction
             self._previous_summary = summary
-
-            return self._with_summary_prefix(summary)
+            return summary
 
         except RuntimeError:
             logger.warning(
-                "Context compression: no provider available for summary. "
-                "Middle turns will be dropped without summary."
+                "Context compression: no provider available for LLM summary. "
+                "Falling back to deterministic extractive summary."
             )
             return None
         except Exception as e:
-            logger.warning("Failed to generate context summary: %s", e)
+            logger.warning("Failed to generate LLM context summary: %s. "
+                         "Falling back to deterministic extractive summary.", e)
             return None
+
+    def _deterministic_summary(
+        self,
+        turns: List[Dict[str, Any]],
+        previous_summary: Optional[str] = None,
+    ) -> Optional[str]:
+        """Build a structured summary without any LLM call.
+
+        Uses sumy's LexRank algorithm (graph-based sentence centrality)
+        for extractive summarization. Falls back to simple extraction
+        if sumy is unavailable.
+
+        LexRank ranks sentences by their centrality in a similarity graph —
+        sentences most representative of the whole content get selected.
+        This is significantly better than naive concatenation because it:
+        - Scores and ranks sentences by importance
+        - Selects a budget-fitting subset
+        - Preserves the most informative content
+        """
+        if not turns:
+            return None
+
+        # Serialize turns to text for sumy
+        all_text = self.serialize_for_summary(turns, max_chars=1500)
+
+        # Try sumy extractive summarization first
+        summary = self._sumy_extract(all_text, sentence_count=6)
+        if summary is None:
+            # sumy not available — fall back to simple extraction
+            summary = self._simple_extract(turns)
+
+        if summary is None:
+            return None
+
+        parts: List[str] = []
+        if previous_summary:
+            parts.append(previous_summary)
+            parts.append("--- Updates since last compaction ---")
+
+        parts.append(summary)
+        result = "\n".join(parts)
+        return result if result.strip() else None
+
+    def _sumy_extract(self, text: str, sentence_count: int = 6) -> Optional[str]:
+        """Extract key sentences using sumy's LexRank algorithm.
+
+        Returns None if sumy is not available or produces no output.
+        """
+        try:
+            from sumy.parsers.plaintext import PlaintextParser
+            from sumy.nlp.tokenizers import Tokenizer
+            from sumy.summarizers.lex_rank import LexRankSummarizer
+            from sumy.nlp.stemmers import Stemmer
+            from sumy.utils import get_stop_words
+
+            if not text or len(text.strip()) < 50:
+                return None
+
+            parser = PlaintextParser.from_string(text, Tokenizer("english"))
+            stemmer = Stemmer("english")
+            summarizer = LexRankSummarizer(stemmer)
+            summarizer.stop_words = get_stop_words("english")
+
+            sentences = list(summarizer(parser.document, sentence_count))
+            if not sentences:
+                return None
+
+            return " ".join(str(s).strip() for s in sentences)
+
+        except ImportError:
+            logger.debug("sumy not available for extractive summarization, using simple fallback")
+            return None
+        except Exception as exc:
+            logger.debug("sumy extractive summary failed: %s", exc)
+            return None
+
+    def _simple_extract(self, turns: List[Dict[str, Any]]) -> Optional[str]:
+        """Simple keyword-based extraction fallback when sumy is unavailable.
+
+        Extracts tool calls, user intents, and key results by role-based
+        partitioning. Less intelligent than sumy but zero-dependency.
+        """
+        parts: List[str] = []
+
+        user_msgs = []
+        tool_calls_seen = []
+        tool_results = []
+        assistant_msgs = []
+
+        for msg in turns:
+            role = msg.get("role", "")
+            content = str(msg.get("content", "") or "")[:500]
+
+            if role == "user":
+                user_msgs.append(content)
+            elif role == "assistant":
+                assistant_msgs.append(content)
+                for tc in msg.get("tool_calls", []):
+                    if isinstance(tc, dict):
+                        fn = tc.get("function", {})
+                        name = fn.get("name", "?")
+                        args = str(fn.get("arguments", ""))[:200]
+                        tool_calls_seen.append(f"{name}({args})")
+            elif role == "tool":
+                tool_results.append(content[:300])
+
+        if user_msgs:
+            parts.append("## User Messages")
+            for i, m in enumerate(user_msgs[-5:], 1):
+                parts.append(f"  {i}. {m[:200]}")
+
+        if tool_calls_seen:
+            parts.append("## Tool Calls Made")
+            for tc in tool_calls_seen[-10:]:
+                parts.append(f"  - {tc}")
+
+        if tool_results:
+            parts.append("## Key Tool Results")
+            for r in tool_results[-5:]:
+                parts.append(f"  - {r[:200]}")
+
+        if assistant_msgs:
+            parts.append("## Assistant Responses")
+            for m in assistant_msgs[-3:]:
+                if m.strip():
+                    parts.append(f"  - {m[:200]}")
+
+        result = "\n".join(parts)
+        return result if result.strip() else None
 
     def reset(self):
         """Clear stored previous summary for a new session."""

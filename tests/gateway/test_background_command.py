@@ -233,6 +233,38 @@ class TestRunBackgroundTask:
         assert "Hello from background!" in content
 
     @pytest.mark.asyncio
+    async def test_successful_task_passes_configured_max_tokens(self):
+        """Background agents should honor model.max_tokens from config.yaml."""
+        runner = _make_runner()
+        mock_adapter = AsyncMock()
+        mock_adapter.send = AsyncMock()
+        mock_adapter.extract_media = MagicMock(return_value=([], "Hello from background!"))
+        mock_adapter.extract_images = MagicMock(return_value=([], "Hello from background!"))
+        runner.adapters[Platform.TELEGRAM] = mock_adapter
+
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            user_id="12345",
+            chat_id="67890",
+            user_name="testuser",
+        )
+
+        mock_result = {"final_response": "Hello from background!", "messages": []}
+        user_config = {"model": {"default": "test-model", "max_tokens": 4096}}
+
+        with patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}), \
+             patch("gateway.run._load_gateway_config", return_value=user_config), \
+             patch("hermes_cli.tools_config._get_platform_tools", return_value=[]), \
+             patch("run_agent.AIAgent") as MockAgent:
+            mock_agent_instance = MagicMock()
+            mock_agent_instance.run_conversation.return_value = mock_result
+            MockAgent.return_value = mock_agent_instance
+
+            await runner._run_background_task("say hello", source, "bg_test")
+
+        assert MockAgent.call_args.kwargs["max_tokens"] == 4096
+
+    @pytest.mark.asyncio
     async def test_exception_sends_error_message(self):
         """When the agent raises an exception, an error message is sent."""
         runner = _make_runner()

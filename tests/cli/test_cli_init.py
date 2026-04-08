@@ -3,6 +3,7 @@ that only manifest at runtime (not in mocked unit tests)."""
 
 import os
 import sys
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -83,6 +84,52 @@ class TestMaxTurnsResolution:
         """The value passed to AIAgent must never be None (causes TypeError in run_conversation)."""
         cli = _make_cli()
         assert isinstance(cli.max_turns, int) and cli.max_turns == 90
+
+
+class TestMaxTokensResolution:
+    """model.max_tokens should flow from config into the live agent."""
+
+    def test_model_max_tokens_loaded_from_config(self):
+        cli_obj = _make_cli(config_overrides={
+            "model": {
+                "default": "anthropic/claude-opus-4.6",
+                "base_url": "https://openrouter.ai/api/v1",
+                "provider": "auto",
+                "max_tokens": 4096,
+            }
+        })
+        assert cli_obj.max_tokens == 4096
+
+    def test_init_agent_passes_model_max_tokens_to_ai_agent(self):
+        cli_obj = _make_cli(config_overrides={
+            "model": {
+                "default": "test-model",
+                "base_url": "http://localhost:8080/v1",
+                "provider": "custom",
+                "max_tokens": 4096,
+            }
+        })
+
+        class _DummyAgent:
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+                self.context_compressor = SimpleNamespace(context_length=131072)
+                self._print_fn = None
+
+        cli_obj._ensure_runtime_credentials = MagicMock(return_value=True)
+        cli_obj.api_key = "test-key"
+        cli_obj.base_url = "http://localhost:8080/v1"
+        cli_obj.provider = "custom"
+        cli_obj.api_mode = "chat_completions"
+
+        with patch.dict(cli_obj._init_agent.__globals__, {"AIAgent": _DummyAgent}), \
+             patch.dict(
+                 sys.modules,
+                 {"hermes_state": SimpleNamespace(SessionDB=lambda: MagicMock())},
+             ):
+            assert cli_obj._init_agent() is True
+
+        assert cli_obj.agent.kwargs["max_tokens"] == 4096
 
 
 class TestVerboseAndToolProgress:

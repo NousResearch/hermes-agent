@@ -204,6 +204,7 @@ def load_cli_config() -> Dict[str, Any]:
             "default": "",
             "base_url": "",
             "provider": "auto",
+            "max_tokens": None,
         },
         "terminal": {
             "env_type": "local",
@@ -1348,6 +1349,14 @@ class HermesCLI:
             self.max_turns = int(os.getenv("HERMES_MAX_ITERATIONS"))
         else:
             self.max_turns = 90
+
+        # Max output tokens: config only for now. CLI/gateway wrappers must
+        # pass this through explicitly or the server default wins.
+        _raw_max_tokens = _model_config.get("max_tokens") if isinstance(_model_config, dict) else None
+        try:
+            self.max_tokens = int(_raw_max_tokens) if _raw_max_tokens not in (None, "") else None
+        except (TypeError, ValueError):
+            self.max_tokens = None
         
         # Parse and validate toolsets
         self.enabled_toolsets = toolsets
@@ -2347,6 +2356,7 @@ class HermesCLI:
                 acp_args=runtime.get("args"),
                 credential_pool=runtime.get("credential_pool"),
                 max_iterations=self.max_turns,
+                max_tokens=self.max_tokens,
                 enabled_toolsets=self.enabled_toolsets,
                 verbose_logging=self.verbose,
                 quiet_mode=not self.verbose,
@@ -4706,6 +4716,7 @@ class HermesCLI:
                     acp_command=turn_route["runtime"].get("command"),
                     acp_args=turn_route["runtime"].get("args"),
                     max_iterations=self.max_turns,
+                    max_tokens=self.max_tokens,
                     enabled_toolsets=self.enabled_toolsets,
                     quiet_mode=True,
                     verbose_logging=False,
@@ -4842,6 +4853,7 @@ class HermesCLI:
                     acp_command=turn_route["runtime"].get("command"),
                     acp_args=turn_route["runtime"].get("args"),
                     max_iterations=8,
+                    max_tokens=self.max_tokens,
                     enabled_toolsets=[],
                     quiet_mode=True,
                     verbose_logging=False,

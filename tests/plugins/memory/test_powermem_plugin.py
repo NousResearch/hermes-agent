@@ -102,9 +102,9 @@ def test_profile_merges_content_and_memory_fields(provider: PowermemMemoryProvid
     assert "from memory field" in out["result"]
 
 
-def test_remember_adds_infer_false(provider: PowermemMemoryProvider):
+def test_add_stores_verbatim_infer_false(provider: PowermemMemoryProvider):
     out = json.loads(
-        provider.handle_tool_call("powermem_remember", {"content": "likes tea"})
+        provider.handle_tool_call("powermem_add", {"content": "likes tea"})
     )
     assert out.get("ok") is True
     mem = provider._memory

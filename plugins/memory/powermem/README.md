@@ -112,7 +112,7 @@ Full key reference: upstream [configuration guide](https://github.com/oceanbase/
 |------|--------|
 | `powermem_search` | Semantic / hybrid search over memories |
 | `powermem_profile` | List recent memories for this user (and agent scope) |
-| `powermem_remember` | Store an explicit fact (`infer=false`, verbatim) |
+| `powermem_add` | Add an explicit memory (`infer=false`, verbatim; aligns with PowerMem `Memory.add`) |
 
 Each completed turn is also sent to PowerMem with **intelligent extraction** (`infer=true`) in the background when LLM settings are configured.
 

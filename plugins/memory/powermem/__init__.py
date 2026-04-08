@@ -104,11 +104,11 @@ SEARCH_SCHEMA = {
     },
 }
 
-REMEMBER_SCHEMA = {
-    "name": "powermem_remember",
+ADD_SCHEMA = {
+    "name": "powermem_add",
     "description": (
-        "Store an explicit durable fact (verbatim, no LLM extraction). "
-        "Use for corrections, preferences, or decisions the user states clearly."
+        "Add an explicit memory (verbatim, no LLM extraction), matching PowerMem's Memory.add "
+        "with infer=false. Use for corrections, preferences, or decisions the user states clearly."
     ),
     "parameters": {
         "type": "object",
@@ -242,7 +242,7 @@ class PowermemMemoryProvider(MemoryProvider):
         return (
             "# PowerMem\n"
             f"Active. user_id={self._user_id} agent_id={self._agent_id}.\n"
-            "Use powermem_search for recall, powermem_remember for explicit facts, "
+            "Use powermem_search for recall, powermem_add for explicit facts, "
             "powermem_profile to list recent memories."
         )
 
@@ -343,7 +343,7 @@ class PowermemMemoryProvider(MemoryProvider):
         threading.Thread(target=_run, daemon=True, name="powermem-memwrite").start()
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
-        return [PROFILE_SCHEMA, SEARCH_SCHEMA, REMEMBER_SCHEMA]
+        return [PROFILE_SCHEMA, SEARCH_SCHEMA, ADD_SCHEMA]
 
     def handle_tool_call(self, tool_name: str, args: dict, **kwargs) -> str:
         if self._is_breaker_open():
@@ -366,8 +366,8 @@ class PowermemMemoryProvider(MemoryProvider):
             return self._tool_profile(args)
         if tool_name == "powermem_search":
             return self._tool_search(args)
-        if tool_name == "powermem_remember":
-            return self._tool_remember(args)
+        if tool_name == "powermem_add":
+            return self._tool_add(args)
         return tool_error(f"Unknown tool: {tool_name}")
 
     def _tool_profile(self, args: dict) -> str:
@@ -438,7 +438,7 @@ class PowermemMemoryProvider(MemoryProvider):
             self._record_failure()
             return tool_error(f"powermem_search failed: {e}")
 
-    def _tool_remember(self, args: dict) -> str:
+    def _tool_add(self, args: dict) -> str:
         content = (args.get("content") or "").strip()
         if not content:
             return tool_error("Missing required parameter: content")
@@ -455,7 +455,7 @@ class PowermemMemoryProvider(MemoryProvider):
             return json.dumps({"result": "Stored.", "ok": True})
         except Exception as e:
             self._record_failure()
-            return tool_error(f"powermem_remember failed: {e}")
+            return tool_error(f"powermem_add failed: {e}")
 
     def shutdown(self) -> None:
         for t in (self._prefetch_thread, self._sync_thread):

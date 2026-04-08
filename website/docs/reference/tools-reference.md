@@ -73,6 +73,8 @@ In addition to built-in tools, Hermes can load tools dynamically from MCP server
 
 :::note
 **Honcho tools** (`honcho_conclude`, `honcho_context`, `honcho_profile`, `honcho_search`) are no longer built-in. They are available via the Honcho memory provider plugin at `plugins/memory/honcho/`. See [Plugins](../user-guide/features/plugins.md) for installation and usage.
+
+**PowerMem tools** (`powermem_search`, `powermem_profile`, `powermem_add`) are provided by the PowerMem memory provider plugin at `plugins/memory/powermem/` when `memory.provider` is set to `powermem`. See [Memory Providers](../user-guide/features/memory-providers.md#powermem).
 :::
 
 ## `image_gen` toolset

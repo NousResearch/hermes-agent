@@ -4,8 +4,6 @@ Tests the _handle_background_command handler (run a prompt in a separate
 background session) across gateway messenger platforms.
 """
 
-import asyncio
-import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -89,7 +87,6 @@ class TestHandleBackgroundCommand:
 
         # Patch asyncio.create_task to capture the coroutine
         created_tasks = []
-        original_create_task = asyncio.create_task
 
         def capture_task(coro, *args, **kwargs):
             # Close the coroutine to avoid warnings
@@ -254,6 +251,119 @@ class TestRunBackgroundTask:
         call_args = mock_adapter.send.call_args
         content = call_args[1].get("content", call_args[0][1] if len(call_args[0]) > 1 else "")
         assert "failed" in content.lower()
+
+    @pytest.mark.asyncio
+    async def test_threaded_attachments_keep_metadata_and_unpack_media_paths(self):
+        """Background task attachments should preserve thread metadata and plain file paths."""
+        runner = _make_runner()
+        runner._load_reasoning_config = MagicMock(return_value=None)
+        runner._resolve_turn_agent_config = MagicMock(
+            return_value={"model": "test-model", "runtime": {"api_key": "test-key"}}
+        )
+
+        mock_adapter = AsyncMock()
+        mock_adapter.send = AsyncMock()
+        mock_adapter.send_image = AsyncMock()
+        mock_adapter.send_document = AsyncMock()
+        mock_adapter.extract_media = MagicMock(
+            return_value=(
+                [("/tmp/report.pdf", False)],
+                "Background result\n\n![chart](https://example.com/chart.png)",
+            )
+        )
+        mock_adapter.extract_images = MagicMock(
+            return_value=(
+                [("https://example.com/chart.png", "chart")],
+                "Background result",
+            )
+        )
+        runner.adapters[Platform.TELEGRAM] = mock_adapter
+
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            user_id="12345",
+            chat_id="67890",
+            user_name="testuser",
+            thread_id="thread-42",
+        )
+        mock_result = {
+            "final_response": (
+                "Background result\n\n"
+                "![chart](https://example.com/chart.png)\n"
+                "MEDIA:/tmp/report.pdf"
+            ),
+            "messages": [],
+        }
+
+        with patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}), \
+             patch("run_agent.AIAgent") as MockAgent:
+            mock_agent_instance = MagicMock()
+            mock_agent_instance.run_conversation.return_value = mock_result
+            MockAgent.return_value = mock_agent_instance
+
+            await runner._run_background_task("say hello", source, "bg_test")
+
+        mock_adapter.send_image.assert_called_once_with(
+            chat_id="67890",
+            image_url="https://example.com/chart.png",
+            caption="chart",
+            metadata={"thread_id": "thread-42"},
+        )
+        mock_adapter.send_document.assert_called_once_with(
+            chat_id="67890",
+            file_path="/tmp/report.pdf",
+            metadata={"thread_id": "thread-42"},
+        )
+
+
+class TestRunBtwTask:
+    """Tests for GatewayRunner._run_btw_task (ephemeral side-question execution)."""
+
+    @pytest.mark.asyncio
+    async def test_threaded_media_attachments_use_document_sender_with_metadata(self):
+        """The /btw side-task path should preserve thread metadata and unpack MEDIA tuples."""
+        runner = _make_runner()
+        runner._load_reasoning_config = MagicMock(return_value=None)
+        runner._resolve_turn_agent_config = MagicMock(
+            return_value={"model": "test-model", "runtime": {"api_key": "test-key"}}
+        )
+
+        mock_adapter = AsyncMock()
+        mock_adapter.send = AsyncMock()
+        mock_adapter.send_document = AsyncMock()
+        mock_adapter.extract_media = MagicMock(
+            return_value=([("/tmp/report.pdf", False)], "Side answer")
+        )
+        mock_adapter.extract_images = MagicMock(return_value=([], "Side answer"))
+        runner.adapters[Platform.TELEGRAM] = mock_adapter
+        runner.session_store.get_or_create_session.return_value = MagicMock(session_id="session-1")
+        runner.session_store.load_transcript.return_value = []
+
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            user_id="12345",
+            chat_id="67890",
+            user_name="testuser",
+            thread_id="thread-42",
+        )
+        mock_result = {
+            "final_response": "Side answer\n\nMEDIA:/tmp/report.pdf",
+            "messages": [],
+        }
+
+        with patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}), \
+             patch("run_agent.AIAgent") as MockAgent:
+            mock_agent_instance = MagicMock()
+            mock_agent_instance.run_conversation.return_value = mock_result
+            MockAgent.return_value = mock_agent_instance
+
+            await runner._run_btw_task("what changed?", source, "session-key", "btw_test")
+
+        mock_adapter.send_document.assert_called_once_with(
+            chat_id="67890",
+            file_path="/tmp/report.pdf",
+            metadata={"thread_id": "thread-42"},
+        )
 
 
 # ---------------------------------------------------------------------------

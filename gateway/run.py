@@ -4377,69 +4377,97 @@ class GatewayRunner:
         text itself is already delivered — this only handles file attachments
         that the normal _process_message_background path would have caught.
         """
-        from pathlib import Path
-
         try:
             media_files, _ = adapter.extract_media(response)
             _, cleaned = adapter.extract_images(response)
             local_files, _ = adapter.extract_local_files(cleaned)
 
             _thread_meta = {"thread_id": event.source.thread_id} if event.source.thread_id else None
-
-            _AUDIO_EXTS = {'.ogg', '.opus', '.mp3', '.wav', '.m4a'}
-            _VIDEO_EXTS = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'}
-            _IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
-
-            for media_path, is_voice in media_files:
-                try:
-                    ext = Path(media_path).suffix.lower()
-                    if ext in _AUDIO_EXTS:
-                        await adapter.send_voice(
-                            chat_id=event.source.chat_id,
-                            audio_path=media_path,
-                            metadata=_thread_meta,
-                        )
-                    elif ext in _VIDEO_EXTS:
-                        await adapter.send_video(
-                            chat_id=event.source.chat_id,
-                            video_path=media_path,
-                            metadata=_thread_meta,
-                        )
-                    elif ext in _IMAGE_EXTS:
-                        await adapter.send_image_file(
-                            chat_id=event.source.chat_id,
-                            image_path=media_path,
-                            metadata=_thread_meta,
-                        )
-                    else:
-                        await adapter.send_document(
-                            chat_id=event.source.chat_id,
-                            file_path=media_path,
-                            metadata=_thread_meta,
-                        )
-                except Exception as e:
-                    logger.warning("[%s] Post-stream media delivery failed: %s", adapter.name, e)
-
-            for file_path in local_files:
-                try:
-                    ext = Path(file_path).suffix.lower()
-                    if ext in _IMAGE_EXTS:
-                        await adapter.send_image_file(
-                            chat_id=event.source.chat_id,
-                            image_path=file_path,
-                            metadata=_thread_meta,
-                        )
-                    else:
-                        await adapter.send_document(
-                            chat_id=event.source.chat_id,
-                            file_path=file_path,
-                            metadata=_thread_meta,
-                        )
-                except Exception as e:
-                    logger.warning("[%s] Post-stream file delivery failed: %s", adapter.name, e)
-
+            await self._deliver_extracted_attachments(
+                adapter=adapter,
+                chat_id=event.source.chat_id,
+                metadata=_thread_meta,
+                media_files=media_files,
+                local_files=local_files,
+            )
         except Exception as e:
             logger.warning("Post-stream media extraction failed: %s", e)
+
+    async def _deliver_extracted_attachments(
+        self,
+        *,
+        adapter,
+        chat_id: str,
+        metadata: Optional[dict] = None,
+        images: Optional[List[tuple[str, str]]] = None,
+        media_files: Optional[List[tuple[str, bool]]] = None,
+        local_files: Optional[List[str]] = None,
+    ) -> None:
+        """Deliver extracted attachments using the shared gateway media contract."""
+        from pathlib import Path
+
+        _AUDIO_EXTS = {'.ogg', '.opus', '.mp3', '.wav', '.m4a'}
+        _VIDEO_EXTS = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'}
+        _IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
+
+        for image_url, alt_text in images or []:
+            try:
+                await adapter.send_image(
+                    chat_id=chat_id,
+                    image_url=image_url,
+                    caption=alt_text,
+                    metadata=metadata,
+                )
+            except Exception as e:
+                logger.warning("[%s] Image delivery failed: %s", adapter.name, e)
+
+        for media_path, _is_voice in media_files or []:
+            try:
+                ext = Path(media_path).suffix.lower()
+                if ext in _AUDIO_EXTS:
+                    await adapter.send_voice(
+                        chat_id=chat_id,
+                        audio_path=media_path,
+                        metadata=metadata,
+                    )
+                elif ext in _VIDEO_EXTS:
+                    await adapter.send_video(
+                        chat_id=chat_id,
+                        video_path=media_path,
+                        metadata=metadata,
+                    )
+                elif ext in _IMAGE_EXTS:
+                    await adapter.send_image_file(
+                        chat_id=chat_id,
+                        image_path=media_path,
+                        metadata=metadata,
+                    )
+                else:
+                    await adapter.send_document(
+                        chat_id=chat_id,
+                        file_path=media_path,
+                        metadata=metadata,
+                    )
+            except Exception as e:
+                logger.warning("[%s] Media delivery failed: %s", adapter.name, e)
+
+        for file_path in local_files or []:
+            try:
+                ext = Path(file_path).suffix.lower()
+                if ext in _IMAGE_EXTS:
+                    await adapter.send_image_file(
+                        chat_id=chat_id,
+                        image_path=file_path,
+                        metadata=metadata,
+                    )
+                else:
+                    await adapter.send_document(
+                        chat_id=chat_id,
+                        file_path=file_path,
+                        metadata=metadata,
+                    )
+            except Exception as e:
+                logger.warning("[%s] File delivery failed: %s", adapter.name, e)
 
     async def _handle_rollback_command(self, event: MessageEvent) -> str:
         """Handle /rollback command — list or restore filesystem checkpoints."""
@@ -4620,26 +4648,13 @@ class GatewayRunner:
                         metadata=_thread_metadata,
                     )
 
-                # Send extracted images
-                for image_url, alt_text in (images or []):
-                    try:
-                        await adapter.send_image(
-                            chat_id=source.chat_id,
-                            image_url=image_url,
-                            caption=alt_text,
-                        )
-                    except Exception:
-                        pass
-
-                # Send media files
-                for media_path in (media_files or []):
-                    try:
-                        await adapter.send_document(
-                            chat_id=source.chat_id,
-                            file_path=media_path,
-                        )
-                    except Exception:
-                        pass
+                await self._deliver_extracted_attachments(
+                    adapter=adapter,
+                    chat_id=source.chat_id,
+                    metadata=_thread_metadata,
+                    images=images,
+                    media_files=media_files,
+                )
             else:
                 preview = prompt[:60] + ("..." if len(prompt) > 60 else "")
                 await adapter.send(
@@ -4796,17 +4811,13 @@ class GatewayRunner:
                     metadata=_thread_meta,
                 )
 
-            for image_url, alt_text in (images or []):
-                try:
-                    await adapter.send_image(chat_id=source.chat_id, image_url=image_url, caption=alt_text)
-                except Exception:
-                    pass
-
-            for media_path in (media_files or []):
-                try:
-                    await adapter.send_file(chat_id=source.chat_id, file_path=media_path)
-                except Exception:
-                    pass
+            await self._deliver_extracted_attachments(
+                adapter=adapter,
+                chat_id=source.chat_id,
+                metadata=_thread_meta,
+                images=images,
+                media_files=media_files,
+            )
 
         except Exception as e:
             logger.exception("/btw task %s failed", task_id)

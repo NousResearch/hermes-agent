@@ -63,6 +63,16 @@ class TestCommandRegistry:
                     assert resolve_command(alias).name == cmd.name or alias == cmd.name, \
                         f"Alias '{alias}' of '{cmd.name}' shadows canonical '{target.name}'"
 
+    def test_no_duplicate_aliases(self):
+        """Each alias should resolve unambiguously to a single command."""
+        seen: dict[str, str] = {}
+        for cmd in COMMAND_REGISTRY:
+            for alias in cmd.aliases:
+                previous = seen.setdefault(alias, cmd.name)
+                assert previous == cmd.name, (
+                    f"Alias '{alias}' is shared by both '{previous}' and '{cmd.name}'"
+                )
+
     def test_every_entry_has_valid_category(self):
         valid_categories = {"Session", "Configuration", "Tools & Skills", "Info", "Exit"}
         for cmd in COMMAND_REGISTRY:
@@ -99,6 +109,12 @@ class TestResolveCommand:
     def test_unknown_returns_none(self):
         assert resolve_command("nonexistent") is None
         assert resolve_command("") is None
+
+    def test_queue_has_no_conflicting_short_alias(self):
+        assert resolve_command("queue").name == "queue"
+        assert "q" not in next(
+            cmd.aliases for cmd in COMMAND_REGISTRY if cmd.name == "queue"
+        )
 
 
 # ---------------------------------------------------------------------------

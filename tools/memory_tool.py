@@ -412,19 +412,23 @@ class MemoryStore:
         file *before* the lock is acquired, creating a race window where
         concurrent readers see an empty file. Atomic rename avoids this:
         readers always see either the old complete file or the new one.
+
+        Resolves any symlinks in the path so os.replace writes to the
+        real file rather than clobbering the symlink entry itself.
         """
         content = ENTRY_DELIMITER.join(entries) if entries else ""
+        real_path = Path(os.path.realpath(str(path)))
         try:
             # Write to temp file in same directory (same filesystem for atomic rename)
             fd, tmp_path = tempfile.mkstemp(
-                dir=str(path.parent), suffix=".tmp", prefix=".mem_"
+                dir=str(real_path.parent), suffix=".tmp", prefix=".mem_"
             )
             try:
                 with os.fdopen(fd, "w", encoding="utf-8") as f:
                     f.write(content)
                     f.flush()
                     os.fsync(f.fileno())
-                os.replace(tmp_path, str(path))  # Atomic on same filesystem
+                os.replace(tmp_path, str(real_path))  # Atomic on same filesystem
             except BaseException:
                 # Clean up temp file on any failure
                 try:
@@ -554,7 +558,3 @@ registry.register(
     check_fn=check_memory_requirements,
     emoji="🧠",
 )
-
-
-
-

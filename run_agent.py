@@ -810,6 +810,14 @@ class AIAgent:
                     client_kwargs["default_headers"] = {
                         "User-Agent": "KimiCLI/1.3",
                     }
+                elif "aiplatform.googleapis.com" in effective_base.lower():
+                    # Google Vertex Express uses x-goog-api-key instead of
+                    # Authorization: Bearer. Pass the key via a custom header
+                    # and use a placeholder so the OpenAI SDK doesn't reject it.
+                    client_kwargs["default_headers"] = {
+                        "x-goog-api-key": api_key,
+                    }
+                    client_kwargs["api_key"] = "vertex-express"
             else:
                 # No explicit creds — use the centralized provider router
                 from agent.auxiliary_client import resolve_provider_client

@@ -111,15 +111,22 @@ export function Md({ compact, t, text }: { compact?: boolean; t: Theme; text: st
       nodes.push(
         <Box flexDirection="column" key={key} paddingLeft={2}>
           {lang && !isDiff && <Text color={t.color.dim}>{'─ ' + lang}</Text>}
-          {block.map((l, j) => (
-            <Text
-              color={isDiff && l.startsWith('+') ? '#a6e3a1' : isDiff && l.startsWith('-') ? '#f38ba8' : undefined}
-              dimColor={isDiff && !l.startsWith('+') && !l.startsWith('-') && l.startsWith(' ')}
-              key={j}
-            >
-              {l}
-            </Text>
-          ))}
+          {block.map((l, j) => {
+            const add = isDiff && l.startsWith('+')
+            const del = isDiff && l.startsWith('-')
+            const hunk = isDiff && l.startsWith('@@')
+
+            return (
+              <Text
+                backgroundColor={add ? t.color.diffAdded : del ? t.color.diffRemoved : undefined}
+                color={add ? t.color.diffAddedWord : del ? t.color.diffRemovedWord : hunk ? t.color.dim : undefined}
+                dimColor={isDiff && !add && !del && !hunk && l.startsWith(' ')}
+                key={j}
+              >
+                {l}
+              </Text>
+            )
+          })}
         </Box>
       )
 

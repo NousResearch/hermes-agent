@@ -15,7 +15,7 @@ def test_version_string_no_v_prefix():
     assert not __version__.startswith("v"), f"__version__ should not start with 'v', got {__version__!r}"
 
 
-def test_check_for_updates_uses_cache(tmp_path):
+def test_check_for_updates_uses_cache(tmp_path, monkeypatch):
     """When cache is fresh, check_for_updates should return cached value without calling git."""
     from hermes_cli.banner import check_for_updates
 
@@ -27,15 +27,15 @@ def test_check_for_updates_uses_cache(tmp_path):
     cache_file = tmp_path / ".update_check"
     cache_file.write_text(json.dumps({"ts": time.time(), "behind": 3}))
 
-    with patch("hermes_cli.banner.os.getenv", return_value=str(tmp_path)):
-        with patch("hermes_cli.banner.subprocess.run") as mock_run:
-            result = check_for_updates()
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    with patch("hermes_cli.banner.subprocess.run") as mock_run:
+        result = check_for_updates()
 
     assert result == 3
     mock_run.assert_not_called()
 
 
-def test_check_for_updates_expired_cache(tmp_path):
+def test_check_for_updates_expired_cache(tmp_path, monkeypatch):
     """When cache is expired, check_for_updates should call git fetch."""
     from hermes_cli.banner import check_for_updates
 
@@ -49,15 +49,15 @@ def test_check_for_updates_expired_cache(tmp_path):
 
     mock_result = MagicMock(returncode=0, stdout="5\n")
 
-    with patch("hermes_cli.banner.os.getenv", return_value=str(tmp_path)):
-        with patch("hermes_cli.banner.subprocess.run", return_value=mock_result) as mock_run:
-            result = check_for_updates()
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    with patch("hermes_cli.banner.subprocess.run", return_value=mock_result) as mock_run:
+        result = check_for_updates()
 
     assert result == 5
     assert mock_run.call_count == 2  # git fetch + git rev-list
 
 
-def test_check_for_updates_no_git_dir(tmp_path):
+def test_check_for_updates_no_git_dir(tmp_path, monkeypatch):
     """Returns None when .git directory doesn't exist anywhere."""
     import hermes_cli.banner as banner
 
@@ -66,19 +66,15 @@ def test_check_for_updates_no_git_dir(tmp_path):
     fake_banner.parent.mkdir(parents=True, exist_ok=True)
     fake_banner.touch()
 
-    original = banner.__file__
-    try:
-        banner.__file__ = str(fake_banner)
-        with patch("hermes_cli.banner.os.getenv", return_value=str(tmp_path)):
-            with patch("hermes_cli.banner.subprocess.run") as mock_run:
-                result = banner.check_for_updates()
-        assert result is None
-        mock_run.assert_not_called()
-    finally:
-        banner.__file__ = original
+    monkeypatch.setattr(banner, "__file__", str(fake_banner))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    with patch("hermes_cli.banner.subprocess.run") as mock_run:
+        result = banner.check_for_updates()
+    assert result is None
+    mock_run.assert_not_called()
 
 
-def test_check_for_updates_fallback_to_project_root():
+def test_check_for_updates_fallback_to_project_root(tmp_path, monkeypatch):
     """Dev install: falls back to Path(__file__).parent.parent when HERMES_HOME has no git repo."""
     import hermes_cli.banner as banner
 
@@ -87,14 +83,12 @@ def test_check_for_updates_fallback_to_project_root():
         pytest.skip("Not running from a git checkout")
 
     # Point HERMES_HOME at a temp dir with no hermes-agent/.git
-    import tempfile
-    with tempfile.TemporaryDirectory() as td:
-        with patch("hermes_cli.banner.os.getenv", return_value=td):
-            with patch("hermes_cli.banner.subprocess.run") as mock_run:
-                mock_run.return_value = MagicMock(returncode=0, stdout="0\n")
-                result = banner.check_for_updates()
-        # Should have fallen back to project root and run git commands
-        assert mock_run.call_count >= 1
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    with patch("hermes_cli.banner.subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock(returncode=0, stdout="0\n")
+        result = banner.check_for_updates()
+    # Should have fallen back to project root and run git commands
+    assert mock_run.call_count >= 1
 
 
 def test_prefetch_non_blocking():

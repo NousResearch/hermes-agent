@@ -228,6 +228,34 @@ _LEGACY_TOOLSET_MAP = {
 
 
 # =============================================================================
+# Deferred tool loading (tool search)
+# =============================================================================
+
+_deferred_catalog: list[dict] | None = None
+
+
+def _estimate_tool_tokens(definitions: list[dict]) -> int:
+    """Rough token estimate for tool definitions (~4 chars/token)."""
+    return sum(len(json.dumps(d)) // 4 for d in definitions)
+
+
+def should_defer_tools(
+    tool_token_estimate: int,
+    context_length: int,
+    mode: str = "auto",
+    threshold: float = 0.10,
+) -> bool:
+    """Decide whether to use deferred tool loading."""
+    if mode == "always":
+        return True
+    if mode == "never":
+        return False
+    if context_length <= 0:
+        return False
+    return tool_token_estimate / context_length > threshold
+
+
+# =============================================================================
 # get_tool_definitions  (the main schema provider)
 # =============================================================================
 
@@ -235,6 +263,8 @@ def get_tool_definitions(
     enabled_toolsets: List[str] = None,
     disabled_toolsets: List[str] = None,
     quiet_mode: bool = False,
+    deferred: bool = False,
+    pinned_tools: list[str] | None = None,
 ) -> List[Dict[str, Any]]:
     """
     Get tool definitions for model API calls with toolset-based filtering.
@@ -346,6 +376,39 @@ def get_tool_definitions(
             print(f"🛠️  Final tool selection ({len(filtered_tools)} tools): {', '.join(tool_names)}")
         else:
             print("🛠️  No tools selected (all filtered out or unavailable)")
+
+    # ── Deferred tool loading ────────────────────────────────────────
+    # When deferred=True, replace full schemas with tool_search/tool_details
+    # meta-tools + any pinned tools.  Store the compact catalog globally so
+    # prompt_builder can inject it into the system prompt.
+    if deferred:
+        global _deferred_catalog
+        from tools.tool_search import register_tool_search
+        register_tool_search()
+
+        _deferred_catalog = registry.get_catalog(tools_to_include)
+
+        pinned = set(pinned_tools or [])
+        pinned_defs = [d for d in filtered_tools if d["function"]["name"] in pinned]
+        meta_defs = registry.get_definitions({"tool_search", "tool_details"}, quiet=True)
+        filtered_tools = meta_defs + pinned_defs
+
+        if not quiet_mode:
+            n_deferred = len(_deferred_catalog) - len(pinned_defs)
+            tool_names = [t["function"]["name"] for t in filtered_tools]
+            print(
+                f"🔍 Tool search active: {n_deferred} tools deferred, "
+                f"{len(pinned_defs)} pinned, {len(meta_defs)} meta-tools"
+            )
+            print(f"🛠️  Loaded tools: {', '.join(tool_names)}")
+
+    else:
+        if not quiet_mode:
+            if filtered_tools:
+                tool_names = [t["function"]["name"] for t in filtered_tools]
+                print(f"🛠️  Final tool selection ({len(filtered_tools)} tools): {', '.join(tool_names)}")
+            else:
+                print("🛠️  No tools selected (all filtered out or unavailable)")
 
     global _last_resolved_tool_names
     _last_resolved_tool_names = [t["function"]["name"] for t in filtered_tools]

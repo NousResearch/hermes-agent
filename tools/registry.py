@@ -142,6 +142,45 @@ class ToolRegistry:
             result.append({"type": "function", "function": schema_with_name})
         return result
 
+    def get_catalog(
+        self, tool_names: set[str] | None = None, quiet: bool = True,
+    ) -> list[dict]:
+        """Return compact catalog entries (name, description, toolset) only.
+
+        Used by tool_search to provide a token-efficient tool index in the
+        system prompt.  Applies check_fn filtering like get_definitions().
+        """
+        entries = []
+        check_results: dict[Callable, bool] = {}
+        for name in sorted(self._tools):
+            entry = self._tools[name]
+            if tool_names and name not in tool_names:
+                continue
+            if entry.check_fn:
+                if entry.check_fn not in check_results:
+                    try:
+                        check_results[entry.check_fn] = bool(entry.check_fn())
+                    except Exception:
+                        check_results[entry.check_fn] = False
+                if not check_results[entry.check_fn]:
+                    continue
+            desc = entry.description or entry.schema.get("description", "")
+            entries.append({
+                "name": name,
+                "description": desc,
+                "toolset": entry.toolset,
+            })
+        return entries
+
+    def get_single_definition(self, tool_name: str) -> dict | None:
+        """Return the full OpenAI-format schema for one tool, or None.
+
+        Applies check_fn filtering.  Convenience wrapper around
+        get_definitions() for tool_search / tool_details lookups.
+        """
+        results = self.get_definitions({tool_name}, quiet=True)
+        return results[0] if results else None
+
     # ------------------------------------------------------------------
     # Dispatch
     # ------------------------------------------------------------------

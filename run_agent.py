@@ -894,7 +894,8 @@ class AIAgent:
             disabled_toolsets=disabled_toolsets,
             quiet_mode=self.quiet_mode,
         )
-        
+        self._tool_search_active = False
+
         # Show tool configuration and store valid tool names for validation
         self.valid_tool_names = set()
         if self.tools:
@@ -1179,6 +1180,38 @@ class AIAgent:
             provider=self.provider,
         )
         self.compression_enabled = compression_enabled
+
+        # ── Deferred tool loading (tool search) ──────────────────────
+        # Must run after compressor init so we have the real context_length.
+        ts_config = _agent_cfg.get("tool_search", {})
+        defer_mode = ts_config.get("mode", "auto")
+        if defer_mode != "never" and self.tools:
+            from model_tools import should_defer_tools, _estimate_tool_tokens
+            tool_tokens = _estimate_tool_tokens(self.tools)
+            ctx_len = self.context_compressor.context_length
+            defer_threshold = float(ts_config.get("threshold", 0.10))
+            if should_defer_tools(tool_tokens, ctx_len, defer_mode, defer_threshold):
+                pinned = ts_config.get("pinned_tools", [])
+                self.tools = get_tool_definitions(
+                    enabled_toolsets=enabled_toolsets,
+                    disabled_toolsets=disabled_toolsets,
+                    quiet_mode=self.quiet_mode,
+                    deferred=True,
+                    pinned_tools=pinned,
+                )
+                self._tool_search_active = True
+                self.valid_tool_names = {t["function"]["name"] for t in self.tools}
+
+        # Track dynamically loaded tools for eviction.
+        # _loaded_tools maps tool_name -> last api_call_count when it was called.
+        # _pinned_tool_names are never evicted.
+        self._loaded_tools: dict[str, int] = {}
+        self._pinned_tool_names: set[str] = set()
+        if self._tool_search_active:
+            self._pinned_tool_names = set(ts_config.get("pinned_tools", []))
+            self._pinned_tool_names |= {"tool_search", "tool_details"}
+            self._tool_evict_after: int = int(ts_config.get("evict_after_turns", 10))
+
         self._subdirectory_hints = SubdirectoryHintTracker(
             working_dir=os.getenv("TERMINAL_CWD") or None,
         )
@@ -2774,6 +2807,14 @@ class AIAgent:
             skills_prompt = ""
         if skills_prompt:
             prompt_parts.append(skills_prompt)
+
+        if self._tool_search_active:
+            from model_tools import _deferred_catalog
+            from agent.prompt_builder import build_tool_catalog_prompt
+            if _deferred_catalog:
+                tool_catalog_prompt = build_tool_catalog_prompt(_deferred_catalog)
+                if tool_catalog_prompt:
+                    prompt_parts.append(tool_catalog_prompt)
 
         if not self.skip_context_files:
             # Use TERMINAL_CWD for context file discovery when set (gateway
@@ -6010,6 +6051,38 @@ class AIAgent:
             if messages and messages[-1].get("_flush_sentinel") == _sentinel:
                 messages.pop()
 
+    def _evict_stale_tools(self) -> list[str]:
+        """Remove dynamically loaded tools that haven't been used recently.
+
+        Evicts tools from self.tools and self.valid_tool_names that were
+        loaded via tool_search but not called in the last evict_after_turns
+        API calls.  Pinned tools and the meta-tools are never evicted.
+
+        Returns the list of evicted tool names.
+        """
+        if not self._tool_search_active or not self._loaded_tools:
+            return []
+
+        cutoff = self._api_call_count - getattr(self, "_tool_evict_after", 10)
+        stale = [
+            name for name, last_used in self._loaded_tools.items()
+            if last_used < cutoff and name not in self._pinned_tool_names
+        ]
+        if not stale:
+            return []
+
+        stale_set = set(stale)
+        self.tools = [t for t in self.tools if t.get("function", {}).get("name") not in stale_set]
+        self.valid_tool_names -= stale_set
+        for name in stale:
+            del self._loaded_tools[name]
+
+        logger.info(
+            "Tool eviction: removed %d stale tool(s): %s",
+            len(stale), ", ".join(sorted(stale)),
+        )
+        return stale
+
     def _compress_context(self, messages: list, system_message: str, *, approx_tokens: int = None, task_id: str = "default") -> tuple:
         """Compress conversation context and split the session in SQLite.
 
@@ -6022,6 +6095,16 @@ class AIAgent:
             self.session_id or "none", _pre_msg_count,
             f"{approx_tokens:,}" if approx_tokens else "unknown", self.model,
         )
+
+        # Evict unused dynamically loaded tools before compression
+        evicted = self._evict_stale_tools()
+        if evicted and not self.quiet_mode:
+            from model_tools import _estimate_tool_tokens
+            saved = _estimate_tool_tokens(
+                [{"type": "function", "function": {"name": n, "parameters": {}}} for n in evicted]
+            )
+            logger.info("Evicted %d tool(s) on compression, freeing ~%d schema tokens", len(evicted), saved)
+
         # Pre-compression memory flush: let the model save memories before they're lost
         self.flush_memories(messages, min_turns=0)
 
@@ -6421,6 +6504,27 @@ class AIAgent:
             turn_tool_msgs = messages[-num_tools:]
             enforce_turn_budget(turn_tool_msgs, env=get_active_env(effective_task_id))
 
+        # ── Dynamic tool loading + usage tracking ──────────────────────
+        if self._tool_search_active:
+            for r in results:
+                if r is None:
+                    continue
+                fname = r[0]
+                if fname in ("tool_search", "tool_details"):
+                    try:
+                        data = json.loads(r[2])
+                        for schema in data.get("tools", []):
+                            tool_name = schema.get("function", {}).get("name")
+                            if tool_name and tool_name not in self.valid_tool_names:
+                                self.tools.append(schema)
+                                self.valid_tool_names.add(tool_name)
+                                self._loaded_tools[tool_name] = self._api_call_count
+                                logger.info("Dynamically loaded tool: %s", tool_name)
+                    except (json.JSONDecodeError, KeyError, TypeError):
+                        pass
+                elif fname in self._loaded_tools:
+                    self._loaded_tools[fname] = self._api_call_count
+
         # ── Budget pressure injection ────────────────────────────────────
         budget_warning = self._get_budget_warning(api_call_count)
         if budget_warning and messages and messages[-1].get("role") == "tool":
@@ -6723,6 +6827,23 @@ class AIAgent:
                 "tool_call_id": tool_call.id
             }
             messages.append(tool_msg)
+
+            # ── Dynamic tool loading + usage tracking ──────────────────
+            if self._tool_search_active:
+                if function_name in ("tool_search", "tool_details"):
+                    try:
+                        data = json.loads(function_result)
+                        for schema in data.get("tools", []):
+                            tn = schema.get("function", {}).get("name")
+                            if tn and tn not in self.valid_tool_names:
+                                self.tools.append(schema)
+                                self.valid_tool_names.add(tn)
+                                self._loaded_tools[tn] = self._api_call_count
+                                logger.info("Dynamically loaded tool: %s", tn)
+                    except (json.JSONDecodeError, KeyError, TypeError):
+                        pass
+                elif function_name in self._loaded_tools:
+                    self._loaded_tools[function_name] = self._api_call_count
 
             if not self.quiet_mode:
                 if self.verbose_logging:

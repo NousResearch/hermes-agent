@@ -753,6 +753,48 @@ def build_skills_system_prompt(
     return result
 
 
+def build_tool_catalog_prompt(catalog: list[dict]) -> str:
+    """Build a compact tool catalog for the system prompt.
+
+    Used when tool_search is active to give the model an index of available
+    tools without the full JSON schemas.  Mirrors the skills index pattern.
+    """
+    if not catalog:
+        return ""
+
+    by_toolset: dict[str, list[tuple[str, str]]] = {}
+    for entry in catalog:
+        ts = entry.get("toolset", "other")
+        if ts.startswith("_"):
+            continue
+        by_toolset.setdefault(ts, []).append(
+            (entry["name"], entry.get("description", ""))
+        )
+
+    lines = []
+    for toolset in sorted(by_toolset):
+        lines.append(f"  {toolset}:")
+        seen: set[str] = set()
+        for name, desc in sorted(by_toolset[toolset]):
+            if name in seen:
+                continue
+            seen.add(name)
+            short = (desc[:77] + "...") if len(desc) > 80 else desc
+            lines.append(f"    - {name}: {short}" if short else f"    - {name}")
+
+    return (
+        "## Available Tools (load before use)\n"
+        "The tools below are available but their full schemas are not loaded. "
+        "Before calling a tool, load its schema with `tool_details(name)` "
+        "(if you know the exact name) or `tool_search(query)` (to search by "
+        "keyword). tool_search and tool_details are always callable.\n"
+        "\n"
+        "<available_tools>\n"
+        + "\n".join(lines) + "\n"
+        "</available_tools>"
+    )
+
+
 def build_nous_subscription_prompt(valid_tool_names: "set[str] | None" = None) -> str:
     """Build a compact Nous subscription capability block for the system prompt."""
     try:

@@ -2333,10 +2333,16 @@ class TelegramAdapter(BasePlatformAdapter):
         DMs remain unrestricted. Group/supergroup messages are accepted when:
         - the chat is explicitly allowlisted in ``free_response_chats``
         - ``require_mention`` is disabled
-        - the message is a command
         - the message replies to the bot
         - the bot is @mentioned
         - the text/caption matches a configured regex wake-word pattern
+
+        When ``require_mention`` is enabled, slash commands are not given
+        special treatment — they must pass the same mention/reply checks
+        as any other group message.  Users can still trigger commands via
+        the Telegram bot menu (``/command@botname``) or by explicitly
+        mentioning the bot (``@botname /command``), both of which are
+        recognised as mentions by :meth:`_message_mentions_bot`.
         """
         if not self._is_group_chat(message):
             return True
@@ -2350,8 +2356,6 @@ class TelegramAdapter(BasePlatformAdapter):
         if str(getattr(getattr(message, "chat", None), "id", "")) in self._telegram_free_response_chats():
             return True
         if not self._telegram_require_mention():
-            return True
-        if is_command:
             return True
         if self._is_reply_to_bot(message):
             return True

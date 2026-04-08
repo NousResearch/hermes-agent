@@ -3981,6 +3981,22 @@ class HermesCLI:
         cmd_args = [_sys.executable, str(script_path)] + base_args + rest
         _cprint(f"Running: {' '.join(cmd_args)}")
 
+        # Per-subcommand timeouts. Long-running operations (full bench, full
+        # training pipeline, redeploy with fresh server start) need much
+        # more than the 1-hour default. The values here are upper bounds —
+        # the subprocess returns as soon as it's actually done.
+        long_running = {
+            "bench": 6 * 3600,    # 243 cases × ~21s each ≈ 85 min, with safety
+            "run":   6 * 3600,    # full pipeline including bench gate
+            "train": 4 * 3600,    # axolotl QLoRA on a 9B model
+            "redeploy": 10 * 60,  # GGUF conversion + server start + health check
+        }
+        timeout_seconds = long_running.get(subcommand, 3600)
+        timeout_label = (
+            f"{timeout_seconds // 3600}h" if timeout_seconds >= 3600
+            else f"{timeout_seconds // 60}m"
+        )
+
         try:
             with self._busy_command(f"finetune {subcommand}..."):
                 result = subprocess.run(
@@ -3988,7 +4004,7 @@ class HermesCLI:
                     cwd=str(scripts_dir),
                     capture_output=True,
                     text=True,
-                    timeout=3600,
+                    timeout=timeout_seconds,
                 )
             if result.stdout:
                 for line in result.stdout.rstrip("\n").split("\n"):
@@ -3999,7 +4015,11 @@ class HermesCLI:
             if result.returncode != 0:
                 _cprint(f"Command exited with code {result.returncode}")
         except subprocess.TimeoutExpired:
-            _cprint("Command timed out after 1h")
+            _cprint(f"Command timed out after {timeout_label}")
+            _cprint(
+                "  For bench / run / train, partial state may be in "
+                "~/.hermes/finetune/ and /tmp/finetune-bench/"
+            )
         except Exception as e:
             _cprint(f"Error running finetune command: {e}")
 

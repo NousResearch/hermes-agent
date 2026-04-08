@@ -30,7 +30,7 @@ import pytest
 import requests
 
 # Ensure repo root is importable
-_repo_root = Path(__file__).resolve().parent.parent
+_repo_root = Path(__file__).resolve().parent.parent.parent
 if str(_repo_root) not in sys.path:
     sys.path.insert(0, str(_repo_root))
 

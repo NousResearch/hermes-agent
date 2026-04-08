@@ -33,8 +33,15 @@ def _ensure_telegram_mock():
     mod.constants.ChatType.GROUP = "group"
     mod.constants.ChatType.SUPERGROUP = "supergroup"
     mod.constants.ChatType.CHANNEL = "channel"
-    for name in ("telegram", "telegram.ext", "telegram.constants", "telegram.request", "telegram.error"):
+    # Provide real exception classes so ``except (NetworkError, ...)`` in
+    # connect() doesn't blow up under xdist when this mock leaks.
+    mod.error.NetworkError = type("NetworkError", (OSError,), {})
+    mod.error.TimedOut = type("TimedOut", (OSError,), {})
+    mod.error.BadRequest = type("BadRequest", (Exception,), {})
+
+    for name in ("telegram", "telegram.ext", "telegram.constants", "telegram.request"):
         sys.modules.setdefault(name, mod)
+    sys.modules.setdefault("telegram.error", mod.error)
 
 
 _ensure_telegram_mock()

@@ -1632,7 +1632,12 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         if not self._bot:
             return SendResult(success=False, error="Not connected")
-        
+
+        from tools.url_safety import is_safe_url
+        if not is_safe_url(image_url):
+            logger.warning("[%s] Blocked unsafe image URL (SSRF protection)", self.name)
+            return await super().send_image(chat_id, image_url, caption, reply_to, metadata=metadata)
+
         try:
             # Telegram can send photos directly from URLs (up to ~5MB)
             _photo_thread = metadata.get("thread_id") if metadata else None
@@ -2222,10 +2227,7 @@ class TelegramAdapter(BasePlatformAdapter):
             existing.media_urls.extend(event.media_urls)
             existing.media_types.extend(event.media_types)
             if event.text:
-                if not existing.text:
-                    existing.text = event.text
-                elif event.text not in existing.text:
-                    existing.text = f"{existing.text}\n\n{event.text}".strip()
+                existing.text = self._merge_caption(existing.text, event.text)
 
         prior_task = self._pending_photo_batch_tasks.get(batch_key)
         if prior_task and not prior_task.done():
@@ -2415,11 +2417,7 @@ class TelegramAdapter(BasePlatformAdapter):
             existing.media_urls.extend(event.media_urls)
             existing.media_types.extend(event.media_types)
             if event.text:
-                if existing.text:
-                    if event.text not in existing.text.split("\n\n"):
-                        existing.text = f"{existing.text}\n\n{event.text}"
-                else:
-                    existing.text = event.text
+                existing.text = self._merge_caption(existing.text, event.text)
 
         prior_task = self._media_group_tasks.get(media_group_id)
         if prior_task:
@@ -2675,3 +2673,46 @@ class TelegramAdapter(BasePlatformAdapter):
             auto_skill=topic_skill,
             timestamp=message.date,
         )
+
+    # ── Message reactions (processing lifecycle) ──────────────────────────
+
+    def _reactions_enabled(self) -> bool:
+        """Check if message reactions are enabled via config/env."""
+        return os.getenv("TELEGRAM_REACTIONS", "false").lower() not in ("false", "0", "no")
+
+    async def _set_reaction(self, chat_id: str, message_id: str, emoji: str) -> bool:
+        """Set a single emoji reaction on a Telegram message."""
+        if not self._bot:
+            return False
+        try:
+            await self._bot.set_message_reaction(
+                chat_id=int(chat_id),
+                message_id=int(message_id),
+                reaction=emoji,
+            )
+            return True
+        except Exception as e:
+            logger.debug("[%s] set_message_reaction failed (%s): %s", self.name, emoji, e)
+            return False
+
+    async def on_processing_start(self, event: MessageEvent) -> None:
+        """Add an in-progress reaction when message processing begins."""
+        if not self._reactions_enabled():
+            return
+        chat_id = getattr(event.source, "chat_id", None)
+        message_id = getattr(event, "message_id", None)
+        if chat_id and message_id:
+            await self._set_reaction(chat_id, message_id, "\U0001f440")
+
+    async def on_processing_complete(self, event: MessageEvent, success: bool) -> None:
+        """Swap the in-progress reaction for a final success/failure reaction.
+
+        Unlike Discord (additive reactions), Telegram's set_message_reaction
+        replaces all existing reactions in one call — no remove step needed.
+        """
+        if not self._reactions_enabled():
+            return
+        chat_id = getattr(event.source, "chat_id", None)
+        message_id = getattr(event, "message_id", None)
+        if chat_id and message_id:
+            await self._set_reaction(chat_id, message_id, "\u2705" if success else "\u274c")

@@ -344,7 +344,7 @@ def _rpc_server_loop(
                 try:
                     request = json.loads(line.decode())
                 except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-                    resp = json.dumps({"error": f"Invalid RPC request: {exc}"})
+                    resp = tool_error(f"Invalid RPC request: {exc}")
                     conn.sendall((resp + "\n").encode())
                     continue
 
@@ -396,7 +396,7 @@ def _rpc_server_loop(
                         devnull.close()
                 except Exception as exc:
                     logger.error("Tool call failed in sandbox: %s", exc, exc_info=True)
-                    result = json.dumps({"error": str(exc)})
+                    result = tool_error(str(exc))
 
                 tool_call_counter[0] += 1
                 call_duration = time.monotonic() - call_start
@@ -648,7 +648,7 @@ def _rpc_poll_loop(
                     except Exception as exc:
                         logger.error("Tool call failed in remote sandbox: %s",
                                      exc, exc_info=True)
-                        tool_result = json.dumps({"error": str(exc)})
+                        tool_result = tool_error(str(exc))
 
                     tool_call_counter[0] += 1
                     call_duration = time.monotonic() - call_start
@@ -890,7 +890,7 @@ def execute_code(
         })
 
     if not code or not code.strip():
-        return json.dumps({"error": "No code provided."})
+        return tool_error("No code provided.")
 
     # Dispatch: remote backends use file-based RPC, local uses UDS
     from tools.terminal_tool import _get_env_config
@@ -1331,7 +1331,7 @@ EXECUTE_CODE_SCHEMA = build_execute_code_schema()
 
 
 # --- Registry ---
-from tools.registry import registry
+from tools.registry import registry, tool_error
 
 registry.register(
     name="execute_code",

@@ -273,3 +273,48 @@ class ToolRegistry:
 
 # Module-level singleton
 registry = ToolRegistry()
+
+
+# ---------------------------------------------------------------------------
+# Helpers for tool response serialization
+# ---------------------------------------------------------------------------
+# Every tool handler must return a JSON string.  These helpers eliminate the
+# boilerplate ``json.dumps({"error": msg}, ensure_ascii=False)`` that appears
+# hundreds of times across tool files.
+#
+# Usage:
+#   from tools.registry import registry, tool_error, tool_result
+#
+#   return tool_error("something went wrong")
+#   return tool_error("not found", code=404)
+#   return tool_result(success=True, data=payload)
+#   return tool_result(items)            # pass a dict directly
+
+
+def tool_error(message, **extra) -> str:
+    """Return a JSON error string for tool handlers.
+
+    >>> tool_error("file not found")
+    '{"error": "file not found"}'
+    >>> tool_error("bad input", success=False)
+    '{"error": "bad input", "success": false}'
+    """
+    result = {"error": str(message)}
+    if extra:
+        result.update(extra)
+    return json.dumps(result, ensure_ascii=False)
+
+
+def tool_result(data=None, **kwargs) -> str:
+    """Return a JSON result string for tool handlers.
+
+    Accepts a dict positional arg *or* keyword arguments (not both):
+
+    >>> tool_result(success=True, count=42)
+    '{"success": true, "count": 42}'
+    >>> tool_result({"key": "value"})
+    '{"key": "value"}'
+    """
+    if data is not None:
+        return json.dumps(data, ensure_ascii=False)
+    return json.dumps(kwargs, ensure_ascii=False)

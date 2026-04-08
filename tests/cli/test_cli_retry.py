@@ -1,6 +1,6 @@
 """Regression tests for CLI /retry history replacement semantics."""
 
-from tests.test_cli_init import _make_cli
+from tests.cli.test_cli_init import _make_cli
 
 
 def test_retry_last_truncates_history_before_requeueing_message():

@@ -76,8 +76,17 @@ class WebhookAdapter(BasePlatformAdapter):
         self._routes: Dict[str, dict] = dict(self._static_routes)
         self._runner = None
 
-        # Delivery info keyed by session chat_id — consumed by send()
+        # Delivery info keyed by session chat_id.
+        #
+        # Read by every send() invocation for the chat_id (status messages
+        # AND the final response).  Cleaned up via TTL on each POST so the
+        # dict stays bounded — see _prune_delivery_info().  Do NOT pop on
+        # send(), or interim status messages (e.g. fallback notifications,
+        # context-pressure warnings) will consume the entry before the
+        # final response arrives, causing the response to silently fall
+        # back to the "log" deliver type.
         self._delivery_info: Dict[str, dict] = {}
+        self._delivery_info_created: Dict[str, float] = {}
 
         # Reference to gateway runner for cross-platform delivery (set externally)
         self.gateway_runner = None
@@ -160,10 +169,14 @@ class WebhookAdapter(BasePlatformAdapter):
     ) -> SendResult:
         """Deliver the agent's response to the configured destination.
 
-        chat_id is ``webhook:{route}:{delivery_id}`` — we pop the delivery
-        info stored during webhook receipt so it doesn't leak memory.
+        chat_id is ``webhook:{route}:{delivery_id}``.  The delivery info
+        stored during webhook receipt is read with ``.get()`` (not popped)
+        so that interim status messages emitted before the final response
+        — fallback-model notifications, context-pressure warnings, etc. —
+        do not consume the entry and silently downgrade the final response
+        to the ``log`` deliver type.  TTL cleanup happens on POST.
         """
-        delivery = self._delivery_info.pop(chat_id, {})
+        delivery = self._delivery_info.get(chat_id, {})
         deliver_type = delivery.get("deliver", "log")
 
         if deliver_type == "log":
@@ -189,6 +202,23 @@ class WebhookAdapter(BasePlatformAdapter):
         return SendResult(
             success=False, error=f"Unknown deliver type: {deliver_type}"
         )
+
+    def _prune_delivery_info(self, now: float) -> None:
+        """Drop delivery_info entries older than the idempotency TTL.
+
+        Mirrors the cleanup pattern used for ``_seen_deliveries``.  Called
+        on each POST so the dict size is bounded by ``rate_limit * TTL``
+        even if many webhooks fire and never receive a final response.
+        """
+        cutoff = now - self._idempotency_ttl
+        stale = [
+            k
+            for k, t in self._delivery_info_created.items()
+            if t < cutoff
+        ]
+        for k in stale:
+            self._delivery_info.pop(k, None)
+            self._delivery_info_created.pop(k, None)
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         return {"name": chat_id, "type": "webhook"}
@@ -382,7 +412,9 @@ class WebhookAdapter(BasePlatformAdapter):
         # same route get independent agent runs (not queued/interrupted).
         session_chat_id = f"webhook:{route_name}:{delivery_id}"
 
-        # Store delivery info for send() — consumed (popped) on delivery
+        # Store delivery info for send().  Read by every send() invocation
+        # for this chat_id (interim status messages and the final response),
+        # so we do NOT pop on send.  TTL-based cleanup keeps the dict bounded.
         deliver_config = {
             "deliver": route_config.get("deliver", "log"),
             "deliver_extra": self._render_delivery_extra(
@@ -391,6 +423,8 @@ class WebhookAdapter(BasePlatformAdapter):
             "payload": payload,
         }
         self._delivery_info[session_chat_id] = deliver_config
+        self._delivery_info_created[session_chat_id] = now
+        self._prune_delivery_info(now)
 
         # Build source and event
         source = self.build_source(

@@ -66,18 +66,13 @@ def _load_config_passthrough() -> frozenset[str]:
 
     result: set[str] = set()
     try:
-        from hermes_constants import get_hermes_home
-        config_path = get_hermes_home() / "config.yaml"
-        if config_path.exists():
-            import yaml
-
-            with open(config_path) as f:
-                cfg = yaml.safe_load(f) or {}
-            passthrough = cfg.get("terminal", {}).get("env_passthrough")
-            if isinstance(passthrough, list):
-                for item in passthrough:
-                    if isinstance(item, str) and item.strip():
-                        result.add(item.strip())
+        from hermes_cli.config import read_raw_config
+        cfg = read_raw_config()
+        passthrough = cfg.get("terminal", {}).get("env_passthrough")
+        if isinstance(passthrough, list):
+            for item in passthrough:
+                if isinstance(item, str) and item.strip():
+                    result.add(item.strip())
     except Exception as e:
         logger.debug("Could not read tools.env_passthrough from config: %s", e)
 

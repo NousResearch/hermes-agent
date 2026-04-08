@@ -161,7 +161,7 @@ def todo_tool(
         JSON string with the full current list and summary metadata.
     """
     if store is None:
-        return json.dumps({"error": "TodoStore not initialized"}, ensure_ascii=False)
+        return tool_error("TodoStore not initialized")
 
     if todos is not None:
         items = store.write(todos, merge)
@@ -255,7 +255,7 @@ TODO_SCHEMA = {
 
 
 # --- Registry ---
-from tools.registry import registry
+from tools.registry import registry, tool_error
 
 registry.register(
     name="todo",

@@ -320,7 +320,7 @@ async def vision_analyze_tool(
     try:
         from tools.interrupt import is_interrupted
         if is_interrupted():
-            return json.dumps({"success": False, "error": "Interrupted"})
+            return tool_error("Interrupted", success=False)
 
         logger.info("Analyzing image: %s", image_url[:60])
         logger.info("User prompt: %s", user_prompt[:100])
@@ -570,7 +570,7 @@ if __name__ == "__main__":
 # ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
-from tools.registry import registry
+from tools.registry import registry, tool_error
 
 VISION_ANALYZE_SCHEMA = {
     "name": "vision_analyze",

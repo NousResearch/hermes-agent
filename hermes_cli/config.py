@@ -416,6 +416,7 @@ DEFAULT_CONFIG = {
         "provider": "local",  # "local" (free, faster-whisper) | "groq" | "openai" (Whisper API)
         "local": {
             "model": "base",  # tiny, base, small, medium, large-v3
+            "language": "",  # auto-detect by default; set to "en", "es", "fr", etc. to force
         },
         "openai": {
             "model": "whisper-1",  # whisper-1, gpt-4o-mini-transcribe, gpt-4o-transcribe
@@ -1879,6 +1880,24 @@ def _normalize_max_turns_config(config: Dict[str, Any]) -> Dict[str, Any]:
     config.pop("max_turns", None)
     return config
 
+
+
+def read_raw_config() -> Dict[str, Any]:
+    """Read ~/.hermes/config.yaml as-is, without merging defaults or migrating.
+
+    Returns the raw YAML dict, or ``{}`` if the file doesn't exist or can't
+    be parsed.  Use this for lightweight config reads where you just need a
+    single value and don't want the overhead of ``load_config()``'s deep-merge
+    + migration pipeline.
+    """
+    try:
+        config_path = get_config_path()
+        if config_path.exists():
+            with open(config_path, encoding="utf-8") as f:
+                return yaml.safe_load(f) or {}
+    except Exception:
+        pass
+    return {}
 
 
 def load_config() -> Dict[str, Any]:

@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from agent.memory_provider import MemoryProvider
+from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
 
@@ -320,7 +321,7 @@ class ByteRoverMemoryProvider(MemoryProvider):
             return self._tool_curate(args)
         elif tool_name == "brv_status":
             return self._tool_status()
-        return json.dumps({"error": f"Unknown tool: {tool_name}"})
+        return tool_error(f"Unknown tool: {tool_name}")
 
     def shutdown(self) -> None:
         if self._sync_thread and self._sync_thread.is_alive():
@@ -331,7 +332,7 @@ class ByteRoverMemoryProvider(MemoryProvider):
     def _tool_query(self, args: dict) -> str:
         query = args.get("query", "")
         if not query:
-            return json.dumps({"error": "query is required"})
+            return tool_error("query is required")
 
         result = _run_brv(
             ["query", "--", query.strip()[:5000]],
@@ -339,7 +340,7 @@ class ByteRoverMemoryProvider(MemoryProvider):
         )
 
         if not result["success"]:
-            return json.dumps({"error": result.get("error", "Query failed")})
+            return tool_error(result.get("error", "Query failed"))
 
         output = result.get("output", "").strip()
         if not output or len(output) < _MIN_OUTPUT_LEN:
@@ -354,7 +355,7 @@ class ByteRoverMemoryProvider(MemoryProvider):
     def _tool_curate(self, args: dict) -> str:
         content = args.get("content", "")
         if not content:
-            return json.dumps({"error": "content is required"})
+            return tool_error("content is required")
 
         result = _run_brv(
             ["curate", "--", content],
@@ -362,14 +363,14 @@ class ByteRoverMemoryProvider(MemoryProvider):
         )
 
         if not result["success"]:
-            return json.dumps({"error": result.get("error", "Curate failed")})
+            return tool_error(result.get("error", "Curate failed"))
 
         return json.dumps({"result": "Memory curated successfully."})
 
     def _tool_status(self) -> str:
         result = _run_brv(["status"], timeout=15, cwd=self._cwd)
         if not result["success"]:
-            return json.dumps({"error": result.get("error", "Status check failed")})
+            return tool_error(result.get("error", "Status check failed"))
         return json.dumps({"status": result.get("output", "")})
 
 

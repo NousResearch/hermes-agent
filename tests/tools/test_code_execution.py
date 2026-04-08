@@ -18,10 +18,18 @@ import pytest
 import json
 import os
 
-# Force local terminal backend for ALL tests in this file.
-# Under xdist, another test may leak TERMINAL_ENV=modal/docker, sending
-# execute_code down the remote path → modal.exception.AuthError.
 os.environ["TERMINAL_ENV"] = "local"
+
+
+@pytest.fixture(autouse=True)
+def _force_local_terminal(monkeypatch):
+    """Re-set TERMINAL_ENV=local before every test.
+
+    The module-level assignment above covers import time, but under xdist
+    another worker can overwrite os.environ between tests.  monkeypatch
+    ensures each test starts (and ends) with the correct value.
+    """
+    monkeypatch.setenv("TERMINAL_ENV", "local")
 import sys
 import time
 import threading

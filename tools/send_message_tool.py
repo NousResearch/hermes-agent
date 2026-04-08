@@ -101,7 +101,7 @@ def _handle_send(args):
     target = args.get("target", "")
     message = args.get("message", "")
     if not target or not message:
-        return json.dumps({"error": "Both 'target' and 'message' are required when action='send'"})
+        return tool_error("Both 'target' and 'message' are required when action='send'")
 
     parts = target.split(":", 1)
     platform_name = parts[0].strip().lower()
@@ -134,7 +134,7 @@ def _handle_send(args):
 
     from tools.interrupt import is_interrupted
     if is_interrupted():
-        return json.dumps({"error": "Interrupted"})
+        return tool_error("Interrupted")
 
     try:
         from gateway.config import load_gateway_config, Platform
@@ -160,11 +160,11 @@ def _handle_send(args):
     platform = platform_map.get(platform_name)
     if not platform:
         avail = ", ".join(platform_map.keys())
-        return json.dumps({"error": f"Unknown platform: {platform_name}. Available: {avail}"})
+        return tool_error(f"Unknown platform: {platform_name}. Available: {avail}")
 
     pconfig = config.platforms.get(platform)
     if not pconfig or not pconfig.enabled:
-        return json.dumps({"error": f"Platform '{platform_name}' is not configured. Set up credentials in ~/.hermes/config.yaml or environment variables."})
+        return tool_error(f"Platform '{platform_name}' is not configured. Set up credentials in ~/.hermes/config.yaml or environment variables.")
 
     from gateway.platforms.base import BasePlatformAdapter
 
@@ -940,7 +940,7 @@ def _check_send_message():
 
 
 # --- Registry ---
-from tools.registry import registry
+from tools.registry import registry, tool_error
 
 registry.register(
     name="send_message",

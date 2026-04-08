@@ -527,7 +527,7 @@ def delegate_task(
     Returns JSON with results array, one entry per task.
     """
     if parent_agent is None:
-        return json.dumps({"error": "delegate_task requires a parent agent context."})
+        return tool_error("delegate_task requires a parent agent context.")
 
     # Depth limit
     depth = getattr(parent_agent, '_delegate_depth', 0)
@@ -552,7 +552,7 @@ def delegate_task(
     try:
         creds = _resolve_delegation_credentials(cfg, parent_agent)
     except ValueError as exc:
-        return json.dumps({"error": str(exc)})
+        return tool_error(str(exc))
 
     # Normalize to task list
     if tasks and isinstance(tasks, list):
@@ -560,15 +560,15 @@ def delegate_task(
     elif goal and isinstance(goal, str) and goal.strip():
         task_list = [{"goal": goal, "context": context, "toolsets": toolsets}]
     else:
-        return json.dumps({"error": "Provide either 'goal' (single task) or 'tasks' (batch)."})
+        return tool_error("Provide either 'goal' (single task) or 'tasks' (batch).")
 
     if not task_list:
-        return json.dumps({"error": "No tasks provided."})
+        return tool_error("No tasks provided.")
 
     # Validate each task has a goal
     for i, task in enumerate(task_list):
         if not task.get("goal", "").strip():
-            return json.dumps({"error": f"Task {i} is missing a 'goal'."})
+            return tool_error(f"Task {i} is missing a 'goal'.")
 
     overall_start = time.monotonic()
     results = []
@@ -958,7 +958,7 @@ DELEGATE_TASK_SCHEMA = {
 
 
 # --- Registry ---
-from tools.registry import registry
+from tools.registry import registry, tool_error
 
 registry.register(
     name="delegate_task",

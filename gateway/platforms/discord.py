@@ -55,6 +55,7 @@ from gateway.platforms.base import (
     cache_document_from_bytes,
     SUPPORTED_DOCUMENT_TYPES,
 )
+from tools.url_safety import is_safe_url
 
 
 def _clean_discord_id(entry: str) -> str:
@@ -1285,6 +1286,10 @@ class DiscordAdapter(BasePlatformAdapter):
         if not self._client:
             return SendResult(success=False, error="Not connected")
 
+        if not is_safe_url(image_url):
+            logger.warning("[%s] Blocked unsafe image URL during Discord send_image", self.name)
+            return await super().send_image(chat_id, image_url, caption, reply_to, metadata=metadata)
+
         try:
             import aiohttp
 
@@ -2188,9 +2193,11 @@ class DiscordAdapter(BasePlatformAdapter):
         # UNLESS the channel is in the free-response list or the message is
         # in a thread where the bot has already participated.
         #
-        # Config (all settable via discord.* in config.yaml):
+        # Config (all settable via discord.* in config.yaml or DISCORD_* env vars):
         #   discord.require_mention: Require @mention in server channels (default: true)
         #   discord.free_response_channels: Channel IDs where bot responds without mention
+        #   discord.ignored_channels: Channel IDs where bot NEVER responds (even when mentioned)
+        #   discord.no_thread_channels: Channel IDs where bot responds directly without creating thread
         #   discord.auto_thread: Auto-create thread on @mention in channels (default: true)
 
         thread_id = None
@@ -2201,9 +2208,18 @@ class DiscordAdapter(BasePlatformAdapter):
             parent_channel_id = self._get_parent_channel_id(message.channel)
 
         if not isinstance(message.channel, discord.DMChannel):
+            # Check ignored channels first - never respond even when mentioned
+            ignored_channels_raw = os.getenv("DISCORD_IGNORED_CHANNELS", "")
+            ignored_channels = {ch.strip() for ch in ignored_channels_raw.split(",") if ch.strip()}
+            channel_ids = {str(message.channel.id)}
+            if parent_channel_id:
+                channel_ids.add(parent_channel_id)
+            if channel_ids & ignored_channels:
+                logger.debug("[%s] Ignoring message in ignored channel: %s", self.name, channel_ids)
+                return
+
             free_channels_raw = os.getenv("DISCORD_FREE_RESPONSE_CHANNELS", "")
             free_channels = {ch.strip() for ch in free_channels_raw.split(",") if ch.strip()}
-            channel_ids = {str(message.channel.id)}
             if parent_channel_id:
                 channel_ids.add(parent_channel_id)
 
@@ -2225,10 +2241,14 @@ class DiscordAdapter(BasePlatformAdapter):
         # Auto-thread: when enabled, automatically create a thread for every
         # @mention in a text channel so each conversation is isolated (like Slack).
         # Messages already inside threads or DMs are unaffected.
+        # no_thread_channels: channels where bot responds directly without thread.
         auto_threaded_channel = None
         if not is_thread and not isinstance(message.channel, discord.DMChannel):
+            no_thread_channels_raw = os.getenv("DISCORD_NO_THREAD_CHANNELS", "")
+            no_thread_channels = {ch.strip() for ch in no_thread_channels_raw.split(",") if ch.strip()}
+            skip_thread = bool(channel_ids & no_thread_channels)
             auto_thread = os.getenv("DISCORD_AUTO_THREAD", "true").lower() in ("true", "1", "yes")
-            if auto_thread:
+            if auto_thread and not skip_thread:
                 thread = await self._auto_create_thread(message)
                 if thread:
                     is_thread = True

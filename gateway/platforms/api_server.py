@@ -818,9 +818,29 @@ class APIServerAdapter(BasePlatformAdapter):
         else:
             return web.json_response(_openai_error("'input' must be a string or array"), status=400)
 
-        # Reconstruct conversation history from previous_response_id
+        # Accept explicit conversation_history from the request body.
+        # This lets stateless clients supply their own history instead of
+        # relying on server-side response chaining via previous_response_id.
+        # Precedence: explicit conversation_history > previous_response_id.
         conversation_history: List[Dict[str, str]] = []
-        if previous_response_id:
+        raw_history = body.get("conversation_history")
+        if raw_history:
+            if not isinstance(raw_history, list):
+                return web.json_response(
+                    _openai_error("'conversation_history' must be an array of message objects"),
+                    status=400,
+                )
+            for i, entry in enumerate(raw_history):
+                if not isinstance(entry, dict) or "role" not in entry or "content" not in entry:
+                    return web.json_response(
+                        _openai_error(f"conversation_history[{i}] must have 'role' and 'content' fields"),
+                        status=400,
+                    )
+                conversation_history.append({"role": str(entry["role"]), "content": str(entry["content"])})
+            if previous_response_id:
+                logger.debug("Both conversation_history and previous_response_id provided; using conversation_history")
+
+        if not conversation_history and previous_response_id:
             stored = self._response_store.get(previous_response_id)
             if stored is None:
                 return web.json_response(_openai_error(f"Previous response not found: {previous_response_id}"), status=404)
@@ -1406,8 +1426,28 @@ class APIServerAdapter(BasePlatformAdapter):
 
         instructions = body.get("instructions")
         previous_response_id = body.get("previous_response_id")
+
+        # Accept explicit conversation_history from the request body.
+        # Precedence: explicit conversation_history > previous_response_id.
         conversation_history: List[Dict[str, str]] = []
-        if previous_response_id:
+        raw_history = body.get("conversation_history")
+        if raw_history:
+            if not isinstance(raw_history, list):
+                return web.json_response(
+                    _openai_error("'conversation_history' must be an array of message objects"),
+                    status=400,
+                )
+            for i, entry in enumerate(raw_history):
+                if not isinstance(entry, dict) or "role" not in entry or "content" not in entry:
+                    return web.json_response(
+                        _openai_error(f"conversation_history[{i}] must have 'role' and 'content' fields"),
+                        status=400,
+                    )
+                conversation_history.append({"role": str(entry["role"]), "content": str(entry["content"])})
+            if previous_response_id:
+                logger.debug("Both conversation_history and previous_response_id provided; using conversation_history")
+
+        if not conversation_history and previous_response_id:
             stored = self._response_store.get(previous_response_id)
             if stored:
                 conversation_history = list(stored.get("conversation_history", []))

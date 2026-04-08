@@ -184,6 +184,8 @@ if _config_path.exists():
             # Env var from .env takes precedence (already in os.environ).
             if "gateway_timeout" in _agent_cfg and "HERMES_AGENT_TIMEOUT" not in os.environ:
                 os.environ["HERMES_AGENT_TIMEOUT"] = str(_agent_cfg["gateway_timeout"])
+            if "gateway_timeout_warning" in _agent_cfg and "HERMES_AGENT_TIMEOUT_WARNING" not in os.environ:
+                os.environ["HERMES_AGENT_TIMEOUT_WARNING"] = str(_agent_cfg["gateway_timeout_warning"])
         # Timezone: bridge config.yaml → HERMES_TIMEZONE env var.
         # HERMES_TIMEZONE from .env takes precedence (already in os.environ).
         _tz_cfg = _cfg.get("timezone", "")
@@ -7114,6 +7116,9 @@ class GatewayRunner:
             # Default 1800s (30 min inactivity).  0 = unlimited.
             _agent_timeout_raw = float(os.getenv("HERMES_AGENT_TIMEOUT", 1800))
             _agent_timeout = _agent_timeout_raw if _agent_timeout_raw > 0 else None
+            _agent_warning_raw = float(os.getenv("HERMES_AGENT_TIMEOUT_WARNING", 900))
+            _agent_warning = _agent_warning_raw if _agent_warning_raw > 0 else None
+            _warning_fired = False
             loop = asyncio.get_event_loop()
             _executor_task = asyncio.ensure_future(
                 loop.run_in_executor(None, run_sync)
@@ -7146,6 +7151,24 @@ class GatewayRunner:
                             _idle_secs = _act.get("seconds_since_activity", 0.0)
                         except Exception:
                             pass
+                    # Staged warning: fire once before escalating to full timeout.
+                    if (not _warning_fired and _agent_warning is not None
+                            and _idle_secs >= _agent_warning):
+                        _warning_fired = True
+                        _warn_adapter = self.adapters.get(source.platform)
+                        if _warn_adapter:
+                            _warn_mins = int(_agent_warning // 60) or 1
+                            try:
+                                await _warn_adapter.send(
+                                    source.chat_id,
+                                    f"⚠️ No activity for {_warn_mins} min. "
+                                    f"If the agent does not respond soon, it will "
+                                    f"be timed out in {_warn_mins} min. "
+                                    f"You can continue waiting or use /reset.",
+                                    metadata=_status_thread_metadata,
+                                )
+                            except Exception:
+                                logger.debug("Inactivity warning send error: %s", _ne)
                     if _idle_secs >= _agent_timeout:
                         _inactivity_timeout = True
                         break

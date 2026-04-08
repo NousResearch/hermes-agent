@@ -445,6 +445,16 @@ agent:
   # Higher = more room for complex tasks, but costs more tokens
   # Recommended: 20-30 for focused tasks, 50-100 for open exploration
   max_turns: 60
+
+  # Inactivity timeout for gateway agent runs (seconds, 0 = unlimited).
+  # The agent can run indefinitely when actively calling tools or receiving
+  # API responses.  Only fires after the agent has been idle for this duration.
+  # gateway_timeout: 1800
+
+  # Staged warning: send a warning before escalating to full timeout.
+  # Fires once per run when inactivity reaches this threshold (seconds).
+  # Set to 0 to disable the warning.
+  # gateway_timeout_warning: 900
   
   # Enable verbose logging
   verbose: false

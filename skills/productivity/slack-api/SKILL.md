@@ -119,34 +119,6 @@ Returns all messages in a thread given the parent message's `ts` (thread_ts).
 
 The thread_ts is typically available from the message metadata. If not, use `conversations.history` on the channel and look for the parent message.
 
-### Handling File Attachments (Images, Documents)
-Slack messages often contain file attachments (screenshots, documents). These appear in the `files` array of each message. **File URLs require the bot token to access** — they are NOT public URLs.
-
-To download a Slack file:
-```python
-import urllib.request
-req = urllib.request.Request(
-    file["url_private"],
-    headers={"Authorization": f"Bearer {TOKEN}"}
-)
-data = urllib.request.urlopen(req).read()
-```
-
-**IMPORTANT — Cross-platform content transfer:** When creating issues (Linear, GitHub, etc.) from Slack threads that contain images, you MUST handle the files explicitly. The text content alone loses critical visual context. Steps:
-1. Fetch the thread via `conversations.replies` — each message has a `files` array
-2. Download each file using `url_private` + bot token auth
-3. Upload to the target platform (e.g. Linear attachment API, GitHub issue, imgur) or use `url_private_download` with the token
-4. Embed the uploaded URLs as markdown images in the issue body
-
-If you skip file handling, flag it explicitly to the user: "Note: N screenshots from the thread were not included — Slack file URLs require authentication and can't be directly embedded."
-
-Common file fields:
-- `url_private` — authenticated download URL
-- `url_private_download` — forces download (vs browser preview)
-- `name` — original filename
-- `mimetype` — e.g. `image/png`
-- `thumb_*` — thumbnail URLs (also require auth)
-
 ### Delete a Bot Message (requires `chat:write` — bot can only delete its own)
 ```bash
 curl -s -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \

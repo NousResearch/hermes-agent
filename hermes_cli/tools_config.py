@@ -221,6 +221,25 @@ def _checklist_toolset_keys(platform: str) -> Set[str]:
         if _toolset_allowed_for_platform(ts_key, platform)
     }
 
+
+def _toolset_tools_present_in_composite(
+    ts_key: str,
+    ts_tools: Set[str],
+    composite_tools: Set[str],
+) -> bool:
+    """Return True when ``composite_tools`` should imply ``ts_key``.
+
+    Most configurable toolsets must be fully present in the platform
+    composite. ``web`` has a backward-compatible carve-out: older/custom
+    composites that predate ``web_crawl`` still represent the web toolset when
+    they include the established ``web_search`` + ``web_extract`` pair.
+    """
+    if ts_tools and ts_tools.issubset(composite_tools):
+        return True
+    if ts_key == "web":
+        return {"web_search", "web_extract"}.issubset(composite_tools)
+    return False
+
 # Platform display config — derived from the canonical registry so every
 # module shares the same data.  Kept as dict-of-dicts for backward
 # compatibility with existing ``PLATFORMS[key]["label"]`` access patterns.
@@ -1347,7 +1366,7 @@ def _get_platform_tools(
                 if not _toolset_allowed_for_platform(ts_key, platform):
                     continue
                 ts_tools = set(resolve_toolset(ts_key))
-                if ts_tools and ts_tools.issubset(composite_tools):
+                if _toolset_tools_present_in_composite(ts_key, ts_tools, composite_tools):
                     expanded.add(ts_key)
 
             default_off = set(_DEFAULT_OFF_TOOLSETS)
@@ -1370,7 +1389,7 @@ def _get_platform_tools(
             if not _toolset_allowed_for_platform(ts_key, platform):
                 continue
             ts_tools = set(resolve_toolset(ts_key))
-            if ts_tools and ts_tools.issubset(all_tool_names):
+            if _toolset_tools_present_in_composite(ts_key, ts_tools, all_tool_names):
                 enabled_toolsets.add(ts_key)
 
         # Auto-enable ``x_search`` when xAI credentials are configured.
@@ -1857,8 +1876,8 @@ def _plugin_video_gen_providers() -> list[dict]:
 
 # Mirror of _plugin_image_gen_providers for web search backends. Surfaces
 # every plugin-registered web provider so it appears in the
-# "Web Search & Extract" picker. All seven providers (brave-free, ddgs,
-# searxng, exa, parallel, tavily, firecrawl) live as plugins after
+# "Web Search & Extract" picker. Bundled providers (brave-free, crawl4ai,
+# ddgs, searxng, exa, local_oss, parallel, tavily, firecrawl, xai) live as plugins after
 # PR #25182 — this helper is the sole source of truth for the category's
 # provider rows. The hardcoded entries that used to drive the category
 # were deleted in the same PR; only the two non-provider UX rows
@@ -1874,8 +1893,7 @@ def _plugin_web_search_providers() -> list[dict]:
     marker) so the picker behaves identically whether a provider is
     hardcoded or plugin-registered.
 
-    After PR #25182, all seven web providers (brave-free, ddgs, searxng,
-    exa, parallel, tavily, firecrawl) are plugins; this helper is the sole
+    After PR #25182, bundled web providers are plugins; this helper is the sole
     source of provider rows for the Web Search & Extract category.
     """
     try:

@@ -44,7 +44,7 @@ class TestGetToolset:
 
         ts = get_toolset("web")
         assert ts is not None
-        assert set(ts["tools"]) == {"web_search", "web_extract", "web_search_plus"}
+        assert set(ts["tools"]) == {"web_search", "web_extract", "web_crawl", "web_search_plus"}
 
     def test_unknown_returns_none(self):
         assert get_toolset("nonexistent") is None
@@ -53,13 +53,14 @@ class TestGetToolset:
 class TestResolveToolset:
     def test_leaf_toolset(self):
         tools = resolve_toolset("web")
-        assert set(tools) == {"web_search", "web_extract"}
+        assert set(tools) == {"web_search", "web_extract", "web_crawl"}
 
     def test_composite_toolset(self):
         tools = resolve_toolset("debugging")
         assert "terminal" in tools
         assert "web_search" in tools
         assert "web_extract" in tools
+        assert "web_crawl" in tools
 
     def test_cycle_detection(self):
         # Create a cycle: A includes B, B includes A
@@ -110,6 +111,7 @@ class TestResolveMultipleToolsets:
         tools = resolve_multiple_toolsets(["web", "terminal"])
         assert "web_search" in tools
         assert "web_extract" in tools
+        assert "web_crawl" in tools
         assert "terminal" in tools
         # No duplicates
         assert len(tools) == len(set(tools))
@@ -152,7 +154,7 @@ class TestGetToolsetInfo:
         info = get_toolset_info("web")
         assert info["name"] == "web"
         assert info["is_composite"] is False
-        assert info["tool_count"] == 2
+        assert info["tool_count"] == 3
 
     def test_composite(self):
         info = get_toolset_info("debugging")

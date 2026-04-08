@@ -2,8 +2,8 @@
 
 Covers:
 
-- All eight bundled plugins (brave-free, ddgs, searxng, exa, parallel,
-  tavily, firecrawl, xai) instantiate and self-report the expected
+- All ten bundled providers (brave-free, crawl4ai, ddgs, exa, firecrawl,
+  local_oss, parallel, searxng, tavily, xai) instantiate and self-report the expected
   capabilities + ABC-derived defaults.
 - Each plugin's ``is_available()`` correctly reflects env-var presence.
 - The web_search_registry resolves an active provider in the documented
@@ -33,7 +33,10 @@ def _clear_web_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Strip every web-provider env var so is_available() returns False."""
     for k in (
         "BRAVE_SEARCH_API_KEY",
+        "SEARXNG_API_URL",
         "SEARXNG_URL",
+        "CRAWL4AI_API_URL",
+        "CRAWL4AI_API_TOKEN",
         "TAVILY_API_KEY",
         "TAVILY_BASE_URL",
         "EXA_API_KEY",
@@ -68,18 +71,20 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 class TestBundledPluginsRegister:
-    """All eight bundled web plugins discover and register correctly."""
+    """All bundled web providers discover and register correctly."""
 
-    def test_all_seven_plugins_present_in_registry(self) -> None:
+    def test_all_bundled_plugins_present_in_registry(self) -> None:
         _ensure_plugins_loaded()
         from agent.web_search_registry import list_providers
 
         names = sorted(p.name for p in list_providers())
         assert names == [
             "brave-free",
+            "crawl4ai",
             "ddgs",
             "exa",
             "firecrawl",
+            "local_oss",
             "parallel",
             "searxng",
             "tavily",
@@ -90,10 +95,12 @@ class TestBundledPluginsRegister:
         "plugin_name,expected_search,expected_extract",
         [
             ("brave-free", True, False),
+            ("crawl4ai", False, True),
             ("ddgs", True, False),
             ("searxng", True, False),
             ("exa", True, True),
             ("parallel", True, True),
+            ("local_oss", True, True),
             ("tavily", True, True),
             ("firecrawl", True, True),
             # xai: search-only via Grok's agentic web_search tool.
@@ -116,7 +123,18 @@ class TestBundledPluginsRegister:
 
     @pytest.mark.parametrize(
         "plugin_name",
-        ["brave-free", "ddgs", "searxng", "exa", "parallel", "tavily", "firecrawl", "xai"],
+        [
+            "brave-free",
+            "crawl4ai",
+            "ddgs",
+            "searxng",
+            "exa",
+            "local_oss",
+            "parallel",
+            "tavily",
+            "firecrawl",
+            "xai",
+        ],
     )
     def test_each_plugin_has_name_and_display_name(self, plugin_name: str) -> None:
         _ensure_plugins_loaded()
@@ -129,7 +147,18 @@ class TestBundledPluginsRegister:
 
     @pytest.mark.parametrize(
         "plugin_name",
-        ["brave-free", "ddgs", "searxng", "exa", "parallel", "tavily", "firecrawl", "xai"],
+        [
+            "brave-free",
+            "crawl4ai",
+            "ddgs",
+            "searxng",
+            "exa",
+            "local_oss",
+            "parallel",
+            "tavily",
+            "firecrawl",
+            "xai",
+        ],
     )
     def test_each_plugin_has_setup_schema(self, plugin_name: str) -> None:
         """``get_setup_schema()`` returns a dict the picker can consume."""
@@ -169,7 +198,32 @@ class TestIsAvailable:
         p = get_provider("searxng")
         assert p is not None
         assert p.is_available() is False
-        monkeypatch.setenv("SEARXNG_URL", "http://localhost:8080")
+        monkeypatch.setenv("SEARXNG_API_URL", "http://localhost:8080")
+        assert p.is_available() is True
+
+    def test_crawl4ai_requires_api_url(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _ensure_plugins_loaded()
+        from agent.web_search_registry import get_provider
+
+        p = get_provider("crawl4ai")
+        assert p is not None
+        assert p.is_available() is False
+        monkeypatch.setenv("CRAWL4AI_API_URL", "http://localhost:11235")
+        assert p.is_available() is True
+
+    def test_local_oss_requires_searxng_and_crawl4ai(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _ensure_plugins_loaded()
+        from agent.web_search_registry import get_provider
+
+        p = get_provider("local_oss")
+        assert p is not None
+        assert p.is_available() is False
+        monkeypatch.setenv("SEARXNG_API_URL", "http://localhost:8080")
+        assert p.is_available() is False
+        monkeypatch.setenv("CRAWL4AI_API_URL", "http://localhost:11235")
         assert p.is_available() is True
 
     def test_tavily_requires_api_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -328,6 +382,37 @@ class TestRegistryResolution:
             # means an env var leaked in.
             assert result.is_available() is True
 
+    def test_local_oss_wins_when_both_local_urls_available(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _ensure_plugins_loaded()
+        from agent.web_search_registry import _resolve
+
+        monkeypatch.setenv("SEARXNG_API_URL", "http://localhost:8080")
+        monkeypatch.setenv("CRAWL4AI_API_URL", "http://localhost:11235")
+
+        search = _resolve(None, capability="search")
+        extract = _resolve(None, capability="extract")
+
+        assert search is not None
+        assert extract is not None
+        assert search.name == "local_oss"
+        assert extract.name == "local_oss"
+
+    def test_crawl4ai_extract_resolves_when_only_crawl4ai_available(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _ensure_plugins_loaded()
+        from agent.web_search_registry import _resolve
+
+        monkeypatch.setenv("CRAWL4AI_API_URL", "http://localhost:11235")
+        result = _resolve(None, capability="extract")
+
+        assert result is not None
+        assert result.name == "crawl4ai"
+
 
 # ---------------------------------------------------------------------------
 # Sync-vs-async extract detection
@@ -350,6 +435,22 @@ class TestAsyncExtractDispatch:
         from agent.web_search_registry import get_provider
 
         p = get_provider("firecrawl")
+        assert p is not None
+        assert inspect.iscoroutinefunction(p.extract) is True
+
+    def test_crawl4ai_extract_is_async(self) -> None:
+        _ensure_plugins_loaded()
+        from agent.web_search_registry import get_provider
+
+        p = get_provider("crawl4ai")
+        assert p is not None
+        assert inspect.iscoroutinefunction(p.extract) is True
+
+    def test_local_oss_extract_is_async(self) -> None:
+        _ensure_plugins_loaded()
+        from agent.web_search_registry import get_provider
+
+        p = get_provider("local_oss")
         assert p is not None
         assert inspect.iscoroutinefunction(p.extract) is True
 
@@ -448,6 +549,28 @@ class TestErrorResponseShapes:
         assert isinstance(result, list)
         if result:  # if anything came back, it should be an error entry
             assert "error" in result[0]
+
+    def test_crawl4ai_extract_returns_per_url_errors_when_unconfigured(self) -> None:
+        _ensure_plugins_loaded()
+        from agent.web_search_registry import get_provider
+
+        p = get_provider("crawl4ai")
+        assert p is not None
+        result = asyncio.run(p.extract(["https://example.com"]))
+        assert isinstance(result, list)
+        assert result[0]["url"] == "https://example.com"
+        assert "error" in result[0]
+
+    def test_local_oss_returns_error_dict_when_search_unconfigured(self) -> None:
+        _ensure_plugins_loaded()
+        from agent.web_search_registry import get_provider
+
+        p = get_provider("local_oss")
+        assert p is not None
+        result = p.search("test", limit=5)
+        assert isinstance(result, dict)
+        assert result.get("success") is False
+        assert "error" in result
 
     def test_firecrawl_config_error_points_paid_users_to_nous_subscription(self, monkeypatch):
         from plugins.web.firecrawl import provider as firecrawl_provider

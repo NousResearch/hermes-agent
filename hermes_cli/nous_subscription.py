@@ -371,6 +371,7 @@ def get_nous_subscription_features(
     # search/extract independently of web.backend.
     web_search_backend = str(web_cfg.get("search_backend") or "").strip().lower()
     web_extract_backend = str(web_cfg.get("extract_backend") or "").strip().lower()
+    web_crawl_backend = str(web_cfg.get("crawl_backend") or "").strip().lower()
     tts_provider = str(tts_cfg.get("provider") or "edge").strip().lower()
     # STT default is "local" (faster-whisper) per DEFAULT_CONFIG, which
     # requires `pip install faster-whisper`. For Nous subscribers we'd
@@ -404,7 +405,9 @@ def get_nous_subscription_features(
     direct_firecrawl = bool(get_env_value("FIRECRAWL_API_KEY") or get_env_value("FIRECRAWL_API_URL"))
     direct_parallel = bool(get_env_value("PARALLEL_API_KEY"))
     direct_tavily = bool(get_env_value("TAVILY_API_KEY"))
-    direct_searxng = bool(get_env_value("SEARXNG_URL"))
+    direct_searxng = bool(get_env_value("SEARXNG_API_URL") or get_env_value("SEARXNG_URL"))
+    direct_crawl4ai = bool(get_env_value("CRAWL4AI_API_URL"))
+    direct_local_oss = direct_searxng and direct_crawl4ai
     direct_fal = fal_key_is_configured()
     direct_fal_video = direct_fal  # same FAL_KEY; separate var so use_gateway is independent
     direct_openai_tts = bool(resolve_openai_audio_api_key())
@@ -512,17 +515,32 @@ def get_nous_subscription_features(
             or (web_backend == "parallel" and direct_parallel)
             or (web_backend == "tavily" and direct_tavily)
             or (web_backend == "searxng" and direct_searxng)
-            # Per-capability overrides: search_backend or extract_backend may be set
+            or (web_backend == "crawl4ai" and direct_crawl4ai)
+            or (web_backend == "local_oss" and direct_local_oss)
+            # Per-capability overrides may be set
             # without web.backend (using the new split config from #20061)
             or (web_search_backend == "searxng" and direct_searxng)
+            or (web_search_backend == "local_oss" and direct_local_oss)
             or (web_search_backend == "exa" and direct_exa)
             or (web_search_backend == "firecrawl" and direct_firecrawl)
             or (web_search_backend == "parallel" and direct_parallel)
             or (web_search_backend == "tavily" and direct_tavily)
+            or (web_extract_backend == "crawl4ai" and direct_crawl4ai)
+            or (web_extract_backend == "local_oss" and direct_local_oss)
+            or (web_crawl_backend == "crawl4ai" and direct_crawl4ai)
+            or (web_crawl_backend == "local_oss" and direct_local_oss)
+            or (web_crawl_backend == "firecrawl" and direct_firecrawl)
+            or (web_crawl_backend == "tavily" and direct_tavily)
         )
     )
     web_available = bool(
-        managed_web_available or direct_exa or direct_firecrawl or direct_parallel or direct_tavily or direct_searxng
+        managed_web_available
+        or direct_exa
+        or direct_firecrawl
+        or direct_parallel
+        or direct_tavily
+        or direct_searxng
+        or direct_crawl4ai
     )
 
     image_managed = image_tool_enabled and managed_image_available and not direct_fal
@@ -639,8 +657,8 @@ def get_nous_subscription_features(
             managed_by_nous=web_managed,
             direct_override=web_active and not web_managed,
             toolset_enabled=web_tool_enabled,
-            current_provider=web_backend or web_search_backend or "",
-            explicit_configured=bool(web_backend or web_search_backend),
+            current_provider=web_backend or web_search_backend or web_extract_backend or web_crawl_backend or "",
+            explicit_configured=bool(web_backend or web_search_backend or web_extract_backend or web_crawl_backend),
         ),
         "image_gen": NousFeatureState(
             key="image_gen",

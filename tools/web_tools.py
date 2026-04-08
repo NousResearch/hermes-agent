@@ -10,12 +10,15 @@ for Nous Subscribers only.
 Available tools:
 - web_search_tool: Search the web for information
 - web_extract_tool: Extract content from specific web pages
+- web_crawl_tool: Crawl a website and return page content
 
 Backend compatibility:
 - Exa: https://exa.ai (search, extract)
-- Firecrawl: https://docs.firecrawl.dev/introduction (search, extract; direct or derived firecrawl-gateway.<domain> for Nous Subscribers)
+- Firecrawl: https://docs.firecrawl.dev/introduction (search, extract, crawl; direct or derived firecrawl-gateway.<domain> for Nous Subscribers)
 - Parallel: https://docs.parallel.ai (search, extract)
-- Tavily: https://tavily.com (search, extract)
+- SearXNG: https://docs.searxng.org/ (search)
+- Crawl4AI: https://docs.crawl4ai.com/core/self-hosting/ (extract, crawl)
+- Tavily: https://tavily.com (search, extract, crawl)
 
 LLM Processing:
 - Uses OpenRouter API with Gemini 3 Flash Preview for intelligent content extraction
@@ -56,6 +59,7 @@ from plugins.web.firecrawl.provider import (
     _get_firecrawl_client,  # noqa: F401  # re-exported for tests that `from tools.web_tools import _get_firecrawl_client`
     _get_firecrawl_gateway_url,
     _is_tool_gateway_ready,
+    _to_plain_object as _firecrawl_to_plain_object,
     check_firecrawl_api_key,
 )
 # Tavily helpers re-exported for backward-compat with existing unit tests
@@ -73,6 +77,18 @@ from plugins.web.parallel.provider import (  # noqa: F401 — backward-compat na
     _get_parallel_client,
 )
 from plugins.web.exa.provider import _get_exa_client  # noqa: F401
+from plugins.web.local_oss.provider import (  # noqa: F401 — backward-compat/test helpers
+    _crawl4ai_extract_timeout,
+    _crawl4ai_fetch_rendered_document,
+    _crawl4ai_post,
+    _get_crawl4ai_api_url,
+    _get_crawl4ai_headers,
+    _get_searxng_api_url,
+    _normalize_crawl4ai_document,
+    _normalize_crawl4ai_documents,
+    _normalize_searxng_search_results,
+    crawl4ai_crawl as _crawl4ai_crawl,
+)
 
 # Module-level cache slots for the per-vendor clients. The plugins read/write
 # these via tools.web_tools so unit tests that reset
@@ -103,9 +119,49 @@ from tools.tool_backend_helpers import (  # noqa: F401
     prefers_gateway,
 )
 from tools.url_safety import async_is_safe_url, normalize_url_for_request
+from tools.website_policy import check_website_access
 import sys
 
 logger = logging.getLogger(__name__)
+
+_LOCAL_OSS_BACKEND = "local_oss"
+_KNOWN_WEB_BACKENDS = {
+    "parallel",
+    "firecrawl",
+    "tavily",
+    "exa",
+    "searxng",
+    "brave-free",
+    "ddgs",
+    "xai",
+    "crawl4ai",
+    _LOCAL_OSS_BACKEND,
+}
+_SEARCH_CAPABLE_BACKENDS = {
+    "exa",
+    "parallel",
+    "firecrawl",
+    "tavily",
+    "searxng",
+    "brave-free",
+    "ddgs",
+    "xai",
+    _LOCAL_OSS_BACKEND,
+}
+_EXTRACT_CAPABLE_BACKENDS = {
+    "exa",
+    "parallel",
+    "firecrawl",
+    "tavily",
+    "crawl4ai",
+    _LOCAL_OSS_BACKEND,
+}
+_CRAWL_CAPABLE_BACKENDS = {
+    "firecrawl",
+    "tavily",
+    "crawl4ai",
+    _LOCAL_OSS_BACKEND,
+}
 
 
 # ─── Backend Selection ────────────────────────────────────────────────────────
@@ -133,6 +189,20 @@ def _env_value(name: str) -> str:
 def _has_env(name: str) -> bool:
     return bool(_env_value(name))
 
+
+def _normalize_backend_name(value: object | None) -> str:
+    return str(value or "").strip().lower()
+
+
+def _backend_supports_capability(backend: str, capability: str) -> bool:
+    if capability == "search":
+        return backend in _SEARCH_CAPABLE_BACKENDS
+    if capability == "extract":
+        return backend in _EXTRACT_CAPABLE_BACKENDS
+    if capability == "crawl":
+        return backend in _CRAWL_CAPABLE_BACKENDS
+    return False
+
 def _load_web_config() -> dict:
     """Load the ``web:`` section from ~/.hermes/config.yaml."""
     try:
@@ -148,8 +218,8 @@ def _get_backend() -> str:
     Falls back to whichever API key is present for users who configured
     keys manually without running setup.
     """
-    configured = (_load_web_config().get("backend") or "").lower().strip()
-    if configured in {"parallel", "firecrawl", "tavily", "exa", "searxng", "brave-free", "ddgs", "xai"}:
+    configured = _normalize_backend_name(_load_web_config().get("backend"))
+    if configured in _KNOWN_WEB_BACKENDS:
         return configured
 
     # Fallback for manual / legacy config — pick the highest-priority
@@ -158,14 +228,18 @@ def _get_backend() -> str:
     # pre-empted by a Nous OAuth token whose subscription tier may not
     # actually grant web-search access (the gateway then fails at runtime
     # with "no subscription" and the tool returns an error to the agent
-    # without falling back). Free-tier backends trail the paid ones.
+    # without falling back). Self-hosted local URLs are also explicit user
+    # configuration, so they beat the managed gateway probe. Free-tier
+    # package-only backends trail the configured services.
     backend_candidates = (
         ("tavily", _has_env("TAVILY_API_KEY")),
         ("exa", _has_env("EXA_API_KEY")),
         ("parallel", _has_env("PARALLEL_API_KEY")),
         ("firecrawl", _has_env("FIRECRAWL_API_KEY") or _has_env("FIRECRAWL_API_URL")),
+        (_LOCAL_OSS_BACKEND, (_has_env("SEARXNG_API_URL") or _has_env("SEARXNG_URL")) and _has_env("CRAWL4AI_API_URL")),
+        ("searxng", _has_env("SEARXNG_API_URL") or _has_env("SEARXNG_URL")),
+        ("crawl4ai", _has_env("CRAWL4AI_API_URL")),
         ("firecrawl", _is_tool_gateway_ready()),
-        ("searxng", _has_env("SEARXNG_URL")),
         ("brave-free", _has_env("BRAVE_SEARCH_API_KEY")),
         ("ddgs", _ddgs_package_importable()),
     )
@@ -201,6 +275,11 @@ def _get_extract_backend() -> str:
     return _get_capability_backend("extract")
 
 
+def _get_crawl_backend() -> str:
+    """Determine which backend to use for web_crawl specifically."""
+    return _get_capability_backend("crawl")
+
+
 def _get_capability_backend(capability: str) -> str:
     """Shared helper for per-capability backend selection.
 
@@ -208,10 +287,15 @@ def _get_capability_backend(capability: str) -> str:
     uses it. Otherwise falls through to the shared ``_get_backend()``.
     """
     cfg = _load_web_config()
-    specific = (cfg.get(f"{capability}_backend") or "").lower().strip()
+    specific = _normalize_backend_name(cfg.get(f"{capability}_backend"))
     if specific and _is_backend_available(specific):
         return specific
     return _get_backend()
+
+
+def _get_backend_for_capability(capability: str) -> str:
+    """Resolve the effective backend for a specific web capability."""
+    return _get_capability_backend(capability)
 
 
 def _is_backend_available(backend: str) -> bool:
@@ -225,11 +309,18 @@ def _is_backend_available(backend: str) -> bool:
     if backend == "tavily":
         return _has_env("TAVILY_API_KEY")
     if backend == "searxng":
-        return _has_env("SEARXNG_URL")
+        return _has_env("SEARXNG_API_URL") or _has_env("SEARXNG_URL")
     if backend == "brave-free":
         return _has_env("BRAVE_SEARCH_API_KEY")
     if backend == "ddgs":
         return _ddgs_package_importable()
+    if backend == "crawl4ai":
+        return _has_env("CRAWL4AI_API_URL")
+    if backend == _LOCAL_OSS_BACKEND:
+        return (
+            (_has_env("SEARXNG_API_URL") or _has_env("SEARXNG_URL"))
+            and _has_env("CRAWL4AI_API_URL")
+        )
     if backend == "xai":
         # Cheap probe — env var OR auth.json has OAuth tokens. Must not
         # call resolve_xai_http_credentials() here because the OAuth path
@@ -285,6 +376,11 @@ def _web_requires_env() -> list[str]:
         "TAVILY_API_KEY",
         "FIRECRAWL_API_KEY",
         "FIRECRAWL_API_URL",
+        "SEARXNG_URL",
+        "SEARXNG_API_URL",
+        "CRAWL4AI_API_URL",
+        "CRAWL4AI_API_TOKEN",
+        "BRAVE_SEARCH_API_KEY",
         "FIRECRAWL_GATEWAY_URL",
         "TOOL_GATEWAY_DOMAIN",
         "TOOL_GATEWAY_SCHEME",
@@ -758,8 +854,7 @@ def clean_base64_images(text: str) -> str:
 def _ensure_web_plugins_loaded() -> None:
     """Idempotently trigger plugin discovery so the web registry is populated.
 
-    Every bundled web provider (brave-free, ddgs, searxng, exa, parallel,
-    tavily, firecrawl) registers itself via ``plugins/web/<vendor>/__init__.py``
+    Every bundled web provider registers itself via ``plugins/web/<vendor>/__init__.py``
     during plugin discovery. Tool dispatch can be reached from contexts that
     haven't already triggered discovery — subprocess agent runs, delegate
     children, standalone scripts, certain test paths — and without it the
@@ -840,10 +935,9 @@ def web_search_tool(query: str, limit: int = 5) -> str:
         if is_interrupted():
             return tool_error("Interrupted", success=False)
 
-        # Dispatch through the web search registry. All 7 providers
-        # (brave-free, ddgs, searxng, exa, parallel, tavily, firecrawl)
-        # now live as plugins; the dispatcher is just a registry lookup +
-        # delegation. Sync only — every provider's search() is sync.
+        # Dispatch through the web search registry. Bundled providers now
+        # live as plugins; the dispatcher is just a registry lookup +
+        # delegation. Sync only — every search provider's search() is sync.
         _ensure_web_plugins_loaded()
         from agent.web_search_registry import (
             get_active_search_provider,
@@ -978,10 +1072,10 @@ async def web_extract_tool(
         else:
             backend = _get_extract_backend()
 
-            # All seven providers (brave-free, ddgs, searxng, exa, parallel,
-            # tavily, firecrawl) now live as plugins. The dispatcher is a
+            # Bundled providers now live as plugins. The dispatcher is a
             # registry lookup + delegation. Some providers' extract() is
-            # async (parallel, firecrawl), others sync (exa, tavily) — we
+            # async (parallel, firecrawl, crawl4ai, local_oss), others sync
+            # (exa, tavily) — we
             # detect coroutine functions and await; sync functions run
             # inline (the policy gate, SSRF re-check, etc. live inside the
             # provider itself for the firecrawl per-URL loop).
@@ -1006,8 +1100,8 @@ async def web_extract_tool(
                             "error": (
                                 f"{provider.display_name} is a search-only "
                                 "backend and cannot extract URL content. "
-                                "Set web.extract_backend to firecrawl, "
-                                "tavily, exa, or parallel."
+                                "Set web.extract_backend to crawl4ai, local_oss, "
+                                "firecrawl, tavily, exa, or parallel."
                             ),
                         },
                         ensure_ascii=False,
@@ -1019,8 +1113,8 @@ async def web_extract_tool(
                             "success": False,
                             "error": (
                                 "No web extract provider configured. "
-                                "Set web.extract_backend to firecrawl, "
-                                "tavily, exa, or parallel."
+                                "Set web.extract_backend to crawl4ai, local_oss, "
+                                "firecrawl, tavily, exa, or parallel."
                             ),
                         },
                         ensure_ascii=False,
@@ -1053,8 +1147,8 @@ async def web_extract_tool(
         
         debug_call_data["pages_extracted"] = pages_extracted
         debug_call_data["original_response_size"] = len(json.dumps(response))
-        effective_model = model or _get_default_summarizer_model()
-        auxiliary_available = check_auxiliary_model()
+        effective_model = model or (_get_default_summarizer_model() if use_llm_processing else None)
+        auxiliary_available = check_auxiliary_model() if use_llm_processing else False
         
         # Process each result with LLM if enabled
         if use_llm_processing and auxiliary_available:
@@ -1181,15 +1275,409 @@ async def web_extract_tool(
         return tool_error(error_msg)
 
 
-# Convenience function to check Firecrawl credentials
+def _normalize_firecrawl_crawl_results(crawl_result: Any) -> List[Dict[str, Any]]:
+    """Normalize Firecrawl crawl() results to Hermes' document schema."""
+    plain = _firecrawl_to_plain_object(crawl_result)
+    if isinstance(plain, dict):
+        data_list = plain.get("data") or plain.get("results") or []
+    elif isinstance(plain, list):
+        data_list = plain
+    else:
+        data_list = []
+
+    pages: List[Dict[str, Any]] = []
+    for item in data_list:
+        doc = _firecrawl_to_plain_object(item)
+        if not isinstance(doc, dict):
+            continue
+
+        metadata = _firecrawl_to_plain_object(doc.get("metadata"))
+        if not isinstance(metadata, dict):
+            metadata = {}
+
+        markdown = _firecrawl_to_plain_object(doc.get("markdown"))
+        if isinstance(markdown, dict):
+            content = (
+                markdown.get("fit_markdown")
+                or markdown.get("raw_markdown")
+                or markdown.get("markdown")
+                or ""
+            )
+        else:
+            content = markdown if isinstance(markdown, str) else ""
+        content = content or doc.get("content") or doc.get("html") or ""
+
+        page_url = (
+            doc.get("url")
+            or doc.get("sourceURL")
+            or metadata.get("sourceURL")
+            or metadata.get("url")
+            or ""
+        )
+        title = doc.get("title") or metadata.get("title") or ""
+
+        page_blocked = check_website_access(page_url) if page_url else None
+        if page_blocked:
+            logger.info(
+                "Blocked crawled page %s by rule %s",
+                page_blocked["host"],
+                page_blocked["rule"],
+            )
+            pages.append(
+                {
+                    "url": page_url,
+                    "title": title,
+                    "content": "",
+                    "raw_content": "",
+                    "error": page_blocked["message"],
+                    "blocked_by_policy": {
+                        "host": page_blocked["host"],
+                        "rule": page_blocked["rule"],
+                        "source": page_blocked["source"],
+                    },
+                }
+            )
+            continue
+
+        pages.append(
+            {
+                "url": page_url,
+                "title": title,
+                "content": content,
+                "raw_content": content,
+                "metadata": metadata,
+            }
+        )
+
+    return pages
+
+
+async def _finalize_web_crawl_results(
+    results: List[Dict[str, Any]],
+    *,
+    debug_call_data: Dict[str, Any],
+    use_llm_processing: bool,
+    auxiliary_available: bool,
+    effective_model: Optional[str],
+    min_length: int,
+) -> str:
+    """Apply optional LLM processing, trim fields, and log crawl debug data."""
+    response = {"results": results}
+    pages_crawled = len(response.get("results", []))
+    logger.info("Crawled %d pages", pages_crawled)
+
+    debug_call_data["pages_crawled"] = pages_crawled
+    debug_call_data["original_response_size"] = len(json.dumps(response))
+
+    if use_llm_processing and auxiliary_available:
+        logger.info("Processing crawled content with LLM (parallel)...")
+        debug_call_data["processing_applied"].append("llm_processing")
+
+        async def process_single_crawl_result(result: Dict[str, Any]):
+            page_url = result.get("url", "Unknown URL")
+            title = result.get("title", "")
+            content = result.get("content", "")
+            if not content:
+                return result, None, "no_content"
+
+            original_size = len(content)
+            processed = await process_content_with_llm(
+                content,
+                page_url,
+                title,
+                effective_model,
+                min_length,
+            )
+            if processed:
+                result["raw_content"] = content
+                result["content"] = processed
+                metrics = {
+                    "url": page_url,
+                    "original_size": original_size,
+                    "processed_size": len(processed),
+                    "compression_ratio": len(processed) / original_size if original_size else 1.0,
+                    "model_used": effective_model,
+                }
+                return result, metrics, "processed"
+
+            metrics = {
+                "url": page_url,
+                "original_size": original_size,
+                "processed_size": original_size,
+                "compression_ratio": 1.0,
+                "model_used": None,
+                "reason": "content_too_short",
+            }
+            return result, metrics, "too_short"
+
+        tasks = [process_single_crawl_result(result) for result in response.get("results", [])]
+        processed_results = await asyncio.gather(*tasks, return_exceptions=True)
+        for result_item in processed_results:
+            if isinstance(result_item, BaseException):
+                logger.warning("Web crawl result processing task failed: %s", result_item)
+                continue
+            result, metrics, status = result_item
+            page_url = result.get("url", "Unknown URL")
+            if status == "processed":
+                debug_call_data["compression_metrics"].append(metrics)
+                debug_call_data["pages_processed_with_llm"] += 1
+                logger.info("%s (processed)", page_url)
+            elif status == "too_short":
+                debug_call_data["compression_metrics"].append(metrics)
+                logger.info("%s (no processing - content too short)", page_url)
+            else:
+                logger.warning("%s (no content to process)", page_url)
+    elif use_llm_processing and not auxiliary_available:
+        logger.warning("LLM processing requested but no auxiliary model available, returning raw content")
+        debug_call_data["processing_applied"].append("llm_processing_unavailable")
+
+    trimmed_results = [
+        {
+            "url": r.get("url", ""),
+            "title": r.get("title", ""),
+            "content": r.get("content", ""),
+            "error": r.get("error"),
+            **({"blocked_by_policy": r["blocked_by_policy"]} if "blocked_by_policy" in r else {}),
+        }
+        for r in response.get("results", [])
+    ]
+    result_json = json.dumps({"results": trimmed_results}, indent=2, ensure_ascii=False)
+    cleaned_result = clean_base64_images(result_json)
+
+    debug_call_data["final_response_size"] = len(cleaned_result)
+    debug_call_data["processing_applied"].append("base64_image_removal")
+    _debug.log_call("web_crawl_tool", debug_call_data)
+    _debug.save()
+    return cleaned_result
+
+
+async def web_crawl_tool(
+    url: str,
+    instructions: str = None,
+    depth: str = "basic",
+    use_llm_processing: bool = True,
+    model: Optional[str] = None,
+    min_length: int = DEFAULT_MIN_LENGTH_FOR_SUMMARIZATION,
+) -> str:
+    """Crawl a website using the configured crawl-capable web backend."""
+    debug_call_data = {
+        "parameters": {
+            "url": url,
+            "instructions": instructions,
+            "depth": depth,
+            "use_llm_processing": use_llm_processing,
+            "model": model,
+            "min_length": min_length,
+        },
+        "error": None,
+        "pages_crawled": 0,
+        "pages_processed_with_llm": 0,
+        "original_response_size": 0,
+        "final_response_size": 0,
+        "compression_metrics": [],
+        "processing_applied": [],
+    }
+
+    try:
+        effective_model = model or (_get_default_summarizer_model() if use_llm_processing else None)
+        auxiliary_available = check_auxiliary_model() if use_llm_processing else False
+        backend = _get_crawl_backend()
+
+        if not url.startswith(("http://", "https://")):
+            url = f"https://{url}"
+            logger.info("Added https:// prefix to URL: %s", url)
+
+        normalized_url = normalize_url_for_request(url)
+        if normalized_url != url:
+            url = normalized_url
+            debug_call_data["parameters"]["url"] = url
+
+        if not await async_is_safe_url(url):
+            return json.dumps(
+                {
+                    "results": [
+                        {
+                            "url": url,
+                            "title": "",
+                            "content": "",
+                            "error": "Blocked: URL targets a private or internal network address",
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            )
+
+        blocked = check_website_access(url)
+        if blocked:
+            logger.info("Blocked web_crawl for %s by rule %s", blocked["host"], blocked["rule"])
+            return json.dumps(
+                {
+                    "results": [
+                        {
+                            "url": url,
+                            "title": "",
+                            "content": "",
+                            "error": blocked["message"],
+                            "blocked_by_policy": {
+                                "host": blocked["host"],
+                                "rule": blocked["rule"],
+                                "source": blocked["source"],
+                            },
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            )
+
+        from tools.interrupt import is_interrupted as _is_int
+        if _is_int():
+            return tool_error("Interrupted", success=False)
+
+        if backend in ("searxng", "brave-free", "ddgs", "xai"):
+            label = {
+                "searxng": "SearXNG",
+                "brave-free": "Brave Search (free tier)",
+                "ddgs": "DuckDuckGo (ddgs)",
+                "xai": "xAI Web Search",
+            }[backend]
+            return json.dumps(
+                {
+                    "success": False,
+                    "error": (
+                        f"{label} is a search-only backend and cannot crawl URLs. "
+                        "Set web.crawl_backend to crawl4ai, firecrawl, or tavily."
+                    ),
+                },
+                ensure_ascii=False,
+            )
+
+        if backend in ("crawl4ai", _LOCAL_OSS_BACKEND):
+            if instructions:
+                logger.info(
+                    "Instructions parameter ignored for Crawl4AI crawl API; "
+                    "Hermes applies summarization after crawling"
+                )
+            logger.info("Crawl4AI crawl: %s (depth=%s)", url, depth)
+            results = await _crawl4ai_crawl(url, depth=depth)
+            return await _finalize_web_crawl_results(
+                results,
+                debug_call_data=debug_call_data,
+                use_llm_processing=use_llm_processing,
+                auxiliary_available=auxiliary_available,
+                effective_model=effective_model,
+                min_length=min_length,
+            )
+
+        if backend == "tavily":
+            logger.info("Tavily crawl: %s", url)
+            payload: Dict[str, Any] = {
+                "url": url,
+                "limit": 20,
+                "extract_depth": depth,
+            }
+            if instructions:
+                payload["instructions"] = instructions
+            raw = await asyncio.to_thread(_tavily_request, "crawl", payload)
+            results = _normalize_tavily_documents(raw, fallback_url=url)
+            return await _finalize_web_crawl_results(
+                results,
+                debug_call_data=debug_call_data,
+                use_llm_processing=use_llm_processing,
+                auxiliary_available=auxiliary_available,
+                effective_model=effective_model,
+                min_length=min_length,
+            )
+
+        if backend == "firecrawl":
+            if not check_firecrawl_api_key():
+                return json.dumps(
+                    {
+                        "success": False,
+                        "error": (
+                            "web_crawl requires Firecrawl. Set FIRECRAWL_API_KEY, "
+                            "FIRECRAWL_API_URL"
+                            f"{_firecrawl_backend_help_suffix()}, or use web_search + web_extract instead."
+                        ),
+                    },
+                    ensure_ascii=False,
+                )
+
+            if instructions:
+                logger.info("Instructions parameter ignored (not supported in Firecrawl crawl API)")
+            crawl_params = {
+                "limit": 20,
+                "scrape_options": {"formats": ["markdown"]},
+            }
+            logger.info("Firecrawl crawl: %s", url)
+            crawl_result = await asyncio.wait_for(
+                asyncio.to_thread(
+                    _get_firecrawl_client().crawl,
+                    url=url,
+                    **crawl_params,
+                ),
+                timeout=180,
+            )
+            results = _normalize_firecrawl_crawl_results(crawl_result)
+            return await _finalize_web_crawl_results(
+                results,
+                debug_call_data=debug_call_data,
+                use_llm_processing=use_llm_processing,
+                auxiliary_available=auxiliary_available,
+                effective_model=effective_model,
+                min_length=min_length,
+            )
+
+        return json.dumps(
+            {
+                "success": False,
+                "error": (
+                    f"web_crawl is not supported by the configured backend '{backend}'. "
+                    "Use Crawl4AI, Firecrawl, Tavily, or configure web.backend=local_oss."
+                ),
+            },
+            ensure_ascii=False,
+        )
+
+    except Exception as e:
+        error_msg = f"Error crawling website: {str(e)}"
+        logger.debug("%s", error_msg)
+
+        debug_call_data["error"] = error_msg
+        _debug.log_call("web_crawl_tool", debug_call_data)
+        _debug.save()
+
+        return tool_error(error_msg)
+
+
+def check_web_search_available() -> bool:
+    """Check whether the configured search backend is available."""
+    backend = _get_backend_for_capability("search")
+    return _backend_supports_capability(backend, "search") and _is_backend_available(backend)
+
+
+def check_web_extract_available() -> bool:
+    """Check whether the configured extraction backend is available."""
+    backend = _get_backend_for_capability("extract")
+    return _backend_supports_capability(backend, "extract") and _is_backend_available(backend)
+
+
+def check_web_crawl_available() -> bool:
+    """Check whether the configured crawl backend is available."""
+    backend = _get_backend_for_capability("crawl")
+    return _backend_supports_capability(backend, "crawl") and _is_backend_available(backend)
+
+
 def check_web_api_key() -> bool:
-    """Check whether the configured web backend is available."""
-    configured = _load_web_config().get("backend", "").lower().strip()
-    if configured in {"exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs", "xai"}:
+    """Check whether any configured web capability is available."""
+    configured = _normalize_backend_name(_load_web_config().get("backend"))
+    if configured in _KNOWN_WEB_BACKENDS:
         return _is_backend_available(configured)
     return any(
-        _is_backend_available(backend)
-        for backend in ("exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs", "xai")
+        (
+            check_web_search_available(),
+            check_web_extract_available(),
+            check_web_crawl_available(),
+        )
     )
 
 
@@ -1226,11 +1714,15 @@ if __name__ == "__main__":
         elif backend == "tavily":
             print("   Using Tavily API (https://tavily.com)")
         elif backend == "searxng":
-            print(f"   Using SearXNG (search only): {_env_value('SEARXNG_URL')}")
+            print(f"   Using SearXNG (search only): {_env_value('SEARXNG_API_URL') or _env_value('SEARXNG_URL')}")
         elif backend == "brave-free":
             print("   Using Brave Search free tier (search only)")
         elif backend == "ddgs":
             print("   Using DuckDuckGo via ddgs package (search only)")
+        elif backend == "crawl4ai":
+            print("   Using Crawl4AI (extract/crawl only)")
+        elif backend == _LOCAL_OSS_BACKEND:
+            print("   Using local OSS backend (SearXNG + Crawl4AI)")
         elif firecrawl_url_available:
             print(f"   Using self-hosted Firecrawl: {os.getenv('FIRECRAWL_API_URL').strip().rstrip('/')}")
         elif firecrawl_key_available:
@@ -1242,7 +1734,8 @@ if __name__ == "__main__":
     else:
         print("❌ No web search backend configured")
         print(
-            "Set EXA_API_KEY, PARALLEL_API_KEY, TAVILY_API_KEY, FIRECRAWL_API_KEY, FIRECRAWL_API_URL"
+            "Set EXA_API_KEY, PARALLEL_API_KEY, TAVILY_API_KEY, FIRECRAWL_API_KEY, "
+            "FIRECRAWL_API_URL, SEARXNG_API_URL, or CRAWL4AI_API_URL"
             f"{_firecrawl_backend_help_suffix()}"
         )
 
@@ -1353,6 +1846,31 @@ WEB_EXTRACT_SCHEMA = {
     }
 }
 
+WEB_CRAWL_SCHEMA = {
+    "name": "web_crawl",
+    "description": "Crawl a website and return page content in markdown format. Uses a crawl-capable backend such as Firecrawl, Tavily, Crawl4AI, or local_oss. Use this when you need multiple pages from the same site; for a single page, prefer web_extract.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "url": {
+                "type": "string",
+                "description": "Base website URL to crawl.",
+            },
+            "instructions": {
+                "type": "string",
+                "description": "Optional crawl/extraction instructions when supported by the backend.",
+            },
+            "depth": {
+                "type": "string",
+                "enum": ["basic", "advanced"],
+                "description": "Crawl depth. basic crawls shallowly; advanced allows one additional link depth.",
+                "default": "basic",
+            },
+        },
+        "required": ["url"],
+    },
+}
+
 registry.register(
     name="web_search",
     toolset="web",
@@ -1373,5 +1891,20 @@ registry.register(
     requires_env=_web_requires_env(),
     is_async=True,
     emoji="📄",
+    max_result_size_chars=100_000,
+)
+registry.register(
+    name="web_crawl",
+    toolset="web",
+    schema=WEB_CRAWL_SCHEMA,
+    handler=lambda args, **kw: web_crawl_tool(
+        args.get("url", ""),
+        instructions=args.get("instructions"),
+        depth=args.get("depth", "basic"),
+    ),
+    check_fn=check_web_api_key,
+    requires_env=_web_requires_env(),
+    is_async=True,
+    emoji="🕸️",
     max_result_size_chars=100_000,
 )

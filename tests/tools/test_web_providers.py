@@ -24,7 +24,7 @@ from tests.tools.conftest import register_all_web_providers
 class TestWebProviderABCs:
     """The unified WebSearchProvider ABC enforces the interface contract.
 
-    After PR #25182, all seven providers are subclasses of
+    After PR #25182, bundled providers are subclasses of
     :class:`agent.web_search_provider.WebSearchProvider`. The legacy
     in-tree ABCs at ``tools.web_providers.base`` (separate
     ``WebSearchProvider`` + ``WebExtractProvider``) were deleted in the
@@ -217,10 +217,12 @@ class TestDefaultConfig:
         assert "backend" in web
         assert "search_backend" in web
         assert "extract_backend" in web
+        assert "crawl_backend" in web
         # All empty string by default (no override)
         assert web["backend"] == ""
         assert web["search_backend"] == ""
         assert web["extract_backend"] == ""
+        assert web["crawl_backend"] == ""
 
 
 # ---------------------------------------------------------------------------

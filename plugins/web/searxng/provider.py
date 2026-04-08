@@ -15,9 +15,10 @@ Config keys this provider responds to::
       search_backend: "searxng"     # explicit per-capability
       backend: "searxng"            # shared fallback
 
-Env var::
+Env vars::
 
-    SEARXNG_URL=http://localhost:8080
+    SEARXNG_API_URL=http://localhost:8080  # preferred
+    SEARXNG_URL=http://localhost:8080      # legacy alias
 """
 
 from __future__ import annotations
@@ -32,16 +33,20 @@ logger = logging.getLogger(__name__)
 
 
 def _searxng_url() -> str:
-    """Return SEARXNG_URL from Hermes config-aware env, falling back to process env."""
-    try:
-        from hermes_cli.config import get_env_value
+    """Return the configured SearXNG URL, preferring ``SEARXNG_API_URL``."""
+    for key in ("SEARXNG_API_URL", "SEARXNG_URL"):
+        try:
+            from hermes_cli.config import get_env_value
 
-        val = get_env_value("SEARXNG_URL")
-    except Exception:
-        val = None
-    if val is None:
-        val = os.getenv("SEARXNG_URL", "")
-    return (val or "").strip()
+            val = get_env_value(key)
+        except Exception:
+            val = None
+        if val is None:
+            val = os.getenv(key, "")
+        val = (val or "").strip()
+        if val:
+            return val
+    return ""
 
 
 class SearXNGWebSearchProvider(WebSearchProvider):
@@ -56,7 +61,7 @@ class SearXNGWebSearchProvider(WebSearchProvider):
         return "SearXNG"
 
     def is_available(self) -> bool:
-        """Return True when ``SEARXNG_URL`` is set."""
+        """Return True when a SearXNG URL is configured."""
         return bool(_searxng_url())
 
     def supports_search(self) -> bool:
@@ -71,7 +76,7 @@ class SearXNGWebSearchProvider(WebSearchProvider):
 
         base_url = _searxng_url().rstrip("/")
         if not base_url:
-            return {"success": False, "error": "SEARXNG_URL is not set"}
+            return {"success": False, "error": "SEARXNG_API_URL or SEARXNG_URL is not set"}
 
         params: Dict[str, Any] = {
             "q": query,
@@ -145,7 +150,7 @@ class SearXNGWebSearchProvider(WebSearchProvider):
             "tag": "Free, privacy-respecting metasearch. Point SEARXNG_URL at your instance.",
             "env_vars": [
                 {
-                    "key": "SEARXNG_URL",
+                    "key": "SEARXNG_API_URL",
                     "prompt": "SearXNG instance URL (e.g. http://localhost:8080)",
                     "url": "https://searx.space/",
                 },

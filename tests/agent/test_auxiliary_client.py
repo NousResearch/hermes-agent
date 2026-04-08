@@ -737,8 +737,8 @@ class TestAuxiliaryPoolAwareness:
         assert client is not None
         assert client.__class__.__name__ == "AnthropicAuxiliaryClient"
 
-    def test_vision_auto_prefers_openrouter_over_active_provider(self, monkeypatch):
-        """OpenRouter is tried before the active provider in vision auto."""
+    def test_vision_auto_prefers_active_provider_over_openrouter(self, monkeypatch):
+        """Active provider is tried before OpenRouter in vision auto."""
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
         monkeypatch.setenv("ANTHROPIC_API_KEY", "***")
 
@@ -746,12 +746,13 @@ class TestAuxiliaryPoolAwareness:
             patch("agent.auxiliary_client._read_nous_auth", return_value=None),
             patch("agent.auxiliary_client._read_main_provider", return_value="anthropic"),
             patch("agent.auxiliary_client._read_main_model", return_value="claude-sonnet-4"),
-            patch("agent.auxiliary_client.OpenAI") as mock_openai,
+            patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
+            patch("agent.anthropic_adapter.resolve_anthropic_token", return_value="***"),
         ):
             provider, client, model = resolve_vision_provider_client()
 
-        # OpenRouter should win over anthropic active provider
-        assert provider == "openrouter"
+        # Active provider should win over OpenRouter
+        assert provider == "anthropic"
 
     def test_vision_auto_uses_named_custom_as_active_provider(self, monkeypatch):
         """Named custom provider works as active provider fallback in vision auto."""

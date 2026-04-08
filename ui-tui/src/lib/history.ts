@@ -70,10 +70,12 @@ export function append(line: string): void {
     }
 
     const ts = new Date().toISOString().replace('T', ' ').replace('Z', '')
+
     const encoded = trimmed
       .split('\n')
       .map(l => '+' + l)
       .join('\n')
+
     appendFileSync(file, `\n# ${ts}\n${encoded}\n`)
   } catch {
     /* ignore */

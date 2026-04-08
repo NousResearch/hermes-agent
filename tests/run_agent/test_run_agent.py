@@ -138,6 +138,48 @@ def test_aiagent_reuses_existing_errors_log_handler():
             root_logger.addHandler(handler)
 
 
+class TestProviderModelNormalization:
+    def test_aiagent_strips_matching_native_provider_prefix(self):
+        with (
+            patch(
+                "run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")
+            ),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+        ):
+            agent = AIAgent(
+                model="zai/glm-5.1",
+                provider="zai",
+                base_url="https://api.z.ai/api/paas/v4",
+                api_key="test-key-1234567890",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+        assert agent.model == "glm-5.1"
+
+    def test_aiagent_keeps_aggregator_vendor_slug(self):
+        with (
+            patch(
+                "run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")
+            ),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+        ):
+            agent = AIAgent(
+                model="anthropic/claude-sonnet-4.6",
+                provider="openrouter",
+                base_url="https://openrouter.ai/api/v1",
+                api_key="test-key-1234567890",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+        assert agent.model == "anthropic/claude-sonnet-4.6"
+
+
 # ---------------------------------------------------------------------------
 # Helper to build mock assistant messages (API response objects)
 # ---------------------------------------------------------------------------

@@ -45,6 +45,20 @@ Already up to date.  (or: Updating abc1234..def5678)
 ✅ Hermes Agent updated successfully!
 ```
 
+### Recommended Post-Update Validation
+
+`hermes update` handles the main update path, but a quick validation confirms everything landed cleanly:
+
+1. `git status --short` — if the tree is unexpectedly dirty, inspect before continuing
+2. `hermes doctor` — checks config, dependencies, and service health
+3. `hermes --version` — confirm the version bumped as expected
+4. If you use the gateway: `hermes gateway status`
+5. If `doctor` reports npm audit issues: run `npm audit fix` in the flagged directory
+
+:::warning Dirty working tree after update
+If `git status --short` shows unexpected changes after `hermes update`, stop and inspect them before continuing. This usually means local modifications were reapplied on top of the updated code, or a dependency step refreshed lockfiles.
+:::
+
 ### Checking your current version
 
 ```bash

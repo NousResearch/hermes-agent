@@ -276,6 +276,33 @@ class TestSendMessageTool:
             thread_id=None,
         )
 
+    def test_top_level_send_failure_redacts_query_token(self):
+        config, _telegram_cfg = _make_config()
+        leaked = "very-secret-query-token-123456"
+
+        def _raise_and_close(coro):
+            coro.close()
+            raise RuntimeError(
+                f"transport error: https://api.example.com/send?access_token={leaked}"
+            )
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_raise_and_close):
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "telegram:-1001",
+                        "message": "hello",
+                    }
+                )
+            )
+
+        assert "error" in result
+        assert leaked not in result["error"]
+        assert "access_token=***" in result["error"]
+
 
 class TestSendTelegramMediaDelivery:
     def test_sends_text_then_photo_for_media_tag(self, tmp_path, monkeypatch):

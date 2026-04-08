@@ -20,7 +20,6 @@ Config (env vars or hermes config.yaml under retaindb:):
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import os
@@ -35,6 +34,7 @@ from typing import Any, Dict, List
 from urllib.parse import quote
 
 from agent.memory_provider import MemoryProvider
+from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
 
@@ -189,7 +189,7 @@ class _Client:
             "Content-Type": "application/json",
             "x-sdk-runtime": "hermes-plugin",
         }
-        if path.startswith("/v1/memory") or path.startswith("/v1/context"):
+        if path.startswith(("/v1/memory", "/v1/context")):
             h["X-API-Key"] = token
         return h
 
@@ -505,7 +505,8 @@ class RetainDBMemoryProvider(MemoryProvider):
         self._user_id = kwargs.get("user_id", "default") or "default"
         self._agent_id = kwargs.get("agent_id", "hermes") or "hermes"
 
-        hermes_home_path = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
+        from hermes_constants import get_hermes_home
+        hermes_home_path = get_hermes_home()
         db_path = hermes_home_path / "retaindb_queue.db"
         self._queue = _WriteQueue(self._client, db_path)
 
@@ -649,11 +650,11 @@ class RetainDBMemoryProvider(MemoryProvider):
 
     def handle_tool_call(self, tool_name: str, args: dict, **kwargs) -> str:
         if not self._client:
-            return json.dumps({"error": "RetainDB not initialized"})
+            return tool_error("RetainDB not initialized")
         try:
             return json.dumps(self._dispatch(tool_name, args))
         except Exception as exc:
-            return json.dumps({"error": str(exc)})
+            return tool_error(str(exc))
 
     def _dispatch(self, tool_name: str, args: dict) -> Any:
         c = self._client

@@ -43,7 +43,7 @@ import threading
 import webbrowser
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 logger = logging.getLogger(__name__)
@@ -54,7 +54,7 @@ logger = logging.getLogger(__name__)
 
 _OAUTH_AVAILABLE = False
 try:
-    from mcp.client.auth import OAuthClientProvider, TokenStorage
+    from mcp.client.auth import OAuthClientProvider
     from mcp.shared.auth import (
         OAuthClientInformationFull,
         OAuthClientMetadata,
@@ -320,7 +320,6 @@ async def _wait_for_callback() -> tuple[str, str | None]:
         OAuthNonInteractiveError: If the callback times out (no user present
             to complete the browser auth).
     """
-    global _oauth_port
     assert _oauth_port is not None, "OAuth callback port not set"
 
     # The callback server is already running (started in build_oauth_auth).

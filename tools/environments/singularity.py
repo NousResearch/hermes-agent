@@ -11,11 +11,10 @@ import os
 import shlex
 import shutil
 import subprocess
-import tempfile
 import threading
 import uuid
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Dict, Optional
 
 from hermes_constants import get_hermes_home
 from tools.environments.base import BaseEnvironment

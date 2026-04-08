@@ -37,7 +37,13 @@ on CLI, Telegram, Discord, or any platform.
 Define a shorthand first:
 
 ```bash
-GSETUP="python ~/.hermes/skills/productivity/google-workspace/scripts/setup.py"
+HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
+GWORKSPACE_SKILL_DIR="$HERMES_HOME/skills/productivity/google-workspace"
+PYTHON_BIN="${HERMES_PYTHON:-python3}"
+if [ -x "$HERMES_HOME/hermes-agent/venv/bin/python" ]; then
+  PYTHON_BIN="$HERMES_HOME/hermes-agent/venv/bin/python"
+fi
+GSETUP="$PYTHON_BIN $GWORKSPACE_SKILL_DIR/scripts/setup.py"
 ```
 
 ### Step 0: Check if already set up
@@ -135,7 +141,13 @@ Should print `AUTHENTICATED`. Setup is complete — token refreshes automaticall
 All commands go through the API script. Set `GAPI` as a shorthand:
 
 ```bash
-GAPI="python ~/.hermes/skills/productivity/google-workspace/scripts/google_api.py"
+HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
+GWORKSPACE_SKILL_DIR="$HERMES_HOME/skills/productivity/google-workspace"
+PYTHON_BIN="${HERMES_PYTHON:-python3}"
+if [ -x "$HERMES_HOME/hermes-agent/venv/bin/python" ]; then
+  PYTHON_BIN="$HERMES_HOME/hermes-agent/venv/bin/python"
+fi
+GAPI="$PYTHON_BIN $GWORKSPACE_SKILL_DIR/scripts/google_api.py"
 ```
 
 ### Gmail

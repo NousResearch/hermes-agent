@@ -36,8 +36,9 @@ import sys
 import types
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, List, Optional, Set, Union
 
+from hermes_constants import get_hermes_home
 from utils import env_var_enabled
 
 try:
@@ -60,6 +61,8 @@ VALID_HOOKS: Set[str] = {
     "post_api_request",
     "on_session_start",
     "on_session_end",
+    "on_session_finalize",
+    "on_session_reset",
 }
 
 ENTRY_POINTS_GROUP = "hermes_agent.plugins"
@@ -95,7 +98,7 @@ class PluginManifest:
     version: str = ""
     description: str = ""
     author: str = ""
-    requires_env: List[str] = field(default_factory=list)
+    requires_env: List[Union[str, Dict[str, Any]]] = field(default_factory=list)
     provides_tools: List[str] = field(default_factory=list)
     provides_hooks: List[str] = field(default_factory=list)
     source: str = ""        # "user", "project", or "entrypoint"
@@ -258,8 +261,7 @@ class PluginManager:
         manifests: List[PluginManifest] = []
 
         # 1. User plugins (~/.hermes/plugins/)
-        hermes_home = os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes"))
-        user_dir = Path(hermes_home) / "plugins"
+        user_dir = get_hermes_home() / "plugins"
         manifests.extend(self._scan_directory(user_dir, source="user"))
 
         # 2. Project plugins (./.hermes/plugins/)

@@ -314,6 +314,29 @@ class TestSendDingtalk:
         assert "error" in result
         assert "DingTalk send failed" in result["error"]
 
+    def test_http_error_redacts_access_token_in_exception_text(self):
+        token = "supersecret-access-token-123456789"
+        resp = self._make_httpx_resp(status_code=401)
+        resp.raise_for_status = MagicMock(
+            side_effect=Exception(
+                f"POST https://oapi.dingtalk.com/robot/send?access_token={token} returned 401"
+            )
+        )
+        client_ctx, _ = self._make_httpx_client(resp)
+
+        with patch("httpx.AsyncClient", return_value=client_ctx):
+            result = asyncio.run(
+                _send_dingtalk(
+                    {"webhook_url": f"https://oapi.dingtalk.com/robot/send?access_token={token}"},
+                    "ch",
+                    "hi",
+                )
+            )
+
+        assert "error" in result
+        assert token not in result["error"]
+        assert "access_token=***" in result["error"]
+
     def test_missing_config(self):
         with patch.dict(os.environ, {"DINGTALK_WEBHOOK_URL": ""}, clear=False):
             result = asyncio.run(_send_dingtalk({}, "ch", "hi"))

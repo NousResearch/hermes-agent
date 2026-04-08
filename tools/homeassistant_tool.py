@@ -221,22 +221,22 @@ def _handle_list_entities(args: dict, **kw) -> str:
         return json.dumps({"result": result})
     except Exception as e:
         logger.error("ha_list_entities error: %s", e)
-        return json.dumps({"error": f"Failed to list entities: {e}"})
+        return tool_error(f"Failed to list entities: {e}")
 
 
 def _handle_get_state(args: dict, **kw) -> str:
     """Handler for ha_get_state tool."""
     entity_id = args.get("entity_id", "")
     if not entity_id:
-        return json.dumps({"error": "Missing required parameter: entity_id"})
+        return tool_error("Missing required parameter: entity_id")
     if not _ENTITY_ID_RE.match(entity_id):
-        return json.dumps({"error": f"Invalid entity_id format: {entity_id}"})
+        return tool_error(f"Invalid entity_id format: {entity_id}")
     try:
         result = _run_async(_async_get_state(entity_id))
         return json.dumps({"result": result})
     except Exception as e:
         logger.error("ha_get_state error: %s", e)
-        return json.dumps({"error": f"Failed to get state for {entity_id}: {e}"})
+        return tool_error(f"Failed to get state for {entity_id}: {e}")
 
 
 def _handle_call_service(args: dict, **kw) -> str:
@@ -244,7 +244,7 @@ def _handle_call_service(args: dict, **kw) -> str:
     domain = args.get("domain", "")
     service = args.get("service", "")
     if not domain or not service:
-        return json.dumps({"error": "Missing required parameters: domain and service"})
+        return tool_error("Missing required parameters: domain and service")
 
     if domain in _BLOCKED_DOMAINS:
         return json.dumps({
@@ -254,7 +254,7 @@ def _handle_call_service(args: dict, **kw) -> str:
 
     entity_id = args.get("entity_id")
     if entity_id and not _ENTITY_ID_RE.match(entity_id):
-        return json.dumps({"error": f"Invalid entity_id format: {entity_id}"})
+        return tool_error(f"Invalid entity_id format: {entity_id}")
 
     data = args.get("data")
     try:
@@ -262,7 +262,7 @@ def _handle_call_service(args: dict, **kw) -> str:
         return json.dumps({"result": result})
     except Exception as e:
         logger.error("ha_call_service error: %s", e)
-        return json.dumps({"error": f"Failed to call {domain}.{service}: {e}"})
+        return tool_error(f"Failed to call {domain}.{service}: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -311,7 +311,7 @@ def _handle_list_services(args: dict, **kw) -> str:
         return json.dumps({"result": result})
     except Exception as e:
         logger.error("ha_list_services error: %s", e)
-        return json.dumps({"error": f"Failed to list services: {e}"})
+        return tool_error(f"Failed to list services: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -451,7 +451,7 @@ HA_CALL_SERVICE_SCHEMA = {
 # Registration
 # ---------------------------------------------------------------------------
 
-from tools.registry import registry
+from tools.registry import registry, tool_error
 
 registry.register(
     name="ha_list_entities",

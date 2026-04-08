@@ -136,8 +136,11 @@ class TestCodeExecutionTZ:
     """Verify TZ env var is passed to sandboxed child process via real execute_code."""
 
     @pytest.fixture(autouse=True)
-    def _import_execute_code(self):
+    def _import_execute_code(self, monkeypatch):
         """Lazy-import execute_code to avoid pulling in firecrawl at collection time."""
+        # Force local backend — other tests in the same xdist worker may leak
+        # TERMINAL_ENV=modal/docker which causes modal.exception.AuthError.
+        monkeypatch.setenv("TERMINAL_ENV", "local")
         try:
             from tools.code_execution_tool import execute_code
             self._execute_code = execute_code

@@ -700,6 +700,147 @@ class TestReactions:
 
 
 # ---------------------------------------------------------------------------
+# TestThreadReplyHandling
+# ---------------------------------------------------------------------------
+
+
+class TestThreadReplyHandling:
+    """Test thread reply processing without explicit bot mentions."""
+
+    @pytest.fixture()
+    def mock_session_store(self):
+        """Create a mock session store with entries dict."""
+        store = MagicMock()
+        store._entries = {}
+        store._ensure_loaded = MagicMock()
+        store.config = MagicMock()
+        store.config.group_sessions_per_user = True
+        return store
+
+    @pytest.fixture()
+    def adapter_with_session_store(self, mock_session_store):
+        """Create an adapter with a mock session store attached."""
+        config = PlatformConfig(enabled=True, token="***")
+        a = SlackAdapter(config)
+        a._app = MagicMock()
+        a._app.client = AsyncMock()
+        a._bot_user_id = "U_BOT"
+        a._team_bot_user_ids = {"T_TEAM": "U_BOT"}
+        a._running = True
+        a.handle_message = AsyncMock()
+        a.set_session_store(mock_session_store)
+        return a
+
+    @pytest.mark.asyncio
+    async def test_thread_reply_without_mention_no_session_ignored(
+        self, adapter_with_session_store, mock_session_store
+    ):
+        """Thread replies without mention should be ignored if no active session."""
+        mock_session_store._entries = {}  # No active sessions
+
+        event = {
+            "text": "Just replying in the thread",
+            "user": "U_USER",
+            "channel": "C123",
+            "ts": "123.456",
+            "thread_ts": "123.000",  # Different from ts - this is a reply
+            "channel_type": "channel",
+            "team": "T_TEAM",
+        }
+        await adapter_with_session_store._handle_slack_message(event)
+        adapter_with_session_store.handle_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_thread_reply_without_mention_with_session_processed(
+        self, adapter_with_session_store, mock_session_store
+    ):
+        """Thread replies without mention should be processed if there's an active session."""
+        # Simulate an active session for this thread
+        session_key = "agent:main:slack:group:C123:123.000:U_USER"
+        mock_session_store._entries = {session_key: MagicMock()}
+
+        event = {
+            "text": "Follow-up question",
+            "user": "U_USER",
+            "channel": "C123",
+            "ts": "123.456",
+            "thread_ts": "123.000",  # Reply in thread 123.000
+            "channel_type": "channel",
+            "team": "T_TEAM",
+        }
+        await adapter_with_session_store._handle_slack_message(event)
+        adapter_with_session_store.handle_message.assert_called_once()
+
+        # Verify the text is passed through unchanged (no mention stripping needed)
+        msg_event = adapter_with_session_store.handle_message.call_args[0][0]
+        assert msg_event.text == "Follow-up question"
+
+    @pytest.mark.asyncio
+    async def test_thread_reply_with_mention_strips_bot_id(
+        self, adapter_with_session_store, mock_session_store
+    ):
+        """Thread replies with @mention should still strip the bot ID."""
+        # Even with a session, mentions should be stripped
+        session_key = "agent:main:slack:group:C123:123.000:U_USER"
+        mock_session_store._entries = {session_key: MagicMock()}
+
+        event = {
+            "text": "<@U_BOT> thanks for the help",
+            "user": "U_USER",
+            "channel": "C123",
+            "ts": "123.456",
+            "thread_ts": "123.000",
+            "channel_type": "channel",
+            "team": "T_TEAM",
+        }
+        await adapter_with_session_store._handle_slack_message(event)
+        adapter_with_session_store.handle_message.assert_called_once()
+
+        msg_event = adapter_with_session_store.handle_message.call_args[0][0]
+        assert "<@U_BOT>" not in msg_event.text
+        assert msg_event.text == "thanks for the help"
+
+    @pytest.mark.asyncio
+    async def test_top_level_message_requires_mention_even_with_session(
+        self, adapter_with_session_store, mock_session_store
+    ):
+        """Top-level channel messages should require mention even if session exists."""
+        # Session exists but this is a top-level message (no thread_ts)
+        session_key = "agent:main:slack:group:C123:123.000:U_USER"
+        mock_session_store._entries = {session_key: MagicMock()}
+
+        event = {
+            "text": "New question without mention",
+            "user": "U_USER",
+            "channel": "C123",
+            "ts": "456.789",
+            # No thread_ts - this is a top-level message
+            "channel_type": "channel",
+            "team": "T_TEAM",
+        }
+        await adapter_with_session_store._handle_slack_message(event)
+        adapter_with_session_store.handle_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_no_session_store_ignores_thread_replies(
+        self, adapter
+    ):
+        """If no session store is attached, thread replies without mention should be ignored."""
+        # adapter fixture has no session store attached
+        event = {
+            "text": "Thread reply without mention",
+            "user": "U_USER",
+            "channel": "C123",
+            "ts": "123.456",
+            "thread_ts": "123.000",
+            "channel_type": "channel",
+            "team": "T_TEAM",
+        }
+        await adapter._handle_slack_message(event)
+        adapter.handle_message.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
 # TestUserNameResolution
 # ---------------------------------------------------------------------------
 

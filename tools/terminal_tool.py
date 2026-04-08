@@ -142,12 +142,6 @@ from tools.approval import (
 )
 
 
-def _check_dangerous_command(command: str, env_type: str) -> dict:
-    """Delegate to the consolidated approval module, passing the CLI callback."""
-    return _check_dangerous_command_impl(command, env_type,
-                                         approval_callback=_approval_callback)
-
-
 def _check_all_guards(command: str, env_type: str) -> dict:
     """Delegate to consolidated guard (tirith + dangerous cmd) with CLI callback."""
     return _check_all_guards_impl(command, env_type,
@@ -421,9 +415,11 @@ Do NOT use sed/awk to edit files — use patch instead.
 Do NOT use echo/cat heredoc to create files — use write_file instead.
 Reserve terminal for: builds, installs, git, processes, scripts, network, package managers, and anything that needs a shell.
 
-Foreground (default): Commands return INSTANTLY when done, even if the timeout is high. Set timeout=300 for long builds/scripts — you'll still get the result in seconds if it's fast. Prefer foreground for everything that finishes.
-Background: ONLY for long-running servers, watchers, or processes that never exit. Set background=true to get a session_id, then use process(action="wait") to block until done — it returns instantly on completion, same as foreground. Use process(action="poll") only when you need a progress check without blocking.
-Do NOT use background for scripts, builds, or installs — foreground with a generous timeout is always better (fewer tool calls, instant results).
+Foreground (default): Commands return INSTANTLY when done, even if the timeout is high. Set timeout=300 for long builds/scripts — you'll still get the result in seconds if it's fast. Prefer foreground for short commands.
+Background: Set background=true to get a session_id. Two patterns:
+  (1) Long-lived processes that never exit (servers, watchers).
+  (2) Long-running tasks with notify_on_complete=true — you can keep working on other things and the system auto-notifies you when the task finishes. Great for test suites, builds, deployments, or anything that takes more than a minute.
+Use process(action="poll") for progress checks, process(action="wait") to block until done.
 Working directory: Use 'workdir' for per-command cwd.
 PTY mode: Set pty=true for interactive CLI tools (Codex, Claude Code, Python REPL).
 
@@ -718,8 +714,6 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
 
 def _cleanup_inactive_envs(lifetime_seconds: int = 300):
     """Clean up environments that have been inactive for longer than lifetime_seconds."""
-    global _active_environments, _last_activity
-
     current_time = time.time()
 
     # Check the process registry -- skip cleanup for sandboxes with active
@@ -782,8 +776,6 @@ def _cleanup_inactive_envs(lifetime_seconds: int = 300):
 
 def _cleanup_thread_worker():
     """Background thread worker that periodically cleans up inactive environments."""
-    global _cleanup_running
-
     while _cleanup_running:
         try:
             config = _get_env_config()
@@ -819,6 +811,12 @@ def _stop_cleanup_thread():
             pass
 
 
+def get_active_env(task_id: str):
+    """Return the active BaseEnvironment for *task_id*, or None."""
+    with _env_lock:
+        return _active_environments.get(task_id)
+
+
 def get_active_environments_info() -> Dict[str, Any]:
     """Get information about currently active environments."""
     info = {
@@ -829,7 +827,7 @@ def get_active_environments_info() -> Dict[str, Any]:
     
     # Calculate total disk usage (per-task to avoid double-counting)
     total_size = 0
-    for task_id in _active_environments.keys():
+    for task_id in _active_environments:
         scratch_dir = _get_scratch_dir()
         pattern = f"hermes-*{task_id[:8]}*"
         import glob
@@ -846,8 +844,6 @@ def get_active_environments_info() -> Dict[str, Any]:
 
 def cleanup_all_environments():
     """Clean up ALL active environments. Use with caution."""
-    global _active_environments, _last_activity
-    
     task_ids = list(_active_environments.keys())
     cleaned = 0
     
@@ -875,8 +871,6 @@ def cleanup_all_environments():
 
 def cleanup_vm(task_id: str):
     """Manually clean up a specific environment by task_id."""
-    global _active_environments, _last_activity
-
     # Remove from tracking dicts while holding the lock, but defer the
     # actual (potentially slow) env.cleanup() call to outside the lock
     # so other tool calls aren't blocked.
@@ -1009,6 +1003,7 @@ def terminal_tool(
     workdir: Optional[str] = None,
     check_interval: Optional[int] = None,
     pty: bool = False,
+    notify_on_complete: bool = False,
 ) -> str:
     """
     Execute a command in the configured terminal environment.
@@ -1022,6 +1017,7 @@ def terminal_tool(
         workdir: Working directory for this command (optional, uses session cwd if not set)
         check_interval: Seconds between auto-checks for background processes (gateway only, min 30)
         pty: If True, use pseudo-terminal for interactive CLI tools (local backend only)
+        notify_on_complete: If True and background=True, auto-notify the agent when the process exits
 
     Returns:
         str: JSON string with output, exit_code, and error fields
@@ -1039,8 +1035,6 @@ def terminal_tool(
         # Force run after user confirmation
         # Note: force parameter is internal only, not exposed to model API
     """
-    global _active_environments, _last_activity
-
     try:
         # Get configuration
         config = _get_env_config()
@@ -1253,6 +1247,32 @@ def terminal_tool(
                         f"Requested timeout {timeout}s was clamped to "
                         f"configured limit of {max_timeout}s"
                     )
+
+                # Mark for agent notification on completion
+                if notify_on_complete and background:
+                    proc_session.notify_on_complete = True
+                    result_data["notify_on_complete"] = True
+
+                    # In gateway mode, auto-register a fast watcher so the
+                    # gateway can detect completion and trigger a new agent
+                    # turn.  CLI mode uses the completion_queue directly.
+                    _gw_platform = os.getenv("HERMES_SESSION_PLATFORM", "")
+                    if _gw_platform and not check_interval:
+                        _gw_chat_id = os.getenv("HERMES_SESSION_CHAT_ID", "")
+                        _gw_thread_id = os.getenv("HERMES_SESSION_THREAD_ID", "")
+                        proc_session.watcher_platform = _gw_platform
+                        proc_session.watcher_chat_id = _gw_chat_id
+                        proc_session.watcher_thread_id = _gw_thread_id
+                        proc_session.watcher_interval = 5
+                        process_registry.pending_watchers.append({
+                            "session_id": proc_session.id,
+                            "check_interval": 5,
+                            "session_key": session_key,
+                            "platform": _gw_platform,
+                            "chat_id": _gw_chat_id,
+                            "thread_id": _gw_thread_id,
+                            "notify_on_complete": True,
+                        })
 
                 # Register check_interval watcher (gateway picks this up after agent run)
                 if check_interval and background:
@@ -1550,7 +1570,7 @@ TERMINAL_SCHEMA = {
             },
             "background": {
                 "type": "boolean",
-                "description": "ONLY for servers/watchers that never exit. For scripts, builds, installs — use foreground with timeout instead (it returns instantly when done).",
+                "description": "Run the command in the background. Two patterns: (1) Long-lived processes that never exit (servers, watchers). (2) Long-running tasks paired with notify_on_complete=true — you can keep working and get notified when the task finishes. For short commands, prefer foreground with a generous timeout instead.",
                 "default": False
             },
             "timeout": {
@@ -1571,6 +1591,11 @@ TERMINAL_SCHEMA = {
                 "type": "boolean",
                 "description": "Run in pseudo-terminal (PTY) mode for interactive CLI tools like Codex, Claude Code, or Python REPL. Only works with local and SSH backends. Default: false.",
                 "default": False
+            },
+            "notify_on_complete": {
+                "type": "boolean",
+                "description": "When true (and background=true), you'll be automatically notified when the process finishes — no polling needed. Use this for tasks that take a while (tests, builds, deployments) so you can keep working on other things in the meantime.",
+                "default": False
             }
         },
         "required": ["command"]
@@ -1587,6 +1612,7 @@ def _handle_terminal(args, **kw):
         workdir=args.get("workdir"),
         check_interval=args.get("check_interval"),
         pty=args.get("pty", False),
+        notify_on_complete=args.get("notify_on_complete", False),
     )
 
 
@@ -1597,4 +1623,5 @@ registry.register(
     handler=_handle_terminal,
     check_fn=check_terminal_requirements,
     emoji="💻",
+    max_result_size_chars=100_000,
 )

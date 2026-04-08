@@ -23,6 +23,16 @@ from typing import Any, Optional
 _GATEWAY_KIND = "hermes-gateway"
 _RUNTIME_STATUS_FILE = "gateway_state.json"
 _LOCKS_DIRNAME = "gateway-locks"
+_PID_LIVENESS_ERRORS = (ProcessLookupError, PermissionError, OSError, SystemError)
+
+
+def _pid_is_alive(pid: int) -> bool:
+    """Best-effort cross-platform liveness probe for a PID."""
+    try:
+        os.kill(pid, 0)
+        return True
+    except _PID_LIVENESS_ERRORS:
+        return False
 
 
 def _get_pid_path() -> Path:
@@ -263,9 +273,7 @@ def acquire_scoped_lock(scope: str, identity: str, metadata: Optional[dict[str, 
 
         stale = existing_pid is None
         if not stale:
-            try:
-                os.kill(existing_pid, 0)
-            except (ProcessLookupError, PermissionError):
+            if not _pid_is_alive(existing_pid):
                 stale = True
             else:
                 current_start = _get_process_start_time(existing_pid)
@@ -366,9 +374,7 @@ def get_running_pid() -> Optional[int]:
         remove_pid_file()
         return None
 
-    try:
-        os.kill(pid, 0)  # signal 0 = existence check, no actual signal sent
-    except (ProcessLookupError, PermissionError):
+    if not _pid_is_alive(pid):
         remove_pid_file()
         return None
 

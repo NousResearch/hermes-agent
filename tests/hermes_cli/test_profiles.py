@@ -758,6 +758,17 @@ class TestEdgeCases:
         with patch("os.kill", return_value=None):
             assert _check_gateway_running(default_home) is True
 
+    def test_gateway_running_check_windows_systemerror(self, profile_env):
+        """Windows-style SystemError from os.kill should be treated as not running."""
+        from hermes_cli.profiles import _check_gateway_running
+        tmp_path = profile_env
+        default_home = tmp_path / ".hermes"
+        pid_file = default_home / "gateway.pid"
+        pid_file.write_text(json.dumps({"pid": 12345}))
+
+        with patch("os.kill", side_effect=SystemError("windows kill wrapper failure")):
+            assert _check_gateway_running(default_home) is False
+
     def test_profile_name_boundary_single_char(self):
         """Single alphanumeric character is valid."""
         validate_profile_name("a")

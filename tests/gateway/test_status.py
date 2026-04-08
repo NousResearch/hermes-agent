@@ -62,6 +62,27 @@ class TestGatewayPidState:
 
         assert status.get_running_pid() == os.getpid()
 
+    def test_pid_is_alive_handles_windows_systemerror(self, monkeypatch):
+        def fake_kill(pid, sig):
+            raise SystemError("<built-in function kill> returned a result with an exception set")
+
+        monkeypatch.setattr(status.os, "kill", fake_kill)
+
+        assert status._pid_is_alive(12345) is False
+
+    def test_get_running_pid_removes_pid_file_on_windows_systemerror(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        pid_path = tmp_path / "gateway.pid"
+        pid_path.write_text(json.dumps({"pid": 12345}))
+
+        def fake_kill(pid, sig):
+            raise SystemError("windows kill wrapper failure")
+
+        monkeypatch.setattr(status.os, "kill", fake_kill)
+
+        assert status.get_running_pid() is None
+        assert not pid_path.exists()
+
 
 class TestGatewayRuntimeStatus:
     def test_write_runtime_status_overwrites_stale_pid_on_restart(self, tmp_path, monkeypatch):

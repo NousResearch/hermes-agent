@@ -1314,9 +1314,15 @@ export function App({ gw }: { gw: GatewayClient }) {
           return true
 
         case 'personality':
-          rpc('config.set', { key: 'personality', value: arg }).then((r: any) =>
-            sys(`personality: ${r.value || 'default'}`)
-          )
+          if (arg) {
+            rpc('config.set', { key: 'personality', value: arg }).then((r: any) =>
+              sys(`personality: ${r.value || 'default'}`)
+            )
+          } else {
+            gw.request('slash.exec', { command: 'personality', session_id: sid })
+              .then((r: any) => sys(r?.output || '(no output)'))
+              .catch(() => sys('personality command failed'))
+          }
 
           return true
 

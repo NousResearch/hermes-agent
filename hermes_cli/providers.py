@@ -94,6 +94,12 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         transport="openai_chat",
         base_url_env_var="KIMI_BASE_URL",
     ),
+    "stepfun": HermesOverlay(
+        transport="openai_chat",
+        extra_env_vars=("STEPFUN_API_KEY",),
+        base_url_override="https://api.stepfun.ai/step_plan/v1",
+        base_url_env_var="STEPFUN_BASE_URL",
+    ),
     "minimax": HermesOverlay(
         transport="anthropic_messages",
         base_url_env_var="MINIMAX_BASE_URL",
@@ -209,6 +215,9 @@ ALIASES: Dict[str, str] = {
     "kimi-coding": "kimi-for-coding",
     "kimi-coding-cn": "kimi-for-coding",
     "moonshot": "kimi-for-coding",
+    "step": "stepfun",
+    "step-fun": "stepfun",
+    "stepfun-coding-plan": "stepfun",
 
     # minimax-cn
     "minimax-china": "minimax-cn",
@@ -294,6 +303,8 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "nous": "Nous Portal",
     "openai-codex": "OpenAI Codex",
     "copilot-acp": "GitHub Copilot ACP",
+    "xiaomi": "Xiaomi MiMo",
+    "stepfun": "StepFun Coding Plan",
     "xiaomi": "Xiaomi MiMo",
     "local": "Local endpoint",
     "bedrock": "AWS Bedrock",
@@ -407,9 +418,6 @@ def get_label(provider_id: str) -> str:
         return pdef.name
 
     return canonical
-
-
-
 
 def is_aggregator(provider: str) -> bool:
     """Return True when the provider is a multi-model aggregator."""

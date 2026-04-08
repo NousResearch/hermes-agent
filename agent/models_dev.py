@@ -147,6 +147,8 @@ PROVIDER_TO_MODELS_DEV: Dict[str, str] = {
     "zai": "zai",
     "kimi-coding": "kimi-for-coding",
     "kimi-coding-cn": "kimi-for-coding",
+    "stepfun": "stepfun",
+    "kimi-coding-cn": "kimi-for-coding",
     "minimax": "minimax",
     "minimax-cn": "minimax-cn",
     "deepseek": "deepseek",

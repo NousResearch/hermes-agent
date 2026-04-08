@@ -1566,6 +1566,8 @@ def select_provider_and_model(args=None):
         _model_flow_anthropic(config, current_model)
     elif selected_provider == "kimi-coding":
         _model_flow_kimi(config, current_model)
+    elif selected_provider == "stepfun":
+        _model_flow_stepfun(config, current_model)
     elif selected_provider == "bedrock":
         _model_flow_bedrock(config, current_model)
     elif selected_provider in (
@@ -3483,7 +3485,6 @@ def _model_flow_bedrock_api_key(config, region, current_model=""):
 
     mantle_base_url = f"https://bedrock-mantle.{region}.api.aws/v1"
 
-    # Prompt for API key
     existing_key = get_env_value("AWS_BEARER_TOKEN_BEDROCK") or ""
     if existing_key:
         print(f"  Bedrock API Key: {existing_key[:12]}... ✓")
@@ -3505,7 +3506,6 @@ def _model_flow_bedrock_api_key(config, region, current_model=""):
         print("  ✓ API key saved.")
     print()
 
-    # Model selection — use static list (mantle doesn't need boto3 for discovery)
     model_list = _PROVIDER_MODELS.get("bedrock", [])
     print(f"  Showing {len(model_list)} curated models")
 
@@ -3520,7 +3520,6 @@ def _model_flow_bedrock_api_key(config, region, current_model=""):
     if selected:
         _save_model_choice(selected)
 
-        # Save as custom provider pointing to bedrock-mantle
         cfg = load_config()
         model = cfg.get("model")
         if not isinstance(model, dict):
@@ -3528,16 +3527,14 @@ def _model_flow_bedrock_api_key(config, region, current_model=""):
             cfg["model"] = model
         model["provider"] = "custom"
         model["base_url"] = mantle_base_url
-        model.pop("api_mode", None)  # chat_completions is the default
+        model.pop("api_mode", None)
 
-        # Also save region in bedrock config for reference
         bedrock_cfg = cfg.get("bedrock", {})
         if not isinstance(bedrock_cfg, dict):
             bedrock_cfg = {}
         bedrock_cfg["region"] = region
         cfg["bedrock"] = bedrock_cfg
 
-        # Save the API key env var name so hermes knows where to find it
         save_env_value("OPENAI_API_KEY", existing_key)
         save_env_value("OPENAI_BASE_URL", mantle_base_url)
 
@@ -3551,12 +3548,7 @@ def _model_flow_bedrock_api_key(config, region, current_model=""):
 
 
 def _model_flow_bedrock(config, current_model=""):
-    """AWS Bedrock provider: verify credentials, pick region, discover models.
-
-    Uses the native Converse API via boto3 — not the OpenAI-compatible endpoint.
-    Auth is handled by the AWS SDK default credential chain (env vars, profile,
-    instance role), so no API key prompt is needed.
-    """
+    """AWS Bedrock provider: verify credentials, pick region, discover models."""
     from hermes_cli.auth import (
         _prompt_model_selection,
         _save_model_choice,
@@ -3565,7 +3557,6 @@ def _model_flow_bedrock(config, current_model=""):
     from hermes_cli.config import load_config, save_config
     from hermes_cli.models import _PROVIDER_MODELS
 
-    # 1. Check for AWS credentials
     try:
         from agent.bedrock_adapter import (
             has_aws_credentials,
@@ -3591,7 +3582,6 @@ def _model_flow_bedrock(config, current_model=""):
         print("  AWS credentials: boto3 default chain (instance role / SSO)")
     print()
 
-    # 2. Region selection
     current_region = resolve_bedrock_region()
     try:
         region_input = input(f"  AWS Region [{current_region}]: ").strip()
@@ -3600,7 +3590,6 @@ def _model_flow_bedrock(config, current_model=""):
         return
     region = region_input or current_region
 
-    # 2b. Authentication mode
     print("  Choose authentication method:")
     print()
     print("    1. IAM credential chain (recommended)")
@@ -3619,7 +3608,6 @@ def _model_flow_bedrock(config, current_model=""):
         _model_flow_bedrock_api_key(config, region, current_model)
         return
 
-    # 3. Model discovery — try live API first, fall back to static list
     print(f"  Discovering models in {region}...")
     live_models = discover_bedrock_models(region)
 
@@ -3644,8 +3632,6 @@ def _model_flow_bedrock(config, current_model=""):
                 continue
             filtered.append(m)
 
-        # Deduplicate: prefer inference profiles (us.*, global.*) over bare
-        # foundation model IDs.
         profile_base_ids = set()
         for m in filtered:
             mid = m["id"]
@@ -3698,7 +3684,6 @@ def _model_flow_bedrock(config, current_model=""):
             )
             return
 
-    # 4. Model selection
     if model_list:
         selected = _prompt_model_selection(model_list, current_model=current_model)
     else:
@@ -3717,7 +3702,7 @@ def _model_flow_bedrock(config, current_model=""):
             cfg["model"] = model
         model["provider"] = "bedrock"
         model["base_url"] = f"https://bedrock-runtime.{region}.amazonaws.com"
-        model.pop("api_mode", None)  # bedrock_converse is auto-detected
+        model.pop("api_mode", None)
 
         bedrock_cfg = cfg.get("bedrock", {})
         if not isinstance(bedrock_cfg, dict):
@@ -3731,6 +3716,147 @@ def _model_flow_bedrock(config, current_model=""):
         print(f"  Default model set to: {selected} (via AWS Bedrock, {region})")
     else:
         print("  No change.")
+
+
+def _infer_stepfun_region(base_url: str) -> str:
+    """Infer the current StepFun region from the configured endpoint."""
+    normalized = (base_url or "").strip().lower()
+    if "api.stepfun.com" in normalized:
+        return "china"
+    return "international"
+
+
+def _stepfun_base_url_for_region(region: str) -> str:
+    from hermes_cli.auth import (
+        STEPFUN_STEP_PLAN_CN_BASE_URL,
+        STEPFUN_STEP_PLAN_INTL_BASE_URL,
+    )
+
+    return (
+        STEPFUN_STEP_PLAN_CN_BASE_URL
+        if region == "china"
+        else STEPFUN_STEP_PLAN_INTL_BASE_URL
+    )
+
+
+def _model_flow_stepfun(config, current_model=""):
+    """StepFun Coding Plan flow with region-specific Step Plan endpoints."""
+    from hermes_cli.auth import (
+        PROVIDER_REGISTRY,
+        _prompt_model_selection,
+        _save_model_choice,
+        deactivate_provider,
+    )
+    from hermes_cli.config import (
+        get_env_value,
+        save_env_value,
+        load_config,
+        save_config,
+    )
+    from hermes_cli.models import _PROVIDER_MODELS, fetch_api_models
+
+    provider_id = "stepfun"
+    pconfig = PROVIDER_REGISTRY[provider_id]
+    key_env = pconfig.api_key_env_vars[0] if pconfig.api_key_env_vars else ""
+    base_url_env = pconfig.base_url_env_var or ""
+
+    existing_key = ""
+    for ev in pconfig.api_key_env_vars:
+        existing_key = get_env_value(ev) or os.getenv(ev, "")
+        if existing_key:
+            break
+
+    if not existing_key:
+        print(f"No {pconfig.name} API key configured.")
+        if key_env:
+            try:
+                import getpass
+
+                new_key = getpass.getpass(f"{key_env} (or Enter to cancel): ").strip()
+            except (KeyboardInterrupt, EOFError):
+                print()
+                return
+            if not new_key:
+                print("Cancelled.")
+                return
+            save_env_value(key_env, new_key)
+            existing_key = new_key
+            print("API key saved.")
+            print()
+    else:
+        print(f"  {pconfig.name} API key: {existing_key[:8]}... ✓")
+        print()
+
+    current_base = ""
+    if base_url_env:
+        current_base = get_env_value(base_url_env) or os.getenv(base_url_env, "")
+    if not current_base:
+        model_cfg = config.get("model")
+        if isinstance(model_cfg, dict):
+            current_base = str(model_cfg.get("base_url") or "").strip()
+    current_region = _infer_stepfun_region(current_base or pconfig.inference_base_url)
+
+    region_choices = [
+        ("international", f"International ({_stepfun_base_url_for_region('international')})"),
+        ("china", f"China ({_stepfun_base_url_for_region('china')})"),
+    ]
+    ordered_regions = []
+    for region_key, label in region_choices:
+        if region_key == current_region:
+            ordered_regions.insert(0, (region_key, f"{label}  ← currently active"))
+        else:
+            ordered_regions.append((region_key, label))
+    ordered_regions.append(("cancel", "Cancel"))
+
+    region_idx = _prompt_provider_choice([label for _, label in ordered_regions])
+    if region_idx is None or ordered_regions[region_idx][0] == "cancel":
+        print("No change.")
+        return
+
+    selected_region = ordered_regions[region_idx][0]
+    effective_base = _stepfun_base_url_for_region(selected_region)
+    if base_url_env:
+        save_env_value(base_url_env, effective_base)
+
+    live_models = fetch_api_models(existing_key, effective_base)
+    if live_models:
+        model_list = live_models
+        print(f"  Found {len(model_list)} model(s) from {pconfig.name} API")
+    else:
+        model_list = _PROVIDER_MODELS.get(provider_id, [])
+        if model_list:
+            print(
+                f"  Could not auto-detect models from {pconfig.name} API — "
+                "showing Step Plan defaults."
+            )
+
+    if model_list:
+        selected = _prompt_model_selection(model_list, current_model=current_model)
+    else:
+        try:
+            selected = input("Model name: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            selected = None
+
+    if selected:
+        _save_model_choice(selected)
+
+        cfg = load_config()
+        model = cfg.get("model")
+        if not isinstance(model, dict):
+            model = {"default": model} if model else {}
+            cfg["model"] = model
+        model["provider"] = provider_id
+        model["base_url"] = effective_base
+        model.pop("api_mode", None)
+
+        save_config(cfg)
+        deactivate_provider()
+
+        config["model"] = dict(model)
+        print(f"Default model set to: {selected} (via {pconfig.name})")
+    else:
+        print("No change.")
 
 
 def _model_flow_api_key_provider(config, provider_id, current_model=""):
@@ -6536,6 +6662,7 @@ For more help on a command:
             "xiaomi",
             "arcee",
             "nvidia",
+            "stepfun",
         ],
         default=None,
         help="Inference provider (default: auto)",

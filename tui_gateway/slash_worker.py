@@ -12,6 +12,7 @@ import sys
 
 import cli as cli_mod
 from cli import HermesCLI
+from rich.console import Console
 
 
 def _run(cli: HermesCLI, command: str) -> str:
@@ -22,6 +23,12 @@ def _run(cli: HermesCLI, command: str) -> str:
         cmd = f"/{cmd}"
 
     buf = io.StringIO()
+
+    # Rich Console captures its file handle at construction time, so
+    # contextlib.redirect_stdout won't affect it. Swap the console's
+    # underlying file to our buffer so self.console.print() is captured.
+    cli.console = Console(file=buf, force_terminal=True, width=120)
+
     old = getattr(cli_mod, "_cprint", None)
     if old is not None:
         cli_mod._cprint = lambda text: print(text)

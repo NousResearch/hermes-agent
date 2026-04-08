@@ -324,7 +324,10 @@ class TestCompressWithClient:
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):
             c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=2, protect_last_n=2)
 
-        # Last head message (index 1) is "assistant" → summary should be "user"
+        # Last head message (index 1) is "assistant" → summary should be "user".
+        # With min_tail=3, tail = last 3 messages (indices 5-7).
+        # head_last=assistant, tail_first=assistant → summary_role="user", no collision.
+        # Need 8 messages: min_for_compress = 2+3+1 = 6, must have > 6.
         msgs = [
             {"role": "user", "content": "msg 0"},
             {"role": "assistant", "content": "msg 1"},
@@ -332,6 +335,8 @@ class TestCompressWithClient:
             {"role": "assistant", "content": "msg 3"},
             {"role": "user", "content": "msg 4"},
             {"role": "assistant", "content": "msg 5"},
+            {"role": "user", "content": "msg 6"},
+            {"role": "assistant", "content": "msg 7"},
         ]
         with patch("agent.context_compressor.call_llm", return_value=mock_response):
             result = c.compress(msgs)
@@ -460,8 +465,10 @@ class TestCompressWithClient:
             c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=2, protect_last_n=2)
 
         # Head: [system, user]        → last head = user
-        # Tail: [assistant, user]     → first tail = assistant
+        # Tail: [assistant, user, assistant] → first tail = assistant
         # summary_role="assistant" collides with tail, "user" collides with head → merge
+        # With min_tail=3, tail = last 3 messages (indices 5-7).
+        # Need 8 messages: min_for_compress = 2+3+1 = 6, must have > 6.
         msgs = [
             {"role": "system", "content": "system prompt"},
             {"role": "user", "content": "msg 1"},
@@ -470,6 +477,7 @@ class TestCompressWithClient:
             {"role": "assistant", "content": "msg 4"},   # compressed
             {"role": "assistant", "content": "msg 5"},   # tail start
             {"role": "user", "content": "msg 6"},
+            {"role": "assistant", "content": "msg 7"},
         ]
         with patch("agent.context_compressor.call_llm", return_value=mock_response):
             result = c.compress(msgs)
@@ -481,7 +489,7 @@ class TestCompressWithClient:
             if r1 in ("user", "assistant") and r2 in ("user", "assistant"):
                 assert r1 != r2, f"consecutive {r1} at indices {i-1},{i}"
 
-        # The summary should be merged into the first tail message (assistant)
+        # The summary should be merged into the first tail message (assistant at index 5)
         first_tail = [m for m in result if "msg 5" in (m.get("content") or "")]
         assert len(first_tail) == 1
         assert "summary text" in first_tail[0]["content"]
@@ -496,14 +504,18 @@ class TestCompressWithClient:
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):
             c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=2, protect_last_n=2)
 
-        # Head=assistant, Tail=assistant → summary_role="user", no collision
+        # Head=assistant, Tail=assistant → summary_role="user", no collision.
+        # With min_tail=3, tail = last 3 messages (indices 5-7).
+        # Need 8 messages: min_for_compress = 2+3+1 = 6, must have > 6.
         msgs = [
             {"role": "user", "content": "msg 0"},
             {"role": "assistant", "content": "msg 1"},
             {"role": "user", "content": "msg 2"},
             {"role": "assistant", "content": "msg 3"},
-            {"role": "assistant", "content": "msg 4"},
-            {"role": "user", "content": "msg 5"},
+            {"role": "user", "content": "msg 4"},
+            {"role": "assistant", "content": "msg 5"},
+            {"role": "user", "content": "msg 6"},
+            {"role": "assistant", "content": "msg 7"},
         ]
         with patch("agent.context_compressor.call_llm", return_value=mock_response):
             result = c.compress(msgs)

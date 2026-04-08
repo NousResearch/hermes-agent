@@ -3350,11 +3350,17 @@ class GatewayRunner:
         is_running = session_key in self._running_agents
 
         title = None
+        token_totals = None
         if self._session_db:
             try:
                 title = self._session_db.get_session_title(session_entry.session_id)
+                token_totals = self._session_db.get_session_token_totals(session_entry.session_id)
             except Exception:
                 title = None
+                token_totals = None
+
+        # Use SessionDB token totals for authoritative count; fall back to session_store
+        total_tokens = token_totals["total_tokens"] if token_totals else session_entry.total_tokens
 
         lines = [
             "📊 **Hermes Gateway Status**",
@@ -3366,7 +3372,7 @@ class GatewayRunner:
         lines.extend([
             f"**Created:** {session_entry.created_at.strftime('%Y-%m-%d %H:%M')}",
             f"**Last Activity:** {session_entry.updated_at.strftime('%Y-%m-%d %H:%M')}",
-            f"**Tokens:** {session_entry.total_tokens:,}",
+            f"**Tokens:** {total_tokens:,}",
             f"**Agent Running:** {'Yes ⚡' if is_running else 'No'}",
             "",
             f"**Connected Platforms:** {', '.join(connected_platforms)}",

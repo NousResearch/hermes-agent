@@ -1,0 +1,28 @@
+name: mnemoria
+version: 0.1.0
+description: |
+  Mnemoria memory provider — cognitive memory with ACT-R activation scoring,
+  typed facts, Hebbian links, and RL reranking. Backed by SQLite.
+
+  Install: pip install mnemoria
+  Enable: set memory.provider: mnemoria in ~/.hermes/config.yaml
+provider: mnemoria
+memory_provider: true
+pip_dependencies:
+  - mnemoria>=0.1.0
+
+config:
+  HERMES_MEMORY_MNEMORIA_ENABLED:
+    type: bool
+    default: false
+    description: Enable the Mnemoria memory provider.
+  HERMES_MEMORY_MNEMORIA_MODE:
+    type: string
+    default: balanced
+    description: Memory profile — balanced (default).
+    choices:
+      - balanced
+  HERMES_MNEMORIA_DB:
+    type: path
+    default: ~/.hermes/mnemoria.db
+    description: SQLite database path for the Mnemoria memory store.

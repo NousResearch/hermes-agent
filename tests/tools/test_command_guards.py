@@ -9,9 +9,12 @@ import tools.approval as approval_module
 from tools.approval import (
     approve_session,
     check_all_command_guards,
+    check_dangerous_command,
     is_approved,
-    set_current_session_key,
+    register_gateway_notify,
     reset_current_session_key,
+    set_current_session_key,
+    unregister_gateway_notify,
 )
 
 # Ensure the module is importable so we can patch it
@@ -164,6 +167,79 @@ class TestTirithAllowDangerous:
         cb.assert_called_once()
         # allow_permanent should be True (no tirith warning)
         assert cb.call_args[1]["allow_permanent"] is True
+
+
+class TestGatewaySelfManagementHardBlock:
+    @patch(_TIRITH_PATCH, return_value=_tirith_result("allow"))
+    def test_gateway_restart_from_gateway_session_is_hard_blocked(self, mock_tirith):
+        os.environ["HERMES_GATEWAY_SESSION"] = "1"
+        result = check_all_command_guards("hermes gateway restart", "local")
+        assert result["approved"] is False
+        assert result.get("status") == "blocked_by_policy"
+        assert "local shell" in result["message"]
+        mock_tirith.assert_not_called()
+
+    @patch(_TIRITH_PATCH, return_value=_tirith_result("allow"))
+    def test_gateway_restart_is_blocked_even_in_yolo_mode(self, mock_tirith):
+        os.environ["HERMES_GATEWAY_SESSION"] = "1"
+        os.environ["HERMES_YOLO_MODE"] = "1"
+        result = check_all_command_guards("hermes gateway restart", "local")
+        assert result["approved"] is False
+        assert result.get("status") == "blocked_by_policy"
+        mock_tirith.assert_not_called()
+
+    @patch(_TIRITH_PATCH, return_value=_tirith_result("allow"))
+    def test_gateway_restart_from_local_cli_is_not_hard_blocked(self, mock_tirith):
+        os.environ["HERMES_INTERACTIVE"] = "1"
+        result = check_all_command_guards("hermes gateway restart", "local")
+        assert result["approved"] is True
+
+    @patch(_TIRITH_PATCH, return_value=_tirith_result("allow"))
+    def test_gateway_status_commands_are_not_hard_blocked(self, mock_tirith):
+        os.environ["HERMES_GATEWAY_SESSION"] = "1"
+        assert check_all_command_guards("systemctl --user status hermes-gateway", "local")["approved"] is True
+        assert check_all_command_guards("echo 'hermes gateway restart'", "local")["approved"] is True
+        mock_tirith.assert_called()
+
+    @patch(_TIRITH_PATCH, return_value=_tirith_result("allow"))
+    def test_gateway_callback_context_triggers_hard_block_without_env_var(self, mock_tirith):
+        session_key = "gateway-turn"
+        token = set_current_session_key(session_key)
+        register_gateway_notify(session_key, lambda _data: None)
+        try:
+            result = check_all_command_guards("hermes gateway restart", "local")
+        finally:
+            unregister_gateway_notify(session_key)
+            reset_current_session_key(token)
+        assert result["approved"] is False
+        assert result.get("status") == "blocked_by_policy"
+        mock_tirith.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "env FOO=1 hermes gateway restart",
+            "sudo -u alice systemctl --user restart hermes-gateway",
+            "bash -lc \"hermes gateway restart\"",
+            "service hermes-gateway restart",
+            "brew services restart hermes-gateway",
+        ],
+    )
+    @patch(_TIRITH_PATCH, return_value=_tirith_result("allow"))
+    def test_gateway_wrapped_restart_variants_are_hard_blocked(self, mock_tirith, command):
+        os.environ["HERMES_GATEWAY_SESSION"] = "1"
+        result = check_all_command_guards(command, "local")
+        assert result["approved"] is False
+        assert result.get("status") == "blocked_by_policy"
+        assert "local shell" in result["message"]
+        mock_tirith.assert_not_called()
+
+    def test_check_dangerous_command_hard_blocks_wrapped_gateway_restart(self):
+        os.environ["HERMES_GATEWAY_SESSION"] = "1"
+        result = check_dangerous_command("bash -lc \"hermes gateway restart\"", "local")
+        assert result["approved"] is False
+        assert result.get("status") == "blocked_by_policy"
+        assert "local shell" in result["message"]
 
 
 # ---------------------------------------------------------------------------

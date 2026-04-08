@@ -192,6 +192,128 @@ def detect_dangerous_command(command: str) -> tuple:
     return (False, None, None)
 
 
+_GATEWAY_SELF_MANAGEMENT_PATTERNS = [
+    (
+        r'^(?:env\s+(?:[A-Za-z_][A-Za-z0-9_]*=\S+\s+)*)?(?:sudo(?:\s+-u\s+\S+)?\s+)?(?:\S*/)?hermes\b(?:[^\n;&|]*?\s+--profile\s+\S+)?[^\n;&|]*?\bgateway\s+(?:start|stop|restart|run|install)\b',
+        "gateway self-management from inside a live gateway session",
+    ),
+    (
+        r'^(?:env\s+(?:[A-Za-z_][A-Za-z0-9_]*=\S+\s+)*)?(?:sudo(?:\s+-u\s+\S+)?\s+)?(?:\S*/)?python(?:3(?:\.\d+)?)?\s+-m\s+hermes_cli\.main\b(?:[^\n;&|]*?\s+--profile\s+\S+)?[^\n;&|]*?\bgateway\s+(?:start|stop|restart|run|install)\b',
+        "gateway self-management from inside a live gateway session",
+    ),
+    (
+        r'^(?:env\s+(?:[A-Za-z_][A-Za-z0-9_]*=\S+\s+)*)?(?:sudo(?:\s+-u\s+\S+)?\s+)?launchctl\s+(?:bootout|bootstrap|kickstart|kill|stop|start|unload|load)\b[^\n]*\bai\.hermes\.gateway\b',
+        "launchctl management of ai.hermes.gateway from inside a live gateway session",
+    ),
+    (
+        r'^(?:env\s+(?:[A-Za-z_][A-Za-z0-9_]*=\S+\s+)*)?(?:sudo(?:\s+-u\s+\S+)?\s+)?systemctl(?:\s+--user)?\s+(?:start|stop|restart|try-restart|reload-or-restart)\b[^\n]*\bhermes-gateway\b',
+        "systemd management of hermes-gateway from inside a live gateway session",
+    ),
+    (
+        r'^(?:env\s+(?:[A-Za-z_][A-Za-z0-9_]*=\S+\s+)*)?(?:sudo(?:\s+-u\s+\S+)?\s+)?service\s+hermes-gateway\s+(?:start|stop|restart)\b',
+        "service management of hermes-gateway from inside a live gateway session",
+    ),
+    (
+        r'^(?:env\s+(?:[A-Za-z_][A-Za-z0-9_]*=\S+\s+)*)?(?:sudo(?:\s+-u\s+\S+)?\s+)?brew\s+services\s+(?:start|stop|restart)\s+hermes-gateway\b',
+        "brew services management of hermes-gateway from inside a live gateway session",
+    ),
+]
+
+
+_GATEWAY_SELF_MANAGEMENT_MESSAGE = (
+    "Running gateway start/stop/restart commands from a live messaging "
+    "session would interrupt the current conversation. Run this from a "
+    "local shell on the agent machine instead."
+)
+
+
+def _blocked_gateway_self_management_result(description: str) -> dict:
+    """Return the hard-block response for gateway self-management commands."""
+    return {
+        "approved": False,
+        "status": "blocked_by_policy",
+        "description": description,
+        "message": f"BLOCKED: {description}. {_GATEWAY_SELF_MANAGEMENT_MESSAGE}",
+    }
+
+
+def _extract_gateway_self_management_candidates(segment: str) -> list[str]:
+    """Return normalized command variants to probe for gateway self-management.
+
+    This unwraps common wrappers like env-prefixes, sudo -u, and shell -c so
+    `env FOO=1 hermes gateway restart` and `bash -lc "hermes gateway restart"`
+    are checked against the same policy patterns.
+    """
+    candidates: list[str] = []
+
+    def _add(value: str) -> None:
+        value = value.strip()
+        if value and value not in candidates:
+            candidates.append(value)
+
+    _add(segment)
+
+    stripped = re.sub(
+        r'^(?:env\s+(?:[A-Za-z_][A-Za-z0-9_]*=\S+\s+)*)?(?:sudo(?:\s+-u\s+\S+)?\s+)?',
+        '',
+        segment,
+        count=1,
+    ).strip()
+    _add(stripped)
+
+    shell_match = re.match(
+        r'^(?:env\s+(?:[A-Za-z_][A-Za-z0-9_]*=\S+\s+)*)?(?:sudo(?:\s+-u\s+\S+)?\s+)?'
+        r'(?:bash|sh|zsh|ksh)\s+-[^\s]*c\s+(.+)$',
+        segment,
+        re.IGNORECASE | re.DOTALL,
+    )
+    if shell_match:
+        inner = shell_match.group(1).strip()
+        if len(inner) >= 2 and inner[0] == inner[-1] and inner[0] in {'"', "'"}:
+            inner = inner[1:-1]
+        _add(inner)
+
+    return candidates
+
+
+def _is_live_gateway_session() -> bool:
+    """Return True when command guards are running inside an active gateway turn."""
+    if os.getenv("HERMES_GATEWAY_SESSION"):
+        return True
+
+    session_key = get_current_session_key("")
+    if not session_key:
+        return False
+
+    with _lock:
+        return session_key in _gateway_notify_cbs
+
+
+def detect_gateway_self_management_command(command: str) -> tuple[bool, Optional[str]]:
+    """Detect commands that would stop/restart the gateway from within itself.
+
+    Messaging sessions run inside the gateway process. Allowing a terminal
+    command like ``hermes gateway restart`` from a Telegram/Discord/etc. turn can
+    terminate the very process serving that turn, interrupting the response and
+    creating confusing restart loops in the same conversation.
+
+    These commands must be hard-blocked rather than routed through approval.
+    The operator can still manage the service from a local shell outside the
+    gateway session.
+    """
+    if not _is_live_gateway_session():
+        return (False, None)
+
+    command_lower = _normalize_command_for_detection(command).lower()
+    segments = [seg.strip() for seg in re.split(r'\s*(?:&&|\|\||;|\n)\s*', command_lower) if seg.strip()]
+    for segment in segments:
+        for candidate in _extract_gateway_self_management_candidates(segment):
+            for pattern, description in _GATEWAY_SELF_MANAGEMENT_PATTERNS:
+                if re.search(pattern, candidate, re.IGNORECASE | re.DOTALL):
+                    return (True, description)
+    return (False, None)
+
+
 # =========================================================================
 # Per-session approval state (thread-safe)
 # =========================================================================
@@ -596,6 +718,10 @@ def check_dangerous_command(command: str, env_type: str,
     if env_type in ("docker", "singularity", "modal", "daytona"):
         return {"approved": True, "message": None}
 
+    is_self_mgmt, self_mgmt_desc = detect_gateway_self_management_command(command)
+    if is_self_mgmt:
+        return _blocked_gateway_self_management_result(self_mgmt_desc)
+
     # --yolo: bypass all approval prompts. Gateway /yolo is session-scoped;
     # CLI --yolo remains process-scoped via the env var for local use.
     if os.getenv("HERMES_YOLO_MODE") or is_current_session_yolo_enabled():
@@ -697,6 +823,10 @@ def check_all_command_guards(command: str, env_type: str,
     # Skip containers for both checks
     if env_type in ("docker", "singularity", "modal", "daytona"):
         return {"approved": True, "message": None}
+
+    is_self_mgmt, self_mgmt_desc = detect_gateway_self_management_command(command)
+    if is_self_mgmt:
+        return _blocked_gateway_self_management_result(self_mgmt_desc)
 
     # --yolo or approvals.mode=off: bypass all approval prompts.
     # Gateway /yolo is session-scoped; CLI --yolo remains process-scoped.

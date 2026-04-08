@@ -24,11 +24,13 @@ import json
 import logging
 import uuid
 
-logger = logging.getLogger(__name__)
+from tools.budget_config import (
+    DEFAULT_RESULT_SIZE_CHARS as DEFAULT_MAX_RESULT_SIZE_CHARS,
+    DEFAULT_TURN_BUDGET_CHARS as MAX_TURN_BUDGET_CHARS,
+    DEFAULT_PREVIEW_SIZE_CHARS as PREVIEW_SIZE_CHARS,
+)
 
-DEFAULT_MAX_RESULT_SIZE_CHARS: int = 50_000
-MAX_TURN_BUDGET_CHARS: int = 200_000
-PREVIEW_SIZE_CHARS: int = 2_000
+logger = logging.getLogger(__name__)
 PERSISTED_OUTPUT_TAG = "<persisted-output>"
 PERSISTED_OUTPUT_CLOSING_TAG = "</persisted-output>"
 STORAGE_DIR = "/tmp/hermes-results"
@@ -112,6 +114,7 @@ def maybe_persist_tool_result(
     tool_use_id: str,
     env=None,
     threshold: int | float | None = None,
+    preview_size: int = PREVIEW_SIZE_CHARS,
 ) -> str:
     """Layer 2: persist oversized result into the sandbox, return preview + path.
 
@@ -125,6 +128,7 @@ def maybe_persist_tool_result(
         tool_use_id: Unique ID for this tool call (used as filename).
         env: The active BaseEnvironment instance, or None.
         threshold: Override threshold; if None, looked up from registry.
+        preview_size: Max chars for the inline preview after persistence.
 
     Returns:
         Original content if small, or <persisted-output> replacement.
@@ -143,7 +147,7 @@ def maybe_persist_tool_result(
     remote_path = f"{STORAGE_DIR}/{tool_use_id}.txt"
     # Write raw output (not JSON wrapper) so read_file returns readable text
     file_content = _extract_raw_output(content)
-    preview, has_more = generate_preview(file_content)
+    preview, has_more = generate_preview(file_content, max_chars=preview_size)
 
     # Try writing into the sandbox
     if env is not None:
@@ -173,6 +177,7 @@ def enforce_turn_budget(
     tool_messages: list[dict],
     env=None,
     budget: int = MAX_TURN_BUDGET_CHARS,
+    preview_size: int = PREVIEW_SIZE_CHARS,
 ) -> list[dict]:
     """Layer 3: enforce aggregate budget across all tool results in a turn.
 
@@ -210,6 +215,7 @@ def enforce_turn_budget(
             tool_use_id=tool_use_id,
             env=env,
             threshold=0,
+            preview_size=preview_size,
         )
         if replacement != content:
             total_size -= size

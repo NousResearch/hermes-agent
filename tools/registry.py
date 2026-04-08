@@ -169,12 +169,14 @@ class ToolRegistry:
     # Query helpers  (replace redundant dicts in model_tools.py)
     # ------------------------------------------------------------------
 
-    def get_max_result_size(self, name: str) -> int | float:
-        """Return per-tool max result size, or global default."""
-        from tools.tool_result_storage import DEFAULT_MAX_RESULT_SIZE_CHARS
+    def get_max_result_size(self, name: str, default: int | float | None = None) -> int | float:
+        """Return per-tool max result size, or *default* (or global default)."""
         entry = self._tools.get(name)
         if entry and entry.max_result_size_chars is not None:
             return entry.max_result_size_chars
+        if default is not None:
+            return default
+        from tools.tool_result_storage import DEFAULT_MAX_RESULT_SIZE_CHARS
         return DEFAULT_MAX_RESULT_SIZE_CHARS
 
     def get_all_tool_names(self) -> List[str]:

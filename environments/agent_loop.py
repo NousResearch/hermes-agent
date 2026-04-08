@@ -140,6 +140,7 @@ class HermesAgentLoop:
         temperature: float = 1.0,
         max_tokens: Optional[int] = None,
         extra_body: Optional[Dict[str, Any]] = None,
+        budget_config: Optional["BudgetConfig"] = None,
     ):
         """
         Initialize the agent loop.
@@ -156,7 +157,11 @@ class HermesAgentLoop:
             extra_body: Extra parameters passed to the OpenAI client's create() call.
                         Used for OpenRouter provider preferences, transforms, etc.
                         e.g. {"provider": {"ignore": ["DeepInfra"]}}
+            budget_config: Tool result persistence budget. Controls per-tool
+                        thresholds, per-turn aggregate budget, and preview size.
+                        If None, uses DEFAULT_BUDGET (current hardcoded values).
         """
+        from tools.budget_config import DEFAULT_BUDGET
         self.server = server
         self.tool_schemas = tool_schemas
         self.valid_tool_names = valid_tool_names
@@ -165,6 +170,7 @@ class HermesAgentLoop:
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.extra_body = extra_body
+        self.budget_config = budget_config or DEFAULT_BUDGET
 
     async def run(self, messages: List[Dict[str, Any]]) -> AgentResult:
         """
@@ -455,6 +461,8 @@ class HermesAgentLoop:
                             tool_name=tool_name,
                             tool_use_id=tc_id,
                             env=get_active_env(self.task_id),
+                            threshold=self.budget_config.resolve_threshold(tool_name),
+                            preview_size=self.budget_config.preview_size,
                         )
                     except Exception:
                         pass  # Persistence is best-effort in eval path
@@ -470,7 +478,12 @@ class HermesAgentLoop:
                 try:
                     num_tcs = len(assistant_msg.tool_calls)
                     if num_tcs > 0:
-                        enforce_turn_budget(messages[-num_tcs:], env=get_active_env(self.task_id))
+                        enforce_turn_budget(
+                            messages[-num_tcs:],
+                            env=get_active_env(self.task_id),
+                            budget=self.budget_config.turn_budget,
+                            preview_size=self.budget_config.preview_size,
+                        )
                 except Exception:
                     pass
 

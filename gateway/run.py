@@ -2129,6 +2129,9 @@ class GatewayRunner:
         if canonical == "update":
             return await self._handle_update_command(event)
 
+        if canonical == "restart-gateway":
+            return await self._handle_restart_gateway_command(event)
+
         if canonical == "title":
             return await self._handle_title_command(event)
 
@@ -5613,6 +5616,69 @@ class GatewayRunner:
 
         self._schedule_update_notification_watch()
         return "⚕ Starting Hermes update… I'll stream progress here."
+
+    async def _handle_restart_gateway_command(self, event: MessageEvent) -> str:
+        """Handle /restart-gateway — safely restart the gateway via launchd.
+
+        Spawns a detached process that sleeps briefly (to allow the response
+        message to flush), then uses ``launchctl kickstart -k`` to ask launchd
+        to kill the current gateway and start a fresh one.  The detached process
+        survives the gateway shutdown because it runs in its own session
+        (``start_new_session=True``).
+        """
+        import subprocess
+        import shutil
+
+        # Verify launchd service is loaded before attempting restart
+        service_label = "ai.hermes.gateway"
+        uid = os.getuid()
+        target = f"gui/{uid}/{service_label}"
+
+        check = subprocess.run(
+            ["launchctl", "print", target],
+            capture_output=True, text=True,
+        )
+        if check.returncode != 0:
+            return (
+                f"✗ launchd service '{service_label}' is not loaded. "
+                f"Cannot restart via launchctl. Use `hermes gateway start` from a terminal."
+            )
+
+        # Pre-flight: verify the gateway module imports cleanly
+        preflight = subprocess.run(
+            [sys.executable, "-c", "from gateway.run import GatewayRunner"],
+            capture_output=True, text=True,
+            cwd=str(Path(__file__).parent.parent.resolve()),
+        )
+        if preflight.returncode != 0:
+            return (
+                f"✗ Pre-flight import check failed — aborting restart to avoid crash loop.\n\n"
+                f"{preflight.stderr[:500]}"
+            )
+
+        # Spawn a detached process: sleep 3s (let this response flush), then kickstart
+        restart_cmd = f"sleep 3 && launchctl kickstart -k {shlex.quote(target)}"
+        try:
+            setsid_bin = shutil.which("setsid")
+            if setsid_bin:
+                subprocess.Popen(
+                    [setsid_bin, "bash", "-c", restart_cmd],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True,
+                )
+            else:
+                subprocess.Popen(
+                    ["bash", "-c", restart_cmd],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True,
+                )
+        except Exception as e:
+            return f"✗ Failed to spawn restart process: {e}"
+
+        logger.info("Gateway restart scheduled via /restart-gateway (3s delay)")
+        return "♻️ Restarting gateway in ~3 seconds. I'll be back shortly."
 
     def _schedule_update_notification_watch(self) -> None:
         """Ensure a background task is watching for update completion."""

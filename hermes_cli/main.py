@@ -1649,6 +1649,11 @@ def _model_flow_named_custom(config, provider_info):
         model["base_url"] = base_url
         if api_key:
             model["api_key"] = api_key
+        api_mode = provider_info.get("api_mode")
+        if api_mode:
+            model["api_mode"] = api_mode
+        else:
+            model.pop("api_mode", None)
         save_config(cfg)
         deactivate_provider()
 
@@ -1722,6 +1727,11 @@ def _model_flow_named_custom(config, provider_info):
     model["base_url"] = base_url
     if api_key:
         model["api_key"] = api_key
+    api_mode = provider_info.get("api_mode")
+    if api_mode:
+        model["api_mode"] = api_mode
+    else:
+        model.pop("api_mode", None)
     save_config(cfg)
     deactivate_provider()
 

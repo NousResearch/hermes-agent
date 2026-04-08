@@ -395,7 +395,7 @@ class TestEnforceTurnBudget:
         assert PERSISTED_OUTPUT_TAG in msgs[1]["content"]
 
     def test_medium_result_regression(self):
-        """6 results of 42K chars each (252K total) — each under 50K default
+        """6 results of 42K chars each (252K total) — each under 100K default
         threshold but aggregate exceeds 200K budget. L3 should persist."""
         env = MagicMock()
         env.execute.return_value = {"output": "", "returncode": 0}
@@ -449,7 +449,7 @@ class TestPerToolThresholds:
         try:
             import tools.terminal_tool  # noqa: F401
             val = registry.get_max_result_size("terminal")
-            assert val == 30_000
+            assert val == 100_000
         except ImportError:
             pytest.skip("terminal_tool not importable in test env")
 
@@ -467,6 +467,6 @@ class TestPerToolThresholds:
         try:
             import tools.file_tools  # noqa: F401
             val = registry.get_max_result_size("search_files")
-            assert val == 20_000
+            assert val == 100_000
         except ImportError:
             pytest.skip("file_tools not importable in test env")

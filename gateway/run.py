@@ -2449,28 +2449,54 @@ class GatewayRunner:
         # .update_response so the update process can continue.
         _quick_key = self._session_key_for_source(source)
         _update_prompts = getattr(self, "_update_prompt_pending", {})
+
+        def _write_update_response(response_text: str) -> Optional[str]:
+            response_path = _hermes_home / ".update_response"
+            try:
+                tmp = response_path.with_suffix(".tmp")
+                tmp.write_text(response_text)
+                tmp.replace(response_path)
+            except OSError as e:
+                logger.warning("Failed to write update response: %s", e)
+                return f"✗ Failed to send response to update process: {e}"
+            return None
+
         if _update_prompts.get(_quick_key):
             raw = (event.text or "").strip()
-            # Accept /approve and /deny as shorthand for yes/no
             cmd = event.get_command()
-            if cmd in ("approve", "yes"):
-                response_text = "y"
-            elif cmd in ("deny", "no"):
-                response_text = "n"
-            else:
-                response_text = raw
-            if response_text:
-                response_path = _hermes_home / ".update_response"
+            if cmd in ("approve", "deny"):
                 try:
-                    tmp = response_path.with_suffix(".tmp")
-                    tmp.write_text(response_text)
-                    tmp.replace(response_path)
-                except OSError as e:
-                    logger.warning("Failed to write update response: %s", e)
-                    return f"✗ Failed to send response to update process: {e}"
-                _update_prompts.pop(_quick_key, None)
-                label = response_text if len(response_text) <= 20 else response_text[:20] + "…"
-                return f"✓ Sent `{label}` to the update process."
+                    from tools.approval import has_blocking_approval
+                except (ImportError, ModuleNotFoundError):
+                    has_blocking_approval = None
+                if has_blocking_approval and has_blocking_approval(_quick_key):
+                    # A real dangerous-command approval is waiting for /approve or
+                    # /deny in this same session. Let normal command dispatch
+                    # handle it instead of stealing the command for /update.
+                    pass
+                else:
+                    # Accept /approve and /deny as shorthand for yes/no only when
+                    # no dangerous-command approval is currently waiting.
+                    response_text = "y" if cmd == "approve" else "n"
+                    error = _write_update_response(response_text)
+                    if error:
+                        return error
+                    _update_prompts.pop(_quick_key, None)
+                    return f"✓ Sent `{response_text}` to the update process."
+            else:
+                if cmd == "yes":
+                    response_text = "y"
+                elif cmd == "no":
+                    response_text = "n"
+                else:
+                    response_text = raw
+                if response_text:
+                    error = _write_update_response(response_text)
+                    if error:
+                        return error
+                    _update_prompts.pop(_quick_key, None)
+                    label = response_text if len(response_text) <= 20 else response_text[:20] + "…"
+                    return f"✓ Sent `{label}` to the update process."
 
         # PRIORITY handling when an agent is already running for this session.
         # Default behavior is to interrupt immediately so user text/stop messages
@@ -6666,6 +6692,7 @@ class GatewayRunner:
         output_path = _hermes_home / ".update_output.txt"
         exit_code_path = _hermes_home / ".update_exit_code"
         prompt_path = _hermes_home / ".update_prompt.json"
+        last_forwarded_prompt_key: Optional[str] = None
 
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
@@ -6790,7 +6817,8 @@ class GatewayRunner:
                     prompt_data = json.loads(prompt_path.read_text())
                     prompt_text = prompt_data.get("prompt", "")
                     default = prompt_data.get("default", "")
-                    if prompt_text:
+                    prompt_key = str(prompt_data.get("id") or json.dumps(prompt_data, sort_keys=True, ensure_ascii=False))
+                    if prompt_text and prompt_key != last_forwarded_prompt_key:
                         # Flush any buffered output first so the user sees
                         # context before the prompt
                         await _flush_buffer()
@@ -6818,13 +6846,16 @@ class GatewayRunner:
                             )
                         self._update_prompt_pending[session_key] = True
                         # Remove the prompt file so it isn't re-read on the
-                        # next poll cycle.  The update process only needs
+                        # next poll cycle. The update process only needs
                         # .update_response to continue — it doesn't re-check
                         # .update_prompt.json while waiting.
                         prompt_path.unlink(missing_ok=True)
+                        last_forwarded_prompt_key = prompt_key
                         logger.info("Forwarded update prompt to %s: %s", session_key, prompt_text[:80])
                 except (json.JSONDecodeError, OSError) as e:
                     logger.debug("Failed to read update prompt: %s", e)
+            if not prompt_path.exists():
+                last_forwarded_prompt_key = None
 
             await asyncio.sleep(poll_interval)
 

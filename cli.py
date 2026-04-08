@@ -6177,8 +6177,10 @@ class HermesCLI:
                     except Exception:
                         _resp_color = "#4F6D4A"
 
+                    # Render as styled markdown when enabled, otherwise plain ANSI text
+                    _response_renderable = Markdown(response) if self.markdown_enabled else _rich_text_from_ansi(response)
                     ChatConsole().print(Panel(
-                        _rich_text_from_ansi(response),
+                        _response_renderable,
                         title=f"[{_resp_color} bold]⚕ /btw[/]",
                         title_align="left",
                         border_style=_resp_color,

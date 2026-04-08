@@ -231,6 +231,21 @@ class TestSourceLinesAreGuarded:
 class TestExtractContentOrReasoning:
     """agent/auxiliary_client.py — extract_content_or_reasoning()"""
 
+    def test_choices_is_none(self):
+        """Gracefully handle response.choices=None."""
+        response = types.SimpleNamespace(choices=None)
+        assert extract_content_or_reasoning(response) == ""
+
+    def test_choices_is_empty_list(self):
+        """Gracefully handle response.choices=[]."""
+        response = types.SimpleNamespace(choices=[])
+        assert extract_content_or_reasoning(response) == ""
+
+    def test_choices_missing(self):
+        """Gracefully handle response without choices attribute."""
+        response = types.SimpleNamespace()
+        assert extract_content_or_reasoning(response) == ""
+
     def test_normal_content_returned(self):
         response = _make_response("  Hello world  ")
         assert extract_content_or_reasoning(response) == "Hello world"

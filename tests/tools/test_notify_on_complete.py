@@ -197,6 +197,26 @@ class TestCheckpointNotify:
             s = registry.get("proc_live")
             assert s.notify_on_complete is True
 
+    def test_recover_requeues_notify_watchers(self, registry, tmp_path):
+        checkpoint = tmp_path / "procs.json"
+        checkpoint.write_text(json.dumps([{
+            "session_id": "proc_live",
+            "command": "sleep 999",
+            "pid": os.getpid(),
+            "task_id": "t1",
+            "session_key": "sk1",
+            "watcher_platform": "telegram",
+            "watcher_chat_id": "123",
+            "watcher_thread_id": "42",
+            "watcher_interval": 5,
+            "notify_on_complete": True,
+        }]))
+        with patch("tools.process_registry.CHECKPOINT_PATH", checkpoint):
+            recovered = registry.recover_from_checkpoint()
+            assert recovered == 1
+            assert len(registry.pending_watchers) == 1
+            assert registry.pending_watchers[0]["notify_on_complete"] is True
+
     def test_recover_defaults_false(self, registry, tmp_path):
         """Old checkpoint entries without the field default to False."""
         checkpoint = tmp_path / "procs.json"

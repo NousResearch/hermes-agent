@@ -149,6 +149,7 @@ class MatrixAdapter(BasePlatformAdapter):
         self._sync_task: Optional[asyncio.Task] = None
         self._closing = False
         self._startup_ts: float = 0.0
+        self._initial_sync_done: bool = False
 
         # Cache: room_id → bool (is DM)
         self._dm_rooms: Dict[str, bool] = {}
@@ -393,6 +394,7 @@ class MatrixAdapter(BasePlatformAdapter):
             await client.receive_response(resp)
         if isinstance(resp, nio.SyncResponse):
             self._joined_rooms = set(resp.rooms.join.keys())
+            self._initial_sync_done = True
             logger.info(
                 "Matrix: initial sync complete, joined %d rooms",
                 len(self._joined_rooms),
@@ -986,12 +988,8 @@ class MatrixAdapter(BasePlatformAdapter):
         if self._is_duplicate_event(getattr(event, "event_id", None)):
             return
 
-        # Startup grace: ignore old messages from initial sync.
-        event_ts = getattr(event, "server_timestamp", 0) / 1000.0
-        # Drop messages that predate startup by more than the grace window.
-        # Use a clock-skew tolerance of 60s to handle server/client time drift.
-        _clock_skew_tolerance = 60.0
-        if event_ts and event_ts < self._startup_ts - _STARTUP_GRACE_SECONDS - _clock_skew_tolerance:
+        # Startup grace: ignore messages from initial sync batch.
+        if not self._initial_sync_done:
             return
 
         # Handle undecryptable MegolmEvents: request the missing session key
@@ -1114,6 +1112,11 @@ class MatrixAdapter(BasePlatformAdapter):
         # Acknowledge receipt so the room shows as read (fire-and-forget).
         self._background_read_receipt(room.room_id, event.event_id)
 
+        logger.debug(
+            'Matrix: dispatching message from %s in %s, handler=%s',
+            getattr(event, 'sender', '?'), room.room_id,
+            'set' if self._message_handler else 'NOT SET - message will be dropped',
+        )
         await self.handle_message(msg_event)
 
     async def _on_room_message_media(self, room: Any, event: Any) -> None:
@@ -1128,12 +1131,8 @@ class MatrixAdapter(BasePlatformAdapter):
         if self._is_duplicate_event(getattr(event, "event_id", None)):
             return
 
-        # Startup grace.
-        event_ts = getattr(event, "server_timestamp", 0) / 1000.0
-        # Drop messages that predate startup by more than the grace window.
-        # Use a clock-skew tolerance of 60s to handle server/client time drift.
-        _clock_skew_tolerance = 60.0
-        if event_ts and event_ts < self._startup_ts - _STARTUP_GRACE_SECONDS - _clock_skew_tolerance:
+        # Startup grace: ignore messages from initial sync batch.
+        if not self._initial_sync_done:
             return
 
         body = getattr(event, "body", "") or ""

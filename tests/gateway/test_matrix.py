@@ -1131,6 +1131,7 @@ class TestMatrixMegolmEventHandling:
     @pytest.mark.asyncio
     async def test_megolm_event_requests_room_key_and_buffers(self):
         adapter = _make_adapter()
+        adapter._initial_sync_done = True
         adapter._user_id = "@bot:example.org"
         adapter._startup_ts = 0.0
         adapter._dm_rooms = {}
@@ -1169,6 +1170,7 @@ class TestMatrixMegolmEventHandling:
     @pytest.mark.asyncio
     async def test_megolm_buffer_capped(self):
         adapter = _make_adapter()
+        adapter._initial_sync_done = True
         adapter._user_id = "@bot:example.org"
         adapter._startup_ts = 0.0
         adapter._dm_rooms = {}
@@ -1714,6 +1716,7 @@ class TestMatrixEncryptedMedia:
     @pytest.mark.asyncio
     async def test_on_room_message_media_does_not_emit_ciphertext_url_when_encrypted_media_decryption_fails(self):
         adapter = _make_adapter()
+        adapter._initial_sync_done = True
         adapter._user_id = "@bot:example.org"
         adapter._startup_ts = 0.0
         adapter._dm_rooms = {}

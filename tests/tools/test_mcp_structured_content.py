@@ -1,5 +1,6 @@
-"""Tests for MCP tool structured_content preservation."""
+"""Tests for MCP tool structuredContent preservation."""
 
+import asyncio
 import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -18,12 +19,25 @@ class _FakeContentBlock:
 
 
 class _FakeCallToolResult:
-    """Minimal CallToolResult stand-in."""
+    """Minimal CallToolResult stand-in.
 
-    def __init__(self, content, is_error=False, structured_content=None):
+    Uses camelCase ``structuredContent`` / ``isError`` to match the real
+    MCP SDK Pydantic model (``mcp.types.CallToolResult``).
+    """
+
+    def __init__(self, content, is_error=False, structuredContent=None):
         self.content = content
         self.isError = is_error
-        self.structured_content = structured_content
+        self.structuredContent = structuredContent
+
+
+def _fake_run_on_mcp_loop(coro, timeout=30):
+    """Run an MCP coroutine directly in a fresh event loop."""
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
 
 
 @pytest.fixture
@@ -31,15 +45,16 @@ def _patch_mcp_server():
     """Patch _servers and the MCP event loop so _make_tool_handler can run."""
     fake_session = MagicMock()
     fake_server = SimpleNamespace(session=fake_session)
-    with patch.dict(mcp_tool._servers, {"test-server": fake_server}):
+    with patch.dict(mcp_tool._servers, {"test-server": fake_server}), \
+         patch("tools.mcp_tool._run_on_mcp_loop", side_effect=_fake_run_on_mcp_loop):
         yield fake_session
 
 
 class TestStructuredContentPreservation:
-    """Ensure structured_content from CallToolResult is forwarded."""
+    """Ensure structuredContent from CallToolResult is forwarded."""
 
     def test_text_only_result(self, _patch_mcp_server):
-        """When no structured_content, result is text-only (existing behaviour)."""
+        """When no structuredContent, result is text-only (existing behaviour)."""
         session = _patch_mcp_server
         session.call_tool = AsyncMock(
             return_value=_FakeCallToolResult(
@@ -50,51 +65,47 @@ class TestStructuredContentPreservation:
         raw = handler({})
         data = json.loads(raw)
         assert data == {"result": "hello"}
-        assert "structuredContent" not in data
 
-    def test_structured_content_included(self, _patch_mcp_server):
-        """When structured_content is present, it must appear in the response."""
+    def test_structured_content_is_the_result(self, _patch_mcp_server):
+        """When structuredContent is present, it becomes the result directly."""
         session = _patch_mcp_server
         payload = {"value": "secret-123", "revealed": True}
         session.call_tool = AsyncMock(
             return_value=_FakeCallToolResult(
                 content=[_FakeContentBlock("OK")],
-                structured_content=payload,
+                structuredContent=payload,
             )
         )
         handler = mcp_tool._make_tool_handler("test-server", "my-tool", 30.0)
         raw = handler({})
         data = json.loads(raw)
-        assert data["result"] == "OK"
-        assert data["structuredContent"] == payload
+        assert data["result"] == payload
 
-    def test_structured_content_none_omitted(self, _patch_mcp_server):
-        """When structured_content is explicitly None, key is omitted."""
+    def test_structured_content_none_falls_back_to_text(self, _patch_mcp_server):
+        """When structuredContent is explicitly None, fall back to text."""
         session = _patch_mcp_server
         session.call_tool = AsyncMock(
             return_value=_FakeCallToolResult(
                 content=[_FakeContentBlock("done")],
-                structured_content=None,
+                structuredContent=None,
             )
         )
         handler = mcp_tool._make_tool_handler("test-server", "my-tool", 30.0)
         raw = handler({})
         data = json.loads(raw)
         assert data == {"result": "done"}
-        assert "structuredContent" not in data
 
     def test_empty_text_with_structured_content(self, _patch_mcp_server):
-        """When content blocks are empty but structured_content exists."""
+        """When content blocks are empty but structuredContent exists."""
         session = _patch_mcp_server
         payload = {"status": "ok", "data": [1, 2, 3]}
         session.call_tool = AsyncMock(
             return_value=_FakeCallToolResult(
                 content=[],
-                structured_content=payload,
+                structuredContent=payload,
             )
         )
         handler = mcp_tool._make_tool_handler("test-server", "my-tool", 30.0)
         raw = handler({})
         data = json.loads(raw)
-        assert data["result"] == ""
-        assert data["structuredContent"] == payload
+        assert data["result"] == payload

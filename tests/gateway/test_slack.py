@@ -96,7 +96,7 @@ class TestAppMentionHandler:
     """Verify that the app_mention event handler is registered."""
 
     def test_app_mention_registered_on_connect(self):
-        """connect() should register both 'message' and 'app_mention' handlers."""
+        """connect() should register message + assistant lifecycle handlers."""
         config = PlatformConfig(enabled=True, token="xoxb-fake")
         adapter = SlackAdapter(config)
 
@@ -145,6 +145,8 @@ class TestAppMentionHandler:
 
         assert "message" in registered_events
         assert "app_mention" in registered_events
+        assert "assistant_thread_started" in registered_events
+        assert "assistant_thread_context_changed" in registered_events
         assert "/hermes" in registered_commands
 
 
@@ -838,6 +840,92 @@ class TestThreadReplyHandling:
         }
         await adapter._handle_slack_message(event)
         adapter.handle_message.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# TestAssistantThreadLifecycle
+# ---------------------------------------------------------------------------
+
+
+class TestAssistantThreadLifecycle:
+    """Slack Assistant lifecycle events should seed session/user context."""
+
+    @pytest.fixture()
+    def mock_session_store(self):
+        store = MagicMock()
+        store._entries = {}
+        store._ensure_loaded = MagicMock()
+        store.config = MagicMock()
+        store.config.group_sessions_per_user = True
+        store.get_or_create_session = MagicMock()
+        return store
+
+    @pytest.fixture()
+    def assistant_adapter(self, mock_session_store):
+        config = PlatformConfig(enabled=True, token="***")
+        a = SlackAdapter(config)
+        a._app = MagicMock()
+        a._app.client = AsyncMock()
+        a._bot_user_id = "U_BOT"
+        a._team_bot_user_ids = {"T_TEAM": "U_BOT"}
+        a._running = True
+        a.handle_message = AsyncMock()
+        a.set_session_store(mock_session_store)
+        return a
+
+    @pytest.mark.asyncio
+    async def test_lifecycle_event_seeds_session_store(self, assistant_adapter, mock_session_store):
+        event = {
+            "type": "assistant_thread_started",
+            "team_id": "T_TEAM",
+            "assistant_thread": {
+                "channel_id": "D123",
+                "thread_ts": "171.000",
+                "user_id": "U_USER",
+                "context": {"channel_id": "C_ORIGIN"},
+            },
+        }
+
+        await assistant_adapter._handle_assistant_thread_lifecycle_event(event)
+
+        assert assistant_adapter._assistant_threads[("D123", "171.000")]["user_id"] == "U_USER"
+        mock_session_store.get_or_create_session.assert_called_once()
+        source = mock_session_store.get_or_create_session.call_args[0][0]
+        assert source.chat_id == "D123"
+        assert source.chat_type == "dm"
+        assert source.user_id == "U_USER"
+        assert source.thread_id == "171.000"
+        assert source.chat_topic == "C_ORIGIN"
+
+    @pytest.mark.asyncio
+    async def test_message_uses_cached_assistant_thread_identity(self, assistant_adapter):
+        assistant_adapter._assistant_threads[("D123", "171.000")] = {
+            "channel_id": "D123",
+            "thread_ts": "171.000",
+            "user_id": "U_USER",
+            "team_id": "T_TEAM",
+        }
+        assistant_adapter._app.client.users_info = AsyncMock(return_value={
+            "user": {"profile": {"display_name": "Tyler"}}
+        })
+        assistant_adapter._app.client.reactions_add = AsyncMock()
+        assistant_adapter._app.client.reactions_remove = AsyncMock()
+
+        event = {
+            "text": "hello from assistant dm",
+            "channel": "D123",
+            "channel_type": "im",
+            "thread_ts": "171.000",
+            "ts": "171.111",
+            "team": "T_TEAM",
+        }
+
+        await assistant_adapter._handle_slack_message(event)
+
+        msg_event = assistant_adapter.handle_message.call_args[0][0]
+        assert msg_event.source.user_id == "U_USER"
+        assert msg_event.source.thread_id == "171.000"
+        assert msg_event.source.user_name == "Tyler"
 
 
 # ---------------------------------------------------------------------------

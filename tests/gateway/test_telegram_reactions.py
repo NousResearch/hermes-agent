@@ -230,7 +230,9 @@ def test_config_bridges_telegram_reactions(monkeypatch, tmp_path):
         },
     }))
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    monkeypatch.delenv("TELEGRAM_REACTIONS", raising=False)
+    # Use setenv (not delenv) so monkeypatch registers cleanup even when
+    # the var doesn't exist yet — load_gateway_config will overwrite it.
+    monkeypatch.setenv("TELEGRAM_REACTIONS", "")
 
     from gateway.config import load_gateway_config
     load_gateway_config()

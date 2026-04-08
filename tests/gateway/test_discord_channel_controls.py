@@ -77,7 +77,6 @@ class FakeThread:
 def adapter(monkeypatch):
     monkeypatch.setattr(discord_platform.discord, "DMChannel", FakeDMChannel, raising=False)
     monkeypatch.setattr(discord_platform.discord, "Thread", FakeThread, raising=False)
-    monkeypatch.setattr(discord_platform.discord, "ForumChannel", type("ForumChannel", (), {}), raising=False)
 
     config = PlatformConfig(enabled=True, token="fake-token")
     adapter = DiscordAdapter(config)
@@ -294,7 +293,9 @@ def test_config_bridges_ignored_channels(monkeypatch, tmp_path):
         },
     }))
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    monkeypatch.delenv("DISCORD_IGNORED_CHANNELS", raising=False)
+    # Use setenv (not delenv) so monkeypatch registers cleanup even when
+    # the var doesn't exist yet — load_gateway_config will overwrite it.
+    monkeypatch.setenv("DISCORD_IGNORED_CHANNELS", "")
 
     from gateway.config import load_gateway_config
     load_gateway_config()
@@ -313,7 +314,7 @@ def test_config_bridges_no_thread_channels(monkeypatch, tmp_path):
         },
     }))
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    monkeypatch.delenv("DISCORD_NO_THREAD_CHANNELS", raising=False)
+    monkeypatch.setenv("DISCORD_NO_THREAD_CHANNELS", "")
 
     from gateway.config import load_gateway_config
     load_gateway_config()

@@ -463,6 +463,35 @@ platforms:
 You usually don't need to configure this manually. The auto-discovery via DoH handles most restricted-network scenarios. The `TELEGRAM_FALLBACK_IPS` env var is only needed if DoH is also blocked on your network.
 :::
 
+## Message Reactions
+
+The bot can add emoji reactions to messages as visual processing feedback:
+
+- 👀 when the bot starts processing your message
+- ✅ when the response is delivered successfully
+- ❌ if an error occurs during processing
+
+Reactions are **disabled by default**. Enable them in `config.yaml`:
+
+```yaml
+telegram:
+  reactions: true
+```
+
+Or via environment variable:
+
+```bash
+TELEGRAM_REACTIONS=true
+```
+
+:::note
+Unlike Discord (where reactions are additive), Telegram's Bot API replaces all bot reactions in a single call. The transition from 👀 to ✅/❌ happens atomically — you won't see both at once.
+:::
+
+:::tip
+If the bot doesn't have permission to add reactions in a group, the reaction calls fail silently and message processing continues normally.
+:::
+
 ## Troubleshooting
 
 | Problem | Solution |

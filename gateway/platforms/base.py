@@ -124,7 +124,14 @@ async def cache_image_from_url(url: str, ext: str = ".jpg", retries: int = 2) ->
 
     Returns:
         Absolute path to the cached image file as a string.
+
+    Raises:
+        ValueError: If the URL targets a private/internal network (SSRF protection).
     """
+    from tools.url_safety import is_safe_url
+    if not is_safe_url(url):
+        raise ValueError(f"Blocked unsafe URL (SSRF protection): {_safe_url_for_log(url)}")
+
     import asyncio
     import httpx
     import logging as _logging
@@ -232,7 +239,14 @@ async def cache_audio_from_url(url: str, ext: str = ".ogg", retries: int = 2) ->
 
     Returns:
         Absolute path to the cached audio file as a string.
+
+    Raises:
+        ValueError: If the URL targets a private/internal network (SSRF protection).
     """
+    from tools.url_safety import is_safe_url
+    if not is_safe_url(url):
+        raise ValueError(f"Blocked unsafe URL (SSRF protection): {_safe_url_for_log(url)}")
+
     import asyncio
     import httpx
     import logging as _logging

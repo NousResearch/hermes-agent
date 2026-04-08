@@ -55,6 +55,7 @@ from gateway.platforms.base import (
     cache_document_from_bytes,
     SUPPORTED_DOCUMENT_TYPES,
 )
+from tools.url_safety import is_safe_url
 
 
 def _clean_discord_id(entry: str) -> str:
@@ -1284,6 +1285,10 @@ class DiscordAdapter(BasePlatformAdapter):
         """Send an image natively as a Discord file attachment."""
         if not self._client:
             return SendResult(success=False, error="Not connected")
+
+        if not is_safe_url(image_url):
+            logger.warning("[%s] Blocked unsafe image URL during Discord send_image", self.name)
+            return await super().send_image(chat_id, image_url, caption, reply_to, metadata=metadata)
 
         try:
             import aiohttp

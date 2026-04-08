@@ -75,6 +75,7 @@ from hermes_constants import OPENROUTER_BASE_URL
 
 # Agent internals extracted to agent/ package for modularity
 from agent.memory_manager import build_memory_context_block
+from agent.retry_utils import jittered_backoff
 from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY, PLATFORM_HINTS,
     MEMORY_GUIDANCE, SESSION_SEARCH_GUIDANCE, SKILLS_GUIDANCE,
@@ -7541,7 +7542,8 @@ class AIAgent:
                             }
                         
                         # Longer backoff for rate limiting (likely cause of None choices)
-                        wait_time = min(5 * (2 ** (retry_count - 1)), 120)  # 5s, 10s, 20s, 40s, 80s, 120s
+                        # Jittered exponential: 5s base, 120s cap + random jitter
+                        wait_time = jittered_backoff(retry_count, base_delay=5.0, max_delay=120.0)
                         self._vprint(f"{self.log_prefix}⏳ Retrying in {wait_time}s (extended backoff for possible rate limit)...", force=True)
                         logging.warning(f"Invalid API response (retry {retry_count}/{max_retries}): {', '.join(error_details)} | Provider: {provider_name}")
                         
@@ -8398,7 +8400,7 @@ class AIAgent:
                                     _retry_after = min(int(_ra_raw), 120)  # Cap at 2 minutes
                                 except (TypeError, ValueError):
                                     pass
-                    wait_time = _retry_after if _retry_after else min(2 ** retry_count, 60)
+                    wait_time = _retry_after if _retry_after else jittered_backoff(retry_count, base_delay=2.0, max_delay=60.0)
                     if is_rate_limited:
                         self._emit_status(f"⏱️ Rate limit reached. Waiting {wait_time}s before retry (attempt {retry_count + 1}/{max_retries})...")
                     else:

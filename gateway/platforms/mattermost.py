@@ -223,6 +223,20 @@ class MattermostAdapter(BasePlatformAdapter):
             self._base_url,
         )
 
+        # Register custom slash commands so the Mattermost mobile client
+        # stops intercepting /approve, /deny, /help, etc. as "unknown command".
+        # Opt-in: requires MATTERMOST_SLASH_COMMAND_URL to be set to a URL
+        # that the operator has wired up to re-post the command back into a
+        # channel (or a local webhook that dispatches through the gateway).
+        # Failures here are non-fatal — the WebSocket path still works.
+        try:
+            await self._register_slash_commands()
+        except Exception as exc:
+            logger.warning(
+                "Mattermost: slash command registration failed (non-fatal): %s",
+                exc,
+            )
+
         # Start WebSocket in background.
         self._ws_task = asyncio.create_task(self._ws_loop())
         self._mark_connected()
@@ -291,6 +305,106 @@ class MattermostAdapter(BasePlatformAdapter):
         ch_type = _CHANNEL_TYPE_MAP.get(data.get("type", "O"), "channel")
         display_name = data.get("display_name") or data.get("name") or chat_id
         return {"name": display_name, "type": ch_type}
+
+    # ------------------------------------------------------------------
+    # Slash command registration
+    # ------------------------------------------------------------------
+
+    async def _register_slash_commands(self) -> None:
+        """Register ``COMMAND_REGISTRY`` entries as Mattermost custom slash commands.
+
+        Mirrors the pattern used by the Telegram adapter (``set_my_commands``)
+        and the Slack adapter (``slack_subcommand_map``).  Solves the mobile
+        client issue where ``/approve``, ``/deny``, etc. are intercepted by
+        Mattermost and rejected as "command not found" before the gateway's
+        WebSocket handler ever sees them.
+
+        Behavior:
+          * Opt-in — requires ``MATTERMOST_SLASH_COMMAND_URL`` to be set.
+            Operators point it at a webhook that re-dispatches the slash
+            command text back into the channel (or at the gateway's own
+            webhook platform).  Without this, nothing is registered.
+          * Resolves the team via ``MATTERMOST_TEAM_ID`` env var, or falls
+            back to the bot's first team from ``GET users/{id}/teams``.
+          * Dedups against already-registered triggers to keep the call
+            idempotent across restarts (see Mattermost API error for
+            duplicate triggers).
+          * Capped at 50 commands to stay well under typical server limits,
+            matching the Telegram cap documented in #4006.
+        """
+        from hermes_cli.commands import (
+            COMMAND_REGISTRY,
+            _is_gateway_available,
+            _resolve_config_gates,
+        )
+
+        callback_url = os.getenv("MATTERMOST_SLASH_COMMAND_URL", "").strip()
+        if not callback_url:
+            logger.debug(
+                "Mattermost: MATTERMOST_SLASH_COMMAND_URL not set — skipping "
+                "slash command registration"
+            )
+            return
+
+        # Resolve team ID.
+        team_id = os.getenv("MATTERMOST_TEAM_ID", "").strip()
+        if not team_id:
+            teams = await self._api_get(f"users/{self._bot_user_id}/teams")
+            if isinstance(teams, list) and teams:
+                team_id = teams[0].get("id", "")
+        if not team_id:
+            logger.warning(
+                "Mattermost: could not resolve team ID — set MATTERMOST_TEAM_ID "
+                "to enable slash command registration"
+            )
+            return
+
+        # Fetch existing commands for dedup (idempotent re-registration).
+        existing = await self._api_get(f"teams/{team_id}/commands")
+        existing_triggers: set[str] = set()
+        if isinstance(existing, list):
+            for cmd in existing:
+                trig = cmd.get("trigger")
+                if trig:
+                    existing_triggers.add(trig)
+
+        overrides = _resolve_config_gates()
+        created = 0
+        skipped_existing = 0
+        _CMD_CAP = 50
+
+        for cmd in COMMAND_REGISTRY:
+            if created + skipped_existing >= _CMD_CAP:
+                break
+            if not _is_gateway_available(cmd, overrides):
+                continue
+            trigger = cmd.name
+            if trigger in existing_triggers:
+                skipped_existing += 1
+                continue
+
+            payload: Dict[str, Any] = {
+                "team_id": team_id,
+                "trigger": trigger,
+                "method": "P",
+                "url": callback_url,
+                "auto_complete": True,
+                "auto_complete_desc": cmd.description,
+                "auto_complete_hint": cmd.args_hint or "",
+                "display_name": f"Hermes: /{trigger}",
+                "description": cmd.description,
+                "username": self._bot_username or "hermes",
+            }
+
+            data = await self._api_post("commands", payload)
+            if data and "id" in data:
+                created += 1
+                existing_triggers.add(trigger)
+
+        logger.info(
+            "Mattermost: slash commands registered (new=%d, already_present=%d, team=%s)",
+            created, skipped_existing, team_id,
+        )
 
     # ------------------------------------------------------------------
     # Optional overrides

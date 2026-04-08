@@ -37,7 +37,7 @@ export const Thinking = memo(function Thinking({
       {tools.map(tool => (
         <Text color={t.color.dim} key={tool.id}>
           <Spinner color={t.color.amber} /> {TOOL_VERBS[tool.name] ?? tool.name}
-          {tool.context ? `  ${tool.context}` : ''}
+          {tool.context ? `: ${tool.context}` : ''}
         </Text>
       ))}
 

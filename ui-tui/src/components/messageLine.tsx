@@ -13,9 +13,9 @@ export const MessageLine = memo(function MessageLine({ cols, compact, msg, t }: 
 
   if (msg.role === 'tool') {
     return (
-      <Text color={t.color.dim} wrap="wrap">
-        {'  '}{msg.text}
-      </Text>
+      <Box borderColor={t.color.dim} borderStyle="round" marginLeft={3} paddingX={1}>
+        <Text color={t.color.dim}>{msg.text}</Text>
+      </Box>
     )
   }
 

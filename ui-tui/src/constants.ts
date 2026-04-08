@@ -23,21 +23,19 @@ export const HOTKEYS: [string, string][] = [
   ['Ctrl+C', 'interrupt / clear / exit'],
   ['Ctrl+D', 'exit'],
   ['Ctrl+G', 'open $EDITOR for prompt'],
-  ['Ctrl+L', 'clear screen'],
-  ['Ctrl+V', 'paste clipboard image (same as /paste)'],
-  ['Tab', 'complete /commands (registry-aware)'],
-  ['↑/↓', 'queue edit (if queued) / input history'],
-  ['PgUp/PgDn', 'scroll messages'],
+  ['Ctrl+L', 'new session (clear)'],
+  ['Ctrl+V', 'paste clipboard image'],
+  ['Tab', 'apply completion'],
+  ['↑/↓', 'completions / queue edit / history'],
   ['Esc', 'clear input'],
   ['Ctrl+A/E', 'home / end of line'],
   ['Ctrl+W', 'delete word'],
+  ['Ctrl+U/K', 'delete to start / end'],
   ['Ctrl+←/→', 'jump word'],
   ['Home/End', 'start / end of line'],
   ['\\+Enter', 'multi-line continuation'],
   ['!cmd', 'run shell command'],
   ['{!cmd}', 'interpolate shell output inline'],
-  ['/voice record', 'start PTT recording'],
-  ['/voice stop', 'stop + transcribe']
 ]
 
 export const INTERPOLATION_RE = /\{!(.+?)\}/g

@@ -479,6 +479,16 @@ export function App({ gw }: { gw: GatewayClient }) {
       die()
     }
 
+    if (key.ctrl && ch === 'l') {
+      setStatus('forging session…')
+      newSession()
+      return
+    }
+
+    if (key.ctrl && ch === 'v') {
+      paste()
+      return
+    }
 
     if (key.ctrl && ch === 'g') {
       return openEditor()
@@ -586,7 +596,6 @@ export function App({ gw }: { gw: GatewayClient }) {
         case 'tool.start': {
           const ctx = (p.context as string) || ''
           setTools(prev => [...prev, { id: p.tool_id, name: p.name, context: ctx }])
-          appendMessage({ role: 'tool', text: `${TOOL_VERBS[p.name] ?? p.name}${ctx ? '  ' + ctx : ''}` })
           break
         }
 
@@ -595,7 +604,7 @@ export function App({ gw }: { gw: GatewayClient }) {
             const done = prev.find(t => t.id === p.tool_id)
             const label = TOOL_VERBS[done?.name ?? p.name] ?? done?.name ?? p.name
             const ctx = done?.context || ''
-            appendMessage({ role: 'tool', text: `${label}${ctx ? '  ' + ctx : ''} ✓` })
+            appendMessage({ role: 'tool', text: `${label}${ctx ? ': ' + ctx : ''} ✓` })
             return prev.filter(t => t.id !== p.tool_id)
           })
           break

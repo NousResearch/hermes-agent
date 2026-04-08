@@ -84,6 +84,10 @@ class SlackAdapter(BasePlatformAdapter):
         self._seen_messages: Dict[str, float] = {}
         self._SEEN_TTL = 300   # 5 minutes
         self._SEEN_MAX = 2000  # prune threshold
+        # Track threads the bot has participated in (channel_id:thread_ts)
+        self._active_threads: set = set()
+        # Track threads whose history has already been fetched (avoid re-fetching)
+        self._thread_history_fetched: set = set()
 
     async def connect(self) -> bool:
         """Connect to Slack via Socket Mode."""
@@ -712,6 +716,72 @@ class SlackAdapter(BasePlatformAdapter):
             )
             return {"name": chat_id, "type": "unknown"}
 
+    # ----- Thread history -----
+
+    async def _fetch_thread_context(
+        self, channel_id: str, thread_ts: str, current_ts: str,
+    ) -> str:
+        """Fetch prior messages in a Slack thread via conversations.replies.
+
+        Returns a formatted context string to prepend to the user's message,
+        or empty string if no useful history exists.
+
+        Only fetches once per thread (tracked via _thread_history_fetched).
+        Caps at the most recent 20 messages to avoid bloating the prompt.
+        """
+        thread_key = f"{channel_id}:{thread_ts}"
+        if thread_key in self._thread_history_fetched:
+            return ""
+        self._thread_history_fetched.add(thread_key)
+
+        try:
+            client = self._get_client(channel_id)
+            result = await client.conversations_replies(
+                channel=channel_id,
+                ts=thread_ts,
+                limit=21,  # 20 prior + potentially the current message
+            )
+            messages = result.get("messages", [])
+            if not messages:
+                return ""
+
+            # Filter out the current message (we don't want to duplicate it)
+            # and build context from the rest
+            bot_uid = self._bot_user_id
+            lines = []
+            for msg in messages:
+                msg_ts = msg.get("ts", "")
+                if msg_ts == current_ts:
+                    continue  # skip the message we're currently processing
+
+                msg_user = msg.get("user", "")
+                msg_text = msg.get("text", "").strip()
+                if not msg_text:
+                    continue
+
+                # Resolve display name: bot or user
+                if msg_user == bot_uid or msg.get("bot_id"):
+                    sender = "assistant"
+                else:
+                    # Try cache first, fall back to user_id
+                    sender = self._user_name_cache.get(msg_user, msg_user)
+
+                lines.append(f"[{sender}]: {msg_text}")
+
+            if not lines:
+                return ""
+
+            context = "\n".join(lines)
+            return (
+                f"[Thread context — previous messages in this thread:]\n"
+                f"{context}\n"
+                f"[End of thread context]\n\n"
+            )
+
+        except Exception as e:
+            logger.warning("[Slack] Failed to fetch thread context: %s", e)
+            return ""
+
     # ----- Internal handlers -----
 
     async def _handle_slack_message(self, event: dict) -> None:
@@ -763,11 +833,17 @@ class SlackAdapter(BasePlatformAdapter):
         else:
             thread_ts = event.get("thread_ts") or ts  # ts fallback for channels
 
-        # In channels, only respond if bot is mentioned
+        # In channels, only respond if bot is mentioned (or if we're in a thread we already joined)
         bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
         if not is_dm and bot_uid:
-            if f"<@{bot_uid}>" not in text:
+            is_mention = f"<@{bot_uid}>" in text
+            thread_key = f"{channel_id}:{event.get('thread_ts')}" if event.get("thread_ts") else None
+            is_active_thread = thread_key and thread_key in self._active_threads
+            if not is_mention and not is_active_thread:
                 return
+            # Track this thread as active if it's a mention that starts/continues a thread
+            if is_mention and thread_ts:
+                self._active_threads.add(f"{channel_id}:{thread_ts}")
             # Strip the bot mention from the text
             text = text.replace(f"<@{bot_uid}>", "").strip()
 
@@ -858,6 +934,15 @@ class SlackAdapter(BasePlatformAdapter):
 
                 except Exception as e:  # pragma: no cover - defensive logging
                     logger.warning("[Slack] Failed to cache document from %s: %s", url, e, exc_info=True)
+
+        # Fetch thread context from Slack API when this is a thread message.
+        # This gives the agent visibility into prior thread messages it may not
+        # have in its session history (e.g. first interaction in an existing thread,
+        # or after a gateway restart).
+        if thread_ts and thread_ts != ts:
+            thread_context = await self._fetch_thread_context(channel_id, thread_ts, ts)
+            if thread_context:
+                text = thread_context + text
 
         # Resolve user display name (cached after first lookup)
         user_name = await self._resolve_user_name(user_id, chat_id=channel_id)

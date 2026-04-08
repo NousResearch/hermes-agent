@@ -357,6 +357,8 @@ class HindsightMemoryProvider(MemoryProvider):
                 val = input("  LLM endpoint URL (e.g. http://192.168.1.10:8080/v1): ").strip()
                 if val:
                     provider_config["llm_base_url"] = val
+            elif llm_provider == "openrouter":
+                provider_config["llm_base_url"] = "https://openrouter.ai/api/v1"
 
             default_model = _PROVIDER_DEFAULT_MODELS.get(llm_provider, "gpt-4o-mini")
             val = input(f"  LLM model [{default_model}]: ").strip()

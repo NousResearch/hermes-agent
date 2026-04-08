@@ -4668,13 +4668,13 @@ class HermesCLI:
                             if output:
                                 self.console.print(_rich_text_from_ansi(output))
                             else:
-                                ChatConsole().print("[dim]Command returned no output[/]")
+                                self.console.print("[dim]Command returned no output[/]")
                         except subprocess.TimeoutExpired:
-                            ChatConsole().print("[bold red]Quick command timed out (30s)[/]")
+                            self.console.print("[bold red]Quick command timed out (30s)[/]")
                         except Exception as e:
-                            ChatConsole().print(f"[bold red]Quick command error: {e}[/]")
+                            self.console.print(f"[bold red]Quick command error: {e}[/]")
                     else:
-                        ChatConsole().print(f"[bold red]Quick command '{base_cmd}' has no command defined[/]")
+                        self.console.print(f"[bold red]Quick command '{base_cmd}' has no command defined[/]")
                 elif qcmd.get("type") == "alias":
                     target = qcmd.get("target", "").strip()
                     if target:
@@ -4683,9 +4683,9 @@ class HermesCLI:
                         aliased_command = f"{target} {user_args}".strip()
                         return self.process_command(aliased_command)
                     else:
-                        ChatConsole().print(f"[bold red]Quick command '{base_cmd}' has no target defined[/]")
+                        self.console.print(f"[bold red]Quick command '{base_cmd}' has no target defined[/]")
                 else:
-                    ChatConsole().print(f"[bold red]Quick command '{base_cmd}' has unsupported type (supported: 'exec', 'alias')[/]")
+                    self.console.print(f"[bold red]Quick command '{base_cmd}' has unsupported type (supported: 'exec', 'alias')[/]")
             # Check for plugin-registered slash commands
             elif base_cmd.lstrip("/") in _get_plugin_cmd_handler_names():
                 from hermes_cli.plugins import get_plugin_command_handler

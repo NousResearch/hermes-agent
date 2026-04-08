@@ -2678,7 +2678,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
     def _reactions_enabled(self) -> bool:
         """Check if message reactions are enabled via config/env."""
-        return os.getenv("TELEGRAM_REACTIONS", "true").lower() not in ("false", "0", "no")
+        return os.getenv("TELEGRAM_REACTIONS", "false").lower() not in ("false", "0", "no")
 
     async def _set_reaction(self, chat_id: str, message_id: str, emoji: str) -> bool:
         """Set a single emoji reaction on a Telegram message."""
@@ -2695,21 +2695,6 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.debug("[%s] set_message_reaction failed (%s): %s", self.name, emoji, e)
             return False
 
-    async def _remove_reaction(self, chat_id: str, message_id: str) -> bool:
-        """Remove all reactions from a Telegram message."""
-        if not self._bot:
-            return False
-        try:
-            await self._bot.set_message_reaction(
-                chat_id=int(chat_id),
-                message_id=int(message_id),
-                reaction=None,
-            )
-            return True
-        except Exception as e:
-            logger.debug("[%s] remove_reaction failed: %s", self.name, e)
-            return False
-
     async def on_processing_start(self, event: MessageEvent) -> None:
         """Add an in-progress reaction when message processing begins."""
         if not self._reactions_enabled():
@@ -2720,7 +2705,11 @@ class TelegramAdapter(BasePlatformAdapter):
             await self._set_reaction(chat_id, message_id, "\U0001f440")
 
     async def on_processing_complete(self, event: MessageEvent, success: bool) -> None:
-        """Swap the in-progress reaction for a final success/failure reaction."""
+        """Swap the in-progress reaction for a final success/failure reaction.
+
+        Unlike Discord (additive reactions), Telegram's set_message_reaction
+        replaces all existing reactions in one call — no remove step needed.
+        """
         if not self._reactions_enabled():
             return
         chat_id = getattr(event.source, "chat_id", None)

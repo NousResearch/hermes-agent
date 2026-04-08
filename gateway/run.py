@@ -921,12 +921,11 @@ class GatewayRunner:
 
     @staticmethod
     def _load_reasoning_config() -> dict | None:
-        """Load reasoning effort from config with env fallback.
+        """Load reasoning effort from config.yaml.
 
-        Checks agent.reasoning_effort in config.yaml first, then
-        HERMES_REASONING_EFFORT as a fallback. Valid: "xhigh", "high",
-        "medium", "low", "minimal", "none". Returns None to use default
-        (medium).
+        Reads agent.reasoning_effort from config.yaml. Valid: "xhigh",
+        "high", "medium", "low", "minimal", "none". Returns None to use
+        default (medium).
         """
         from hermes_constants import parse_reasoning_effort
         effort = ""
@@ -939,8 +938,6 @@ class GatewayRunner:
                 effort = str(cfg.get("agent", {}).get("reasoning_effort", "") or "").strip()
         except Exception:
             pass
-        if not effort:
-            effort = os.getenv("HERMES_REASONING_EFFORT", "")
         result = parse_reasoning_effort(effort)
         if effort and effort.strip() and result is None:
             logger.warning("Unknown reasoning_effort '%s', using default (medium)", effort)

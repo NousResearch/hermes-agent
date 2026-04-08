@@ -585,11 +585,9 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         except Exception as e:
             logger.warning("Job '%s': failed to load config.yaml, using defaults: %s", job_id, e)
 
-        # Reasoning config from env or config.yaml
+        # Reasoning config from config.yaml
         from hermes_constants import parse_reasoning_effort
-        effort = os.getenv("HERMES_REASONING_EFFORT", "")
-        if not effort:
-            effort = str(_cfg.get("agent", {}).get("reasoning_effort", "")).strip()
+        effort = str(_cfg.get("agent", {}).get("reasoning_effort", "")).strip()
         reasoning_config = parse_reasoning_effort(effort)
 
         # Prefill messages from env or config.yaml

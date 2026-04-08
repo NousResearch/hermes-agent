@@ -54,6 +54,23 @@ _PROVIDER_ENV_HINTS = (
 )
 
 
+def _is_termux() -> bool:
+    prefix = os.getenv("PREFIX", "")
+    return bool(os.getenv("TERMUX_VERSION") or "com.termux/files/usr" in prefix)
+
+
+def _python_install_cmd() -> str:
+    return "python -m pip install" if _is_termux() else "uv pip install"
+
+
+def _system_package_install_cmd(pkg: str) -> str:
+    if _is_termux():
+        return f"pkg install {pkg}"
+    if sys.platform == "darwin":
+        return f"brew install {pkg}"
+    return f"sudo apt install {pkg}"
+
+
 def _has_provider_env_config(content: str) -> bool:
     """Return True when ~/.hermes/.env contains provider auth/base URL settings."""
     return any(key in content for key in _PROVIDER_ENV_HINTS)
@@ -200,7 +217,7 @@ def run_doctor(args):
             check_ok(name)
         except ImportError:
             check_fail(name, "(missing)")
-            issues.append(f"Install {name}: uv pip install {module}")
+            issues.append(f"Install {name}: {_python_install_cmd()} {module}")
     
     for module, name in optional_packages:
         try:
@@ -503,7 +520,7 @@ def run_doctor(args):
         check_ok("ripgrep (rg)", "(faster file search)")
     else:
         check_warn("ripgrep (rg) not found", "(file search uses grep fallback)")
-        check_info("Install for faster search: sudo apt install ripgrep")
+        check_info(f"Install for faster search: {_system_package_install_cmd('ripgrep')}")
     
     # Docker (optional)
     terminal_env = os.getenv("TERMINAL_ENV", "local")
@@ -577,6 +594,8 @@ def run_doctor(args):
             check_warn("agent-browser not installed", "(run: npm install)")
     else:
         check_warn("Node.js not found", "(optional, needed for browser tools)")
+        if _is_termux():
+            check_info("Install Node.js on Termux with: pkg install nodejs")
     
     # npm audit for all Node.js packages
     if shutil.which("npm"):
@@ -739,8 +758,9 @@ def run_doctor(args):
                 __import__("tinker_atropos")
                 check_ok("tinker-atropos", "(RL training backend)")
             except ImportError:
-                check_warn("tinker-atropos found but not installed", "(run: uv pip install -e ./tinker-atropos)")
-                issues.append("Install tinker-atropos: uv pip install -e ./tinker-atropos")
+                install_cmd = f"{_python_install_cmd()} -e ./tinker-atropos"
+                check_warn("tinker-atropos found but not installed", f"(run: {install_cmd})")
+                issues.append(f"Install tinker-atropos: {install_cmd}")
         else:
             check_warn("tinker-atropos requires Python 3.11+", f"(current: {py_version.major}.{py_version.minor})")
     else:

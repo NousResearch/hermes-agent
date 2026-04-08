@@ -808,6 +808,55 @@ def test_minimax_explicit_api_mode_respected(monkeypatch):
     assert resolved["api_mode"] == "chat_completions"
 
 
+def test_minimax_config_base_url_overrides_hardcoded_default(monkeypatch):
+    """model.base_url in config.yaml should override the hardcoded default (#6039)."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "minimax")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {
+        "provider": "minimax",
+        "base_url": "https://api.minimaxi.com/anthropic",
+    })
+    monkeypatch.setenv("MINIMAX_API_KEY", "test-minimax-key")
+    monkeypatch.delenv("MINIMAX_BASE_URL", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="minimax")
+
+    assert resolved["provider"] == "minimax"
+    assert resolved["base_url"] == "https://api.minimaxi.com/anthropic"
+    assert resolved["api_mode"] == "anthropic_messages"
+
+
+def test_minimax_env_base_url_still_wins_over_config(monkeypatch):
+    """MINIMAX_BASE_URL env var should take priority over config.yaml model.base_url."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "minimax")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {
+        "provider": "minimax",
+        "base_url": "https://api.minimaxi.com/anthropic",
+    })
+    monkeypatch.setenv("MINIMAX_API_KEY", "test-minimax-key")
+    monkeypatch.setenv("MINIMAX_BASE_URL", "https://custom.example.com/v1")
+
+    resolved = rp.resolve_runtime_provider(requested="minimax")
+
+    # Env var wins because resolve_api_key_provider_credentials prefers it
+    assert resolved["base_url"] == "https://custom.example.com/v1"
+
+
+def test_minimax_config_base_url_ignored_for_different_provider(monkeypatch):
+    """model.base_url should NOT be used when model.provider doesn't match."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "minimax")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {
+        "provider": "openrouter",
+        "base_url": "https://some-other-endpoint.com/v1",
+    })
+    monkeypatch.setenv("MINIMAX_API_KEY", "test-minimax-key")
+    monkeypatch.delenv("MINIMAX_BASE_URL", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="minimax")
+
+    # Should use the default, NOT the config base_url from a different provider
+    assert resolved["base_url"] == "https://api.minimax.io/anthropic"
+
+
 def test_alibaba_default_coding_intl_endpoint_uses_chat_completions(monkeypatch):
     """Alibaba default coding-intl /v1 URL should use chat_completions mode."""
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "alibaba")

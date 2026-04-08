@@ -163,6 +163,16 @@ def _resolve_runtime_from_pool_entry(
         api_mode = _copilot_runtime_api_mode(model_cfg, getattr(entry, "runtime_api_key", ""))
     else:
         configured_provider = str(model_cfg.get("provider") or "").strip().lower()
+        # Honour model.base_url from config.yaml when the configured provider
+        # matches this provider — same pattern as the Anthropic branch above.
+        # Only override when the pool entry has no explicit base_url (i.e. it
+        # fell back to the hardcoded default).  Env var overrides win (#6039).
+        pconfig = PROVIDER_REGISTRY.get(provider)
+        pool_url_is_default = pconfig and base_url.rstrip("/") == pconfig.inference_base_url.rstrip("/")
+        if configured_provider == provider and pool_url_is_default:
+            cfg_base_url = str(model_cfg.get("base_url") or "").strip().rstrip("/")
+            if cfg_base_url:
+                base_url = cfg_base_url
         configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
         if configured_mode and _provider_supports_explicit_api_mode(provider, configured_provider):
             api_mode = configured_mode
@@ -724,7 +734,15 @@ def resolve_runtime_provider(
     pconfig = PROVIDER_REGISTRY.get(provider)
     if pconfig and pconfig.auth_type == "api_key":
         creds = resolve_api_key_provider_credentials(provider)
-        base_url = creds.get("base_url", "").rstrip("/")
+        # Honour model.base_url from config.yaml when the configured provider
+        # matches this provider — mirrors the Anthropic path above.  Without
+        # this, users who set model.base_url to e.g. api.minimaxi.com/anthropic
+        # (China endpoint) still get the hardcoded api.minimax.io default (#6039).
+        cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
+        cfg_base_url = ""
+        if cfg_provider == provider:
+            cfg_base_url = (model_cfg.get("base_url") or "").strip().rstrip("/")
+        base_url = cfg_base_url or creds.get("base_url", "").rstrip("/")
         api_mode = "chat_completions"
         if provider == "copilot":
             api_mode = _copilot_runtime_api_mode(model_cfg, creds.get("api_key", ""))

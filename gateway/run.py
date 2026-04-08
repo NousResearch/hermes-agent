@@ -2921,6 +2921,22 @@ class GatewayRunner:
 
             response = agent_result.get("final_response") or ""
             agent_messages = agent_result.get("messages", [])
+
+            # Strip compaction handoff echoes — if the model parrots the
+            # [CONTEXT COMPACTION] summary stored in its context, remove
+            # it so the user gets a clean greeting instead of a raw
+            # internal handoff blob (#6212).
+            if response and "[CONTEXT COMPACTION]" in response:
+                import re as _re_compact
+                response = _re_compact.sub(
+                    r'\[CONTEXT COMPACTION\].*?(?:avoid repeating work:)',
+                    '',
+                    response,
+                    flags=_re_compact.DOTALL,
+                ).strip()
+                if not response:
+                    response = ""
+
             _response_time = time.time() - _msg_start_time
             _api_calls = agent_result.get("api_calls", 0)
             _resp_len = len(response)

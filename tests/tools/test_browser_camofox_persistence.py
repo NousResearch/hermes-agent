@@ -16,6 +16,7 @@ from tools.browser_camofox import (
     _managed_persistence_enabled,
     camofox_close,
     camofox_navigate,
+    camofox_soft_cleanup,
     check_camofox_available,
     cleanup_all_camofox_sessions,
     get_vnc_url,
@@ -240,3 +241,50 @@ class TestVncUrlDiscovery:
 
         assert result["vnc_url"] == "http://localhost:6080"
         assert "vnc_hint" in result
+
+
+class TestCamofoxSoftCleanup:
+    """camofox_soft_cleanup drops local state only when managed persistence is on."""
+
+    def test_returns_true_and_drops_session_when_enabled(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+
+        with _enable_persistence():
+            _get_session("task-1")
+            result = camofox_soft_cleanup("task-1")
+
+        assert result is True
+        # Session should have been dropped from in-memory store
+        import tools.browser_camofox as mod
+        with mod._sessions_lock:
+            assert "task-1" not in mod._sessions
+
+    def test_returns_false_when_disabled(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+
+        _get_session("task-1")
+        config = {"browser": {"camofox": {"managed_persistence": False}}}
+        with patch("tools.browser_camofox.load_config", return_value=config):
+            result = camofox_soft_cleanup("task-1")
+
+        assert result is False
+        # Session should still be present — not dropped
+        import tools.browser_camofox as mod
+        with mod._sessions_lock:
+            assert "task-1" in mod._sessions
+
+    def test_does_not_call_server_delete(self, tmp_path, monkeypatch):
+        """Soft cleanup must never hit the Camofox /sessions DELETE endpoint."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+
+        with (
+            _enable_persistence(),
+            patch("tools.browser_camofox.requests.delete") as mock_delete,
+        ):
+            _get_session("task-1")
+            camofox_soft_cleanup("task-1")
+
+        mock_delete.assert_not_called()

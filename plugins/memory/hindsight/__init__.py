@@ -23,11 +23,11 @@ import json
 import logging
 import os
 import threading
-
-from hermes_constants import get_hermes_home
+from importlib.util import find_spec
 from typing import Any, Dict, List
 
 from agent.memory_provider import MemoryProvider
+from hermes_constants import get_hermes_home
 from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
@@ -35,6 +35,8 @@ logger = logging.getLogger(__name__)
 _DEFAULT_API_URL = "https://api.hindsight.vectorize.io"
 _DEFAULT_LOCAL_URL = "http://localhost:8888"
 _VALID_BUDGETS = {"low", "mid", "high"}
+_CLOUD_CLIENT_MODULE = "hindsight_client"
+_LOCAL_DEPENDENCIES = ("hindsight", "hindsight_embed")
 _PROVIDER_DEFAULT_MODELS = {
     "openai": "gpt-4o-mini",
     "anthropic": "claude-haiku-4-5",
@@ -78,6 +80,57 @@ def _run_sync(coro, timeout: float = 120.0):
     loop = _get_loop()
     future = asyncio.run_coroutine_threadsafe(coro, loop)
     return future.result(timeout=timeout)
+
+
+def _missing_modules(module_names: tuple[str, ...]) -> list[str]:
+    """Return any modules that are unavailable in the current environment."""
+    missing = []
+    for module_name in module_names:
+        try:
+            if find_spec(module_name) is None:
+                missing.append(module_name)
+        except (ImportError, ModuleNotFoundError, ValueError):
+            missing.append(module_name)
+    return missing
+
+
+def _missing_local_dependencies() -> list[str]:
+    """Return any missing packages required for local embedded mode."""
+    return _missing_modules(_LOCAL_DEPENDENCIES)
+
+
+def _local_dependency_error(missing: list[str] | None = None) -> str:
+    """Build a clear error for unavailable local embedded mode."""
+    if missing is None:
+        missing = _missing_local_dependencies()
+    missing_list = ", ".join(missing)
+    required_list = ", ".join(_LOCAL_DEPENDENCIES)
+    return (
+        "Hindsight local mode requires embedded dependencies "
+        f"({required_list}). Missing: {missing_list}. "
+        "Run `hermes memory setup` to install the local provider dependencies."
+    )
+
+
+def _require_local_dependencies() -> None:
+    """Raise a clear error when local embedded mode is unavailable."""
+    missing = _missing_local_dependencies()
+    if missing:
+        raise RuntimeError(_local_dependency_error(missing))
+
+
+def _has_cloud_client() -> bool:
+    """Return True when the cloud client dependency is importable."""
+    return not _missing_modules((_CLOUD_CLIENT_MODULE,))
+
+
+def _require_cloud_client() -> None:
+    """Raise a clear error when cloud mode is unavailable."""
+    if not _has_cloud_client():
+        raise RuntimeError(
+            f"Hindsight cloud mode requires the `{_CLOUD_CLIENT_MODULE}` package. "
+            "Run `hermes memory setup` to install the provider dependencies."
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -205,10 +258,10 @@ class HindsightMemoryProvider(MemoryProvider):
             cfg = _load_config()
             mode = cfg.get("mode", "cloud")
             if mode == "local":
-                return True
+                return not _missing_local_dependencies()
             has_key = bool(cfg.get("apiKey") or os.environ.get("HINDSIGHT_API_KEY", ""))
             has_url = bool(cfg.get("api_url") or os.environ.get("HINDSIGHT_API_URL", ""))
-            return has_key or has_url
+            return (has_key or has_url) and _has_cloud_client()
         except Exception:
             return False
 
@@ -246,6 +299,7 @@ class HindsightMemoryProvider(MemoryProvider):
         """Return the cached Hindsight client (created once, reused)."""
         if self._client is None:
             if self._mode == "local":
+                _require_local_dependencies()
                 from hindsight import HindsightEmbedded
                 # Disable __del__ on the class to prevent "attached to a
                 # different loop" errors during GC — we handle cleanup in
@@ -258,6 +312,7 @@ class HindsightMemoryProvider(MemoryProvider):
                     llm_model=self._config.get("llm_model", ""),
                 )
             else:
+                _require_cloud_client()
                 from hindsight_client import Hindsight
                 kwargs = {"base_url": self._api_url, "timeout": 30.0}
                 if self._api_key:
@@ -282,6 +337,11 @@ class HindsightMemoryProvider(MemoryProvider):
 
         prefetch_method = self._config.get("prefetch_method", "recall")
         self._prefetch_method = prefetch_method if prefetch_method in ("recall", "reflect") else "recall"
+
+        if self._mode == "local":
+            _require_local_dependencies()
+        else:
+            _require_cloud_client()
 
         logger.info("Hindsight initialized: mode=%s, api_url=%s, bank=%s, budget=%s, memory_mode=%s, prefetch_method=%s",
                      self._mode, self._api_url, self._bank_id, self._budget, self._memory_mode, self._prefetch_method)

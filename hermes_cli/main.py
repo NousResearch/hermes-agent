@@ -565,14 +565,19 @@ def _launch_tui():
 
     tsx = tui_dir / "node_modules" / ".bin" / "tsx"
     if tsx.exists():
-        sys.exit(subprocess.call([str(tsx), "src/entry.tsx"], cwd=str(tui_dir)))
+        argv = [str(tsx), "src/entry.tsx"]
+    else:
+        npm = shutil.which("npm")
+        if not npm:
+            print("npm not found in PATH. Source your nvm/node setup or set PATH.")
+            sys.exit(1)
+        argv = [npm, "start"]
 
-    npm = shutil.which("npm")
-    if not npm:
-        print("npm not found in PATH. Source your nvm/node setup or set PATH.")
-        sys.exit(1)
-
-    sys.exit(subprocess.call([npm, "start"], cwd=str(tui_dir)))
+    try:
+        code = subprocess.call(argv, cwd=str(tui_dir))
+    except KeyboardInterrupt:
+        code = 130
+    sys.exit(code)
 
 
 def cmd_chat(args):

@@ -1,0 +1,92 @@
+
+┌─────────────────────────────────────────────────────────┐
+│                     Hermes Doctor                        │
+└─────────────────────────────────────────────────────────┘
+
+* Python Environment
+  [OK] Python 3.12.10
+  [WARN] Not in virtual environment (recommended)
+
+* Required Packages
+  [FAIL] OpenAI SDK (missing)
+  [OK] Rich (terminal UI)
+  [OK] python-dotenv
+  [OK] PyYAML
+  [OK] HTTPX
+  [WARN] Croniter (cron expressions) (optional, not installed)
+  [WARN] python-telegram-bot (optional, not installed)
+  [WARN] discord.py (optional, not installed)
+
+* Configuration Files
+  [OK] ~/.hermes/.env file exists
+  [OK] API key or custom endpoint configured
+  [OK] ~/.hermes/config.yaml exists
+  [OK] Config version up to date (v12)
+
+* Auth Providers
+  [WARN] Nous Portal auth (not logged in)
+  [WARN] OpenAI Codex auth (not logged in)
+    -> No Codex credentials stored. Run `hermes auth` to authenticate.
+  [WARN] codex CLI not found (required for openai-codex login)
+
+* Directory Structure
+  [OK] ~/.hermes directory exists
+  [OK] ~/.hermes/cron/ exists
+  [OK] ~/.hermes/sessions/ exists
+  [OK] ~/.hermes/logs/ exists
+  [OK] ~/.hermes/skills/ exists
+  [OK] ~/.hermes/memories/ exists
+  [OK] ~/.hermes/SOUL.md exists (persona configured)
+  [OK] ~/.hermes/memories/ directory exists
+    -> MEMORY.md not created yet (will be created when the agent first writes a memory)
+    -> USER.md not created yet (will be created when the agent first writes a memory)
+  [OK] ~/.hermes/state.db exists (2 sessions)
+
+* External Tools
+  [OK] git
+  [OK] ripgrep (rg) (faster file search)
+  [OK] docker (optional)
+  [OK] Node.js
+  [OK] agent-browser (Node.js) (browser automation)
+
+* API Connectivity
+  [WARN] OpenRouter API (not configured)
+  Checking OpenCode Go API...
+  [WARN] OpenCode Go          (HTTP 404)           
+
+* Submodules
+  [WARN] tinker-atropos found but not installed (run: uv pip install -e ./tinker-atropos)
+
+* Tool Availability
+  [OK] terminal
+  [OK] file
+  [OK] skills
+  [OK] cronjob
+  [OK] todo
+  [OK] clarify
+  [OK] delegation
+  [WARN] rl (missing TINKER_API_KEY, WANDB_API_KEY)
+  [WARN] tts (system dependency not met)
+  [WARN] code_execution (system dependency not met)
+  [WARN] messaging (system dependency not met)
+  [WARN] homeassistant (system dependency not met)
+
+* Skills Hub
+  [WARN] Skills Hub directory not initialized (run: hermes skills list)
+  [WARN] No GITHUB_TOKEN (60 req/hr rate limit — set in ~/.hermes/.env for better rates)
+
+* Honcho Memory
+  [WARN] Honcho config not found run: hermes memory setup
+
+* Mem0 Memory
+  [WARN] Mem0 not configured (set MEM0_API_KEY in .env or run hermes memory setup)
+
+────────────────────────────────────────────────────────────
+  Found 3 issue(s) to address:
+
+  1. Install OpenAI SDK: uv pip install openai
+  2. Install tinker-atropos: uv pip install -e ./tinker-atropos
+  3. Run 'hermes setup' to configure missing API keys for full tool access
+
+  Tip: run 'hermes doctor --fix' to auto-fix what's possible.
+

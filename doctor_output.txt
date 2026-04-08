@@ -1,0 +1,71 @@
+
+┌─────────────────────────────────────────────────────────┐
+│                     Hermes Doctor                        │
+└─────────────────────────────────────────────────────────┘
+
+* Python Environment
+  [OK] Python 3.12.10
+  [WARN] Not in virtual environment (recommended)
+
+◆ Required Packages
+  [FAIL] OpenAI SDK (missing)
+  [OK] Rich (terminal UI)
+  [OK] python-dotenv
+  [OK] PyYAML
+  [OK] HTTPX
+  [WARN] Croniter (cron expressions) (optional, not installed)
+  [WARN] python-telegram-bot (optional, not installed)
+  [WARN] discord.py (optional, not installed)
+
+◆ Configuration Files
+  [OK] ~/.hermes/.env file exists
+  [OK] API key or custom endpoint configured
+  [OK] ~/.hermes/config.yaml exists
+  [OK] Config version up to date (v12)
+
+◆ Auth Providers
+  [WARN] Nous Portal auth (not logged in)
+  [WARN] OpenAI Codex auth (not logged in)
+    -> No Codex credentials stored. Run `hermes auth` to authenticate.
+  [WARN] codex CLI not found (required for openai-codex login)
+
+◆ Directory Structure
+  [OK] ~/.hermes directory exists
+  [OK] ~/.hermes/cron/ exists
+  [OK] ~/.hermes/sessions/ exists
+  [OK] ~/.hermes/logs/ exists
+  [OK] ~/.hermes/skills/ exists
+  [OK] ~/.hermes/memories/ exists
+  [OK] ~/.hermes/SOUL.md exists (persona configured)
+  [OK] ~/.hermes/memories/ directory exists
+    -> MEMORY.md not created yet (will be created when the agent first writes a memory)
+    -> USER.md not created yet (will be created when the agent first writes a memory)
+  [OK] ~/.hermes/state.db exists (2 sessions)
+
+◆ External Tools
+  [OK] git
+  [OK] ripgrep (rg) (faster file search)
+  [OK] docker (optional)
+  [OK] Node.js
+  [OK] agent-browser (Node.js) (browser automation)
+
+◆ API Connectivity
+  [WARN] OpenRouter API (not configured)
+Traceback (most recent call last):
+  File "C:\Users\beer8\AppData\Local\hermes\hermes-agent\hermes_cli\doctor.py", line 724, in run_doctor
+    print(f"\r  {color('\u26a0', Colors.YELLOW)} {_label} {color(f'(HTTP {_resp.status_code})', Colors.DIM)}           ")
+UnicodeEncodeError: 'cp950' codec can't encode character '\u26a0' in position 3: illegal multibyte sequence
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "C:\Users\beer8\AppData\Local\hermes\hermes-agent\hermes", line 11, in <module>
+    main()
+  File "C:\Users\beer8\AppData\Local\hermes\hermes-agent\hermes_cli\main.py", line 5574, in main
+    args.func(args)
+  File "C:\Users\beer8\AppData\Local\hermes\hermes-agent\hermes_cli\main.py", line 2585, in cmd_doctor
+    run_doctor(args)
+  File "C:\Users\beer8\AppData\Local\hermes\hermes-agent\hermes_cli\doctor.py", line 726, in run_doctor
+    print(f"\r  {color('\u26a0', Colors.YELLOW)} {_label} {color(f'({_e})', Colors.DIM)}           ")
+UnicodeEncodeError: 'cp950' codec can't encode character '\u26a0' in position 3: illegal multibyte sequence
+  Checking OpenCode Go API...

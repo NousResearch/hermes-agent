@@ -1,6 +1,7 @@
 """Tests for gateway/platforms/base.py — MessageEvent, media extraction, message truncation."""
 
 import os
+import pytest
 from unittest.mock import patch
 
 from gateway.platforms.base import (
@@ -8,8 +9,11 @@ from gateway.platforms.base import (
     GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE,
     MessageEvent,
     MessageType,
+    SendResult,
     _safe_url_for_log,
 )
+from gateway.session import SessionSource
+from gateway.config import Platform, PlatformConfig
 
 
 class TestSecretCaptureGuidance:
@@ -448,3 +452,80 @@ class TestGetHumanDelay:
         with patch.dict(os.environ, env):
             delay = BasePlatformAdapter._get_human_delay()
             assert 0.1 <= delay <= 0.2
+
+
+class _SilentResponseAdapter(BasePlatformAdapter):
+    async def connect(self):
+        return True
+
+    async def disconnect(self):
+        pass
+
+    async def send(self, chat_id, content, reply_to=None, metadata=None):
+        self.sent_messages.append(content)
+        return SendResult(success=True, message_id="sent")
+
+    async def get_chat_info(self, chat_id):
+        return {}
+
+
+class TestSilentResponseSuppression:
+    def _adapter(self):
+        adapter = _SilentResponseAdapter(
+            config=PlatformConfig(enabled=True, token="test"),
+            platform=Platform.DISCORD,
+        )
+        adapter.sent_messages = []
+        return adapter
+
+    def _event(self, text="hello"):
+        return MessageEvent(
+            text=text,
+            source=SessionSource(
+                platform=Platform.DISCORD,
+                chat_id="chat-1",
+                chat_type="channel",
+                user_id="user-1",
+                user_name="sd",
+            ),
+            message_id="msg-1",
+        )
+
+    @pytest.mark.asyncio
+    async def test_empty_sentinel_is_not_sent(self):
+        adapter = self._adapter()
+
+        async def handler(_event):
+            return "(empty)"
+
+        adapter.set_message_handler(handler)
+
+        await adapter._process_message_background(self._event(), "chat-1")
+
+        assert adapter.sent_messages == []
+
+    @pytest.mark.asyncio
+    async def test_whitespace_wrapped_empty_sentinel_is_not_sent(self):
+        adapter = self._adapter()
+
+        async def handler(_event):
+            return "  (empty) \n"
+
+        adapter.set_message_handler(handler)
+
+        await adapter._process_message_background(self._event(), "chat-1")
+
+        assert adapter.sent_messages == []
+
+    @pytest.mark.asyncio
+    async def test_regular_response_still_sends(self):
+        adapter = self._adapter()
+
+        async def handler(_event):
+            return "hello back"
+
+        adapter.set_message_handler(handler)
+
+        await adapter._process_message_background(self._event(), "chat-1")
+
+        assert adapter.sent_messages == ["hello back"]

@@ -74,6 +74,19 @@ def _safe_url_for_log(url: str, max_len: int = 80) -> str:
     return f"{safe[:max_len - 3]}..."
 
 
+def _is_silent_response(response: Optional[str]) -> bool:
+    """Return True when a handler result should not be sent to the user.
+
+    Hermes core can surface a reasoning-only completion as the literal string
+    ``"(empty)"``. Treat that sentinel the same as a true empty/None response
+    at the messaging boundary so it behaves like "no reply".
+    """
+    if response is None:
+        return True
+    normalized = str(response).strip()
+    return not normalized or normalized == "(empty)"
+
+
 # ---------------------------------------------------------------------------
 # Image cache utilities
 #
@@ -1227,12 +1240,14 @@ class BasePlatformAdapter(ABC):
             # Call the handler (this can take a while with tool calls)
             response = await self._message_handler(event)
             
-            # Send response if any.  A None/empty response is normal when
-            # streaming already delivered the text (already_sent=True) or
-            # when the message was queued behind an active agent.  Log at
-            # DEBUG to avoid noisy warnings for expected behavior.
-            if not response:
+            # Send response if any. A None/empty response is normal when
+            # streaming already delivered the text (already_sent=True), when
+            # the message was queued behind an active agent, or when the core
+            # completed with the "(empty)" sentinel for "no visible reply".
+            # Log at DEBUG to avoid noisy warnings for expected behavior.
+            if _is_silent_response(response):
                 logger.debug("[%s] Handler returned empty/None response for %s", self.name, event.source.chat_id)
+                response = None
             if response:
                 # Extract MEDIA:<path> tags (from TTS tool) before other processing
                 media_files, response = self.extract_media(response)

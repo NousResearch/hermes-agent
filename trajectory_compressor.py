@@ -44,6 +44,7 @@ import fire
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn, TimeElapsedColumn, TimeRemainingColumn
 from rich.console import Console
 from hermes_constants import OPENROUTER_BASE_URL
+from agent.retry_utils import jittered_backoff
 
 # Load environment variables
 from dotenv import load_dotenv
@@ -585,7 +586,7 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
                 self.logger.warning(f"Summarization attempt {attempt + 1} failed: {e}")
                 
                 if attempt < self.config.max_retries - 1:
-                    time.sleep(self.config.retry_delay * (attempt + 1))
+                    time.sleep(jittered_backoff(attempt + 1, base_delay=self.config.retry_delay, max_delay=30.0))
                 else:
                     # Fallback: create a basic summary
                     return "[CONTEXT SUMMARY]: [Summary generation failed - previous turns contained tool calls and responses that have been compressed to save context space.]"
@@ -647,7 +648,7 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
                 self.logger.warning(f"Summarization attempt {attempt + 1} failed: {e}")
                 
                 if attempt < self.config.max_retries - 1:
-                    await asyncio.sleep(self.config.retry_delay * (attempt + 1))
+                    await asyncio.sleep(jittered_backoff(attempt + 1, base_delay=self.config.retry_delay, max_delay=30.0))
                 else:
                     # Fallback: create a basic summary
                     return "[CONTEXT SUMMARY]: [Summary generation failed - previous turns contained tool calls and responses that have been compressed to save context space.]"

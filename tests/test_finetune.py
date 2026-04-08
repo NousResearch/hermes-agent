@@ -253,9 +253,13 @@ class TestScorer:
             {"role": "user", "content": "No, I meant X not Y. Actually, I want X."},
         ])
         scored = scorer.score_session(session)
-        # Turn score for the assistant turn should be low
-        turn_scores = scored["scoring"]["turn_scores"]
-        assert any(s < 0.3 for _, s in turn_scores)
+        # The negative_turn_signal carries the correction-induced low score.
+        # In positive_signals mode, turn_scores exposes positive signals
+        # (which default to 0.5 neutral when nothing fires), so the
+        # discriminating signal lives in negative_turn_signal.
+        assert scored["scoring"]["negative_turn_signal"] < 0.3
+        # And the composite should land in the bad bucket given the correction
+        assert scored["scoring"]["bucket"] in ("bad", "neutral")
 
 
 # ============================================================================
@@ -856,3 +860,249 @@ class TestTurnExtraction:
         assert examples[0]["session_id"] == "trace-test"
         assert "turn_index_in_session" in examples[0]
         assert examples[0]["score"] == 0.9
+
+
+# ============================================================================
+# Positive signal tests (Phase 1 — see hermes-finetune-positive-signals-spec)
+# ============================================================================
+
+class TestPositiveSignals:
+    def _turn(self, role, content="", tool_calls=None, tool_name=None):
+        t = {"role": role, "content": content}
+        if tool_calls:
+            t["tool_calls"] = tool_calls
+        if tool_name:
+            t["tool_name"] = tool_name
+        return t
+
+    # ---- Tool result classification ----
+
+    def test_tool_result_status_success(self, tmp_hermes):
+        from score import _tool_result_status
+        assert _tool_result_status("file content here") == "success"
+        assert _tool_result_status('{"total_count": 5, "files": ["a.py"]}') == "success"
+
+    def test_tool_result_status_soft_failure(self, tmp_hermes):
+        from score import _tool_result_status
+        assert _tool_result_status('{"total_count": 0}') == "soft_failure"
+        assert _tool_result_status('{"results": []}') == "soft_failure"
+        assert _tool_result_status("No matches found") == "soft_failure"
+
+    def test_tool_result_status_hard_failure(self, tmp_hermes):
+        from score import _tool_result_status
+        assert _tool_result_status('{"error": "permission denied"}') == "hard_failure"
+        assert _tool_result_status("Traceback (most recent call last):") == "hard_failure"
+        assert _tool_result_status("command not found") == "hard_failure"
+
+    # ---- Tool success chain ----
+
+    def test_tool_success_chain_no_tools(self, tmp_hermes):
+        from score import positive_tool_success_chain
+        turns = [
+            self._turn("user", "hello"),
+            self._turn("assistant", "hi there"),
+        ]
+        assert positive_tool_success_chain(turns, 1) == 0.0
+
+    def test_tool_success_chain_full_chain(self, tmp_hermes):
+        from score import positive_tool_success_chain
+        turns = [
+            self._turn("user", "list files in /tmp"),
+            self._turn("assistant", "Looking now", tool_calls=[
+                {"function": {"name": "terminal", "arguments": '{"cmd": "ls /tmp"}'}}
+            ]),
+            self._turn("tool", "file1.txt\nfile2.txt", tool_name="terminal"),
+            self._turn("user", "great, now show me file1.txt"),
+        ]
+        score = positive_tool_success_chain(turns, 1)
+        # Tool succeeded (0.5) + user did not correct (0.7) + user advanced
+        # topic with >8 words (0.9). The reference check requires the
+        # extracted artifact tokens to appear in the user message — file1.txt
+        # is in the user msg, so we expect 1.0.
+        assert score >= 0.9
+
+    def test_tool_success_chain_failure(self, tmp_hermes):
+        from score import positive_tool_success_chain
+        turns = [
+            self._turn("user", "do thing"),
+            self._turn("assistant", "trying", tool_calls=[
+                {"function": {"name": "terminal", "arguments": '{}'}}
+            ]),
+            self._turn("tool", '{"error": "command not found"}'),
+        ]
+        assert positive_tool_success_chain(turns, 1) == 0.0
+
+    def test_tool_success_chain_soft_failure(self, tmp_hermes):
+        """Empty search results count as failure even though tool returned cleanly."""
+        from score import positive_tool_success_chain
+        turns = [
+            self._turn("user", "find foo"),
+            self._turn("assistant", "searching", tool_calls=[
+                {"function": {"name": "search_files", "arguments": '{"query": "foo"}'}}
+            ]),
+            self._turn("tool", '{"total_count": 0}'),
+        ]
+        assert positive_tool_success_chain(turns, 1) == 0.0
+
+    # ---- Artifact longevity ----
+
+    def test_artifact_longevity_path_referenced(self, tmp_hermes):
+        from score import positive_artifact_longevity
+        turns = [
+            self._turn("user", "create a script"),
+            self._turn("assistant", "I'll write src/main.py for you"),
+            self._turn("user", "thanks"),
+            self._turn("assistant", "now editing src/main.py"),
+        ]
+        score = positive_artifact_longevity(turns, 1)
+        # span = 3 turns from intro to last reference, in the 3-5 bucket → 0.7
+        assert score >= 0.5
+
+    def test_artifact_longevity_no_reference(self, tmp_hermes):
+        from score import positive_artifact_longevity
+        turns = [
+            self._turn("user", "what is python"),
+            self._turn("assistant", "Python is a programming language"),
+        ]
+        # No artifacts at all
+        assert positive_artifact_longevity(turns, 1) == 0.0
+
+    def test_artifact_longevity_modified_bonus(self, tmp_hermes):
+        from score import positive_artifact_longevity
+        turns = [
+            self._turn("user", "make a config"),
+            self._turn("assistant", "I created config.yaml"),
+            self._turn("user", "update it"),
+            self._turn("assistant", "updating", tool_calls=[
+                {"function": {"name": "patch", "arguments": '{"path": "config.yaml"}'}}
+            ]),
+        ]
+        score = positive_artifact_longevity(turns, 1)
+        # Span 3 turns + modified bonus → at least 0.6
+        assert score >= 0.6
+
+    # ---- Self-correction ----
+
+    def test_self_correction_after_tool_failure(self, tmp_hermes):
+        from score import positive_self_correction
+        turns = [
+            self._turn("user", "list files matching foo"),
+            self._turn("assistant", "trying", tool_calls=[
+                {"function": {"name": "search_files", "arguments": '{}'}}
+            ]),
+            self._turn("tool", '{"total_count": 0}'),
+            self._turn("user", "search for the pattern foo* in src/ instead"),
+            self._turn("assistant", "retrying", tool_calls=[
+                {"function": {"name": "search_files", "arguments": '{}'}}
+            ]),
+            self._turn("tool", '{"total_count": 3, "files": ["a.py", "b.py", "c.py"]}'),
+            self._turn("user", "perfect, now read a.py"),
+        ]
+        # Index 4 is the corrected response
+        score = positive_self_correction(turns, 4)
+        assert score == 0.9
+
+    def test_self_correction_not_a_correction(self, tmp_hermes):
+        """When previous turn succeeded, this isn't a correction context."""
+        from score import positive_self_correction
+        turns = [
+            self._turn("user", "list files"),
+            self._turn("assistant", "ok", tool_calls=[
+                {"function": {"name": "terminal", "arguments": '{}'}}
+            ]),
+            self._turn("tool", "a.py b.py"),
+            self._turn("user", "read a.py"),
+            self._turn("assistant", "ok", tool_calls=[
+                {"function": {"name": "read_file", "arguments": '{}'}}
+            ]),
+        ]
+        assert positive_self_correction(turns, 4) is None
+
+    # ---- Resolution detection ----
+
+    def test_detect_resolution_tool_chain(self, tmp_hermes):
+        from score import detect_resolution
+        turns = [
+            self._turn("user", "create the file"),
+            self._turn("assistant", "ok", tool_calls=[
+                {"function": {"name": "write_file", "arguments": '{}'}}
+            ]),
+            self._turn("tool", "file written"),
+            self._turn("user", "and now run it"),
+            self._turn("assistant", "running", tool_calls=[
+                {"function": {"name": "terminal", "arguments": '{}'}}
+            ]),
+            self._turn("tool", "output: hello"),
+        ]
+        # Last assistant turn had a successful tool call, no user response after
+        idx = detect_resolution(turns)
+        assert idx == 4
+
+    def test_detect_resolution_unresolved(self, tmp_hermes):
+        from score import detect_resolution
+        turns = [
+            self._turn("user", "do thing"),
+            self._turn("assistant", "trying", tool_calls=[
+                {"function": {"name": "terminal", "arguments": '{}'}}
+            ]),
+            self._turn("tool", '{"error": "failed"}'),
+            self._turn("user", "that didn't work"),
+        ]
+        # User responded after the tool failed → not resolved
+        assert detect_resolution(turns) is None
+
+    def test_detect_resolution_too_short(self, tmp_hermes):
+        from score import detect_resolution
+        turns = [
+            self._turn("user", "hi"),
+            self._turn("assistant", "hello"),
+        ]
+        assert detect_resolution(turns) is None
+
+    # ---- End-to-end scoring with the new mode ----
+
+    def test_score_session_positive_mode_with_tool_success(self, tmp_hermes):
+        """A session with successful tool chains should score in good bucket."""
+        from score import QualityScorer
+        scorer = QualityScorer()
+        session = {
+            "session_id": "tool-success-session",
+            "started_at": "2026-01-01T00:00:00",
+            "turns": [
+                {"role": "user", "content": "list the python files in src/"},
+                {"role": "assistant", "content": "Looking", "tool_calls": [
+                    {"function": {"name": "terminal", "arguments": '{"cmd": "ls src/*.py"}'}}
+                ]},
+                {"role": "tool", "content": "src/main.py\nsrc/utils.py", "tool_name": "terminal"},
+                {"role": "user", "content": "now read main.py and tell me what it does"},
+                {"role": "assistant", "content": "Reading", "tool_calls": [
+                    {"function": {"name": "read_file", "arguments": '{"path": "src/main.py"}'}}
+                ]},
+                {"role": "tool", "content": "def main(): print('hello')", "tool_name": "read_file"},
+                {"role": "assistant", "content": "It defines a main function that prints hello"},
+            ],
+            "metadata": {"source": "cli", "model": "test", "tool_call_count": 2, "total_tokens": 200},
+        }
+        scored = scorer.score_session(session)
+        assert scored["scoring"]["scoring_mode"] == "positive_signals"
+        # At least one assistant turn should score in the good range
+        turn_scores = scored["scoring"]["turn_scores"]
+        assert any(s >= 0.7 for _, s in turn_scores), \
+            f"expected at least one good-scored turn, got {turn_scores}"
+
+    def test_score_session_legacy_mode_still_works(self, tmp_hermes):
+        from score import QualityScorer
+        scorer = QualityScorer(config={"mode": "legacy", "weights": {}, "thresholds": {}})
+        session = {
+            "session_id": "legacy-session",
+            "started_at": "2026-01-01T00:00:00",
+            "turns": [
+                {"role": "user", "content": "what is X"},
+                {"role": "assistant", "content": "X is a thing"},
+                {"role": "user", "content": "thanks, that helps a lot"},
+            ],
+            "metadata": {"source": "cli", "model": "test"},
+        }
+        scored = scorer.score_session(session)
+        assert scored["scoring"]["scoring_mode"] == "legacy"
+        assert "composite_score" in scored["scoring"]

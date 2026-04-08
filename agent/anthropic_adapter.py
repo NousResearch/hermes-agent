@@ -1142,7 +1142,15 @@ def convert_messages_to_anthropic(
                         curr_content = [{"type": "text", "text": curr_content}]
                     fixed[-1]["content"] = prev_content + curr_content
             else:
-                # Consecutive assistant messages — merge text content
+                # Consecutive assistant messages — merge text content.
+                # Drop thinking blocks from the *second* message: their
+                # signature was computed against a different turn boundary
+                # and becomes invalid once merged.
+                if isinstance(m["content"], list):
+                    m["content"] = [
+                        b for b in m["content"]
+                        if not (isinstance(b, dict) and b.get("type") in ("thinking", "redacted_thinking"))
+                    ]
                 prev_blocks = fixed[-1]["content"]
                 curr_blocks = m["content"]
                 if isinstance(prev_blocks, list) and isinstance(curr_blocks, list):

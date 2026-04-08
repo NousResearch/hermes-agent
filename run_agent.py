@@ -4895,7 +4895,7 @@ class AIAgent:
                 effective_key = (fb_client.api_key or resolve_anthropic_token() or "") if fb_provider == "anthropic" else (fb_client.api_key or "")
                 self.api_key = effective_key
                 self._anthropic_api_key = effective_key
-                self._anthropic_base_url = getattr(fb_client, "base_url", None)
+                self._anthropic_base_url = fb_base_url
                 self._anthropic_client = build_anthropic_client(effective_key, self._anthropic_base_url)
                 self._is_anthropic_oauth = _is_oauth_token(effective_key)
                 self.client = None
@@ -5334,6 +5334,7 @@ class AIAgent:
                 is_oauth=self._is_anthropic_oauth,
                 preserve_dots=self._anthropic_preserve_dots(),
                 context_length=ctx_len,
+                base_url=getattr(self, "_anthropic_base_url", None),
             )
 
         if self.api_mode == "codex_responses":

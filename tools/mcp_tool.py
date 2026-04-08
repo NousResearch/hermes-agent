@@ -1255,13 +1255,10 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                     parts.append(block.text)
             text_result = "\n".join(parts) if parts else ""
 
-            # Preserve structured_content (structuredContent) if present
-            structured = getattr(result, "structured_content", None)
+            # Prefer structuredContent (machine-readable JSON) over plain text
+            structured = getattr(result, "structuredContent", None)
             if structured is not None:
-                return json.dumps({
-                    "result": text_result,
-                    "structuredContent": structured,
-                })
+                return json.dumps({"result": structured})
             return json.dumps({"result": text_result})
 
         try:

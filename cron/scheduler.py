@@ -196,7 +196,7 @@ def _send_media_via_adapter(adapter, chat_id: str, media_files: list, metadata: 
             logger.warning("Job '%s': failed to send media %s: %s", job.get("id", "?"), media_path, e)
 
 
-def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> None:
+def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Optional[str]:
     """
     Deliver job output to the configured target (origin chat, specific platform, etc.).
 
@@ -204,16 +204,16 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> None:
     use the live adapter first — this supports E2EE rooms (e.g. Matrix) where
     the standalone HTTP path cannot encrypt.  Falls back to standalone send if
     the adapter path fails or is unavailable.
+
+    Returns None on success, or an error string on failure.
     """
     target = _resolve_delivery_target(job)
     if not target:
         if job.get("deliver", "local") != "local":
-            logger.warning(
-                "Job '%s' deliver=%s but no concrete delivery target could be resolved",
-                job["id"],
-                job.get("deliver", "local"),
-            )
-        return
+            msg = f"no delivery target resolved for deliver={job.get('deliver', 'local')}"
+            logger.warning("Job '%s': %s", job["id"], msg)
+            return msg
+        return None  # local-only jobs don't deliver — not a failure
 
     platform_name = target["platform"]
     chat_id = target["chat_id"]
@@ -239,19 +239,22 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> None:
     }
     platform = platform_map.get(platform_name.lower())
     if not platform:
-        logger.warning("Job '%s': unknown platform '%s' for delivery", job["id"], platform_name)
-        return
+        msg = f"unknown platform '{platform_name}'"
+        logger.warning("Job '%s': %s", job["id"], msg)
+        return msg
 
     try:
         config = load_gateway_config()
     except Exception as e:
-        logger.error("Job '%s': failed to load gateway config for delivery: %s", job["id"], e)
-        return
+        msg = f"failed to load gateway config: {e}"
+        logger.error("Job '%s': %s", job["id"], msg)
+        return msg
 
     pconfig = config.platforms.get(platform)
     if not pconfig or not pconfig.enabled:
-        logger.warning("Job '%s': platform '%s' not configured/enabled", job["id"], platform_name)
-        return
+        msg = f"platform '{platform_name}' not configured/enabled"
+        logger.warning("Job '%s': %s", job["id"], msg)
+        return msg
 
     # Optionally wrap the content with a header/footer so the user knows this
     # is a cron delivery.  Wrapping is on by default; set cron.wrap_response: false
@@ -307,7 +310,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> None:
 
             if adapter_ok:
                 logger.info("Job '%s': delivered to %s:%s via live adapter", job["id"], platform_name, chat_id)
-                return
+                return None
         except Exception as e:
             logger.warning(
                 "Job '%s': live adapter delivery to %s:%s failed (%s), falling back to standalone",
@@ -329,13 +332,17 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> None:
             future = pool.submit(asyncio.run, _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files))
             result = future.result(timeout=30)
     except Exception as e:
-        logger.error("Job '%s': delivery to %s:%s failed: %s", job["id"], platform_name, chat_id, e)
-        return
+        msg = f"delivery to {platform_name}:{chat_id} failed: {e}"
+        logger.error("Job '%s': %s", job["id"], msg)
+        return msg
 
     if result and result.get("error"):
-        logger.error("Job '%s': delivery error: %s", job["id"], result["error"])
-    else:
-        logger.info("Job '%s': delivered to %s:%s", job["id"], platform_name, chat_id)
+        msg = f"delivery error: {result['error']}"
+        logger.error("Job '%s': %s", job["id"], msg)
+        return msg
+
+    logger.info("Job '%s': delivered to %s:%s", job["id"], platform_name, chat_id)
+    return None
 
 
 _SCRIPT_TIMEOUT = 120  # seconds
@@ -868,13 +875,15 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
                     logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
                     should_deliver = False
 
+                delivery_error = None
                 if should_deliver:
                     try:
-                        _deliver_result(job, deliver_content, adapters=adapters, loop=loop)
+                        delivery_error = _deliver_result(job, deliver_content, adapters=adapters, loop=loop)
                     except Exception as de:
+                        delivery_error = str(de)
                         logger.error("Delivery failed for job %s: %s", job["id"], de)
 
-                mark_job_run(job["id"], success, error)
+                mark_job_run(job["id"], success, error, delivery_error=delivery_error)
                 executed += 1
 
             except Exception as e:

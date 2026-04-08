@@ -5,6 +5,7 @@ Pure display functions with no HermesCLI state dependency.
 
 import json
 import logging
+import os
 import shutil
 import subprocess
 import threading
@@ -187,6 +188,79 @@ def check_for_updates() -> Optional[int]:
         pass
 
     return behind
+
+
+def _resolve_repo_dir() -> Optional[Path]:
+    """Return the active Hermes git checkout, or None if this isn't a git install."""
+    hermes_home = get_hermes_home()
+    repo_dir = hermes_home / "hermes-agent"
+    if not (repo_dir / ".git").exists():
+        repo_dir = Path(__file__).parent.parent.resolve()
+    return repo_dir if (repo_dir / ".git").exists() else None
+
+
+def _git_short_hash(repo_dir: Path, rev: str) -> Optional[str]:
+    """Resolve a git revision to an 8-character short hash."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short=8", rev],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            cwd=str(repo_dir),
+        )
+    except Exception:
+        return None
+    if result.returncode != 0:
+        return None
+    value = (result.stdout or "").strip()
+    return value or None
+
+
+def get_git_banner_state(repo_dir: Optional[Path] = None) -> Optional[dict]:
+    """Return upstream/local git hashes for the startup banner."""
+    repo_dir = repo_dir or _resolve_repo_dir()
+    if repo_dir is None:
+        return None
+
+    upstream = _git_short_hash(repo_dir, "origin/main")
+    local = _git_short_hash(repo_dir, "HEAD")
+    if not upstream or not local:
+        return None
+
+    ahead = 0
+    try:
+        result = subprocess.run(
+            ["git", "rev-list", "--count", "origin/main..HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            cwd=str(repo_dir),
+        )
+        if result.returncode == 0:
+            ahead = int((result.stdout or "0").strip() or "0")
+    except Exception:
+        ahead = 0
+
+    return {"upstream": upstream, "local": local, "ahead": max(ahead, 0)}
+
+
+def format_banner_version_label() -> str:
+    """Return the version label shown in the startup banner title."""
+    base = f"Hermes Agent v{VERSION} ({RELEASE_DATE})"
+    state = get_git_banner_state()
+    if not state:
+        return base
+
+    upstream = state["upstream"]
+    local = state["local"]
+    ahead = int(state.get("ahead") or 0)
+
+    if ahead <= 0 or upstream == local:
+        return f"{base} · upstream {upstream}"
+
+    carried_word = "commit" if ahead == 1 else "commits"
+    return f"{base} · upstream {upstream} · local {local} (+{ahead} carried {carried_word})"
 
 
 # =========================================================================
@@ -448,7 +522,7 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
     border_color = _skin_color("banner_border", "#CD7F32")
     outer_panel = Panel(
         layout_table,
-        title=f"[bold {title_color}]{agent_name} v{VERSION} ({RELEASE_DATE})[/]",
+        title=f"[bold {title_color}]{format_banner_version_label()}[/]",
         border_style=border_color,
         padding=(0, 2),
     )

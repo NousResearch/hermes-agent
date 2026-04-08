@@ -111,7 +111,7 @@ def get_config_schema(self):
 Fields with `secret: True` and `env_var` go to `.env`. Non-secret fields are passed to `save_config()`.
 
 :::tip Minimal vs Full Schema
-Every field in `get_config_schema()` is prompted during `hermes memory setup`. Providers with many options should keep the schema minimal — only include fields the user **must** configure (API key, required credentials). Document optional settings in a config file reference (e.g. `$HERMES_HOME/myprovider.json`) rather than prompting for them all during setup. This keeps the setup wizard fast while still supporting advanced configuration. See the Supermemory provider for an example — it only prompts for the API key; all other options live in `supermemory.json`.
+Every field in `get_config_schema()` is prompted during `hermes memory setup`. Providers with many options should keep the schema minimal — only include fields the user **must** configure (API key, required credentials). Document optional settings in a config file reference (e.g. `$HERMES_HOME/myprovider.json`) rather than prompting for them all during setup. This keeps the setup wizard fast while still supporting advanced configuration. See the Supermemory provider for an example — it only prompts for the API key; all other options live in `supermemory.json`. The seekdb M0 provider (`plugins/memory/m0/`) follows the same pattern: API key (and optional base URL) in setup, with `auto_recall`, `auto_capture`, and timeouts in `m0.json`.
 :::
 
 ## Save Config

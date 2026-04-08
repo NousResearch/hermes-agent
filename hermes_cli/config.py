@@ -444,8 +444,8 @@ DEFAULT_CONFIG = {
         "memory_char_limit": 2200,   # ~800 tokens at 2.75 chars/token
         "user_char_limit": 1375,     # ~500 tokens at 2.75 chars/token
         # External memory provider plugin (empty = built-in only).
-        # Set to a provider name to activate: "openviking", "mem0",
-        # "hindsight", "holographic", "retaindb", "byterover".
+        # Set to a provider name to activate: "openviking", "mem0", "m0",
+        # "hindsight", "holographic", "retaindb", "byterover", "supermemory", "powermem".
         # Only ONE external provider is allowed at a time.
         "provider": "",
     },
@@ -943,6 +943,22 @@ OPTIONAL_ENV_VARS = {
     "HONCHO_BASE_URL": {
         "description": "Base URL for self-hosted Honcho instances (no API key needed)",
         "prompt": "Honcho base URL (e.g. http://localhost:8000)",
+        "category": "tool",
+    },
+
+    # ── seekdb M0 (cloud memory) ──
+    "M0_API_KEY": {
+        "description": "seekdb M0 Access Key (ak_...) for hosted memory at m0.seekdb.ai",
+        "prompt": "M0 Access Key",
+        "url": "https://m0.seekdb.ai",
+        "password": True,
+        "category": "tool",
+    },
+    "M0_BASE_URL": {
+        "description": "M0 API base URL (optional; default https://m0.seekdb.ai)",
+        "prompt": "M0 base URL",
+        "url": "https://m0.seekdb.ai",
+        "password": False,
         "category": "tool",
     },
 

@@ -1,0 +1,4 @@
+name: m0
+version: 1.0.0
+description: "seekdb M0 — hosted cloud memory at m0.seekdb.ai (PowerMem-based), HTTP API with Access Key."
+pip_dependencies: []

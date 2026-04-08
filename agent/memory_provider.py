@@ -5,7 +5,7 @@ external provider is active at a time alongside the always-on built-in
 memory (MEMORY.md / USER.md). The MemoryManager enforces this limit.
 
 Built-in memory is always active as the first provider and cannot be removed.
-External providers (Honcho, Hindsight, Mem0, etc.) are additive — they never
+External providers (Honcho, Hindsight, Mem0, seekdb M0, etc.) are additive — they never
 disable the built-in store. Only one external provider runs at a time to
 prevent tool schema bloat and conflicting memory backends.
 

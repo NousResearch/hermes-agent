@@ -59,6 +59,8 @@ hermes-agent/
 ├── acp_adapter/          # ACP server (VS Code / Zed / JetBrains integration)
 ├── cron/                 # Scheduler (jobs.py, scheduler.py)
 ├── environments/         # RL training environments (Atropos)
+├── plugins/
+│   └── memory/           # Shipped memory provider plugins (honcho, mem0, m0, hindsight, holographic, openviking, retaindb, byterover, supermemory, …)
 ├── tests/                # Pytest suite (~3000 tests)
 └── batch_runner.py       # Parallel batch processing
 ```

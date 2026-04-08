@@ -206,11 +206,11 @@ Hooks are discovered from `gateway/builtin_hooks/` (always active) and `~/.herme
 
 ## Memory Provider Integration
 
-When a memory provider plugin (e.g., Honcho) is enabled:
+When a memory provider plugin (e.g., Honcho, Mem0, seekdb M0) is enabled:
 
 1. Gateway creates an `AIAgent` per message with the session ID
 2. The `MemoryManager` initializes the provider with the session context
-3. Provider tools (e.g., `honcho_profile`, `viking_search`) are routed through:
+3. Provider tools (e.g., `honcho_profile`, `mem0_search`, `m0_search`, `viking_search`) are routed through:
 
 ```text
 AIAgent._invoke_tool()

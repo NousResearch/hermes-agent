@@ -877,6 +877,44 @@ def run_doctor(args):
         check_warn("Mem0 check failed", str(_e))
 
     # =========================================================================
+    # seekdb M0 (cloud memory)
+    # =========================================================================
+    print()
+    print(color("◆ seekdb M0 (Cloud Memory)", Colors.CYAN, Colors.BOLD))
+
+    try:
+        import urllib.error as _urllib_error
+        import urllib.parse as _urllib_parse
+        import urllib.request as _urllib_request
+
+        m0_key = (get_env_value("M0_API_KEY") or "").strip()
+        if not m0_key:
+            check_warn("M0 not configured", "(set M0_API_KEY in .env or run: hermes memory setup → m0)")
+        else:
+            base = (get_env_value("M0_BASE_URL") or "https://m0.seekdb.ai").rstrip("/")
+            try:
+                status_url = f"{base}/api/instances/{_urllib_parse.quote(m0_key, safe='')}/status"
+                req = _urllib_request.Request(
+                    status_url,
+                    headers={"X-API-Key": m0_key, "Accept": "application/json"},
+                    method="GET",
+                )
+                with _urllib_request.urlopen(req, timeout=5.0) as resp:
+                    raw = resp.read().decode("utf-8", errors="replace")
+                import json as _json
+
+                data = _json.loads(raw) if raw.strip() else {}
+                st = data.get("status", "?")
+                count = data.get("memory_count", "?")
+                check_ok("M0 instance reachable", f"status={st} memory_count={count}")
+            except _urllib_error.HTTPError as he:
+                check_warn("M0 status check failed", f"HTTP {he.code} — verify AK and base URL")
+            except Exception as _e:
+                check_warn("M0 status check failed", str(_e))
+    except Exception as _e:
+        check_warn("M0 check failed", str(_e))
+
+    # =========================================================================
     # Profiles
     # =========================================================================
     try:

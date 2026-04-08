@@ -76,7 +76,7 @@ Speech-to-text supports three providers: local Whisper (free, runs on-device), G
 ## Memory & Personalization
 
 - **[Built-in Memory](/docs/user-guide/features/memory)** — Persistent, curated memory via `MEMORY.md` and `USER.md` files. The agent maintains bounded stores of personal notes and user profile data that survive across sessions.
-- **[Memory Providers](/docs/user-guide/features/memory-providers)** — Plug in external memory backends for deeper personalization. Seven providers are supported: Honcho (dialectic reasoning), OpenViking (tiered retrieval), Mem0 (cloud extraction), Hindsight (knowledge graphs), Holographic (local SQLite), RetainDB (hybrid search), and ByteRover (CLI-based).
+- **[Memory Providers](/docs/user-guide/features/memory-providers)** — Plug in external memory backends for deeper personalization. Nine built-in providers include Honcho (dialectic reasoning), OpenViking (tiered retrieval), Mem0 (cloud extraction), seekdb M0 (`m0`, hosted HTTP at m0.seekdb.ai), Hindsight (knowledge graphs), Holographic (local SQLite), RetainDB (hybrid search), ByteRover (CLI-based), and Supermemory (cloud graph API).
 
 ## Messaging Platforms
 

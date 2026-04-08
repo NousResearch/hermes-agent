@@ -12,7 +12,7 @@ Usage:
     from plugins.memory import discover_memory_providers, load_memory_provider
 
     available = discover_memory_providers()   # [(name, desc, available), ...]
-    provider = load_memory_provider("openviking")  # MemoryProvider instance
+    provider = load_memory_provider("openviking")  # or "mem0", "m0", "supermemory", ...
 """
 
 from __future__ import annotations

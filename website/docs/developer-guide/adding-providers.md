@@ -302,14 +302,14 @@ Run tests with xdist disabled:
 
 ```bash
 source venv/bin/activate
-python -m pytest tests/test_runtime_provider_resolution.py tests/test_cli_provider_resolution.py tests/test_cli_model_command.py tests/test_setup_model_selection.py -n0 -q
+python3.11 -m pytest tests/test_runtime_provider_resolution.py tests/test_cli_provider_resolution.py tests/test_cli_model_command.py tests/test_setup_model_selection.py -n0 -q
 ```
 
 For deeper changes, run the full suite before pushing:
 
 ```bash
 source venv/bin/activate
-python -m pytest tests/ -n0 -q
+python3.11 -m pytest tests/ -n0 -q
 ```
 
 ## Step 9: Live verification

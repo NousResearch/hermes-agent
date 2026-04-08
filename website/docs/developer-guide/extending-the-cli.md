@@ -77,7 +77,7 @@ Run it:
 
 ```bash
 cd ~/.hermes/hermes-agent
-source .venv/bin/activate
+source venv/bin/activate
 python my_cli.py
 ```
 

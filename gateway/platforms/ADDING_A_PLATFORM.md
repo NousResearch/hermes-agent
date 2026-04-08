@@ -304,7 +304,7 @@ After implementing everything, verify with:
 
 ```bash
 # All tests pass
-python -m pytest tests/ -q
+python3.11 -m pytest tests/ -q
 
 # Grep for your platform name to find any missed integration points
 grep -r "telegram\|discord\|whatsapp\|slack" gateway/ tools/ agent/ cron/ hermes_cli/ toolsets.py \

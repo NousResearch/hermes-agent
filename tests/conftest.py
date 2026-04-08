@@ -10,6 +10,12 @@ from unittest.mock import patch
 
 import pytest
 
+if sys.version_info < (3, 11):
+    raise pytest.UsageError(
+        "Tests require Python >= 3.11. "
+        "Use python3.11 -m pytest ... (project requires-python is >=3.11)."
+    )
+
 # Ensure project root is importable
 PROJECT_ROOT = Path(__file__).parent.parent
 if str(PROJECT_ROOT) not in sys.path:

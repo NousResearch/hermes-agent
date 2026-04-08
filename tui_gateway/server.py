@@ -1087,7 +1087,7 @@ def _(rid, params: dict) -> dict:
 # ── Methods: slash.exec ──────────────────────────────────────────────
 
 
-def _mirror_slash_side_effects(session: dict, command: str):
+def _mirror_slash_side_effects(sid: str, session: dict, command: str):
     """Apply side effects that must also hit the gateway's live agent."""
     parts = command.lstrip("/").split(None, 1)
     if not parts:
@@ -1097,7 +1097,22 @@ def _mirror_slash_side_effects(session: dict, command: str):
     try:
         if name == "model" and arg and agent:
             from hermes_cli.model_switch import switch_model
-            switch_model(agent, arg)
+            result = switch_model(
+                raw_input=arg,
+                current_provider=getattr(agent, "provider", "") or "",
+                current_model=getattr(agent, "model", "") or "",
+                current_base_url=getattr(agent, "base_url", "") or "",
+                current_api_key=getattr(agent, "api_key", "") or "",
+            )
+            if result.success:
+                agent.switch_model(
+                    new_model=result.new_model,
+                    new_provider=result.target_provider,
+                    api_key=result.api_key,
+                    base_url=result.base_url,
+                    api_mode=result.api_mode,
+                )
+                _emit("session.info", sid, _session_info(agent))
         elif name == "compress" and agent:
             (getattr(agent, "compress_context", None) or getattr(agent, "context_compressor", agent).compress)()
         elif name == "reload-mcp" and agent and hasattr(agent, "reload_mcp_tools"):
@@ -1129,7 +1144,7 @@ def _(rid, params: dict) -> dict:
 
     try:
         output = worker.run(cmd)
-        _mirror_slash_side_effects(session, cmd)
+        _mirror_slash_side_effects(params.get("session_id", ""), session, cmd)
         return _ok(rid, {"output": output or "(no output)"})
     except Exception as e:
         try:

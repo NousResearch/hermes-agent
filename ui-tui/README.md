@@ -1,89 +1,225 @@
 # Hermes TUI
 
-Ink-based terminal UI for the Hermes agent. Two processes, one stdio pipe: TypeScript renders the screen, Python runs the brain.
+React + Ink terminal UI for Hermes. TypeScript owns the screen. Python owns sessions, tools, model calls, and most command logic.
 
-```
+```bash
 hermes --tui
 ```
 
-## How it works
+## What runs
 
-The TUI spawns `tui_gateway.entry` as a child process. They talk newline-delimited JSON-RPC over stdin/stdout. Python handles sessions, tools, and LLM calls. Ink handles layout, input, and rendering. Stderr is piped into a ring buffer (never hits the terminal).
+The client entrypoint is `src/entry.tsx`. It exits early if `stdin` is not a TTY, starts `GatewayClient`, then renders `App`.
 
-```
-Ink (ui-tui/)                    Python (tui_gateway/)
-─────────────                    ─────────────────────
-  TextInput                        entry.py
-      │                               │
-      ├─ JSON-RPC request ──────────► handle_request()
-      │                               │
-      │                           server.py
-      │                            40 RPC methods
-      │                            agent threads
-      │                               │
-      ◄── JSON-RPC response ─────────┤
-      ◄── event push (streaming) ────┘
+`GatewayClient` spawns:
+
+```text
+python -m tui_gateway.entry
 ```
 
-All Python writes go through a locked `write_json()` so concurrent agent threads can't interleave bytes on stdout.
+By default it uses `venv/bin/python` from the repo root. Set `HERMES_PYTHON` to override.
 
-## Layout
+The transport is newline-delimited JSON-RPC over stdio:
 
-The app runs in the alternate screen buffer. Everything fits in one fixed frame -- no native scroll. The message area gets whatever rows are left after subtracting chrome:
+```text
+ui-tui/src                  tui_gateway/
+-----------                 -------------
+entry.tsx                   entry.py
+  -> GatewayClient            -> request loop
+  -> App                      -> server.py RPC handlers
 
+stdin/stdout: JSON-RPC requests, responses, events
+stderr: captured into an in-memory log ring
 ```
-rows - header - thinking - queue - palette - statusbar - separator - input
+
+Malformed stdout lines are treated as protocol noise and surfaced as `gateway.protocol_error`. Stderr lines become `gateway.stderr`. Neither writes directly into the terminal.
+
+## Running it
+
+From the repo root, the normal path is:
+
+```bash
+hermes --tui
 ```
 
-The viewport walks backward from the newest message, estimating each one's rendered height, until the row budget runs out. PgUp/PgDn shift the window.
+The CLI expects `ui-tui/node_modules` to exist. If the TUI deps are missing:
 
-## Hotkeys
+```bash
+cd ui-tui
+npm install
+```
 
-| Key | What it does |
-|-----|-------------|
-| Ctrl+C | Interrupt / clear / exit (contextual) |
-| Ctrl+D | Exit |
-| Ctrl+G | Open `$EDITOR` for multiline prompt |
-| Ctrl+L | Clear messages |
-| Ctrl+V | Paste clipboard image |
-| Tab | Complete `/commands` |
-| Up/Down | Cycle queue or input history |
-| PgUp/PgDn | Scroll |
-| Esc | Clear input |
-| `\` + Enter | Continue on next line |
-| `!cmd` | Shell command |
-| `{!cmd}` | Interpolate shell output inline |
+Local package commands:
 
-## Ctrl+G editor
+```bash
+npm run dev
+npm start
+npm run build
+npm run lint
+npm run fmt
+npm run fix
+```
 
-Writes the current input to a temp file, leaves the alt screen, opens your `$EDITOR`, then reads the file back and submits it on save. Multiline `\`-continued input pre-populates the file.
+There is no package-local test script today.
 
-## Message queue
+## App model
 
-Input typed while the agent is busy gets queued. The queue drains automatically after each response. Double-Enter sends the next queued item. Arrow keys let you edit queued messages before they send.
+`src/app.tsx` is the center of the UI. It holds:
+
+- transcript and streaming state
+- queued messages and input history
+- session lifecycle
+- tool progress and reasoning text
+- prompt flows for approval, clarify, sudo, and secret input
+- slash command routing
+- tab completion and path completion
+- theme state from gateway skin data
+
+The UI renders as a normal Ink tree with `Static` transcript output, a live streaming assistant row, prompt overlays, queue preview, status rule, input line, and completion list.
+
+The intro panel is driven by `session.info` and rendered through `branding.tsx`.
+
+## Hotkeys and interactions
+
+Current input behavior is split across `app.tsx`, `components/textInput.tsx`, and the prompt/picker components.
+
+### Main chat input
+
+| Key | Behavior |
+|---|---|
+| `Enter` | Submit the current draft |
+| empty `Enter` twice | If queued messages exist and the agent is busy, interrupt the current run. If queued messages exist and the agent is idle, send the next queued message |
+| `\` + `Enter` | Append the line to the multiline buffer instead of sending |
+| `Ctrl+C` | Interrupt active run, or clear the current draft, or exit if nothing is pending |
+| `Ctrl+D` | Exit |
+| `Ctrl+G` | Open `$EDITOR` with the current draft |
+| `Ctrl+L` | New session (same as `/clear`) |
+| `Ctrl+V` | Paste clipboard image (same as `/paste`) |
+| `Esc` | Clear the current draft |
+| `Tab` | Apply the active completion |
+| `Up/Down` | Cycle completions if the completion list is open; otherwise edit queued messages first, then walk input history |
+| `Left/Right` | Move the cursor |
+| modified `Left/Right` | Move by word when the terminal sends `Ctrl` or `Meta` with the arrow key |
+| `Home` / `Ctrl+A` | Start of line |
+| `End` / `Ctrl+E` | End of line |
+| `Backspace` / `Delete` | Delete the character to the left of the cursor |
+| modified `Backspace` / `Delete` | Delete the previous word |
+| `Ctrl+W` | Delete the previous word |
+| `Ctrl+U` | Delete from the cursor back to the start of the line |
+| `Ctrl+K` | Delete from the cursor to the end of the line |
+| `Meta+B` / `Meta+F` | Move by word |
+| `!cmd` | Run a shell command through the gateway |
+| `{!cmd}` | Inline shell interpolation before send or queue |
+
+Notes:
+
+- `Tab` only applies completions when completions are present and you are not in multiline mode.
+- Queue/history navigation only applies when you are not in multiline mode.
+- `PgUp` / `PgDn` are left to the terminal emulator; the TUI does not handle them.
+
+### Prompt and picker modes
+
+| Context | Keys | Behavior |
+|---|---|---|
+| approval prompt | `Up/Down`, `Enter` | Move and confirm the selected approval choice |
+| approval prompt | `o`, `s`, `a`, `d` | Quick-pick `once`, `session`, `always`, `deny` |
+| approval prompt | `Esc`, `Ctrl+C` | Deny |
+| clarify prompt with choices | `Up/Down`, `Enter` | Move and confirm the selected choice |
+| clarify prompt with choices | single-digit number | Quick-pick the matching numbered choice |
+| clarify prompt with choices | `Enter` on "Other" | Switch into free-text entry |
+| clarify free-text mode | `Enter` | Submit typed answer |
+| sudo / secret prompt | `Enter` | Submit typed value |
+| sudo / secret prompt | `Ctrl+C` | Cancel by sending an empty response |
+| resume picker | `Up/Down`, `Enter` | Move and resume the selected session |
+| resume picker | `1-9` | Quick-pick one of the first nine visible sessions |
+| resume picker | `Esc`, `Ctrl+C` | Close the picker |
+
+Notes:
+
+- Clarify free-text mode and masked prompts use `ink-text-input`, so text editing there follows the library's default bindings rather than `components/textInput.tsx`.
+- When a blocking prompt is open, the main chat input hotkeys are suspended.
+- Clarify mode has no dedicated cancel shortcut in the current client. Sudo and secret prompts only expose `Ctrl+C` cancellation from the app-level blocked handler.
+
+### Interaction rules
+
+- Plain text entered while the agent is busy is queued instead of sent immediately.
+- Slash commands and `!cmd` do not queue; they execute immediately even while a run is active.
+- Queue auto-drains after each assistant response, unless a queued item is currently being edited.
+- `Up/Down` prioritizes queued-message editing over history. History only activates when there is no queue to edit.
+- If you load a queued item into the input and resubmit plain text, that queue item is replaced, removed from the queue preview, and promoted to send next. If the agent is still busy, the edited item is moved to the front of the queue and the current run is interrupted first.
+- Completion requests are debounced by 60 ms. Input starting with `/` uses `complete.slash`. A trailing token that starts with `./`, `../`, `~/`, `/`, or `@` uses `complete.path`.
+- Large pasted blocks, defined here as 5+ lines or more than 500 characters, are written under `~/.hermes/pastes` or `HERMES_HOME/pastes` and replaced with a placeholder. Smaller multiline pastes are flattened into spaces.
+- `Ctrl+G` writes the current draft, including any multiline buffer, to a temp file, temporarily swaps screen buffers, launches `$EDITOR`, then restores the TUI and submits the saved text if the editor exits cleanly.
+- Input history is stored in `~/.hermes/.hermes_history` or under `HERMES_HOME`.
 
 ## Rendering
 
-Assistant text goes through `markdown.tsx` -- a zero-dependency JSX renderer that handles code blocks (with diff coloring), headings, lists, quotes, tables, and inline formatting. If the Python side provides pre-rendered ANSI (via `agent.rich_output`), that takes priority.
+Assistant output is rendered in one of two ways:
 
-## Slash commands
+- if the payload already contains ANSI, `messageLine.tsx` prints it directly
+- otherwise `components/markdown.tsx` renders a small Markdown subset into Ink components
 
-60+ commands wired in the local `slash()` switch. Anything unrecognized falls through to `command.dispatch` on the Python side (quick commands, plugins, skill commands) with alias resolution. `/help` lists them all.
+The Markdown renderer handles headings, lists, block quotes, tables, fenced code blocks, diff coloring, inline code, emphasis, links, and plain URLs.
 
-## Events (Python -> Ink)
+Tool activity is shown separately through `components/thinking.tsx` while runs are active, then collapsed into tool completion rows in the transcript.
+
+## Prompt flows
+
+The Python gateway can pause the main loop and request structured input:
+
+- `approval.request`: allow once, allow for session, allow always, or deny
+- `clarify.request`: pick from choices or type a custom answer
+- `sudo.request`: masked password entry
+- `secret.request`: masked value entry for a named env var
+- `session.list`: used by `SessionPicker` for `/resume`
+
+These are stateful UI branches in `app.tsx`, not separate screens.
+
+## Commands
+
+The local slash handler covers the built-ins that need direct client behavior:
+
+- `/help`
+- `/quit`, `/exit`, `/q`
+- `/clear`
+- `/new`
+- `/compact`
+- `/resume`
+- `/copy`
+- `/paste`
+- `/logs`
+- `/statusbar`, `/sb`
+- `/queue`
+- `/undo`
+- `/retry`
+
+Notes:
+
+- `/copy` sends the selected assistant response through OSC 52.
+- `/paste` asks the gateway for clipboard image attachment state.
+- `/statusbar` currently toggles client state, but the status rule is still always rendered.
+
+Anything else falls through to:
+
+1. `slash.exec`
+2. `command.dispatch`
+
+That lets Python own aliases, plugins, skills, and registry-backed commands without duplicating the logic in the TUI.
+
+## Event surface
+
+Primary event types the client handles today:
 
 | Event | Payload |
-|-------|---------|
+|---|---|
 | `gateway.ready` | `{ skin? }` |
-| `session.info` | `{ model, tools, skills }` |
-| `message.start` | -- |
+| `session.info` | session metadata for banner + tool/skill panels |
+| `message.start` | start assistant streaming |
 | `message.delta` | `{ text, rendered? }` |
 | `message.complete` | `{ text, rendered?, usage, status }` |
 | `thinking.delta` | `{ text }` |
 | `reasoning.delta` | `{ text }` |
 | `status.update` | `{ kind, text }` |
-| `tool.generating` | `{ name }` |
-| `tool.start` | `{ tool_id, name }` |
+| `tool.start` | `{ tool_id, name, context? }` |
 | `tool.progress` | `{ name, preview }` |
 | `tool.complete` | `{ tool_id, name }` |
 | `clarify.request` | `{ question, choices?, request_id }` |
@@ -93,67 +229,66 @@ Assistant text goes through `markdown.tsx` -- a zero-dependency JSX renderer tha
 | `background.complete` | `{ task_id, text }` |
 | `btw.complete` | `{ text }` |
 | `error` | `{ message }` |
+| `gateway.stderr` | synthesized from child stderr |
+| `gateway.protocol_error` | synthesized from malformed stdout |
 
-The client also synthesizes `gateway.stderr` and `gateway.protocol_error` from the child process.
+## Theme model
 
-## RPC methods (40)
+The client starts with `DEFAULT_THEME` from `theme.ts`, then merges in gateway skin data from `gateway.ready`.
 
-Session: `session.create`, `session.list`, `session.resume`, `session.branch`, `session.title`, `session.usage`, `session.history`, `session.undo`, `session.compress`, `session.save`, `session.interrupt`, `terminal.resize`
+Current branding overrides:
 
-Prompts: `prompt.submit`, `prompt.background`, `prompt.btw`
+- agent name
+- prompt symbol
+- welcome text
+- goodbye text
 
-Responses: `clarify.respond`, `approval.respond`, `sudo.respond`, `secret.respond`, `clipboard.paste`
+Current color overrides:
 
-Config: `config.set`, `config.get`
+- banner title, accent, border, body, dim
+- label, ok, error, warn
 
-System: `process.stop`, `reload.mcp`, `shell.exec`, `cli.exec`, `commands.catalog`, `command.resolve`, `command.dispatch`
+`branding.tsx` uses those values for the logo, session panel, and update notice.
 
-Features: `voice.toggle`, `voice.record`, `voice.tts`, `insights.get`, `rollback.list`, `rollback.restore`, `rollback.diff`, `browser.manage`, `plugins.list`, `cron.manage`, `skills.manage`
+## File map
 
-## Performance notes
-
-- `MessageLine` and `Thinking` are `React.memo`'d so they skip re-render when the user types
-- The spinner uses `useRef` instead of `useState` -- no parent re-renders at 80ms intervals
-- `rpc` and `newSession` are `useCallback`-stable so the gateway event listener doesn't re-subscribe every render
-- On a normal keystroke, only the input line re-renders. Viewport recalc only triggers on message/scroll changes.
-
-## Themes
-
-Python loads a skin from `~/.hermes/config.yaml` at startup. The `gateway.ready` event carries colors and branding to the client, which merges them into the default palette (gold/amber/bronze/cornsilk). Branding overrides the agent name, prompt symbol, and welcome text.
-
-## Files
-
-```
+```text
 ui-tui/src/
-  entry.tsx           entrypoint
-  app.tsx             state, events, input, commands, layout
-  altScreen.tsx       alternate screen buffer
-  gatewayClient.ts    JSON-RPC child process bridge
-  constants.ts        hotkeys, tool verbs, spinner frames
-  theme.ts            palette + skin mapping
-  types.ts            shared interfaces
-  banner.ts           ASCII art
-
-  lib/
-    text.ts           ANSI strip, row estimation
-    messages.ts       streaming message upsert
-    history.ts        persistent input history
-    slash.ts          command palette + tab completion
-    osc52.ts          clipboard via OSC 52
+  entry.tsx              TTY gate + render()
+  app.tsx                main state machine and UI
+  gatewayClient.ts       child process + JSON-RPC bridge
+  theme.ts               default palette + skin merge
+  constants.ts           display constants, hotkeys, tool labels
+  types.ts               shared client-side types
+  banner.ts              ASCII art data
 
   components/
-    messageLine.tsx   chat message (memoized)
-    markdown.tsx      MD renderer (code, diff, tables)
-    thinking.tsx      spinner / reasoning / tool progress
-    queuedMessages.tsx  queue display
-    prompts.tsx       approval + clarify
-    maskedPrompt.tsx  sudo / secret input
-    sessionPicker.tsx session resume picker
-    commandPalette.tsx  slash suggestions
-    branding.tsx      welcome banner + session panel
+    branding.tsx         banner + session summary
+    markdown.tsx         Markdown-to-Ink renderer
+    maskedPrompt.tsx     masked input for sudo / secrets
+    messageLine.tsx      transcript rows
+    prompts.tsx          approval + clarify flows
+    queuedMessages.tsx   queued input preview
+    sessionPicker.tsx    session resume picker
+    textInput.tsx        custom line editor
+    thinking.tsx         spinner, reasoning, tool activity
 
-tui_gateway/
-  entry.py            stdin loop, JSON-RPC dispatch
-  server.py           40 RPC methods, session management
-  render.py           optional Rich ANSI rendering bridge
+  lib/
+    history.ts           persistent input history
+    osc52.ts             OSC 52 clipboard copy
+    text.ts              text helpers, ANSI detection, previews
 ```
+
+Related Python side:
+
+```text
+tui_gateway/
+  entry.py               stdio entrypoint
+  server.py              RPC handlers and session logic
+  render.py              optional rich/ANSI bridge
+```
+
+## Notes
+
+- `src/main.tsx` currently duplicates `entry.tsx`.
+- `src/altScreen.tsx`, `components/commandPalette.tsx`, and `lib/slash.ts` exist, but are not part of the active runtime path from `entry.tsx` to `app.tsx`.

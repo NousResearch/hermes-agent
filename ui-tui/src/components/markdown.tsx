@@ -13,11 +13,7 @@ function MdInline({ t, text }: { t: Theme; text: string }) {
     const i = m.index ?? 0
 
     if (i > last) {
-      parts.push(
-        <Text color={t.color.cornsilk} key={parts.length}>
-          {text.slice(last, i)}
-        </Text>
-      )
+      parts.push(<Text key={parts.length}>{text.slice(last, i)}</Text>)
     }
 
     if (m[2] && m[3]) {
@@ -27,11 +23,7 @@ function MdInline({ t, text }: { t: Theme; text: string }) {
         </Text>
       )
     } else if (m[4]) {
-      parts.push(
-        <Text bold color={t.color.cornsilk} key={parts.length}>
-          {m[4]}
-        </Text>
-      )
+      parts.push(<Text bold key={parts.length}>{m[4]}</Text>)
     } else if (m[5]) {
       parts.push(
         <Text color={t.color.amber} dimColor key={parts.length}>
@@ -39,11 +31,7 @@ function MdInline({ t, text }: { t: Theme; text: string }) {
         </Text>
       )
     } else if (m[6]) {
-      parts.push(
-        <Text color={t.color.cornsilk} italic key={parts.length}>
-          {m[6]}
-        </Text>
-      )
+      parts.push(<Text italic key={parts.length}>{m[6]}</Text>)
     } else if (m[7]) {
       parts.push(
         <Text color={t.color.amber} key={parts.length} underline>
@@ -56,14 +44,10 @@ function MdInline({ t, text }: { t: Theme; text: string }) {
   }
 
   if (last < text.length) {
-    parts.push(
-      <Text color={t.color.cornsilk} key={parts.length}>
-        {text.slice(last)}
-      </Text>
-    )
+    parts.push(<Text key={parts.length}>{text.slice(last)}</Text>)
   }
 
-  return <Text>{parts.length ? parts : <Text color={t.color.cornsilk}>{text}</Text>}</Text>
+  return <Text>{parts.length ? parts : <Text>{text}</Text>}</Text>
 }
 
 export function Md({ compact, t, text }: { compact?: boolean; t: Theme; text: string }) {
@@ -121,7 +105,7 @@ export function Md({ compact, t, text }: { compact?: boolean; t: Theme; text: st
           {block.map((l, j) => (
             <Text
               color={
-                isDiff && l.startsWith('+') ? '#a6e3a1' : isDiff && l.startsWith('-') ? '#f38ba8' : t.color.cornsilk
+                isDiff && l.startsWith('+') ? '#a6e3a1' : isDiff && l.startsWith('-') ? '#f38ba8' : undefined
               }
               dimColor={isDiff && !l.startsWith('+') && !l.startsWith('-') && l.startsWith(' ')}
               key={j}
@@ -227,7 +211,7 @@ export function Md({ compact, t, text }: { compact?: boolean; t: Theme; text: st
         nodes.push(
           <Box flexDirection="column" key={key} paddingLeft={2}>
             {tableRows.map((row, ri) => (
-              <Text color={ri === 0 ? t.color.amber : t.color.cornsilk} key={ri}>
+              <Text color={ri === 0 ? t.color.amber : undefined} key={ri}>
                 {row.map((cell, ci) => cell.padEnd(widths[ci] ?? 0)).join('  ')}
               </Text>
             ))}

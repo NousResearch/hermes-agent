@@ -19,10 +19,11 @@ Security:
   - Rate limiting per route (fixed-window, configurable)
   - Idempotency cache prevents duplicate agent runs on webhook retries
   - Body size limits checked before reading payload
-  - Set secret to "INSECURE_NO_AUTH" to skip validation (testing only)
+  - Set secret to "INSECURE_NO_AUTH" to skip validation only on loopback binds
 """
 
 import asyncio
+import ipaddress
 import hashlib
 import hmac
 import json
@@ -60,6 +61,21 @@ _DYNAMIC_ROUTES_FILENAME = "webhook_subscriptions.json"
 def check_webhook_requirements() -> bool:
     """Check if webhook adapter dependencies are available."""
     return AIOHTTP_AVAILABLE
+
+
+def _is_loopback_host(host: str) -> bool:
+    """Return True when *host* is an explicit loopback bind target."""
+    normalized = str(host or "").strip().lower()
+    if not normalized:
+        return False
+    if normalized == "localhost":
+        return True
+    if normalized.startswith("[") and normalized.endswith("]"):
+        normalized = normalized[1:-1]
+    try:
+        return ipaddress.ip_address(normalized).is_loopback
+    except ValueError:
+        return False
 
 
 class WebhookAdapter(BasePlatformAdapter):
@@ -105,6 +121,31 @@ class WebhookAdapter(BasePlatformAdapter):
             config.extra.get("max_body_bytes", 1_048_576)
         )  # 1MB
 
+    def _validate_insecure_secret_allowed(
+        self,
+        *,
+        secret: str,
+        route_name: Optional[str] = None,
+    ) -> None:
+        """Reject unauthenticated webhook mode on non-loopback binds."""
+        if secret != _INSECURE_NO_AUTH or _is_loopback_host(self._host):
+            return
+
+        if route_name:
+            raise ValueError(
+                f"[webhook] Route '{route_name}' uses '{_INSECURE_NO_AUTH}' "
+                f"but host '{self._host}' is not loopback. Bind to 127.0.0.1, "
+                "localhost, or ::1 for unauthenticated local testing, or "
+                "configure a real HMAC secret."
+            )
+
+        raise ValueError(
+            f"[webhook] Global secret is '{_INSECURE_NO_AUTH}' but host "
+            f"'{self._host}' is not loopback. Bind to 127.0.0.1, localhost, "
+            "or ::1 for unauthenticated local testing, or configure a real "
+            "HMAC secret."
+        )
+
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
@@ -112,6 +153,7 @@ class WebhookAdapter(BasePlatformAdapter):
     async def connect(self) -> bool:
         # Load agent-created subscriptions before validating
         self._reload_dynamic_routes()
+        self._validate_insecure_secret_allowed(secret=self._global_secret)
 
         # Validate routes at startup — secret is required per route
         for name, route in self._routes.items():
@@ -122,6 +164,7 @@ class WebhookAdapter(BasePlatformAdapter):
                     f"Set 'secret' on the route or globally. "
                     f"For testing without auth, set secret to '{_INSECURE_NO_AUTH}'."
                 )
+            self._validate_insecure_secret_allowed(secret=secret, route_name=name)
 
         app = web.Application()
         app.router.add_get("/health", self._handle_health)

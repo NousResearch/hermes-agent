@@ -352,7 +352,7 @@ class TestHTTPHandling:
     async def test_connect_starts_server(self):
         """connect() starts the HTTP listener and marks adapter as connected."""
         routes = {"r1": {"secret": _INSECURE_NO_AUTH, "prompt": "x"}}
-        adapter = _make_adapter(routes=routes, port=0)
+        adapter = _make_adapter(routes=routes, host="127.0.0.1", port=0)
         # Use port 0 — the OS picks a free port, but aiohttp requires a real bind.
         # We just test that the method completes and marks connected.
         # Need to mock TCPSite to avoid actual binding.
@@ -370,6 +370,27 @@ class TestHTTPHandling:
             mock_site_inst.start.assert_awaited_once()
 
         await adapter.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_connect_rejects_global_insecure_no_auth_on_non_loopback(self):
+        """Global INSECURE_NO_AUTH must not be allowed on remotely reachable binds."""
+        adapter = _make_adapter(secret=_INSECURE_NO_AUTH, host="0.0.0.0", port=0)
+
+        with pytest.raises(ValueError, match="Global secret is"):
+            await adapter.connect()
+
+        assert not adapter.is_connected
+
+    @pytest.mark.asyncio
+    async def test_connect_rejects_route_insecure_no_auth_on_non_loopback(self):
+        """Route-scoped INSECURE_NO_AUTH must not be allowed on remotely reachable binds."""
+        routes = {"r1": {"secret": _INSECURE_NO_AUTH, "prompt": "x"}}
+        adapter = _make_adapter(routes=routes, host="0.0.0.0", port=0)
+
+        with pytest.raises(ValueError, match="Route 'r1' uses"):
+            await adapter.connect()
+
+        assert not adapter.is_connected
 
     @pytest.mark.asyncio
     async def test_disconnect_cleans_up(self):

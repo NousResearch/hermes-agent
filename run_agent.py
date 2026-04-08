@@ -2781,6 +2781,57 @@ class AIAgent:
     _VALID_API_ROLES = frozenset({"system", "user", "assistant", "tool", "function", "developer"})
 
     @staticmethod
+    def _get_stored_tool_call_id(tool_call, messages: list, fallback_index: int = None) -> str:
+        """Look up the correct tool_call_id from the stored assistant message.
+
+        When the API returns tool_calls, we transform and store them in the message
+        history with potentially different ID fields (e.g., 'call_id' becomes 'id').
+        This method finds the matching stored tool_call by function name and returns
+        the correct ID to use in tool_result messages.
+
+        Args:
+            tool_call: The raw tool_call object from the API response
+            messages: The message history list
+            fallback_index: Optional index hint for matching (for concurrent execution order preservation)
+
+        Returns:
+            The correct tool_call_id string, or a fallback ID if not found.
+        """
+        if not messages or not tool_call:
+            return getattr(tool_call, "id", None) or getattr(tool_call, "call_id", None) or "unknown"
+
+        function_name = getattr(tool_call.function, "name", "") if hasattr(tool_call, "function") else ""
+
+        # Find the most recent assistant message with tool_calls
+        for msg in reversed(messages):
+            if msg.get("role") != "assistant":
+                continue
+            stored_tool_calls = msg.get("tool_calls", [])
+            if not stored_tool_calls:
+                continue
+
+            # Try to match by function name and optionally by position
+            for idx, stored_tc in enumerate(stored_tool_calls):
+                stored_fn = stored_tc.get("function", {}) if isinstance(stored_tc, dict) else {}
+                stored_name = stored_fn.get("name", "") if isinstance(stored_fn, dict) else ""
+
+                if stored_name == function_name:
+                    # Return the stored ID (could be 'id' or 'call_id')
+                    stored_id = stored_tc.get("id") or stored_tc.get("call_id") or ""
+                    if stored_id:
+                        return stored_id
+
+            # If no exact match by name, try to use position hint for first match
+            if fallback_index is not None and idx < len(stored_tool_calls):
+                stored_tc = stored_tool_calls[idx]
+                stored_id = stored_tc.get("id") or stored_tc.get("call_id") or ""
+                if stored_id:
+                    return stored_id
+
+        # Fallback to raw tool_call attributes
+        return getattr(tool_call, "id", None) or getattr(tool_call, "call_id", None) or "unknown"
+
+    @staticmethod
     def _sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Fix orphaned tool_call / tool_result pairs before every LLM call.
 
@@ -6054,11 +6105,11 @@ class AIAgent:
         # ── Pre-flight: interrupt check ──────────────────────────────────
         if self._interrupt_requested:
             print(f"{self.log_prefix}⚡ Interrupt: skipping {num_tools} tool call(s)")
-            for tc in tool_calls:
+            for idx, tc in enumerate(tool_calls):
                 messages.append({
                     "role": "tool",
                     "content": f"[Tool execution cancelled — {tc.function.name} was skipped due to user interrupt]",
-                    "tool_call_id": tc.id,
+                    "tool_call_id": self._get_stored_tool_call_id(tc, messages, fallback_index=idx),
                 })
             return
 
@@ -6232,11 +6283,14 @@ class AIAgent:
             if subdir_hints:
                 function_result += subdir_hints
 
-            # Append tool result message in order
+            # Look up the correct tool_call_id from the stored assistant message
+            # (not tc.id from the raw API response) to ensure consistency.
+            tool_call_id = self._get_stored_tool_call_id(tc, messages, fallback_index=i)
+
             tool_msg = {
                 "role": "tool",
                 "content": function_result,
-                "tool_call_id": tc.id,
+                "tool_call_id": tool_call_id,
             }
             messages.append(tool_msg)
 
@@ -6273,7 +6327,7 @@ class AIAgent:
                     skip_msg = {
                         "role": "tool",
                         "content": f"[Tool execution cancelled — {skipped_name} was skipped due to user interrupt]",
-                        "tool_call_id": skipped_tc.id,
+                        "tool_call_id": self._get_stored_tool_call_id(skipped_tc, messages),
                     }
                     messages.append(skip_msg)
                 break
@@ -6535,7 +6589,7 @@ class AIAgent:
             tool_msg = {
                 "role": "tool",
                 "content": function_result,
-                "tool_call_id": tool_call.id
+                "tool_call_id": self._get_stored_tool_call_id(tool_call, messages, fallback_index=i - 1)
             }
             messages.append(tool_msg)
 
@@ -6555,7 +6609,7 @@ class AIAgent:
                     skip_msg = {
                         "role": "tool",
                         "content": f"[Tool execution skipped — {skipped_name} was not started. User sent a new message]",
-                        "tool_call_id": skipped_tc.id
+                        "tool_call_id": self._get_stored_tool_call_id(skipped_tc, messages)
                     }
                     messages.append(skip_msg)
                 break
@@ -8207,13 +8261,41 @@ class AIAgent:
                     _err_message = (_err_body.get("error", {}).get("message", "") if isinstance(_err_body, dict) else "")
                     _is_generic_400 = (status_code == 400 and _err_message.strip().lower() in ("error", ""))
                     is_client_status_error = isinstance(status_code, int) and 400 <= status_code < 500 and status_code not in _RETRYABLE_STATUS_CODES and not _is_generic_400
+
+                    # Check for orphaned tool_result errors (MiniMax and other providers
+                    # may lose track of tool calls in long conversations). Extract the
+                    # tool_id and remove the orphaned result, then retry.
+                    _orphaned_tool_result = None
+                    if "tool_result" in error_msg and "not found" in error_msg:
+                        _match = re.search(r"tool_result[^']*'([^']+)'", error_msg)
+                        if _match:
+                            _orphaned_tool_result = _match.group(1)
+                            self._vprint(
+                                f"{self.log_prefix}⚠️  Orphaned tool_result detected ({_orphaned_tool_result}), "
+                                f"removing and retrying...",
+                                force=True,
+                            )
+                            # Remove the orphaned tool_result from messages
+                            _original_len = len(messages)
+                            messages = [
+                                m for m in messages
+                                if not (m.get("role") == "tool" and m.get("tool_call_id") == _orphaned_tool_result)
+                            ]
+                            self._vprint(
+                                f"{self.log_prefix}   Removed {len(messages) - _original_len} orphaned tool_result(s)",
+                                force=True,
+                            )
+                            if len(messages) < _original_len:
+                                restart_with_compressed_messages = True
+                                break
+
                     is_client_error = (is_local_validation_error or is_client_status_error or any(phrase in error_msg for phrase in [
                         'error code: 401', 'error code: 403',
                         'error code: 404', 'error code: 422',
                         'is not a valid model', 'invalid model', 'model not found',
                         'invalid api key', 'invalid_api_key', 'authentication',
                         'unauthorized', 'forbidden', 'not found',
-                    ])) and not is_context_length_error
+                    ])) and not is_context_length_error and _orphaned_tool_result is None
 
                     if is_client_error:
                         # Try fallback before aborting — a different provider
@@ -8635,14 +8717,14 @@ class AIAgent:
 
                         assistant_msg = self._build_assistant_message(assistant_message, finish_reason)
                         messages.append(assistant_msg)
-                        for tc in assistant_message.tool_calls:
+                        for idx, tc in enumerate(assistant_message.tool_calls):
                             if tc.function.name not in self.valid_tool_names:
                                 content = f"Tool '{tc.function.name}' does not exist. Available tools: {available}"
                             else:
                                 content = "Skipped: another tool call in this turn used an invalid name. Please retry this tool call."
                             messages.append({
                                 "role": "tool",
-                                "tool_call_id": tc.id,
+                                "tool_call_id": self._get_stored_tool_call_id(tc, messages, fallback_index=idx),
                                 "content": content,
                             })
                         continue
@@ -8693,7 +8775,7 @@ class AIAgent:
                             
                             # Respond with tool error results for each tool call
                             invalid_names = {name for name, _ in invalid_json_args}
-                            for tc in assistant_message.tool_calls:
+                            for idx, tc in enumerate(assistant_message.tool_calls):
                                 if tc.function.name in invalid_names:
                                     err = next(e for n, e in invalid_json_args if n == tc.function.name)
                                     tool_result = (
@@ -8705,7 +8787,7 @@ class AIAgent:
                                     tool_result = "Skipped: other tool call in this response had invalid JSON."
                                 messages.append({
                                     "role": "tool",
-                                    "tool_call_id": tc.id,
+                                    "tool_call_id": self._get_stored_tool_call_id(tc, messages, fallback_index=idx),
                                     "content": tool_result,
                                 })
                             continue

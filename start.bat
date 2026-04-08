@@ -10,12 +10,8 @@ if %errorlevel% neq 0 (
     exit /b 1
 )
 
-echo Checking dependencies...
-python -c "import fastapi, uvicorn, jinja2" >nul 2>&1
-if %errorlevel% neq 0 (
-    echo Installing missing dependencies...
-    python -m pip install fastapi uvicorn jinja2 pydantic
-)
+echo Checking and installing dependencies...
+python -m pip install -r requirements.txt
 
 echo Starting Hermes Dashboard...
 set PYTHONPATH=%PYTHONPATH%;.

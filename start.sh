@@ -6,12 +6,8 @@ if ! command -v python3 &> /dev/null; then
     exit 1
 fi
 
-echo "Checking dependencies..."
-python3 -c "import fastapi, uvicorn, jinja2" &> /dev/null
-if [ $? -ne 0 ]; then
-    echo "Installing missing dependencies..."
-    python3 -m pip install fastapi uvicorn jinja2 pydantic
-fi
+echo "Checking and installing dependencies..."
+python3 -m pip install -r requirements.txt
 
 echo "Starting Hermes Dashboard..."
 # Try to open browser

@@ -26,8 +26,9 @@ logger = logging.getLogger("hermes_dashboard")
 app = FastAPI(title="Hermes Agent Dashboard")
 
 # Setup templates and static files
-templates = Jinja2Templates(directory="dashboard/templates")
-app.mount("/static", StaticFiles(directory="dashboard/static"), name="static")
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
+app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
 
 # Global state
 active_sessions: Dict[str, AIAgent] = {}

@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import MessageEvent, MessageType
+from gateway.platforms.base import MessageEvent, MessageType, ProcessingOutcome
 from gateway.session import SessionSource
 
 
@@ -180,7 +180,7 @@ async def test_on_processing_complete_success(monkeypatch):
     adapter = _make_adapter()
     event = _make_event()
 
-    await adapter.on_processing_complete(event, success=True)
+    await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
 
     adapter._bot.set_message_reaction.assert_awaited_once_with(
         chat_id=123,
@@ -196,7 +196,7 @@ async def test_on_processing_complete_failure(monkeypatch):
     adapter = _make_adapter()
     event = _make_event()
 
-    await adapter.on_processing_complete(event, success=False)
+    await adapter.on_processing_complete(event, ProcessingOutcome.FAILURE)
 
     adapter._bot.set_message_reaction.assert_awaited_once_with(
         chat_id=123,
@@ -212,7 +212,19 @@ async def test_on_processing_complete_skipped_when_disabled(monkeypatch):
     adapter = _make_adapter()
     event = _make_event()
 
-    await adapter.on_processing_complete(event, success=True)
+    await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+
+    adapter._bot.set_message_reaction.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_on_processing_complete_cancelled_keeps_existing_reaction(monkeypatch):
+    """Expected cancellation should not replace the in-progress reaction."""
+    monkeypatch.setenv("TELEGRAM_REACTIONS", "true")
+    adapter = _make_adapter()
+    event = _make_event()
+
+    await adapter.on_processing_complete(event, ProcessingOutcome.CANCELLED)
 
     adapter._bot.set_message_reaction.assert_not_awaited()
 

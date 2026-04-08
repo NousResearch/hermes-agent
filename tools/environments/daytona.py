@@ -11,13 +11,12 @@ import shlex
 import threading
 import warnings
 from pathlib import Path
-from typing import Dict, Optional
 
 from tools.environments.base import (
     BaseEnvironment,
     _ThreadedProcessHandle,
-    _file_mtime_key,
 )
+from tools.environments.file_sync import FileSyncManager, iter_sync_files, quoted_rm_command
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +60,6 @@ class DaytonaEnvironment(BaseEnvironment):
         self._daytona = Daytona()
         self._sandbox = None
         self._lock = threading.Lock()
-        self._last_sync_time: float = 0
 
         memory_gib = max(1, math.ceil(memory / 1024))
         disk_gib = max(1, math.ceil(disk / 1024))
@@ -128,50 +126,40 @@ class DaytonaEnvironment(BaseEnvironment):
             pass
         logger.info("Daytona: resolved home to %s, cwd to %s", self._remote_home, self.cwd)
 
-        self._synced_files: Dict[str, tuple] = {}
-        self._sync_files()
+        self._sync_manager = FileSyncManager(
+            get_files_fn=lambda: iter_sync_files(f"{self._remote_home}/.hermes"),
+            upload_fn=self._daytona_upload,
+            delete_fn=self._daytona_delete,
+        )
+        self._sync_manager.sync(force=True)
         self.init_session()
 
-    def _upload_if_changed(self, host_path: str, remote_path: str) -> bool:
-        file_key = _file_mtime_key(host_path)
-        if file_key is None:
-            return False
-        if self._synced_files.get(remote_path) == file_key:
-            return False
-        try:
-            parent = str(Path(remote_path).parent)
-            self._sandbox.process.exec(f"mkdir -p {parent}")
-            self._sandbox.fs.upload_file(host_path, remote_path)
-            self._synced_files[remote_path] = file_key
-            return True
-        except Exception as e:
-            logger.debug("Daytona: upload failed %s: %s", host_path, e)
-            return False
+    def _daytona_upload(self, host_path: str, remote_path: str) -> None:
+        """Upload a single file via Daytona SDK."""
+        parent = str(Path(remote_path).parent)
+        self._sandbox.process.exec(f"mkdir -p {parent}")
+        self._sandbox.fs.upload_file(host_path, remote_path)
 
-    def _sync_files(self) -> None:
-        container_base = f"{self._remote_home}/.hermes"
-        try:
-            from tools.credential_files import get_credential_file_mounts, iter_skills_files
-            for mount_entry in get_credential_file_mounts():
-                remote_path = mount_entry["container_path"].replace("/root/.hermes", container_base, 1)
-                self._upload_if_changed(mount_entry["host_path"], remote_path)
-            for entry in iter_skills_files(container_base=container_base):
-                self._upload_if_changed(entry["host_path"], entry["container_path"])
-        except Exception as e:
-            logger.debug("Daytona: could not sync skills/credentials: %s", e)
+    def _daytona_delete(self, remote_paths: list[str]) -> None:
+        """Batch-delete remote files via SDK exec."""
+        self._sandbox.process.exec(quoted_rm_command(remote_paths))
 
-    def _ensure_sandbox_ready(self):
+    # ------------------------------------------------------------------
+    # Sandbox lifecycle
+    # ------------------------------------------------------------------
+
+    def _ensure_sandbox_ready(self) -> None:
         """Restart sandbox if it was stopped (e.g., by a previous interrupt)."""
         self._sandbox.refresh_data()
         if self._sandbox.state in (self._SandboxState.STOPPED, self._SandboxState.ARCHIVED):
             self._sandbox.start()
             logger.info("Daytona: restarted sandbox %s", self._sandbox.id)
 
-    def _before_execute(self):
-        """Ensure sandbox is ready, then rate-limited file sync via base class."""
+    def _before_execute(self) -> None:
+        """Ensure sandbox is ready, then sync files via FileSyncManager."""
         with self._lock:
             self._ensure_sandbox_ready()
-        super()._before_execute()
+        self._sync_manager.sync()
 
     def _run_bash(self, cmd_string: str, *, login: bool = False,
                   timeout: int = 120,

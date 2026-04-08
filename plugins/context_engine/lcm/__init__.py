@@ -112,10 +112,27 @@ class LcmContextEngine(ContextEngine):
         self._engine.token_estimator._last_prompt_tokens = prompt_tokens
 
     def should_compress(self, prompt_tokens: int = None) -> bool:
-        """Check if compaction should fire (covers both async and blocking)."""
+        """Check if compaction should fire (covers both async and blocking).
+
+        Uses the real token count from the API response (prompt_tokens) when
+        available, falling back to the engine's internal active_tokens(). The
+        engine's active list may be empty before the first compress() call
+        (messages are only ingested during compress()), so relying solely on
+        active_tokens() creates a chicken-and-egg where compression never fires.
+        """
         if prompt_tokens is not None:
             self.last_prompt_tokens = prompt_tokens
 
+        # Use real API-reported token count if available — it reflects the
+        # actual context size including messages the engine hasn't ingested yet.
+        real_tokens = prompt_tokens if prompt_tokens and prompt_tokens > 0 else None
+
+        if real_tokens is not None:
+            budget = self._engine.context_length
+            ratio = real_tokens / budget if budget > 0 else 0.0
+            return ratio >= self._config.tau_soft
+
+        # Fallback: check engine's internal state (works after first compress())
         action = self._engine.check_thresholds()
         return action != CompactionAction.NONE
 
@@ -154,9 +171,19 @@ class LcmContextEngine(ContextEngine):
         return result
 
     def should_compress_preflight(self, messages: List[Dict[str, Any]]) -> bool:
-        """Quick estimate before the API call."""
-        active_tokens = self._engine.active_tokens()
-        return active_tokens > int(self.context_length * self._config.tau_soft)
+        """Quick estimate before the API call.
+
+        Checks real messages since the engine's active list may be empty
+        before the first compress() call.
+        """
+        # If engine has ingested messages, use its active token count
+        if self._engine.active:
+            active_tokens = self._engine.active_tokens()
+            return active_tokens > int(self.context_length * self._config.tau_soft)
+
+        # Otherwise estimate from the raw messages passed in
+        estimated = self._engine.token_estimator.estimate(messages)
+        return estimated > int(self.context_length * self._config.tau_soft)
 
     # ── Session lifecycle ─────────────────────────────────────────────────
 

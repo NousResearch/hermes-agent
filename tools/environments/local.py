@@ -405,8 +405,15 @@ class LocalEnvironment(PersistentShellMixin, BaseEnvironment):
         )
         run_env = _make_run_env(self.env)
 
+        # Use -ic (interactive, non-login) by default to avoid slow login shell
+        # initialization on some platforms (e.g. FreeBSD where -l triggers
+        # /etc/profile loading that can cause timeouts).
+        # Allow override via HERMES_SHELL_LOGIN_MODE env var for users who need
+        # login shell behavior (e.g. for PATH setup in ~/.profile).
+        _login_flag = "" if os.environ.get("HERMES_SHELL_LOGIN_MODE", "").lower() in ("0", "false", "no") else "l"
+        _shell_flags = f"-{_login_flag}ic" if _login_flag else "-ic"
         proc = subprocess.Popen(
-            [user_shell, "-lic", fenced_cmd],
+            [user_shell, _shell_flags, fenced_cmd],
             text=True,
             cwd=work_dir,
             env=run_env,

@@ -280,6 +280,8 @@ Discord behavior is controlled through two files: **`~/.hermes/.env`** for crede
 | `DISCORD_AUTO_THREAD` | No | `true` | When `true`, automatically creates a new thread for every `@mention` in a text channel, so each conversation is isolated (similar to Slack behavior). Messages already inside threads or DMs are unaffected. |
 | `DISCORD_ALLOW_BOTS` | No | `"none"` | Controls how the bot handles messages from other Discord bots. `"none"` — ignore all other bots. `"mentions"` — only accept bot messages that `@mention` Hermes. `"all"` — accept all bot messages. |
 | `DISCORD_REACTIONS` | No | `true` | When `true`, the bot adds emoji reactions to messages during processing (👀 when starting, ✅ on success, ❌ on error). Set to `false` to disable reactions entirely. |
+| `DISCORD_IGNORED_CHANNELS` | No | — | Comma-separated channel IDs where the bot **never** responds, even when `@mentioned`. Takes priority over all other channel settings. |
+| `DISCORD_NO_THREAD_CHANNELS` | No | — | Comma-separated channel IDs where the bot responds directly in the channel instead of creating a thread. Only relevant when `DISCORD_AUTO_THREAD` is `true`. |
 
 ### Config File (`config.yaml`)
 
@@ -292,6 +294,8 @@ discord:
   free_response_channels: ""      # Comma-separated channel IDs (or YAML list)
   auto_thread: true               # Auto-create threads on @mention
   reactions: true                 # Add emoji reactions during processing
+  ignored_channels: []            # Channel IDs where bot never responds
+  no_thread_channels: []          # Channel IDs where bot responds without threading
 
 # Session isolation (applies to all gateway platforms, not just Discord)
 group_sessions_per_user: true     # Isolate sessions per user in shared channels
@@ -341,6 +345,40 @@ Controls whether the bot adds emoji reactions to messages as visual feedback:
 - ❌ added if an error occurs during processing
 
 Disable this if you find the reactions distracting or if the bot's role doesn't have the **Add Reactions** permission.
+
+#### `discord.ignored_channels`
+
+**Type:** string or list — **Default:** `[]`
+
+Channel IDs where the bot **never** responds, even when directly `@mentioned`. This takes the highest priority — if a channel is in this list, the bot silently ignores all messages there, regardless of `require_mention`, `free_response_channels`, or any other setting.
+
+```yaml
+# String format
+discord:
+  ignored_channels: "1234567890,9876543210"
+
+# List format
+discord:
+  ignored_channels:
+    - 1234567890
+    - 9876543210
+```
+
+If a thread's parent channel is in this list, messages in that thread are also ignored.
+
+#### `discord.no_thread_channels`
+
+**Type:** string or list — **Default:** `[]`
+
+Channel IDs where the bot responds directly in the channel instead of auto-creating a thread. This only has an effect when `auto_thread` is `true` (the default). In these channels, the bot responds inline like a normal message rather than spawning a new thread.
+
+```yaml
+discord:
+  no_thread_channels:
+    - 1234567890  # Bot responds inline here
+```
+
+Useful for channels dedicated to bot interaction where threads would add unnecessary noise.
 
 #### `group_sessions_per_user`
 

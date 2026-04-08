@@ -700,6 +700,29 @@ class ProcessRegistry:
         """Send data + newline to a running process's stdin (like pressing Enter)."""
         return self.write_stdin(session_id, data + "\n")
 
+    def close_stdin(self, session_id: str) -> dict:
+        """Close a running process's stdin / send EOF without killing the process."""
+        session = self.get(session_id)
+        if session is None:
+            return {"status": "not_found", "error": f"No process with ID {session_id}"}
+        if session.exited:
+            return {"status": "already_exited", "error": "Process has already finished"}
+
+        if hasattr(session, '_pty') and session._pty:
+            try:
+                session._pty.sendeof()
+                return {"status": "ok", "message": "EOF sent"}
+            except Exception as e:
+                return {"status": "error", "error": str(e)}
+
+        if not session.process or not session.process.stdin:
+            return {"status": "error", "error": "Process stdin not available (non-local backend or stdin closed)"}
+        try:
+            session.process.stdin.close()
+            return {"status": "ok", "message": "stdin closed"}
+        except Exception as e:
+            return {"status": "error", "error": str(e)}
+
     def list_sessions(self, task_id: str = None) -> list:
         """List all running and recently-finished processes."""
         with self._lock:
@@ -915,14 +938,14 @@ PROCESS_SCHEMA = {
         "Actions: 'list' (show all), 'poll' (check status + new output), "
         "'log' (full output with pagination), 'wait' (block until done or timeout), "
         "'kill' (terminate), 'write' (send raw stdin data without newline), "
-        "'submit' (send data + Enter, for answering prompts)."
+        "'submit' (send data + Enter, for answering prompts), 'close' (close stdin/send EOF)."
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["list", "poll", "log", "wait", "kill", "write", "submit"],
+                "enum": ["list", "poll", "log", "wait", "kill", "write", "submit", "close"],
                 "description": "Action to perform on background processes"
             },
             "session_id": {
@@ -962,7 +985,7 @@ def _handle_process(args, **kw):
 
     if action == "list":
         return _json.dumps({"processes": process_registry.list_sessions(task_id=task_id)}, ensure_ascii=False)
-    elif action in ("poll", "log", "wait", "kill", "write", "submit"):
+    elif action in ("poll", "log", "wait", "kill", "write", "submit", "close"):
         if not session_id:
             return tool_error(f"session_id is required for {action}")
         if action == "poll":
@@ -978,7 +1001,9 @@ def _handle_process(args, **kw):
             return _json.dumps(process_registry.write_stdin(session_id, str(args.get("data", ""))), ensure_ascii=False)
         elif action == "submit":
             return _json.dumps(process_registry.submit_stdin(session_id, str(args.get("data", ""))), ensure_ascii=False)
-    return tool_error(f"Unknown process action: {action}. Use: list, poll, log, wait, kill, write, submit")
+        elif action == "close":
+            return _json.dumps(process_registry.close_stdin(session_id), ensure_ascii=False)
+    return tool_error(f"Unknown process action: {action}. Use: list, poll, log, wait, kill, write, submit, close")
 
 
 registry.register(

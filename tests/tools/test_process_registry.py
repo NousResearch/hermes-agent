@@ -136,6 +136,64 @@ class TestReadLog:
 
 
 # =========================================================================
+# Stdin helpers
+# =========================================================================
+
+class TestStdinHelpers:
+    def test_close_stdin_not_found(self, registry):
+        result = registry.close_stdin("nonexistent")
+        assert result["status"] == "not_found"
+
+    def test_close_stdin_pipe_mode(self, registry):
+        proc = MagicMock()
+        proc.stdin = MagicMock()
+        s = _make_session()
+        s.process = proc
+        registry._running[s.id] = s
+
+        result = registry.close_stdin(s.id)
+
+        proc.stdin.close.assert_called_once()
+        assert result["status"] == "ok"
+
+    def test_close_stdin_pty_mode(self, registry):
+        pty = MagicMock()
+        s = _make_session()
+        s._pty = pty
+        registry._running[s.id] = s
+
+        result = registry.close_stdin(s.id)
+
+        pty.sendeof.assert_called_once()
+        assert result["status"] == "ok"
+
+    def test_close_stdin_allows_eof_driven_process_to_finish(self, registry, tmp_path):
+        session = registry.spawn_local(
+            'python3 -c "import sys; print(sys.stdin.read().strip())"',
+            cwd=str(tmp_path),
+            use_pty=False,
+        )
+
+        try:
+            time.sleep(0.5)
+            assert registry.submit_stdin(session.id, "hello")["status"] == "ok"
+            assert registry.close_stdin(session.id)["status"] == "ok"
+
+            deadline = time.time() + 5
+            while time.time() < deadline:
+                poll = registry.poll(session.id)
+                if poll["status"] == "exited":
+                    assert poll["exit_code"] == 0
+                    assert "hello" in poll["output_preview"]
+                    return
+                time.sleep(0.2)
+
+            pytest.fail("process did not exit after stdin was closed")
+        finally:
+            registry.kill_process(session.id)
+
+
+# =========================================================================
 # List sessions
 # =========================================================================
 

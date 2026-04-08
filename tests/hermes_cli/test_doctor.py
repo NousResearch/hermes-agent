@@ -14,6 +14,23 @@ from hermes_cli import doctor as doctor_mod
 from hermes_cli.doctor import _has_provider_env_config
 
 
+class TestDoctorPlatformHints:
+    def test_termux_package_hint(self, monkeypatch):
+        monkeypatch.setenv("TERMUX_VERSION", "0.118.3")
+        monkeypatch.setenv("PREFIX", "/data/data/com.termux/files/usr")
+        assert doctor._is_termux() is True
+        assert doctor._python_install_cmd() == "python -m pip install"
+        assert doctor._system_package_install_cmd("ripgrep") == "pkg install ripgrep"
+
+    def test_non_termux_package_hint_defaults_to_apt(self, monkeypatch):
+        monkeypatch.delenv("TERMUX_VERSION", raising=False)
+        monkeypatch.setenv("PREFIX", "/usr")
+        monkeypatch.setattr(sys, "platform", "linux")
+        assert doctor._is_termux() is False
+        assert doctor._python_install_cmd() == "uv pip install"
+        assert doctor._system_package_install_cmd("ripgrep") == "sudo apt install ripgrep"
+
+
 class TestProviderEnvDetection:
     def test_detects_openai_api_key(self):
         content = "OPENAI_BASE_URL=http://localhost:1234/v1\nOPENAI_API_KEY=***"

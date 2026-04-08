@@ -800,8 +800,20 @@ def list_authenticated_providers(
         if not has_creds:
             continue
 
-        # Use curated list
-        model_ids = curated.get(pid, [])
+        # Use live API for openai-codex; curated list for others
+        if pid == "openai-codex":
+            try:
+                from hermes_cli.codex_models import get_codex_model_ids
+                from hermes_cli.auth import _load_auth_store
+                _store = _load_auth_store() or {}
+                _pool = _store.get("credential_pool", {}).get("openai-codex", [])
+                _token = (_pool[0].get("access_token") if isinstance(_pool, list) and _pool else
+                          _pool.get("access_token") if isinstance(_pool, dict) else None)
+                model_ids = get_codex_model_ids(access_token=_token)
+            except Exception:
+                model_ids = curated.get(pid, [])
+        else:
+            model_ids = curated.get(pid, [])
         total = len(model_ids)
         top = model_ids[:max_models]
 
@@ -820,6 +832,8 @@ def list_authenticated_providers(
     if user_providers and isinstance(user_providers, dict):
         for ep_name, ep_cfg in user_providers.items():
             if not isinstance(ep_cfg, dict):
+                continue
+            if ep_name in seen_slugs:
                 continue
             display_name = ep_cfg.get("name", "") or ep_name
             api_url = ep_cfg.get("api", "") or ep_cfg.get("url", "") or ""

@@ -1224,9 +1224,9 @@ def build_anthropic_kwargs(
     # Map reasoning_config to Anthropic's thinking parameter.
     # Claude 4.6 models use adaptive thinking + output_config.effort.
     # Older models use manual thinking with budget_tokens.
-    # Haiku models do NOT support extended thinking at all — skip entirely.
+    # Haiku and MiniMax models do NOT support extended thinking — skip entirely.
     if reasoning_config and isinstance(reasoning_config, dict):
-        if reasoning_config.get("enabled") is not False and "haiku" not in model.lower():
+        if reasoning_config.get("enabled") is not False and "haiku" not in model.lower() and "minimax" not in model.lower():
             effort = str(reasoning_config.get("effort", "medium")).lower()
             budget = THINKING_BUDGET.get(effort, 8000)
             if _supports_adaptive_thinking(model):

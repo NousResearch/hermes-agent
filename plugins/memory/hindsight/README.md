@@ -74,7 +74,7 @@ Config file: `~/.hermes/hindsight/config.json`
 | `llm_provider` | `openai` | LLM provider: `openai`, `anthropic`, `gemini`, `groq`, `minimax`, `ollama` |
 | `llm_model` | per-provider | Model name (e.g. `gpt-4o-mini`, `openai/gpt-oss-120b`) |
 
-The LLM API key is stored in `~/.hermes/.env` as `HINDSIGHT_LLM_API_KEY`.
+The LLM API key is stored in ~/.hermes/.env as HINDSIGHT_API_LLM_KEY.
 
 ## Tools
 
@@ -91,7 +91,8 @@ Available in `hybrid` and `tools` memory modes:
 | Variable | Description |
 |----------|-------------|
 | `HINDSIGHT_API_KEY` | API key for Hindsight Cloud |
-| `HINDSIGHT_LLM_API_KEY` | LLM API key for local mode |
+| `HINDSIGHT_API_LLM_KEY` | LLM API key for local mode |
+| `HINDSIGHT_API_LLM_BASE_URL` | LLM Base URL for local mode (e.g. OpenRouter) |
 | `HINDSIGHT_API_URL` | Override API endpoint |
 | `HINDSIGHT_BANK_ID` | Override bank name |
 | `HINDSIGHT_BUDGET` | Override recall budget |

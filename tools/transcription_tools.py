@@ -295,8 +295,12 @@ def _transcribe_local(file_path: str, model_name: str) -> Dict[str, Any]:
             _local_model = WhisperModel(model_name, device="auto", compute_type="auto")
             _local_model_name = model_name
 
-        # Allow forcing the language via env var (e.g. HERMES_LOCAL_STT_LANGUAGE=en)
-        _forced_lang = os.getenv(LOCAL_STT_LANGUAGE_ENV, DEFAULT_LOCAL_STT_LANGUAGE)
+        # Language: config.yaml (stt.local.language) > env var > auto-detect.
+        _forced_lang = (
+            _load_stt_config().get("local", {}).get("language")
+            or os.getenv(LOCAL_STT_LANGUAGE_ENV)
+            or None
+        )
         transcribe_kwargs = {"beam_size": 5}
         if _forced_lang:
             transcribe_kwargs["language"] = _forced_lang
@@ -350,7 +354,12 @@ def _transcribe_local_command(file_path: str, model_name: str) -> Dict[str, Any]
             ),
         }
 
-    language = os.getenv(LOCAL_STT_LANGUAGE_ENV, DEFAULT_LOCAL_STT_LANGUAGE)
+    # Language: config.yaml (stt.local.language) > env var > "en" default.
+    language = (
+        _load_stt_config().get("local", {}).get("language")
+        or os.getenv(LOCAL_STT_LANGUAGE_ENV)
+        or DEFAULT_LOCAL_STT_LANGUAGE
+    )
     normalized_model = _normalize_local_command_model(model_name)
 
     try:

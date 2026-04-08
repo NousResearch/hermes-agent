@@ -89,6 +89,50 @@ Use HTTP servers when:
 - your organization exposes internal MCP endpoints
 - you do not want Hermes spawning a local subprocess for that integration
 
+### Example: Invoice Ninja connector
+
+Hermes includes a small local MCP server for Invoice Ninja in `integrations/invoice_ninja.py`.
+It uses the `X-API-TOKEN` header and supports both the hosted Invoice Ninja API and self-hosted instances.
+
+```yaml
+mcp_servers:
+  invoice_ninja:
+    command: "python"
+    args: ["-m", "integrations.invoice_ninja"]
+    env:
+      INVOICE_NINJA_API_TOKEN: "***"
+      INVOICE_NINJA_BASE_URL: "https://invoicing.co"
+```
+
+The server exposes both raw and convenience tools, including:
+- `invoice_ninja_request`
+- `invoice_ninja_list_invoices`
+- `invoice_ninja_get_invoice`
+- `invoice_ninja_create_invoice`
+- `invoice_ninja_update_invoice`
+- `invoice_ninja_append_invoice_line_item`
+- `invoice_ninja_list_clients`
+- `invoice_ninja_create_client`
+- `invoice_ninja_list_payments`
+- `invoice_ninja_record_payment`
+- `invoice_ninja_list_expenses`
+- `invoice_ninja_get_expense`
+- `invoice_ninja_create_expense`
+- `invoice_ninja_create_expense_from_receipt`
+- `invoice_ninja_attach_expense`
+- `invoice_ninja_list_unpaid_or_unbilled_expenses`
+- `invoice_ninja_update_expense`
+- `invoice_ninja_delete_expense`
+- `invoice_ninja_list_expense_categories`
+- `invoice_ninja_create_expense_category`
+- `invoice_ninja_update_expense_category`
+- `invoice_ninja_delete_expense_category`
+- `invoice_ninja_list_recurring_expenses`
+- `invoice_ninja_create_recurring_expense`
+- `invoice_ninja_update_recurring_expense`
+- `invoice_ninja_delete_recurring_expense`
+- `invoice_ninja_run_expense_report`
+
 ## Basic configuration reference
 
 Hermes reads MCP config from `~/.hermes/config.yaml` under `mcp_servers`.

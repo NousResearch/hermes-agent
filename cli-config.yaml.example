@@ -624,6 +624,12 @@ platform_toolsets:
 #     args: ["-y", "@modelcontextprotocol/server-github"]
 #     env:
 #       GITHUB_PERSONAL_ACCESS_TOKEN: "ghp_..."
+#   invoice_ninja:
+#     command: python
+#     args: ["-m", "integrations.invoice_ninja"]
+#     env:
+#       INVOICE_NINJA_API_TOKEN: "***"
+#       INVOICE_NINJA_BASE_URL: "https://invoicing.co"
 #
 # Sampling (server-initiated LLM requests) — enabled by default.
 # Per-server config under the 'sampling' key:

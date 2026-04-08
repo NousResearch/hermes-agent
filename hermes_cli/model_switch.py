@@ -593,7 +593,20 @@ def switch_model(
     base_url = current_base_url
     api_mode = ""
 
-    if provider_changed or explicit_provider:
+    # For user-defined providers (from config.yaml providers: dict),
+    # extract credentials directly instead of resolve_runtime_provider
+    # which only knows about built-in providers and custom_providers list.
+    _user_ep = (user_providers or {}).get(target_provider) if user_providers else None
+    if _user_ep and isinstance(_user_ep, dict):
+        base_url = _user_ep.get("api", "") or _user_ep.get("url", "") or _user_ep.get("base_url", "") or base_url
+        api_key = _user_ep.get("api_key", "") or api_key
+        _transport = _user_ep.get("transport", "")
+        if _transport:
+            from hermes_cli.providers import TRANSPORT_TO_API_MODE
+            api_mode = TRANSPORT_TO_API_MODE.get(_transport, "chat_completions")
+        else:
+            api_mode = determine_api_mode(target_provider, base_url)
+    elif provider_changed or explicit_provider:
         try:
             runtime = resolve_runtime_provider(requested=target_provider)
             api_key = runtime.get("api_key", "")
@@ -826,11 +839,13 @@ def list_authenticated_providers(
             default_model = ep_cfg.get("default_model", "")
 
             models_list = []
-            if default_model:
-                models_list.append(default_model)
-
-            # Try to probe /v1/models if URL is set (but don't block on it)
-            # For now just show what we know from config
+            ep_models = ep_cfg.get("models")
+            if isinstance(ep_models, list) and ep_models:
+                models_list = [str(m) for m in ep_models if m]
+            elif isinstance(ep_models, dict) and ep_models:
+                models_list = list(ep_models.keys())
+            if default_model and default_model not in models_list:
+                models_list.insert(0, default_model)
             results.append({
                 "slug": ep_name,
                 "name": display_name,

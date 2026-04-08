@@ -3583,6 +3583,8 @@ class GatewayRunner:
                     _cur_base_url = current_base_url
                     _cur_api_key = current_api_key
 
+                    _cur_user_provs = user_provs
+
                     async def _on_model_selected(
                         _chat_id: str, model_id: str, provider_slug: str
                     ) -> str:
@@ -3595,6 +3597,7 @@ class GatewayRunner:
                             current_api_key=_cur_api_key,
                             is_global=False,
                             explicit_provider=provider_slug,
+                            user_providers=_cur_user_provs,
                         )
                         if not result.success:
                             return f"Error: {result.error_message}"
@@ -3702,6 +3705,7 @@ class GatewayRunner:
             current_api_key=current_api_key,
             is_global=persist_global,
             explicit_provider=explicit_provider,
+            user_providers=user_provs,
         )
 
         if not result.success:

@@ -138,6 +138,13 @@ class FinetuneBenchEnv(HermesAgentBaseEnv):
 
     async def setup(self):
         """Load prompt bank, custom cases, and configure docker sandbox mount."""
+        # Pre-flight: confirm the configured LLM endpoint is reachable BEFORE
+        # we start the rollout loop. Without this check, a dead llama-server
+        # causes the bench to hang silently on its first request — the agent
+        # loop has no per-call timeout and the parent dispatcher only kills
+        # after hours. Fail loud and fast instead.
+        self._preflight_health_check()
+
         # Suppress the per-container disk-quota warning that fires for every
         # case on systems without overlay2-on-XFS-with-pquota. It's harmless
         # informational noise and would print 243 times in a full run.
@@ -199,6 +206,72 @@ class FinetuneBenchEnv(HermesAgentBaseEnv):
         self.iter = 0
 
         logger.info("Loaded %d test cases", len(self.prompt_bank))
+
+    def _preflight_health_check(self):
+        """
+        Verify the configured LLM server is reachable before starting the
+        rollout loop. Raises SystemExit with a clear message if not, so
+        the failure is loud and immediate instead of a silent hang.
+        """
+        import urllib.request
+        import urllib.error
+
+        # Find the base_url from the first server config. Atropos's
+        # APIServer stores it as `self.config.base_url` (a Pydantic
+        # field on the APIServerConfig). Older versions and some
+        # subclasses may also expose it as a direct attribute.
+        base_url = None
+        try:
+            for server in self.server.servers:
+                cfg = getattr(server, "config", None)
+                url = (
+                    getattr(cfg, "base_url", None) if cfg is not None else None
+                ) or getattr(server, "base_url", None)
+                if url:
+                    base_url = str(url)
+                    break
+        except Exception as e:
+            logger.debug("preflight: server enumeration failed: %s", e)
+
+        if not base_url:
+            print("[finetune-bench] ⚠ could not determine LLM server URL from config — "
+                  "skipping pre-flight health check")
+            return
+
+        # Construct the health-check URL. /v1/models is the standard
+        # OpenAI-compatible endpoint and is what llama-server, vLLM,
+        # SGLang, and OpenRouter all expose.
+        health_url = base_url.rstrip("/")
+        if not health_url.endswith("/v1/models"):
+            if health_url.endswith("/v1"):
+                health_url = health_url + "/models"
+            else:
+                health_url = health_url + "/v1/models"
+
+        print(f"[finetune-bench] pre-flight: GET {health_url}")
+        try:
+            with urllib.request.urlopen(health_url, timeout=5) as resp:
+                if 200 <= resp.status < 300:
+                    print(f"[finetune-bench] pre-flight: ✓ server is responsive")
+                    return
+                print(
+                    f"[finetune-bench] pre-flight: ✗ server returned HTTP {resp.status}"
+                )
+        except (urllib.error.URLError, urllib.error.HTTPError, ConnectionError, OSError) as e:
+            print(
+                f"[finetune-bench] pre-flight: ✗ could not reach LLM server at {base_url}"
+            )
+            print(f"  reason: {e}")
+            print(
+                "  Start your local model (e.g. llama-server) before running the bench, "
+                "or update finetune_bench/default.yaml's setup.base_url to point at a "
+                "different endpoint."
+            )
+
+        # If we reach here, the server is unreachable. Exit with a non-zero
+        # code so the parent dispatcher (manage.py / cli.py) sees a real
+        # failure instead of waiting hours for a hung run.
+        raise SystemExit(2)
 
     async def get_next_item(self):
         if self.iter >= len(self.prompt_bank):

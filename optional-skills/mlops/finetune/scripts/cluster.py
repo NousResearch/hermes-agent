@@ -57,7 +57,17 @@ class DomainClusterer:
         self._embeddings_cache: Dict[str, np.ndarray] = {}
 
     def _get_embed_model(self):
-        """Lazy-load the sentence-transformers model."""
+        """Lazy-load the sentence-transformers model.
+
+        Pinned to CPU regardless of CUDA availability. The clustering step
+        only embeds at most a few thousand short text snippets per run, so
+        CPU is fast enough (~30 seconds for 200 sessions on a modest
+        machine), and pinning to CPU avoids competing with a running
+        llama-server for GPU memory. With CUDA torch installed (the
+        default after axolotl is added), sentence-transformers would
+        otherwise auto-select cuda:0 and OOM the embedding load against
+        an active inference server.
+        """
         if self._embed_model is None:
             try:
                 from sentence_transformers import SentenceTransformer
@@ -66,8 +76,11 @@ class DomainClusterer:
                     "sentence-transformers is required for clustering. "
                     "Install with: pip install sentence-transformers>=2.2"
                 )
-            logger.info("Loading embedding model: %s", self.embedding_model_name)
-            self._embed_model = SentenceTransformer(self.embedding_model_name)
+            logger.info("Loading embedding model: %s (device=cpu)", self.embedding_model_name)
+            self._embed_model = SentenceTransformer(
+                self.embedding_model_name,
+                device="cpu",
+            )
         return self._embed_model
 
     def _extract_user_text(self, session: Dict) -> str:

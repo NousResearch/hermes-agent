@@ -3997,23 +3997,69 @@ class HermesCLI:
             else f"{timeout_seconds // 60}m"
         )
 
+        # Long-running subcommands stream their output line-by-line so users
+        # see progress (tqdm bars, per-case results) instead of staring at a
+        # frozen TUI for tens of minutes. Quick subcommands keep the buffered
+        # capture pattern because their output is small and arrives all at once.
+        streaming_commands = {"bench", "run", "train"}
+        stream_output = subcommand in streaming_commands
+
         try:
             with self._busy_command(f"finetune {subcommand}..."):
-                result = subprocess.run(
-                    cmd_args,
-                    cwd=str(scripts_dir),
-                    capture_output=True,
-                    text=True,
-                    timeout=timeout_seconds,
-                )
-            if result.stdout:
-                for line in result.stdout.rstrip("\n").split("\n"):
-                    _cprint(line)
-            if result.stderr:
-                for line in result.stderr.rstrip("\n").split("\n"):
-                    _cprint(line)
-            if result.returncode != 0:
-                _cprint(f"Command exited with code {result.returncode}")
+                if stream_output:
+                    # Start the subprocess and forward each line to _cprint as
+                    # it appears. We use Popen with line-buffered text mode so
+                    # the bench env's per-case progress prints surface in real
+                    # time. PYTHONUNBUFFERED=1 in the child env disables Python
+                    # stdout buffering for libraries that respect it.
+                    child_env = os.environ.copy()
+                    child_env.setdefault("PYTHONUNBUFFERED", "1")
+                    proc = subprocess.Popen(
+                        cmd_args,
+                        cwd=str(scripts_dir),
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT,
+                        text=True,
+                        bufsize=1,
+                        env=child_env,
+                    )
+                    deadline = time.time() + timeout_seconds
+                    timed_out = False
+                    try:
+                        for line in proc.stdout:
+                            _cprint(line.rstrip("\n"))
+                            if time.time() > deadline:
+                                proc.kill()
+                                timed_out = True
+                                break
+                        proc.wait(timeout=10)
+                    except KeyboardInterrupt:
+                        proc.terminate()
+                        try:
+                            proc.wait(timeout=5)
+                        except subprocess.TimeoutExpired:
+                            proc.kill()
+                        raise
+                    if timed_out:
+                        raise subprocess.TimeoutExpired(cmd_args, timeout_seconds)
+                    if proc.returncode != 0:
+                        _cprint(f"Command exited with code {proc.returncode}")
+                else:
+                    result = subprocess.run(
+                        cmd_args,
+                        cwd=str(scripts_dir),
+                        capture_output=True,
+                        text=True,
+                        timeout=timeout_seconds,
+                    )
+                    if result.stdout:
+                        for line in result.stdout.rstrip("\n").split("\n"):
+                            _cprint(line)
+                    if result.stderr:
+                        for line in result.stderr.rstrip("\n").split("\n"):
+                            _cprint(line)
+                    if result.returncode != 0:
+                        _cprint(f"Command exited with code {result.returncode}")
         except subprocess.TimeoutExpired:
             _cprint(f"Command timed out after {timeout_label}")
             _cprint(

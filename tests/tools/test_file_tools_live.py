@@ -22,21 +22,19 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from tools.environments.local import (
-    LocalEnvironment,
-    _clean_shell_noise,
-    _extract_fenced_output,
-    _OUTPUT_FENCE,
-    _SHELL_NOISE_SUBSTRINGS,
-)
+from tools.environments.local import LocalEnvironment
 from tools.file_operations import ShellFileOperations
 
 
 # ── Shared noise detection ───────────────────────────────────────────────
-# Every known shell noise pattern. If ANY of these appear in output that
-# isn't explicitly expected, the test fails with a clear message.
+# Known shell noise patterns that should never appear in command output.
 
-_ALL_NOISE_PATTERNS = list(_SHELL_NOISE_SUBSTRINGS) + [
+_ALL_NOISE_PATTERNS = [
+    "bash: cannot set terminal process group",
+    "bash: no job control in this shell",
+    "no job control in this shell",
+    "cannot set terminal process group",
+    "tcsetattr: Inappropriate ioctl for device",
     "bash: ",
     "Inappropriate ioctl",
     "Auto-suggestions:",
@@ -86,134 +84,6 @@ def populated_dir(tmp_path):
     (tmp_path / "notes.txt").write_text(MULTIFILE_C)
     (tmp_path / "data.csv").write_text("col1,col2\n1,2\n3,4\n")
     return tmp_path
-
-
-# ── _clean_shell_noise unit tests ────────────────────────────────────────
-
-class TestCleanShellNoise:
-    def test_single_noise_line(self):
-        output = "bash: no job control in this shell\nhello world\n"
-        result = _clean_shell_noise(output)
-        assert result == "hello world\n"
-
-    def test_double_noise_lines(self):
-        output = (
-            "bash: cannot set terminal process group (-1): Inappropriate ioctl for device\n"
-            "bash: no job control in this shell\n"
-            "actual output here\n"
-        )
-        result = _clean_shell_noise(output)
-        assert result == "actual output here\n"
-        _assert_clean(result)
-
-    def test_tcsetattr_noise(self):
-        output = (
-            "bash: [12345: 2 (255)] tcsetattr: Inappropriate ioctl for device\n"
-            "real content\n"
-        )
-        result = _clean_shell_noise(output)
-        assert result == "real content\n"
-        _assert_clean(result)
-
-    def test_triple_noise_lines(self):
-        output = (
-            "bash: cannot set terminal process group (-1): Inappropriate ioctl for device\n"
-            "bash: no job control in this shell\n"
-            "bash: [999: 2 (255)] tcsetattr: Inappropriate ioctl for device\n"
-            "clean\n"
-        )
-        result = _clean_shell_noise(output)
-        assert result == "clean\n"
-
-    def test_no_noise_untouched(self):
-        assert _clean_shell_noise("hello\nworld\n") == "hello\nworld\n"
-
-    def test_empty_string(self):
-        assert _clean_shell_noise("") == ""
-
-    def test_only_noise_produces_empty(self):
-        output = "bash: no job control in this shell\n"
-        result = _clean_shell_noise(output)
-        _assert_clean(result)
-
-    def test_noise_in_middle_not_stripped(self):
-        """Noise in the middle is real output and should be preserved."""
-        output = "real\nbash: no job control in this shell\nmore real\n"
-        result = _clean_shell_noise(output)
-        assert result == output
-
-    def test_zsh_restored_session(self):
-        output = "Restored session: Mon Mar  2 22:16:54 +03 2026\nhello\n"
-        result = _clean_shell_noise(output)
-        assert result == "hello\n"
-
-    def test_zsh_saving_session_trailing(self):
-        output = "hello\nSaving session...completed.\n"
-        result = _clean_shell_noise(output)
-        assert result == "hello\n"
-
-    def test_zsh_oh_my_zsh_banner(self):
-        output = "Oh My Zsh on! | Auto-suggestions: press right\nhello\n"
-        result = _clean_shell_noise(output)
-        assert result == "hello\n"
-
-    def test_zsh_full_noise_sandwich(self):
-        """Both leading and trailing zsh noise stripped."""
-        output = (
-            "Restored session: Mon Mar  2\n"
-            "command not found: docker\n"
-            "Oh My Zsh on!\n"
-            "actual output\n"
-            "Saving session...completed.\n"
-        )
-        result = _clean_shell_noise(output)
-        assert result == "actual output\n"
-
-    def test_last_login_stripped(self):
-        output = "Last login: Mon Mar 2 22:00:00 on ttys001\nhello\n"
-        result = _clean_shell_noise(output)
-        assert result == "hello\n"
-
-
-# ── _extract_fenced_output unit tests ────────────────────────────────────
-
-class TestExtractFencedOutput:
-    def test_normal_fenced_output(self):
-        raw = f"noise\n{_OUTPUT_FENCE}hello world\n{_OUTPUT_FENCE}more noise\n"
-        assert _extract_fenced_output(raw) == "hello world\n"
-
-    def test_no_trailing_newline(self):
-        """printf output with no trailing newline is preserved."""
-        raw = f"noise{_OUTPUT_FENCE}exact{_OUTPUT_FENCE}noise"
-        assert _extract_fenced_output(raw) == "exact"
-
-    def test_no_fences_falls_back(self):
-        """Without fences, falls back to pattern-based cleaning."""
-        raw = "bash: no job control in this shell\nhello\n"
-        result = _extract_fenced_output(raw)
-        assert result == "hello\n"
-
-    def test_only_start_fence(self):
-        """Only start fence (e.g. user command called exit)."""
-        raw = f"noise{_OUTPUT_FENCE}hello\nSaving session...\n"
-        result = _extract_fenced_output(raw)
-        assert result == "hello\n"
-
-    def test_user_outputs_fence_string(self):
-        """If user command outputs the fence marker, it is preserved."""
-        raw = f"noise{_OUTPUT_FENCE}{_OUTPUT_FENCE}real\n{_OUTPUT_FENCE}noise"
-        result = _extract_fenced_output(raw)
-        # first fence -> last fence captures the middle including user's fence
-        assert _OUTPUT_FENCE in result
-        assert "real\n" in result
-
-    def test_empty_command_output(self):
-        raw = f"noise{_OUTPUT_FENCE}{_OUTPUT_FENCE}noise"
-        assert _extract_fenced_output(raw) == ""
-
-    def test_multiline_output(self):
-        raw = f"noise\n{_OUTPUT_FENCE}line1\nline2\nline3\n{_OUTPUT_FENCE}noise\n"
-        assert _extract_fenced_output(raw) == "line1\nline2\nline3\n"
 
 
 # ── LocalEnvironment.execute() ───────────────────────────────────────────

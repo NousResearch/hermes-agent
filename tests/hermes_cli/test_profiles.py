@@ -450,6 +450,33 @@ class TestExportImport:
         with pytest.raises(FileExistsError):
             import_profile(str(archive_path), name="coder")
 
+    def test_import_with_renamed_target_does_not_modify_existing_profile(self, profile_env, tmp_path):
+        """Importing with --name must not touch an existing profile matching archive root."""
+        create_profile("victim", no_alias=True)
+        victim_dir = get_profile_dir("victim")
+        (victim_dir / "marker.txt").write_text("original")
+
+        archive_path = tmp_path / "export" / "victim.tar.gz"
+        archive_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with tarfile.open(archive_path, "w:gz") as tf:
+            victim_root = tarfile.TarInfo("victim/")
+            victim_root.type = tarfile.DIRTYPE
+            tf.addfile(victim_root)
+
+            payload = b"imported"
+            marker = tarfile.TarInfo("victim/marker.txt")
+            marker.size = len(payload)
+            tf.addfile(marker, io.BytesIO(payload))
+
+        imported = import_profile(str(archive_path), name="restored")
+
+        assert victim_dir.is_dir()
+        assert (victim_dir / "marker.txt").read_text() == "original"
+        assert imported.is_dir()
+        assert imported == get_profile_dir("restored")
+        assert (imported / "marker.txt").read_text() == "imported"
+
     def test_import_rejects_traversal_archive_member(self, profile_env, tmp_path):
         archive_path = tmp_path / "export" / "evil.tar.gz"
         archive_path.parent.mkdir(parents=True, exist_ok=True)

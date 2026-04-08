@@ -847,34 +847,52 @@ def _safe_extract_profile_archive(archive: Path, destination: Path) -> None:
                 pass
 
 
+def _inspect_profile_archive_layout(archive: Path) -> str:
+    """Validate archive layout and return the single top-level directory name."""
+    import tarfile
+
+    top_roots = set()
+    has_profile_directory = False
+
+    with tarfile.open(archive, "r:gz") as tf:
+        for member in tf.getmembers():
+            parts = _normalize_profile_archive_parts(member.name)
+            top_roots.add(parts[0])
+
+            if len(parts) == 1 and member.isfile():
+                raise ValueError(
+                    "Profile archive must contain files under a top-level profile directory."
+                )
+
+            if len(parts) > 1 or member.isdir():
+                has_profile_directory = True
+
+    if len(top_roots) != 1:
+        raise ValueError(
+            "Profile archive must contain exactly one top-level profile directory."
+        )
+    if not has_profile_directory:
+        raise ValueError(
+            "Profile archive must contain a top-level profile directory."
+        )
+
+    return next(iter(top_roots))
+
+
 def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
     """Import a profile from a tar.gz archive.
 
     If *name* is not given, infers it from the archive's top-level directory.
     Returns the imported profile directory.
     """
-    import tarfile
+    import tempfile
 
     archive = Path(archive_path)
     if not archive.exists():
         raise FileNotFoundError(f"Archive not found: {archive}")
 
-    # Peek at the archive to find the top-level directory name
-    with tarfile.open(archive, "r:gz") as tf:
-        top_dirs = {
-            parts[0]
-            for member in tf.getmembers()
-            for parts in [_normalize_profile_archive_parts(member.name)]
-            if len(parts) > 1 or member.isdir()
-        }
-        if not top_dirs:
-            top_dirs = {
-                _normalize_profile_archive_parts(member.name)[0]
-                for member in tf.getmembers()
-                if member.isdir()
-            }
-
-    inferred_name = name or (top_dirs.pop() if len(top_dirs) == 1 else None)
+    archive_root = _inspect_profile_archive_layout(archive)
+    inferred_name = name or archive_root
     if not inferred_name:
         raise ValueError(
             "Cannot determine profile name from archive. "
@@ -898,12 +916,17 @@ def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
     profiles_root = _get_profiles_root()
     profiles_root.mkdir(parents=True, exist_ok=True)
 
-    _safe_extract_profile_archive(archive, profiles_root)
-
-    # If the archive extracted under a different name, rename
-    extracted = profiles_root / (top_dirs.pop() if top_dirs else inferred_name)
-    if extracted != profile_dir and extracted.exists():
-        extracted.rename(profile_dir)
+    # Extract to an isolated staging directory first to avoid clobbering
+    # existing profiles when the archive root name differs from --name.
+    with tempfile.TemporaryDirectory(dir=str(profiles_root), prefix=".import_") as tmpdir:
+        staging_root = Path(tmpdir)
+        _safe_extract_profile_archive(archive, staging_root)
+        extracted = staging_root / archive_root
+        if not extracted.is_dir():
+            raise ValueError(
+                "Profile archive is missing the expected top-level directory."
+            )
+        shutil.move(str(extracted), str(profile_dir))
 
     return profile_dir
 

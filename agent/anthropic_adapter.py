@@ -1102,7 +1102,15 @@ def convert_messages_to_anthropic(
                         curr_content = [{"type": "text", "text": curr_content}]
                     fixed[-1]["content"] = prev_content + curr_content
             else:
-                # Consecutive assistant messages — merge text content
+                # Consecutive assistant messages — merge text content.
+                # Drop thinking blocks from the *second* message: their
+                # signature was computed against a different turn boundary
+                # and becomes invalid once merged.
+                if isinstance(m["content"], list):
+                    m["content"] = [
+                        b for b in m["content"]
+                        if not (isinstance(b, dict) and b.get("type") in ("thinking", "redacted_thinking"))
+                    ]
                 prev_blocks = fixed[-1]["content"]
                 curr_blocks = m["content"]
                 if isinstance(prev_blocks, list) and isinstance(curr_blocks, list):
@@ -1119,6 +1127,68 @@ def convert_messages_to_anthropic(
         else:
             fixed.append(m)
     result = fixed
+
+    # ── Thinking block signature management ──────────────────────────
+    # Anthropic signs thinking blocks against the full turn content.
+    # Any upstream mutation (context compression, session truncation,
+    # orphan stripping, message merging) invalidates the signature,
+    # causing HTTP 400 "Invalid signature in thinking block".
+    #
+    # Strategy (following clawdbot/OpenClaw pattern):
+    # 1. Strip thinking/redacted_thinking from all assistant messages
+    #    EXCEPT the last one — preserves reasoning continuity on the
+    #    current tool-use chain while avoiding stale signature errors.
+    # 2. Downgrade unsigned thinking blocks (no signature) to text —
+    #    Anthropic can't validate them and will reject them.
+    # 3. Strip cache_control from thinking/redacted_thinking blocks —
+    #    cache markers can interfere with signature validation.
+    _THINKING_TYPES = frozenset(("thinking", "redacted_thinking"))
+
+    last_assistant_idx = None
+    for i in range(len(result) - 1, -1, -1):
+        if result[i].get("role") == "assistant":
+            last_assistant_idx = i
+            break
+
+    for idx, m in enumerate(result):
+        if m.get("role") != "assistant" or not isinstance(m.get("content"), list):
+            continue
+
+        if idx != last_assistant_idx:
+            # Strip ALL thinking blocks from non-latest assistant messages
+            stripped = [
+                b for b in m["content"]
+                if not (isinstance(b, dict) and b.get("type") in _THINKING_TYPES)
+            ]
+            m["content"] = stripped or [{"type": "text", "text": "(thinking elided)"}]
+        else:
+            # Latest assistant: keep signed thinking blocks for reasoning
+            # continuity; downgrade unsigned ones to plain text.
+            new_content = []
+            for b in m["content"]:
+                if not isinstance(b, dict) or b.get("type") not in _THINKING_TYPES:
+                    new_content.append(b)
+                    continue
+                if b.get("type") == "redacted_thinking":
+                    # Redacted blocks use 'data' for the signature payload
+                    if b.get("data"):
+                        new_content.append(b)
+                    # else: drop — no data means it can't be validated
+                elif b.get("signature"):
+                    # Signed thinking block — keep it
+                    new_content.append(b)
+                else:
+                    # Unsigned thinking — downgrade to text so it's not lost
+                    thinking_text = b.get("thinking", "")
+                    if thinking_text:
+                        new_content.append({"type": "text", "text": thinking_text})
+            m["content"] = new_content or [{"type": "text", "text": "(empty)"}]
+
+        # Strip cache_control from any remaining thinking/redacted_thinking
+        # blocks — cache markers interfere with signature validation.
+        for b in m["content"]:
+            if isinstance(b, dict) and b.get("type") in _THINKING_TYPES:
+                b.pop("cache_control", None)
 
     return system, result
 

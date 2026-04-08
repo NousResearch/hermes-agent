@@ -4968,9 +4968,21 @@ class AIAgent:
                 # Swap OpenAI client and config in-place
                 self.api_key = fb_client.api_key
                 self.client = fb_client
+                # Preserve provider-specific headers that
+                # resolve_provider_client() may have baked into
+                # fb_client via the default_headers kwarg.  The OpenAI
+                # SDK stores these in _custom_headers.  Without this,
+                # subsequent request-client rebuilds (via
+                # _create_request_openai_client) drop the headers,
+                # causing 403s from providers like Kimi Coding that
+                # require a User-Agent sentinel.
+                fb_headers = getattr(fb_client, "_custom_headers", None)
+                if not fb_headers:
+                    fb_headers = getattr(fb_client, "default_headers", None)
                 self._client_kwargs = {
                     "api_key": fb_client.api_key,
                     "base_url": fb_base_url,
+                    **({"default_headers": dict(fb_headers)} if fb_headers else {}),
                 }
 
             # Re-evaluate prompt caching for the new provider/model

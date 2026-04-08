@@ -1,9 +1,11 @@
 """Tests for the local persistent shell backend."""
 
 import glob as glob_mod
+import subprocess
 
 import pytest
 
+import tools.environments.local as local_mod
 from tools.environments.local import LocalEnvironment
 from tools.environments.persistent_shell import PersistentShellMixin
 
@@ -162,3 +164,28 @@ class TestLocalPersistent:
     def test_multiple_commands_semicolon(self, env):
         r = env.execute("X=42; echo $X")
         assert r["output"].strip() == "42"
+
+    def test_windows_kill_shell_children_falls_back_to_taskkill(self, monkeypatch):
+        env = LocalEnvironment.__new__(LocalEnvironment)
+        env._shell_pid = 4242
+        env._shell_alive = True
+        calls = []
+
+        def fake_run(cmd, capture_output=True, timeout=5, **kwargs):
+            calls.append(cmd)
+            if cmd[:2] == [r"C:\Program Files\Git\bin\bash.exe", "-lc"]:
+                return subprocess.CompletedProcess(cmd, 127)
+            if cmd[0] == "taskkill":
+                return subprocess.CompletedProcess(cmd, 0)
+            raise AssertionError(f"unexpected command: {cmd}")
+
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        monkeypatch.setattr(local_mod, "_find_bash", lambda: r"C:\Program Files\Git\bin\bash.exe")
+        monkeypatch.setattr(local_mod.subprocess, "run", fake_run)
+
+        LocalEnvironment._kill_shell_children(env)
+
+        assert calls[0][:2] == [r"C:\Program Files\Git\bin\bash.exe", "-lc"]
+        assert "pkill -P 4242" in calls[0][2]
+        assert calls[1] == ["taskkill", "/PID", "4242", "/T", "/F"]
+        assert env._shell_alive is False

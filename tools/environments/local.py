@@ -6,6 +6,7 @@ import platform
 import shutil
 import signal
 import subprocess
+import tempfile
 import threading
 import time
 
@@ -335,6 +336,11 @@ class LocalEnvironment(PersistentShellMixin, BaseEnvironment):
 
     @property
     def _temp_prefix(self) -> str:
+        if _IS_WINDOWS:
+            # Git Bash can write to forward-slash Windows paths like
+            # C:/Users/... and native Python can read them unchanged.
+            tmpdir = tempfile.gettempdir().rstrip("\\/").replace("\\", "/")
+            return f"{tmpdir}/hermes-local-{self._session_id}"
         return f"/tmp/hermes-local-{self._session_id}"
 
     def _spawn_shell_process(self) -> subprocess.Popen:
@@ -361,15 +367,51 @@ class LocalEnvironment(PersistentShellMixin, BaseEnvironment):
         return results
 
     def _kill_shell_children(self):
-        if self._shell_pid is None:
+        shell_pid = self._shell_pid
+        if shell_pid is None and _IS_WINDOWS:
+            shell_proc = getattr(self, "_shell_proc", None)
+            shell_pid = getattr(shell_proc, "pid", None)
+
+        if shell_pid is None:
             return
-        try:
+
+        def _kill_shell_tree_windows():
             subprocess.run(
-                ["pkill", "-P", str(self._shell_pid)],
+                ["taskkill", "/PID", str(shell_pid), "/T", "/F"],
+                capture_output=True, timeout=5,
+            )
+            # The persistent shell itself is gone; let the next execute() restart it.
+            self._shell_alive = False
+
+        try:
+            if _IS_WINDOWS:
+                bash = _find_bash()
+                result = subprocess.run(
+                    [
+                        bash,
+                        "-lc",
+                        (
+                            "command -v pkill >/dev/null 2>&1 "
+                            f"&& pkill -P {shell_pid} 2>/dev/null"
+                        ),
+                    ],
+                    capture_output=True,
+                    timeout=5,
+                )
+                if result.returncode != 0:
+                    _kill_shell_tree_windows()
+                return
+
+            subprocess.run(
+                ["pkill", "-P", str(shell_pid)],
                 capture_output=True, timeout=5,
             )
         except (subprocess.TimeoutExpired, FileNotFoundError):
-            pass
+            if _IS_WINDOWS:
+                try:
+                    _kill_shell_tree_windows()
+                except (subprocess.TimeoutExpired, FileNotFoundError):
+                    pass
 
     def _cleanup_temp_files(self):
         for f in glob.glob(f"{self._temp_prefix}-*"):

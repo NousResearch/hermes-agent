@@ -1031,14 +1031,25 @@ export function App({ gw }: { gw: GatewayClient }) {
         const dbl = now - lastEmptyAt.current < 450
         lastEmptyAt.current = now
 
-        if (dbl && queueRef.current.length) {
-          if (busy && sid) {
-            gw.request('session.interrupt', { session_id: sid }).catch(() => {})
-            setStatus('interrupting…')
+        if (dbl && busy && sid) {
+          interruptedRef.current = true
+          gw.request('session.interrupt', { session_id: sid }).catch(() => {})
 
-            return
+          const partial = (streaming || buf.current).trimStart()
+          if (partial) {
+            appendMessage({ role: 'assistant' as const, text: partial + '\n\n*[interrupted]*' })
+          } else {
+            sys('interrupted')
           }
 
+          idle()
+          setStatus('interrupted')
+          setTimeout(() => setStatus('ready'), 1500)
+
+          return
+        }
+
+        if (dbl && queueRef.current.length) {
           const next = dequeue()
 
           if (next && sid) {

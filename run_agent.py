@@ -8262,7 +8262,9 @@ class AIAgent:
                         else:
                             self._persist_session(messages, conversation_history)
                         return {
-                            "final_response": None,
+                            "final_response": (
+                                f"❌ {self._summarize_api_error(api_error)}"
+                            ),
                             "messages": messages,
                             "api_calls": api_call_count,
                             "completed": False,

@@ -641,12 +641,15 @@ class TestVisionClientFallback:
         assert client is None
         assert model is None
 
-    def test_vision_auto_includes_anthropic_when_configured(self, monkeypatch):
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-key")
+    def test_vision_auto_includes_active_provider_when_configured(self, monkeypatch):
+        """Active provider appears in available backends when credentials exist."""
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "***")
         with (
             patch("agent.auxiliary_client._read_nous_auth", return_value=None),
+            patch("agent.auxiliary_client._read_main_provider", return_value="anthropic"),
+            patch("agent.auxiliary_client._read_main_model", return_value="claude-sonnet-4"),
             patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
-            patch("agent.anthropic_adapter.resolve_anthropic_token", return_value="sk-ant-api03-key"),
+            patch("agent.anthropic_adapter.resolve_anthropic_token", return_value="***"),
         ):
             backends = get_available_vision_backends()
 
@@ -719,88 +722,50 @@ class TestAuxiliaryPoolAwareness:
         assert call_kwargs["base_url"] == "https://api.githubcopilot.com"
         assert call_kwargs["default_headers"]["Editor-Version"]
 
-    def test_vision_auto_uses_anthropic_when_no_higher_priority_backend(self, monkeypatch):
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-key")
+    def test_vision_auto_uses_active_provider_as_fallback(self, monkeypatch):
+        """When no OpenRouter/Nous available, vision auto falls back to active provider."""
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "***")
         with (
             patch("agent.auxiliary_client._read_nous_auth", return_value=None),
+            patch("agent.auxiliary_client._read_main_provider", return_value="anthropic"),
+            patch("agent.auxiliary_client._read_main_model", return_value="claude-sonnet-4"),
             patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
-            patch("agent.anthropic_adapter.resolve_anthropic_token", return_value="sk-ant-api03-key"),
+            patch("agent.anthropic_adapter.resolve_anthropic_token", return_value="***"),
         ):
             client, model = get_vision_auxiliary_client()
 
         assert client is not None
         assert client.__class__.__name__ == "AnthropicAuxiliaryClient"
-        assert model == "claude-haiku-4-5-20251001"
 
-    def test_selected_anthropic_provider_is_preferred_for_vision_auto(self, monkeypatch):
+    def test_vision_auto_prefers_openrouter_over_active_provider(self, monkeypatch):
+        """OpenRouter is tried before the active provider in vision auto."""
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-key")
-
-        def fake_load_config():
-            return {"model": {"provider": "anthropic", "default": "claude-sonnet-4-6"}}
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "***")
 
         with (
             patch("agent.auxiliary_client._read_nous_auth", return_value=None),
-            patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
-            patch("agent.anthropic_adapter.resolve_anthropic_token", return_value="sk-ant-api03-key"),
+            patch("agent.auxiliary_client._read_main_provider", return_value="anthropic"),
+            patch("agent.auxiliary_client._read_main_model", return_value="claude-sonnet-4"),
             patch("agent.auxiliary_client.OpenAI") as mock_openai,
-            patch("hermes_cli.config.load_config", fake_load_config),
-        ):
-            client, model = get_vision_auxiliary_client()
-
-        assert client is not None
-        assert client.__class__.__name__ == "AnthropicAuxiliaryClient"
-        assert model == "claude-haiku-4-5-20251001"
-
-    def test_selected_codex_provider_short_circuits_vision_auto(self, monkeypatch):
-        def fake_load_config():
-            return {"model": {"provider": "openai-codex", "default": "gpt-5.2-codex"}}
-
-        codex_client = MagicMock()
-        with (
-            patch("hermes_cli.config.load_config", fake_load_config),
-            patch("agent.auxiliary_client._try_codex", return_value=(codex_client, "gpt-5.2-codex")) as mock_codex,
-            patch("agent.auxiliary_client._try_openrouter") as mock_openrouter,
-            patch("agent.auxiliary_client._try_nous") as mock_nous,
-            patch("agent.auxiliary_client._try_anthropic") as mock_anthropic,
-            patch("agent.auxiliary_client._try_custom_endpoint") as mock_custom,
         ):
             provider, client, model = resolve_vision_provider_client()
 
-        assert provider == "openai-codex"
-        assert client is codex_client
-        assert model == "gpt-5.2-codex"
-        mock_codex.assert_called_once()
-        mock_openrouter.assert_not_called()
-        mock_nous.assert_not_called()
-        mock_anthropic.assert_not_called()
-        mock_custom.assert_not_called()
+        # OpenRouter should win over anthropic active provider
+        assert provider == "openrouter"
 
-    def test_vision_auto_includes_codex(self, codex_auth_dir):
-        """Codex supports vision (gpt-5.3-codex), so auto mode should use it."""
-        with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
-             patch("agent.auxiliary_client.OpenAI"):
-            client, model = get_vision_auxiliary_client()
-        from agent.auxiliary_client import CodexAuxiliaryClient
-        assert isinstance(client, CodexAuxiliaryClient)
-        assert model == "gpt-5.2-codex"
-
-    def test_vision_auto_falls_back_to_custom_endpoint(self, monkeypatch):
-        """Custom endpoint is used as fallback in vision auto mode.
-
-        Many local models (Qwen-VL, LLaVA, etc.) support vision.
-        When no OpenRouter/Nous/Codex is available, try the custom endpoint.
-        """
+    def test_vision_auto_uses_named_custom_as_active_provider(self, monkeypatch):
+        """Named custom provider works as active provider fallback in vision auto."""
         monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
              patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)), \
-             patch("agent.auxiliary_client._read_codex_access_token", return_value=None), \
-             patch("agent.auxiliary_client._resolve_custom_runtime",
-                   return_value=("http://localhost:1234/v1", "local-key")), \
-             patch("agent.auxiliary_client.OpenAI") as mock_openai:
-            client, model = get_vision_auxiliary_client()
-        assert client is not None  # Custom endpoint picked up as fallback
+             patch("agent.auxiliary_client._read_main_provider", return_value="custom:local"), \
+             patch("agent.auxiliary_client._read_main_model", return_value="my-local-model"), \
+             patch("agent.auxiliary_client.resolve_provider_client",
+                   return_value=(MagicMock(), "my-local-model")) as mock_resolve:
+            provider, client, model = resolve_vision_provider_client()
+        assert client is not None
+        assert provider == "custom:local"
 
     def test_vision_direct_endpoint_override(self, monkeypatch):
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
@@ -888,7 +853,14 @@ class TestAuxiliaryPoolAwareness:
         monkeypatch.setenv("AUXILIARY_VISION_PROVIDER", "main")
         monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        # Clear client cache to avoid stale entries from previous tests
+        from agent.auxiliary_client import _client_cache
+        _client_cache.clear()
         with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
+             patch("agent.auxiliary_client._read_main_provider", return_value=""), \
+             patch("agent.auxiliary_client._read_main_model", return_value=""), \
+             patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)), \
+             patch("agent.auxiliary_client._resolve_custom_runtime", return_value=(None, None)), \
              patch("agent.auxiliary_client._read_codex_access_token", return_value=None), \
              patch("agent.auxiliary_client._resolve_api_key_provider", return_value=(None, None)):
             client, model = get_vision_auxiliary_client()

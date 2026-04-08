@@ -1425,9 +1425,6 @@ def get_async_text_auxiliary_client(task: str = ""):
 _VISION_AUTO_PROVIDER_ORDER = (
     "openrouter",
     "nous",
-    "openai-codex",
-    "anthropic",
-    "custom",
 )
 
 
@@ -1473,17 +1470,20 @@ def _preferred_main_vision_provider() -> Optional[str]:
 def get_available_vision_backends() -> List[str]:
     """Return the currently available vision backends in auto-selection order.
 
-    This is the single source of truth for setup, tool gating, and runtime
-    auto-routing of vision tasks. The selected main provider is preferred when
-    it is also a known-good vision backend; otherwise Hermes falls back through
-    the standard conservative order.
+    Order: OpenRouter → Nous → active provider.  This is the single source
+    of truth for setup, tool gating, and runtime auto-routing of vision tasks.
     """
-    ordered = list(_VISION_AUTO_PROVIDER_ORDER)
-    preferred = _preferred_main_vision_provider()
-    if preferred in ordered:
-        ordered.remove(preferred)
-        ordered.insert(0, preferred)
-    return [provider for provider in ordered if _strict_vision_backend_available(provider)]
+    available = [p for p in _VISION_AUTO_PROVIDER_ORDER
+                 if _strict_vision_backend_available(p)]
+    # Also check the user's active provider (may be DeepSeek, Alibaba, named
+    # custom, etc.) — resolve_provider_client handles all provider types.
+    main_provider = _read_main_provider()
+    if (main_provider and main_provider not in ("auto", "")
+            and main_provider not in available):
+        client, _ = resolve_provider_client(main_provider, _read_main_model())
+        if client is not None:
+            available.append(main_provider)
+    return available
 
 
 def resolve_vision_provider_client(
@@ -1528,16 +1528,30 @@ def resolve_vision_provider_client(
         return "custom", client, final_model
 
     if requested == "auto":
-        ordered = list(_VISION_AUTO_PROVIDER_ORDER)
-        preferred = _preferred_main_vision_provider()
-        if preferred in ordered:
-            ordered.remove(preferred)
-            ordered.insert(0, preferred)
-
-        for candidate in ordered:
+        # Vision auto-detection order:
+        #   1. OpenRouter  (known vision-capable default model)
+        #   2. Nous Portal (known vision-capable default model)
+        #   3. Active provider + model (user's main chat config)
+        #   4. Stop
+        for candidate in _VISION_AUTO_PROVIDER_ORDER:
             sync_client, default_model = _resolve_strict_vision_backend(candidate)
             if sync_client is not None:
                 return _finalize(candidate, sync_client, default_model)
+
+        # Fall back to the user's active provider + model.
+        main_provider = _read_main_provider()
+        main_model = _read_main_model()
+        if main_provider and main_provider not in ("auto", ""):
+            sync_client, resolved_model = resolve_provider_client(
+                main_provider, main_model)
+            if sync_client is not None:
+                logger.info(
+                    "Vision auto-detect: using active provider %s (%s)",
+                    main_provider, resolved_model or main_model,
+                )
+                return _finalize(
+                    main_provider, sync_client, resolved_model or main_model)
+
         logger.debug("Auxiliary vision client: none available")
         return None, None, None
 

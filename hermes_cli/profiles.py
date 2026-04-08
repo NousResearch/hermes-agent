@@ -418,8 +418,21 @@ def create_profile(
             )
 
     if clone_all and source_dir:
-        # Full copy of source profile
-        shutil.copytree(source_dir, profile_dir)
+        # Full copy of source profile.
+        # Guard against recursive self-copy when cloning from the default profile
+        # (~/.hermes) into a named profile (~/.hermes/profiles/<name>), because the
+        # destination lives inside the source tree. Exclude the nested profiles dir
+        # from the copy to preserve profile isolation and avoid infinite recursion.
+        copy_ignore = None
+        try:
+            source_resolved = source_dir.resolve()
+            dest_resolved = profile_dir.resolve(strict=False)
+            if source_resolved in dest_resolved.parents:
+                copy_ignore = shutil.ignore_patterns("profiles")
+        except Exception:
+            copy_ignore = None
+
+        shutil.copytree(source_dir, profile_dir, ignore=copy_ignore)
         # Strip runtime files
         for stale in _CLONE_ALL_STRIP:
             (profile_dir / stale).unlink(missing_ok=True)

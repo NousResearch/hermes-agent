@@ -171,6 +171,19 @@ class TestCreateProfile:
         assert not (profile_dir / "gateway_state.json").exists()
         assert not (profile_dir / "processes.json").exists()
 
+    def test_clone_all_from_default_does_not_recursively_copy_profiles_dir(self, profile_env):
+        tmp_path = profile_env
+        default_home = tmp_path / ".hermes"
+        nested_existing = default_home / "profiles" / "existing"
+        nested_existing.mkdir(parents=True, exist_ok=True)
+        (nested_existing / "config.yaml").write_text("model: stale")
+        (default_home / "config.yaml").write_text("model: gpt-4")
+
+        profile_dir = create_profile("coder", clone_all=True, no_alias=True)
+
+        assert (profile_dir / "config.yaml").read_text() == "model: gpt-4"
+        assert not (profile_dir / "profiles").exists()
+
     def test_clone_config_missing_files_skipped(self, profile_env):
         """Clone config gracefully skips files that don't exist in source."""
         profile_dir = create_profile("coder", clone_config=True, no_alias=True)

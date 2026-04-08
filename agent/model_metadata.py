@@ -611,6 +611,59 @@ def _model_id_matches(candidate_id: str, lookup_model: str) -> bool:
     return False
 
 
+def query_ollama_num_ctx(model: str, base_url: str) -> Optional[int]:
+    """Query an Ollama server for the model's context length.
+
+    Returns the model's maximum context from GGUF metadata via ``/api/show``,
+    or the explicit ``num_ctx`` from the Modelfile if set.  Returns None if
+    the server is unreachable or not Ollama.
+
+    This is the value that should be passed as ``num_ctx`` in Ollama chat
+    requests to override the default 2048.
+    """
+    import httpx
+
+    bare_model = _strip_provider_prefix(model)
+    server_url = base_url.rstrip("/")
+    if server_url.endswith("/v1"):
+        server_url = server_url[:-3]
+
+    try:
+        server_type = detect_local_server_type(base_url)
+    except Exception:
+        return None
+    if server_type != "ollama":
+        return None
+
+    try:
+        with httpx.Client(timeout=3.0) as client:
+            resp = client.post(f"{server_url}/api/show", json={"name": bare_model})
+            if resp.status_code != 200:
+                return None
+            data = resp.json()
+
+            # Prefer explicit num_ctx from Modelfile parameters (user override)
+            params = data.get("parameters", "")
+            if "num_ctx" in params:
+                for line in params.split("\n"):
+                    if "num_ctx" in line:
+                        parts = line.strip().split()
+                        if len(parts) >= 2:
+                            try:
+                                return int(parts[-1])
+                            except ValueError:
+                                pass
+
+            # Fall back to GGUF model_info context_length (training max)
+            model_info = data.get("model_info", {})
+            for key, value in model_info.items():
+                if "context_length" in key and isinstance(value, (int, float)):
+                    return int(value)
+    except Exception:
+        pass
+    return None
+
+
 def _query_local_context_length(model: str, base_url: str) -> Optional[int]:
     """Query a local server for the model's context length."""
     import httpx

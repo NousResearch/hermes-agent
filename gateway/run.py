@@ -6721,14 +6721,23 @@ class GatewayRunner:
                     clean_msg = {k: v for k, v in msg.items() if k != "timestamp"}
                     agent_history.append(clean_msg)
                 else:
-                    # Simple text message - just need role and content
+                    # Simple text message - just need role and content.
+                    # Assistant turns with reasoning replay state must survive
+                    # even when they have no visible content.
                     content = msg.get("content")
-                    if content:
+                    keep_assistant_replay = (
+                        role == "assistant"
+                        and any(
+                            msg.get(_rkey)
+                            for _rkey in ("reasoning", "reasoning_details", "codex_reasoning_items")
+                        )
+                    )
+                    if content or keep_assistant_replay:
                         # Tag cross-platform mirror messages so the agent knows their origin
-                        if msg.get("mirror"):
+                        if content and msg.get("mirror"):
                             mirror_src = msg.get("mirror_source", "another session")
                             content = f"[Delivered from {mirror_src}] {content}"
-                        entry = {"role": role, "content": content}
+                        entry = {"role": role, "content": content or ""}
                         # Preserve reasoning fields on assistant messages so
                         # multi-turn reasoning context survives session reload.
                         # The agent's _build_api_kwargs converts these to the

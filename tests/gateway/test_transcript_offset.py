@@ -43,8 +43,21 @@ def _filter_history(history: list) -> list:
             agent_history.append(clean_msg)
         else:
             content = msg.get("content")
-            if content:
-                agent_history.append({"role": role, "content": content})
+            keep_assistant_replay = (
+                role == "assistant"
+                and any(
+                    msg.get(key)
+                    for key in ("reasoning", "reasoning_details", "codex_reasoning_items")
+                )
+            )
+            if content or keep_assistant_replay:
+                entry = {"role": role, "content": content or ""}
+                if role == "assistant":
+                    for key in ("reasoning", "reasoning_details", "codex_reasoning_items"):
+                        value = msg.get(key)
+                        if value:
+                            entry[key] = value
+                agent_history.append(entry)
     return agent_history
 
 
@@ -265,3 +278,117 @@ class TestTranscriptHistoryOffset:
         assert len(fixed_new) == 2
         assert fixed_new[0]["content"] == "Now search for dogs"
         assert fixed_new[1]["content"] == "Dog results here."
+
+    def test_reasoning_only_assistant_survives_filter(self):
+        """Reasoning-only assistant turns must survive gateway reload."""
+        history = [
+            {"role": "user", "content": "Think hard", "timestamp": "t0"},
+            {
+                "role": "assistant",
+                "content": None,
+                "reasoning": "step by step",
+                "timestamp": "t1",
+            },
+        ]
+
+        agent_history = _filter_history(history)
+
+        assert len(agent_history) == 2
+        assert agent_history[1] == {
+            "role": "assistant",
+            "content": "",
+            "reasoning": "step by step",
+        }
+
+    def test_reasoning_details_only_assistant_survives_filter(self):
+        """Structured reasoning continuity must survive even without content."""
+        history = [
+            {"role": "user", "content": "Think hard", "timestamp": "t0"},
+            {
+                "role": "assistant",
+                "content": "",
+                "reasoning_details": [{"type": "summary", "text": "step by step"}],
+                "timestamp": "t1",
+            },
+        ]
+
+        agent_history = _filter_history(history)
+
+        assert len(agent_history) == 2
+        assert agent_history[1] == {
+            "role": "assistant",
+            "content": "",
+            "reasoning_details": [{"type": "summary", "text": "step by step"}],
+        }
+
+    def test_codex_reasoning_only_assistant_survives_filter(self):
+        """Encrypted Codex reasoning items must survive gateway reload."""
+        history = [
+            {"role": "user", "content": "Think hard", "timestamp": "t0"},
+            {
+                "role": "assistant",
+                "content": "",
+                "codex_reasoning_items": [
+                    {"id": "rs_1", "type": "reasoning", "encrypted_content": "enc_blob"}
+                ],
+                "timestamp": "t1",
+            },
+        ]
+
+        agent_history = _filter_history(history)
+
+        assert len(agent_history) == 2
+        assert agent_history[1] == {
+            "role": "assistant",
+            "content": "",
+            "codex_reasoning_items": [
+                {"id": "rs_1", "type": "reasoning", "encrypted_content": "enc_blob"}
+            ],
+        }
+
+    def test_empty_assistant_without_replay_fields_still_dropped(self):
+        """Truly empty assistant shells should not be replayed."""
+        history = [
+            {"role": "user", "content": "Hi", "timestamp": "t0"},
+            {"role": "assistant", "content": "", "timestamp": "t1"},
+        ]
+
+        agent_history = _filter_history(history)
+
+        assert agent_history == [{"role": "user", "content": "Hi"}]
+
+    def test_reasoning_only_assistant_counts_toward_history_offset(self):
+        """Preserved reasoning-only turns must contribute to the offset."""
+        history = [
+            {"role": "session_meta", "tools": [], "timestamp": "t0"},
+            {"role": "user", "content": "Think hard", "timestamp": "t1"},
+            {
+                "role": "assistant",
+                "content": "",
+                "reasoning_details": [{"type": "summary", "text": "step by step"}],
+                "timestamp": "t1",
+            },
+        ]
+
+        agent_history = _filter_history(history)
+        assert len(agent_history) == 2
+
+        agent_messages = [
+            {"role": "user", "content": "Think hard"},
+            {
+                "role": "assistant",
+                "content": "",
+                "reasoning_details": [{"type": "summary", "text": "step by step"}],
+            },
+            {"role": "user", "content": "What next?"},
+            {"role": "assistant", "content": "Here is the next step."},
+        ]
+
+        fixed_new = (
+            agent_messages[len(agent_history):]
+            if len(agent_messages) > len(agent_history)
+            else []
+        )
+        assert len(fixed_new) == 2
+        assert fixed_new[0]["content"] == "What next?"
+        assert fixed_new[1]["content"] == "Here is the next step."

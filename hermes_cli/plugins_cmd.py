@@ -534,6 +534,15 @@ def cmd_disable(name: str) -> None:
     console.print(f"[yellow]⊘[/yellow] Plugin [bold]{name}[/bold] disabled. Takes effect on next session.")
 
 
+def _skin():
+    """Return the active skin, or None if unavailable."""
+    try:
+        from hermes_cli.skin_engine import get_active_skin
+        return get_active_skin()
+    except Exception:
+        return None
+
+
 def cmd_list() -> None:
     """List installed plugins."""
     from rich.console import Console
@@ -555,12 +564,16 @@ def cmd_list() -> None:
 
     disabled = _get_disabled_set()
 
+    skin = _skin()
+    col_accent = skin.get_ui_ext("table_col_accent", "bold cyan") if skin else "bold cyan"
+    col_dim = skin.get_ui_ext("table_col_dim", "dim") if skin else "dim"
+
     table = Table(title="Installed Plugins", show_lines=False)
-    table.add_column("Name", style="bold")
+    table.add_column("Name", style=col_accent)
     table.add_column("Status")
-    table.add_column("Version", style="dim")
+    table.add_column("Version", style=col_dim)
     table.add_column("Description")
-    table.add_column("Source", style="dim")
+    table.add_column("Source", style=col_dim)
 
     for d in dirs:
         manifest_file = d / "plugin.yaml"

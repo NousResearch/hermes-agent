@@ -21,13 +21,100 @@ _RESET = "\033[0m"
 logger = logging.getLogger(__name__)
 
 _ANSI_RESET = "\033[0m"
-_ANSI_DIM = "\033[38;2;150;150;150m"
-_ANSI_FILE = "\033[38;2;180;160;255m"
-_ANSI_HUNK = "\033[38;2;120;120;140m"
-_ANSI_MINUS = "\033[38;2;255;255;255;48;2;120;20;20m"
-_ANSI_PLUS = "\033[38;2;255;255;255;48;2;20;90;20m"
+
+
+# ---------------------------------------------------------------------------
+# Hex → ANSI truecolor helpers (used by diff color accessors below)
+# ---------------------------------------------------------------------------
+
+def _hex_to_ansi_fg(hex_color: str) -> str:
+    """Convert #RRGGBB to ANSI truecolor foreground escape. Returns "" on error."""
+    try:
+        h = hex_color.lstrip("#")
+        r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+        return f"\033[38;2;{r};{g};{b}m"
+    except Exception:
+        return ""
+
+
+def _hex_to_ansi_bg(hex_color: str) -> str:
+    """Convert #RRGGBB to ANSI truecolor background escape. Returns "" on error."""
+    try:
+        h = hex_color.lstrip("#")
+        r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+        return f"\033[48;2;{r};{g};{b}m"
+    except Exception:
+        return ""
+
+
+def _d(key: str) -> str:
+    """Lazy diff color accessor. Returns hex string from active skin, or ""."""
+    try:
+        from hermes_cli.skin_engine import get_active_skin
+        return get_active_skin().get_diff(key, "")
+    except Exception:
+        return ""
+
+
+def _ansi_dim() -> str:
+    return _hex_to_ansi_fg(_d("context_fg"))
+
+
+def _ansi_file() -> str:
+    return _hex_to_ansi_fg(_d("file_path_fg"))
+
+
+def _ansi_hunk() -> str:
+    return _hex_to_ansi_fg(_d("hunk_fg"))
+
+
+def _ansi_minus() -> str:
+    return _hex_to_ansi_fg(_d("deletion_fg")) + _hex_to_ansi_bg(_d("deletion_bg"))
+
+
+def _ansi_plus() -> str:
+    return _hex_to_ansi_fg(_d("addition_fg")) + _hex_to_ansi_bg(_d("addition_bg"))
 _MAX_INLINE_DIFF_FILES = 6
 _MAX_INLINE_DIFF_LINES = 80
+
+# Set to True by the CLI when code-highlight mode is active.  Consumed by
+# get_cute_tool_message to suppress the inline code snippet (the highlighted
+# block will show the full code immediately after).
+_code_highlight_active: bool = False
+
+
+def set_code_highlight_active(active: bool) -> None:
+    global _code_highlight_active
+    _code_highlight_active = active
+
+
+def set_diff_limits(max_lines: int, max_files: int) -> None:
+    global _MAX_INLINE_DIFF_LINES, _MAX_INLINE_DIFF_FILES
+    _MAX_INLINE_DIFF_LINES = max_lines
+    _MAX_INLINE_DIFF_FILES = max_files
+
+
+# Rich-based rendering (syntax highlighting + enhanced diffs)
+try:
+    from agent.rich_output import DiffRenderer as _RichDiffRenderer
+    from agent.rich_output import LanguageDetector as _RichLanguageDetector
+    from agent.rich_output import SyntaxHighlighter as _RichSyntaxHighlighter
+    from agent.rich_output import clean_command_output
+    _rich_diff = _RichDiffRenderer()
+    _rich_syntax = _RichSyntaxHighlighter()
+    _rich_detector = _RichLanguageDetector()
+    _RICH_OUTPUT = True
+    # Register invalidation callbacks for skin-switch.
+    # skin_engine never imports display or rich_output, so callers self-register.
+    try:
+        from agent import rich_output as _rich_output
+        from hermes_cli import skin_engine as _skin_engine
+        _skin_engine.register_skin_callback(_rich_syntax.refresh)
+        _skin_engine.register_skin_callback(_rich_output._rebuild_md_cache)
+    except Exception:
+        pass
+except ImportError:
+    _RICH_OUTPUT = False
 
 
 @dataclass
@@ -411,7 +498,18 @@ def _emit_inline_diff(diff_text: str, print_fn) -> bool:
 
 
 def _render_inline_unified_diff(diff: str) -> list[str]:
-    """Render unified diff lines in Hermes' inline transcript style."""
+    """Render unified diff lines with line numbers and coloured backgrounds.
+
+    Uses rich_output.DiffRenderer when available (line numbers, green/red
+    background highlights).  Falls back to the original ANSI-string path.
+    """
+    if _RICH_OUTPUT:
+        try:
+            return _rich_diff.to_lines(diff, max_lines=0)
+        except Exception as exc:
+            logger.debug("Rich diff render failed, using ANSI fallback: %s", exc)
+
+    # Original ANSI fallback — unchanged from upstream
     rendered: list[str] = []
     from_file = None
     to_file = None
@@ -423,24 +521,42 @@ def _render_inline_unified_diff(diff: str) -> list[str]:
         if raw_line.startswith("+++ "):
             to_file = raw_line[4:].strip()
             if from_file or to_file:
-                rendered.append(f"{_ANSI_FILE}{from_file or 'a/?'} → {to_file or 'b/?'}{_ANSI_RESET}")
+                rendered.append(f"{_ansi_file()}{from_file or 'a/?'} → {to_file or 'b/?'}{_ANSI_RESET}")
             continue
         if raw_line.startswith("@@"):
-            rendered.append(f"{_ANSI_HUNK}{raw_line}{_ANSI_RESET}")
+            rendered.append(f"{_ansi_hunk()}{raw_line}{_ANSI_RESET}")
             continue
         if raw_line.startswith("-"):
-            rendered.append(f"{_ANSI_MINUS}{raw_line}{_ANSI_RESET}")
+            rendered.append(f"{_ansi_minus()}{raw_line}{_ANSI_RESET}")
             continue
         if raw_line.startswith("+"):
-            rendered.append(f"{_ANSI_PLUS}{raw_line}{_ANSI_RESET}")
+            rendered.append(f"{_ansi_plus()}{raw_line}{_ANSI_RESET}")
             continue
         if raw_line.startswith(" "):
-            rendered.append(f"{_ANSI_DIM}{raw_line}{_ANSI_RESET}")
+            rendered.append(f"{_ansi_dim()}{raw_line}{_ANSI_RESET}")
             continue
         if raw_line:
             rendered.append(raw_line)
 
     return rendered
+
+
+def highlight_code(
+    code: str,
+    language: str | None = None,
+    filename: str | None = None,
+) -> str:
+    """Return an ANSI-highlighted version of *code* for terminal display.
+
+    When rich_output is unavailable the original string is returned unchanged.
+    """
+    if not _RICH_OUTPUT:
+        return code
+    try:
+        return _rich_syntax.to_ansi(code, language=language, filename=filename)
+    except Exception as exc:
+        logger.debug("highlight_code failed: %s", exc)
+        return code
 
 
 def _split_unified_diff_sections(diff: str) -> list[str]:
@@ -492,7 +608,7 @@ def _summarize_rendered_diff_sections(
 
         rendered.extend(section_lines[:remaining_budget])
         omitted_lines += len(section_lines) - remaining_budget
-        omitted_files += 1 + max(0, len(sections) - idx - 1)
+        omitted_files += max(0, len(sections) - idx - 1)
         for leftover in sections[idx + 1:]:
             omitted_lines += len(_render_inline_unified_diff(leftover))
         break
@@ -501,7 +617,7 @@ def _summarize_rendered_diff_sections(
         summary = f"… omitted {omitted_lines} diff line(s)"
         if omitted_files:
             summary += f" across {omitted_files} additional file(s)/section(s)"
-        rendered.append(f"{_ANSI_HUNK}{summary}{_ANSI_RESET}")
+        rendered.append(f"{_ansi_hunk()}{summary}{_ANSI_RESET}")
 
     return rendered
 
@@ -529,6 +645,187 @@ def render_edit_diff_with_delta(
         logger.debug("Could not render inline diff: %s", exc)
         return False
     return _emit_inline_diff("\n".join(rendered_lines), print_fn)
+
+
+# =========================================================================
+# execute_code / read_file / terminal syntax highlight previews
+# =========================================================================
+
+_PREVIEW_MAX_LINES = 40
+
+
+def set_preview_max_lines(n: int) -> None:
+    global _PREVIEW_MAX_LINES
+    _PREVIEW_MAX_LINES = n
+
+
+def _emit_highlighted_lines(block: str, print_fn) -> bool:
+    lines = block.rstrip("\n").splitlines()
+    if not lines:
+        return False
+    if len(lines) > _PREVIEW_MAX_LINES:
+        omitted = len(lines) - _PREVIEW_MAX_LINES
+        lines = lines[:_PREVIEW_MAX_LINES] + [
+            f"\033[2m╌╌ {omitted} more line{'s' if omitted != 1 else ''} omitted ╌╌\033[0m"
+        ]
+    for line in lines:
+        print_fn(line)
+    return True
+
+def _highlight_block(header: str, content: str, language: str, print_fn) -> bool:
+    """Print a labelled syntax-highlighted block aligned with the ┊ tool log.
+
+    Format::
+
+        \033[2m  ┊ <header>\033[0m
+        <highlighted content lines>
+    """
+    _print = print_fn or print
+    _print(f"\033[2m  ┊ {header}\033[0m")
+    if not _RICH_OUTPUT:
+        return _emit_highlighted_lines(content, _print)
+    try:
+        highlighted = _rich_syntax.to_ansi(content, language=language).rstrip("\n")
+        return _emit_highlighted_lines(highlighted, _print)
+    except Exception as exc:
+        logger.debug("highlight_block failed for %s: %s", header, exc)
+        return False
+
+
+def render_execute_code_preview(code: str, print_fn=None) -> bool:
+    """Print *code* with Python syntax highlighting.
+
+    The cute_msg line already labels the tool; this function prints only the
+    highlighted code (no header) so the output stays compact.
+    Returns True if anything was printed.
+    """
+    if not code or not code.strip():
+        return False
+    _print = print_fn or print
+    if not _RICH_OUTPUT:
+        return _emit_highlighted_lines(code, _print)
+    try:
+        highlighted = _rich_syntax.to_ansi(code, language="python").rstrip("\n")
+        return _emit_highlighted_lines(highlighted, _print)
+    except Exception as exc:
+        logger.debug("execute_code highlight failed: %s", exc)
+        return False
+
+
+def render_read_file_preview(path: str, result_json: str, print_fn=None) -> bool:
+    """Print the content of a read_file result with syntax highlighting.
+
+    Language is detected from *path*'s extension.  Returns False (no output)
+    when the file type is unknown — we don't highlight plain text or binary.
+    """
+    if not path or not result_json:
+        return False
+    try:
+        import json as _json
+        result = _json.loads(result_json)
+        content = result.get("content", "")
+    except Exception:
+        return False
+    if not content or not content.strip():
+        return False
+
+    from pathlib import Path as _Path
+    if _RICH_OUTPUT:
+        lang = _rich_detector.detect_from_filename(_Path(path).name)
+    else:
+        lang = None
+    if not lang:
+        return False  # unknown type — skip, don't guess
+
+    header = f"📄 {_Path(path).name}"
+    return _highlight_block(header, content, lang, print_fn)
+
+
+_FILE_READ_COMMANDS = frozenset({
+    "cat", "head", "tail", "less", "more", "bat",
+    "sed", "awk", "grep", "cut", "sort", "uniq",
+    "nl", "od", "xxd", "hexdump",
+})
+
+# Commands that *execute* a file rather than reading it — the terminal output
+# will be runtime stdout, not source code.  Never highlight for these.
+_FILE_EXEC_COMMANDS = frozenset({
+    "python", "python3", "python2",
+    "node", "nodejs", "deno", "bun",
+    "ruby", "perl", "php", "lua",
+    "bash", "sh", "zsh", "fish", "dash",
+    "Rscript", "julia",
+})
+
+
+def _extract_file_language_from_command(command: str):
+    """Return (filename, language) if *command* is clearly reading a known source file.
+
+    Only fires when the leading verb is a known file-reader (cat, head, sed …).
+    Commands that *execute* files (node, python, bash …) are explicitly excluded
+    — their stdout is runtime output, not source code.
+
+    Parses tokens in reverse (file arg is typically last) and returns the first
+    token whose extension maps to a known language.  Returns (None, None) if no
+    match — we never fall back to content-based detection for shell output.
+    """
+    if not command:
+        return None, None
+    try:
+        import shlex as _shlex
+        tokens = _shlex.split(command)
+    except ValueError:
+        tokens = command.split()
+
+    if not tokens:
+        return None, None
+
+    # Check the leading verb (strip path prefix, e.g. /usr/bin/cat → cat)
+    from pathlib import Path as _Path
+    verb = _Path(tokens[0]).name
+    if verb in _FILE_EXEC_COMMANDS:
+        return None, None
+    if verb not in _FILE_READ_COMMANDS:
+        return None, None
+
+    if not _RICH_OUTPUT:
+        return None, None
+
+    for tok in reversed(tokens):
+        if tok.startswith("-"):
+            continue
+        # Only consider tokens that look like a file path (contain a dot or slash)
+        if "." not in _Path(tok).name:
+            continue
+        lang = _rich_detector.detect_from_filename(_Path(tok).name)
+        if lang:
+            return _Path(tok).name, lang
+    return None, None
+
+
+def render_terminal_preview(command: str, result_json: str, print_fn=None) -> bool:
+    """Print terminal output with syntax highlighting when the command reads a source file.
+
+    Highlighting is only applied when a known-extension filename can be extracted
+    from *command* (e.g. ``cat foo.py``, ``sed -n '1,50p' app.ts``).
+    Returns False without printing anything if the language cannot be determined.
+    """
+    if not command or not result_json:
+        return False
+    filename, lang = _extract_file_language_from_command(command)
+    if not lang:
+        return False
+    try:
+        import json as _json
+        result = _json.loads(result_json)
+        output = result.get("output", "")
+    except Exception:
+        return False
+    if not output or not output.strip():
+        return False
+
+    header = f"💻 {filename}"
+    return _highlight_block(header, output, lang, print_fn)
 
 
 # =========================================================================
@@ -948,6 +1245,8 @@ def get_cute_tool_message(
         }
         return _wrap(f"┊ 🧪 rl        {rl.get(tool_name, tool_name.replace('rl_', ''))}  {dur}")
     if tool_name == "execute_code":
+        if _code_highlight_active:
+            return _wrap(f"┊ 🐍 exec      {dur}")
         code = args.get("code", "")
         first_line = code.strip().split("\n")[0] if code.strip() else ""
         return _wrap(f"┊ 🐍 exec      {_trunc(first_line, 35)}  {dur}")
@@ -990,9 +1289,6 @@ def _osc8_link(url: str, text: str) -> str:
 # Context pressure display (CLI user-facing warnings)
 # =========================================================================
 
-# ANSI color codes for context pressure tiers
-_CYAN = "\033[36m"
-_YELLOW = "\033[33m"
 _BOLD = "\033[1m"
 _DIM_ANSI = "\033[2m"
 
@@ -1000,6 +1296,29 @@ _DIM_ANSI = "\033[2m"
 _BAR_FILLED = "▰"
 _BAR_EMPTY = "▱"
 _BAR_WIDTH = 20
+
+
+def _hex_to_ansi_fg(hex_color: str) -> str:
+    """Convert #RRGGBB to ANSI truecolor foreground escape. Returns "" on error."""
+    try:
+        h = hex_color.lstrip("#")
+        r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+        return f"\033[38;2;{r};{g};{b}m"
+    except Exception:
+        return ""
+
+
+def _ctx_color(pct: float) -> str:
+    """Return ANSI foreground color for context bar based on threshold percentage."""
+    skin = _get_skin()
+    if skin is None:
+        # Fallback: yellow for all levels
+        return f"{_BOLD}\033[33m"
+    if pct >= 0.95:
+        return f"{_BOLD}{_hex_to_ansi_fg(skin.get_ui_ext('context_bar_crit', '#ef5350'))}"
+    if pct >= 0.80:
+        return f"{_BOLD}{_hex_to_ansi_fg(skin.get_ui_ext('context_bar_warn', '#ffa726'))}"
+    return f"{_BOLD}{_hex_to_ansi_fg(skin.get_ui_ext('context_bar_normal', '#5f87d7'))}"
 
 
 def format_context_pressure(
@@ -1026,7 +1345,7 @@ def format_context_pressure(
     threshold_k = f"{threshold_tokens // 1000}k" if threshold_tokens >= 1000 else str(threshold_tokens)
     threshold_pct_int = int(threshold_percent * 100)
 
-    color = f"{_BOLD}{_YELLOW}"
+    color = _ctx_color(compaction_progress)
     icon = "⚠"
     if compression_enabled:
         hint = "compaction approaching"

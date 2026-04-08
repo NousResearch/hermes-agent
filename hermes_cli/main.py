@@ -50,6 +50,23 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+
+def _pt_style(key: str, fallback: list) -> tuple:
+    """Return a prompt_toolkit style tuple from the active skin's ui_ext.
+
+    Called at prompt construction time — not at module level — so mid-session
+    skin switches take effect the next time a menu is opened.
+    """
+    try:
+        from hermes_cli.skin_engine import get_active_skin
+        val = get_active_skin().get_ui_ext(key, fallback)
+    except Exception:
+        val = fallback
+    if isinstance(val, str):
+        val = val.split() or fallback
+    return tuple(val)
+
+
 def _require_tty(command_name: str) -> None:
     """Exit with a clear error if stdin is not a terminal.
 
@@ -1069,12 +1086,19 @@ def _prompt_provider_choice(choices, *, default=0):
     if the user cancels.
     """
     try:
-        from hermes_cli.setup import _curses_prompt_choice
-        idx = _curses_prompt_choice("Select provider:", choices, default)
-        if idx >= 0:
-            print()
-            return idx
-    except Exception:
+        from simple_term_menu import TerminalMenu
+        menu_items = [f"  {c}" for c in choices]
+        menu = TerminalMenu(
+            menu_items, cursor_index=0,
+            menu_cursor="-> ", menu_cursor_style=_pt_style("menu_cursor", ["fg_green", "bold"]),
+            menu_highlight_style=_pt_style("menu_highlight", ["fg_green"]),
+            cycle_cursor=True, clear_screen=False,
+            title="Select provider:",
+        )
+        idx = menu.show()
+        print()
+        return idx
+    except (ImportError, NotImplementedError):
         pass
 
     # Fallback: numbered list
@@ -1670,8 +1694,8 @@ def _model_flow_named_custom(config, provider_info):
             menu_items = [f"  {m}" for m in models] + ["  Cancel"]
             menu = TerminalMenu(
                 menu_items, cursor_index=0,
-                menu_cursor="-> ", menu_cursor_style=("fg_green", "bold"),
-                menu_highlight_style=("fg_green",),
+                menu_cursor="-> ", menu_cursor_style=_pt_style("menu_cursor", ["fg_green", "bold"]),
+                menu_highlight_style=_pt_style("menu_highlight", ["fg_green"]),
                 cycle_cursor=True, clear_screen=False,
                 title=f"Select model from {name}:",
             )
@@ -1784,8 +1808,8 @@ def _prompt_reasoning_effort_selection(efforts, current_effort=""):
             choices,
             cursor_index=default_idx,
             menu_cursor="-> ",
-            menu_cursor_style=("fg_green", "bold"),
-            menu_highlight_style=("fg_green",),
+            menu_cursor_style=_pt_style("menu_cursor", ["fg_green", "bold"]),
+            menu_highlight_style=_pt_style("menu_highlight", ["fg_green"]),
             cycle_cursor=True,
             clear_screen=False,
             title="Select reasoning effort:",

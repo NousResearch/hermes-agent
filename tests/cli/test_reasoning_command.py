@@ -8,10 +8,29 @@ Combines functionality from:
 - PR #790 (0xbyt4): reasoning display toggle and rendering
 """
 
+import sys
 import unittest
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 import re
+
+# Stub optional packages that aren't installed in the test environment.
+# Applied conditionally so real installs are never shadowed.
+_MISSING_STUBS = {
+    mod: MagicMock()
+    for mod in [
+        "prompt_toolkit", "prompt_toolkit.history", "prompt_toolkit.styles",
+        "prompt_toolkit.patch_stdout", "prompt_toolkit.application",
+        "prompt_toolkit.layout", "prompt_toolkit.layout.processors",
+        "prompt_toolkit.filters", "prompt_toolkit.layout.dimension",
+        "prompt_toolkit.layout.menus", "prompt_toolkit.widgets",
+        "prompt_toolkit.key_binding", "prompt_toolkit.completion",
+        "prompt_toolkit.formatted_text", "prompt_toolkit.auto_suggest",
+        "fire",
+    ]
+    if mod not in sys.modules
+}
+sys.modules.update(_MISSING_STUBS)
 
 
 # ---------------------------------------------------------------------------
@@ -259,6 +278,26 @@ class TestReasoningCollapse(unittest.TestCase):
         self.assertIn("7 more lines", preview_lines[-1])
 
 
+class TestReasoningDimRendering(unittest.TestCase):
+    def test_dim_lines_wraps_each_line_independently(self):
+        from cli import _DIM, _RST, _dim_lines
+
+        rendered = _dim_lines("alpha\nbeta")
+
+        self.assertEqual(rendered, [f"{_DIM}alpha{_RST}", f"{_DIM}beta{_RST}"])
+
+    def test_dim_lines_handles_truncation_suffix_without_outer_wrapper(self):
+        from cli import _DIM, _RST, _dim_lines
+
+        display_reasoning = "Line 1\n  ... (5 more lines)"
+        rendered = _dim_lines(display_reasoning)
+
+        self.assertEqual(
+            rendered,
+            [f"{_DIM}Line 1{_RST}", f"{_DIM}  ... (5 more lines){_RST}"],
+        )
+
+
 # ---------------------------------------------------------------------------
 # Reasoning callback
 # ---------------------------------------------------------------------------
@@ -369,7 +408,6 @@ class TestReasoningPreviewBuffering(unittest.TestCase):
 class TestReasoningDisplayModeSelection(unittest.TestCase):
     def _make_cli(self, *, show_reasoning=False, streaming_enabled=False, verbose=False):
         from cli import HermesCLI
-
         cli = HermesCLI.__new__(HermesCLI)
         cli.show_reasoning = show_reasoning
         cli.streaming_enabled = streaming_enabled
@@ -378,24 +416,37 @@ class TestReasoningDisplayModeSelection(unittest.TestCase):
         cli._on_reasoning = lambda text: ("preview", text)
         return cli
 
-    def test_show_reasoning_non_streaming_uses_final_box_only(self):
+    def test_show_reasoning_off_returns_none(self):
+        """show_reasoning=False always returns None regardless of streaming or verbose."""
+        for streaming in (True, False):
+            for verbose in (True, False):
+                cli = self._make_cli(show_reasoning=False, streaming_enabled=streaming, verbose=verbose)
+                self.assertIsNone(
+                    cli._current_reasoning_callback(),
+                    f"expected None with show_reasoning=False streaming={streaming} verbose={verbose}",
+                )
+
+    def test_show_reasoning_non_streaming_returns_preview_callback(self):
+        """show_reasoning=True + streaming=False → _on_reasoning (batch preview), not None."""
         cli = self._make_cli(show_reasoning=True, streaming_enabled=False, verbose=False)
 
-        self.assertIsNone(cli._current_reasoning_callback())
+        callback = cli._current_reasoning_callback()
+        self.assertIsNotNone(callback)
+        self.assertEqual(callback("x"), ("preview", "x"))
 
     def test_show_reasoning_streaming_uses_live_reasoning_box(self):
+        """show_reasoning=True + streaming=True → _stream_reasoning_delta (live tokens)."""
         cli = self._make_cli(show_reasoning=True, streaming_enabled=True, verbose=False)
 
         callback = cli._current_reasoning_callback()
         self.assertIsNotNone(callback)
         self.assertEqual(callback("x"), ("stream", "x"))
 
-    def test_verbose_without_show_reasoning_uses_preview_callback(self):
+    def test_verbose_without_show_reasoning_returns_none(self):
+        """verbose=True must not leak reasoning; show_reasoning is the sole gate."""
         cli = self._make_cli(show_reasoning=False, streaming_enabled=False, verbose=True)
 
-        callback = cli._current_reasoning_callback()
-        self.assertIsNotNone(callback)
-        self.assertEqual(callback("x"), ("preview", "x"))
+        self.assertIsNone(cli._current_reasoning_callback())
 
 
 # ---------------------------------------------------------------------------
@@ -723,6 +774,7 @@ class TestReasoningShownThisTurnFlag(unittest.TestCase):
         cli._stream_prefilt = ""
         cli._in_reasoning_block = False
         cli._reasoning_preview_buf = ""
+        cli._stream_code_hl = SimpleNamespace(reset=lambda: None)
         return cli
 
     @patch("cli._cprint")

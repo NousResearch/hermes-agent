@@ -102,6 +102,31 @@ class TestBuiltinSkins:
             for key in required_keys:
                 assert key in skin.colors, f"Skin '{name}' missing color '{key}'"
 
+    def test_all_builtin_skins_declare_spinner_style(self):
+        from hermes_cli.skin_engine import _BUILTIN_SKINS, _build_skin_config
+        for name, data in _BUILTIN_SKINS.items():
+            skin = _build_skin_config(data)
+            style = skin.get_spinner_style()
+            assert style is not None, f"Skin '{name}' missing spinner.style"
+
+    def test_ares_spinner_style_is_arrows(self):
+        from hermes_cli.skin_engine import load_skin
+        assert load_skin("ares").get_spinner_style() == "arrows"
+
+    def test_mono_spinner_style_is_none_key(self):
+        from hermes_cli.skin_engine import load_skin
+        assert load_skin("mono").get_spinner_style() == "none"
+
+    def test_skin_without_spinner_style_returns_none(self):
+        from hermes_cli.skin_engine import SkinConfig
+        skin = SkinConfig(name="bare", spinner={})
+        assert skin.get_spinner_style() is None
+
+    def test_skin_with_empty_spinner_style_returns_none(self):
+        from hermes_cli.skin_engine import SkinConfig
+        skin = SkinConfig(name="bare", spinner={"style": ""})
+        assert skin.get_spinner_style() is None
+
 
 class TestSkinManagement:
     def test_set_active_skin(self):

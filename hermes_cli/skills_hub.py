@@ -26,6 +26,30 @@ from hermes_constants import display_hermes_home
 _console = Console()
 
 
+def _skin():
+    """Return the active skin, or None if unavailable."""
+    try:
+        from hermes_cli.skin_engine import get_active_skin
+        return get_active_skin()
+    except Exception:
+        return None
+
+
+def _col_accent() -> str:
+    s = _skin()
+    return s.get_ui_ext("table_col_accent", "bold cyan") if s else "bold cyan"
+
+
+def _col_dim() -> str:
+    s = _skin()
+    return s.get_ui_ext("table_col_dim", "dim") if s else "dim"
+
+
+def _panel_border() -> str:
+    s = _skin()
+    return s.get_ui_ext("panel_border", "cyan") if s else "cyan"
+
+
 # ---------------------------------------------------------------------------
 # Shared do_* functions
 # ---------------------------------------------------------------------------
@@ -54,9 +78,9 @@ def _resolve_short_name(name: str, sources, console: Console) -> str:
     if len(exact) > 1:
         c.print(f"\n[yellow]Multiple skills named '{name}' found:[/]")
         table = Table()
-        table.add_column("Source", style="dim")
-        table.add_column("Trust", style="dim")
-        table.add_column("Identifier", style="bold cyan")
+        table.add_column("Source", style=_col_dim())
+        table.add_column("Trust", style=_col_dim())
+        table.add_column("Identifier", style=_col_accent())
         for r in exact:
             trust_style = {"builtin": "bright_cyan", "trusted": "green", "community": "yellow"}.get(r.trust_level, "dim")
             trust_label = "official" if r.source == "official" else r.trust_level
@@ -158,11 +182,11 @@ def do_search(query: str, source: str = "all", limit: int = 10,
         return
 
     table = Table(title=f"Skills Hub — {len(results)} result(s)")
-    table.add_column("Name", style="bold cyan")
+    table.add_column("Name", style=_col_accent())
     table.add_column("Description", max_width=60)
-    table.add_column("Source", style="dim")
-    table.add_column("Trust", style="dim")
-    table.add_column("Identifier", style="dim")
+    table.add_column("Source", style=_col_dim())
+    table.add_column("Trust", style=_col_dim())
+    table.add_column("Identifier", style=_col_dim())
 
     for r in results:
         trust_style = {"builtin": "bright_cyan", "trusted": "green", "community": "yellow"}.get(r.trust_level, "dim")
@@ -259,9 +283,9 @@ def do_browse(page: int = 1, page_size: int = 20, source: str = "all",
     c.print()
 
     # Build table
-    table = Table(show_header=True, header_style="bold")
-    table.add_column("#", style="dim", width=4, justify="right")
-    table.add_column("Name", style="bold cyan", max_width=25)
+    s = _skin(); table = Table(show_header=True, header_style=s.get_ui_ext("table_header", "bold") if s else "bold")
+    table.add_column("#", style=_col_dim(), width=4, justify="right")
+    table.add_column("Name", style=_col_accent(), max_width=25)
     table.add_column("Description", max_width=50)
     table.add_column("Source", style="dim", width=12)
     table.add_column("Trust", width=10)
@@ -385,7 +409,7 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     if extra_metadata:
         metadata_lines = _format_extra_metadata_lines(extra_metadata)
         if metadata_lines:
-            c.print(Panel("\n".join(metadata_lines), title="Upstream Metadata", border_style="blue"))
+            c.print(Panel("\n".join(metadata_lines), title="Upstream Metadata", border_style=_panel_border()))
 
     # Confirm with user — show appropriate warning based on source
     # skip_confirm bypasses the prompt (needed in TUI mode where input() hangs)
@@ -511,10 +535,10 @@ def do_list(source_filter: str = "all", console: Optional[Console] = None) -> No
     all_skills = _find_all_skills()
 
     table = Table(title="Installed Skills")
-    table.add_column("Name", style="bold cyan")
-    table.add_column("Category", style="dim")
-    table.add_column("Source", style="dim")
-    table.add_column("Trust", style="dim")
+    table.add_column("Name", style=_col_accent())
+    table.add_column("Category", style=_col_dim())
+    table.add_column("Source", style=_col_dim())
+    table.add_column("Trust", style=_col_dim())
 
     hub_count = 0
     builtin_count = 0
@@ -565,9 +589,9 @@ def do_check(name: Optional[str] = None, console: Optional[Console] = None) -> N
         return
 
     table = Table(title="Skill Updates")
-    table.add_column("Name", style="bold cyan")
-    table.add_column("Source", style="dim")
-    table.add_column("Status", style="dim")
+    table.add_column("Name", style=_col_accent())
+    table.add_column("Source", style=_col_dim())
+    table.add_column("Status", style=_col_dim())
 
     for entry in results:
         table.add_row(entry.get("name", ""), entry.get("source", ""), entry.get("status", ""))
@@ -678,8 +702,8 @@ def do_tap(action: str, repo: str = "", console: Optional[Console] = None) -> No
             c.print("[dim]No custom taps configured. Using default sources only.[/]\n")
             return
         table = Table(title="Configured Taps")
-        table.add_column("Repo", style="bold cyan")
-        table.add_column("Path", style="dim")
+        table.add_column("Repo", style=_col_accent())
+        table.add_column("Path", style=_col_dim())
         for t in taps:
             label = t.get("repo") or t.get("name") or t.get("path", "unknown")
             table.add_row(label, t.get("path", "skills/"))

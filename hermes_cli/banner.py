@@ -33,9 +33,16 @@ _DIM = "\033[2m"
 _RST = "\033[0m"
 
 
+def _normalize_ansi_c1(text: str) -> str:
+    """Normalize 8-bit C1 CSI controls to standard ESC-prefixed ANSI."""
+    if "\x9b" not in text:
+        return text
+    return text.replace("\x9b", "\x1b[")
+
+
 def cprint(text: str):
     """Print ANSI-colored text through prompt_toolkit's renderer."""
-    _pt_print(_PT_ANSI(text))
+    _pt_print(_PT_ANSI(_normalize_ansi_c1(text)))
 
 
 # =========================================================================

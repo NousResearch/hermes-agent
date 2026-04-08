@@ -79,6 +79,35 @@ branding:
   prompt_symbol: "❯ "                 # Input prompt symbol
   help_header: "(^_^)? Available Commands"  # /help header text
 
+# ── Syntax Highlighting ─────────────────────────────────────────────────────
+# Named color scheme applied to fenced code blocks, inline code, and tool
+# output highlights.  The scheme controls the Pygments token → color mapping
+# used by the Rich renderer.
+#
+# Built-in options:
+#   hermes        — default Hermes palette (bold blues/greens/yellows)
+#   monokai       — Wimer Hazenberg's Monokai (pink/green/yellow)
+#   dracula       — Zeno Rocha's Dracula (purple/pink/green)
+#   one-dark      — Atom One Dark / One Dark Pro
+#   github-dark   — GitHub Primer dark theme
+#   nord          — Arctic Ice Studio Nord (cool blues)
+#   catppuccin    — Catppuccin Mocha (pastel)
+#   tokyo-night   — enkia/tokyo-night-vscode-theme
+#   gruvbox       — morhetz/gruvbox (warm retro)
+#   solarized-dark — Ethan Schoonover's Solarized dark
+#
+# You can also override individual token colors under syntax_overrides.
+syntax_scheme: monokai
+
+# Optional per-token overrides on top of the named scheme.
+# Token names: keyword, keyword_type, name, name_builtin, name_class,
+#   name_function, name_decorator, name_exception, comment, string,
+#   string_doc, string_escape, string_regex, number, operator, error,
+#   diff_deleted, diff_inserted
+# syntax_overrides:
+#   keyword: "bold #FF79C6"
+#   comment: "italic #6272A4"
+
 # ── Tool Output ─────────────────────────────────────────────────────────────
 # Character used as the prefix for tool output lines.
 # Default is "┊" (thin dotted vertical line). Some alternatives:

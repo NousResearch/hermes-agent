@@ -4,14 +4,15 @@ import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { Box, Static, Text, useApp, useInput, useStdout } from 'ink'
-import { TextInput } from './components/textInput.js'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+
 import { Banner, SessionPanel } from './components/branding.js'
 import { MaskedPrompt } from './components/maskedPrompt.js'
 import { MessageLine } from './components/messageLine.js'
 import { ApprovalPrompt, ClarifyPrompt } from './components/prompts.js'
 import { QueuedMessages } from './components/queuedMessages.js'
 import { SessionPicker } from './components/sessionPicker.js'
+import { TextInput } from './components/textInput.js'
 import { Thinking } from './components/thinking.js'
 import { HOTKEYS, INTERPOLATION_RE, PLACEHOLDERS, TOOL_VERBS, ZERO } from './constants.js'
 import { type GatewayClient, type GatewayEvent } from './gatewayClient.js'
@@ -41,20 +42,33 @@ const introMsg = (info: SessionInfo): Msg => ({
   info
 })
 
-function extractTabWord(input: string): string | null {
-  const m = input.match(/((?:\.\.?\/|~\/|\/|@)[^\s]*)$/)
-  return m?.[1] ?? null
-}
+const TAB_PATH_RE = /((?:\.\.?\/|~\/|\/|@)[^\s]*)$/
 
-function StatusRule({ cols, color, dimColor, statusColor, parts }: {
-  cols: number; color: string; dimColor: string; statusColor: string; parts: (string | false | undefined | null)[]
+function StatusRule({
+  cols,
+  color,
+  dimColor,
+  statusColor,
+  parts
+}: {
+  cols: number
+  color: string
+  dimColor: string
+  statusColor: string
+  parts: (string | false | undefined | null)[]
 }) {
   const label = parts.filter(Boolean).join(' · ')
+  const lead = String(parts[0] ?? '')
   const fill = Math.max(0, cols - label.length - 5)
 
   return (
     <Text color={color}>
-      {'─ '}<Text color={dimColor}><Text color={statusColor}>{parts[0]}</Text>{label.slice(String(parts[0] || '').length)}</Text>{' ' + '─'.repeat(fill)}
+      {'─ '}
+      <Text color={dimColor}>
+        <Text color={statusColor}>{parts[0]}</Text>
+        {label.slice(lead.length)}
+      </Text>
+      {' ' + '─'.repeat(fill)}
     </Text>
   )
 }
@@ -65,10 +79,15 @@ export function App({ gw }: { gw: GatewayClient }) {
   const [cols, setCols] = useState(stdout?.columns ?? 80)
 
   useEffect(() => {
-    if (!stdout) return
+    if (!stdout) {
+      return
+    }
     const sync = () => setCols(stdout.columns ?? 80)
     stdout.on('resize', sync)
-    return () => { stdout.off('resize', sync) }
+
+    return () => {
+      stdout.off('resize', sync)
+    }
   }, [stdout])
 
   const [input, setInput] = useState('')
@@ -108,7 +127,6 @@ export function App({ gw }: { gw: GatewayClient }) {
   const lastEmptyAt = useRef(0)
   const lastStatusNoteRef = useRef('')
   const protocolWarnedRef = useRef(false)
-  const stderrWarnedRef = useRef(false)
   const pasteCounterRef = useRef(0)
 
   const empty = !messages.length
@@ -167,31 +185,51 @@ export function App({ gw }: { gw: GatewayClient }) {
   const compInputRef = useRef('')
 
   useEffect(() => {
-    if (blocked) { if (completions.length) { setCompletions([]); setCompIdx(0) }; return }
-    if (input === compInputRef.current) return
+    if (blocked) {
+      if (completions.length) {
+        setCompletions([])
+        setCompIdx(0)
+      }
+
+      return
+    }
+
+    if (input === compInputRef.current) {
+      return
+    }
     compInputRef.current = input
 
     const isSlash = input.startsWith('/')
-    const pathWord = !isSlash ? extractTabWord(input) : null
+    const pathWord = !isSlash ? (input.match(TAB_PATH_RE)?.[1] ?? null) : null
 
     if (!isSlash && !pathWord) {
-      if (completions.length) { setCompletions([]); setCompIdx(0) }
+      if (completions.length) {
+        setCompletions([])
+        setCompIdx(0)
+      }
+
       return
     }
 
     const t = setTimeout(() => {
-      if (compInputRef.current !== input) return
+      if (compInputRef.current !== input) {
+        return
+      }
 
       const req = isSlash
         ? gw.request('complete.slash', { text: input })
         : gw.request('complete.path', { word: pathWord })
 
-      req.then((r: any) => {
-        if (compInputRef.current !== input) return
-        setCompletions(r?.items ?? [])
-        setCompIdx(0)
-        setCompReplace(isSlash ? (r?.replace_from ?? 1) : input.length - (pathWord?.length ?? 0))
-      }).catch(() => {})
+      req
+        .then((r: any) => {
+          if (compInputRef.current !== input) {
+            return
+          }
+          setCompletions(r?.items ?? [])
+          setCompIdx(0)
+          setCompReplace(isSlash ? (r?.replace_from ?? 1) : input.length - (pathWord?.length ?? 0))
+        })
+        .catch(() => {})
     }, 60)
 
     return () => clearTimeout(t)
@@ -232,7 +270,6 @@ export function App({ gw }: { gw: GatewayClient }) {
         setStatus('ready')
         lastStatusNoteRef.current = ''
         protocolWarnedRef.current = false
-        stderrWarnedRef.current = false
 
         if (r.info) {
           setInfo(r.info)
@@ -277,7 +314,11 @@ export function App({ gw }: { gw: GatewayClient }) {
 
   const expandPastes = (text: string) =>
     text.replace(PASTE_REF_RE, (m, path) => {
-      try { return readFileSync(path, 'utf8') } catch { return m }
+      try {
+        return readFileSync(path, 'utf8')
+      } catch {
+        return m
+      }
     })
 
   const collapsePaste = (text: string) => {
@@ -285,8 +326,14 @@ export function App({ gw }: { gw: GatewayClient }) {
     const lineCount = text.split('\n').length
     const pasteDir = join(process.env.HERMES_HOME ?? join(homedir(), '.hermes'), 'pastes')
     mkdirSync(pasteDir, { recursive: true })
-    const pasteFile = join(pasteDir, `paste_${pasteCounterRef.current}_${new Date().toTimeString().slice(0, 8).replace(/:/g, '')}.txt`)
+
+    const pasteFile = join(
+      pasteDir,
+      `paste_${pasteCounterRef.current}_${new Date().toTimeString().slice(0, 8).replace(/:/g, '')}.txt`
+    )
+
     writeFileSync(pasteFile, text, 'utf8')
+
     return `[Pasted text #${pasteCounterRef.current}: ${lineCount} lines → ${pasteFile}]`
   }
 
@@ -310,9 +357,12 @@ export function App({ gw }: { gw: GatewayClient }) {
     gw.request('shell.exec', { command: cmd })
       .then((r: any) => {
         const out = [r.stdout, r.stderr].filter(Boolean).join('\n').trim()
-        sys(out || `exit ${r.code}`)
 
-        if (r.code !== 0 && out) {
+        if (out) {
+          sys(out)
+        }
+
+        if (r.code !== 0 || !out) {
           sys(`exit ${r.code}`)
         }
       })
@@ -349,8 +399,8 @@ export function App({ gw }: { gw: GatewayClient }) {
 
     try {
       unlinkSync(file)
-    } catch (_) {
-      /* cleanup best-effort */
+    } catch {
+      /* noop */
     }
   }
 
@@ -399,13 +449,18 @@ export function App({ gw }: { gw: GatewayClient }) {
     }
 
     if (completions.length && input && (key.upArrow || key.downArrow)) {
-      setCompIdx(i => key.upArrow ? (i - 1 + completions.length) % completions.length : (i + 1) % completions.length)
+      setCompIdx(i => (key.upArrow ? (i - 1 + completions.length) % completions.length : (i + 1) % completions.length))
+
       return
     }
 
     if (!inputBuf.length && key.tab && completions.length) {
-      const pick = completions[compIdx]
-      if (pick) setInput(input.slice(0, compReplace) + pick.text)
+      const row = completions[compIdx]
+
+      if (row) {
+        setInput(input.slice(0, compReplace) + row.text)
+      }
+
       return
     }
 
@@ -459,9 +514,11 @@ export function App({ gw }: { gw: GatewayClient }) {
       if (busy && sid) {
         interruptedRef.current = true
         gw.request('session.interrupt', { session_id: sid }).catch(() => {})
+
         if (buf.current.trim()) {
           appendMessage({ role: 'assistant' as const, text: buf.current.trimStart() })
         }
+
         idle()
         setStatus('interrupted')
         sys('interrupted by user')
@@ -482,11 +539,13 @@ export function App({ gw }: { gw: GatewayClient }) {
     if (key.ctrl && ch === 'l') {
       setStatus('forging session…')
       newSession()
+
       return
     }
 
     if (key.ctrl && ch === 'v') {
       paste()
+
       return
     }
 
@@ -530,6 +589,7 @@ export function App({ gw }: { gw: GatewayClient }) {
 
         case 'session.info':
           setInfo(p as SessionInfo)
+
           break
 
         case 'thinking.delta':
@@ -559,9 +619,6 @@ export function App({ gw }: { gw: GatewayClient }) {
 
           break
 
-        case 'gateway.stderr':
-          break
-
         case 'gateway.protocol_error':
           setStatus('protocol warning')
 
@@ -579,23 +636,24 @@ export function App({ gw }: { gw: GatewayClient }) {
 
           break
 
-        case 'tool.generating':
-          break
-
         case 'tool.progress':
           if (p?.preview) {
             setTools(prev => {
               const idx = prev.findIndex(t => t.name === p.name)
-              if (idx >= 0) return [...prev.slice(0, idx), { ...prev[idx]!, context: p.preview as string }, ...prev.slice(idx + 1)]
+
+              if (idx >= 0) {
+                return [...prev.slice(0, idx), { ...prev[idx]!, context: p.preview as string }, ...prev.slice(idx + 1)]
+              }
+
               return prev
             })
           }
 
           break
-
         case 'tool.start': {
           const ctx = (p.context as string) || ''
           setTools(prev => [...prev, { id: p.tool_id, name: p.name, context: ctx }])
+
           break
         }
 
@@ -605,8 +663,10 @@ export function App({ gw }: { gw: GatewayClient }) {
             const label = TOOL_VERBS[done?.name ?? p.name] ?? done?.name ?? p.name
             const ctx = done?.context || ''
             appendMessage({ role: 'tool', text: `${label}${ctx ? ': ' + ctx : ''} ✓` })
+
             return prev.filter(t => t.id !== p.tool_id)
           })
+
           break
 
         case 'clarify.request':
@@ -644,7 +704,9 @@ export function App({ gw }: { gw: GatewayClient }) {
           break
 
         case 'message.delta':
-          if (!p?.text || interruptedRef.current) break
+          if (!p?.text || interruptedRef.current) {
+            break
+          }
 
           buf.current += p.rendered ?? p.text
           setStreaming(buf.current.trimStart())
@@ -732,108 +794,164 @@ export function App({ gw }: { gw: GatewayClient }) {
               .filter(Boolean)
               .join('\n')
           )
+
           return true
         }
 
         case 'quit':
+
         case 'exit':
+
         case 'q':
           die()
+
           return true
 
         case 'clear':
           setStatus('forging session…')
           newSession()
+
           return true
 
         case 'new':
           setStatus('forging session…')
           newSession('new session started')
+
           return true
 
         case 'compact':
           setCompact(c => (arg ? true : !c))
           sys(arg ? `compact on, focus: ${arg}` : `compact ${compact ? 'off' : 'on'}`)
+
           return true
 
         case 'resume':
-          if (!sid) { setPicker(true); return true }
           setPicker(true)
-          return true
 
+          return true
         case 'copy': {
           const all = messages.filter(m => m.role === 'assistant')
           const target = all[arg ? Math.min(parseInt(arg), all.length) - 1 : all.length - 1]
-          if (!target) { sys('nothing to copy'); return true }
+
+          if (!target) {
+            sys('nothing to copy')
+
+            return true
+          }
+
           writeOsc52Clipboard(target.text)
           sys('copied to clipboard')
+
           return true
         }
 
         case 'paste':
           paste()
-          return true
 
+          return true
         case 'logs': {
           const limit = Math.min(80, Math.max(1, parseInt(arg, 10) || 20))
           sys(gw.getLogTail(limit) || 'no gateway logs')
+
           return true
         }
 
         case 'statusbar':
+
         case 'sb':
           setStatusBar(v => !v)
           sys(`status bar ${statusBar ? 'off' : 'on'}`)
+
           return true
 
         case 'queue':
-          if (!arg) { sys(`${queueRef.current.length} queued message(s)`); return true }
+          if (!arg) {
+            sys(`${queueRef.current.length} queued message(s)`)
+
+            return true
+          }
+
           enqueue(arg)
           sys(`queued: "${arg.slice(0, 50)}${arg.length > 50 ? '…' : ''}"`)
+
           return true
 
         case 'undo':
-          if (!sid) return true
+          if (!sid) {
+            return true
+          }
           rpc('session.undo', { session_id: sid }).then((r: any) => {
             if (r.removed > 0) {
               setMessages(prev => {
                 const q = [...prev]
-                while (q.at(-1)?.role === 'assistant' || q.at(-1)?.role === 'tool') q.pop()
-                if (q.at(-1)?.role === 'user') q.pop()
+
+                while (q.at(-1)?.role === 'assistant' || q.at(-1)?.role === 'tool') {
+                  q.pop()
+                }
+
+                if (q.at(-1)?.role === 'user') {
+                  q.pop()
+                }
+
                 return q
               })
               sys(`undid ${r.removed} messages`)
-            } else sys('nothing to undo')
+            } else {
+              sys('nothing to undo')
+            }
           })
+
           return true
 
         case 'retry':
-          if (!lastUserMsg) { sys('nothing to retry'); return true }
-          if (sid) gw.request('session.undo', { session_id: sid }).catch(() => {})
+          if (!lastUserMsg) {
+            sys('nothing to retry')
+
+            return true
+          }
+
+          if (sid) {
+            gw.request('session.undo', { session_id: sid }).catch(() => {})
+          }
           setMessages(prev => {
             const q = [...prev]
-            while (q.at(-1)?.role === 'assistant' || q.at(-1)?.role === 'tool') q.pop()
+
+            while (q.at(-1)?.role === 'assistant' || q.at(-1)?.role === 'tool') {
+              q.pop()
+            }
+
             return q
           })
           send(lastUserMsg)
+
           return true
 
         default:
           rpc('slash.exec', { command: cmd.slice(1), session_id: sid })
             .then((r: any) => {
-              if (r?.output) sys(r.output)
-              else sys(`/${name}: no output`)
+              if (r?.output) {
+                sys(r.output)
+              } else {
+                sys(`/${name}: no output`)
+              }
             })
             .catch(() => {
               gw.request('command.dispatch', { name: name ?? '', arg, session_id: sid })
                 .then((d: any) => {
-                  if (d.type === 'exec') sys(d.output || '(no output)')
-                  else if (d.type === 'alias') slash(`/${d.target}${arg ? ' ' + arg : ''}`)
-                  else if (d.type === 'plugin') sys(d.output || '(no output)')
-                  else if (d.type === 'skill') { sys(`⚡ loading skill: ${d.name}`); send(d.message) }
+                  if (d.type === 'exec') {
+                    sys(d.output || '(no output)')
+                  } else if (d.type === 'alias') {
+                    slash(`/${d.target}${arg ? ' ' + arg : ''}`)
+                  } else if (d.type === 'plugin') {
+                    sys(d.output || '(no output)')
+                  } else if (d.type === 'skill') {
+                    sys(`⚡ loading skill: ${d.name}`)
+                    send(d.message)
+                  }
                 })
                 .catch(() => sys(`unknown command: /${name}`))
             })
+
           return true
       }
     },
@@ -899,11 +1017,13 @@ export function App({ gw }: { gw: GatewayClient }) {
           syncQueue()
           gw.request('session.interrupt', { session_id: sid }).catch(() => {})
           setStatus('interrupting…')
+
           return
         }
 
         if (picked && sid) {
           send(picked)
+
           return
         }
 
@@ -965,16 +1085,14 @@ export function App({ gw }: { gw: GatewayClient }) {
       <Static items={historyItems}>
         {(m, i) => (
           <Box flexDirection="column" key={i} paddingX={1}>
-            {m.kind === 'intro' && m.info
-              ? (
-                  <Box flexDirection="column" paddingTop={1}>
-                    <Banner t={theme} />
-                    <SessionPanel info={m.info} sid={sid} t={theme} />
-                  </Box>
-                )
-              : (
-                  <MessageLine cols={cols} compact={compact} msg={m} t={theme} />
-                )}
+            {m.kind === 'intro' && m.info ? (
+              <Box flexDirection="column" paddingTop={1}>
+                <Banner t={theme} />
+                <SessionPanel info={m.info} sid={sid} t={theme} />
+              </Box>
+            ) : (
+              <MessageLine cols={cols} compact={compact} msg={m} t={theme} />
+            )}
           </Box>
         )}
       </Static>
@@ -1052,11 +1170,13 @@ export function App({ gw }: { gw: GatewayClient }) {
                   setSid(r.session_id)
                   setMessages([])
                   setInfo(r.info ?? null)
-                  if (r.info) appendHistory(introMsg(r.info))
+
+                  if (r.info) {
+                    appendHistory(introMsg(r.info))
+                  }
                   setUsage(ZERO)
                   lastStatusNoteRef.current = ''
                   protocolWarnedRef.current = false
-                  stderrWarnedRef.current = false
                   sys(`resumed session (${r.message_count} messages)`)
                   setStatus('ready')
                 })
@@ -1071,23 +1191,38 @@ export function App({ gw }: { gw: GatewayClient }) {
 
         <QueuedMessages cols={cols} queued={queuedDisplay} queueEditIdx={queueEditIdx} t={theme} />
 
-        <Text>{' '}</Text>
+        <Text> </Text>
 
-        <StatusRule cols={cols} color={theme.color.bronze} dimColor={theme.color.dim} statusColor={statusColor}
-          parts={[status, sid, info?.model?.split('/').pop(), usage.total > 0 && `${fmtK(usage.total)} tok`]} />
+        <StatusRule
+          color={theme.color.bronze}
+          cols={cols}
+          dimColor={theme.color.dim}
+          parts={[status, sid, info?.model?.split('/').pop(), usage.total > 0 && `${fmtK(usage.total)} tok`]}
+          statusColor={statusColor}
+        />
 
         {!blocked && (
           <Box>
             <Box width={3}>
-              <Text bold color={theme.color.gold}>{inputBuf.length ? '… ' : `${theme.brand.prompt} `}</Text>
+              <Text bold color={theme.color.gold}>
+                {inputBuf.length ? '… ' : `${theme.brand.prompt} `}
+              </Text>
             </Box>
 
             <TextInput
               onChange={setInput}
               onLargePaste={collapsePaste}
               onSubmit={submit}
+              placeholder={
+                empty
+                  ? PLACEHOLDER
+                  : busy
+                    ? 'Ctrl+C to interrupt…'
+                    : inputBuf.length
+                      ? 'continue (or Enter to send)'
+                      : ''
+              }
               value={input}
-              placeholder={empty ? PLACEHOLDER : busy ? 'Ctrl+C to interrupt…' : inputBuf.length ? 'continue (or Enter to send)' : ''}
             />
           </Box>
         )}
@@ -1096,9 +1231,12 @@ export function App({ gw }: { gw: GatewayClient }) {
           <Box borderColor={theme.color.bronze} borderStyle="single" flexDirection="column" paddingX={1}>
             {completions.slice(Math.max(0, compIdx - 8), compIdx + 8).map((item, i) => {
               const active = Math.max(0, compIdx - 8) + i === compIdx
+
               return (
                 <Text key={item.text}>
-                  <Text bold={active} color={active ? theme.color.amber : theme.color.cornsilk}>{item.display}</Text>
+                  <Text bold={active} color={active ? theme.color.amber : theme.color.cornsilk}>
+                    {item.display}
+                  </Text>
                   {item.meta ? <Text color={theme.color.dim}> {item.meta}</Text> : null}
                 </Text>
               )

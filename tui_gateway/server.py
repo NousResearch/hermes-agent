@@ -319,9 +319,13 @@ def _wire_callbacks(sid: str):
 
 def _make_agent(sid: str, key: str, session_id: str | None = None):
     from run_agent import AIAgent
+    cfg = _load_cfg()
+    system_prompt = cfg.get("agent", {}).get("system_prompt", "") or ""
     return AIAgent(
         model=_resolve_model(), quiet_mode=True, platform="tui",
-        session_id=session_id or key, session_db=_get_db(), **_agent_cbs(sid),
+        session_id=session_id or key, session_db=_get_db(),
+        ephemeral_system_prompt=system_prompt or None,
+        **_agent_cbs(sid),
     )
 
 
@@ -1119,6 +1123,11 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str):
                     api_mode=result.api_mode,
                 )
                 _emit("session.info", sid, _session_info(agent))
+        elif name in ("personality", "prompt") and agent:
+            cfg = _load_cfg()
+            new_prompt = cfg.get("agent", {}).get("system_prompt", "") or ""
+            agent.ephemeral_system_prompt = new_prompt or None
+            agent._cached_system_prompt = None
         elif name == "compress" and agent:
             (getattr(agent, "compress_context", None) or getattr(agent, "context_compressor", agent).compress)()
         elif name == "reload-mcp" and agent and hasattr(agent, "reload_mcp_tools"):

@@ -476,7 +476,7 @@ export function App({ gw }: { gw: GatewayClient }) {
       switch (ev.type) {
         case 'gateway.ready':
           if (p?.skin) {
-            setTheme(fromSkin(p.skin.colors ?? {}, p.skin.branding ?? {}))
+            setTheme(fromSkin(p.skin.colors ?? {}, p.skin.branding ?? {}, p.skin.banner_logo ?? '', p.skin.banner_hero ?? ''))
           }
 
           rpc('commands.catalog', {})
@@ -842,7 +842,7 @@ export function App({ gw }: { gw: GatewayClient }) {
           return true
 
         default:
-          rpc('slash.exec', { command: cmd.slice(1), session_id: sid })
+          gw.request('slash.exec', { command: cmd.slice(1), session_id: sid })
             .then((r: any) => {
               if (r?.output) {
                 sys(r.output)

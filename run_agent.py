@@ -606,6 +606,17 @@ class AIAgent:
         else:
             self.api_mode = "chat_completions"
 
+        try:
+            from hermes_cli.model_normalize import (
+                _AGGREGATOR_PROVIDERS,
+                normalize_model_for_provider,
+            )
+
+            if self.provider not in _AGGREGATOR_PROVIDERS:
+                self.model = normalize_model_for_provider(self.model, self.provider)
+        except Exception:
+            pass
+
         # Direct OpenAI sessions use the Responses API path.  GPT-5.x tool
         # calls with reasoning are rejected on /v1/chat/completions, and
         # Hermes is a tool-using client by default.

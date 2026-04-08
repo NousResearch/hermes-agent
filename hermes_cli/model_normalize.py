@@ -168,6 +168,40 @@ def _dots_to_hyphens(model_name: str) -> str:
     return model_name.replace(".", "-")
 
 
+def _normalize_provider_alias(provider_name: str) -> str:
+    """Resolve provider aliases to Hermes' canonical ids."""
+    raw = (provider_name or "").strip().lower()
+    if not raw:
+        return raw
+    try:
+        from hermes_cli.models import normalize_provider
+
+        return normalize_provider(raw)
+    except Exception:
+        return raw
+
+
+def _strip_matching_provider_prefix(model_name: str, target_provider: str) -> str:
+    """Strip ``provider/`` only when the prefix matches the target provider.
+
+    This prevents arbitrary slash-bearing model IDs from being mangled on
+    native providers while still repairing manual config values like
+    ``zai/glm-5.1`` for the ``zai`` provider.
+    """
+    if "/" not in model_name:
+        return model_name
+
+    prefix, remainder = model_name.split("/", 1)
+    if not prefix.strip() or not remainder.strip():
+        return model_name
+
+    normalized_prefix = _normalize_provider_alias(prefix)
+    normalized_target = _normalize_provider_alias(target_provider)
+    if normalized_prefix and normalized_prefix == normalized_target:
+        return remainder.strip()
+    return model_name
+
+
 def detect_vendor(model_name: str) -> Optional[str]:
     """Detect the vendor slug from a bare model name.
 
@@ -305,24 +339,33 @@ def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
     if not name:
         return name
 
-    provider = (target_provider or "").strip().lower()
+    provider = _normalize_provider_alias(target_provider)
 
     # --- Aggregators: need vendor/model format ---
     if provider in _AGGREGATOR_PROVIDERS:
         return _prepend_vendor(name)
 
-    # --- Anthropic / OpenCode: strip vendor, dots -> hyphens ---
+    # --- Anthropic / OpenCode: strip matching provider prefix, dots -> hyphens ---
     if provider in _DOT_TO_HYPHEN_PROVIDERS:
-        bare = _strip_vendor_prefix(name)
+        bare = _strip_matching_provider_prefix(name, provider)
+        if "/" in bare:
+            return bare
         return _dots_to_hyphens(bare)
 
-    # --- Copilot: strip vendor, keep dots ---
+    # --- Copilot: strip matching provider prefix, keep dots ---
     if provider in _STRIP_VENDOR_ONLY_PROVIDERS:
-        return _strip_vendor_prefix(name)
+        return _strip_matching_provider_prefix(name, provider)
 
     # --- DeepSeek: map to one of two canonical names ---
     if provider == "deepseek":
-        return _normalize_for_deepseek(name)
+        bare = _strip_matching_provider_prefix(name, provider)
+        if "/" in bare:
+            return bare
+        return _normalize_for_deepseek(bare)
+
+    # --- Native passthrough providers: strip only matching provider prefixes ---
+    if provider in _PASSTHROUGH_PROVIDERS - {"custom", "huggingface", "openai-codex"}:
+        return _strip_matching_provider_prefix(name, provider)
 
     # --- Custom & all others: pass through as-is ---
     return name

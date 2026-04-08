@@ -2027,6 +2027,25 @@ class HermesCLI:
         current_model = (self.model or "").strip()
         changed = False
 
+        try:
+            from hermes_cli.model_normalize import (
+                _AGGREGATOR_PROVIDERS,
+                normalize_model_for_provider,
+            )
+
+            if resolved_provider not in _AGGREGATOR_PROVIDERS:
+                normalized_model = normalize_model_for_provider(current_model, resolved_provider)
+                if normalized_model and normalized_model != current_model:
+                    if not self._model_is_default:
+                        self.console.print(
+                            f"[yellow]⚠️  Normalized model '{current_model}' to '{normalized_model}' for {resolved_provider}.[/]"
+                        )
+                    self.model = normalized_model
+                    current_model = normalized_model
+                    changed = True
+        except Exception:
+            pass
+
         if resolved_provider == "copilot":
             try:
                 from hermes_cli.models import copilot_model_api_mode, normalize_copilot_model_id
@@ -2072,7 +2091,7 @@ class HermesCLI:
             return changed
 
         if resolved_provider != "openai-codex":
-            return False
+            return changed
 
         # 1. Strip provider prefix ("openai/gpt-5.4" → "gpt-5.4")
         if "/" in current_model:

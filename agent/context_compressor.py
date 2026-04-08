@@ -73,6 +73,22 @@ class ContextCompressor(ContextEngine):
         self._context_probe_persistable = False
         self._previous_summary = None
 
+    def update_model(
+        self,
+        model: str,
+        context_length: int,
+        base_url: str = "",
+        api_key: str = "",
+        provider: str = "",
+    ) -> None:
+        """Update model info after a model switch or fallback activation."""
+        self.model = model
+        self.base_url = base_url
+        self.api_key = api_key
+        self.provider = provider
+        self.context_length = context_length
+        self.threshold_tokens = int(context_length * self.threshold_percent)
+
     def __init__(
         self,
         model: str,

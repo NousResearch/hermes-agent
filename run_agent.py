@@ -1268,18 +1268,54 @@ class AIAgent:
                                         pass
                         break
         
-        # Check if a plugin registered a custom context engine (e.g. LCM)
-        _plugin_engine = None
+        # Select context engine: config-driven (like memory providers).
+        # 1. Check config.yaml context.engine setting
+        # 2. Check plugins/context_engine/<name>/ directory (repo-shipped)
+        # 3. Check general plugin system (user-installed plugins)
+        # 4. Fall back to built-in ContextCompressor
+        _selected_engine = None
+        _engine_name = "compressor"  # default
         try:
-            from hermes_cli.plugins import get_plugin_context_engine
-            _plugin_engine = get_plugin_context_engine()
+            _ctx_cfg = _agent_cfg.get("context", {}) if isinstance(_agent_cfg, dict) else {}
+            _engine_name = _ctx_cfg.get("engine", "compressor") or "compressor"
         except Exception:
             pass
 
-        if _plugin_engine is not None:
-            self.context_compressor = _plugin_engine
+        if _engine_name != "compressor":
+            # Try loading from plugins/context_engine/<name>/
+            try:
+                from plugins.context_engine import load_context_engine
+                _selected_engine = load_context_engine(_engine_name)
+            except Exception as _ce_load_err:
+                logger.debug("Context engine load from plugins/context_engine/: %s", _ce_load_err)
+
+            # Try general plugin system as fallback
+            if _selected_engine is None:
+                try:
+                    from hermes_cli.plugins import get_plugin_context_engine
+                    _candidate = get_plugin_context_engine()
+                    if _candidate and _candidate.name == _engine_name:
+                        _selected_engine = _candidate
+                except Exception:
+                    pass
+
+            if _selected_engine is None:
+                logger.warning(
+                    "Context engine '%s' not found — falling back to built-in compressor",
+                    _engine_name,
+                )
+        else:
+            # Even with default config, check if a plugin registered one
+            try:
+                from hermes_cli.plugins import get_plugin_context_engine
+                _selected_engine = get_plugin_context_engine()
+            except Exception:
+                pass
+
+        if _selected_engine is not None:
+            self.context_compressor = _selected_engine
             if not self.quiet_mode:
-                logger.info("Using plugin context engine: %s", _plugin_engine.name)
+                logger.info("Using context engine: %s", _selected_engine.name)
         else:
             self.context_compressor = ContextCompressor(
                 model=self.model,
@@ -1385,11 +1421,13 @@ class AIAgent:
             "api_key": getattr(self, "api_key", ""),
             "client_kwargs": dict(self._client_kwargs),
             "use_prompt_caching": self._use_prompt_caching,
-            # Compressor state that _try_activate_fallback() overwrites
-            "compressor_model": _cc.model,
-            "compressor_base_url": _cc.base_url,
+            # Context engine state that _try_activate_fallback() overwrites.
+            # Use getattr for model/base_url/api_key/provider since plugin
+            # engines may not have these (they're ContextCompressor-specific).
+            "compressor_model": getattr(_cc, "model", self.model),
+            "compressor_base_url": getattr(_cc, "base_url", self.base_url),
             "compressor_api_key": getattr(_cc, "api_key", ""),
-            "compressor_provider": _cc.provider,
+            "compressor_provider": getattr(_cc, "provider", self.provider),
             "compressor_context_length": _cc.context_length,
             "compressor_threshold_tokens": _cc.threshold_tokens,
         }
@@ -1518,13 +1556,12 @@ class AIAgent:
                 provider=self.provider,
                 config_context_length=getattr(self, "_config_context_length", None),
             )
-            self.context_compressor.model = self.model
-            self.context_compressor.base_url = self.base_url
-            self.context_compressor.api_key = self.api_key
-            self.context_compressor.provider = self.provider
-            self.context_compressor.context_length = new_context_length
-            self.context_compressor.threshold_tokens = int(
-                new_context_length * self.context_compressor.threshold_percent
+            self.context_compressor.update_model(
+                model=self.model,
+                context_length=new_context_length,
+                base_url=self.base_url,
+                api_key=getattr(self, "api_key", ""),
+                provider=self.provider,
             )
 
         # ── Invalidate cached system prompt so it rebuilds next turn ──
@@ -1540,10 +1577,10 @@ class AIAgent:
             "api_key": getattr(self, "api_key", ""),
             "client_kwargs": dict(self._client_kwargs),
             "use_prompt_caching": self._use_prompt_caching,
-            "compressor_model": _cc.model if _cc else self.model,
-            "compressor_base_url": _cc.base_url if _cc else self.base_url,
+            "compressor_model": getattr(_cc, "model", self.model) if _cc else self.model,
+            "compressor_base_url": getattr(_cc, "base_url", self.base_url) if _cc else self.base_url,
             "compressor_api_key": getattr(_cc, "api_key", "") if _cc else "",
-            "compressor_provider": _cc.provider if _cc else self.provider,
+            "compressor_provider": getattr(_cc, "provider", self.provider) if _cc else self.provider,
             "compressor_context_length": _cc.context_length if _cc else 0,
             "compressor_threshold_tokens": _cc.threshold_tokens if _cc else 0,
         }
@@ -2740,10 +2777,11 @@ class AIAgent:
         }
 
     def shutdown_memory_provider(self, messages: list = None) -> None:
-        """Shut down the memory provider — call at actual session boundaries.
+        """Shut down the memory provider and context engine — call at actual session boundaries.
 
         This calls on_session_end() then shutdown_all() on the memory
-        manager. NOT called per-turn — only at CLI exit, /reset, gateway
+        manager, and on_session_end() on the context engine.
+        NOT called per-turn — only at CLI exit, /reset, gateway
         session expiry, etc.
         """
         if self._memory_manager:
@@ -2753,6 +2791,15 @@ class AIAgent:
                 pass
             try:
                 self._memory_manager.shutdown_all()
+            except Exception:
+                pass
+        # Notify context engine of session end (flush DAG, close DBs, etc.)
+        if hasattr(self, "context_compressor") and self.context_compressor:
+            try:
+                self.context_compressor.on_session_end(
+                    self.session_id or "",
+                    messages or [],
+                )
             except Exception:
                 pass
     
@@ -5272,13 +5319,12 @@ class AIAgent:
                     self.model, base_url=self.base_url,
                     api_key=self.api_key, provider=self.provider,
                 )
-                self.context_compressor.model = self.model
-                self.context_compressor.base_url = self.base_url
-                self.context_compressor.api_key = self.api_key
-                self.context_compressor.provider = self.provider
-                self.context_compressor.context_length = fb_context_length
-                self.context_compressor.threshold_tokens = int(
-                    fb_context_length * self.context_compressor.threshold_percent
+                self.context_compressor.update_model(
+                    model=self.model,
+                    context_length=fb_context_length,
+                    base_url=self.base_url,
+                    api_key=getattr(self, "api_key", ""),
+                    provider=self.provider,
                 )
 
             self._emit_status(
@@ -5338,14 +5384,15 @@ class AIAgent:
                     shared=True,
                 )
 
-            # ── Restore context compressor state ──
+            # ── Restore context engine state ──
             cc = self.context_compressor
-            cc.model = rt["compressor_model"]
-            cc.base_url = rt["compressor_base_url"]
-            cc.api_key = rt["compressor_api_key"]
-            cc.provider = rt["compressor_provider"]
-            cc.context_length = rt["compressor_context_length"]
-            cc.threshold_tokens = rt["compressor_threshold_tokens"]
+            cc.update_model(
+                model=rt["compressor_model"],
+                context_length=rt["compressor_context_length"],
+                base_url=rt["compressor_base_url"],
+                api_key=rt["compressor_api_key"],
+                provider=rt["compressor_provider"],
+            )
 
             # ── Reset fallback chain for the new turn ──
             self._fallback_activated = False
@@ -8247,7 +8294,7 @@ class AIAgent:
                         # Cache discovered context length after successful call.
                         # Only persist limits confirmed by the provider (parsed
                         # from the error message), not guessed probe tiers.
-                        if self.context_compressor._context_probed:
+                        if getattr(self.context_compressor, "_context_probed", False):
                             ctx = self.context_compressor.context_length
                             if getattr(self.context_compressor, "_context_probe_persistable", False):
                                 save_context_length(self.model, self.base_url, ctx)
@@ -8586,16 +8633,22 @@ class AIAgent:
                         compressor = self.context_compressor
                         old_ctx = compressor.context_length
                         if old_ctx > _reduced_ctx:
-                            compressor.context_length = _reduced_ctx
-                            compressor.threshold_tokens = int(
-                                _reduced_ctx * compressor.threshold_percent
+                            compressor.update_model(
+                                model=self.model,
+                                context_length=_reduced_ctx,
+                                base_url=self.base_url,
+                                api_key=getattr(self, "api_key", ""),
+                                provider=self.provider,
                             )
-                            compressor._context_probed = True
-                            # Don't persist — this is a subscription-tier
-                            # limitation, not a model capability.  If the user
-                            # later enables extra usage the 1M limit should
-                            # come back automatically.
-                            compressor._context_probe_persistable = False
+                            # Context probing flags — only set on built-in
+                            # compressor (plugin engines manage their own).
+                            if hasattr(compressor, "_context_probed"):
+                                compressor._context_probed = True
+                                # Don't persist — this is a subscription-tier
+                                # limitation, not a model capability.  If the
+                                # user later enables extra usage the 1M limit
+                                # should come back automatically.
+                                compressor._context_probe_persistable = False
                             self._vprint(
                                 f"{self.log_prefix}⚠️  Anthropic long-context tier "
                                 f"requires extra usage — reducing context: "
@@ -8759,17 +8812,25 @@ class AIAgent:
                             new_ctx = get_next_probe_tier(old_ctx)
 
                         if new_ctx and new_ctx < old_ctx:
-                            compressor.context_length = new_ctx
-                            compressor.threshold_tokens = int(new_ctx * compressor.threshold_percent)
-                            compressor._context_probed = True
-                            # Only persist limits parsed from the provider's
-                            # error message (a real number).  Guessed fallback
-                            # tiers from get_next_probe_tier() should stay
-                            # in-memory only — persisting them pollutes the
-                            # cache with wrong values.
-                            compressor._context_probe_persistable = bool(
-                                parsed_limit and parsed_limit == new_ctx
+                            compressor.update_model(
+                                model=self.model,
+                                context_length=new_ctx,
+                                base_url=self.base_url,
+                                api_key=getattr(self, "api_key", ""),
+                                provider=self.provider,
                             )
+                            # Context probing flags — only set on built-in
+                            # compressor (plugin engines manage their own).
+                            if hasattr(compressor, "_context_probed"):
+                                compressor._context_probed = True
+                                # Only persist limits parsed from the provider's
+                                # error message (a real number).  Guessed fallback
+                                # tiers from get_next_probe_tier() should stay
+                                # in-memory only — persisting them pollutes the
+                                # cache with wrong values.
+                                compressor._context_probe_persistable = bool(
+                                    parsed_limit and parsed_limit == new_ctx
+                                )
                             self._vprint(f"{self.log_prefix}⚠️  Context length exceeded — stepping down: {old_ctx:,} → {new_ctx:,} tokens", force=True)
                         else:
                             self._vprint(f"{self.log_prefix}⚠️  Context length exceeded at minimum tier — attempting compression...", force=True)

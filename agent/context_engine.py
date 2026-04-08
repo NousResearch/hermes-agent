@@ -3,7 +3,11 @@
 A context engine controls how conversation context is managed when
 approaching the model's token limit. The built-in ContextCompressor
 is the default implementation. Third-party engines (e.g. LCM) can
-replace it by registering via the plugin system.
+replace it via the plugin system or by being placed in the
+``plugins/context_engine/<name>/`` directory.
+
+Selection is config-driven: ``context.engine`` in config.yaml.
+Default is ``"compressor"`` (the built-in). Only one engine is active.
 
 The engine is responsible for:
   - Deciding when compaction should fire
@@ -17,7 +21,8 @@ Lifecycle:
   3. update_from_response() called after each API response with usage data
   4. should_compress() checked after each turn
   5. compress() called when should_compress() returns True
-  6. on_session_end() called when the conversation ends
+  6. on_session_end() called at real session boundaries (CLI exit, /reset,
+     gateway session expiry) — NOT per-turn
 """
 
 from abc import ABC, abstractmethod
@@ -44,6 +49,16 @@ class ContextEngine(ABC):
     threshold_tokens: int = 0
     context_length: int = 0
     compression_count: int = 0
+
+    # -- Compaction parameters (read by run_agent.py for preflight) --------
+    #
+    # These control the preflight compression check.  Subclasses may
+    # override via __init__ or property; defaults are sensible for most
+    # engines.
+
+    threshold_percent: float = 0.75
+    protect_first_n: int = 3
+    protect_last_n: int = 6
 
     # -- Core interface ----------------------------------------------------
 
@@ -93,9 +108,10 @@ class ContextEngine(ABC):
         """
 
     def on_session_end(self, session_id: str, messages: List[Dict[str, Any]]) -> None:
-        """Called when the conversation ends.
+        """Called at real session boundaries (CLI exit, /reset, gateway expiry).
 
         Use this to flush state, close DB connections, etc.
+        NOT called per-turn — only when the session truly ends.
         """
 
     def on_session_reset(self) -> None:
@@ -158,9 +174,11 @@ class ContextEngine(ABC):
         api_key: str = "",
         provider: str = "",
     ) -> None:
-        """Called when the user switches models mid-session.
+        """Called when the user switches models or on fallback activation.
 
-        Default updates context_length and threshold_tokens. Override if
-        your engine needs to do more (e.g. recalculate DAG budgets).
+        Default updates context_length and recalculates threshold_tokens
+        from threshold_percent. Override if your engine needs more
+        (e.g. recalculate DAG budgets, switch summary models).
         """
         self.context_length = context_length
+        self.threshold_tokens = int(context_length * self.threshold_percent)

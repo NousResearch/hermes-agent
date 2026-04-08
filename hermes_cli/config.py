@@ -504,6 +504,16 @@ DEFAULT_CONFIG = {
         "max_ms": 2500,
     },
     
+    # Context engine -- controls how the context window is managed when
+    # approaching the model's token limit.
+    # "compressor" = built-in lossy summarization (default).
+    # Set to a plugin name to activate an alternative engine (e.g. "lcm"
+    # for Lossless Context Management).  The engine must be installed as
+    # a plugin in plugins/context_engine/<name>/ or ~/.hermes/plugins/.
+    "context": {
+        "engine": "compressor",
+    },
+
     # Persistent memory -- bounded curated memory injected into system prompt
     "memory": {
         "memory_enabled": True,
@@ -1450,7 +1460,7 @@ _KNOWN_ROOT_KEYS = {
     "_config_version", "model", "providers", "fallback_model",
     "fallback_providers", "credential_pool_strategies", "toolsets",
     "agent", "terminal", "display", "compression", "delegation",
-    "auxiliary", "custom_providers", "memory", "gateway",
+    "auxiliary", "custom_providers", "context", "memory", "gateway",
 }
 
 # Valid fields inside a custom_providers list entry

@@ -55,6 +55,7 @@ def _make_runner(session_entry: SessionEntry, *, platform: Platform = Platform.T
     runner._pending_approvals = {}
     runner._session_db = MagicMock()
     runner._session_db.get_session_title.return_value = None
+    runner._session_db.get_session_token_totals.return_value = None
     runner._reasoning_config = None
     runner._provider_routing = {}
     runner._fallback_model = None
@@ -111,6 +112,51 @@ async def test_status_command_includes_session_title_when_present():
 
     assert "**Session ID:** `sess-1`" in result
     assert "**Title:** My titled session" in result
+
+
+@pytest.mark.asyncio
+async def test_status_command_prefers_sessiondb_token_totals():
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        total_tokens=321,
+    )
+    runner = _make_runner(session_entry)
+    runner._session_db.get_session_token_totals.return_value = {
+        "input_tokens": 100,
+        "output_tokens": 200,
+        "cache_read_tokens": 10,
+        "cache_write_tokens": 5,
+        "reasoning_tokens": 6,
+        "total_tokens": 3210,
+    }
+
+    result = await runner._handle_message(_make_event("/status"))
+
+    assert "**Tokens:** 3,210" in result
+
+
+@pytest.mark.asyncio
+async def test_status_command_falls_back_when_sessiondb_row_missing():
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        total_tokens=321,
+    )
+    runner = _make_runner(session_entry)
+    runner._session_db.get_session_token_totals.return_value = None
+
+    result = await runner._handle_message(_make_event("/status"))
+
+    assert "**Tokens:** 321" in result
 
 
 @pytest.mark.asyncio

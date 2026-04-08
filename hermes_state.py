@@ -704,12 +704,12 @@ class SessionDB:
             row = cursor.fetchone()
         return dict(row) if row else None
 
-    def get_session_token_totals(self, session_id: str) -> Dict[str, int]:
+    def get_session_token_totals(self, session_id: str) -> Optional[Dict[str, int]]:
         """Get token totals for a session from SessionDB.
 
         Returns a dict with input_tokens, output_tokens, cache_read_tokens,
         cache_write_tokens, reasoning_tokens, and total_tokens (sum of all).
-        Returns zeros for all fields if the session is not found.
+        Returns None if the session is not found.
         """
         with self._lock:
             cursor = self._conn.execute(
@@ -735,14 +735,7 @@ class SessionDB:
                 + totals["reasoning_tokens"]
             )
             return totals
-        return {
-            "input_tokens": 0,
-            "output_tokens": 0,
-            "cache_read_tokens": 0,
-            "cache_write_tokens": 0,
-            "reasoning_tokens": 0,
-            "total_tokens": 0,
-        }
+        return None
 
     def resolve_session_id(self, session_id_or_prefix: str) -> Optional[str]:
         """Resolve an exact or uniquely prefixed session ID to the full ID.

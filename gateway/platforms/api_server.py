@@ -1454,6 +1454,21 @@ class APIServerAdapter(BasePlatformAdapter):
                 if instructions is None:
                     instructions = stored.get("instructions")
 
+        # When input is a multi-message array, extract all but the last
+        # message as conversation history (the last becomes user_message).
+        # Only fires when no explicit history was provided.
+        if not conversation_history and isinstance(raw_input, list) and len(raw_input) > 1:
+            for msg in raw_input[:-1]:
+                if isinstance(msg, dict) and msg.get("role") and msg.get("content"):
+                    content = msg["content"]
+                    if isinstance(content, list):
+                        # Flatten multi-part content blocks to text
+                        content = " ".join(
+                            part.get("text", "") for part in content
+                            if isinstance(part, dict) and part.get("type") == "text"
+                        )
+                    conversation_history.append({"role": msg["role"], "content": str(content)})
+
         session_id = body.get("session_id") or run_id
         ephemeral_system_prompt = instructions
 

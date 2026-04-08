@@ -9,8 +9,14 @@ RUN apt-get update && \
 COPY . /opt/hermes
 WORKDIR /opt/hermes
 
+# Match the repo's supported install path: prefer uv.lock, then fall back to uv pip.
+ENV UV_PROJECT_ENVIRONMENT=/opt/hermes/.venv
+ENV PATH="/opt/hermes/.venv/bin:${PATH}"
+
 # Install Python and Node dependencies in one layer, no cache
-RUN pip install --no-cache-dir -e ".[all]" --break-system-packages && \
+RUN pip install --no-cache-dir uv --break-system-packages && \
+    uv venv "$UV_PROJECT_ENVIRONMENT" && \
+    (uv sync --all-extras --locked || uv pip install --python "$UV_PROJECT_ENVIRONMENT/bin/python" -e ".[all]") && \
     npm install --prefer-offline --no-audit && \
     npx playwright install --with-deps chromium --only-shell && \
     cd /opt/hermes/scripts/whatsapp-bridge && \

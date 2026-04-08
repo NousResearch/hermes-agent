@@ -307,6 +307,7 @@ class APIServerAdapter(BasePlatformAdapter):
         self._run_streams: Dict[str, "asyncio.Queue[Optional[Dict]]"] = {}
         # Creation timestamps for orphaned-run TTL sweep
         self._run_streams_created: Dict[str, float] = {}
+        self._run_session_keys: Dict[str, str] = {}  # run_id -> approval session_key
         self._session_db: Optional[Any] = None  # Lazy-init SessionDB for session continuity
 
     @staticmethod
@@ -1472,6 +1473,10 @@ class APIServerAdapter(BasePlatformAdapter):
         session_id = body.get("session_id") or run_id
         ephemeral_system_prompt = instructions
 
+        # Track the session_key for approval resolution
+        _approval_session_key = f"api_server:{session_id}"
+        self._run_session_keys[run_id] = _approval_session_key
+
         async def _run_and_close():
             try:
                 agent = self._create_agent(
@@ -1481,10 +1486,38 @@ class APIServerAdapter(BasePlatformAdapter):
                     tool_progress_callback=event_cb,
                 )
                 def _run_sync():
-                    r = agent.run_conversation(
-                        user_message=user_message,
-                        conversation_history=conversation_history,
+                    from tools.approval import (
+                        register_gateway_notify,
+                        reset_current_session_key,
+                        set_current_session_key,
+                        unregister_gateway_notify,
                     )
+
+                    def _approval_notify(approval_data):
+                        """Push approval request to SSE stream."""
+                        cmd = approval_data.get("command", "")
+                        desc = approval_data.get("description", "dangerous command")
+                        try:
+                            loop.call_soon_threadsafe(q.put_nowait, {
+                                "event": "approval.required",
+                                "run_id": run_id,
+                                "timestamp": time.time(),
+                                "command": cmd[:500],
+                                "description": desc,
+                            })
+                        except Exception as _e:
+                            logger.warning("Failed to push approval SSE event: %s", _e)
+
+                    token = set_current_session_key(_approval_session_key)
+                    register_gateway_notify(_approval_session_key, _approval_notify)
+                    try:
+                        r = agent.run_conversation(
+                            user_message=user_message,
+                            conversation_history=conversation_history,
+                        )
+                    finally:
+                        unregister_gateway_notify(_approval_session_key)
+                        reset_current_session_key(token)
                     u = {
                         "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
                         "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,
@@ -1513,6 +1546,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 except Exception:
                     pass
             finally:
+                # Clean up approval session key mapping
+                self._run_session_keys.pop(run_id, None)
                 # Sentinel: signal SSE stream to close
                 try:
                     q.put_nowait(None)
@@ -1528,6 +1563,39 @@ class APIServerAdapter(BasePlatformAdapter):
             task.add_done_callback(self._background_tasks.discard)
 
         return web.json_response({"run_id": run_id, "status": "started"}, status=202)
+
+
+    async def _handle_run_approve(self, request: "web.Request") -> "web.Response":
+        """POST /v1/runs/{run_id}/approve — approve or deny a pending dangerous command."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        run_id = request.match_info.get("run_id", "")
+        session_key = self._run_session_keys.get(run_id)
+        if not session_key:
+            return web.json_response({"ok": False, "error": "Run not found or already completed"}, status=404)
+
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"ok": False, "error": "Invalid JSON"}, status=400)
+
+        choice = body.get("choice", "once")  # once, session, always, deny
+        resolve_all = body.get("all", False)
+
+        from tools.approval import resolve_gateway_approval, has_blocking_approval
+
+        if not has_blocking_approval(session_key):
+            return web.json_response({"ok": False, "error": "No pending approval for this run"}, status=404)
+
+        count = resolve_gateway_approval(session_key, choice, resolve_all=resolve_all)
+        if count == 0:
+            return web.json_response({"ok": False, "error": "No pending approval resolved"}, status=404)
+
+        action = "approved" if choice != "deny" else "denied"
+        logger.info("[api_server] User %s %d command(s) for run %s (choice=%s)", action, count, run_id, choice)
+        return web.json_response({"ok": True, "action": action, "count": count})
 
     async def _handle_run_events(self, request: "web.Request") -> "web.StreamResponse":
         """GET /v1/runs/{run_id}/events — SSE stream of structured agent lifecycle events."""
@@ -1626,6 +1694,7 @@ class APIServerAdapter(BasePlatformAdapter):
             # Structured event streaming
             self._app.router.add_post("/v1/runs", self._handle_runs)
             self._app.router.add_get("/v1/runs/{run_id}/events", self._handle_run_events)
+            self._app.router.add_post("/v1/runs/{run_id}/approve", self._handle_run_approve)
             # Start background sweep to clean up orphaned (unconsumed) run streams
             sweep_task = asyncio.create_task(self._sweep_orphaned_runs())
             try:

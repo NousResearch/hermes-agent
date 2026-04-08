@@ -1142,7 +1142,13 @@ def resolve_provider_client(
     if provider == "codex":
         provider = "openai-codex"
     if provider == "main":
-        provider = "custom"
+        # Resolve to the user's actual main provider so named custom providers
+        # and non-aggregator providers (DeepSeek, Alibaba, etc.) work correctly.
+        main_prov = _read_main_provider()
+        if main_prov and main_prov not in ("auto", "main", ""):
+            provider = main_prov
+        else:
+            provider = "custom"
 
     # ── Auto: try all providers in priority order ────────────────────
     if provider == "auto":
@@ -1237,6 +1243,28 @@ def resolve_provider_client(
         logger.warning("resolve_provider_client: custom/main requested "
                        "but no endpoint credentials found")
         return None, None
+
+    # ── Named custom providers (config.yaml custom_providers list) ───
+    try:
+        from hermes_cli.runtime_provider import _get_named_custom_provider
+        custom_entry = _get_named_custom_provider(provider)
+        if custom_entry:
+            custom_base = custom_entry.get("base_url", "").strip()
+            custom_key = custom_entry.get("api_key", "").strip() or "no-key-required"
+            if custom_base:
+                final_model = model or _read_main_model() or "gpt-4o-mini"
+                client = OpenAI(api_key=custom_key, base_url=custom_base)
+                logger.debug(
+                    "resolve_provider_client: named custom provider %r (%s)",
+                    provider, final_model)
+                return (_to_async_client(client, final_model) if async_mode
+                        else (client, final_model))
+            logger.warning(
+                "resolve_provider_client: named custom provider %r has no base_url",
+                provider)
+            return None, None
+    except ImportError:
+        pass
 
     # ── API-key providers from PROVIDER_REGISTRY ─────────────────────
     try:
@@ -1358,6 +1386,11 @@ def _normalize_vision_provider(provider: Optional[str]) -> str:
     if provider == "codex":
         return "openai-codex"
     if provider == "main":
+        # Resolve to actual main provider — named custom providers and
+        # non-aggregator providers need to pass through as their real name.
+        main_prov = _read_main_provider()
+        if main_prov and main_prov not in ("auto", "main", ""):
+            return main_prov
         return "custom"
     return provider
 

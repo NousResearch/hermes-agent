@@ -905,6 +905,40 @@ class TestAuxiliaryPoolAwareness:
         assert isinstance(client, CodexAuxiliaryClient)
         assert model == "gpt-5.2-codex"
 
+    def test_vision_auto_includes_kimi_when_configured(self, monkeypatch):
+        """Verify kimi-coding shows up in available vision backends when key is set."""
+        monkeypatch.setenv("KIMI_API_KEY", "kimi-test-key")
+        mock_client = MagicMock()
+        with patch("agent.auxiliary_client.resolve_provider_client", return_value=(mock_client, "kimi-k2.5")):
+            backends = get_available_vision_backends()
+        assert "kimi-coding" in backends
+
+    def test_resolve_kimi_vision_client(self, monkeypatch):
+        """Verify kimi-coding resolves to the correct model for vision."""
+        monkeypatch.setenv("KIMI_API_KEY", "kimi-test-key")
+        mock_client = MagicMock()
+        with patch("agent.auxiliary_client.resolve_provider_client", return_value=(mock_client, "kimi-k2.5")) as mock_resolve:
+            provider, client, model = resolve_vision_provider_client(provider="kimi-coding")
+        assert provider == "kimi-coding"
+        assert client is mock_client
+        assert model == "kimi-k2.5"
+        mock_resolve.assert_called_with("kimi-coding", model="kimi-k2.5")
+
+    def test_selected_kimi_provider_is_preferred_for_vision_auto(self, monkeypatch):
+        """Verify kimi-coding is preferred for vision when it is the main provider."""
+        monkeypatch.setenv("KIMI_API_KEY", "kimi-test-key")
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-test-key")
+
+        def fake_load_config():
+            return {"model": {"provider": "kimi-coding", "default": "kimi-k2-turbo-preview"}}
+
+        with patch("hermes_cli.config.load_config", fake_load_config), \
+             patch("agent.auxiliary_client.resolve_provider_client") as mock_resolve:
+            mock_resolve.side_effect = lambda p, model=None: (MagicMock(), model or "default")
+            provider, client, model = resolve_vision_provider_client(provider="auto")
+        assert provider == "kimi-coding"
+        assert model == "kimi-k2.5"
+
 
 class TestGetAuxiliaryProvider:
     """Tests for _get_auxiliary_provider env var resolution."""

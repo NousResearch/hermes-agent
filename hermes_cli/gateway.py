@@ -1279,7 +1279,7 @@ def launchd_status(deep: bool = False):
 
 def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False):
     """Run the gateway in foreground.
-    
+
     Args:
         verbose: Stderr log verbosity count added on top of default WARNING (0=WARNING, 1=INFO, 2+=DEBUG).
         quiet: Suppress all stderr log output.
@@ -1287,6 +1287,24 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False):
                  This prevents systemd restart loops when the old process
                  hasn't fully exited yet.
     """
+    # Warn if starting with the default HERMES_HOME while named profiles exist.
+    # Without --profile (or active_profile), the gateway silently uses the root
+    # config instead of a profile's config — a common source of wrong-model bugs.
+    _hermes_home = get_hermes_home()
+    _default_home = Path.home() / ".hermes"
+    _profiles_dir = _default_home / "profiles"
+    if Path(_hermes_home).resolve() == _default_home.resolve() and _profiles_dir.is_dir():
+        _profiles = [p.name for p in _profiles_dir.iterdir() if p.is_dir()]
+        if _profiles:
+            print(
+                f"\n⚠️  Warning: starting gateway with the default config (~/.hermes/config.yaml).\n"
+                f"   Profiles detected: {', '.join(_profiles)}\n"
+                f"   If you meant to run a profile gateway, use:\n"
+                f"     hermes --profile <name> gateway run\n"
+                f"   or set a default: echo <name> > ~/.hermes/active_profile\n",
+                file=sys.stderr,
+            )
+
     sys.path.insert(0, str(PROJECT_ROOT))
     
     from gateway.run import start_gateway

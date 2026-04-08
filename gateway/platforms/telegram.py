@@ -2926,8 +2926,8 @@ class TelegramAdapter(BasePlatformAdapter):
             chat_id=str(chat.id),
             chat_name=chat.title or (chat.full_name if hasattr(chat, "full_name") else None),
             chat_type=chat_type,
-            user_id=str(user.id) if user else None,
-            user_name=user.full_name if user else None,
+            user_id=str(user.id) if user else (str(chat.id) if chat_type == "dm" else None),
+            user_name=user.full_name if user else (chat.full_name if hasattr(chat, "full_name") and chat_type == "dm" else None),
             thread_id=thread_id_str,
             chat_topic=chat_topic,
         )

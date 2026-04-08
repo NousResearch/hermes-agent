@@ -309,11 +309,13 @@ class _MatrixApprovalPrompt:
         session_key: str,
         chat_id: str,
         message_id: str,
+        request_id: str = "",
         resolved: bool = False,
         requester_user_id: str | None = None,
         expires_at: float | None = None,
     ):
         self.session_key = session_key
+        self.request_id = request_id
         self.chat_id = chat_id
         self.message_id = message_id
         self.resolved = resolved
@@ -2006,6 +2008,7 @@ class MatrixAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         requester_user_id = str((metadata or {}).get("requester_user_id") or "") or None
+        request_id = str((metadata or {}).get("approval_request_id") or "")
         cmd_preview = command[:2000] + "..." if len(command) > 2000 else command
         text = (
             "⚠️ **Dangerous command requires approval**\n"
@@ -2024,6 +2027,7 @@ class MatrixAdapter(BasePlatformAdapter):
 
         prompt = _MatrixApprovalPrompt(
             session_key=session_key,
+            request_id=request_id,
             chat_id=chat_id,
             message_id=result.message_id,
             requester_user_id=requester_user_id,
@@ -3265,7 +3269,12 @@ class MatrixAdapter(BasePlatformAdapter):
                 try:
                     from tools.approval import resolve_gateway_approval
 
-                    count = resolve_gateway_approval(prompt.session_key, choice)
+                    if prompt.request_id:
+                        count = resolve_gateway_approval(
+                            prompt.session_key, choice, request_id=prompt.request_id
+                        )
+                    else:
+                        count = resolve_gateway_approval(prompt.session_key, choice)
                     if count:
                         prompt.resolved = True
                         self._approval_prompts_by_event.pop(reacts_to, None)

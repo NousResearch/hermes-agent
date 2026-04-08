@@ -16,6 +16,7 @@ import os
 import html as _html
 import re
 import threading
+import uuid
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Set, Any
 
@@ -644,7 +645,7 @@ class TelegramAdapter(BasePlatformAdapter):
         # Interactive model picker state per chat
         self._model_picker_state: Dict[str, dict] = {}
         # Approval button state: message_id → session_key
-        self._approval_state: Dict[int, str] = {}
+        self._approval_state: Dict[str, Dict[str, str]] = {}
         # Slash-confirm button state: confirm_id → session_key (for /reload-mcp
         # and any other slash-confirm prompts; see GatewayRunner._request_slash_confirm).
         self._slash_confirm_state: Dict[str, str] = {}
@@ -4588,22 +4589,18 @@ class TelegramAdapter(BasePlatformAdapter):
             # Resolve thread context for thread replies
             thread_id = self._metadata_thread_id(metadata)
 
-            # We'll use the message_id as part of callback_data to look up session_key
-            # Send a placeholder first, then update — or use a counter.
-            # Simpler: use a monotonic counter to generate short IDs.
-            import itertools
-            if not hasattr(self, "_approval_counter"):
-                self._approval_counter = itertools.count(1)
-            approval_id = next(self._approval_counter)
+            request_id = str((metadata or {}).get("approval_request_id") or "")
+            if not request_id:
+                request_id = uuid.uuid4().hex
 
             keyboard = InlineKeyboardMarkup([
                 [
-                    InlineKeyboardButton("✅ Allow Once", callback_data=f"ea:once:{approval_id}"),
-                    InlineKeyboardButton("✅ Session", callback_data=f"ea:session:{approval_id}"),
+                    InlineKeyboardButton("✅ Allow Once", callback_data=f"ea:once:{request_id}"),
+                    InlineKeyboardButton("✅ Session", callback_data=f"ea:session:{request_id}"),
                 ],
                 [
-                    InlineKeyboardButton("✅ Always", callback_data=f"ea:always:{approval_id}"),
-                    InlineKeyboardButton("❌ Deny", callback_data=f"ea:deny:{approval_id}"),
+                    InlineKeyboardButton("✅ Always", callback_data=f"ea:always:{request_id}"),
+                    InlineKeyboardButton("❌ Deny", callback_data=f"ea:deny:{request_id}"),
                 ],
             ])
 
@@ -4629,7 +4626,7 @@ class TelegramAdapter(BasePlatformAdapter):
             msg = await self._send_message_with_thread_fallback(**kwargs)
 
             # Store session_key keyed by approval_id for the callback handler
-            self._approval_state[approval_id] = session_key
+            self._approval_state[request_id] = {"session_key": session_key}
 
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
@@ -5352,11 +5349,7 @@ class TelegramAdapter(BasePlatformAdapter):
             parts = data.split(":", 2)
             if len(parts) == 3:
                 choice = parts[1]  # once, session, always, deny
-                try:
-                    approval_id = int(parts[2])
-                except (ValueError, IndexError):
-                    await query.answer(text="Invalid approval data.")
-                    return
+                request_id = parts[2]
 
                 # Only authorized users may click approval buttons.
                 caller_id = str(getattr(query.from_user, "id", ""))
@@ -5370,8 +5363,10 @@ class TelegramAdapter(BasePlatformAdapter):
                     await query.answer(text="⛔ You are not authorized to approve commands.")
                     return
 
-                session_key = self._approval_state.pop(approval_id, None)
-                if not session_key:
+                state = self._approval_state.get(request_id)
+                if state is None and request_id.isdigit():
+                    state = self._approval_state.get(int(request_id))
+                if not state:
                     await query.answer(text="This approval has already been resolved.")
                     return
 
@@ -5400,7 +5395,14 @@ class TelegramAdapter(BasePlatformAdapter):
                 # Resolve the approval — unblocks the agent thread
                 try:
                     from tools.approval import resolve_gateway_approval
-                    count = resolve_gateway_approval(session_key, choice)
+                    if isinstance(state, dict):
+                        session_key = state["session_key"]
+                        count = resolve_gateway_approval(
+                            session_key, choice, request_id=request_id
+                        )
+                    else:
+                        session_key = state
+                        count = resolve_gateway_approval(session_key, choice)
                     logger.info(
                         "Telegram button resolved %d approval(s) for session %s (choice=%s, user=%s)",
                         count, session_key, choice, user_display,
@@ -5408,6 +5410,10 @@ class TelegramAdapter(BasePlatformAdapter):
                 except Exception as exc:
                     logger.error("Failed to resolve gateway approval from Telegram button: %s", exc)
                     count = 0
+                finally:
+                    self._approval_state.pop(request_id, None)
+                    if request_id.isdigit():
+                        self._approval_state.pop(int(request_id), None)
 
                 # Resume the typing indicator — paused when the approval was
                 # sent (gateway/run.py).  The text /approve and /deny paths

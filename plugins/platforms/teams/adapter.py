@@ -27,6 +27,7 @@ import html
 import json
 import logging
 import os
+import uuid
 from typing import Any, Dict, Optional
 from urllib.parse import quote
 
@@ -1006,8 +1007,9 @@ class TeamsAdapter(BasePlatformAdapter):
         data = action.data or {}
         hermes_action = data.get("hermes_action", "")
         session_key = data.get("session_key", "")
+        request_id = data.get("request_id", "")
 
-        if not hermes_action or not session_key:
+        if not hermes_action or not session_key or not request_id:
             return InvokeResponse(
                 status=200,
                 body=AdaptiveCardActionMessageResponse(value="Unknown action."),
@@ -1066,7 +1068,11 @@ class TeamsAdapter(BasePlatformAdapter):
                 ),
             )
 
-        resolve_gateway_approval(session_key, choice)
+        if not resolve_gateway_approval(session_key, choice, request_id=request_id):
+            return InvokeResponse(
+                status=200,
+                body=AdaptiveCardActionMessageResponse(value="Approval already resolved or expired."),
+            )
 
         label_map = {
             "once": "✅ Allowed (once)",
@@ -1104,9 +1110,13 @@ class TeamsAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Teams app not initialized")
 
         cmd_preview = command[:2000] + "..." if len(command) > 2000 else command
+        request_id = str((metadata or {}).get("approval_request_id") or "")
+        if not request_id:
+            request_id = uuid.uuid4().hex
         # Truncated for button data payload — just enough to reconstruct the card body.
         btn_data_base = {
             "session_key": session_key,
+            "request_id": request_id,
             "cmd": command[:200] + "..." if len(command) > 200 else command,
             "desc": description,
         }

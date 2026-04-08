@@ -103,10 +103,20 @@ document.addEventListener('DOMContentLoaded', () => {
         return messageDiv;
     }
 
+    function escapeHTML(str) {
+        const p = document.createElement('p');
+        p.textContent = str;
+        return p.innerHTML;
+    }
+
     function formatContent(content) {
         // Basic markdown-like formatting (could use a library like marked.js)
         if (!content) return '';
-        return content
+
+        // Escape HTML first for security
+        let escaped = escapeHTML(content);
+
+        return escaped
             .replace(/\n/g, '<br>')
             .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
             .replace(/\*(.*?)\*/g, '<em>$1</em>')

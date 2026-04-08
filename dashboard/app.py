@@ -3,12 +3,16 @@ import json
 import uuid
 import logging
 import threading
+import sys
 from typing import List, Dict, Any, Optional
-from fastapi import FastAPI, Request, Form, BackgroundTasks, HTTPException
+from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
+
+# Add current directory to path so we can import from root
+sys.path.append(os.getcwd())
 
 # Hermes imports
 from run_agent import AIAgent
@@ -195,3 +199,7 @@ async def chat_stream(message: str, session_id: Optional[str] = None):
             yield f"data: {json.dumps(item)}\n\n"
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)

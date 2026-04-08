@@ -48,8 +48,23 @@ hermes              # start chatting!
 
 ## Getting Started
 
+### 🖥️ Web Dashboard (Beginner Friendly)
+If you prefer a visual interface over the terminal, Hermes now includes a Web Dashboard.
+
+**To start it:**
+- **Windows:** Double-click `start.bat` (Requires Python installed on Windows)
+- **Linux/macOS:** Run `./start.sh` or `hermes dashboard`
+
+This will open a modern chat interface in your browser with full support for:
+- 🌗 **Dark/Light Themes**
+- 🇫🇷 **French & English Language**
+- 📜 **Session History**
+- 💡 **Function Tooltips**
+
+### ⌨️ CLI Usage
 ```bash
 hermes              # Interactive CLI — start a conversation
+hermes dashboard    # Start the Web Dashboard
 hermes model        # Choose your LLM provider and model
 hermes tools        # Configure which tools are enabled
 hermes config set   # Set individual config values

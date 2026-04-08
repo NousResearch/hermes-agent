@@ -299,6 +299,27 @@ compression:
   # Options: "auto", "openrouter", "nous", "main"
   # summary_provider: "auto"
 
+# ── Tool Result Budgets (context-aware output limits) ─────────────────────
+# Prevents tool results from exceeding the model's available context.
+# Budgets scale automatically with context window size — on large-context
+# models (128K+) this is effectively invisible. On small models (32K),
+# it prevents context overflow by paginating large results to disk.
+tool_budgets:
+  # Max single tool result as a fraction of the model's context window.
+  # Budget = max(floor, min(baseline, available_context))
+  result_pct: 0.25
+
+  # Max total tool output in one turn as a fraction of context.
+  turn_pct: 0.50
+
+  # Minimum useful result size in tokens. Below this threshold, results
+  # are paginated to disk rather than returning a useless sliver.
+  floor_tokens: 2000
+
+  # When context is tight, try compacting conversation history before
+  # accepting a small budget. Frees up room for a more useful result.
+  compact_before_spill: true
+
 # =============================================================================
 # Auxiliary Models (Advanced — Experimental)
 # =============================================================================

@@ -39,9 +39,7 @@ export const HOTKEYS: [string, string][] = [
 ]
 
 export const INTERPOLATION_RE = /\{!(.+?)\}/g
-
 export const LONG_MSG = 300
-export const MAX_CTX = 128_000
 
 export const PLACEHOLDERS = [
   'Ask me anything…',

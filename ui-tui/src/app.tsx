@@ -38,14 +38,14 @@ import type {
   Usage
 } from './types.js'
 
+// ── Constants ────────────────────────────────────────────────────────
+
 const PLACEHOLDER = pick(PLACEHOLDERS)
 const PASTE_TOKEN_RE = /\[\[paste:(\d+)\]\]/g
-const EXCERPT_CHAR_LIMIT = 1200
-const EXCERPT_LINE_LIMIT = 14
-const LARGE_PASTE_CHAR_LIMIT = 8000
-const LARGE_PASTE_LINE_LIMIT = 80
-const SMALL_PASTE_CHAR_LIMIT = 400
-const SMALL_PASTE_LINE_LIMIT = 4
+
+const SMALL_PASTE = { chars: 400, lines: 4 }
+const LARGE_PASTE = { chars: 8000, lines: 80 }
+const EXCERPT = { chars: 1200, lines: 14 }
 
 const SECRET_PATTERNS = [
   /AKIA[0-9A-Z]{16}/g,
@@ -57,24 +57,18 @@ const SECRET_PATTERNS = [
   /\b(?:api[_-]?key|token|secret)\b\s*[:=]\s*["']?[A-Za-z0-9_-]{12,}/gi
 ]
 
-const introMsg = (info: SessionInfo): Msg => ({
-  role: 'system',
-  text: '',
-  kind: 'intro',
-  info
-})
+// ── Pure helpers ─────────────────────────────────────────────────────
+
+const introMsg = (info: SessionInfo): Msg => ({ role: 'system', text: '', kind: 'intro', info })
 
 const classifyPaste = (text: string): PendingPaste['kind'] => {
-  const t = text.toLowerCase()
-  const lines = text.split('\n')
-
-  if (/error|warn|traceback|exception|stack|debug|\[\d{2}:\d{2}:\d{2}\]/.test(t)) {
+  if (/error|warn|traceback|exception|stack|debug|\[\d{2}:\d{2}:\d{2}\]/i.test(text)) {
     return 'log'
   }
 
   if (
     /```|function\s+\w+|class\s+\w+|import\s+.+from|const\s+\w+\s*=|def\s+\w+\(|<\w+/.test(text) ||
-    lines.filter(line => /[{}()[\];<>]/.test(line)).length >= 3
+    text.split('\n').filter(l => /[{}()[\];<>]/.test(l)).length >= 3
   ) {
     return 'code'
   }
@@ -83,26 +77,32 @@ const classifyPaste = (text: string): PendingPaste['kind'] => {
 }
 
 const redactSecrets = (text: string) => {
-  let output = text
   let redactions = 0
 
-  for (const pattern of SECRET_PATTERNS) {
-    output = output.replace(pattern, value => {
-      redactions += 1
+  const cleaned = SECRET_PATTERNS.reduce(
+    (t, pat) =>
+      t.replace(pat, val => {
+        redactions++
 
-      if (value.includes(':') || value.includes('=')) {
-        const [head] = value.split(/[:=]/)
-        return `${head}: [REDACTED_SECRET]`
-      }
+        return val.includes(':') || val.includes('=')
+          ? `${val.split(/[:=]/)[0]}: [REDACTED_SECRET]`
+          : '[REDACTED_SECRET]'
+      }),
+    text
+  )
 
-      return '[REDACTED_SECRET]'
-    })
-  }
-
-  return { redactions, text: output }
+  return { redactions, text: cleaned }
 }
 
-const tokenForPaste = (id: number) => `[[paste:${id}]]`
+const pasteToken = (id: number) => `[[paste:${id}]]`
+
+const stripTokens = (text: string, re: RegExp) =>
+  text
+    .replace(re, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim()
+
+// ── StatusRule ────────────────────────────────────────────────────────
 
 function StatusRule({
   cols,
@@ -119,7 +119,6 @@ function StatusRule({
 }) {
   const label = parts.filter(Boolean).join(' · ')
   const lead = String(parts[0] ?? '')
-  const fill = Math.max(0, cols - label.length - 5)
 
   return (
     <Text color={color}>
@@ -128,10 +127,22 @@ function StatusRule({
         <Text color={statusColor}>{parts[0]}</Text>
         {label.slice(lead.length)}
       </Text>
-      {' ' + '─'.repeat(fill)}
+      {' ' + '─'.repeat(Math.max(0, cols - label.length - 5))}
     </Text>
   )
 }
+
+// ── PromptBox ────────────────────────────────────────────────────────
+
+function PromptBox({ children, color }: { children: React.ReactNode; color: string }) {
+  return (
+    <Box borderColor={color} borderStyle="round" flexDirection="column" marginTop={1} paddingX={1}>
+      {children}
+    </Box>
+  )
+}
+
+// ── App ──────────────────────────────────────────────────────────────
 
 export function App({ gw }: { gw: GatewayClient }) {
   const { exit } = useApp()
@@ -150,6 +161,8 @@ export function App({ gw }: { gw: GatewayClient }) {
       stdout.off('resize', sync)
     }
   }, [stdout])
+
+  // ── State ────────────────────────────────────────────────────────
 
   const [input, setInput] = useState('')
   const [inputBuf, setInputBuf] = useState<string[]>([])
@@ -179,7 +192,10 @@ export function App({ gw }: { gw: GatewayClient }) {
   const [pastes, setPastes] = useState<PendingPaste[]>([])
   const [pasteReview, setPasteReview] = useState<{ largeIds: number[]; text: string } | null>(null)
   const [streaming, setStreaming] = useState('')
+  const [bgTasks, setBgTasks] = useState<Set<string>>(new Set())
   const [catalog, setCatalog] = useState<SlashCatalog | null>(null)
+
+  // ── Refs ─────────────────────────────────────────────────────────
 
   const activityIdRef = useRef(0)
   const buf = useRef('')
@@ -190,14 +206,24 @@ export function App({ gw }: { gw: GatewayClient }) {
   const lastStatusNoteRef = useRef('')
   const protocolWarnedRef = useRef(false)
   const pasteCounterRef = useRef(0)
+  const colsRef = useRef(cols)
+  colsRef.current = cols
+
+  // ── Hooks ────────────────────────────────────────────────────────
 
   const { queueRef, queueEditRef, queuedDisplay, queueEditIdx, enqueue, dequeue, replaceQ, setQueueEdit, syncQueue } =
     useQueue()
-
   const { historyRef, historyIdx, setHistoryIdx, historyDraftRef, pushHistory } = useInputHistory()
+  const { completions, compIdx, setCompIdx, compReplace } = useCompletion(input, blocked(), gw)
+
+  function blocked() {
+    return !!(clarify || approval || pasteReview || picker || secret || sudo)
+  }
 
   const empty = !messages.length
-  const blocked = !!(clarify || approval || pasteReview || picker || secret || sudo)
+  const isBlocked = blocked()
+
+  // ── Resize RPC ───────────────────────────────────────────────────
 
   useEffect(() => {
     if (!sid || !stdout) {
@@ -212,7 +238,7 @@ export function App({ gw }: { gw: GatewayClient }) {
     }
   }, [sid, stdout]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  const { completions, compIdx, setCompIdx, compReplace } = useCompletion(input, blocked, gw)
+  // ── Core actions ─────────────────────────────────────────────────
 
   const appendMessage = useCallback((msg: Msg) => {
     setMessages(prev => [...prev, msg])
@@ -231,13 +257,11 @@ export function App({ gw }: { gw: GatewayClient }) {
         return prev
       }
 
-      activityIdRef.current += 1
+      activityIdRef.current++
+
       return [...prev, { id: activityIdRef.current, text, tone }].slice(-8)
     })
   }, [])
-
-  const colsRef = useRef(cols)
-  colsRef.current = cols
 
   const rpc = useCallback(
     (method: string, params: Record<string, unknown> = {}) =>
@@ -245,38 +269,6 @@ export function App({ gw }: { gw: GatewayClient }) {
         sys(`error: ${e.message}`)
       }),
     [gw, sys]
-  )
-
-  const newSession = useCallback(
-    (msg?: string) =>
-      rpc('session.create', { cols: colsRef.current }).then((r: any) => {
-        if (!r) {
-          return
-        }
-
-        setSid(r.session_id)
-        setHistoryItems([])
-        setMessages([])
-        setPastes([])
-        setActivity([])
-        setUsage(ZERO)
-        setStatus('ready')
-        setIntroCollapsed(false)
-        lastStatusNoteRef.current = ''
-        protocolWarnedRef.current = false
-
-        if (r.info) {
-          setInfo(r.info)
-          appendHistory(introMsg(r.info))
-        } else {
-          setInfo(null)
-        }
-
-        if (msg) {
-          sys(msg)
-        }
-      }),
-    [appendHistory, rpc, sys]
   )
 
   const idle = () => {
@@ -309,6 +301,48 @@ export function App({ gw }: { gw: GatewayClient }) {
     historyDraftRef.current = ''
   }
 
+  const resetSession = () => {
+    setSid(null as any) // will be set by caller
+    setHistoryItems([])
+    setMessages([])
+    setPastes([])
+    setActivity([])
+    setBgTasks(new Set())
+    setIntroCollapsed(false)
+    setUsage(ZERO)
+    lastStatusNoteRef.current = ''
+    protocolWarnedRef.current = false
+  }
+
+  // ── Session management ───────────────────────────────────────────
+
+  const newSession = useCallback(
+    (msg?: string) =>
+      rpc('session.create', { cols: colsRef.current }).then((r: any) => {
+        if (!r) {
+          return
+        }
+
+        resetSession()
+        setSid(r.session_id)
+        setStatus('ready')
+
+        if (r.info) {
+          setInfo(r.info)
+          appendHistory(introMsg(r.info))
+        } else {
+          setInfo(null)
+        }
+
+        if (msg) {
+          sys(msg)
+        }
+      }),
+    [appendHistory, rpc, sys]
+  )
+
+  // ── Paste pipeline ───────────────────────────────────────────────
+
   const listPasteIds = useCallback((text: string) => {
     const ids = new Set<number>()
 
@@ -330,12 +364,13 @@ export function App({ gw }: { gw: GatewayClient }) {
       const usedIds = new Set<number>()
       let redactions = 0
 
-      const resolved = text.replace(PASTE_TOKEN_RE, (_match, rawId: string) => {
+      const resolved = text.replace(PASTE_TOKEN_RE, (_m, rawId: string) => {
         const id = parseInt(rawId, 10)
         const paste = byId.get(id)
 
         if (!paste) {
           missingIds.add(id)
+
           return `[missing paste:${id}]`
         }
 
@@ -351,41 +386,33 @@ export function App({ gw }: { gw: GatewayClient }) {
         const lines = cleaned.text.split('\n')
 
         if (paste.mode === 'excerpt') {
-          const clippedLines = lines.slice(0, EXCERPT_LINE_LIMIT)
-          let excerpt = clippedLines.join('\n')
+          let excerpt = lines.slice(0, EXCERPT.lines).join('\n')
 
-          if (excerpt.length > EXCERPT_CHAR_LIMIT) {
-            excerpt = excerpt.slice(0, EXCERPT_CHAR_LIMIT).trimEnd() + '…'
+          if (excerpt.length > EXCERPT.chars) {
+            excerpt = excerpt.slice(0, EXCERPT.chars).trimEnd() + '…'
           }
 
-          const isTruncated = lines.length > EXCERPT_LINE_LIMIT || cleaned.text.length > excerpt.length
-          const truncLabel = isTruncated ? `\n…[paste #${id} truncated]` : ''
+          const truncated = lines.length > EXCERPT.lines || cleaned.text.length > excerpt.length
+          const tail = truncated ? `\n…[paste #${id} truncated]` : ''
 
-          return `[paste #${id} excerpt]\n\`\`\`${lang}\n${excerpt}${truncLabel}\n\`\`\``
+          return `[paste #${id} excerpt]\n\`\`\`${lang}\n${excerpt}${tail}\n\`\`\``
         }
 
         return `[paste #${id} attached · ${paste.lineCount} lines]\n\`\`\`${lang}\n${cleaned.text}\n\`\`\``
       })
 
-      return {
-        missingIds: [...missingIds],
-        redactions,
-        text: resolved,
-        usedIds: [...usedIds]
-      }
+      return { missingIds: [...missingIds], redactions, text: resolved, usedIds: [...usedIds] }
     },
     [pastes]
   )
 
   const handleTextPaste = useCallback(
     ({ cursor, text, value }: { cursor: number; text: string; value: string }) => {
-      pasteCounterRef.current += 1
+      pasteCounterRef.current++
       const id = pasteCounterRef.current
-      const charCount = text.length
       const lineCount = text.split('\n').length
-      const mode: PasteMode =
-        lineCount > SMALL_PASTE_LINE_LIMIT || charCount > SMALL_PASTE_CHAR_LIMIT ? 'attach' : 'excerpt'
-      const token = tokenForPaste(id)
+      const mode: PasteMode = lineCount > SMALL_PASTE.lines || text.length > SMALL_PASTE.chars ? 'attach' : 'excerpt'
+      const token = pasteToken(id)
       const lead = cursor > 0 && !/\s/.test(value[cursor - 1] ?? '') ? ' ' : ''
       const tail = cursor < value.length && !/\s/.test(value[cursor] ?? '') ? ' ' : ''
       const insert = `${lead}${token}${tail}`
@@ -394,7 +421,7 @@ export function App({ gw }: { gw: GatewayClient }) {
         [
           ...prev,
           {
-            charCount,
+            charCount: text.length,
             createdAt: Date.now(),
             id,
             kind: classifyPaste(text),
@@ -404,22 +431,22 @@ export function App({ gw }: { gw: GatewayClient }) {
           }
         ].slice(-24)
       )
+
       pushActivity(`captured ${lineCount}L paste as ${token} (${mode})`)
 
-      return {
-        cursor: cursor + insert.length,
-        value: value.slice(0, cursor) + insert + value.slice(cursor)
-      }
+      return { cursor: cursor + insert.length, value: value.slice(0, cursor) + insert + value.slice(cursor) }
     },
     [pushActivity]
   )
+
+  // ── Send ─────────────────────────────────────────────────────────
 
   const send = (text: string) => {
     const payload = resolvePasteTokens(text)
 
     if (payload.missingIds.length) {
-      setStatus('missing paste token')
       pushActivity(`missing paste token(s): ${payload.missingIds.join(', ')}`, 'warn')
+
       return
     }
 
@@ -435,6 +462,7 @@ export function App({ gw }: { gw: GatewayClient }) {
     setStatus('running…')
     buf.current = ''
     interruptedRef.current = false
+
     gw.request('prompt.submit', { session_id: sid, text: payload.text }).catch((e: Error) => {
       inflightPasteIdsRef.current = []
       sys(`error: ${e.message}`)
@@ -447,6 +475,7 @@ export function App({ gw }: { gw: GatewayClient }) {
     appendMessage({ role: 'user', text: `!${cmd}` })
     setBusy(true)
     setStatus('running…')
+
     gw.request('shell.exec', { command: cmd })
       .then((r: any) => {
         const out = [r.stdout, r.stderr].filter(Boolean).join('\n').trim()
@@ -500,10 +529,11 @@ export function App({ gw }: { gw: GatewayClient }) {
   const interpolate = (text: string, then: (result: string) => void) => {
     setStatus('interpolating…')
     const matches = [...text.matchAll(new RegExp(INTERPOLATION_RE.source, 'g'))]
+
     Promise.all(
-      matches.map(match =>
+      matches.map(m =>
         gw
-          .request('shell.exec', { command: match[1]! })
+          .request('shell.exec', { command: m[1]! })
           .then((r: any) => [r.stdout, r.stderr].filter(Boolean).join('\n').trim())
           .catch(() => '(error)')
       )
@@ -518,6 +548,8 @@ export function App({ gw }: { gw: GatewayClient }) {
     })
   }
 
+  // ── Dispatch ─────────────────────────────────────────────────────
+
   const dispatchSubmission = useCallback(
     (full: string, allowLarge = false) => {
       if (!full.trim() || !sid) {
@@ -531,36 +563,37 @@ export function App({ gw }: { gw: GatewayClient }) {
         historyDraftRef.current = ''
       }
 
-      // Slash commands and shell — route immediately, no paste logic needed
       if (full.startsWith('/') && slashRef.current(full)) {
         clearInput()
+
         return
       }
 
       if (full.startsWith('!')) {
         clearInput()
         shellExec(full.slice(1).trim())
+
         return
       }
 
-      // Paste token validation for non-command text
-      const missing = resolvePasteTokens(full).missingIds
+      const { missingIds } = resolvePasteTokens(full)
 
-      if (missing.length) {
-        setStatus('missing paste token')
-        pushActivity(`missing paste token(s): ${missing.join(', ')}`, 'warn')
+      if (missingIds.length) {
+        pushActivity(`missing paste token(s): ${missingIds.join(', ')}`, 'warn')
+
         return
       }
 
       const largeIds = listPasteIds(full).filter(id => {
-        const paste = pastes.find(p => p.id === id)
+        const p = pastes.find(x => x.id === id)
 
-        return !!paste && (paste.charCount >= LARGE_PASTE_CHAR_LIMIT || paste.lineCount >= LARGE_PASTE_LINE_LIMIT)
+        return !!p && (p.charCount >= LARGE_PASTE.chars || p.lineCount >= LARGE_PASTE.lines)
       })
 
       if (!allowLarge && largeIds.length) {
         setPasteReview({ largeIds, text: full })
         setStatus(`review large paste (${largeIds.length})`)
+
         return
       }
 
@@ -579,6 +612,7 @@ export function App({ gw }: { gw: GatewayClient }) {
           syncQueue()
           gw.request('session.interrupt', { session_id: sid }).catch(() => {})
           setStatus('interrupting…')
+
           return
         }
 
@@ -594,16 +628,19 @@ export function App({ gw }: { gw: GatewayClient }) {
       if (busy) {
         if (hasInterpolation(full)) {
           interpolate(full, enqueue)
+
           return
         }
 
         enqueue(full)
+
         return
       }
 
       if (hasInterpolation(full)) {
         setBusy(true)
         interpolate(full, send)
+
         return
       }
 
@@ -613,13 +650,15 @@ export function App({ gw }: { gw: GatewayClient }) {
     [busy, enqueue, gw, listPasteIds, pastes, resolvePasteTokens, sid]
   )
 
+  // ── Input handling ───────────────────────────────────────────────
+
   useInput((ch, key) => {
-    if (blocked) {
+    if (isBlocked) {
       if (pasteReview) {
         if (key.return) {
-          const text = pasteReview.text
+          const t = pasteReview.text
           setPasteReview(null)
-          dispatchSubmission(text, true)
+          dispatchSubmission(t, true)
         } else if (key.escape || (key.ctrl && ch === 'c')) {
           setPasteReview(null)
           setStatus('ready')
@@ -669,14 +708,12 @@ export function App({ gw }: { gw: GatewayClient }) {
 
     if (key.upArrow && !inputBuf.length) {
       if (queueRef.current.length) {
-        const len = queueRef.current.length
-        const idx = queueEditIdx === null ? 0 : (queueEditIdx + 1) % len
+        const idx = queueEditIdx === null ? 0 : (queueEditIdx + 1) % queueRef.current.length
         setQueueEdit(idx)
         setHistoryIdx(null)
         setInput(queueRef.current[idx] ?? '')
       } else if (historyRef.current.length) {
-        const hist = historyRef.current
-        const idx = historyIdx === null ? hist.length - 1 : Math.max(0, historyIdx - 1)
+        const idx = historyIdx === null ? historyRef.current.length - 1 : Math.max(0, historyIdx - 1)
 
         if (historyIdx === null) {
           historyDraftRef.current = input
@@ -684,7 +721,7 @@ export function App({ gw }: { gw: GatewayClient }) {
 
         setHistoryIdx(idx)
         setQueueEdit(null)
-        setInput(hist[idx] ?? '')
+        setInput(historyRef.current[idx] ?? '')
       }
 
       return
@@ -692,21 +729,22 @@ export function App({ gw }: { gw: GatewayClient }) {
 
     if (key.downArrow && !inputBuf.length) {
       if (queueRef.current.length) {
-        const len = queueRef.current.length
-        const idx = queueEditIdx === null ? len - 1 : (queueEditIdx - 1 + len) % len
+        const idx =
+          queueEditIdx === null
+            ? queueRef.current.length - 1
+            : (queueEditIdx - 1 + queueRef.current.length) % queueRef.current.length
         setQueueEdit(idx)
         setHistoryIdx(null)
         setInput(queueRef.current[idx] ?? '')
       } else if (historyIdx !== null) {
-        const hist = historyRef.current
         const next = historyIdx + 1
 
-        if (next >= hist.length) {
+        if (next >= historyRef.current.length) {
           setHistoryIdx(null)
           setInput(historyDraftRef.current)
         } else {
           setHistoryIdx(next)
-          setInput(hist[next] ?? '')
+          setInput(historyRef.current[next] ?? '')
         }
       }
 
@@ -717,10 +755,10 @@ export function App({ gw }: { gw: GatewayClient }) {
       if (busy && sid) {
         interruptedRef.current = true
         gw.request('session.interrupt', { session_id: sid }).catch(() => {})
-
         const partial = (streaming || buf.current).trimStart()
+
         if (partial) {
-          appendMessage({ role: 'assistant' as const, text: partial + '\n\n*[interrupted]*' })
+          appendMessage({ role: 'assistant', text: partial + '\n\n*[interrupted]*' })
         } else {
           sys('interrupted')
         }
@@ -763,6 +801,8 @@ export function App({ gw }: { gw: GatewayClient }) {
     }
   })
 
+  // ── Gateway events ───────────────────────────────────────────────
+
   const onEvent = useCallback(
     (ev: GatewayEvent) => {
       const p = ev.payload as any
@@ -770,7 +810,9 @@ export function App({ gw }: { gw: GatewayClient }) {
       switch (ev.type) {
         case 'gateway.ready':
           if (p?.skin) {
-            setTheme(fromSkin(p.skin.colors ?? {}, p.skin.branding ?? {}, p.skin.banner_logo ?? '', p.skin.banner_hero ?? ''))
+            setTheme(
+              fromSkin(p.skin.colors ?? {}, p.skin.branding ?? {}, p.skin.banner_logo ?? '', p.skin.banner_hero ?? '')
+            )
           }
 
           rpc('commands.catalog', {})
@@ -850,24 +892,21 @@ export function App({ gw }: { gw: GatewayClient }) {
             setTools(prev => {
               const idx = prev.findIndex(t => t.name === p.name)
 
-              if (idx >= 0) {
-                return [...prev.slice(0, idx), { ...prev[idx]!, context: p.preview as string }, ...prev.slice(idx + 1)]
-              }
-
-              return prev
+              return idx >= 0
+                ? [...prev.slice(0, idx), { ...prev[idx]!, context: p.preview as string }, ...prev.slice(idx + 1)]
+                : prev
             })
           }
 
           break
-        case 'tool.start': {
-          const ctx = (p.context as string) || ''
-          setTools(prev => [...prev, { id: p.tool_id, name: p.name, context: ctx }])
+
+        case 'tool.start':
+          setTools(prev => [...prev, { id: p.tool_id, name: p.name, context: (p.context as string) || '' }])
 
           break
-        }
-
         case 'tool.complete': {
           const mark = p.error ? '✗' : '✓'
+
           setTools(prev => {
             const done = prev.find(t => t.id === p.tool_id)
             const label = TOOL_VERBS[done?.name ?? p.name] ?? done?.name ?? p.name
@@ -876,9 +915,9 @@ export function App({ gw }: { gw: GatewayClient }) {
 
             return prev.filter(t => t.id !== p.tool_id)
           })
-        }
 
           break
+        }
 
         case 'clarify.request':
           setClarify({ choices: p.choices, question: p.question, requestId: p.request_id })
@@ -905,22 +944,32 @@ export function App({ gw }: { gw: GatewayClient }) {
           break
 
         case 'background.complete':
+          setBgTasks(prev => {
+            const next = new Set(prev)
+            next.delete(p.task_id)
+
+            return next
+          })
           sys(`[bg ${p.task_id}] ${p.text}`)
 
           break
 
         case 'btw.complete':
+          setBgTasks(prev => {
+            const next = new Set(prev)
+            next.delete(`btw:${p.task_id ?? 'x'}`)
+
+            return next
+          })
           sys(`[btw] ${p.text}`)
 
           break
 
         case 'message.delta':
-          if (!p?.text || interruptedRef.current) {
-            break
+          if (p?.text && !interruptedRef.current) {
+            buf.current += p.rendered ?? p.text
+            setStreaming(buf.current.trimStart())
           }
-
-          buf.current += p.rendered ?? p.text
-          setStreaming(buf.current.trimStart())
 
           break
         case 'message.complete': {
@@ -934,7 +983,7 @@ export function App({ gw }: { gw: GatewayClient }) {
           }
 
           if (!wasInterrupted) {
-            appendMessage({ role: 'assistant' as const, text: (p?.rendered ?? p?.text ?? buf.current).trimStart() })
+            appendMessage({ role: 'assistant', text: (p?.rendered ?? p?.text ?? buf.current).trimStart() })
           }
 
           buf.current = ''
@@ -965,8 +1014,8 @@ export function App({ gw }: { gw: GatewayClient }) {
 
           break
       }
+      // eslint-disable-next-line react-hooks/exhaustive-deps
     },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     [appendMessage, dequeue, newSession, pushActivity, send, sys]
   )
 
@@ -985,6 +1034,8 @@ export function App({ gw }: { gw: GatewayClient }) {
     }
   }, [gw, onEvent, onExit])
 
+  // ── Slash commands ───────────────────────────────────────────────
+
   const slash = useCallback(
     (cmd: string): boolean => {
       const [name, ...rest] = cmd.slice(1).split(/\s+/)
@@ -994,11 +1045,11 @@ export function App({ gw }: { gw: GatewayClient }) {
         case 'help': {
           const rows = catalog?.pairs ?? []
           const cap = 52
-          const lines = rows.slice(0, cap).map(([c, d]) => `    ${c.padEnd(16)} ${d}`)
+
           sys(
             [
               '  Commands:',
-              ...lines,
+              ...rows.slice(0, cap).map(([c, d]) => `    ${c.padEnd(16)} ${d}`),
               rows.length > cap ? `    … ${rows.length - cap} more` : '',
               '',
               '  Hotkeys:',
@@ -1032,14 +1083,14 @@ export function App({ gw }: { gw: GatewayClient }) {
 
           return true
 
-        case 'compact':
-          setCompact(c => (arg ? true : !c))
-          sys(arg ? `compact on, focus: ${arg}` : `compact ${compact ? 'off' : 'on'}`)
+        case 'resume':
+          setPicker(true)
 
           return true
 
-        case 'resume':
-          setPicker(true)
+        case 'compact':
+          setCompact(c => (arg ? true : !c))
+          sys(arg ? `compact on, focus: ${arg}` : `compact ${compact ? 'off' : 'on'}`)
 
           return true
         case 'copy': {
@@ -1066,30 +1117,24 @@ export function App({ gw }: { gw: GatewayClient }) {
           }
 
           if (arg === 'list') {
-            if (!pastes.length) {
-              sys('no text pastes')
-            } else {
-              sys(
-                pastes
-                  .map(
-                    p =>
-                      `#${p.id} ${p.mode} · ${p.lineCount}L · ${p.kind} · ${compactPreview(p.text, 60) || '(empty)'}`
-                  )
-                  .join('\n')
-              )
-            }
+            sys(
+              pastes.length
+                ? pastes
+                    .map(
+                      p =>
+                        `#${p.id} ${p.mode} · ${p.lineCount}L · ${p.kind} · ${compactPreview(p.text, 60) || '(empty)'}`
+                    )
+                    .join('\n')
+                : 'no text pastes'
+            )
 
             return true
           }
 
           if (arg === 'clear') {
             setPastes([])
-            setInput(v => v.replace(PASTE_TOKEN_RE, '').replace(/\s{2,}/g, ' ').trim())
-            setInputBuf(prev =>
-              prev
-                .map(line => line.replace(PASTE_TOKEN_RE, '').replace(/\s{2,}/g, ' ').trim())
-                .filter(Boolean)
-            )
+            setInput(v => stripTokens(v, PASTE_TOKEN_RE))
+            setInputBuf(prev => prev.map(l => stripTokens(l, PASTE_TOKEN_RE)).filter(Boolean))
             pushActivity('cleared paste shelf')
 
             return true
@@ -1100,18 +1145,14 @@ export function App({ gw }: { gw: GatewayClient }) {
 
             if (!id || !pastes.some(p => p.id === id)) {
               sys('usage: /paste drop <id>')
+
               return true
             }
 
+            const re = new RegExp(`\\s*\\[\\[paste:${id}\\]\\]\\s*`, 'g')
             setPastes(prev => prev.filter(p => p.id !== id))
-            setInput(v => v.replace(new RegExp(`\\s*\\[\\[paste:${id}\\]\\]\\s*`, 'g'), ' ').replace(/\s{2,}/g, ' ').trim())
-            setInputBuf(prev =>
-              prev
-                .map(line =>
-                  line.replace(new RegExp(`\\s*\\[\\[paste:${id}\\]\\]\\s*`, 'g'), ' ').replace(/\s{2,}/g, ' ').trim()
-                )
-                .filter(Boolean)
-            )
+            setInput(v => stripTokens(v, re))
+            setInputBuf(prev => prev.map(l => stripTokens(l, re)).filter(Boolean))
             pushActivity(`dropped paste #${id}`)
 
             return true
@@ -1124,6 +1165,7 @@ export function App({ gw }: { gw: GatewayClient }) {
 
             if (!id || !['attach', 'excerpt', 'inline'].includes(mode) || !pastes.some(p => p.id === id)) {
               sys('usage: /paste mode <id> <attach|excerpt|inline>')
+
               return true
             }
 
@@ -1136,12 +1178,11 @@ export function App({ gw }: { gw: GatewayClient }) {
           sys('usage: /paste [list|mode <id> <attach|excerpt|inline>|drop <id>|clear]')
 
           return true
-        case 'logs': {
-          const limit = Math.min(80, Math.max(1, parseInt(arg, 10) || 20))
-          sys(gw.getLogTail(limit) || 'no gateway logs')
+
+        case 'logs':
+          sys(gw.getLogTail(Math.min(80, Math.max(1, parseInt(arg, 10) || 20))) || 'no gateway logs')
 
           return true
-        }
 
         case 'statusbar':
 
@@ -1216,20 +1257,33 @@ export function App({ gw }: { gw: GatewayClient }) {
           return true
 
         case 'background':
+
         case 'bg':
           if (!arg) {
             sys('/background <prompt>')
+
             return true
           }
-          rpc('prompt.background', { session_id: sid, text: arg }).then((r: any) => sys(`bg ${r.task_id} started`))
+
+          rpc('prompt.background', { session_id: sid, text: arg }).then((r: any) => {
+            setBgTasks(prev => new Set(prev).add(r.task_id))
+            sys(`bg ${r.task_id} started`)
+          })
+
           return true
 
         case 'btw':
           if (!arg) {
             sys('/btw <question>')
+
             return true
           }
-          rpc('prompt.btw', { session_id: sid, text: arg }).then(() => sys('btw running…'))
+
+          rpc('prompt.btw', { session_id: sid, text: arg }).then(() => {
+            setBgTasks(prev => new Set(prev).add('btw:x'))
+            sys('btw running…')
+          })
+
           return true
 
         case 'model':
@@ -1241,37 +1295,45 @@ export function App({ gw }: { gw: GatewayClient }) {
               setInfo(prev => (prev ? { ...prev, model: r.value } : prev))
             })
           }
+
           return true
 
         case 'yolo':
           rpc('config.set', { key: 'yolo' }).then((r: any) => sys(`yolo ${r.value === '1' ? 'on' : 'off'}`))
+
           return true
 
         case 'reasoning':
           rpc('config.set', { key: 'reasoning', value: arg || 'medium' }).then((r: any) => sys(`reasoning: ${r.value}`))
+
           return true
 
         case 'verbose':
           rpc('config.set', { key: 'verbose', value: arg || 'cycle' }).then((r: any) => sys(`verbose: ${r.value}`))
+
           return true
 
         case 'personality':
           rpc('config.set', { key: 'personality', value: arg }).then((r: any) =>
             sys(`personality: ${r.value || 'default'}`)
           )
+
           return true
 
         case 'compress':
           rpc('session.compress', { session_id: sid }).then((r: any) =>
             sys(`compressed${r.usage?.total ? ' · ' + fmtK(r.usage.total) + ' tok' : ''}`)
           )
+
           return true
 
         case 'stop':
           rpc('process.stop', {}).then((r: any) => sys(`killed ${r.killed ?? 0} process(es)`))
+
           return true
 
         case 'branch':
+
         case 'fork':
           rpc('session.branch', { session_id: sid, name: arg }).then((r: any) => {
             if (r?.session_id) {
@@ -1281,57 +1343,73 @@ export function App({ gw }: { gw: GatewayClient }) {
               sys(`branched → ${r.title}`)
             }
           })
+
           return true
 
         case 'reload-mcp':
+
         case 'reload_mcp':
           rpc('reload.mcp', { session_id: sid }).then(() => sys('MCP reloaded'))
+
           return true
 
         case 'title':
           rpc('session.title', { session_id: sid, ...(arg ? { title: arg } : {}) }).then((r: any) =>
             sys(`title: ${r.title || '(none)'}`)
           )
+
           return true
 
         case 'usage':
           rpc('session.usage', { session_id: sid }).then((r: any) => {
-            if (r) { setUsage({ input: r.input ?? 0, output: r.output ?? 0, total: r.total ?? 0, calls: r.calls ?? 0 }) }
-            sys(`${fmtK(r?.input ?? 0)} in · ${fmtK(r?.output ?? 0)} out · ${fmtK(r?.total ?? 0)} total · ${r?.calls ?? 0} calls`)
+            if (r) {
+              setUsage({ input: r.input ?? 0, output: r.output ?? 0, total: r.total ?? 0, calls: r.calls ?? 0 })
+            }
+
+            sys(
+              `${fmtK(r?.input ?? 0)} in · ${fmtK(r?.output ?? 0)} out · ${fmtK(r?.total ?? 0)} total · ${r?.calls ?? 0} calls`
+            )
           })
+
           return true
 
         case 'save':
           rpc('session.save', { session_id: sid }).then((r: any) => sys(`saved: ${r.file}`))
+
           return true
 
         case 'history':
           rpc('session.history', { session_id: sid }).then((r: any) => sys(`${r.count} messages`))
+
           return true
 
         case 'profile':
           rpc('config.get', { key: 'profile' }).then((r: any) => sys(r.display || r.home))
+
           return true
 
         case 'voice':
-          if (arg === 'on' || arg === 'off') {
-            rpc('voice.toggle', { action: arg }).then((r: any) => sys(`voice ${r.enabled ? 'on' : 'off'}`))
-          } else {
-            rpc('voice.toggle', { action: 'status' }).then((r: any) => sys(`voice: ${r.enabled ? 'on' : 'off'}`))
-          }
+          rpc('voice.toggle', { action: arg === 'on' || arg === 'off' ? arg : 'status' }).then((r: any) =>
+            sys(`voice${arg === 'on' || arg === 'off' ? '' : ':'} ${r.enabled ? 'on' : 'off'}`)
+          )
+
           return true
 
         case 'insights':
           rpc('insights.get', { days: parseInt(arg) || 30 }).then((r: any) =>
             sys(`${r.days}d: ${r.sessions} sessions, ${r.messages} messages`)
           )
-          return true
 
+          return true
         case 'rollback': {
           const [sub, ...rArgs] = (arg || 'list').split(/\s+/)
+
           if (!sub || sub === 'list') {
             rpc('rollback.list', { session_id: sid }).then((r: any) => {
-              if (!r.checkpoints?.length) { return sys('no checkpoints') }
+              if (!r.checkpoints?.length) {
+                return sys('no checkpoints')
+              }
+
               sys(r.checkpoints.map((c: any, i: number) => `  ${i} ${c.hash?.slice(0, 8)} ${c.message}`).join('\n'))
             })
           } else {
@@ -1340,34 +1418,33 @@ export function App({ gw }: { gw: GatewayClient }) {
               sys(r.rendered || r.diff || r.message || 'done')
             )
           }
+
           return true
         }
 
         case 'browser': {
-          const action = arg || 'status'
-          const [act, ...bArgs] = action.split(/\s+/)
+          const [act, ...bArgs] = (arg || 'status').split(/\s+/)
           rpc('browser.manage', { action: act, ...(bArgs[0] ? { url: bArgs[0] } : {}) }).then((r: any) =>
             sys(r.connected ? `browser: ${r.url}` : 'browser: disconnected')
           )
+
           return true
         }
 
         case 'plugins':
           rpc('plugins.list', {}).then((r: any) => {
-            if (!r.plugins?.length) { return sys('no plugins') }
+            if (!r.plugins?.length) {
+              return sys('no plugins')
+            }
+
             sys(r.plugins.map((p: any) => `  ${p.name} v${p.version}${p.enabled ? '' : ' (disabled)'}`).join('\n'))
           })
+
           return true
 
         default:
           gw.request('slash.exec', { command: cmd.slice(1), session_id: sid })
-            .then((r: any) => {
-              if (r?.output) {
-                sys(r.output)
-              } else {
-                sys(`/${name}: no output`)
-              }
-            })
+            .then((r: any) => sys(r?.output || `/${name}: no output`))
             .catch(() => {
               gw.request('command.dispatch', { name: name ?? '', arg, session_id: sid })
                 .then((d: any) => {
@@ -1387,12 +1464,14 @@ export function App({ gw }: { gw: GatewayClient }) {
 
           return true
       }
+      // eslint-disable-next-line react-hooks/exhaustive-deps
     },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     [catalog, compact, gw, lastUserMsg, messages, newSession, pastes, pushActivity, rpc, send, sid, statusBar, sys]
   )
 
   slashRef.current = slash
+
+  // ── Submit ───────────────────────────────────────────────────────
 
   const submit = useCallback(
     (value: string) => {
@@ -1404,10 +1483,10 @@ export function App({ gw }: { gw: GatewayClient }) {
         if (dbl && busy && sid) {
           interruptedRef.current = true
           gw.request('session.interrupt', { session_id: sid }).catch(() => {})
-
           const partial = (streaming || buf.current).trimStart()
+
           if (partial) {
-            appendMessage({ role: 'assistant' as const, text: partial + '\n\n*[interrupted]*' })
+            appendMessage({ role: 'assistant', text: partial + '\n\n*[interrupted]*' })
           } else {
             sys('interrupted')
           }
@@ -1440,12 +1519,13 @@ export function App({ gw }: { gw: GatewayClient }) {
         return
       }
 
-      const full = [...inputBuf, value].join('\n')
-      dispatchSubmission(full)
+      dispatchSubmission([...inputBuf, value].join('\n'))
+      // eslint-disable-next-line react-hooks/exhaustive-deps
     },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     [dequeue, dispatchSubmission, inputBuf, sid]
   )
+
+  // ── Derived ──────────────────────────────────────────────────────
 
   const statusColor =
     status === 'ready'
@@ -1455,6 +1535,8 @@ export function App({ gw }: { gw: GatewayClient }) {
         : status === 'interrupted'
           ? theme.color.warn
           : theme.color.dim
+
+  // ── Render ───────────────────────────────────────────────────────
 
   return (
     <Box flexDirection="column">
@@ -1483,26 +1565,27 @@ export function App({ gw }: { gw: GatewayClient }) {
 
       <Box flexDirection="column" paddingX={1}>
         {streaming && (
-          <Box flexDirection="column">
-            <MessageLine cols={cols} compact={compact} msg={{ role: 'assistant', text: streaming }} t={theme} />
-          </Box>
+          <MessageLine cols={cols} compact={compact} msg={{ role: 'assistant', text: streaming }} t={theme} />
         )}
 
-        {(thinking || tools.length > 0) && (!streaming || tools.length > 0) && <Thinking key={turnKey} reasoning={reasoning} t={theme} tools={tools} />}
+        {(thinking || tools.length > 0) && (!streaming || tools.length > 0) && (
+          <Thinking key={turnKey} reasoning={reasoning} t={theme} tools={tools} />
+        )}
+
         <ActivityLane items={activity} t={theme} />
 
         {pasteReview && (
-          <Box borderColor={theme.color.warn} borderStyle="round" flexDirection="column" marginTop={1} paddingX={1}>
+          <PromptBox color={theme.color.warn}>
             <Text bold color={theme.color.warn}>
               Review large paste before send
             </Text>
             <Text color={theme.color.dim}>pastes: {pasteReview.largeIds.map(id => `#${id}`).join(', ')}</Text>
             <Text color={theme.color.dim}>Enter to send · Esc/Ctrl+C to cancel</Text>
-          </Box>
+          </PromptBox>
         )}
 
         {clarify && (
-          <Box borderColor={theme.color.bronze} borderStyle="round" flexDirection="column" marginTop={1} paddingX={1}>
+          <PromptBox color={theme.color.bronze}>
             <ClarifyPrompt
               onAnswer={answer => {
                 gw.request('clarify.respond', { answer, request_id: clarify.requestId }).catch(() => {})
@@ -1512,11 +1595,11 @@ export function App({ gw }: { gw: GatewayClient }) {
               req={clarify}
               t={theme}
             />
-          </Box>
+          </PromptBox>
         )}
 
         {approval && (
-          <Box borderColor={theme.color.bronze} borderStyle="round" flexDirection="column" marginTop={1} paddingX={1}>
+          <PromptBox color={theme.color.bronze}>
             <ApprovalPrompt
               onChoice={choice => {
                 gw.request('approval.respond', { choice, session_id: sid }).catch(() => {})
@@ -1527,42 +1610,42 @@ export function App({ gw }: { gw: GatewayClient }) {
               req={approval}
               t={theme}
             />
-          </Box>
+          </PromptBox>
         )}
 
         {sudo && (
-          <Box borderColor={theme.color.bronze} borderStyle="round" flexDirection="column" marginTop={1} paddingX={1}>
+          <PromptBox color={theme.color.bronze}>
             <MaskedPrompt
               icon="🔐"
               label="sudo password required"
-              onSubmit={password => {
-                gw.request('sudo.respond', { request_id: sudo.requestId, password }).catch(() => {})
+              onSubmit={pw => {
+                gw.request('sudo.respond', { request_id: sudo.requestId, password: pw }).catch(() => {})
                 setSudo(null)
                 setStatus('running…')
               }}
               t={theme}
             />
-          </Box>
+          </PromptBox>
         )}
 
         {secret && (
-          <Box borderColor={theme.color.bronze} borderStyle="round" flexDirection="column" marginTop={1} paddingX={1}>
+          <PromptBox color={theme.color.bronze}>
             <MaskedPrompt
               icon="🔑"
               label={secret.prompt}
-              onSubmit={value => {
-                gw.request('secret.respond', { request_id: secret.requestId, value }).catch(() => {})
+              onSubmit={val => {
+                gw.request('secret.respond', { request_id: secret.requestId, value: val }).catch(() => {})
                 setSecret(null)
                 setStatus('running…')
               }}
               sub={`for ${secret.envVar}`}
               t={theme}
             />
-          </Box>
+          </PromptBox>
         )}
 
         {picker && (
-          <Box borderColor={theme.color.bronze} borderStyle="round" flexDirection="column" marginTop={1} paddingX={1}>
+          <PromptBox color={theme.color.bronze}>
             <SessionPicker
               gw={gw}
               onCancel={() => setPicker(false)}
@@ -1571,21 +1654,14 @@ export function App({ gw }: { gw: GatewayClient }) {
                 setStatus('resuming…')
                 gw.request('session.resume', { cols, session_id: id })
                   .then((r: any) => {
+                    resetSession()
                     setSid(r.session_id)
-                  setHistoryItems([])
-                    setMessages([])
                     setInfo(r.info ?? null)
-                    setPastes([])
-                    setActivity([])
-                    setIntroCollapsed(false)
 
                     if (r.info) {
                       appendHistory(introMsg(r.info))
                     }
 
-                    setUsage(ZERO)
-                    lastStatusNoteRef.current = ''
-                    protocolWarnedRef.current = false
                     sys(`resumed session (${r.message_count} messages)`)
                     setStatus('ready')
                   })
@@ -1596,10 +1672,16 @@ export function App({ gw }: { gw: GatewayClient }) {
               }}
               t={theme}
             />
-          </Box>
+          </PromptBox>
         )}
 
         <QueuedMessages cols={cols} queued={queuedDisplay} queueEditIdx={queueEditIdx} t={theme} />
+
+        {bgTasks.size > 0 && (
+          <Text color={theme.color.dim} dimColor>
+            {bgTasks.size} background {bgTasks.size === 1 ? 'task' : 'tasks'} running · /stop to cancel
+          </Text>
+        )}
 
         <Text> </Text>
 
@@ -1608,12 +1690,18 @@ export function App({ gw }: { gw: GatewayClient }) {
             color={theme.color.bronze}
             cols={cols}
             dimColor={theme.color.dim}
-            parts={[status, sid, info?.model?.split('/').pop(), usage.total > 0 && `${fmtK(usage.total)} tok`]}
+            parts={[
+              status,
+              sid,
+              info?.model?.split('/').pop(),
+              bgTasks.size > 0 && `${bgTasks.size} bg`,
+              usage.total > 0 && `${fmtK(usage.total)} tok`
+            ]}
             statusColor={statusColor}
           />
         )}
 
-        {!blocked && (
+        {!isBlocked && (
           <Box>
             <Box width={3}>
               <Text bold color={theme.color.gold}>

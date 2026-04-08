@@ -24,9 +24,8 @@ export interface ClarifyReq {
 export interface Msg {
   role: Role
   text: string
-  kind?: 'intro' | 'tool-active'
+  kind?: 'intro'
   info?: SessionInfo
-  toolId?: string
 }
 
 export type Role = 'assistant' | 'system' | 'tool' | 'user'
@@ -52,7 +51,6 @@ export interface Usage {
 export interface SudoReq {
   requestId: string
 }
-
 export interface SecretReq {
   envVar: string
   prompt: string
@@ -72,7 +70,6 @@ export interface PendingPaste {
   text: string
 }
 
-/** From `commands.catalog` — mirrors hermes_cli.commands COMMANDS + SUBCOMMANDS + skills. */
 export interface SlashCatalog {
   canon: Record<string, string>
   pairs: [string, string][]

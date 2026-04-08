@@ -20,7 +20,6 @@ export const MessageLine = memo(function MessageLine({
   t: Theme
 }) {
   const { body, glyph, prefix } = ROLE[msg.role](t)
-  const contentWidth = Math.max(20, cols - 5)
 
   if (msg.role === 'tool') {
     return (
@@ -61,7 +60,7 @@ export const MessageLine = memo(function MessageLine({
           </Text>
         </Box>
 
-        <Box width={contentWidth}>{content}</Box>
+        <Box width={Math.max(20, cols - 5)}>{content}</Box>
       </Box>
     </Box>
   )

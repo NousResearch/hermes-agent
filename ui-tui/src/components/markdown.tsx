@@ -70,6 +70,21 @@ export function Md({ compact, t, text }: { compact?: boolean; t: Theme; text: st
   const lines = text.split('\n')
   const nodes: ReactNode[] = []
   let i = 0
+  let prevKind: 'blank' | 'code' | 'heading' | 'list' | 'paragraph' | 'quote' | 'table' | null = null
+
+  const gap = () => {
+    if (nodes.length && prevKind !== 'blank') {
+      nodes.push(<Text key={`gap-${nodes.length}`}>{' '}</Text>)
+      prevKind = 'blank'
+    }
+  }
+
+  const start = (kind: Exclude<typeof prevKind, null | 'blank'>) => {
+    if (prevKind && prevKind !== 'blank' && prevKind !== kind) {
+      gap()
+    }
+    prevKind = kind
+  }
 
   while (i < lines.length) {
     const line = lines[i]!
@@ -81,7 +96,15 @@ export function Md({ compact, t, text }: { compact?: boolean; t: Theme; text: st
       continue
     }
 
+    if (!line.trim()) {
+      gap()
+      i++
+
+      continue
+    }
+
     if (line.startsWith('```')) {
+      start('code')
       const lang = line.slice(3).trim()
       const block: string[] = []
 
@@ -115,6 +138,7 @@ export function Md({ compact, t, text }: { compact?: boolean; t: Theme; text: st
     const heading = line.match(/^#{1,3}\s+(.*)/)
 
     if (heading) {
+      start('heading')
       nodes.push(
         <Text bold color={t.color.amber} key={key}>
           {heading[1]}
@@ -128,6 +152,7 @@ export function Md({ compact, t, text }: { compact?: boolean; t: Theme; text: st
     const bullet = line.match(/^\s*[-*]\s(.*)/)
 
     if (bullet) {
+      start('list')
       nodes.push(
         <Text key={key}>
           <Text color={t.color.dim}> • </Text>
@@ -142,6 +167,7 @@ export function Md({ compact, t, text }: { compact?: boolean; t: Theme; text: st
     const numbered = line.match(/^\s*(\d+)\.\s(.*)/)
 
     if (numbered) {
+      start('list')
       nodes.push(
         <Text key={key}>
           <Text color={t.color.dim}> {numbered[1]}. </Text>
@@ -154,6 +180,7 @@ export function Md({ compact, t, text }: { compact?: boolean; t: Theme; text: st
     }
 
     if (line.match(/^>\s?/)) {
+      start('quote')
       const quoteLines: string[] = []
 
       while (i < lines.length && lines[i]!.match(/^>\s?/)) {
@@ -176,6 +203,7 @@ export function Md({ compact, t, text }: { compact?: boolean; t: Theme; text: st
     }
 
     if (line.includes('|') && line.trim().startsWith('|')) {
+      start('table')
       const tableRows: string[][] = []
 
       while (i < lines.length && lines[i]!.trim().startsWith('|')) {
@@ -210,7 +238,9 @@ export function Md({ compact, t, text }: { compact?: boolean; t: Theme; text: st
       continue
     }
 
+    start('paragraph')
     nodes.push(<MdInline key={key} t={t} text={line} />)
+
     i++
   }
 

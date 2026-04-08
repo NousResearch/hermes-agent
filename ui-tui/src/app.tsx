@@ -1,28 +1,23 @@
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { mkdirSync, mkdtempSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
+import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { Box, Text, useApp, useInput, useStdout } from 'ink'
-import TextInput from 'ink-text-input'
+import { Box, Static, Text, useApp, useInput, useStdout } from 'ink'
+import { TextInput } from './components/textInput.js'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-
-import { AltScreen } from './altScreen.js'
 import { Banner, SessionPanel } from './components/branding.js'
-import { CommandPalette } from './components/commandPalette.js'
 import { MaskedPrompt } from './components/maskedPrompt.js'
 import { MessageLine } from './components/messageLine.js'
 import { ApprovalPrompt, ClarifyPrompt } from './components/prompts.js'
-import { estimateQueuedRows, QueuedMessages } from './components/queuedMessages.js'
+import { QueuedMessages } from './components/queuedMessages.js'
 import { SessionPicker } from './components/sessionPicker.js'
 import { Thinking } from './components/thinking.js'
-import { HOTKEYS, INTERPOLATION_RE, MAX_CTX, PLACEHOLDERS, TOOL_VERBS, ZERO } from './constants.js'
+import { HOTKEYS, INTERPOLATION_RE, PLACEHOLDERS, TOOL_VERBS, ZERO } from './constants.js'
 import { type GatewayClient, type GatewayEvent } from './gatewayClient.js'
 import * as inputHistory from './lib/history.js'
-import { upsert } from './lib/messages.js'
 import { writeOsc52Clipboard } from './lib/osc52.js'
-import { paletteForLine, tabAdvance } from './lib/slash.js'
-import { estimateRows, flat, fmtK, hasInterpolation, pick, userDisplay } from './lib/text.js'
+import { fmtK, hasInterpolation, pick } from './lib/text.js'
 import { DEFAULT_THEME, fromSkin, type Theme } from './theme.js'
 import type {
   ActiveTool,
@@ -37,16 +32,49 @@ import type {
 } from './types.js'
 
 const PLACEHOLDER = pick(PLACEHOLDERS)
+const PASTE_REF_RE = /\[Pasted text #\d+: \d+ lines \u2192 (.+?)\]/g
+
+const introMsg = (info: SessionInfo): Msg => ({
+  role: 'system',
+  text: '',
+  kind: 'intro',
+  info
+})
+
+function extractTabWord(input: string): string | null {
+  const m = input.match(/((?:\.\.?\/|~\/|\/|@)[^\s]*)$/)
+  return m?.[1] ?? null
+}
+
+function StatusRule({ cols, color, dimColor, statusColor, parts }: {
+  cols: number; color: string; dimColor: string; statusColor: string; parts: (string | false | undefined | null)[]
+}) {
+  const label = parts.filter(Boolean).join(' · ')
+  const fill = Math.max(0, cols - label.length - 5)
+
+  return (
+    <Text color={color}>
+      {'─ '}<Text color={dimColor}><Text color={statusColor}>{parts[0]}</Text>{label.slice(String(parts[0] || '').length)}</Text>{' ' + '─'.repeat(fill)}
+    </Text>
+  )
+}
 
 export function App({ gw }: { gw: GatewayClient }) {
   const { exit } = useApp()
   const { stdout } = useStdout()
-  const cols = stdout?.columns ?? 80
-  const rows = stdout?.rows ?? 24
+  const [cols, setCols] = useState(stdout?.columns ?? 80)
+
+  useEffect(() => {
+    if (!stdout) return
+    const sync = () => setCols(stdout.columns ?? 80)
+    stdout.on('resize', sync)
+    return () => { stdout.off('resize', sync) }
+  }, [stdout])
 
   const [input, setInput] = useState('')
   const [inputBuf, setInputBuf] = useState<string[]>([])
   const [messages, setMessages] = useState<Msg[]>([])
+  const [historyItems, setHistoryItems] = useState<Msg[]>([])
   const [status, setStatus] = useState('summoning hermes…')
   const [sid, setSid] = useState<string | null>(null)
   const [theme, setTheme] = useState<Theme>(DEFAULT_THEME)
@@ -67,12 +95,12 @@ export function App({ gw }: { gw: GatewayClient }) {
   const [lastUserMsg, setLastUserMsg] = useState('')
   const [queueEditIdx, setQueueEditIdx] = useState<number | null>(null)
   const [historyIdx, setHistoryIdx] = useState<number | null>(null)
-  const [scrollOffset, setScrollOffset] = useState(0)
+  const [streaming, setStreaming] = useState('')
   const [queuedDisplay, setQueuedDisplay] = useState<string[]>([])
   const [catalog, setCatalog] = useState<SlashCatalog | null>(null)
 
   const buf = useRef('')
-  const stickyRef = useRef(true)
+  const interruptedRef = useRef(false)
   const queueRef = useRef<string[]>([])
   const historyRef = useRef<string[]>(inputHistory.load())
   const historyDraftRef = useRef('')
@@ -81,6 +109,7 @@ export function App({ gw }: { gw: GatewayClient }) {
   const lastStatusNoteRef = useRef('')
   const protocolWarnedRef = useRef(false)
   const stderrWarnedRef = useRef(false)
+  const pasteCounterRef = useRef(0)
 
   const empty = !messages.length
   const blocked = !!(clarify || approval || sudo || secret || picker)
@@ -120,12 +149,6 @@ export function App({ gw }: { gw: GatewayClient }) {
   }
 
   useEffect(() => {
-    if (stickyRef.current) {
-      setScrollOffset(0)
-    }
-  }, [messages.length])
-
-  useEffect(() => {
     if (!sid || !stdout) {
       return
     }
@@ -138,55 +161,52 @@ export function App({ gw }: { gw: GatewayClient }) {
     }
   }, [sid, stdout]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  const paletteMatches = useMemo(
-    () => (!blocked && input.startsWith('/') ? paletteForLine(input, catalog) : []),
-    [blocked, catalog, input]
-  )
+  const [completions, setCompletions] = useState<{ text: string; display: string; meta: string }[]>([])
+  const [compIdx, setCompIdx] = useState(0)
+  const [compReplace, setCompReplace] = useState(0)
+  const compInputRef = useRef('')
 
-  const queueRows = useMemo(
-    () => estimateQueuedRows(queuedDisplay.length, queueEditIdx),
-    [queueEditIdx, queuedDisplay.length]
-  )
+  useEffect(() => {
+    if (blocked) { if (completions.length) { setCompletions([]); setCompIdx(0) }; return }
+    if (input === compInputRef.current) return
+    compInputRef.current = input
 
-  const thinkingRows = thinking ? Math.max(1, tools.length || 1) + (reasoning || thinkingText ? 1 : 0) : 0
-  const paletteRows = paletteMatches.length ? paletteMatches.length + 1 : 0
-  const footerRows = statusBar ? 1 : 0
-  const msgBudget = Math.max(3, rows - 2 - (empty ? 0 : 2) - thinkingRows - queueRows - paletteRows - footerRows - 2)
+    const isSlash = input.startsWith('/')
+    const pathWord = !isSlash ? extractTabWord(input) : null
 
-  const viewport = useMemo(() => {
-    if (!messages.length) {
-      return { above: 0, end: 0, start: 0 }
+    if (!isSlash && !pathWord) {
+      if (completions.length) { setCompletions([]); setCompIdx(0) }
+      return
     }
 
-    const end = Math.max(0, messages.length - scrollOffset)
-    const width = Math.max(20, cols - 5)
+    const t = setTimeout(() => {
+      if (compInputRef.current !== input) return
 
-    let budget = msgBudget
-    let start = end
+      const req = isSlash
+        ? gw.request('complete.slash', { text: input })
+        : gw.request('complete.path', { word: pathWord })
 
-    for (let i = end - 1; i >= 0 && budget > 0; i--) {
-      const msg = messages[i]!
-      const margin = msg.role === 'user' && i > 0 && messages[i - 1]?.role !== 'user' ? 1 : 0
-      const text = msg.role === 'user' ? userDisplay(msg.text) : msg.text
-      budget -= margin + estimateRows(text, width, compact && msg.role === 'assistant')
+      req.then((r: any) => {
+        if (compInputRef.current !== input) return
+        setCompletions(r?.items ?? [])
+        setCompIdx(0)
+        setCompReplace(isSlash ? (r?.replace_from ?? 1) : input.length - (pathWord?.length ?? 0))
+      }).catch(() => {})
+    }, 60)
 
-      if (budget >= 0) {
-        start = i
-      }
-    }
+    return () => clearTimeout(t)
+  }, [input, blocked, gw]) // eslint-disable-line react-hooks/exhaustive-deps
 
-    if (start === end && end > 0) {
-      start = end - 1
-    }
+  const appendMessage = useCallback((msg: Msg) => {
+    setMessages(prev => [...prev, msg])
+    setHistoryItems(prev => [...prev, msg])
+  }, [])
 
-    if (start > 0 && messages[start - 1]?.role === 'user') {
-      start--
-    }
+  const appendHistory = useCallback((msg: Msg) => {
+    setHistoryItems(prev => [...prev, msg])
+  }, [])
 
-    return { above: start, end, start }
-  }, [cols, compact, messages, msgBudget, scrollOffset])
-
-  const sys = useCallback((text: string) => setMessages(prev => [...prev, { role: 'system' as const, text }]), [])
+  const sys = useCallback((text: string) => appendMessage({ role: 'system' as const, text }), [appendMessage])
 
   const colsRef = useRef(cols)
   colsRef.current = cols
@@ -214,11 +234,18 @@ export function App({ gw }: { gw: GatewayClient }) {
         protocolWarnedRef.current = false
         stderrWarnedRef.current = false
 
+        if (r.info) {
+          setInfo(r.info)
+          appendHistory(introMsg(r.info))
+        } else {
+          setInfo(null)
+        }
+
         if (msg) {
           sys(msg)
         }
       }),
-    [rpc, sys]
+    [appendHistory, rpc, sys]
   )
 
   const idle = () => {
@@ -231,6 +258,8 @@ export function App({ gw }: { gw: GatewayClient }) {
     setSecret(null)
     setReasoning('')
     setThinkingText('')
+    setStreaming('')
+    buf.current = ''
   }
 
   const die = () => {
@@ -246,36 +275,28 @@ export function App({ gw }: { gw: GatewayClient }) {
     historyDraftRef.current = ''
   }
 
-  const scrollBot = () => {
-    setScrollOffset(0)
-    stickyRef.current = true
-  }
-
-  const scrollUp = (n: number) => {
-    setScrollOffset(prev => Math.min(Math.max(0, messages.length - 1), prev + n))
-    stickyRef.current = false
-  }
-
-  const scrollDown = (n: number) => {
-    setScrollOffset(prev => {
-      const v = Math.max(0, prev - n)
-
-      if (!v) {
-        stickyRef.current = true
-      }
-
-      return v
+  const expandPastes = (text: string) =>
+    text.replace(PASTE_REF_RE, (m, path) => {
+      try { return readFileSync(path, 'utf8') } catch { return m }
     })
+
+  const collapsePaste = (text: string) => {
+    pasteCounterRef.current += 1
+    const lineCount = text.split('\n').length
+    const pasteDir = join(process.env.HERMES_HOME ?? join(homedir(), '.hermes'), 'pastes')
+    mkdirSync(pasteDir, { recursive: true })
+    const pasteFile = join(pasteDir, `paste_${pasteCounterRef.current}_${new Date().toTimeString().slice(0, 8).replace(/:/g, '')}.txt`)
+    writeFileSync(pasteFile, text, 'utf8')
+    return `[Pasted text #${pasteCounterRef.current}: ${lineCount} lines → ${pasteFile}]`
   }
 
   const send = (text: string) => {
     setLastUserMsg(text)
-    setMessages(prev => [...prev, { role: 'user', text }])
-    scrollBot()
-    setStatus('thinking…')
+    appendMessage({ role: 'user', text })
     setBusy(true)
     buf.current = ''
-    gw.request('prompt.submit', { session_id: sid, text }).catch((e: Error) => {
+    interruptedRef.current = false
+    gw.request('prompt.submit', { session_id: sid, text: expandPastes(text) }).catch((e: Error) => {
       sys(`error: ${e.message}`)
       setStatus('ready')
       setBusy(false)
@@ -283,7 +304,7 @@ export function App({ gw }: { gw: GatewayClient }) {
   }
 
   const shellExec = (cmd: string) => {
-    setMessages(prev => [...prev, { role: 'user', text: `!${cmd}` }])
+    appendMessage({ role: 'user', text: `!${cmd}` })
     setBusy(true)
     setStatus('running…')
     gw.request('shell.exec', { command: cmd })
@@ -377,25 +398,14 @@ export function App({ gw }: { gw: GatewayClient }) {
       return
     }
 
-    if (!inputBuf.length && key.tab && input.startsWith('/')) {
-      const next = tabAdvance(input, catalog)
-
-      if (next) {
-        setInput(next)
-      }
-
+    if (completions.length && input && (key.upArrow || key.downArrow)) {
+      setCompIdx(i => key.upArrow ? (i - 1 + completions.length) % completions.length : (i + 1) % completions.length)
       return
     }
 
-    if (key.pageUp) {
-      scrollUp(5)
-
-      return
-    }
-
-    if (key.pageDown) {
-      scrollDown(5)
-
+    if (!inputBuf.length && key.tab && completions.length) {
+      const pick = completions[compIdx]
+      if (pick) setInput(input.slice(0, compReplace) + pick.text)
       return
     }
 
@@ -447,7 +457,11 @@ export function App({ gw }: { gw: GatewayClient }) {
 
     if (key.ctrl && ch === 'c') {
       if (busy && sid) {
+        interruptedRef.current = true
         gw.request('session.interrupt', { session_id: sid }).catch(() => {})
+        if (buf.current.trim()) {
+          appendMessage({ role: 'assistant' as const, text: buf.current.trimStart() })
+        }
         idle()
         setStatus('interrupted')
         sys('interrupted by user')
@@ -465,16 +479,9 @@ export function App({ gw }: { gw: GatewayClient }) {
       die()
     }
 
-    if (key.ctrl && ch === 'l') {
-      setMessages([])
-    }
 
     if (key.ctrl && ch === 'g') {
       return openEditor()
-    }
-
-    if (key.ctrl && ch === 'v') {
-      return paste()
     }
 
     if (key.escape) {
@@ -513,7 +520,6 @@ export function App({ gw }: { gw: GatewayClient }) {
 
         case 'session.info':
           setInfo(p as SessionInfo)
-
           break
 
         case 'thinking.delta':
@@ -528,7 +534,6 @@ export function App({ gw }: { gw: GatewayClient }) {
           setBusy(true)
           setReasoning('')
           setThinkingText('')
-          setStatus('thinking…')
 
           break
 
@@ -545,11 +550,6 @@ export function App({ gw }: { gw: GatewayClient }) {
           break
 
         case 'gateway.stderr':
-          if (!stderrWarnedRef.current) {
-            stderrWarnedRef.current = true
-            sys('gateway stderr captured · /logs to inspect')
-          }
-
           break
 
         case 'gateway.protocol_error':
@@ -570,33 +570,34 @@ export function App({ gw }: { gw: GatewayClient }) {
           break
 
         case 'tool.generating':
-          if (p?.name) {
-            setStatus(`preparing ${p.name}…`)
-          }
-
           break
 
         case 'tool.progress':
           if (p?.preview) {
-            setMessages(prev =>
-              prev.at(-1)?.role === 'tool'
-                ? [...prev.slice(0, -1), { role: 'tool' as const, text: `${p.name}: ${p.preview}` }]
-                : [...prev, { role: 'tool' as const, text: `${p.name}: ${p.preview}` }]
-            )
+            setTools(prev => {
+              const idx = prev.findIndex(t => t.name === p.name)
+              if (idx >= 0) return [...prev.slice(0, idx), { ...prev[idx]!, context: p.preview as string }, ...prev.slice(idx + 1)]
+              return prev
+            })
           }
 
           break
 
-        case 'tool.start':
-          setTools(prev => [...prev, { id: p.tool_id, name: p.name }])
-          setStatus(`running ${p.name}…`)
-          setMessages(prev => [...prev, { role: 'tool', text: `${TOOL_VERBS[p.name] ?? p.name}…` }])
-
+        case 'tool.start': {
+          const ctx = (p.context as string) || ''
+          setTools(prev => [...prev, { id: p.tool_id, name: p.name, context: ctx }])
+          appendMessage({ role: 'tool', text: `${TOOL_VERBS[p.name] ?? p.name}${ctx ? '  ' + ctx : ''}` })
           break
+        }
 
         case 'tool.complete':
-          setTools(prev => prev.filter(t => t.id !== p.tool_id))
-
+          setTools(prev => {
+            const done = prev.find(t => t.id === p.tool_id)
+            const label = TOOL_VERBS[done?.name ?? p.name] ?? done?.name ?? p.name
+            const ctx = done?.context || ''
+            appendMessage({ role: 'tool', text: `${label}${ctx ? '  ' + ctx : ''} ✓` })
+            return prev.filter(t => t.id !== p.tool_id)
+          })
           break
 
         case 'clarify.request':
@@ -634,20 +635,16 @@ export function App({ gw }: { gw: GatewayClient }) {
           break
 
         case 'message.delta':
-          if (!p?.text) {
-            break
-          }
+          if (!p?.text || interruptedRef.current) break
 
           buf.current += p.rendered ?? p.text
-          setThinking(false)
-          setTools([])
-          setReasoning('')
-          setMessages(prev => upsert(prev, 'assistant', buf.current.trimStart()))
+          setStreaming(buf.current.trimStart())
 
           break
         case 'message.complete': {
           idle()
-          setMessages(prev => upsert(prev, 'assistant', (p?.rendered ?? p?.text ?? buf.current).trimStart()))
+          setStreaming('')
+          appendMessage({ role: 'assistant' as const, text: (p?.rendered ?? p?.text ?? buf.current).trimStart() })
           buf.current = ''
           setStatus('ready')
 
@@ -667,8 +664,7 @@ export function App({ gw }: { gw: GatewayClient }) {
 
           if (next) {
             setLastUserMsg(next)
-            setMessages(prev => [...prev, { role: 'user' as const, text: next }])
-            setStatus('thinking…')
+            appendMessage({ role: 'user' as const, text: next })
             setBusy(true)
             buf.current = ''
             gw.request('prompt.submit', { session_id: ev.session_id, text: next }).catch((e: Error) => {
@@ -690,7 +686,7 @@ export function App({ gw }: { gw: GatewayClient }) {
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [gw, sys, newSession]
+    [appendMessage, gw, sys, newSession]
   )
 
   useEffect(() => {
@@ -715,7 +711,6 @@ export function App({ gw }: { gw: GatewayClient }) {
           const rows = catalog?.pairs ?? []
           const cap = 52
           const lines = rows.slice(0, cap).map(([c, d]) => `    ${c.padEnd(16)} ${d}`)
-
           sys(
             [
               '  Commands:',
@@ -728,717 +723,108 @@ export function App({ gw }: { gw: GatewayClient }) {
               .filter(Boolean)
               .join('\n')
           )
-
           return true
         }
+
+        case 'quit':
+        case 'exit':
+        case 'q':
+          die()
+          return true
 
         case 'clear':
           setStatus('forging session…')
           newSession()
-
-          return true
-
-        case 'quit': // falls through
-
-        case 'exit':
-          die()
-
           return true
 
         case 'new':
           setStatus('forging session…')
           newSession('new session started')
-
-          return true
-
-        case 'branch': // falls through
-
-        case 'fork':
-          if (!sid) {
-            return true
-          }
-
-          rpc('session.branch', { session_id: sid, name: arg }).then((r: any) => {
-            setSid(r.session_id)
-            setUsage(ZERO)
-            sys(`branched → ${r.title}`)
-            setStatus('ready')
-          })
-
-          return true
-
-        case 'undo':
-          if (!sid) {
-            return true
-          }
-
-          rpc('session.undo', { session_id: sid }).then((r: any) => {
-            if (r.removed > 0) {
-              setMessages(prev => {
-                const q = [...prev]
-
-                while (q.at(-1)?.role === 'assistant' || q.at(-1)?.role === 'tool') {
-                  q.pop()
-                }
-
-                if (q.at(-1)?.role === 'user') {
-                  q.pop()
-                }
-
-                return q
-              })
-              sys(`undid ${r.removed} messages`)
-            } else {
-              sys('nothing to undo')
-            }
-          })
-
-          return true
-
-        case 'retry':
-          if (!lastUserMsg) {
-            sys('nothing to retry')
-
-            return true
-          }
-
-          if (sid) {
-            gw.request('session.undo', { session_id: sid }).catch(() => {})
-          }
-
-          setMessages(prev => {
-            const q = [...prev]
-
-            while (q.at(-1)?.role === 'assistant' || q.at(-1)?.role === 'tool') {
-              q.pop()
-            }
-
-            return q
-          })
-          send(lastUserMsg)
-
           return true
 
         case 'compact':
           setCompact(c => (arg ? true : !c))
           sys(arg ? `compact on, focus: ${arg}` : `compact ${compact ? 'off' : 'on'}`)
-
           return true
 
-        case 'compress':
-          if (!sid) {
-            return true
-          }
-
-          rpc('session.compress', { session_id: sid }).then((r: any) => {
-            sys('context compressed')
-
-            if (r.usage) {
-              setUsage(r.usage)
-            }
-          })
-
+        case 'resume':
+          if (!sid) { setPicker(true); return true }
+          setPicker(true)
           return true
 
-        case 'cost': // falls through
-
-        case 'usage':
-          sys(
-            `in: ${fmtK(usage.input)}  out: ${fmtK(usage.output)}  total: ${fmtK(usage.total)}  calls: ${usage.calls}`
-          )
-
-          return true
         case 'copy': {
           const all = messages.filter(m => m.role === 'assistant')
           const target = all[arg ? Math.min(parseInt(arg), all.length) - 1 : all.length - 1]
-
-          if (!target) {
-            sys('nothing to copy')
-
-            return true
-          }
-
+          if (!target) { sys('nothing to copy'); return true }
           writeOsc52Clipboard(target.text)
           sys('copied to clipboard')
-
           return true
         }
-
-        case 'context': {
-          const pct = Math.min(100, Math.round((usage.total / MAX_CTX) * 100))
-          const bar = Math.round((pct / 100) * 30)
-          const icon = pct < 50 ? '✓' : pct < 80 ? '⚠' : '✗'
-          sys(
-            `context: ${fmtK(usage.total)} / ${fmtK(MAX_CTX)} (${pct}%)\n[${'█'.repeat(bar)}${'░'.repeat(30 - bar)}] ${icon}`
-          )
-
-          return true
-        }
-
-        case 'config':
-          sys(
-            `model: ${info?.model ?? '?'}  session: ${sid ?? 'none'}  compact: ${compact}\ntools: ${flat(info?.tools ?? {}).length}  skills: ${flat(info?.skills ?? {}).length}`
-          )
-
-          return true
-
-        case 'status':
-          sys(
-            `session: ${sid ?? 'none'}  status: ${status}  tokens: ${fmtK(usage.input)}↑ ${fmtK(usage.output)}↓ (${usage.calls} calls)`
-          )
-
-          return true
-        case 'logs': {
-          const limit = Math.min(80, Math.max(1, parseInt(arg, 10) || 20))
-          const out = gw.getLogTail(limit)
-
-          sys(out || 'no gateway logs')
-
-          return true
-        }
-
-        case 'resume':
-          setPicker(true)
-
-          return true
-
-        case 'history':
-          if (!sid) {
-            setPicker(true)
-
-            return true
-          }
-
-          rpc('session.history', { session_id: sid }).then((r: any) =>
-            sys(`session ${sid}: ${r.count} messages in context`)
-          )
-
-          return true
-
-        case 'title':
-          if (!sid) {
-            return true
-          }
-
-          if (!arg) {
-            rpc('session.title', { session_id: sid }).then((r: any) =>
-              sys(`title: ${r.title || '(none)'}  session: ${r.session_key}`)
-            )
-
-            return true
-          }
-
-          rpc('session.title', { session_id: sid, title: arg }).then(() => sys(`title → ${arg}`))
-
-          return true
-
-        case 'tools':
-          if (!info?.tools || !Object.keys(info.tools).length) {
-            sys('no tools loaded')
-
-            return true
-          }
-
-          sys(
-            Object.entries(info.tools)
-              .map(([k, vs]) => `${k} (${vs.length}): ${vs.join(', ')}`)
-              .join('\n')
-          )
-
-          return true
-
-        case 'skills':
-          if (!arg || arg === 'list') {
-            if (!info?.skills || !Object.keys(info.skills).length) {
-              sys('no skills loaded')
-
-              return true
-            }
-
-            sys(
-              Object.entries(info.skills)
-                .map(([k, vs]) => `${k}: ${vs.join(', ')}`)
-                .join('\n')
-            )
-
-            return true
-          }
-
-          if (arg.startsWith('search ')) {
-            rpc('skills.manage', { action: 'search', query: arg.slice(7).trim() }).then((r: any) => {
-              if (!r.results?.length) {
-                sys('no results')
-
-                return
-              }
-
-              sys(r.results.map((s: any) => `  ${s.name}: ${s.description}`).join('\n'))
-            })
-
-            return true
-          }
-
-          if (arg.startsWith('install ')) {
-            rpc('skills.manage', { action: 'install', query: arg.slice(8).trim() }).then((r: any) =>
-              sys(r.installed ? `installed ${r.name}` : 'install failed')
-            )
-
-            return true
-          }
-
-          if (arg === 'browse' || arg.startsWith('browse ')) {
-            rpc('skills.manage', { action: 'browse', query: arg.slice(6).trim() }).then((r: any) => {
-              if (!r.results?.length) {
-                sys('no skills available')
-
-                return
-              }
-
-              sys(r.results.map((s: any) => `  ${s.name}: ${s.description}`).join('\n'))
-            })
-
-            return true
-          }
-
-          if (arg.startsWith('inspect ')) {
-            rpc('skills.manage', { action: 'inspect', query: arg.slice(8).trim() }).then((r: any) =>
-              sys(JSON.stringify(r.info, null, 2))
-            )
-
-            return true
-          }
-
-          sys('usage: /skills [list|search <q>|install <name>|browse|inspect <name>]')
-
-          return true
-
-        case 'verbose':
-          rpc('config.set', { key: 'verbose', value: arg || 'cycle' }).then((r: any) => sys(`verbose → ${r.value}`))
-
-          return true
-
-        case 'yolo':
-          rpc('config.set', { key: 'yolo', value: '' }).then((r: any) =>
-            sys(`yolo → ${r.value === '1' ? 'on' : 'off'}`)
-          )
-
-          return true
-
-        case 'reasoning':
-          if (!arg) {
-            sys('usage: /reasoning <none|low|medium|high|xhigh|show|hide>')
-
-            return true
-          }
-
-          rpc('config.set', { key: 'reasoning', value: arg }).then((r: any) => sys(`reasoning → ${r.value}`))
-
-          return true
-
-        case 'stop':
-          rpc('process.stop').then((r: any) => sys(`killed ${r.killed} process(es)`))
-
-          return true
-
-        case 'profile':
-          gw.request('config.get', { key: 'profile' })
-            .then((r: any) => sys(`profile: ${r.display}`))
-            .catch(() => sys(`profile: ${process.env.HERMES_HOME ?? '~/.hermes'}`))
-
-          return true
-
-        case 'save':
-          if (!sid) {
-            return true
-          }
-
-          rpc('session.save', { session_id: sid }).then((r: any) => sys(`saved to ${r.file}`))
-
-          return true
-
-        case 'provider':
-          rpc('config.get', { key: 'provider' }).then((r: any) => {
-            const lines = [`model: ${r.model}  provider: ${r.provider}`]
-
-            if (r.providers?.length) {
-              lines.push(`available: ${r.providers.join(', ')}`)
-            }
-
-            sys(lines.join('\n'))
-          })
-
-          return true
-
-        case 'prompt':
-          if (!arg) {
-            rpc('config.get', { key: 'prompt' }).then((r: any) => sys(`custom prompt: ${r.prompt || '(none set)'}`))
-
-            return true
-          }
-
-          rpc('config.set', { key: 'prompt', value: arg }).then((r: any) =>
-            sys(r.value ? `prompt set (${r.value.length} chars)` : 'prompt cleared')
-          )
-
-          return true
-
-        case 'personality':
-          if (!arg) {
-            sys('usage: /personality <name>  (concise, creative, analytical, friendly, none)')
-
-            return true
-          }
-
-          rpc('config.set', { key: 'personality', value: arg }).then((r: any) =>
-            sys(`personality → ${r.value || 'default'}`)
-          )
-
-          return true
-
-        case 'plan':
-          send(arg ? `/plan ${arg}` : 'Create a detailed plan for the current task.')
-
-          return true
-
-        case 'background':
-
-        case 'bg':
-          if (!arg) {
-            sys('usage: /background <prompt>')
-
-            return true
-          }
-
-          rpc('prompt.background', { session_id: sid, text: arg }).then((r: any) =>
-            sys(`background task ${r.task_id} started`)
-          )
-
-          return true
-
-        case 'btw':
-          if (!arg) {
-            sys('usage: /btw <question>')
-
-            return true
-          }
-
-          rpc('prompt.btw', { session_id: sid, text: arg }).then(() => sys('btw running…'))
-
-          return true
-
-        case 'queue': // falls through
-
-        case 'q':
-          if (!arg) {
-            sys(`${queueRef.current.length} queued message(s)`)
-
-            return true
-          }
-
-          enqueue(arg)
-          sys(`queued: "${arg.slice(0, 50)}${arg.length > 50 ? '…' : ''}"`)
-
-          return true
-
-        case 'rollback':
-          if (!sid) {
-            return true
-          }
-
-          if (!arg) {
-            rpc('rollback.list', { session_id: sid }).then((r: any) => {
-              if (!r.enabled) {
-                sys('checkpoints not enabled — use hermes --checkpoints')
-
-                return
-              }
-
-              if (!r.checkpoints?.length) {
-                sys('no checkpoints')
-
-                return
-              }
-
-              sys(
-                r.checkpoints
-                  .map((c: any, i: number) => `  ${i + 1}. ${c.message || c.hash.slice(0, 8)} (${c.timestamp})`)
-                  .join('\n')
-              )
-            })
-
-            return true
-          }
-
-          if (arg.startsWith('diff ')) {
-            const ref = arg.slice(5).trim()
-            rpc('rollback.list', { session_id: sid }).then((r: any) => {
-              const hash = /^\d+$/.test(ref) ? r.checkpoints?.[parseInt(ref) - 1]?.hash : ref
-
-              if (!hash) {
-                sys(`checkpoint ${ref} not found`)
-
-                return
-              }
-
-              rpc('rollback.diff', { session_id: sid, hash }).then((d: any) =>
-                sys(d.rendered || d.stat || d.diff || 'no changes')
-              )
-            })
-
-            return true
-          }
-
-          {
-            const parts = arg.trim().split(/\s+/)
-            const ref = parts[0]!
-            const file = parts[1]
-            rpc('rollback.list', { session_id: sid }).then((r: any) => {
-              const hash = /^\d+$/.test(ref) ? r.checkpoints?.[parseInt(ref) - 1]?.hash : ref
-
-              if (!hash) {
-                sys(`checkpoint ${ref} not found`)
-
-                return
-              }
-
-              rpc('rollback.restore', { session_id: sid, hash, ...(file ? { file } : {}) }).then((d: any) =>
-                sys(d.success ? `restored${file ? ` ${file}` : ''}` : `failed: ${d.error || 'unknown'}`)
-              )
-            })
-          }
-
-          return true
-
-        case 'insights':
-          rpc('insights.get', { days: arg ? parseInt(arg) : 30 }).then((r: any) =>
-            sys(`last ${r.days}d: ${r.sessions} sessions, ${r.messages} messages`)
-          )
-
-          return true
-
-        case 'toolsets':
-          if (!info?.tools) {
-            sys('no toolsets loaded')
-
-            return true
-          }
-
-          sys(
-            Object.entries(info.tools)
-              .map(([k, vs]) => `${k}: ${vs.length} tools`)
-              .join('\n')
-          )
-
-          return true
 
         case 'paste':
           paste()
-
           return true
 
-        case 'reload-mcp':
-
-        case 'reload_mcp':
-          rpc('reload.mcp', { session_id: sid }).then(() => sys('MCP servers reloaded'))
-
-          return true
-
-        case 'browser':
-          if (!arg || arg === 'status') {
-            rpc('browser.manage', { action: 'status' }).then((r: any) =>
-              sys(r.connected ? `browser: connected (${r.url})` : 'browser: not connected')
-            )
-          } else if (arg === 'connect' || arg.startsWith('connect ')) {
-            const url = arg.split(/\s+/)[1]
-            rpc('browser.manage', { action: 'connect', ...(url ? { url } : {}) }).then((r: any) =>
-              sys(`browser connected: ${r.url}`)
-            )
-          } else if (arg === 'disconnect') {
-            rpc('browser.manage', { action: 'disconnect' }).then(() => sys('browser disconnected'))
-          } else {
-            sys('usage: /browser [connect|disconnect|status]')
-          }
-
-          return true
-
-        case 'platforms':
-
-        case 'gateway':
-          sys('gateway status is not available in TUI mode')
-
-          return true
-
-        case 'statusbar':
-
-        case 'sb':
-          setStatusBar(v => !v)
-          sys(`status bar ${statusBar ? 'off' : 'on'}`)
-
-          return true
-
-        case 'voice':
-          if (!arg || arg === 'status') {
-            rpc('voice.toggle', { action: 'status' }).then((r: any) => sys(`voice: ${r.enabled ? 'on' : 'off'}`))
-          } else if (arg === 'on' || arg === 'off') {
-            rpc('voice.toggle', { action: arg }).then((r: any) => sys(`voice → ${r.enabled ? 'on' : 'off'}`))
-          } else if (arg === 'record') {
-            rpc('voice.record', { action: 'start' }).then(() => sys('recording… (use /voice stop to transcribe)'))
-          } else if (arg === 'stop') {
-            rpc('voice.record', { action: 'stop' }).then((r: any) => {
-              if (r.text) {
-                send(r.text)
-              } else {
-                sys('no speech detected')
-              }
-            })
-          } else if (arg === 'tts') {
-            const last = messages.filter(m => m.role === 'assistant').at(-1)
-
-            if (last) {
-              rpc('voice.tts', { text: last.text }).then(() => sys('speaking…'))
-            } else {
-              sys('no response to speak')
-            }
-          } else {
-            sys('usage: /voice [on|off|status|record|stop|tts]')
-          }
-
-          return true
-
-        case 'plugins':
-          rpc('plugins.list').then((r: any) => {
-            if (!r.plugins?.length) {
-              sys('no plugins installed')
-
-              return
-            }
-
-            sys(r.plugins.map((p: any) => `  ${p.name} v${p.version} ${p.enabled ? '✓' : '✗'}`).join('\n'))
-          })
-
-          return true
-
-        case 'cron':
-          if (!arg || arg === 'list') {
-            rpc('cron.manage', { action: 'list' }).then((r: any) => {
-              const jobs = r.jobs || r.schedules || []
-
-              if (!jobs.length) {
-                sys('no cron jobs')
-
-                return
-              }
-
-              sys(jobs.map((j: any) => `  ${j.name}: ${j.schedule} ${j.paused ? '(paused)' : ''}`).join('\n'))
-            })
-          } else {
-            const parts = arg.split(/\s+/)
-            const sub = parts[0]!
-
-            if (sub === 'add' || sub === 'create') {
-              const name = parts[1] || ''
-              const schedule = parts[2] || ''
-              const prompt = parts.slice(3).join(' ')
-              rpc('cron.manage', { action: 'add', name, schedule, prompt }).then((r: any) =>
-                sys(r.message || r.status || 'created')
-              )
-            } else {
-              rpc('cron.manage', { action: sub, name: parts[1] || '' }).then((r: any) =>
-                sys(r.message || r.status || JSON.stringify(r))
-              )
-            }
-          }
-
-          return true
-
-        case 'update':
-        case 'hermes': {
-          const argv = name === 'update' ? ['update'] : arg.split(/\s+/).filter(Boolean)
-
-          if (!argv.length) {
-            sys('usage: /hermes <args…>  (e.g. sessions list, chat -q "hi")')
-
-            return true
-          }
-
-          if (name === 'update') {
-            setBusy(true)
-            setStatus('updating…')
-          }
-
-          rpc('cli.exec', { argv, timeout: name === 'update' ? 600 : 240 })
-            .then((r: any) => {
-              if (r.blocked) {
-                return sys(r.hint ?? 'blocked')
-              }
-
-              sys(r.output ?? '(no output)')
-
-              if (r.code !== 0) {
-                sys(`exit ${r.code}`)
-              }
-            })
-            .catch((e: Error) => sys(`error: ${e.message}`))
-            .finally(() => {
-              if (name === 'update') {
-                setStatus('ready')
-                setBusy(false)
-              }
-            })
-
+        case 'logs': {
+          const limit = Math.min(80, Math.max(1, parseInt(arg, 10) || 20))
+          sys(gw.getLogTail(limit) || 'no gateway logs')
           return true
         }
 
-        case 'model':
-          if (!arg) {
-            sys('usage: /model <name>')
-
-            return true
-          }
-
-          rpc('config.set', { key: 'model', value: arg }).then(() => sys(`model → ${arg}`))
-
+        case 'statusbar':
+        case 'sb':
+          setStatusBar(v => !v)
+          sys(`status bar ${statusBar ? 'off' : 'on'}`)
           return true
 
-        case 'skin':
-          if (!arg) {
-            sys('usage: /skin <name>')
+        case 'queue':
+          if (!arg) { sys(`${queueRef.current.length} queued message(s)`); return true }
+          enqueue(arg)
+          sys(`queued: "${arg.slice(0, 50)}${arg.length > 50 ? '…' : ''}"`)
+          return true
 
-            return true
-          }
+        case 'undo':
+          if (!sid) return true
+          rpc('session.undo', { session_id: sid }).then((r: any) => {
+            if (r.removed > 0) {
+              setMessages(prev => {
+                const q = [...prev]
+                while (q.at(-1)?.role === 'assistant' || q.at(-1)?.role === 'tool') q.pop()
+                if (q.at(-1)?.role === 'user') q.pop()
+                return q
+              })
+              sys(`undid ${r.removed} messages`)
+            } else sys('nothing to undo')
+          })
+          return true
 
-          rpc('config.set', { key: 'skin', value: arg }).then(() => sys(`skin → ${arg} (restart to apply)`))
-
+        case 'retry':
+          if (!lastUserMsg) { sys('nothing to retry'); return true }
+          if (sid) gw.request('session.undo', { session_id: sid }).catch(() => {})
+          setMessages(prev => {
+            const q = [...prev]
+            while (q.at(-1)?.role === 'assistant' || q.at(-1)?.role === 'tool') q.pop()
+            return q
+          })
+          send(lastUserMsg)
           return true
 
         default:
-          gw.request('command.dispatch', { name: name ?? '', arg, session_id: sid })
+          rpc('slash.exec', { command: cmd.slice(1), session_id: sid })
             .then((r: any) => {
-              if (r.type === 'exec') {
-                sys(r.output || '(no output)')
-              } else if (r.type === 'alias') {
-                slash(`/${r.target}${arg ? ' ' + arg : ''}`)
-              } else if (r.type === 'plugin') {
-                sys(r.output || '(no output)')
-              } else if (r.type === 'skill') {
-                sys(`⚡ loading skill: ${r.name}`)
-                send(r.message)
-              }
+              if (r?.output) sys(r.output)
+              else sys(`/${name}: no output`)
             })
             .catch(() => {
-              gw.request('command.resolve', { name: name ?? '' })
-                .then((r: any) => {
-                  if (!r.canonical || r.canonical === name) {
-                    sys(`unknown command: /${name}`)
-                  } else if (r.category === 'cli-only') {
-                    sys(`/${name} is CLI-only — run it in a terminal`)
-                  } else {
-                    send(`/${r.canonical}${arg ? ' ' + arg : ''}`)
-                  }
+              gw.request('command.dispatch', { name: name ?? '', arg, session_id: sid })
+                .then((d: any) => {
+                  if (d.type === 'exec') sys(d.output || '(no output)')
+                  else if (d.type === 'alias') slash(`/${d.target}${arg ? ' ' + arg : ''}`)
+                  else if (d.type === 'plugin') sys(d.output || '(no output)')
+                  else if (d.type === 'skill') { sys(`⚡ loading skill: ${d.name}`); send(d.message) }
                 })
                 .catch(() => sys(`unknown command: /${name}`))
             })
-
           return true
       }
     },
@@ -1495,7 +881,22 @@ export function App({ gw }: { gw: GatewayClient }) {
 
       if (editIdx !== null && !full.startsWith('/') && !full.startsWith('!')) {
         replaceQ(editIdx, full)
+        const picked = queueRef.current.splice(editIdx, 1)[0]
+        syncQueue()
         setQueueEdit(null)
+
+        if (picked && busy && sid) {
+          queueRef.current.unshift(picked)
+          syncQueue()
+          gw.request('session.interrupt', { session_id: sid }).catch(() => {})
+          setStatus('interrupting…')
+          return
+        }
+
+        if (picked && sid) {
+          send(picked)
+          return
+        }
 
         return
       }
@@ -1551,84 +952,39 @@ export function App({ gw }: { gw: GatewayClient }) {
           : theme.color.dim
 
   return (
-    <AltScreen>
-      <Box flexDirection="column" flexGrow={1} padding={1}>
-        {empty ? (
-          <>
-            <Banner t={theme} />
-            {info && <SessionPanel info={info} t={theme} />}
-            {!sid ? (
-              <Text color={theme.color.dim}>⚕ {status}</Text>
-            ) : (
-              <Text color={theme.color.dim}>
-                type <Text color={theme.color.amber}>/</Text> for commands
-                {' · '}
-                <Text color={theme.color.amber}>!</Text> for shell
-                {' · '}
-                <Text color={theme.color.amber}>Ctrl+C</Text> to interrupt
-              </Text>
-            )}
-          </>
-        ) : (
-          <Box marginBottom={1}>
-            <Text bold color={theme.color.gold}>
-              {theme.brand.icon}{' '}
-            </Text>
-            <Text bold color={theme.color.amber}>
-              {theme.brand.name}
-            </Text>
-            <Text color={theme.color.dim}>
-              {info?.model ? ` · ${info.model.split('/').pop()}` : ''}
-              {' · '}
-              <Text color={statusColor}>{status}</Text>
-              {busy && ' · Ctrl+C to stop'}
-            </Text>
-            {usage.total > 0 && (
-              <Text color={theme.color.dim}>
-                {' · '}
-                {fmtK(usage.input)}↑ {fmtK(usage.output)}↓ ({usage.calls} calls)
-              </Text>
-            )}
+    <Box flexDirection="column">
+      <Static items={historyItems}>
+        {(m, i) => (
+          <Box flexDirection="column" key={i} paddingX={1}>
+            {m.kind === 'intro' && m.info
+              ? (
+                  <Box flexDirection="column" paddingTop={1}>
+                    <Banner t={theme} />
+                    <SessionPanel info={m.info} sid={sid} t={theme} />
+                  </Box>
+                )
+              : (
+                  <MessageLine cols={cols} compact={compact} msg={m} t={theme} />
+                )}
+          </Box>
+        )}
+      </Static>
+
+      <Box flexDirection="column" paddingX={1}>
+        {streaming && (
+          <Box flexDirection="column">
+            <MessageLine cols={cols} compact={compact} msg={{ role: 'assistant', text: streaming }} t={theme} />
           </Box>
         )}
 
-        <Box flexDirection="column" flexGrow={1} overflow="hidden">
-          {viewport.above > 0 && (
-            <Text color={theme.color.dim} dimColor>
-              ↑ {viewport.above} above · PgUp/PgDn to scroll
-            </Text>
-          )}
-
-          {messages.slice(viewport.start, viewport.end).map((m, i) => {
-            const ri = viewport.start + i
-
-            return (
-              <Box
-                flexDirection="column"
-                key={ri}
-                marginTop={m.role === 'user' && ri > 0 && messages[ri - 1]!.role !== 'user' ? 1 : 0}
-              >
-                <MessageLine compact={compact} msg={m} t={theme} />
-              </Box>
-            )
-          })}
-
-          {scrollOffset > 0 && (
-            <Text color={theme.color.dim} dimColor>
-              ↓ {scrollOffset} below · PgDn or Enter to return
-            </Text>
-          )}
-
-          {thinking && <Thinking reasoning={reasoning} t={theme} thinking={thinkingText} tools={tools} />}
-        </Box>
+        {(thinking || tools.length > 0) && !streaming && <Thinking reasoning={reasoning} t={theme} tools={tools} />}
 
         {clarify && (
           <ClarifyPrompt
             onAnswer={answer => {
               gw.request('clarify.respond', { answer, request_id: clarify.requestId }).catch(() => {})
-              setMessages(prev => [...prev, { role: 'user', text: answer }])
+              appendMessage({ role: 'user', text: answer })
               setClarify(null)
-              setStatus('thinking…')
             }}
             req={clarify}
             t={theme}
@@ -1686,6 +1042,8 @@ export function App({ gw }: { gw: GatewayClient }) {
                 .then((r: any) => {
                   setSid(r.session_id)
                   setMessages([])
+                  setInfo(r.info ?? null)
+                  if (r.info) appendHistory(introMsg(r.info))
                   setUsage(ZERO)
                   lastStatusNoteRef.current = ''
                   protocolWarnedRef.current = false
@@ -1702,51 +1060,45 @@ export function App({ gw }: { gw: GatewayClient }) {
           />
         )}
 
-        {!!paletteMatches.length && <CommandPalette matches={paletteMatches} t={theme} />}
-
         <QueuedMessages cols={cols} queued={queuedDisplay} queueEditIdx={queueEditIdx} t={theme} />
 
-        {statusBar && (
-          <Text color={theme.color.dim}>
-            <Text color={statusColor}>{status}</Text>
-            {' · '}
-            {[
-              sid && `session ${sid}`,
-              info?.model?.split('/').pop(),
-              queuedDisplay.length && `queue ${queuedDisplay.length}`,
-              usage.total > 0 && `${fmtK(usage.total)} tok`
-            ]
-              .filter(Boolean)
-              .join(' · ')}
-          </Text>
-        )}
+        <Text>{' '}</Text>
 
-        <Text color={theme.color.bronze}>{'─'.repeat(cols - 2)}</Text>
+        <StatusRule cols={cols} color={theme.color.bronze} dimColor={theme.color.dim} statusColor={statusColor}
+          parts={[status, sid, info?.model?.split('/').pop(), usage.total > 0 && `${fmtK(usage.total)} tok`]} />
 
         {!blocked && (
           <Box>
             <Box width={3}>
-              <Text bold color={theme.color.gold}>
-                {inputBuf.length ? '… ' : `${theme.brand.prompt} `}
-              </Text>
+              <Text bold color={theme.color.gold}>{inputBuf.length ? '… ' : `${theme.brand.prompt} `}</Text>
             </Box>
+
             <TextInput
               onChange={setInput}
+              onLargePaste={collapsePaste}
               onSubmit={submit}
-              placeholder={
-                empty
-                  ? PLACEHOLDER
-                  : busy
-                    ? 'Ctrl+C to interrupt…'
-                    : inputBuf.length
-                      ? 'continue (or Enter to send)'
-                      : ''
-              }
               value={input}
+              placeholder={empty ? PLACEHOLDER : busy ? 'Ctrl+C to interrupt…' : inputBuf.length ? 'continue (or Enter to send)' : ''}
             />
           </Box>
         )}
+
+        {!!completions.length && (
+          <Box borderColor={theme.color.bronze} borderStyle="single" flexDirection="column" paddingX={1}>
+            {completions.slice(Math.max(0, compIdx - 8), compIdx + 8).map((item, i) => {
+              const active = Math.max(0, compIdx - 8) + i === compIdx
+              return (
+                <Text key={item.text}>
+                  <Text bold={active} color={active ? theme.color.amber : theme.color.cornsilk}>{item.display}</Text>
+                  {item.meta ? <Text color={theme.color.dim}> {item.meta}</Text> : null}
+                </Text>
+              )
+            })}
+          </Box>
+        )}
+
+        {!empty && !sid && <Text color={theme.color.dim}>⚕ {status}</Text>}
       </Box>
-    </AltScreen>
+    </Box>
   )
 }

@@ -1,3 +1,4 @@
+import atexit
 import json
 import os
 import subprocess
@@ -12,6 +13,12 @@ from hermes_cli.env_loader import load_hermes_dotenv
 _hermes_home = get_hermes_home()
 load_hermes_dotenv(hermes_home=_hermes_home, project_env=Path(__file__).parent.parent / ".env")
 
+try:
+    from hermes_cli.banner import prefetch_update_check
+    prefetch_update_check()
+except Exception:
+    pass
+
 from tui_gateway.render import make_stream_renderer, render_diff, render_message
 
 _sessions: dict[str, dict] = {}
@@ -20,6 +27,74 @@ _pending: dict[str, threading.Event] = {}
 _answers: dict[str, str] = {}
 _db = None
 _stdout_lock = threading.Lock()
+
+# Reserve real stdout for JSON-RPC only; redirect Python's stdout to stderr
+# so stray print() from libraries/tools becomes harmless gateway.stderr instead
+# of corrupting the JSON protocol.
+_real_stdout = sys.stdout
+sys.stdout = sys.stderr
+
+
+class _SlashWorker:
+    """Persistent HermesCLI subprocess for slash commands."""
+
+    def __init__(self, session_key: str, model: str):
+        self._lock = threading.Lock()
+        self._seq = 0
+        self.stderr_tail: list[str] = []
+
+        argv = [sys.executable, "-m", "tui_gateway.slash_worker", "--session-key", session_key]
+        if model:
+            argv += ["--model", model]
+
+        self.proc = subprocess.Popen(
+            argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, bufsize=1, cwd=os.getcwd(), env=os.environ.copy(),
+        )
+        threading.Thread(target=self._drain_stderr, daemon=True).start()
+
+    def _drain_stderr(self):
+        for line in (self.proc.stderr or []):
+            if text := line.rstrip("\n"):
+                self.stderr_tail = (self.stderr_tail + [text])[-80:]
+
+    def run(self, command: str) -> str:
+        if self.proc.poll() is not None:
+            raise RuntimeError("slash worker exited")
+
+        with self._lock:
+            self._seq += 1
+            rid = self._seq
+            self.proc.stdin.write(json.dumps({"id": rid, "command": command}) + "\n")
+            self.proc.stdin.flush()
+
+            for line in self.proc.stdout:
+                try:
+                    msg = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if msg.get("id") != rid:
+                    continue
+                if not msg.get("ok"):
+                    raise RuntimeError(msg.get("error", "slash worker failed"))
+                return str(msg.get("output", "")).rstrip()
+
+            raise RuntimeError(f"slash worker closed pipe{': ' + chr(10).join(self.stderr_tail[-8:]) if self.stderr_tail else ''}")
+
+    def close(self):
+        try:
+            if self.proc.poll() is None:
+                self.proc.terminate()
+                self.proc.wait(timeout=1)
+        except Exception:
+            try: self.proc.kill()
+            except Exception: pass
+
+
+atexit.register(lambda: [
+    s.get("slash_worker") and s["slash_worker"].close()
+    for s in _sessions.values()
+])
 
 
 # ── Plumbing ──────────────────────────────────────────────────────────
@@ -36,8 +111,8 @@ def write_json(obj: dict) -> bool:
     line = json.dumps(obj, ensure_ascii=False) + "\n"
     try:
         with _stdout_lock:
-            sys.stdout.write(line)
-            sys.stdout.flush()
+            _real_stdout.write(line)
+            _real_stdout.flush()
         return True
     except BrokenPipeError:
         return False
@@ -158,7 +233,22 @@ def _get_usage(agent) -> dict:
 
 
 def _session_info(agent) -> dict:
-    info: dict = {"model": getattr(agent, "model", ""), "tools": {}, "skills": {}}
+    info: dict = {
+        "model": getattr(agent, "model", ""),
+        "tools": {},
+        "skills": {},
+        "cwd": os.getcwd(),
+        "version": "",
+        "release_date": "",
+        "update_behind": None,
+        "update_command": "",
+    }
+    try:
+        from hermes_cli import __version__, __release_date__
+        info["version"] = __version__
+        info["release_date"] = __release_date__
+    except Exception:
+        pass
     try:
         from model_tools import get_toolset_for_tool
         for t in getattr(agent, "tools", []) or []:
@@ -171,12 +261,27 @@ def _session_info(agent) -> dict:
         info["skills"] = get_available_skills()
     except Exception:
         pass
+    try:
+        from hermes_cli.banner import get_update_result
+        from hermes_cli.config import recommended_update_command
+        info["update_behind"] = get_update_result(timeout=0.5)
+        info["update_command"] = recommended_update_command()
+    except Exception:
+        pass
     return info
+
+
+def _tool_ctx(name: str, args: dict) -> str:
+    try:
+        from agent.display import build_tool_preview
+        return build_tool_preview(name, args, max_len=80) or ""
+    except Exception:
+        return ""
 
 
 def _agent_cbs(sid: str) -> dict:
     return dict(
-        tool_start_callback=lambda tc_id, name, args: _emit("tool.start", sid, {"tool_id": tc_id, "name": name}),
+        tool_start_callback=lambda tc_id, name, args: _emit("tool.start", sid, {"tool_id": tc_id, "name": name, "context": _tool_ctx(name, args)}),
         tool_complete_callback=lambda tc_id, name, args, result: _emit("tool.complete", sid, {"tool_id": tc_id, "name": name}),
         tool_progress_callback=lambda name, preview, args: _emit("tool.progress", sid, {"name": name, "preview": preview}),
         tool_gen_callback=lambda name: _emit("tool.generating", sid, {"name": name}),
@@ -222,7 +327,13 @@ def _init_session(sid: str, key: str, agent, history: list, cols: int = 80):
         "attached_images": [],
         "image_counter": 0,
         "cols": cols,
+        "slash_worker": None,
     }
+    try:
+        _sessions[sid]["slash_worker"] = _SlashWorker(key, getattr(agent, "model", _resolve_model()))
+    except Exception:
+        # Defer hard-failure to slash.exec; chat still works without slash worker.
+        _sessions[sid]["slash_worker"] = None
     try:
         from tools.approval import register_gateway_notify, load_permanent_allowlist
         register_gateway_notify(key, lambda data: _emit("approval.request", sid, data))
@@ -283,7 +394,7 @@ def _(rid, params: dict) -> dict:
         _init_session(sid, key, agent, [], cols=int(params.get("cols", 80)))
     except Exception as e:
         return _err(rid, 5000, f"agent init failed: {e}")
-    return _ok(rid, {"session_id": sid})
+    return _ok(rid, {"session_id": sid, "info": _session_info(agent)})
 
 
 @method("session.list")
@@ -324,7 +435,7 @@ def _(rid, params: dict) -> dict:
         _init_session(sid, target, agent, history, cols=int(params.get("cols", 80)))
     except Exception as e:
         return _err(rid, 5000, f"resume failed: {e}")
-    return _ok(rid, {"session_id": sid, "resumed": target, "message_count": len(history)})
+    return _ok(rid, {"session_id": sid, "resumed": target, "message_count": len(history), "info": _session_info(agent)})
 
 
 @method("session.title")
@@ -856,6 +967,177 @@ def _(rid, params: dict) -> dict:
         pass
 
     return _err(rid, 4018, f"not a quick/plugin/skill command: {name}")
+
+
+# ── Methods: paste ────────────────────────────────────────────────────
+
+_paste_counter = 0
+
+@method("paste.collapse")
+def _(rid, params: dict) -> dict:
+    global _paste_counter
+    text = params.get("text", "")
+    if not text:
+        return _err(rid, 4004, "empty paste")
+
+    _paste_counter += 1
+    line_count = text.count('\n') + 1
+    paste_dir = _hermes_home / "pastes"
+    paste_dir.mkdir(parents=True, exist_ok=True)
+
+    from datetime import datetime
+    paste_file = paste_dir / f"paste_{_paste_counter}_{datetime.now().strftime('%H%M%S')}.txt"
+    paste_file.write_text(text, encoding="utf-8")
+
+    placeholder = f"[Pasted text #{_paste_counter}: {line_count} lines \u2192 {paste_file}]"
+    return _ok(rid, {"placeholder": placeholder, "path": str(paste_file), "lines": line_count})
+
+
+# ── Methods: complete ─────────────────────────────────────────────────
+
+@method("complete.path")
+def _(rid, params: dict) -> dict:
+    word = params.get("word", "")
+    if not word:
+        return _ok(rid, {"items": []})
+
+    items: list[dict] = []
+    try:
+        is_context = word.startswith("@")
+        query = word[1:] if is_context else word
+
+        if is_context and not query:
+            items = [
+                {"text": "@diff", "display": "@diff", "meta": "git diff"},
+                {"text": "@staged", "display": "@staged", "meta": "staged diff"},
+                {"text": "@file:", "display": "@file:", "meta": "attach file"},
+                {"text": "@folder:", "display": "@folder:", "meta": "attach folder"},
+                {"text": "@url:", "display": "@url:", "meta": "fetch url"},
+                {"text": "@git:", "display": "@git:", "meta": "git log"},
+            ]
+            return _ok(rid, {"items": items})
+
+        if is_context and query.startswith(("file:", "folder:")):
+            prefix_tag = query.split(":", 1)[0]
+            path_part = query.split(":", 1)[1] or "."
+        else:
+            prefix_tag = ""
+            path_part = query if not is_context else query
+
+        expanded = os.path.expanduser(path_part)
+        if expanded.endswith("/"):
+            search_dir, match = expanded, ""
+        else:
+            search_dir = os.path.dirname(expanded) or "."
+            match = os.path.basename(expanded)
+
+        match_lower = match.lower()
+        for entry in sorted(os.listdir(search_dir))[:200]:
+            if match and not entry.lower().startswith(match_lower):
+                continue
+            if is_context and not prefix_tag and entry.startswith("."):
+                continue
+            full = os.path.join(search_dir, entry)
+            is_dir = os.path.isdir(full)
+            rel = os.path.relpath(full)
+            suffix = "/" if is_dir else ""
+
+            if is_context and prefix_tag:
+                text = f"@{prefix_tag}:{rel}{suffix}"
+            elif is_context:
+                kind = "folder" if is_dir else "file"
+                text = f"@{kind}:{rel}{suffix}"
+            elif word.startswith("~"):
+                text = "~/" + os.path.relpath(full, os.path.expanduser("~")) + suffix
+            else:
+                text = rel + suffix
+
+            items.append({"text": text, "display": entry + suffix, "meta": "dir" if is_dir else ""})
+            if len(items) >= 30:
+                break
+    except Exception:
+        pass
+
+    return _ok(rid, {"items": items})
+
+
+@method("complete.slash")
+def _(rid, params: dict) -> dict:
+    text = params.get("text", "")
+    if not text.startswith("/"):
+        return _ok(rid, {"items": []})
+
+    try:
+        from hermes_cli.commands import SlashCommandCompleter
+        from prompt_toolkit.document import Document
+        from prompt_toolkit.formatted_text import to_plain_text
+
+        completer = SlashCommandCompleter()
+        doc = Document(text, len(text))
+        items = [
+            {"text": c.text, "display": c.display or c.text,
+             "meta": to_plain_text(c.display_meta) if c.display_meta else ""}
+            for c in completer.get_completions(doc, None)
+        ][:30]
+        return _ok(rid, {"items": items, "replace_from": text.rfind(" ") + 1 if " " in text else 1})
+    except Exception:
+        return _ok(rid, {"items": []})
+
+
+# ── Methods: slash.exec ──────────────────────────────────────────────
+
+
+def _mirror_slash_side_effects(session: dict, command: str):
+    """Apply side effects that must also hit the gateway's live agent."""
+    parts = command.lstrip("/").split(None, 1)
+    if not parts:
+        return
+    name, arg, agent = parts[0], (parts[1].strip() if len(parts) > 1 else ""), session.get("agent")
+
+    try:
+        if name == "model" and arg and agent:
+            from hermes_cli.model_switch import switch_model
+            switch_model(agent, arg)
+        elif name == "compress" and agent:
+            (getattr(agent, "compress_context", None) or getattr(agent, "context_compressor", agent).compress)()
+        elif name == "reload-mcp" and agent and hasattr(agent, "reload_mcp_tools"):
+            agent.reload_mcp_tools()
+        elif name == "stop":
+            from tools.process_registry import ProcessRegistry
+            ProcessRegistry().kill_all()
+    except Exception:
+        pass
+
+
+@method("slash.exec")
+def _(rid, params: dict) -> dict:
+    session, err = _sess(params, rid)
+    if err:
+        return err
+
+    cmd = params.get("command", "").strip()
+    if not cmd:
+        return _err(rid, 4004, "empty command")
+
+    worker = session.get("slash_worker")
+    if not worker:
+        try:
+            worker = _SlashWorker(session["session_key"], getattr(session.get("agent"), "model", _resolve_model()))
+            session["slash_worker"] = worker
+        except Exception as e:
+            return _err(rid, 5030, f"slash worker start failed: {e}")
+
+    try:
+        output = worker.run(cmd)
+        _mirror_slash_side_effects(session, cmd)
+        return _ok(rid, {"output": output or "(no output)"})
+    except Exception as e:
+        try:
+            worker.close()
+        except Exception:
+            pass
+        session["slash_worker"] = None
+        return _err(rid, 5030, str(e))
 
 
 # ── Methods: voice ───────────────────────────────────────────────────

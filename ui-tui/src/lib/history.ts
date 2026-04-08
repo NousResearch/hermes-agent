@@ -4,29 +4,31 @@ import { join } from 'node:path'
 
 const MAX = 1000
 const dir = join(process.env.HERMES_HOME ?? join(homedir(), '.hermes'))
-const file = join(dir, 'tui_history')
+const file = join(dir, '.hermes_history')
 
 let cache: string[] | null = null
 
-function encode(s: string): string {
-  return s.replace(/\\/g, '\\\\').replace(/\n/g, '\\n')
-}
-
-function decode(s: string): string {
-  return s.replace(/\\n/g, '\n').replace(/\\\\/g, '\\')
-}
-
 export function load(): string[] {
-  if (cache) {
-    return cache
-  }
+  if (cache) return cache
 
   try {
-    if (existsSync(file)) {
-      cache = readFileSync(file, 'utf8').split('\n').filter(Boolean).map(decode).slice(-MAX)
-    } else {
-      cache = []
+    if (!existsSync(file)) { cache = []; return cache }
+
+    const lines = readFileSync(file, 'utf8').split('\n')
+    const entries: string[] = []
+    let current: string[] = []
+
+    for (const line of lines) {
+      if (line.startsWith('+')) {
+        current.push(line.slice(1))
+      } else if (current.length) {
+        entries.push(current.join('\n'))
+        current = []
+      }
     }
+    if (current.length) entries.push(current.join('\n'))
+
+    cache = entries.slice(-MAX)
   } catch {
     cache = []
   }
@@ -36,32 +38,21 @@ export function load(): string[] {
 
 export function append(line: string): void {
   const trimmed = line.trim()
-
-  if (!trimmed) {
-    return
-  }
+  if (!trimmed) return
 
   const items = load()
-
-  if (items.at(-1) === trimmed) {
-    return
-  }
+  if (items.at(-1) === trimmed) return
 
   items.push(trimmed)
-
-  if (items.length > MAX) {
-    items.splice(0, items.length - MAX)
-  }
+  if (items.length > MAX) items.splice(0, items.length - MAX)
 
   try {
-    if (!existsSync(dir)) {
-      mkdirSync(dir, { recursive: true })
-    }
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
 
-    appendFileSync(file, encode(trimmed) + '\n')
-  } catch {
-    /* ignore */
-  }
+    const ts = new Date().toISOString().replace('T', ' ').replace('Z', '')
+    const encoded = trimmed.split('\n').map(l => '+' + l).join('\n')
+    appendFileSync(file, `\n# ${ts}\n${encoded}\n`)
+  } catch { /* ignore */ }
 }
 
 export function all(): string[] {

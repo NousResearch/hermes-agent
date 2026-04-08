@@ -1,6 +1,7 @@
 export interface ActiveTool {
   id: string
   name: string
+  context?: string
 }
 
 export interface ApprovalReq {
@@ -17,14 +18,22 @@ export interface ClarifyReq {
 export interface Msg {
   role: Role
   text: string
+  kind?: 'intro' | 'tool-active'
+  info?: SessionInfo
+  toolId?: string
 }
 
 export type Role = 'assistant' | 'system' | 'tool' | 'user'
 
 export interface SessionInfo {
+  cwd?: string
   model: string
+  release_date?: string
   skills: Record<string, string[]>
   tools: Record<string, string[]>
+  update_behind?: number | null
+  update_command?: string
+  version?: string
 }
 
 export interface Usage {

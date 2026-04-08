@@ -30,7 +30,7 @@ TRANSIENT_TRANSPORT_PHRASES = frozenset({
 })
 
 _RETRY_AFTER_TEXT_RE = re.compile(
-    r"retry\s+(?:after\s+)?(\d+(?:\.\d+)?)\s*(?:sec|secs|seconds|s\b)",
+    r"retry\s+(?:after\s+)?(\d+(?:\.\d+)?)\s*(?:seconds?|secs?\b|s\b)",
     re.IGNORECASE,
 )
 
@@ -176,13 +176,17 @@ def extract_retry_after(error: Exception) -> Optional[float]:
     response = getattr(error, "response", None)
     headers = getattr(response, "headers", None) if response else None
     if headers and hasattr(headers, "get"):
-        for key in ("retry-after", "Retry-After"):
-            val = headers.get(key)
-            if val:
-                try:
-                    return float(val)
-                except (TypeError, ValueError):
-                    logger.debug("Could not parse %s header value as float: %r", key, val)
+        val = headers.get("retry-after") or headers.get("Retry-After")
+        if val is None and isinstance(headers, dict):
+            for key, candidate in headers.items():
+                if isinstance(key, str) and key.lower() == "retry-after":
+                    val = candidate
+                    break
+        if val:
+            try:
+                return float(val)
+            except (TypeError, ValueError):
+                logger.debug("Could not parse Retry-After header value as float: %r", val)
         # Some providers use x-ratelimit-reset (epoch timestamp)
         reset = headers.get("x-ratelimit-reset")
         if reset:

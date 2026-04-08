@@ -198,6 +198,14 @@ def test_extract_retry_after_from_lowercase_headers():
     assert extract_retry_after(error) == 45.0
 
 
+def test_extract_retry_after_from_uppercase_headers_dict():
+    """Plain dict headers should still handle uppercase RETRY-AFTER keys."""
+    response = SimpleNamespace(headers={"RETRY-AFTER": "25"})
+    error = Exception("Rate limited")
+    error.response = response  # type: ignore[attr-defined]
+    assert extract_retry_after(error) == 25.0
+
+
 def test_extract_retry_after_from_x_ratelimit_reset_future():
     """x-ratelimit-reset should return positive seconds until reset."""
     now = time.time()
@@ -229,6 +237,11 @@ def test_extract_retry_after_message_unit_variants():
     assert extract_retry_after(Exception("retry after 5 sec")) == 5.0
     assert extract_retry_after(Exception("retry after 6 secs")) == 6.0
     assert extract_retry_after(Exception("retry after 7s")) == 7.0
+
+
+def test_extract_retry_after_message_does_not_match_embedded_sec_substring():
+    """'sec' inside another word should not be treated as a time unit."""
+    assert extract_retry_after(Exception("Retry after 30 secretly.")) is None
 
 
 def test_extract_retry_after_from_body():

@@ -324,3 +324,91 @@ class TestSegmentBreakOnToolBoundary:
         await consumer.run()
 
         assert consumer.already_sent
+
+    @pytest.mark.asyncio
+    async def test_edit_failure_sends_only_unsent_tail_at_finish(self):
+        """If an edit fails mid-stream, send only the missing tail once at finish."""
+        adapter = MagicMock()
+        send_results = [
+            SimpleNamespace(success=True, message_id="msg_1"),
+            SimpleNamespace(success=True, message_id="msg_2"),
+        ]
+        adapter.send = AsyncMock(side_effect=send_results)
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=False, error="flood_control:6"))
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        config = StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5, cursor=" ▉")
+        consumer = GatewayStreamConsumer(adapter, "chat_123", config)
+
+        consumer.on_delta("Hello")
+        task = asyncio.create_task(consumer.run())
+        await asyncio.sleep(0.08)
+        consumer.on_delta(" world")
+        await asyncio.sleep(0.08)
+        consumer.finish()
+        await task
+
+        assert adapter.send.call_count == 2
+        first_text = adapter.send.call_args_list[0][1]["content"]
+        second_text = adapter.send.call_args_list[1][1]["content"]
+        assert "Hello" in first_text
+        assert second_text.strip() == "world"
+        assert consumer.already_sent
+
+    @pytest.mark.asyncio
+    async def test_segment_break_clears_failed_edit_fallback_state(self):
+        """A tool boundary after edit failure must not duplicate the next segment."""
+        adapter = MagicMock()
+        send_results = [
+            SimpleNamespace(success=True, message_id="msg_1"),
+            SimpleNamespace(success=True, message_id="msg_2"),
+        ]
+        adapter.send = AsyncMock(side_effect=send_results)
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=False, error="flood_control:6"))
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        config = StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5, cursor=" ▉")
+        consumer = GatewayStreamConsumer(adapter, "chat_123", config)
+
+        consumer.on_delta("Hello")
+        task = asyncio.create_task(consumer.run())
+        await asyncio.sleep(0.08)
+        consumer.on_delta(" world")
+        await asyncio.sleep(0.08)
+        consumer.on_delta(None)
+        consumer.on_delta("Next segment")
+        consumer.finish()
+        await task
+
+        sent_texts = [call[1]["content"] for call in adapter.send.call_args_list]
+        assert sent_texts == ["Hello ▉", "Next segment"]
+
+    @pytest.mark.asyncio
+    async def test_fallback_final_splits_long_continuation_without_dropping_text(self):
+        """Long continuation tails should be chunked when fallback final-send runs."""
+        adapter = MagicMock()
+        adapter.send = AsyncMock(side_effect=[
+            SimpleNamespace(success=True, message_id="msg_1"),
+            SimpleNamespace(success=True, message_id="msg_2"),
+            SimpleNamespace(success=True, message_id="msg_3"),
+        ])
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=False, error="flood_control:6"))
+        adapter.MAX_MESSAGE_LENGTH = 610
+
+        config = StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5, cursor=" ▉")
+        consumer = GatewayStreamConsumer(adapter, "chat_123", config)
+
+        prefix = "abc"
+        tail = "x" * 620
+        consumer.on_delta(prefix)
+        task = asyncio.create_task(consumer.run())
+        await asyncio.sleep(0.08)
+        consumer.on_delta(tail)
+        await asyncio.sleep(0.08)
+        consumer.finish()
+        await task
+
+        sent_texts = [call[1]["content"] for call in adapter.send.call_args_list]
+        assert len(sent_texts) == 3
+        assert sent_texts[0].startswith(prefix)
+        assert sum(len(t) for t in sent_texts[1:]) == len(tail)

@@ -566,6 +566,35 @@ class TestGetDueJobs:
         assert get_job("oneshot-stale")["next_run_at"] is None
 
 
+class TestEnabledToolsets:
+    def test_enabled_toolsets_stored(self, tmp_cron_dir):
+        job = create_job(prompt="monitor", schedule="every 1h", enabled_toolsets=["web", "terminal"])
+        assert job["enabled_toolsets"] == ["web", "terminal"]
+
+    def test_enabled_toolsets_persisted(self, tmp_cron_dir):
+        job = create_job(prompt="monitor", schedule="every 1h", enabled_toolsets=["web", "file"])
+        fetched = get_job(job["id"])
+        assert fetched["enabled_toolsets"] == ["web", "file"]
+
+    def test_enabled_toolsets_none_when_omitted(self, tmp_cron_dir):
+        job = create_job(prompt="monitor", schedule="every 1h")
+        assert job["enabled_toolsets"] is None
+
+    def test_enabled_toolsets_empty_list_normalizes_to_none(self, tmp_cron_dir):
+        job = create_job(prompt="monitor", schedule="every 1h", enabled_toolsets=[])
+        assert job["enabled_toolsets"] is None
+
+    def test_enabled_toolsets_whitespace_entries_stripped(self, tmp_cron_dir):
+        job = create_job(prompt="monitor", schedule="every 1h", enabled_toolsets=["web", " ", "file"])
+        assert job["enabled_toolsets"] == ["web", "file"]
+
+    def test_enabled_toolsets_updated_via_update_job(self, tmp_cron_dir):
+        job = create_job(prompt="monitor", schedule="every 1h")
+        update_job(job["id"], {"enabled_toolsets": ["web", "delegation"]})
+        fetched = get_job(job["id"])
+        assert fetched["enabled_toolsets"] == ["web", "delegation"]
+
+
 class TestSaveJobOutput:
     def test_creates_output_file(self, tmp_cron_dir):
         output_file = save_job_output("test123", "# Results\nEverything ok.")

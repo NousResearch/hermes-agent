@@ -72,7 +72,7 @@ def display_hermes_home() -> str:
         return str(home)
 
 
-VALID_REASONING_EFFORTS = ("xhigh", "high", "medium", "low", "minimal")
+VALID_REASONING_EFFORTS = ("minimal", "low", "medium", "high", "xhigh")
 
 
 def parse_reasoning_effort(effort: str) -> dict | None:

@@ -1238,10 +1238,27 @@ def build_anthropic_kwargs(
 ) -> Dict[str, Any]:
     """Build kwargs for anthropic.messages.create().
 
-    When *max_tokens* is None, the model's native output limit is used
-    (e.g. 128K for Opus 4.6, 64K for Sonnet 4.6).  If *context_length*
-    is provided, the effective limit is clamped so it doesn't exceed
-    the context window.
+    Naming note — two distinct concepts, easily confused:
+      max_tokens     = OUTPUT token cap for a single response.
+                       Anthropic's API calls this "max_tokens" but it only
+                       limits the *output*.  Anthropic's own native SDK
+                       renamed it "max_output_tokens" for clarity.
+      context_length = TOTAL context window (input tokens + output tokens).
+                       The API enforces: input_tokens + max_tokens ≤ context_length.
+                       Stored on the ContextCompressor; reduced on overflow errors.
+
+    When *max_tokens* is None the model's native output ceiling is used
+    (e.g. 128K for Opus 4.6, 64K for Sonnet 4.6).
+
+    When *context_length* is provided and the model's native output ceiling
+    exceeds it (e.g. a local endpoint with an 8K window), the output cap is
+    clamped to context_length − 1.  This only kicks in for unusually small
+    context windows; for full-size models the native output cap is always
+    smaller than the context window so no clamping happens.
+    NOTE: this clamping does not account for prompt size — if the prompt is
+    large, Anthropic may still reject the request.  The caller must detect
+    "max_tokens too large given prompt" errors and retry with a smaller cap
+    (see parse_available_output_tokens_from_error + _ephemeral_max_output_tokens).
 
     When *is_oauth* is True, applies Claude Code compatibility transforms:
     system prompt prefix, tool name prefixing, and prompt sanitization.
@@ -1256,10 +1273,14 @@ def build_anthropic_kwargs(
     anthropic_tools = convert_tools_to_anthropic(tools) if tools else []
 
     model = normalize_model_name(model, preserve_dots=preserve_dots)
+    # effective_max_tokens = output cap for this call (≠ total context window)
     effective_max_tokens = max_tokens or _get_anthropic_max_output(model)
 
-    # Clamp to context window if the user set a lower context_length
-    # (e.g. custom endpoint with limited capacity).
+    # Clamp output cap to fit inside the total context window.
+    # Only matters for small custom endpoints where context_length < native
+    # output ceiling.  For standard Anthropic models context_length (e.g.
+    # 200K) is always larger than the output ceiling (e.g. 128K), so this
+    # branch is not taken.
     if context_length and effective_max_tokens > context_length:
         effective_max_tokens = max(context_length - 1, 1)
 

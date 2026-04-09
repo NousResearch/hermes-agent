@@ -94,14 +94,35 @@ _local_model_name: Optional[str] = None
 
 
 def get_stt_model_from_config() -> Optional[str]:
-    """Read the STT model name from ~/.hermes/config.yaml.
+    """Return the effective STT model from raw user config.
 
-    Returns the value of ``stt.model`` if present, otherwise ``None``.
-    Silently returns ``None`` on any error (missing file, bad YAML, etc.).
+    Preference order:
+    - provider-specific model (e.g. ``stt.local.model`` when provider=local)
+    - legacy ``stt.model`` fallback for backwards compatibility
+
+    Raw config is used here instead of merged defaults so callers can tell the
+    difference between "user explicitly set a model" and "use provider default".
+    This avoids passing cloud-only model names like ``whisper-1`` into the
+    local faster-whisper path while preserving historical helper semantics.
     """
     try:
         from hermes_cli.config import read_raw_config
-        return read_raw_config().get("stt", {}).get("model")
+
+        stt = read_raw_config().get("stt", {})
+        if not isinstance(stt, dict) or not stt:
+            return None
+
+        provider = stt.get("provider")
+        if provider in {"local", "local_command"}:
+            return stt.get("local", {}).get("model") or stt.get("model")
+        if provider == "openai":
+            return stt.get("openai", {}).get("model") or stt.get("model")
+        if provider == "groq":
+            return stt.get("groq", {}).get("model") or stt.get("model")
+        if provider == "mistral":
+            return stt.get("mistral", {}).get("model") or stt.get("model")
+
+        return stt.get("model")
     except Exception:
         pass
     return None

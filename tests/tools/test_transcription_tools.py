@@ -860,6 +860,21 @@ class TestGetSttModelFromConfig:
         from tools.transcription_tools import get_stt_model_from_config
         assert get_stt_model_from_config() is None
 
+    def test_prefers_local_model_over_legacy_top_level_model(self, tmp_path, monkeypatch):
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text(
+            "stt:\n"
+            "  enabled: true\n"
+            "  provider: local\n"
+            "  model: whisper-1\n"
+            "  local:\n"
+            "    model: base\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        from tools.transcription_tools import get_stt_model_from_config
+        assert get_stt_model_from_config() == "base"
+
 
 # ============================================================================
 # _transcribe_mistral

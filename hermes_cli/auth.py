@@ -1544,6 +1544,11 @@ def refresh_codex_oauth_pure(
                 "then run `hermes auth` to re-authenticate."
             )
             relogin_required = True
+        # A 401/403 from the token endpoint always means the refresh token
+        # is invalid/expired — force relogin even if the body error code
+        # wasn't one of the known strings above.
+        if response.status_code in (401, 403) and not relogin_required:
+            relogin_required = True
         raise AuthError(
             message,
             provider="openai-codex",

@@ -356,6 +356,24 @@ class TestBuildApiKwargsCodex:
         assert "reasoning" in kwargs
         assert kwargs["reasoning"]["effort"] == "medium"
 
+    def test_includes_service_tier_when_configured(self, monkeypatch):
+        agent = _make_agent(monkeypatch, "openai-codex", api_mode="codex_responses",
+                            base_url="https://chatgpt.com/backend-api/codex")
+        agent.model = "gpt-5.4"
+        agent.service_tier = "priority"
+        messages = [{"role": "user", "content": "hi"}]
+        kwargs = agent._build_api_kwargs(messages)
+        assert kwargs["service_tier"] == "priority"
+
+    def test_omits_max_output_tokens_for_codex_backend(self, monkeypatch):
+        agent = _make_agent(monkeypatch, "openai-codex", api_mode="codex_responses",
+                            base_url="https://chatgpt.com/backend-api/codex")
+        agent.model = "gpt-5.4"
+        agent.max_tokens = 20
+        messages = [{"role": "user", "content": "hi"}]
+        kwargs = agent._build_api_kwargs(messages)
+        assert "max_output_tokens" not in kwargs
+
     def test_includes_encrypted_content_in_include(self, monkeypatch):
         agent = _make_agent(monkeypatch, "openai-codex", api_mode="codex_responses",
                             base_url="https://chatgpt.com/backend-api/codex")

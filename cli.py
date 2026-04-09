@@ -120,6 +120,75 @@ def _parse_reasoning_config(effort: str) -> dict | None:
     return result
 
 
+def _parse_service_tier_config(raw: str) -> str | None:
+    """Parse a persisted service-tier preference into a Responses API value."""
+    value = str(raw or "").strip().lower()
+    if not value or value in {"normal", "default", "standard", "off", "none"}:
+        return None
+    if value in {"fast", "priority", "on"}:
+        return "priority"
+    logger.warning("Unknown service_tier '%s', ignoring", raw)
+    return None
+
+
+def _prompt_fast_mode_selection(current_tier: str | None = None) -> str | None:
+    """Prompt for a Codex fast-mode selection. Returns 'normal', 'fast', or None."""
+    current = "fast" if current_tier == "priority" else "normal"
+    ordered = ["normal", "fast"]
+    default_idx = ordered.index(current)
+
+    def _label(name: str) -> str:
+        text = name.capitalize()
+        if name == current:
+            return f"{text}  ← currently in use"
+        return text
+
+    try:
+        from simple_term_menu import TerminalMenu
+
+        choices = [f"  {_label(name)}" for name in ordered]
+        choices.append("  Cancel")
+        menu = TerminalMenu(
+            choices,
+            cursor_index=default_idx,
+            menu_cursor="-> ",
+            menu_cursor_style=("fg_green", "bold"),
+            menu_highlight_style=("fg_green",),
+            cycle_cursor=True,
+            clear_screen=False,
+            title="Select Codex inference tier:",
+        )
+        idx = menu.show()
+        if idx is None or idx >= len(ordered):
+            return None
+        print()
+        return ordered[idx]
+    except (ImportError, NotImplementedError):
+        pass
+
+    print("Select Codex inference tier:")
+    for i, name in enumerate(ordered, 1):
+        print(f"  {i}. {_label(name)}")
+    print(f"  {len(ordered) + 1}. Cancel")
+    print()
+
+    while True:
+        try:
+            choice = input(f"Choice [1-{len(ordered) + 1}] (default: cancel): ").strip()
+            if not choice:
+                return None
+            idx = int(choice)
+            if 1 <= idx <= len(ordered):
+                return ordered[idx - 1]
+            if idx == len(ordered) + 1:
+                return None
+            print(f"Please enter 1-{len(ordered) + 1}")
+        except ValueError:
+            print("Please enter a number")
+        except (KeyboardInterrupt, EOFError):
+            return None
+
+
 def _get_chrome_debug_candidates(system: str) -> list[str]:
     """Return likely browser executables for local CDP auto-launch."""
     candidates: list[str] = []
@@ -239,6 +308,7 @@ def load_cli_config() -> Dict[str, Any]:
             "system_prompt": "",
             "prefill_messages_file": "",
             "reasoning_effort": "",
+            "service_tier": "",
             "personalities": {
                 "helpful": "You are a helpful, friendly AI assistant.",
                 "concise": "You are a concise assistant. Keep responses brief and to the point.",
@@ -1478,6 +1548,9 @@ class HermesCLI:
         self.reasoning_config = _parse_reasoning_config(
             CLI_CONFIG["agent"].get("reasoning_effort", "")
         )
+        self.service_tier = _parse_service_tier_config(
+            CLI_CONFIG["agent"].get("service_tier", "")
+        )
         
         # OpenRouter provider routing preferences
         pr = CLI_CONFIG.get("provider_routing", {}) or {}
@@ -2452,6 +2525,7 @@ class HermesCLI:
                 ephemeral_system_prompt=self.system_prompt if self.system_prompt else None,
                 prefill_messages=self.prefill_messages or None,
                 reasoning_config=self.reasoning_config,
+                service_tier=self.service_tier,
                 providers_allowed=self._providers_only,
                 providers_ignored=self._providers_ignore,
                 providers_order=self._providers_order,
@@ -3073,6 +3147,21 @@ class HermesCLI:
             f"{toolsets_info}{provider_info}"
         )
     
+    def _fast_command_available(self) -> bool:
+        try:
+            from hermes_cli.models import codex_model_supports_fast_mode
+        except Exception:
+            return False
+        agent = getattr(self, "agent", None)
+        model = getattr(agent, "model", None) or self.model
+        provider = self.provider or self.requested_provider
+        return codex_model_supports_fast_mode(provider, model)
+
+    def _command_available(self, slash_command: str) -> bool:
+        if slash_command == "/fast":
+            return self._fast_command_available()
+        return True
+
     def show_help(self):
         """Display help information with categorized commands."""
         from hermes_cli.commands import COMMANDS_BY_CATEGORY
@@ -3093,6 +3182,8 @@ class HermesCLI:
         for category, commands in COMMANDS_BY_CATEGORY.items():
             _cprint(f"\n  {_BOLD}── {category} ──{_RST}")
             for cmd, desc in commands.items():
+                if not self._command_available(cmd):
+                    continue
                 ChatConsole().print(f"    [bold {_accent_hex()}]{cmd:<15}[/] [dim]-[/] {_escape(desc)}")
 
         if _skill_commands:
@@ -4542,6 +4633,8 @@ class HermesCLI:
             self._toggle_yolo()
         elif canonical == "reasoning":
             self._handle_reasoning_command(cmd_original)
+        elif canonical == "fast":
+            self._handle_fast_command(cmd_original)
         elif canonical == "compress":
             self._manual_compress()
         elif canonical == "usage":
@@ -4779,6 +4872,7 @@ class HermesCLI:
                     platform="cli",
                     session_db=self._session_db,
                     reasoning_config=self.reasoning_config,
+                    service_tier=self.service_tier,
                     providers_allowed=self._providers_only,
                     providers_ignored=self._providers_ignore,
                     providers_order=self._providers_order,
@@ -4914,6 +5008,7 @@ class HermesCLI:
                     session_id=task_id,
                     platform="cli",
                     reasoning_config=self.reasoning_config,
+                    service_tier=self.service_tier,
                     providers_allowed=self._providers_only,
                     providers_ignored=self._providers_ignore,
                     providers_order=self._providers_order,
@@ -5342,6 +5437,46 @@ class HermesCLI:
             _cprint(f"  {_GOLD}✓ Reasoning effort set to '{arg}' (saved to config){_RST}")
         else:
             _cprint(f"  {_GOLD}✓ Reasoning effort set to '{arg}' (session only){_RST}")
+
+    def _handle_fast_command(self, cmd: str):
+        """Handle /fast — choose the Codex Responses service tier."""
+        if not self._fast_command_available():
+            _cprint("  (._.) /fast is only available for models that explicitly expose a fast backend.")
+            return
+
+        parts = cmd.strip().split(maxsplit=1)
+        if len(parts) < 2:
+            selected = _prompt_fast_mode_selection(current_tier=self.service_tier)
+            if selected is None:
+                return
+            arg = selected
+        else:
+            arg = parts[1].strip().lower()
+
+        if arg == "status":
+            status = "fast" if self.service_tier == "priority" else "normal"
+            _cprint(f"  {_GOLD}Codex inference tier: {status}{_RST}")
+            _cprint(f"  {_DIM}Usage: /fast [normal|fast|status]{_RST}")
+            return
+
+        if arg in {"fast", "on"}:
+            self.service_tier = "priority"
+            saved_value = "fast"
+            label = "FAST"
+        elif arg in {"normal", "off"}:
+            self.service_tier = None
+            saved_value = "normal"
+            label = "NORMAL"
+        else:
+            _cprint(f"  {_DIM}(._.) Unknown argument: {arg}{_RST}")
+            _cprint(f"  {_DIM}Usage: /fast [normal|fast|status]{_RST}")
+            return
+
+        self.agent = None  # Force agent re-init with new service-tier config
+        if save_config_value("agent.service_tier", saved_value):
+            _cprint(f"  {_GOLD}✓ Codex inference tier set to {label} (saved to config){_RST}")
+        else:
+            _cprint(f"  {_GOLD}✓ Codex inference tier set to {label} (session only){_RST}")
 
     def _on_reasoning(self, reasoning_text: str):
         """Callback for intermediate reasoning display during tool-call loops."""
@@ -7647,6 +7782,7 @@ class HermesCLI:
 
         _completer = SlashCommandCompleter(
             skill_commands_provider=lambda: _skill_commands,
+            command_filter=cli_ref._command_available,
         )
         input_area = TextArea(
             height=Dimension(min=1, max=8, preferred=1),

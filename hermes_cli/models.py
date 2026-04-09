@@ -1017,6 +1017,31 @@ def provider_label(provider: Optional[str]) -> str:
     return _PROVIDER_LABELS.get(normalized, original or "OpenRouter")
 
 
+_FAST_MODE_BACKEND_CONFIG: dict[tuple[str, str], dict[str, str]] = {
+    ("openai-codex", "gpt-5.4"): {"service_tier": "priority"},
+}
+
+
+def fast_mode_backend_config(provider: Optional[str], model_id: Optional[str]) -> dict[str, str] | None:
+    """Return backend request overrides for models that expose Fast mode.
+
+    To expose Fast mode for a new model, add its ``(provider, model)`` tuple to
+    ``_FAST_MODE_BACKEND_CONFIG`` along with the backend-specific request
+    overrides Hermes should apply when the user enables Fast mode.
+    """
+    normalized_provider = normalize_provider(provider)
+    raw = str(model_id or "").strip().lower()
+    if "/" in raw:
+        raw = raw.split("/", 1)[1]
+    config = _FAST_MODE_BACKEND_CONFIG.get((normalized_provider, raw))
+    return dict(config) if config else None
+
+
+def codex_model_supports_fast_mode(provider: Optional[str], model_id: Optional[str]) -> bool:
+    """Return whether Hermes should expose Fast mode for the active model."""
+    return fast_mode_backend_config(provider, model_id) is not None
+
+
 def _resolve_copilot_catalog_api_key() -> str:
     """Best-effort GitHub token for fetching the Copilot model catalog."""
     try:

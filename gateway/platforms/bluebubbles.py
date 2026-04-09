@@ -9,6 +9,8 @@ downloading from PR #4588 (YuhangLin).
 """
 
 import asyncio
+import hmac
+import ipaddress
 import json
 import logging
 import os
@@ -89,6 +91,19 @@ def _normalize_server_url(raw: str) -> str:
     return value.rstrip("/")
 
 
+def _is_loopback_host(host: str) -> bool:
+    """Return True when the webhook bind host resolves only to loopback."""
+    value = (host or "").strip()
+    if not value:
+        return False
+    if value.lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(value).is_loopback
+    except ValueError:
+        return False
+
+
 def _strip_markdown(text: str) -> str:
     """Strip common markdown formatting for iMessage plain-text delivery."""
     text = re.sub(r"\*\*(.+?)\*\*", r"\1", text, flags=re.DOTALL)
@@ -122,6 +137,10 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             extra.get("webhook_host")
             or os.getenv("BLUEBUBBLES_WEBHOOK_HOST", DEFAULT_WEBHOOK_HOST)
         )
+        self.webhook_secret = str(
+            extra.get("webhook_secret")
+            or os.getenv("BLUEBUBBLES_WEBHOOK_SECRET", "")
+        ).strip()
         self.webhook_port = int(
             extra.get("webhook_port")
             or os.getenv("BLUEBUBBLES_WEBHOOK_PORT", str(DEFAULT_WEBHOOK_PORT))
@@ -138,6 +157,23 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         self._private_api_enabled: Optional[bool] = None
         self._helper_connected: bool = False
         self._guid_cache: Dict[str, str] = {}
+
+    def _webhook_auth_secret(self) -> str:
+        """Return the secret expected on inbound webhooks.
+
+        Loopback-only deployments keep the historical password fallback for
+        backwards compatibility, but any explicit webhook secret takes
+        precedence.
+        """
+        return self.webhook_secret or self.password
+
+    def _requires_dedicated_webhook_secret(self) -> bool:
+        """Return True when the webhook listener is exposed off-loopback."""
+        return not _is_loopback_host(self.webhook_host)
+
+    def _has_valid_dedicated_webhook_secret(self) -> bool:
+        """Return True when the webhook secret is present and scoped separately."""
+        return bool(self.webhook_secret) and self.webhook_secret != self.password
 
     # ------------------------------------------------------------------
     # API helpers
@@ -167,6 +203,17 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         if not self.server_url or not self.password:
             logger.error(
                 "[bluebubbles] BLUEBUBBLES_SERVER_URL and BLUEBUBBLES_PASSWORD are required"
+            )
+            return False
+        if (
+            self._requires_dedicated_webhook_secret()
+            and not self._has_valid_dedicated_webhook_secret()
+        ):
+            logger.error(
+                "[bluebubbles] Non-loopback webhook host %s requires "
+                "BLUEBUBBLES_WEBHOOK_SECRET, and it must be different from "
+                "BLUEBUBBLES_PASSWORD",
+                self.webhook_host,
             )
             return False
         from aiohttp import web
@@ -673,7 +720,10 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             or request.headers.get("x-guid")
             or request.headers.get("x-bluebubbles-guid")
         )
-        if token != self.password:
+        if not isinstance(token, str) or not hmac.compare_digest(
+            token,
+            self._webhook_auth_secret(),
+        ):
             return web.json_response({"error": "unauthorized"}, status=401)
         try:
             raw = await request.read()

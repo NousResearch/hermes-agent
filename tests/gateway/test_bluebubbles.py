@@ -1,4 +1,5 @@
 """Tests for the BlueBubbles iMessage gateway adapter."""
+import asyncio
 import pytest
 
 from gateway.config import Platform, PlatformConfig
@@ -30,6 +31,7 @@ class TestBlueBubblesConfigLoading:
         monkeypatch.setenv("BLUEBUBBLES_SERVER_URL", "http://localhost:1234")
         monkeypatch.setenv("BLUEBUBBLES_PASSWORD", "secret")
         monkeypatch.setenv("BLUEBUBBLES_WEBHOOK_PORT", "9999")
+        monkeypatch.setenv("BLUEBUBBLES_WEBHOOK_SECRET", "webhook-secret")
         from gateway.config import GatewayConfig, _apply_env_overrides
 
         config = GatewayConfig()
@@ -40,6 +42,7 @@ class TestBlueBubblesConfigLoading:
         assert bc.extra["server_url"] == "http://localhost:1234"
         assert bc.extra["password"] == "secret"
         assert bc.extra["webhook_port"] == 9999
+        assert bc.extra["webhook_secret"] == "webhook-secret"
 
     def test_connected_platforms_includes_bluebubbles(self, monkeypatch):
         monkeypatch.setenv("BLUEBUBBLES_SERVER_URL", "http://localhost:1234")
@@ -108,8 +111,43 @@ class TestBlueBubblesHelpers:
         adapter = _make_adapter(monkeypatch, server_url="localhost:1234")
         assert adapter.server_url == "http://localhost:1234"
 
+    def test_non_loopback_webhook_requires_distinct_secret(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch, webhook_host="0.0.0.0")
+        assert asyncio.run(adapter.connect()) is False
+
+    def test_non_loopback_webhook_rejects_password_reuse(self, monkeypatch):
+        adapter = _make_adapter(
+            monkeypatch,
+            webhook_host="0.0.0.0",
+            webhook_secret="secret",
+        )
+        assert asyncio.run(adapter.connect()) is False
+
+    def test_non_loopback_webhook_accepts_distinct_secret(self, monkeypatch):
+        adapter = _make_adapter(
+            monkeypatch,
+            webhook_host="0.0.0.0",
+            webhook_secret="hook-secret",
+        )
+        assert adapter._has_valid_dedicated_webhook_secret() is True
+        assert adapter._webhook_auth_secret() == "hook-secret"
+
 
 class TestBlueBubblesWebhookParsing:
+    def test_webhook_uses_dedicated_secret_when_configured(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch, webhook_secret="hook-secret")
+
+        class _Request:
+            def __init__(self, token: str):
+                self.query = {"password": token}
+                self.headers = {}
+
+            async def read(self):
+                return b'{"type":"new-message","data":{"text":"hello","chatGuid":"iMessage;-;user@example.com","chatIdentifier":"user@example.com","handle":{"address":"user@example.com"}}}'
+
+        response = asyncio.run(adapter._handle_webhook(_Request("secret")))
+        assert response.status == 401
+
     def test_webhook_prefers_chat_guid_over_message_guid(self, monkeypatch):
         adapter = _make_adapter(monkeypatch)
         payload = {

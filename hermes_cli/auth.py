@@ -440,14 +440,18 @@ def _resolve_zai_base_url(api_key: str, default_url: str, env_override: str) -> 
     if detected and detected.get("base_url"):
         # Persist the detection result keyed on the API key hash.
         key_hash = hashlib.sha256(api_key.encode()).hexdigest()[:16]
-        state["detected_endpoint"] = {
-            "base_url": detected["base_url"],
-            "endpoint_id": detected.get("id", ""),
-            "model": detected.get("model", ""),
-            "label": detected.get("label", ""),
-            "key_hash": key_hash,
-        }
-        _save_provider_state(auth_store, "zai", state)
+        with _auth_store_lock():
+            auth_store = _load_auth_store()
+            state = _load_provider_state(auth_store, "zai") or {}
+            state["detected_endpoint"] = {
+                "base_url": detected["base_url"],
+                "endpoint_id": detected.get("id", ""),
+                "model": detected.get("model", ""),
+                "label": detected.get("label", ""),
+                "key_hash": key_hash,
+            }
+            _save_provider_state(auth_store, "zai", state, set_active=False)
+            _save_auth_store(auth_store)
         logger.info("Z.AI: auto-detected endpoint %s (%s)", detected["label"], detected["base_url"])
         return detected["base_url"]
 
@@ -672,13 +676,14 @@ def _load_provider_state(auth_store: Dict[str, Any], provider_id: str) -> Option
     return dict(state) if isinstance(state, dict) else None
 
 
-def _save_provider_state(auth_store: Dict[str, Any], provider_id: str, state: Dict[str, Any]) -> None:
+def _save_provider_state(auth_store: Dict[str, Any], provider_id: str, state: Dict[str, Any], *, set_active: bool = True) -> None:
     providers = auth_store.setdefault("providers", {})
     if not isinstance(providers, dict):
         auth_store["providers"] = {}
         providers = auth_store["providers"]
     providers[provider_id] = state
-    auth_store["active_provider"] = provider_id
+    if set_active:
+        auth_store["active_provider"] = provider_id
 
 
 def read_credential_pool(provider_id: Optional[str] = None) -> Dict[str, Any]:
@@ -707,14 +712,16 @@ def write_credential_pool(provider_id: str, entries: List[Dict[str, Any]]) -> Pa
 
 def get_provider_auth_state(provider_id: str) -> Optional[Dict[str, Any]]:
     """Return persisted auth state for a provider, or None."""
-    auth_store = _load_auth_store()
-    return _load_provider_state(auth_store, provider_id)
+    with _auth_store_lock():
+        auth_store = _load_auth_store()
+        return _load_provider_state(auth_store, provider_id)
 
 
 def get_active_provider() -> Optional[str]:
     """Return the currently active provider ID from auth store."""
-    auth_store = _load_auth_store()
-    return auth_store.get("active_provider")
+    with _auth_store_lock():
+        auth_store = _load_auth_store()
+        return auth_store.get("active_provider")
 
 
 def clear_provider_auth(provider_id: Optional[str] = None) -> bool:
@@ -1203,7 +1210,7 @@ def _save_codex_tokens(tokens: Dict[str, str], last_refresh: str = None) -> None
         state["tokens"] = tokens
         state["last_refresh"] = last_refresh
         state["auth_mode"] = "chatgpt"
-        _save_provider_state(auth_store, "openai-codex", state)
+        _save_provider_state(auth_store, "openai-codex", state, set_active=False)
         _save_auth_store(auth_store)
 
 

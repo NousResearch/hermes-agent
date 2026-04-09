@@ -103,6 +103,10 @@ def _run_git(
     env = _git_env(shadow_repo, working_dir)
     cmd = ["git"] + list(args)
     allowed_returncodes = allowed_returncodes or set()
+    resolved_cwd = Path(working_dir).resolve()
+    if not resolved_cwd.exists():
+        logger.debug("Checkpoint skipped: working directory not found: %s", resolved_cwd)
+        return False, "", f"working directory not found: {resolved_cwd}"
     try:
         result = subprocess.run(
             cmd,

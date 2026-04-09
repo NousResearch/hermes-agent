@@ -449,10 +449,16 @@ def _(rid, params: dict) -> dict:
 @method("session.list")
 def _(rid, params: dict) -> dict:
     try:
-        rows = _get_db().list_sessions_rich(source="tui", limit=params.get("limit", 20))
+        db = _get_db()
+        # Show both TUI and CLI sessions — TUI is the successor to the CLI,
+        # so users expect to resume their old CLI sessions here too.
+        tui = db.list_sessions_rich(source="tui", limit=params.get("limit", 20))
+        cli = db.list_sessions_rich(source="cli", limit=params.get("limit", 20))
+        rows = sorted(tui + cli, key=lambda s: s.get("started_at") or 0, reverse=True)[:params.get("limit", 20)]
         return _ok(rid, {"sessions": [
             {"id": s["id"], "title": s.get("title") or "", "preview": s.get("preview") or "",
-             "started_at": s.get("started_at") or 0, "message_count": s.get("message_count") or 0}
+             "started_at": s.get("started_at") or 0, "message_count": s.get("message_count") or 0,
+             "source": s.get("source") or ""}
             for s in rows
         ]})
     except Exception as e:

@@ -629,11 +629,19 @@ def _nous_base_url() -> str:
 
 
 def _read_codex_access_token() -> Optional[str]:
-    """Read a valid, non-expired Codex OAuth access token from Hermes auth store."""
+    """Read a valid, non-expired Codex OAuth access token from Hermes auth store.
+
+    If a credential pool exists but currently has no selectable runtime entry
+    (for example all pool slots are marked exhausted), fall back to the
+    profile's auth.json token instead of hard-failing. This keeps explicit
+    fallback-to-Codex working when the pool state is stale but the stored OAuth
+    token is still valid.
+    """
     pool_present, entry = _select_pool_entry("openai-codex")
     if pool_present:
         token = _pool_runtime_api_key(entry)
-        return token or None
+        if token:
+            return token
 
     try:
         from hermes_cli.auth import _read_codex_tokens
@@ -894,9 +902,13 @@ def _try_codex() -> Tuple[Optional[Any], Optional[str]]:
     pool_present, entry = _select_pool_entry("openai-codex")
     if pool_present:
         codex_token = _pool_runtime_api_key(entry)
-        if not codex_token:
-            return None, None
-        base_url = _pool_runtime_base_url(entry, _CODEX_AUX_BASE_URL) or _CODEX_AUX_BASE_URL
+        if codex_token:
+            base_url = _pool_runtime_base_url(entry, _CODEX_AUX_BASE_URL) or _CODEX_AUX_BASE_URL
+        else:
+            codex_token = _read_codex_access_token()
+            if not codex_token:
+                return None, None
+            base_url = _CODEX_AUX_BASE_URL
     else:
         codex_token = _read_codex_access_token()
         if not codex_token:

@@ -145,6 +145,25 @@ class TestAuthHeaders:
         assert "mytoken12345" not in result
 
 
+class TestUrlCredentials:
+    def test_https_basic_auth_password_redacted(self):
+        text = "git remote set-url origin https://user:supersecretpassword@github.com/org/repo.git"
+        result = redact_sensitive_text(text)
+        assert "supersecretpassword" not in result
+        assert "https://***@github.com/org/repo.git" in result
+
+    def test_https_token_only_userinfo_redacted(self):
+        text = "git remote set-url origin https://local-machine-password@github.com/org/repo.git"
+        result = redact_sensitive_text(text)
+        assert "local-machine-password" not in result
+        assert "https://***@github.com/org/repo.git" in result
+
+    def test_url_path_with_at_symbol_unchanged(self):
+        text = "Open https://github.com/@nousresearch/hermes-agent for details"
+        result = redact_sensitive_text(text)
+        assert result == text
+
+
 class TestTelegramTokens:
     def test_bot_token(self):
         text = "bot123456789:ABCDEfghij-KLMNopqrst_UVWXyz12345"

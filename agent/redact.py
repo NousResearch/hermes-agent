@@ -93,6 +93,12 @@ _DB_CONNSTR_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Generic HTTP(S) URLs with embedded userinfo: https://user:pass@host or https://token@host
+_URL_BASIC_AUTH_RE = re.compile(
+    r"((?:https?)://)([^/?#\s@]+)(@)",
+    re.IGNORECASE,
+)
+
 # E.164 phone numbers: +<country><number>, 7-15 digits
 # Negative lookahead prevents matching hex strings or identifiers
 _SIGNAL_PHONE_RE = re.compile(r"(\+[1-9]\d{6,14})(?![A-Za-z0-9])")
@@ -158,6 +164,9 @@ def redact_sensitive_text(text: str) -> str:
 
     # Database connection string passwords
     text = _DB_CONNSTR_RE.sub(lambda m: f"{m.group(1)}***{m.group(3)}", text)
+
+    # Generic HTTP(S) URLs with embedded credentials or tokens
+    text = _URL_BASIC_AUTH_RE.sub(lambda m: f"{m.group(1)}***{m.group(3)}", text)
 
     # E.164 phone numbers (Signal, WhatsApp)
     def _redact_phone(m):

@@ -480,6 +480,39 @@ class TestClassifyApiError:
         result = classify_api_error(e)
         assert result.reason == FailoverReason.context_overflow
 
+    # ── Message-only usage limit disambiguation (no status code) ──
+
+    def test_message_usage_limit_transient_is_rate_limit(self):
+        """'usage limit' + 'try again' with no status code → rate_limit, not billing."""
+        e = Exception("usage limit exceeded, try again in 5 minutes")
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.rate_limit
+        assert result.retryable is True
+        assert result.should_rotate_credential is True
+        assert result.should_fallback is True
+
+    def test_message_usage_limit_no_retry_signal_is_billing(self):
+        """'usage limit' with no transient signal and no status code → billing."""
+        e = Exception("usage limit reached")
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.billing
+        assert result.retryable is False
+        assert result.should_rotate_credential is True
+
+    def test_message_quota_with_reset_window_is_rate_limit(self):
+        """'quota' + 'resets at' with no status code → rate_limit."""
+        e = Exception("quota exceeded, resets at midnight UTC")
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.rate_limit
+        assert result.retryable is True
+
+    def test_message_limit_exceeded_with_wait_is_rate_limit(self):
+        """'limit exceeded' + 'wait' with no status code → rate_limit."""
+        e = Exception("key limit exceeded, please wait before retrying")
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.rate_limit
+        assert result.retryable is True
+
     # ── Unknown / fallback ──
 
     def test_generic_exception_is_unknown(self):

@@ -84,6 +84,36 @@ argus:
 
 **No hardcoded providers** - works with any provider the user configures.
 
+### Circuit Breaker (`circuit_breaker.py`)
+
+Automatic provider disable on failure using Hermes config integration.
+
+**User Configuration (config.yaml):**
+```yaml
+argus:
+  circuit_breaker:
+    enabled: false                  # Disabled by default - set to true to enable
+    failure_threshold: 3            # Consecutive failures to open circuit
+    error_rate_threshold: 0.50    # 50% error rate over window
+    min_requests_for_rate: 5      # Min requests before rate check
+    recovery_timeout: 300           # Seconds before retry (half-open)
+    half_open_requests: 2         # Successful requests to close
+    notify_on_open: true            # Alert when circuit opens
+    notify_on_close: true           # Alert when circuit closes
+```
+
+**How it works:**
+1. Uses Hermes `load_config()` and `save_config()` to manage `provider_routing.ignore`
+2. Uses Argus `provider_health` module for failure detection
+3. States: CLOSED (normal) → OPEN (disabled after failures) → HALF_OPEN (testing) → CLOSED (recovered)
+4. Alerts on circuit open/close
+5. Records events to audit trail
+
+**Uses Hermes classes/functions:**
+- `hermes_cli.config.load_config()` - read current provider_routing
+- `hermes_cli.config.save_config()` - write updated provider_routing
+- `provider_health.run_provider_check()` - get error rates
+
 ## File Organization
 
 ### Production (ships with package)

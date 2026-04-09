@@ -712,6 +712,13 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             name=os.getenv("DISCORD_HOME_CHANNEL_NAME", "Home"),
         )
     
+    # Reply threading mode for Discord (off/first/all)
+    discord_reply_mode = os.getenv("DISCORD_REPLY_TO_MODE", "").lower()
+    if discord_reply_mode in ("off", "first", "all"):
+        if Platform.DISCORD not in config.platforms:
+            config.platforms[Platform.DISCORD] = PlatformConfig()
+        config.platforms[Platform.DISCORD].reply_to_mode = discord_reply_mode
+    
     # WhatsApp (typically uses different auth mechanism)
     whatsapp_enabled = os.getenv("WHATSAPP_ENABLED", "").lower() in ("true", "1", "yes")
     if whatsapp_enabled:

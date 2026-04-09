@@ -941,9 +941,26 @@ class SlackAdapter(BasePlatformAdapter):
                     if v > cutoff
                 }
 
-        # Ignore bot messages (including our own)
+        # Bot message filtering (SLACK_ALLOW_BOTS / config allow_bots):
+        #   "none"     — ignore all bot messages (default, backward-compatible)
+        #   "mentions" — accept bot messages only when they @mention us
+        #   "all"      — accept all bot messages (except our own)
         if event.get("bot_id") or event.get("subtype") == "bot_message":
-            return
+            allow_bots = self.config.extra.get("allow_bots", "")
+            if not allow_bots:
+                allow_bots = os.getenv("SLACK_ALLOW_BOTS", "none")
+            allow_bots = str(allow_bots).lower().strip()
+            if allow_bots == "none":
+                return
+            elif allow_bots == "mentions":
+                text_check = event.get("text", "")
+                if self._bot_user_id and f"<@{self._bot_user_id}>" not in text_check:
+                    return
+            # "all" falls through to process the message
+            # Always ignore our own messages to prevent echo loops
+            msg_user = event.get("user", "")
+            if msg_user and self._bot_user_id and msg_user == self._bot_user_id:
+                return
 
         # Ignore message edits and deletions
         subtype = event.get("subtype")

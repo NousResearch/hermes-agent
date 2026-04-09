@@ -10,6 +10,7 @@ interface SessionItem {
   preview: string
   started_at: number
   message_count: number
+  source?: string
 }
 
 function age(ts: number): string {
@@ -109,7 +110,7 @@ export function SessionPicker({
             </Text>
             <Text color={t.color.dim}>
               {' '}
-              ({s.message_count} msgs, {age(s.started_at)})
+              ({s.message_count} msgs, {age(s.started_at)}{s.source && s.source !== 'tui' ? `, ${s.source}` : ''})
             </Text>
           </Text>
         )

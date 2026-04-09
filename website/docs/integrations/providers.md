@@ -230,7 +230,7 @@ model:
 ```
 
 :::warning Legacy env vars
-`OPENAI_BASE_URL` and `LLM_MODEL` in `.env` are **deprecated**. `OPENAI_BASE_URL` is no longer consulted for endpoint resolution — `config.yaml` is the single source of truth. The CLI ignores `LLM_MODEL` entirely (only the gateway reads it as a fallback). Use `hermes model` or edit `config.yaml` directly — both persist correctly across restarts and Docker containers.
+`OPENAI_BASE_URL` and `LLM_MODEL` in `.env` are **removed**. Neither is read by any part of Hermes — `config.yaml` is the single source of truth for model and endpoint configuration. If you have stale entries in your `.env`, they are automatically cleared on the next `hermes setup` or config migration. Use `hermes model` or edit `config.yaml` directly.
 :::
 
 Both approaches persist to `config.yaml`, which is the source of truth for model, provider, and base URL.

@@ -569,7 +569,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 12,
+    "_config_version": 13,
 }
 
 # =============================================================================
@@ -1700,6 +1700,21 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                     for key in list(providers_dict.keys())[-migrated_count:]:
                         ep = providers_dict[key]
                         print(f"    → {key}: {ep.get('api', '')}")
+
+    # ── Version 12 → 13: clear dead LLM_MODEL / OPENAI_MODEL from .env ──
+    # These env vars were written by the old setup wizard but nothing reads
+    # them anymore (config.yaml is the sole source of truth since March 2026).
+    # Stale entries cause user confusion — see issue report.
+    if current_ver < 13:
+        for dead_var in ("LLM_MODEL", "OPENAI_MODEL"):
+            try:
+                old_val = get_env_value(dead_var)
+                if old_val:
+                    save_env_value(dead_var, "")
+                    if not quiet:
+                        print(f"  ✓ Cleared {dead_var} from .env (no longer used — config.yaml is source of truth)")
+            except Exception:
+                pass
 
     if current_ver < latest_ver and not quiet:
         print(f"Config version: {current_ver} → {latest_ver}")

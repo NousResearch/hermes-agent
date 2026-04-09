@@ -153,8 +153,24 @@ def build_corrective_prompt(
 ) -> str:
     """Build a corrective prompt based on recent entropy detections for this session.
 
-    Queries entropy_detections for both session_id and wal_{session_id} to find
-    detections from both DB-poll and WAL-monitor sources.
+    Queries entropy_detections table for both session_id and wal_{session_id}
+    (WAL monitor prefix) to find detections from both polling sources. Returns
+    a contextual corrective prompt that explains what entropy was detected
+    and how to correct it.
+
+    Args:
+        cursor: Database cursor for agathos.db
+        session_id: Session to build prompt for
+        reason: Human-readable reason for the corrective action
+        corrective_prompts: Optional dict mapping entropy_type to prompt templates.
+            Defaults to DEFAULT_CORRECTIVE_PROMPTS.
+
+    Returns:
+        Formatted corrective prompt string combining the template and reason.
+        If no recent entropy detection found, returns generic restart message.
+
+    Query scope: Last 10 minutes of entropy_detections table.
+    Query sources: Both session_id and wal_session_id (for WAL monitor coverage).
     """
     prompts = corrective_prompts or DEFAULT_CORRECTIVE_PROMPTS
     wal_session_id = f"wal_{session_id}"
@@ -220,10 +236,34 @@ def restart_session(
     reason: str,
     corrective_prompts: Optional[Dict[str, str]] = None,
 ) -> None:
-    """Restart a session with tighter constraints.
+    """Restart a session with tighter constraints and corrective guidance.
 
-    Increments restart_count, builds corrective prompt, dispatches to
-    session-type-specific handler.
+    Orchestrates the restart workflow:
+    1. Fetches session from database
+    2. Increments restart_count and updates status to 'restarted'
+    3. Builds corrective prompt based on recent entropy detections
+    4. Dispatches to session-type-specific restart handler (cron/delegate/manual)
+    5. Commits database changes and logs result
+
+    Args:
+        cursor: Database cursor for agathos.db
+        conn: Database connection for commit
+        session_id: Session to restart
+        reason: Human-readable reason for restart (logged and used in prompts)
+        corrective_prompts: Optional dict mapping entropy_type to prompt templates
+
+    Side effects:
+        - Updates sessions table (restart_count, status)
+        - Dispatches to restart_cron_session, restart_delegate_session,
+          or restart_manual_session based on session_type
+        - Commits connection
+        - Logs info via agathos.actions logger
+        - Logs errors if restart handlers fail
+
+    Returns:
+        None (errors logged, never raises)
+
+    Session types handled: cron, delegate_task, manual
     """
     cursor.execute("SELECT * FROM sessions WHERE session_id = ?", (session_id,))
     row = cursor.fetchone()
@@ -266,7 +306,26 @@ def restart_session(
 
 
 def restart_cron_session(session: Dict, corrective_prompt: str) -> None:
-    """Cron restart: pause job, update prompt, resume."""
+    """Restart a cron session: pause job, update prompt, resume.
+
+    Implementation for cron session restarts:
+    1. Pauses the cron job via pause_job API
+    2. Updates job prompt with corrective instructions prepended
+    3. Resumes the job via resume_job API
+
+    Args:
+        session: Session dict with 'session_id' and 'job_id' keys
+        corrective_prompt: Instructions to prepend to job prompt
+
+    Side effects:
+        - Calls pause_job, get_job, update_job, resume_job APIs
+        - Logs info/warning/error via agathos.actions logger
+
+    Returns:
+        None (errors logged, never raises)
+
+    Fallback behavior: If cron.jobs API unavailable, logs warning and returns.
+    """
     job_id = session.get("job_id")
     if not job_id:
         logger.warning(
@@ -317,7 +376,28 @@ def restart_cron_session(session: Dict, corrective_prompt: str) -> None:
 
 
 def restart_delegate_session(session: Dict, corrective_prompt: str) -> None:
-    """Delegate restart: kill process, respawn with corrective prompt."""
+    """Restart a delegate task session: kill process, prepare for respawn.
+
+    Implementation for delegate_task session restarts:
+    1. Extracts PID from session metadata
+    2. Terminates the process via terminate_pid
+    3. Logs that corrective prompt is stored for respawn
+
+    Note: The actual respawn happens when the parent agent retries.
+    Agathos does not spawn processes directly — it only terminates
+    and relies on Hermes retry logic.
+
+    Args:
+        session: Session dict with 'session_id' and 'metadata' (JSON with 'pid')
+        corrective_prompt: Instructions stored for next respawn
+
+    Side effects:
+        - Calls terminate_pid on the delegate process
+        - Logs info via agathos.actions logger
+
+    Returns:
+        None (errors logged via terminate_pid, never raises)
+    """
     metadata = json.loads(session.get("metadata", "{}"))
     pid = metadata.get("pid")
 
@@ -329,9 +409,26 @@ def restart_delegate_session(session: Dict, corrective_prompt: str) -> None:
 
 
 def restart_manual_session(session: Dict, corrective_prompt: str) -> None:
-    """Manual restart: record action, store corrective prompt for next interaction."""
-    # For manual sessions, we can't force a restart
-    # We record the corrective prompt and notify the user
+    """Restart a manual session: flag for user intervention.
+
+    Implementation for manual session restarts:
+    Manual sessions cannot be forcibly restarted (they are interactive
+    user sessions). Agathos records the corrective prompt and flags
+    the session status, but the user must manually restart or correct.
+
+    Args:
+        session: Session dict with 'session_id'
+        corrective_prompt: Instructions that would be shown if restart were possible
+
+    Side effects:
+        - Logs info via agathos.actions logger
+
+    Returns:
+        None (no actual restart performed, user must intervene)
+
+    Note: Manual sessions rely on user awareness, not automated action.
+    The corrective prompt is logged but not automatically injected.
+    """
     logger.info(
         "Manual session %s flagged for restart (user intervention needed)",
         session["session_id"],
@@ -349,10 +446,33 @@ def kill_session(
     session_id: str,
     reason: str,
 ) -> None:
-    """Kill a session based on its type.
+    """Kill (terminate) a session based on its type.
 
-    Updates session status, dispatches to session-type-specific handler,
-    records kill action.
+    Orchestrates the kill workflow:
+    1. Fetches session from database
+    2. Updates session status to 'killed' and increments kill_count
+    3. Dispatches to session-type-specific kill handler (cron/delegate/manual)
+    4. Records kill action in watcher_actions table
+    5. Commits database changes
+
+    Args:
+        cursor: Database cursor for agathos.db
+        conn: Database connection for commit
+        session_id: Session to kill
+        reason: Human-readable reason for kill (logged and recorded)
+
+    Side effects:
+        - Updates sessions table (kill_count, status)
+        - Inserts into watcher_actions table
+        - Dispatches to kill_cron_session, kill_delegate_session,
+          or kill_manual_session based on session_type
+        - Commits connection
+        - Logs info/error via agathos.actions logger
+
+    Returns:
+        None (errors logged, never raises)
+
+    Session types handled: cron, delegate_task, manual
     """
     cursor.execute("SELECT * FROM sessions WHERE session_id = ?", (session_id,))
     row = cursor.fetchone()
@@ -405,7 +525,27 @@ def kill_session(
 
 
 def kill_cron_session(session: Dict, reason: str) -> None:
-    """Permanently pause a cron job."""
+    """Kill a cron session: permanently pause the job.
+
+    Implementation for cron session kills:
+    1. Extracts job_id from session
+    2. Pauses the cron job via pause_job API with kill reason
+    3. Logs result
+
+    Args:
+        session: Session dict with 'session_id' and 'job_id' keys
+        reason: Human-readable reason for kill (included in pause reason)
+
+    Side effects:
+        - Calls pause_job API
+        - Logs info/warning/error via agathos.actions logger
+
+    Returns:
+        None (errors logged, never raises)
+
+    Difference from restart: Kill is permanent (no resume), restart is temporary.
+    Fallback: If cron.jobs API unavailable, logs warning and returns.
+    """
     job_id = session.get("job_id")
     if not job_id:
         logger.warning(
@@ -430,7 +570,27 @@ def kill_cron_session(session: Dict, reason: str) -> None:
 
 
 def kill_delegate_session(session: Dict, reason: str) -> None:
-    """Terminate a delegate task subprocess."""
+    """Kill a delegate task session: terminate the subprocess.
+
+    Implementation for delegate_task session kills:
+    1. Extracts PID from session metadata
+    2. Terminates the process via terminate_pid
+    3. Logs result
+
+    Args:
+        session: Session dict with 'session_id' and 'metadata' (JSON with 'pid')
+        reason: Human-readable reason for kill (for logging context)
+
+    Side effects:
+        - Calls terminate_pid on the delegate process
+        - Logs info via agathos.actions logger
+
+    Returns:
+        None (errors logged via terminate_pid, never raises)
+
+    Difference from restart: Kill terminates without preparing for respawn.
+    The process is dead; parent must handle failure.
+    """
     metadata = json.loads(session.get("metadata", "{}"))
     pid = metadata.get("pid")
 
@@ -439,7 +599,28 @@ def kill_delegate_session(session: Dict, reason: str) -> None:
 
 
 def kill_manual_session(cursor: sqlite3.Cursor, session: Dict, reason: str) -> None:
-    """Cannot kill manual sessions — record notification for user review."""
+    """Kill a manual session: record notification for user review.
+
+    Implementation for manual session kills:
+    Manual sessions cannot be forcibly killed (they are interactive
+    user sessions). Agathos records a notification in the notifications
+    table requesting user review.
+
+    Args:
+        cursor: Database cursor for agathos.db
+        session: Session dict with 'session_id'
+        reason: Human-readable reason for kill (included in notification)
+
+    Side effects:
+        - Inserts into notifications table (type='kill', delivered=FALSE)
+        - Logs info via agathos.actions logger
+
+    Returns:
+        None (no actual kill performed, user must intervene)
+
+    Note: Manual sessions rely on user awareness, not automated action.
+    The notification is queued for delivery via notification system.
+    """
     message = (
         "Agathos cannot terminate manual session %s.\n"
         "Action required: Please review this session manually.\n"

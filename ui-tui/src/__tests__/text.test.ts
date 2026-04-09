@@ -1,21 +1,36 @@
 import { describe, expect, it } from 'vitest'
 
-import { fmtK, sameToolTrailGroup } from '../lib/text.js'
+import { fmtK, isToolTrailResultLine, lastCotTrailIndex, sameToolTrailGroup } from '../lib/text.js'
+
+describe('isToolTrailResultLine', () => {
+  it('detects completion markers', () => {
+    expect(isToolTrailResultLine('foo ✓')).toBe(true)
+    expect(isToolTrailResultLine('foo ✗')).toBe(true)
+    expect(isToolTrailResultLine('drafting x…')).toBe(false)
+  })
+})
+
+describe('lastCotTrailIndex', () => {
+  it('finds last non-result line', () => {
+    expect(lastCotTrailIndex(['a ✓', 'thinking…'])).toBe(1)
+    expect(lastCotTrailIndex(['only result ✓'])).toBe(-1)
+  })
+})
 
 describe('sameToolTrailGroup', () => {
   it('matches bare check lines', () => {
-    expect(sameToolTrailGroup('🔍 searching', '🔍 searching ✓')).toBe(true)
-    expect(sameToolTrailGroup('🔍 searching', '🔍 searching ✗')).toBe(true)
+    expect(sameToolTrailGroup('searching', 'searching ✓')).toBe(true)
+    expect(sameToolTrailGroup('searching', 'searching ✗')).toBe(true)
   })
 
   it('matches contextual lines', () => {
-    expect(sameToolTrailGroup('🔍 searching', '🔍 searching: * ✓')).toBe(true)
-    expect(sameToolTrailGroup('🔍 searching', '🔍 searching: foo ✓')).toBe(true)
+    expect(sameToolTrailGroup('searching', 'searching: * ✓')).toBe(true)
+    expect(sameToolTrailGroup('searching', 'searching: foo ✓')).toBe(true)
   })
 
   it('rejects other tools', () => {
-    expect(sameToolTrailGroup('🔍 searching', '📖 reading ✓')).toBe(false)
-    expect(sameToolTrailGroup('🔍 searching', '🔍 searching extra ✓')).toBe(false)
+    expect(sameToolTrailGroup('searching', 'reading ✓')).toBe(false)
+    expect(sameToolTrailGroup('searching', 'searching extra ✓')).toBe(false)
   })
 })
 

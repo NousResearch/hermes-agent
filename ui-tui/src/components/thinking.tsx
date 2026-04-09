@@ -3,16 +3,29 @@ import { memo, useEffect, useState } from 'react'
 import spinners, { type BrailleSpinnerName } from 'unicode-animations'
 
 import { FACES, TOOL_VERBS, VERBS } from '../constants.js'
+import { isToolTrailResultLine, lastCotTrailIndex } from '../lib/text.js'
 import type { Theme } from '../theme.js'
-import type { ActiveTool } from '../types.js'
+import type { ActiveTool, ActivityItem } from '../types.js'
 
 const THINK: BrailleSpinnerName[] = ['helix', 'breathe', 'orbit', 'dna', 'waverows', 'snake', 'pulse']
 const TOOL: BrailleSpinnerName[] = ['cascade', 'scan', 'diagswipe', 'fillsweep', 'rain', 'columns', 'sparkle']
 
 const pick = <T,>(a: T[]) => a[Math.floor(Math.random() * a.length)]!
 
+const tone = (item: ActivityItem, t: Theme) =>
+  item.tone === 'error' ? t.color.error : item.tone === 'warn' ? t.color.warn : t.color.dim
+
+const activityGlyph = (item: ActivityItem) => (item.tone === 'error' ? '✗' : item.tone === 'warn' ? '⚠' : '·')
+
+const TreeFork = ({ last }: { last: boolean }) => <Text dimColor>{last ? '└─ ' : '├─ '}</Text>
+
 export function Spinner({ color, variant = 'think' }: { color: string; variant?: 'think' | 'tool' }) {
-  const [spin] = useState(() => spinners[pick(variant === 'tool' ? TOOL : THINK)])
+  const [spin] = useState(() => {
+    const raw = spinners[pick(variant === 'tool' ? TOOL : THINK)]
+
+    return { ...raw, frames: raw.frames.map(f => [...f][0] ?? '⠀') }
+  })
+
   const [frame, setFrame] = useState(0)
 
   useEffect(() => {
@@ -27,30 +40,81 @@ export function Spinner({ color, variant = 'think' }: { color: string; variant?:
 export const ToolTrail = memo(function ToolTrail({
   t,
   tools = [],
-  trail = []
+  trail = [],
+  activity = [],
+  animateCot = false
 }: {
   t: Theme
   tools?: ActiveTool[]
   trail?: string[]
+  activity?: ActivityItem[]
+  animateCot?: boolean
 }) {
-  if (!trail.length && !tools.length) {
+  if (!trail.length && !tools.length && !activity.length) {
     return null
   }
 
+  const act = activity.slice(-4)
+  const rowCount = trail.length + tools.length + act.length
+  const activeCotIdx = animateCot && !tools.length ? lastCotTrailIndex(trail) : -1
+
   return (
     <>
-      {trail.map((line, i) => (
-        <Text color={line.endsWith(' ✗') ? t.color.error : t.color.dim} dimColor={!line.endsWith(' ✗')} key={`t-${i}`}>
-          {t.brand.tool} {line}
-        </Text>
-      ))}
+      {trail.map((line, i) => {
+        const lastInBlock = i === rowCount - 1
 
-      {tools.map(tool => (
-        <Text color={t.color.dim} key={tool.id}>
-          <Spinner color={t.color.amber} variant="tool" /> {TOOL_VERBS[tool.name] ?? tool.name}
-          {tool.context ? `: ${tool.context}` : ''}
-        </Text>
-      ))}
+        if (isToolTrailResultLine(line)) {
+          return (
+            <Text
+              color={line.endsWith(' ✗') ? t.color.error : t.color.dim}
+              dimColor={!line.endsWith(' ✗')}
+              key={`t-${i}`}
+            >
+              <TreeFork last={lastInBlock} />
+              {line}
+            </Text>
+          )
+        }
+
+        if (i === activeCotIdx) {
+          return (
+            <Text color={t.color.dim} key={`c-${i}`}>
+              <TreeFork last={lastInBlock} />
+              <Spinner color={t.color.amber} variant="think" /> {line}
+            </Text>
+          )
+        }
+
+        return (
+          <Text color={t.color.dim} dimColor key={`c-${i}`}>
+            <TreeFork last={lastInBlock} />
+            {line}
+          </Text>
+        )
+      })}
+
+      {tools.map((tool, j) => {
+        const lastInBlock = trail.length + j === rowCount - 1
+
+        return (
+          <Text color={t.color.dim} key={tool.id}>
+            <TreeFork last={lastInBlock} />
+            <Spinner color={t.color.amber} variant="tool" /> {TOOL_VERBS[tool.name] ?? tool.name}
+            {tool.context ? `: ${tool.context}` : ''}
+          </Text>
+        )
+      })}
+
+      {act.map((item, k) => {
+        const lastInBlock = trail.length + tools.length + k === rowCount - 1
+
+        return (
+          <Text color={tone(item, t)} dimColor={item.tone === 'info'} key={`a-${item.id}`}>
+            <TreeFork last={lastInBlock} />
+            {activityGlyph(item)} {item.text}
+          </Text>
+        )
+      })}
     </>
   )
 })
@@ -66,14 +130,18 @@ export const Thinking = memo(function Thinking({ reasoning, t }: { reasoning: st
 
   const tail = reasoning.slice(-160).replace(/\n/g, ' ')
 
-  return tail ? (
-    <Text color={t.color.dim} dimColor wrap="truncate-end">
-      💭 {tail}
-    </Text>
-  ) : (
-    <Text color={t.color.dim}>
-      <Spinner color={t.color.dim} /> {FACES[tick % FACES.length] ?? '(•_•)'} {VERBS[tick % VERBS.length] ?? 'thinking'}
-      …
-    </Text>
+  return (
+    <>
+      <Text color={t.color.dim}>
+        <Spinner color={t.color.dim} /> {FACES[tick % FACES.length] ?? '(•_•)'}{' '}
+        {VERBS[tick % VERBS.length] ?? 'thinking'}…
+      </Text>
+
+      {tail ? (
+        <Text color={t.color.dim} dimColor wrap="truncate-end">
+          💭 {tail}
+        </Text>
+      ) : null}
+    </>
   )
 })

@@ -53,6 +53,19 @@ def _kill_port_process(port: int) -> None:
                             )
                         except subprocess.SubprocessError:
                             pass
+        elif sys.platform == "darwin":
+            # macOS fuser only works with files, not port/tcp syntax.
+            # Use lsof to find and kill processes holding the port.
+            result = subprocess.run(
+                ["lsof", "-ti", f"tcp:{port}"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if result.returncode == 0:
+                for pid in result.stdout.strip().splitlines():
+                    try:
+                        os.kill(int(pid), 15)  # SIGTERM
+                    except (ValueError, OSError):
+                        pass
         else:
             result = subprocess.run(
                 ["fuser", f"{port}/tcp"],

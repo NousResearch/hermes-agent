@@ -834,6 +834,14 @@ OPTIONAL_ENV_VARS = {
         "category": "tool",
         "advanced": True,
     },
+    "METASO_API_KEY": {
+        "description": "Metaso API key for Chinese-optimized web search, content extraction, and AI Q&A",
+        "prompt": "Metaso API key",
+        "url": "https://metaso.cn",
+        "tools": ["web_search", "web_extract"],
+        "password": True,
+        "category": "tool",
+    },
     "FIRECRAWL_GATEWAY_URL": {
         "description": "Exact Firecrawl tool-gateway origin override for Nous Subscribers only (optional)",
         "prompt": "Firecrawl gateway URL (leave empty to derive from domain)",

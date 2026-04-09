@@ -17,6 +17,7 @@ Backend compatibility:
 - Firecrawl: https://docs.firecrawl.dev/introduction (search, extract, crawl; direct or derived firecrawl-gateway.<domain> for Nous Subscribers)
 - Parallel: https://docs.parallel.ai (search, extract)
 - Tavily: https://tavily.com (search, extract, crawl)
+- Metaso: https://metaso.cn (search, extract — Chinese-optimized web search)
 
 LLM Processing:
 - Uses OpenRouter API with Gemini 3 Flash Preview for intelligent content extraction
@@ -88,7 +89,7 @@ def _get_backend() -> str:
     keys manually without running setup.
     """
     configured = (_load_web_config().get("backend") or "").lower().strip()
-    if configured in ("parallel", "firecrawl", "tavily", "exa"):
+    if configured in ("parallel", "firecrawl", "tavily", "exa", "metaso"):
         return configured
 
     # Fallback for manual / legacy config — pick the highest-priority
@@ -99,6 +100,7 @@ def _get_backend() -> str:
         ("parallel", _has_env("PARALLEL_API_KEY")),
         ("tavily", _has_env("TAVILY_API_KEY")),
         ("exa", _has_env("EXA_API_KEY")),
+        ("metaso", _has_env("METASO_API_KEY")),
     )
     for backend, available in backend_candidates:
         if available:
@@ -117,6 +119,8 @@ def _is_backend_available(backend: str) -> bool:
         return check_firecrawl_api_key()
     if backend == "tavily":
         return _has_env("TAVILY_API_KEY")
+    if backend == "metaso":
+        return _has_env("METASO_API_KEY")
     return False
 
 # ─── Firecrawl Client ────────────────────────────────────────────────────────
@@ -189,6 +193,7 @@ def _web_requires_env() -> list[str]:
         "TAVILY_API_KEY",
         "FIRECRAWL_API_KEY",
         "FIRECRAWL_API_URL",
+        "METASO_API_KEY",
     ]
     if managed_nous_tools_enabled():
         requires.extend(
@@ -282,6 +287,188 @@ def _get_async_parallel_client():
 # ─── Tavily Client ───────────────────────────────────────────────────────────
 
 _TAVILY_BASE_URL = "https://api.tavily.com"
+_METASO_BASE_URL = "https://metaso.cn/api/v1"
+_METASO_API_KEY = None
+_METASO_HTTPX_CLIENT = None
+
+
+def _get_metaso_api_key() -> str:
+    """Return the Metaso API key, raising if unset."""
+    global _METASO_API_KEY
+    if _METASO_API_KEY is not None:
+        return _METASO_API_KEY
+    key = os.getenv("METASO_API_KEY", "").strip()
+    if not key:
+        raise ValueError(
+            "METASO_API_KEY environment variable not set. "
+            "Get your API key at https://metaso.cn"
+        )
+    _METASO_API_KEY = key
+    return key
+
+
+def _get_metaso_httpx_client() -> httpx.Client:
+    """Get or create a cached httpx client for Metaso API calls."""
+    global _METASO_HTTPX_CLIENT
+    if _METASO_HTTPX_CLIENT is None:
+        _METASO_HTTPX_CLIENT = httpx.Client(timeout=60)
+    return _METASO_HTTPX_CLIENT
+
+
+def _metaso_search(query: str, limit: int = 10) -> dict:
+    """Search using the Metaso REST API and return normalized results."""
+    from tools.interrupt import is_interrupted
+    if is_interrupted():
+        return {"error": "Interrupted", "success": False}
+
+    logger.info("Metaso search: '%s' (limit=%d)", query, limit)
+    api_key = _get_metaso_api_key()
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "q": query,
+        "scope": "webpage",
+        "size": str(min(limit, 20)),
+    }
+
+    client = _get_metaso_httpx_client()
+    url = f"{_METASO_BASE_URL}/search"
+    response = client.post(url, headers=headers, json=payload)
+    response.raise_for_status()
+    raw = response.json()
+    return _normalize_metaso_search_results(raw)
+
+
+def _normalize_metaso_search_results(raw: dict) -> dict:
+    """Normalize Metaso search response to the standard web search format.
+
+    Expected Metaso response (inferred from API docs and scripts):
+    {
+        "data": [
+            {
+                "url": "...",
+                "title": "...",
+                "snippet": "...",
+                "description": "...",
+                ...
+            }
+        ],
+        ...
+    }
+    Maps to: {success: true, data: {web: [{title, url, description, position}]}}.
+    Defensively validates expected fields — returns tool_error on missing data.
+    """
+    # Try multiple possible response shapes — check key existence, not just default value
+    results_list: list | None = None
+    if isinstance(raw, dict):
+        if "data" in raw:
+            results_list = raw["data"]
+        elif "results" in raw:
+            results_list = raw["results"]
+        elif "web" in raw:
+            results_list = raw["web"]
+
+        if results_list is not None and not isinstance(results_list, list):
+            return tool_error(f"Metaso returned unexpected response format: {json.dumps(raw, ensure_ascii=False)[:500]}")
+
+    if results_list is None:
+        return tool_error(f"Metaso returned unexpected response format: {json.dumps(raw, ensure_ascii=False)[:500]}")
+
+    web_results = []
+    for i, item in enumerate(results_list):
+        if not isinstance(item, dict):
+            continue
+        url = item.get("url", "")
+        title = item.get("title", "")
+        # Try multiple field names for description/snippet
+        description = (
+            item.get("snippet", "")
+            or item.get("description", "")
+            or item.get("summary", "")
+            or item.get("content", "")
+        )
+        web_results.append({
+            "title": title,
+            "url": url,
+            "description": description,
+            "position": i + 1,
+        })
+
+    if not web_results:
+        # Return success with empty results rather than an error — the query
+        # may simply have no matches.
+        return {"success": True, "data": {"web": []}}
+
+    return {"success": True, "data": {"web": web_results}}
+
+
+def _metaso_extract(urls: List[str]) -> List[Dict[str, Any]]:
+    """Extract content from URLs using the Metaso reader API.
+
+    Returns a list of result dicts matching the structure expected by the
+    LLM post-processing pipeline (url, title, content, metadata).
+    """
+    from tools.interrupt import is_interrupted
+    if is_interrupted():
+        return [{"url": u, "error": "Interrupted", "title": ""} for u in urls]
+
+    api_key = _get_metaso_api_key()
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+        "Accept": "text/plain",  # Request markdown output
+    }
+
+    results: List[Dict[str, Any]] = []
+    client = _get_metaso_httpx_client()
+
+    for url in urls:
+        try:
+            logger.info("Metaso reader: %s", url)
+            response = client.post(
+                f"{_METASO_BASE_URL}/reader",
+                headers=headers,
+                json={"url": url},
+            )
+            response.raise_for_status()
+            content = response.text
+
+            # Try to extract title from first line if it looks like a heading
+            title = ""
+            lines = content.split("\n", 3)
+            for line in lines:
+                stripped = line.strip()
+                if stripped.startswith("# "):
+                    title = stripped[2:].strip()
+                    break
+
+            results.append({
+                "url": url,
+                "title": title,
+                "content": content,
+                "raw_content": content,
+                "metadata": {"sourceURL": url, "title": title},
+            })
+        except httpx.HTTPStatusError as e:
+            logger.warning("Metaso reader HTTP error for %s: %s", url, e)
+            results.append({
+                "url": url,
+                "title": "",
+                "content": "",
+                "error": f"Metaso reader error: HTTP {e.response.status_code}",
+            })
+        except Exception as e:
+            logger.warning("Metaso reader error for %s: %s", url, e)
+            results.append({
+                "url": url,
+                "title": "",
+                "content": "",
+                "error": f"Metaso reader error: {str(e)}",
+            })
+
+    return results
 
 
 def _tavily_request(endpoint: str, payload: dict) -> dict:
@@ -1117,6 +1304,15 @@ def web_search_tool(query: str, limit: int = 5) -> str:
             _debug.save()
             return result_json
 
+        if backend == "metaso":
+            response_data = _metaso_search(query, limit)
+            debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
+            result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
+            debug_call_data["final_response_size"] = len(result_json)
+            _debug.log_call("web_search_tool", debug_call_data)
+            _debug.save()
+            return result_json
+
         logger.info("Searching the web for: '%s' (limit: %d)", query, limit)
 
         response = _get_firecrawl_client().search(
@@ -1249,6 +1445,9 @@ async def web_extract_tool(
                     "include_images": False,
                 })
                 results = _normalize_tavily_documents(raw, fallback_url=safe_urls[0] if safe_urls else "")
+            elif backend == "metaso":
+                logger.info("Metaso extract: %d URL(s)", len(safe_urls))
+                results = _metaso_extract(safe_urls)
             else:
                 # ── Firecrawl extraction ──
                 # Determine requested formats for Firecrawl v2
@@ -1539,6 +1738,13 @@ async def web_crawl_tool(
         effective_model = model or _get_default_summarizer_model()
         auxiliary_available = check_auxiliary_model()
         backend = _get_backend()
+
+        # Metaso does not support crawl — suggest alternative
+        if backend == "metaso":
+            return json.dumps({
+                "error": "web_crawl is not supported by the Metaso backend. Use web_search + web_extract instead, or switch to a backend that supports crawling (Firecrawl or Tavily).",
+                "success": False,
+            }, ensure_ascii=False)
 
         # Tavily supports crawl via its /crawl endpoint
         if backend == "tavily":
@@ -1919,9 +2125,9 @@ def check_firecrawl_api_key() -> bool:
 def check_web_api_key() -> bool:
     """Check whether the configured web backend is available."""
     configured = _load_web_config().get("backend", "").lower().strip()
-    if configured in ("exa", "parallel", "firecrawl", "tavily"):
+    if configured in ("exa", "parallel", "firecrawl", "tavily", "metaso"):
         return _is_backend_available(configured)
-    return any(_is_backend_available(backend) for backend in ("exa", "parallel", "firecrawl", "tavily"))
+    return any(_is_backend_available(backend) for backend in ("exa", "parallel", "firecrawl", "tavily", "metaso"))
 
 
 def check_auxiliary_model() -> bool:
@@ -1959,6 +2165,8 @@ if __name__ == "__main__":
             print("   Using Parallel API (https://parallel.ai)")
         elif backend == "tavily":
             print("   Using Tavily API (https://tavily.com)")
+        elif backend == "metaso":
+            print("   Using Metaso API (https://metaso.cn)")
         else:
             if firecrawl_url_available:
                 print(f"   Using self-hosted Firecrawl: {os.getenv('FIRECRAWL_API_URL').strip().rstrip('/')}")
@@ -1971,7 +2179,7 @@ if __name__ == "__main__":
     else:
         print("❌ No web search backend configured")
         print(
-            "Set EXA_API_KEY, PARALLEL_API_KEY, TAVILY_API_KEY, FIRECRAWL_API_KEY, FIRECRAWL_API_URL"
+            "Set EXA_API_KEY, PARALLEL_API_KEY, TAVILY_API_KEY, FIRECRAWL_API_KEY, FIRECRAWL_API_URL, or METASO_API_KEY"
             f"{_firecrawl_backend_help_suffix()}"
         )
 

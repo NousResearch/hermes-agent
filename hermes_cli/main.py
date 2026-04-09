@@ -3948,15 +3948,16 @@ def _ppq_topup(api_key: str):
         return
 
     methods = [
-        ("btc-lightning", "Lightning"),
-        ("btc", "Bitcoin"),
-        ("xmr", "Monero"),
-        ("ltc", "Litecoin"),
+        ("btc-lightning", "Lightning", 0.10),
+        ("btc", "Bitcoin", 10),
+        ("xmr", "Monero", 5),
+        ("ltc", "Litecoin", 2),
+        ("lbtc", "Liquid", 2),
     ]
     print()
     print("  Payment method:")
-    for i, (_, label) in enumerate(methods):
-        print(f"    [{i + 1}] {label}")
+    for i, (_, label, minimum) in enumerate(methods):
+        print(f"    [{i + 1}] {label} (min ${minimum})")
     print()
     try:
         mpick = input("  Choose method [1]: ").strip() or "1"
@@ -3965,10 +3966,13 @@ def _ppq_topup(api_key: str):
         return
 
     try:
-        method_id = methods[int(mpick) - 1][0]
-        method_label = methods[int(mpick) - 1][1]
+        method_id, method_label, method_min = methods[int(mpick) - 1]
     except (ValueError, IndexError):
         print("  Invalid choice.")
+        return
+
+    if amount < method_min:
+        print(f"  Minimum for {method_label} is ${method_min}. Try Lightning (min $0.10) or increase amount.")
         return
 
     print(f"\n  Creating ${amount:.2f} {method_label} invoice...", end="", flush=True)
@@ -4019,14 +4023,14 @@ def _ppq_topup(api_key: str):
                     timeout=5.0,
                 )
                 if sr.status_code == 200:
-                    status = sr.json().get("status", "")
-                    if status == "paid":
+                    status = sr.json().get("status", "").lower()
+                    if status in ("paid", "complete", "settled", "processing"):
                         print(" paid!")
                         new_balance = _ppq_check_balance(api_key)
                         if new_balance is not None:
                             print(f"  New balance: ${new_balance:.2f}")
                         return
-                    elif status == "expired":
+                    elif status in ("expired", "invalid"):
                         print(" expired.")
                         return
             except Exception:

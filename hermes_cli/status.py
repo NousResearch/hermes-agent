@@ -158,13 +158,20 @@ def show_status(args):
     print(color("◆ Auth Providers", Colors.CYAN, Colors.BOLD))
 
     try:
-        from hermes_cli.auth import get_nous_auth_status, get_codex_auth_status, get_qwen_auth_status
+        from hermes_cli.auth import (
+            get_chatgpt_web_auth_status,
+            get_codex_auth_status,
+            get_nous_auth_status,
+            get_qwen_auth_status,
+        )
         nous_status = get_nous_auth_status()
         codex_status = get_codex_auth_status()
+        chatgpt_web_status = get_chatgpt_web_auth_status()
         qwen_status = get_qwen_auth_status()
     except Exception:
         nous_status = {}
         codex_status = {}
+        chatgpt_web_status = {}
         qwen_status = {}
 
     nous_logged_in = bool(nous_status.get("logged_in"))
@@ -195,6 +202,26 @@ def show_status(args):
         print(f"    Refreshed:  {codex_last_refresh}")
     if codex_status.get("error") and not codex_logged_in:
         print(f"    Error:      {codex_status.get('error')}")
+
+    chatgpt_web_logged_in = bool(chatgpt_web_status.get("logged_in"))
+    print(
+        f"  {'ChatGPT Web':<12}  {check_mark(chatgpt_web_logged_in)} "
+        f"{'logged in' if chatgpt_web_logged_in else 'not logged in (run: hermes model)'}"
+    )
+    chatgpt_web_source = chatgpt_web_status.get("source")
+    if chatgpt_web_source:
+        print(f"    Source:     {chatgpt_web_source}")
+    chatgpt_web_mode = chatgpt_web_status.get("auth_mode")
+    if chatgpt_web_mode:
+        print(f"    Mode:       {chatgpt_web_mode}")
+    chatgpt_web_auth_file = chatgpt_web_status.get("auth_store")
+    if chatgpt_web_auth_file:
+        print(f"    Auth file:  {chatgpt_web_auth_file}")
+    chatgpt_web_last_refresh = _format_iso_timestamp(chatgpt_web_status.get("last_refresh"))
+    if chatgpt_web_status.get("last_refresh"):
+        print(f"    Refreshed:  {chatgpt_web_last_refresh}")
+    if chatgpt_web_status.get("error") and not chatgpt_web_logged_in:
+        print(f"    Error:      {chatgpt_web_status.get('error')}")
 
     qwen_logged_in = bool(qwen_status.get("logged_in"))
     print(

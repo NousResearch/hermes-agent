@@ -221,6 +221,60 @@ def test_auth_add_chatgpt_web_oauth_persists_pool_entry(tmp_path, monkeypatch):
     assert entry["base_url"] == DEFAULT_CHATGPT_WEB_BASE_URL
 
 
+def test_auth_add_chatgpt_web_session_token_persists_pool_entry(tmp_path, monkeypatch):
+    from hermes_cli.chatgpt_web import DEFAULT_CHATGPT_WEB_BASE_URL
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+    token = _jwt_with_email("chatgpt-session@example.com")
+    monkeypatch.setattr(
+        "hermes_cli.chatgpt_web._fetch_chatgpt_web_access_token_from_session",
+        lambda session_token, **kwargs: token,
+    )
+
+    from hermes_cli.auth_commands import auth_add_command
+
+    class _Args:
+        provider = "chatgpt-web"
+        auth_type = "api-key"
+        api_key = "session-cookie"
+        label = "cookie-login"
+        token_mode = "session_token"
+
+    auth_add_command(_Args())
+
+    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    entries = payload["credential_pool"]["chatgpt-web"]
+    entry = next(item for item in entries if item["source"] == "manual:session_token")
+    assert entry["label"] == "cookie-login"
+    assert entry["auth_type"] == "api_key"
+    assert entry["access_token"] == token
+    assert entry["session_token"] == "session-cookie"
+    assert entry["base_url"] == DEFAULT_CHATGPT_WEB_BASE_URL
+
+
+def test_interactive_add_chatgpt_web_selects_access_token(monkeypatch):
+    from hermes_cli import auth_commands as auth_commands_mod
+
+    captured = {}
+    monkeypatch.setattr(auth_commands_mod, "_pick_provider", lambda prompt="Provider": "chatgpt-web")
+
+    answers = iter(["1", "web-account"])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
+    monkeypatch.setattr(
+        auth_commands_mod,
+        "auth_add_command",
+        lambda args: captured.setdefault("args", args),
+    )
+
+    auth_commands_mod._interactive_add()
+
+    assert captured["args"].provider == "chatgpt-web"
+    assert captured["args"].auth_type == "api_key"
+    assert captured["args"].token_mode == "access_token"
+    assert captured["args"].label == "web-account"
+
+
 def test_interactive_add_chatgpt_web_selects_oauth(monkeypatch):
     from hermes_cli import auth_commands as auth_commands_mod
 
@@ -240,6 +294,28 @@ def test_interactive_add_chatgpt_web_selects_oauth(monkeypatch):
     assert captured["args"].provider == "chatgpt-web"
     assert captured["args"].auth_type == "oauth"
     assert captured["args"].label == "web-account"
+
+
+def test_interactive_add_chatgpt_web_selects_session_token(monkeypatch):
+    from hermes_cli import auth_commands as auth_commands_mod
+
+    captured = {}
+    monkeypatch.setattr(auth_commands_mod, "_pick_provider", lambda prompt="Provider": "chatgpt-web")
+
+    answers = iter(["3", "cookie-account"])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
+    monkeypatch.setattr(
+        auth_commands_mod,
+        "auth_add_command",
+        lambda args: captured.setdefault("args", args),
+    )
+
+    auth_commands_mod._interactive_add()
+
+    assert captured["args"].provider == "chatgpt-web"
+    assert captured["args"].auth_type == "api_key"
+    assert captured["args"].token_mode == "session_token"
+    assert captured["args"].label == "cookie-account"
 
 
 def test_auth_remove_reindexes_priorities(tmp_path, monkeypatch):

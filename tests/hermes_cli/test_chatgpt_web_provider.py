@@ -202,6 +202,46 @@ def test_get_chatgpt_web_auth_status_prefers_chatgpt_web_pool(tmp_path, monkeypa
     assert status["api_key"] == "chatgpt-web-token"
 
 
+def test_get_chatgpt_web_auth_status_accepts_pool_session_token(tmp_path, monkeypatch):
+    from hermes_cli.auth import get_chatgpt_web_auth_status
+    from hermes_cli.chatgpt_web import DEFAULT_CHATGPT_WEB_BASE_URL
+
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.delenv("CHATGPT_WEB_ACCESS_TOKEN", raising=False)
+    monkeypatch.delenv("CHATGPT_WEB_SESSION_TOKEN", raising=False)
+
+    (hermes_home / "auth.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "credential_pool": {
+                    "chatgpt-web": [
+                        {
+                            "id": "cred-web",
+                            "label": "session-cookie",
+                            "auth_type": "api_key",
+                            "priority": 0,
+                            "source": "manual:session_token",
+                            "access_token": "",
+                            "session_token": "session-cookie-token",
+                            "base_url": DEFAULT_CHATGPT_WEB_BASE_URL,
+                        }
+                    ]
+                },
+            }
+        )
+    )
+
+    status = get_chatgpt_web_auth_status()
+
+    assert status["logged_in"] is True
+    assert status["auth_mode"] == "session_token"
+    assert status["source"] == "pool:session-cookie"
+    assert status["api_key"] == ""
+
+
 def test_resolve_chatgpt_web_runtime_credentials_prefers_pool_entry(tmp_path, monkeypatch):
     from hermes_cli.chatgpt_web import DEFAULT_CHATGPT_WEB_BASE_URL, resolve_chatgpt_web_runtime_credentials
 
@@ -239,3 +279,47 @@ def test_resolve_chatgpt_web_runtime_credentials_prefers_pool_entry(tmp_path, mo
     assert creds["api_key"] == "chatgpt-web-token"
     assert creds["base_url"] == DEFAULT_CHATGPT_WEB_BASE_URL
     assert creds["source"] == "pool:web-account"
+
+
+def test_resolve_chatgpt_web_runtime_credentials_refreshes_pool_session_token(tmp_path, monkeypatch):
+    from hermes_cli.chatgpt_web import DEFAULT_CHATGPT_WEB_BASE_URL, resolve_chatgpt_web_runtime_credentials
+
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.delenv("CHATGPT_WEB_ACCESS_TOKEN", raising=False)
+    monkeypatch.delenv("CHATGPT_WEB_SESSION_TOKEN", raising=False)
+    monkeypatch.setattr(
+        "hermes_cli.chatgpt_web._fetch_chatgpt_web_access_token_from_session",
+        lambda session_token, **kwargs: "refreshed-web-access-token",
+    )
+
+    (hermes_home / "auth.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "credential_pool": {
+                    "chatgpt-web": [
+                        {
+                            "id": "cred-web",
+                            "label": "session-cookie",
+                            "auth_type": "api_key",
+                            "priority": 0,
+                            "source": "manual:session_token",
+                            "access_token": "",
+                            "session_token": "session-cookie-token",
+                            "base_url": DEFAULT_CHATGPT_WEB_BASE_URL,
+                        }
+                    ]
+                },
+            }
+        )
+    )
+
+    creds = resolve_chatgpt_web_runtime_credentials()
+
+    assert creds["provider"] == "chatgpt-web"
+    assert creds["api_key"] == "refreshed-web-access-token"
+    assert creds["base_url"] == DEFAULT_CHATGPT_WEB_BASE_URL
+    assert creds["source"] == "pool:session-cookie"
+    assert creds["session_token"] == "session-cookie-token"

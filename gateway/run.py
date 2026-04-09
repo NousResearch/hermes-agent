@@ -289,30 +289,59 @@ logger = logging.getLogger(__name__)
 _AGENT_PENDING_SENTINEL = object()
 
 
-def _resolve_runtime_agent_kwargs() -> dict:
-    """Resolve provider credentials for gateway-created AIAgent instances."""
+def _resolve_runtime_agent_kwargs(fallback_chain: list | None = None) -> dict:
+    """Resolve provider credentials for gateway-created AIAgent instances.
+
+    When primary provider credentials are unavailable (exhausted, missing),
+    tries each provider in fallback_chain before raising. This ensures the
+    gateway falls back to e.g. ZAI/GLM immediately without waiting for a
+    failed API call.
+    """
     from hermes_cli.runtime_provider import (
         resolve_runtime_provider,
         format_runtime_provider_error,
     )
 
+    def _kwargs_from_runtime(runtime: dict) -> dict:
+        return {
+            "api_key": runtime.get("api_key"),
+            "base_url": runtime.get("base_url"),
+            "provider": runtime.get("provider"),
+            "api_mode": runtime.get("api_mode"),
+            "command": runtime.get("command"),
+            "args": list(runtime.get("args") or []),
+            "credential_pool": runtime.get("credential_pool"),
+        }
+
     try:
         runtime = resolve_runtime_provider(
             requested=os.getenv("HERMES_INFERENCE_PROVIDER"),
         )
-    except Exception as exc:
-        raise RuntimeError(format_runtime_provider_error(exc)) from exc
-
-    return {
-        "api_key": runtime.get("api_key"),
-        "base_url": runtime.get("base_url"),
-        "provider": runtime.get("provider"),
-        "api_mode": runtime.get("api_mode"),
-        "command": runtime.get("command"),
-        "args": list(runtime.get("args") or []),
-        "credential_pool": runtime.get("credential_pool"),
-    }
-
+        return _kwargs_from_runtime(runtime)
+    except Exception as primary_exc:
+        # Primary provider failed (exhausted, missing credentials, etc.)
+        # Try each fallback provider before giving up.
+        chain = fallback_chain or []
+        for fb in chain:
+            if not isinstance(fb, dict):
+                continue
+            fb_provider = fb.get("provider")
+            fb_model = fb.get("model")
+            if not fb_provider or not fb_model:
+                continue
+            try:
+                fb_runtime = resolve_runtime_provider(requested=fb_provider)
+                logger.warning(
+                    "Primary provider credentials unavailable (%s) — using fallback: %s/%s",
+                    primary_exc, fb_model, fb_provider,
+                )
+                result = _kwargs_from_runtime(fb_runtime)
+                # Override model so the agent uses the fallback model, not primary
+                result["_fallback_model_override"] = fb_model
+                return result
+            except Exception:
+                continue
+        raise RuntimeError(format_runtime_provider_error(primary_exc)) from primary_exc
 
 def _build_media_placeholder(event) -> str:
     """Build a text placeholder for media-only events so they aren't dropped.
@@ -1012,8 +1041,8 @@ class GatewayRunner:
     def _load_fallback_model() -> list | dict | None:
         """Load fallback provider chain from config.yaml.
 
-        Returns a list of provider dicts (``fallback_providers``), a single
-        dict (legacy ``fallback_model``), or None if not configured.
+        Returns a list of provider dicts (fallback_providers), a single
+        dict (legacy fallback_model), or None if not configured.
         AIAgent.__init__ normalizes both formats into a chain.
         """
         try:
@@ -1023,12 +1052,34 @@ class GatewayRunner:
                 with open(cfg_path, encoding="utf-8") as _f:
                     cfg = _y.safe_load(_f) or {}
                 fb = cfg.get("fallback_providers") or cfg.get("fallback_model") or None
-                if fb:
-                    return fb
+                if not fb:
+                    return None
+                # Resolve string provider slugs to {provider, model} dicts so
+                # AIAgent._fallback_chain is never silently empty.
+                if isinstance(fb, list):
+                    legacy_fb = cfg.get("fallback_model") or {}
+                    resolved = []
+                    for item in fb:
+                        if isinstance(item, dict) and item.get("provider") and item.get("model"):
+                            resolved.append(item)
+                        elif isinstance(item, str):
+                            model = None
+                            if isinstance(legacy_fb, dict) and legacy_fb.get("provider") == item:
+                                model = legacy_fb.get("model")
+                            if not model:
+                                try:
+                                    from hermes_cli.models import _PROVIDER_MODELS
+                                    candidates = _PROVIDER_MODELS.get(item, [])
+                                    model = candidates[0] if candidates else None
+                                except Exception:
+                                    pass
+                            if model:
+                                resolved.append({"provider": item, "model": model})
+                    return resolved if resolved else None
+                return fb
         except Exception:
             pass
         return None
-
     @staticmethod
     def _load_smart_model_routing() -> dict:
         """Load optional smart cheap-vs-strong model routing config."""
@@ -6651,7 +6702,11 @@ class GatewayRunner:
             model = _resolve_gateway_model(user_config)
 
             try:
-                runtime_kwargs = _resolve_runtime_agent_kwargs()
+                runtime_kwargs = _resolve_runtime_agent_kwargs(
+                    fallback_chain=self._fallback_model if isinstance(self._fallback_model, list) else (
+                        [self._fallback_model] if isinstance(self._fallback_model, dict) else []
+                    ),
+                )
             except Exception as exc:
                 return {
                     "final_response": f"⚠️ Provider authentication failed: {exc}",
@@ -6659,6 +6714,10 @@ class GatewayRunner:
                     "api_calls": 0,
                     "tools": [],
                 }
+            # If fallback was used at credential-resolution time, override the model
+            _cred_fallback_model = runtime_kwargs.pop("_fallback_model_override", None)
+            if _cred_fallback_model:
+                model = _cred_fallback_model
 
             pr = self._provider_routing
             reasoning_config = self._load_reasoning_config()
@@ -7362,7 +7421,7 @@ class GatewayRunner:
                     if first_response and not _already_streamed:
                         try:
                             await adapter.send(source.chat_id, first_response,
-                                               metadata=getattr(event, "metadata", None))
+                                               metadata=_progress_metadata)
                         except Exception as e:
                             logger.warning("Failed to send first response before queued message: %s", e)
                 # else: interrupted — discard the interrupted response ("Operation

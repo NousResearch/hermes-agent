@@ -208,7 +208,7 @@ class StreamingConfig:
             return cls()
         return cls(
             enabled=data.get("enabled", False),
-            transport=data.get("transport", "edit"),
+            transport=(lambda t: "off" if t is False else ("on" if t is True else t))(data.get("transport", "edit")),
             edit_interval=float(data.get("edit_interval", 0.3)),
             buffer_threshold=int(data.get("buffer_threshold", 40)),
             cursor=data.get("cursor", " ▉"),

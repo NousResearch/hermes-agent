@@ -5,6 +5,7 @@ import platform
 import shutil
 import signal
 import subprocess
+import tempfile
 
 from tools.environments.base import BaseEnvironment, _pipe_stdin
 
@@ -208,6 +209,32 @@ class LocalEnvironment(BaseEnvironment):
     def __init__(self, cwd: str = "", timeout: int = 60, env: dict = None):
         super().__init__(cwd=cwd or os.getcwd(), timeout=timeout, env=env)
         self.init_session()
+
+    def get_temp_dir(self) -> str:
+        """Return a shell-safe writable temp dir for local execution.
+
+        Termux does not provide /tmp by default, but exposes a POSIX TMPDIR.
+        Prefer POSIX-style env vars when available, keep using /tmp on regular
+        Unix systems, and only fall back to tempfile.gettempdir() when it also
+        resolves to a POSIX path.
+
+        Check the environment configured for this backend first so callers can
+        override the temp root explicitly (for example via terminal.env or a
+        custom TMPDIR), then fall back to the host process environment.
+        """
+        for env_var in ("TMPDIR", "TMP", "TEMP"):
+            candidate = self.env.get(env_var) or os.environ.get(env_var)
+            if candidate and candidate.startswith("/"):
+                return candidate.rstrip("/") or "/"
+
+        if os.path.isdir("/tmp") and os.access("/tmp", os.W_OK | os.X_OK):
+            return "/tmp"
+
+        candidate = tempfile.gettempdir()
+        if candidate.startswith("/"):
+            return candidate.rstrip("/") or "/"
+
+        return "/tmp"
 
     def _run_bash(self, cmd_string: str, *, login: bool = False,
                   timeout: int = 120,

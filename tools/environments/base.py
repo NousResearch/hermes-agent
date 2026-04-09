@@ -226,14 +226,24 @@ class BaseEnvironment(ABC):
     # Snapshot creation timeout (override for slow cold-starts).
     _snapshot_timeout: int = 30
 
+    def get_temp_dir(self) -> str:
+        """Return the backend temp directory used for session artifacts.
+
+        Most sandboxed backends use ``/tmp`` inside the target environment.
+        LocalEnvironment overrides this on platforms like Termux where ``/tmp``
+        may be missing and ``TMPDIR`` is the portable writable location.
+        """
+        return "/tmp"
+
     def __init__(self, cwd: str, timeout: int, env: dict = None):
         self.cwd = cwd
         self.timeout = timeout
         self.env = env or {}
 
         self._session_id = uuid.uuid4().hex[:12]
-        self._snapshot_path = f"/tmp/hermes-snap-{self._session_id}.sh"
-        self._cwd_file = f"/tmp/hermes-cwd-{self._session_id}.txt"
+        temp_dir = self.get_temp_dir().rstrip("/") or "/"
+        self._snapshot_path = f"{temp_dir}/hermes-snap-{self._session_id}.sh"
+        self._cwd_file = f"{temp_dir}/hermes-cwd-{self._session_id}.txt"
         self._cwd_marker = _cwd_marker(self._session_id)
         self._snapshot_ready = False
         self._last_sync_time: float | None = (

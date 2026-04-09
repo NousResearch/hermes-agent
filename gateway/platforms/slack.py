@@ -281,6 +281,7 @@ class SlackAdapter(BasePlatformAdapter):
                 kwargs = {
                     "channel": chat_id,
                     "text": chunk,
+                    "mrkdwn": True,
                 }
                 if thread_ts:
                     kwargs["thread_ts"] = thread_ts
@@ -323,9 +324,7 @@ class SlackAdapter(BasePlatformAdapter):
         if not self._app:
             return SendResult(success=False, error="Not connected")
         try:
-            # Convert standard markdown → Slack mrkdwn
             formatted = self.format_message(content)
-
             await self._get_client(chat_id).chat_update(
                 channel=chat_id,
                 ts=message_id,
@@ -457,13 +456,36 @@ class SlackAdapter(BasePlatformAdapter):
         text = re.sub(r'(`[^`]+`)', lambda m: _ph(m.group(0)), text)
 
         # 3) Convert markdown links [text](url) → <url|text>
+        def _convert_markdown_link(m):
+            label = m.group(1)
+            url = m.group(2).strip()
+            if url.startswith('<') and url.endswith('>'):
+                url = url[1:-1].strip()
+            return _ph(f'<{url}|{label}>')
+
         text = re.sub(
-            r'\[([^\]]+)\]\(([^)]+)\)',
-            lambda m: _ph(f'<{m.group(2)}|{m.group(1)}>'),
+            r'\[([^\]]+)\]\(([^()]*(?:\([^()]*\)[^()]*)*)\)',
+            _convert_markdown_link,
             text,
         )
 
-        # 4) Convert headers (## Title) → *Title* (bold)
+        # 4) Protect existing Slack entities/manual links so escaping and later
+        #    formatting passes don't break them.
+        text = re.sub(
+            r'(<(?:[@#!]|(?:https?|mailto|tel):)[^>\n]+>)',
+            lambda m: _ph(m.group(1)),
+            text,
+        )
+
+        # 5) Protect blockquote markers before escaping
+        text = re.sub(r'^(>+\s)', lambda m: _ph(m.group(0)), text, flags=re.MULTILINE)
+
+        # 6) Escape Slack control characters in remaining plain text.
+        # Unescape first so already-escaped input doesn't get double-escaped.
+        text = text.replace('&amp;', '&').replace('&lt;', '<').replace('&gt;', '>')
+        text = text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+
+        # 7) Convert headers (## Title) → *Title* (bold)
         def _convert_header(m):
             inner = m.group(1).strip()
             # Strip redundant bold markers inside a header
@@ -474,34 +496,39 @@ class SlackAdapter(BasePlatformAdapter):
             r'^#{1,6}\s+(.+)$', _convert_header, text, flags=re.MULTILINE
         )
 
-        # 5) Convert bold: **text** → *text* (Slack bold)
+        # 8) Convert bold+italic: ***text*** → *_text_* (Slack bold wrapping italic)
+        text = re.sub(
+            r'\*\*\*(.+?)\*\*\*',
+            lambda m: _ph(f'*_{m.group(1)}_*'),
+            text,
+        )
+
+        # 9) Convert bold: **text** → *text* (Slack bold)
         text = re.sub(
             r'\*\*(.+?)\*\*',
             lambda m: _ph(f'*{m.group(1)}*'),
             text,
         )
 
-        # 6) Convert italic: _text_ stays as _text_ (already Slack italic)
-        #    Single *text* → _text_ (Slack italic)
+        # 10) Convert italic: _text_ stays as _text_ (already Slack italic)
+        #     Single *text* → _text_ (Slack italic)
         text = re.sub(
             r'(?<!\*)\*([^*\n]+)\*(?!\*)',
             lambda m: _ph(f'_{m.group(1)}_'),
             text,
         )
 
-        # 7) Convert strikethrough: ~~text~~ → ~text~
+        # 11) Convert strikethrough: ~~text~~ → ~text~
         text = re.sub(
             r'~~(.+?)~~',
             lambda m: _ph(f'~{m.group(1)}~'),
             text,
         )
 
-        # 8) Convert blockquotes: > text → > text (same syntax, just ensure
-        #    no extra escaping happens to the > character)
-        # Slack uses the same > prefix, so this is a no-op for content.
+        # 12) Blockquotes: > prefix is already protected by step 5 above.
 
-        # 9) Restore placeholders in reverse order
-        for key in reversed(list(placeholders.keys())):
+        # 13) Restore placeholders in reverse order
+        for key in reversed(placeholders):
             text = text.replace(key, placeholders[key])
 
         return text

@@ -308,6 +308,7 @@ class TestBackgroundInCLICommands:
 
     def test_background_autocompletes(self):
         """The /background command appears in autocomplete results."""
+        pytest.importorskip("prompt_toolkit")
         from hermes_cli.commands import SlashCommandCompleter
         from prompt_toolkit.document import Document
 

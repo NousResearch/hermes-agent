@@ -992,6 +992,21 @@ _BOLD = "\033[1m"
 _DIM = "\033[2m"
 _RST = "\033[0m"
 
+
+def _ansi_hex(hex_color: str, *, bold: bool = False) -> str:
+    """Return a true-color ANSI prefix for ``#RRGGBB`` strings."""
+    try:
+        text = (hex_color or "").strip()
+        if len(text) != 7 or not text.startswith("#"):
+            raise ValueError("invalid hex")
+        r = int(text[1:3], 16)
+        g = int(text[3:5], 16)
+        b = int(text[5:7], 16)
+        prefix = "1;" if bold else ""
+        return f"\033[{prefix}38;2;{r};{g};{b}m"
+    except Exception:
+        return _BOLD if bold else ""
+
 def _accent_hex() -> str:
     """Return the active skin accent color for legacy CLI output lines."""
     try:
@@ -2459,7 +2474,7 @@ class HermesCLI:
                 self._stream_text_ansi = ""
             w = shutil.get_terminal_size().columns
             fill = w - 2 - len(label)
-            _cprint(f"\n[bold {_border_hex}]╭─{label}{'─' * max(fill - 1, 0)}╮[/]")
+            _cprint(f"\n{_ansi_hex(_border_hex, bold=True)}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}")
 
         self._stream_buf += text
 
@@ -2495,7 +2510,7 @@ class HermesCLI:
                 _border_hex = get_active_skin().get_color("response_border", "#CD7F32")
             except Exception:
                 _border_hex = "#CD7F32"
-            _cprint(f"[bold {_border_hex}]╰{'─' * (w - 2)}╯[/]")
+            _cprint(f"{_ansi_hex(_border_hex, bold=True)}╰{'─' * (w - 2)}╯{_RST}")
 
     def _reset_stream_state(self) -> None:
         """Reset streaming state before each agent invocation."""
@@ -7024,7 +7039,7 @@ class HermesCLI:
                             label = " ⚕ Hermes "
                             _border_hex = "#CD7F32"
                         fill = w - 2 - len(label)
-                        _cprint(f"\n[bold {_border_hex}]╭─{label}{'─' * max(fill - 1, 0)}╮[/]")
+                        _cprint(f"\n{_ansi_hex(_border_hex, bold=True)}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}")
                     _cprint(sentence.rstrip())
 
                 tts_thread = threading.Thread(
@@ -7245,7 +7260,7 @@ class HermesCLI:
                         _border_hex = get_active_skin().get_color("response_border", "#CD7F32")
                     except Exception:
                         _border_hex = "#CD7F32"
-                    _cprint(f"\n[bold {_border_hex}]╰{'─' * (w - 2)}╯[/]")
+                    _cprint(f"\n{_ansi_hex(_border_hex, bold=True)}╰{'─' * (w - 2)}╯{_RST}")
                 elif already_streamed:
                     # Response was already streamed token-by-token with box framing;
                     # _flush_stream() already closed the box. Skip Rich Panel.

@@ -513,6 +513,16 @@ class TelegramAdapter(BasePlatformAdapter):
 
             # Build the application
             builder = Application.builder().token(self.config.token)
+            custom_base_url = self.config.extra.get("base_url")
+            if custom_base_url:
+                builder = builder.base_url(custom_base_url)
+                builder = builder.base_file_url(
+                    self.config.extra.get("base_file_url", custom_base_url)
+                )
+                logger.info(
+                    "[%s] Using custom Telegram base_url: %s",
+                    self.name, custom_base_url,
+                )
             fallback_ips = self._fallback_ips()
             if not fallback_ips:
                 fallback_ips = await discover_fallback_ips()

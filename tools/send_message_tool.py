@@ -555,10 +555,13 @@ async def _send_discord(token, chat_id, message):
     except ImportError:
         return {"error": "aiohttp not installed. Run: pip install aiohttp"}
     try:
+        from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp
+        _proxy = resolve_proxy_url(platform_env_var="DISCORD_PROXY")
+        _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(_proxy)
         url = f"https://discord.com/api/v10/channels/{chat_id}/messages"
         headers = {"Authorization": f"Bot {token}", "Content-Type": "application/json"}
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
-            async with session.post(url, headers=headers, json={"content": message}) as resp:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30), **_sess_kw) as session:
+            async with session.post(url, headers=headers, json={"content": message}, **_req_kw) as resp:
                 if resp.status not in (200, 201):
                     body = await resp.text()
                     return _error(f"Discord API error ({resp.status}): {body}")
@@ -575,11 +578,14 @@ async def _send_slack(token, chat_id, message):
     except ImportError:
         return {"error": "aiohttp not installed. Run: pip install aiohttp"}
     try:
+        from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp
+        _proxy = resolve_proxy_url()
+        _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(_proxy)
         url = "https://slack.com/api/chat.postMessage"
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30), **_sess_kw) as session:
             payload = {"channel": chat_id, "text": message, "mrkdwn": True}
-            async with session.post(url, headers=headers, json=payload) as resp:
+            async with session.post(url, headers=headers, json=payload, **_req_kw) as resp:
                 data = await resp.json()
                 if data.get("ok"):
                     return {"success": True, "platform": "slack", "chat_id": chat_id, "message_id": data.get("ts")}
@@ -712,18 +718,21 @@ async def _send_sms(auth_token, chat_id, message):
     message = message.strip()
 
     try:
+        from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp
+        _proxy = resolve_proxy_url()
+        _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(_proxy)
         creds = f"{account_sid}:{auth_token}"
         encoded = base64.b64encode(creds.encode("ascii")).decode("ascii")
         url = f"https://api.twilio.com/2010-04-01/Accounts/{account_sid}/Messages.json"
         headers = {"Authorization": f"Basic {encoded}"}
 
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30), **_sess_kw) as session:
             form_data = aiohttp.FormData()
             form_data.add_field("From", from_number)
             form_data.add_field("To", chat_id)
             form_data.add_field("Body", message)
 
-            async with session.post(url, data=form_data, headers=headers) as resp:
+            async with session.post(url, data=form_data, headers=headers, **_req_kw) as resp:
                 body = await resp.json()
                 if resp.status >= 400:
                     error_msg = body.get("message", str(body))

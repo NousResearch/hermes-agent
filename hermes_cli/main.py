@@ -605,15 +605,36 @@ def _print_tui_exit_summary(session_id: Optional[str]) -> None:
     )
 
 
-def _launch_tui(resume_session_id: Optional[str] = None):
-    """Replace current process with the Ink TUI."""
-    tui_dir = PROJECT_ROOT / "ui-tui"
+def _find_bundled_tui() -> Optional[Path]:
+    """Find a bundled copy of the TUI.
+    Does *not* read from the `npm run build` dist dir,
+    as this would be a footgun when developing
+    """
+    bundled_tui_dir = os.environ.get("HERMES_TUI_DIR")
+    if bundled_tui_dir and (Path(bundled_tui_dir) / "dist" / "entry.js").exists():
+        return Path(bundled_tui_dir)
+    return None
 
-    if not (tui_dir / "node_modules").exists():
-        npm = shutil.which("npm")
-        if not npm:
-            print("npm not found — install Node.js to use the TUI.")
+def _make_tui_argv(tui_dir: Path) -> tuple[list[str], Path]:
+    """Gets argv to run tui + the working directory. Will npm install deps in dev mode."""
+    def _node_bin(bin: str)-> str:
+        path = shutil.which(bin)
+        if not path:
+            print(f"{bin} not found — install Node.js to use the TUI.")
             sys.exit(1)
+        return path
+
+    # use prebuilt TUI if it exists
+    bundled = _find_bundled_tui()
+    if bundled:
+        node = _node_bin("node")
+        return [node, str(bundled / "dist" / "entry.js")], bundled
+
+    # dev mode - run via tsx
+
+    # install deps if needed
+    if not (tui_dir / "node_modules").exists():
+        npm = _node_bin("npm")
         print("Installing TUI dependencies…")
         result = subprocess.run(
             [npm, "install", "--silent", "--no-fund", "--no-audit", "--progress=false"],
@@ -632,20 +653,23 @@ def _launch_tui(resume_session_id: Optional[str] = None):
 
     tsx = tui_dir / "node_modules" / ".bin" / "tsx"
     if tsx.exists():
-        argv = [str(tsx), "src/entry.tsx"]
-    else:
-        npm = shutil.which("npm")
-        if not npm:
-            print("npm not found in PATH. Source your nvm/node setup or set PATH.")
-            sys.exit(1)
-        argv = [npm, "start"]
+        return [str(tsx), "src/entry.tsx"], tui_dir
+
+    npm = _node_bin("npm")
+    return [npm, "start"], tui_dir
+
+def _launch_tui(resume_session_id: Optional[str] = None):
+    """Replace current process with the Ink TUI."""
+    tui_dir = PROJECT_ROOT / "ui-tui"
 
     env = os.environ.copy()
+    env["HERMES_ROOT"] = os.environ.get("HERMES_ROOT", os.getcwd())
     if resume_session_id:
         env["HERMES_TUI_RESUME"] = resume_session_id
 
+    argv, cwd = _make_tui_argv(tui_dir)
     try:
-        code = subprocess.call(argv, cwd=str(tui_dir), env=env)
+        code = subprocess.call(argv, cwd=str(cwd), env=env)
     except KeyboardInterrupt:
         code = 130
 

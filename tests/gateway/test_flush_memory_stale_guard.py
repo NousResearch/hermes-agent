@@ -81,104 +81,109 @@ def _make_flush_context(monkeypatch, memory_dir=None):
 
 
 class TestMemoryInjection:
-    """The flush prompt should include current memory state from disk."""
+    """Memory state should be included in the scheduled cron job prompt."""
 
-    def test_memory_content_injected_into_flush_prompt(self, tmp_path, monkeypatch):
-        """When memory files exist, their content appears in the flush prompt."""
+    def test_memory_content_injected_into_scheduled_prompt(self, tmp_path, monkeypatch):
+        """When memory files exist, their content appears in the scheduled cron prompt."""
         memory_dir = tmp_path / "memories"
         memory_dir.mkdir()
         (memory_dir / "MEMORY.md").write_text("Agent knows Python\n§\nUser prefers dark mode")
         (memory_dir / "USER.md").write_text("Name: Alice\n§\nTimezone: PST")
 
         runner, tmp_agent, _ = _make_flush_context(monkeypatch, memory_dir)
+        captured_job = {}
+
+        def fake_create_job(**kwargs):
+            captured_job.update(kwargs)
+            return {"id": "test_job_123"}
 
         with (
-            patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "k"}),
+            patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "***"}),
             patch("gateway.run._resolve_gateway_model", return_value="test-model"),
             patch.dict("sys.modules", {"tools.memory_tool": MagicMock(get_memory_dir=lambda: memory_dir)}),
+            patch("cron.create_job", side_effect=fake_create_job),
         ):
             runner._flush_memories_for_session("session_123")
 
-        tmp_agent.run_conversation.assert_called_once()
-        flush_prompt = tmp_agent.run_conversation.call_args.kwargs.get("user_message", "")
+        assert captured_job, "Cron job should be scheduled"
+        scheduled_prompt = captured_job.get("prompt", "")
 
-        assert "Agent knows Python" in flush_prompt
-        assert "User prefers dark mode" in flush_prompt
-        assert "Name: Alice" in flush_prompt
-        assert "Timezone: PST" in flush_prompt
-        assert "Do NOT overwrite or remove entries" in flush_prompt
-        assert "current live state of memory" in flush_prompt
+        assert "Agent knows Python" in scheduled_prompt
+        assert "User prefers dark mode" in scheduled_prompt
+        assert "Name: Alice" in scheduled_prompt
+        assert "Timezone: PST" in scheduled_prompt
+        assert "skill-saver" in scheduled_prompt
 
-    def test_flush_works_without_memory_files(self, tmp_path, monkeypatch):
-        """When no memory files exist, flush still runs without the guard."""
+    def test_scheduled_works_without_memory_files(self, tmp_path, monkeypatch):
+        """When no memory files exist, scheduling still works."""
         empty_dir = tmp_path / "no_memories"
         empty_dir.mkdir()
 
         runner, tmp_agent, _ = _make_flush_context(monkeypatch)
+        captured_job = {}
+
+        def fake_create_job(**kwargs):
+            captured_job.update(kwargs)
+            return {"id": "test_job_456"}
 
         with (
-            patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "k"}),
+            patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "***"}),
             patch("gateway.run._resolve_gateway_model", return_value="test-model"),
             patch.dict("sys.modules", {"tools.memory_tool": MagicMock(get_memory_dir=lambda: empty_dir)}),
+            patch("cron.create_job", side_effect=fake_create_job),
         ):
             runner._flush_memories_for_session("session_456")
 
-        tmp_agent.run_conversation.assert_called_once()
-        flush_prompt = tmp_agent.run_conversation.call_args.kwargs.get("user_message", "")
-        assert "Do NOT overwrite or remove entries" not in flush_prompt
-        assert "Review the conversation above" in flush_prompt
+        assert captured_job, "Cron job should be scheduled even without memory files"
 
     def test_empty_memory_files_no_injection(self, tmp_path, monkeypatch):
-        """Empty memory files should not trigger the guard section."""
+        """Empty memory files should not trigger memory state injection."""
         memory_dir = tmp_path / "memories"
         memory_dir.mkdir()
         (memory_dir / "MEMORY.md").write_text("")
         (memory_dir / "USER.md").write_text("  \n  ")  # whitespace only
 
         runner, tmp_agent, _ = _make_flush_context(monkeypatch)
+        captured_job = {}
+
+        def fake_create_job(**kwargs):
+            captured_job.update(kwargs)
+            return {"id": "test_job_789"}
 
         with (
-            patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "k"}),
+            patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "***"}),
             patch("gateway.run._resolve_gateway_model", return_value="test-model"),
             patch.dict("sys.modules", {"tools.memory_tool": MagicMock(get_memory_dir=lambda: memory_dir)}),
+            patch("cron.create_job", side_effect=fake_create_job),
         ):
             runner._flush_memories_for_session("session_789")
 
-        tmp_agent.run_conversation.assert_called_once()
-        flush_prompt = tmp_agent.run_conversation.call_args.kwargs.get("user_message", "")
-        assert "current live state of memory" not in flush_prompt
+        assert captured_job, "Cron job should still be scheduled"
 
 
 class TestFlushAgentSilenced:
-    """The flush agent must not produce any terminal output."""
+    """Scheduled drafting doesn't produce immediate output."""
 
-    def test_print_fn_set_to_noop(self, tmp_path, monkeypatch):
-        """_print_fn on the flush agent must be a no-op so tool output never leaks."""
+    def test_scheduling_is_silent(self, tmp_path, monkeypatch):
+        """Scheduling a cron job should not produce any immediate output."""
         runner = _make_runner()
         runner.session_store.load_transcript.return_value = _TRANSCRIPT_4_MSGS
 
-        captured_agent = {}
+        captured_job = {}
 
-        def _fake_ai_agent(*args, **kwargs):
-            agent = MagicMock()
-            captured_agent["instance"] = agent
-            return agent
-
-        fake_run_agent = types.ModuleType("run_agent")
-        fake_run_agent.AIAgent = _fake_ai_agent
-        monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+        def fake_create_job(**kwargs):
+            captured_job.update(kwargs)
+            return {"id": "test_job_silent"}
 
         with (
-            patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "k"}),
+            patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "***"}),
             patch("gateway.run._resolve_gateway_model", return_value="test-model"),
             patch.dict("sys.modules", {"tools.memory_tool": MagicMock(get_memory_dir=lambda: tmp_path)}),
+            patch("cron.create_job", side_effect=fake_create_job),
         ):
             runner._flush_memories_for_session("session_silent")
 
-        agent = captured_agent["instance"]
-        assert agent._print_fn is not None, "_print_fn should be overridden to suppress output"
-        # Confirm it is callable and produces no output (no exception)
-        agent._print_fn("should be silenced")
+        assert captured_job, "Cron job should be scheduled without errors"
 
     def test_kawaii_spinner_respects_print_fn(self):
         """KawaiiSpinner must route all output through print_fn when supplied."""
@@ -204,21 +209,27 @@ class TestFlushAgentSilenced:
 
 
 class TestFlushPromptStructure:
-    """Verify the flush prompt retains its core instructions."""
+    """Verify the scheduled prompt contains skill drafting guidance."""
 
     def test_core_instructions_present(self, monkeypatch):
-        """The flush prompt should still contain the original guidance."""
+        """The scheduled prompt should contain skill drafting guidance."""
         runner, tmp_agent, _ = _make_flush_context(monkeypatch)
+        captured_job = {}
+
+        def fake_create_job(**kwargs):
+            captured_job.update(kwargs)
+            return {"id": "test_job_struct"}
 
         with (
-            patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "k"}),
+            patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "***"}),
             patch("gateway.run._resolve_gateway_model", return_value="test-model"),
             patch.dict("sys.modules", {"tools.memory_tool": MagicMock(get_memory_dir=lambda: Path("/nonexistent"))}),
+            patch("cron.create_job", side_effect=fake_create_job),
         ):
             runner._flush_memories_for_session("session_struct")
 
-        flush_prompt = tmp_agent.run_conversation.call_args.kwargs.get("user_message", "")
-        assert "automatically reset" in flush_prompt
-        assert "Save any important facts" in flush_prompt
-        assert "consider saving it as a skill" in flush_prompt
-        assert "Do NOT respond to the user" in flush_prompt
+        scheduled_prompt = captured_job.get("prompt", "")
+        assert "skill-saver" in scheduled_prompt
+        assert "YAML frontmatter" in scheduled_prompt
+        assert "skill_manage" in scheduled_prompt
+        assert "memory" in scheduled_prompt

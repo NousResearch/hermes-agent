@@ -92,6 +92,11 @@ VALID_NAME_RE = re.compile(r'^[a-z0-9][a-z0-9._-]*$')
 ALLOWED_SUBDIRS = {"references", "templates", "scripts", "assets"}
 
 
+def check_skill_manage_requirements() -> bool:
+    """Skill management has no external requirements -- always available."""
+    return True
+
+
 # =============================================================================
 # Validation helpers
 # =============================================================================
@@ -584,19 +589,19 @@ def skill_manage(
     """
     if action == "create":
         if not content:
-            return tool_error("content is required for 'create'. Provide the full SKILL.md text (frontmatter + body).", success=False)
+            return json.dumps({"success": False, "error": "content is required for 'create'. Provide the full SKILL.md text (frontmatter + body)."}, ensure_ascii=False)
         result = _create_skill(name, content, category)
 
     elif action == "edit":
         if not content:
-            return tool_error("content is required for 'edit'. Provide the full updated SKILL.md text.", success=False)
+            return json.dumps({"success": False, "error": "content is required for 'edit'. Provide the full updated SKILL.md text."}, ensure_ascii=False)
         result = _edit_skill(name, content)
 
     elif action == "patch":
         if not old_string:
-            return tool_error("old_string is required for 'patch'. Provide the text to find.", success=False)
+            return json.dumps({"success": False, "error": "old_string is required for 'patch'. Provide the text to find."}, ensure_ascii=False)
         if new_string is None:
-            return tool_error("new_string is required for 'patch'. Use empty string to delete matched text.", success=False)
+            return json.dumps({"success": False, "error": "new_string is required for 'patch'. Use empty string to delete matched text."}, ensure_ascii=False)
         result = _patch_skill(name, old_string, new_string, file_path, replace_all)
 
     elif action == "delete":
@@ -604,14 +609,14 @@ def skill_manage(
 
     elif action == "write_file":
         if not file_path:
-            return tool_error("file_path is required for 'write_file'. Example: 'references/api-guide.md'", success=False)
+            return json.dumps({"success": False, "error": "file_path is required for 'write_file'. Example: 'references/api-guide.md'"}, ensure_ascii=False)
         if file_content is None:
-            return tool_error("file_content is required for 'write_file'.", success=False)
+            return json.dumps({"success": False, "error": "file_content is required for 'write_file'."}, ensure_ascii=False)
         result = _write_file(name, file_path, file_content)
 
     elif action == "remove_file":
         if not file_path:
-            return tool_error("file_path is required for 'remove_file'.", success=False)
+            return json.dumps({"success": False, "error": "file_path is required for 'remove_file'."}, ensure_ascii=False)
         result = _remove_file(name, file_path)
 
     else:
@@ -634,23 +639,66 @@ def skill_manage(
 SKILL_MANAGE_SCHEMA = {
     "name": "skill_manage",
     "description": (
-        "Manage skills (create, update, delete). Skills are your procedural "
-        "memory — reusable approaches for recurring task types. "
-        "New skills go to ~/.hermes/skills/; existing skills can be modified wherever they live.\n\n"
-        "Actions: create (full SKILL.md + optional category), "
-        "patch (old_string/new_string — preferred for fixes), "
-        "edit (full SKILL.md rewrite — major overhauls only), "
-        "delete, write_file, remove_file.\n\n"
-        "Create when: complex task succeeded (5+ calls), errors overcome, "
-        "user-corrected approach worked, non-trivial workflow discovered, "
-        "or user asks you to remember a procedure.\n"
-        "Update when: instructions stale/wrong, OS-specific failures, "
-        "missing steps or pitfalls found during use. "
-        "If you used a skill and hit issues not covered by it, patch it immediately.\n\n"
-        "After difficult/iterative tasks, offer to save as a skill. "
-        "Skip for simple one-offs. Confirm with user before creating/deleting.\n\n"
-        "Good skills: trigger conditions, numbered steps with exact commands, "
-        "pitfalls section, verification steps. Use skill_view() to see format examples."
+        "Manage skills (create, update, delete). Skills are your procedural memory — reusable "
+        "approaches for recurring task types. New skills go to ~/.hermes/skills/; existing skills "
+        "can be modified wherever they live.\n\n"
+        "== ACTIONS ==\n"
+        "• create     — Full SKILL.md + optional category (first time creation)\n"
+        "• edit       — Replace entire SKILL.md (major changes only)\n"
+        "• patch      — Find-and-replace on SKILL.md or supporting files (PREFERRED for updates)\n"
+        "• delete     — Remove skill entirely (confirm with user first)\n"
+        "• write_file — Add/overwrite supporting files (references/, templates/, scripts/, assets/)\n"
+        "• remove_file — Delete supporting files\n\n"
+        "== SKILL FORMAT (MANDATORY FOR 'create' AND 'edit') ==\n\n"
+        "STEP 1: YAML FRONTMATTER — MUST be first, no text before it:\n"
+        "---\n"
+        "name: my-skill                    # lowercase, hyphens only, max 64 chars\n"
+        "description: 1-sentence summary of what this skill does\n"
+        "version: 1.0.0\n"
+        "author: Your Name or 'Hermes Agent'\n"
+        "license: MIT\n"
+        "metadata:\n"
+        "  hermes:\n"
+        "    tags: [tag1, tag2]\n"
+        "---\n\n"
+        "STEP 2: Markdown body — starts AFTER the closing '---':\n"
+        "# "
+        "skill-name\n\n"
+        "**Trigger Conditions**: When to use this skill (5+ tool calls, errors overcome, user corrections)\n\n"
+        "## Procedure\n"
+        "Numbered steps with exact commands and expected outputs.\n\n"
+        "## Pitfalls\n"
+        "Common mistakes and how to fix them.\n\n"
+        "## Verification\n"
+        "How to confirm the task succeeded.\n\n"
+        "== CATEGORY RULES (for 'create' ONLY) ==\n"
+        "• Single directory name only: 'mlops' ✓ , 'mlops/training' ✗ \n"
+        "• Lowercase letters, numbers, hyphens: 'data-science' ✓ , 'DevOps' ✗ \n"
+        "• Examples: devops, data-science, mlops, creative, productivity\n\n"
+        "== WHEN TO CREATE SKILLS ==\n"
+        "✓ Complex task succeeded (5+ tool calls)\n"
+        "✓ Errors overcome that were not trivial\n"
+        "✓ User corrected your approach — save the correct way\n"
+        "✓ Non-trivial workflow discovered\n"
+        "✓ User explicitly asks you to remember a procedure\n\n"
+        "✗ Simple one-offs (single tool call)\n"
+        "✗ Obvious tasks (reading a file, running basic commands)\n\n"
+        "== BEST PRACTICES ==\n"
+        "• ALWAYS read an existing skill first with skill_view('skill-name') to see the format\n"
+        "• For updates, use 'patch' NOT 'edit' unless making major changes\n"
+        "• Include exact commands with shell prompts: '$ ls -la'\n"
+        "• Add pitfalls section based on what went wrong\n"
+        "• Add verification steps so future runs can confirm success\n"
+        "• When in doubt, ask the user before creating/deleting skills\n\n"
+        "== EXAMPLE CREATION ==\n"
+        "User: 'Remember how we fixed the JWT parsing bug'\n"
+        "Agent: /skill jwt-parsing-fix\n"
+        "Agent: [Reads the skill to understand format]\n"
+        "Agent: Calls skill_manage with:\n"
+        "  - action='create'\n"
+        "  - name='jwt-parsing-fix'\n"
+        "  - content='---\\nname: jwt-parsing-fix\\n...' (full content with frontmatter)\n"
+        "  - category=None\n"
     ),
     "parameters": {
         "type": "object",
@@ -722,7 +770,7 @@ SKILL_MANAGE_SCHEMA = {
 
 
 # --- Registry ---
-from tools.registry import registry, tool_error
+from tools.registry import registry
 
 registry.register(
     name="skill_manage",

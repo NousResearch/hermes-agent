@@ -1,5 +1,5 @@
 """
-ARGUS action execution — restart, kill, inject, and corrective prompt logic.
+Agathos action execution — restart, kill, inject, and corrective prompt logic.
 
 Each function takes cursor/conn and session info as explicit parameters.
 Pure functions with side effects only on the database (no Agathos class state).
@@ -48,7 +48,24 @@ def _get_cron_env() -> Dict[str, str]:
 def safe_subprocess(
     cmd: List[str], timeout: int = 10, **kwargs
 ) -> Optional[subprocess.CompletedProcess]:
-    """Run a subprocess with full env and error handling. Never raises."""
+    """Run a subprocess with full environment and error handling. Never raises.
+
+    Wraps subprocess.run with:
+    - Virtual environment context (via _get_cron_env)
+    - Timeout enforcement
+    - Exception catching (FileNotFound, Timeout, generic)
+    - Logging of all failure modes
+
+    Args:
+        cmd: Command and arguments as list
+        timeout: Seconds to wait before killing (default: 10)
+        **kwargs: Additional subprocess.run arguments
+
+    Returns:
+        CompletedProcess on success, None on any failure
+
+    Side effects: Logs warnings/errors via agathos.actions logger.
+    """
     try:
         return subprocess.run(
             cmd,
@@ -75,31 +92,31 @@ def safe_subprocess(
 
 DEFAULT_CORRECTIVE_PROMPTS: Dict[str, str] = {
     "repeat_tool_calls": (
-        "ENTROPY CORRECTION: ARGUS detected repeated tool calls without progress. "
+        "ENTROPY CORRECTION: Agathos detected repeated tool calls without progress. "
         "You are calling the same tool with the same arguments multiple times. "
         "Stop and reassess. Read the file/content you need ONCE, then act on it. "
         "Do not re-read files you already have in context. Complete the task."
     ),
     "repeat_commands": (
-        "ENTROPY CORRECTION: ARGUS detected repeated terminal commands. "
+        "ENTROPY CORRECTION: Agathos detected repeated terminal commands. "
         "You are running the same command multiple times. "
         "Check the output you already received before re-running. "
         "If the command failed, fix the issue, don't retry blindly."
     ),
     "stuck_loop": (
-        "ENTROPY CORRECTION: ARGUS detected a stuck loop pattern. "
+        "ENTROPY CORRECTION: Agathos detected a stuck loop pattern. "
         "Your last several tool calls form a repeating cycle. "
         "STOP. Read your conversation history. Identify what you're trying to accomplish. "
         "Take a different approach. Do not repeat the same sequence."
     ),
     "no_file_changes": (
-        "ENTROPY CORRECTION: ARGUS detected write operations that didn't change files. "
+        "ENTROPY CORRECTION: Agathos detected write operations that didn't change files. "
         "You are calling write_file/patch but the file content is not changing. "
         "Read the file first, verify what you're writing is actually different. "
         "If using patch, check that old_string matches exactly."
     ),
     "error_cascade": (
-        "ENTROPY CORRECTION: ARGUS detected a cascade of tool failures. "
+        "ENTROPY CORRECTION: Agathos detected a cascade of tool failures. "
         "Multiple consecutive tool calls have returned errors. "
         "STOP. Read the error messages carefully. The environment or arguments may be wrong. "
         "Check file paths, command syntax, and prerequisites before retrying. "
@@ -158,7 +175,7 @@ def build_corrective_prompt(
         template = prompts.get(entropy_type, prompts["stuck_loop"])
         return "%s\n\nReason: %s" % (template, reason)
 
-    return "ENTROPY CORRECTION: ARGUS detected an issue requiring restart. %s" % reason
+    return "ENTROPY CORRECTION: Agathos detected an issue requiring restart. %s" % reason
 
 
 # =============================================================================
@@ -167,7 +184,23 @@ def build_corrective_prompt(
 
 
 def terminate_pid(pid: Union[str, int], context: str = "terminate") -> None:
-    """Send SIGTERM then SIGKILL to a process."""
+    """Send SIGTERM then SIGKILL to a process with graceful fallback.
+
+    First sends SIGTERM (-TERM) and waits 2 seconds for graceful shutdown.
+    Then sends SIGKILL (-9) for forced termination if process still exists.
+
+    Args:
+        pid: Process ID to terminate (int or string)
+        context: Description of why process is being terminated (for logging)
+
+    Side effects:
+        - Sends signals to PID
+        - Logs info via agathos.actions logger
+        - 2-second delay between signals
+
+    Returns:
+        None (errors logged, never raises)
+    """
     pid_str = str(pid)
     safe_subprocess(["kill", "-TERM", pid_str])
     logger.info("Sent SIGTERM to PID %s (%s)", pid_str, context)
@@ -246,7 +279,7 @@ def restart_cron_session(session: Dict, corrective_prompt: str) -> None:
         return
 
     try:
-        result = pause_job(job_id, reason="ARGUS restart: entropy detected")
+        result = pause_job(job_id, reason="Agathos restart: entropy detected")
         if result:
             logger.info("Paused cron job %s", job_id)
         else:
@@ -385,7 +418,7 @@ def kill_cron_session(session: Dict, reason: str) -> None:
         return
 
     try:
-        result = pause_job(job_id, reason="ARGUS kill: %s" % reason)
+        result = pause_job(job_id, reason="Agathos kill: %s" % reason)
         if result:
             logger.info("Permanently paused cron job %s", job_id)
         else:
@@ -408,7 +441,7 @@ def kill_delegate_session(session: Dict, reason: str) -> None:
 def kill_manual_session(cursor: sqlite3.Cursor, session: Dict, reason: str) -> None:
     """Cannot kill manual sessions — record notification for user review."""
     message = (
-        "ARGUS cannot terminate manual session %s.\n"
+        "Agathos cannot terminate manual session %s.\n"
         "Action required: Please review this session manually.\n"
         "Reason: %s" % (session["session_id"], reason)
     )

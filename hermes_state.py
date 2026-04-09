@@ -1284,36 +1284,58 @@ class SessionDB:
                 )
             session_ids = set(row["id"] for row in cursor.fetchall())
 
-            # Collect ALL descendant session IDs (not just direct children)
-            # to handle chains like A -> B -> C -> D
-            all_to_delete = set()
+            # BFS to collect all descendant IDs (ended sessions only).
+            # Active sessions are never deleted — their parent references
+            # are nulled out to satisfy the FK without removing them.
+            to_delete = []
+            to_null = []  # sessions NOT being deleted that reference deleted sessions
+            visited = set()
             queue = list(session_ids)
+            depth = {sid: 0 for sid in session_ids}
+
             while queue:
-                sid = queue.pop()
-                if sid in all_to_delete:
+                sid = queue.pop(0)
+                if sid in visited:
                     continue
-                all_to_delete.add(sid)
+                visited.add(sid)
+
                 children = [r[0] for r in conn.execute(
-                    "SELECT id FROM sessions WHERE parent_session_id = ?",
+                    "SELECT id, ended_at FROM sessions WHERE parent_session_id = ?",
                     (sid,),
                 ).fetchall()]
-                queue.extend(children)
 
-            # Null out parent references for sessions NOT being deleted
-            # that reference sessions being deleted as their parent
-            # (avoids FK constraint: sessions.parent_session_id -> sessions.id)
-            for sid in all_to_delete:
+                for child_id, child_ended in children:
+                    if child_ended is not None:
+                        # Ended child — delete it too
+                        depth[child_id] = depth[sid] + 1
+                        queue.append(child_id)
+                    else:
+                        # Active child — don't delete, just orphan it
+                        to_null.append(child_id)
+
+            # Only ended sessions get deleted
+            to_delete = [sid for sid in visited if sid in session_ids or conn.execute(
+                "SELECT ended_at FROM sessions WHERE id = ?", (sid,)
+            ).fetchone()[0] is not None]
+
+            # Sort children before parents (deeper first)
+            to_delete.sort(key=lambda s: depth.get(s, 0), reverse=True)
+
+            # Null out parent_session_id for ALL sessions referencing deleted sessions
+            # (both deleted sessions referencing each other, and active sessions
+            # referencing deleted parents)
+            if to_delete:
+                placeholders = ",".join("?" * len(to_delete))
                 conn.execute(
-                    "UPDATE sessions SET parent_session_id = NULL WHERE parent_session_id = ? AND id NOT IN ({})".format(
-                        ",".join("?" * len(all_to_delete))
-                    ),
-                    (sid, *all_to_delete),
+                    f"UPDATE sessions SET parent_session_id = NULL WHERE parent_session_id IN ({placeholders})",
+                    to_delete,
                 )
 
-            for sid in all_to_delete:
+            # Delete messages first, then sessions in child-before-parent order
+            for sid in to_delete:
                 conn.execute("DELETE FROM messages WHERE session_id = ?", (sid,))
-            for sid in all_to_delete:
+            for sid in to_delete:
                 conn.execute("DELETE FROM sessions WHERE id = ?", (sid,))
-            return len(all_to_delete)
+            return len(to_delete)
 
         return self._execute_write(_do)

@@ -7282,6 +7282,7 @@ class AIAgent:
         length_continue_retries = 0
         truncated_response_prefix = ""
         compression_attempts = 0
+        _turn_exit_reason = "unknown"  # Diagnostic: why the loop ended
         
         # Clear any stale interrupt state at start
         self.clear_interrupt()
@@ -7306,6 +7307,7 @@ class AIAgent:
             # Check for interrupt request (e.g., user sent new message)
             if self._interrupt_requested:
                 interrupted = True
+                _turn_exit_reason = "interrupted_by_user"
                 if not self.quiet_mode:
                     self._safe_print("\n⚡ Breaking out of tool loop due to interrupt...")
                 break
@@ -7314,6 +7316,7 @@ class AIAgent:
             self._api_call_count = api_call_count
             self._touch_activity(f"starting API call #{api_call_count}")
             if not self.iteration_budget.consume():
+                _turn_exit_reason = "budget_exhausted"
                 if not self.quiet_mode:
                     self._safe_print(f"\n⚠️  Iteration budget exhausted ({self.iteration_budget.used}/{self.iteration_budget.max_total} iterations used)")
                 break
@@ -8560,6 +8563,7 @@ class AIAgent:
             
             # If the API call was interrupted, skip response processing
             if interrupted:
+                _turn_exit_reason = "interrupted_during_api_call"
                 break
 
             if restart_with_compressed_messages:
@@ -8579,6 +8583,7 @@ class AIAgent:
             # (e.g. repeated context-length errors that exhausted retry_count),
             # the `response` variable is still None. Break out cleanly.
             if response is None:
+                _turn_exit_reason = "all_retries_exhausted_no_response"
                 print(f"{self.log_prefix}❌ All API retries exhausted with no successful response.")
                 self._persist_session(messages, conversation_history)
                 break
@@ -9042,6 +9047,7 @@ class AIAgent:
                         # instead of wasting API calls on retries that won't help.
                         fallback = getattr(self, '_last_content_with_tools', None)
                         if fallback:
+                            _turn_exit_reason = "fallback_prior_turn_content"
                             logger.debug("Empty follow-up after tool calls — using prior turn content as final response")
                             self._last_content_with_tools = None
                             self._empty_content_retries = 0
@@ -9108,6 +9114,7 @@ class AIAgent:
                         # Exhausted prefill attempts, empty retries, or
                         # structured reasoning with no content —
                         # fall through to "(empty)" terminal.
+                        _turn_exit_reason = "empty_response_exhausted"
                         reasoning_text = self._extract_reasoning(assistant_message)
                         assistant_msg = self._build_assistant_message(assistant_message, finish_reason)
                         assistant_msg["content"] = "(empty)"
@@ -9179,6 +9186,7 @@ class AIAgent:
 
                     messages.append(final_msg)
                     
+                    _turn_exit_reason = f"text_response(finish_reason={finish_reason})"
                     if not self.quiet_mode:
                         self._safe_print(f"🎉 Conversation completed after {api_call_count} OpenAI-compatible API call(s)")
                     break
@@ -9228,6 +9236,7 @@ class AIAgent:
 
                 # If we're near the limit, break to avoid infinite loops
                 if api_call_count >= self.max_iterations - 1:
+                    _turn_exit_reason = f"error_near_max_iterations({error_msg[:80]})"
                     final_response = f"I apologize, but I encountered repeated errors: {error_msg}"
                     # Append as assistant so the history stays valid for
                     # session resume (avoids consecutive user messages).
@@ -9238,6 +9247,7 @@ class AIAgent:
             api_call_count >= self.max_iterations
             or self.iteration_budget.remaining <= 0
         ):
+            _turn_exit_reason = f"max_iterations_reached({api_call_count}/{self.max_iterations})"
             if self.iteration_budget.remaining <= 0 and not self.quiet_mode:
                 print(f"\n⚠️  Iteration budget exhausted ({self.iteration_budget.used}/{self.iteration_budget.max_total} iterations used)")
             final_response = self._handle_max_iterations(messages, api_call_count)
@@ -9254,6 +9264,49 @@ class AIAgent:
         # Persist session to both JSON log and SQLite
         self._persist_session(messages, conversation_history)
 
+        # ── Turn-exit diagnostic log ─────────────────────────────────────
+        # Always logged at INFO so agent.log captures WHY every turn ended.
+        # When the last message is a tool result (agent was mid-work), log
+        # at WARNING — this is the "just stops" scenario users report.
+        _last_msg_role = messages[-1].get("role") if messages else None
+        _last_tool_name = None
+        if _last_msg_role == "tool":
+            # Walk back to find the assistant message with the tool call
+            for _m in reversed(messages):
+                if _m.get("role") == "assistant" and _m.get("tool_calls"):
+                    _tcs = _m["tool_calls"]
+                    if _tcs and isinstance(_tcs[0], dict):
+                        _last_tool_name = _tcs[-1].get("function", {}).get("name")
+                    break
+
+        _turn_tool_count = sum(
+            1 for m in messages
+            if isinstance(m, dict) and m.get("role") == "assistant" and m.get("tool_calls")
+        )
+        _resp_len = len(final_response) if final_response else 0
+        _budget_used = self.iteration_budget.used if self.iteration_budget else 0
+        _budget_max = self.iteration_budget.max_total if self.iteration_budget else 0
+
+        _diag_msg = (
+            "Turn ended: reason=%s model=%s api_calls=%d/%d budget=%d/%d "
+            "tool_turns=%d last_msg_role=%s response_len=%d session=%s"
+        )
+        _diag_args = (
+            _turn_exit_reason, self.model, api_call_count, self.max_iterations,
+            _budget_used, _budget_max,
+            _turn_tool_count, _last_msg_role, _resp_len,
+            self.session_id or "none",
+        )
+
+        if _last_msg_role == "tool" and not interrupted:
+            # Agent was mid-work — this is the "just stops" case.
+            logger.warning(
+                "Turn ended with pending tool result (agent may appear stuck). "
+                + _diag_msg + " last_tool=%s",
+                *_diag_args, _last_tool_name,
+            )
+        else:
+            logger.info(_diag_msg, *_diag_args)
 
         # Plugin hook: post_llm_call
         # Fired once per turn after the tool-calling loop completes.

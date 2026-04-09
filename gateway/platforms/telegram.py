@@ -151,6 +151,10 @@ class TelegramAdapter(BasePlatformAdapter):
         self._dm_topics: Dict[str, int] = {}
         # DM Topics config from extra.dm_topics
         self._dm_topics_config: List[Dict[str, Any]] = self.config.extra.get("dm_topics", [])
+        # Interactive model picker state per chat
+        self._model_picker_state: Dict[str, dict] = {}
+        # Approval button state: message_id → session_key
+        self._approval_state: Dict[int, str] = {}
 
     def _fallback_ips(self) -> list[str]:
         """Return validated fallback IPs from config (populated by _apply_env_overrides)."""
@@ -518,7 +522,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     ", ".join(fallback_ips),
                 )
             if fallback_ips:
-                logger.warning(
+                logger.info(
                     "[%s] Telegram fallback IPs active: %s",
                     self.name,
                     ", ".join(fallback_ips),
@@ -1008,14 +1012,432 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.warning("[%s] send_update_prompt failed: %s", self.name, e)
             return SendResult(success=False, error=str(e))
 
+    async def send_exec_approval(
+        self, chat_id: str, command: str, session_key: str,
+        description: str = "dangerous command",
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send an inline-keyboard approval prompt with interactive buttons.
+
+        The buttons call ``resolve_gateway_approval()`` to unblock the waiting
+        agent thread — same mechanism as the text ``/approve`` flow.
+        """
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+
+        try:
+            cmd_preview = command[:3800] + "..." if len(command) > 3800 else command
+            text = (
+                f"⚠️ *Command Approval Required*\n\n"
+                f"`{cmd_preview}`\n\n"
+                f"Reason: {description}"
+            )
+
+            # Resolve thread context for thread replies
+            thread_id = None
+            if metadata:
+                thread_id = metadata.get("thread_id") or metadata.get("message_thread_id")
+
+            # We'll use the message_id as part of callback_data to look up session_key
+            # Send a placeholder first, then update — or use a counter.
+            # Simpler: use a monotonic counter to generate short IDs.
+            import itertools
+            if not hasattr(self, "_approval_counter"):
+                self._approval_counter = itertools.count(1)
+            approval_id = next(self._approval_counter)
+
+            keyboard = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("✅ Allow Once", callback_data=f"ea:once:{approval_id}"),
+                    InlineKeyboardButton("✅ Session", callback_data=f"ea:session:{approval_id}"),
+                ],
+                [
+                    InlineKeyboardButton("✅ Always", callback_data=f"ea:always:{approval_id}"),
+                    InlineKeyboardButton("❌ Deny", callback_data=f"ea:deny:{approval_id}"),
+                ],
+            ])
+
+            kwargs: Dict[str, Any] = {
+                "chat_id": int(chat_id),
+                "text": text,
+                "parse_mode": ParseMode.MARKDOWN,
+                "reply_markup": keyboard,
+            }
+            if thread_id:
+                kwargs["message_thread_id"] = int(thread_id)
+
+            msg = await self._bot.send_message(**kwargs)
+
+            # Store session_key keyed by approval_id for the callback handler
+            self._approval_state[approval_id] = session_key
+
+            return SendResult(success=True, message_id=str(msg.message_id))
+        except Exception as e:
+            logger.warning("[%s] send_exec_approval failed: %s", self.name, e)
+            return SendResult(success=False, error=str(e))
+
+    async def send_model_picker(
+        self,
+        chat_id: str,
+        providers: list,
+        current_model: str,
+        current_provider: str,
+        session_key: str,
+        on_model_selected,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send an interactive inline-keyboard model picker.
+
+        Two-step drill-down: provider selection → model selection.
+        Edits the same message in-place as the user navigates.
+        """
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+
+        try:
+            from hermes_cli.providers import get_label
+        except ImportError:
+            def get_label(slug):
+                return slug
+
+        try:
+            # Build provider buttons — 2 per row
+            buttons: list = []
+            for p in providers:
+                count = p.get("total_models", len(p.get("models", [])))
+                label = f"{p['name']} ({count})"
+                if p.get("is_current"):
+                    label = f"✓ {label}"
+                # Compact callback data: mp:<slug>  (max 64 bytes)
+                buttons.append(
+                    InlineKeyboardButton(label, callback_data=f"mp:{p['slug']}")
+                )
+
+            rows = [buttons[i : i + 2] for i in range(0, len(buttons), 2)]
+            rows.append([InlineKeyboardButton("✗ Cancel", callback_data="mx")])
+            keyboard = InlineKeyboardMarkup(rows)
+
+            provider_label = get_label(current_provider)
+            text = (
+                f"⚙ *Model Configuration*\n\n"
+                f"Current model: `{current_model or 'unknown'}`\n"
+                f"Provider: {provider_label}\n\n"
+                f"Select a provider:"
+            )
+
+            thread_id = metadata.get("thread_id") if metadata else None
+            msg = await self._bot.send_message(
+                chat_id=int(chat_id),
+                text=text,
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=keyboard,
+                message_thread_id=int(thread_id) if thread_id else None,
+            )
+
+            # Store picker state keyed by chat_id
+            self._model_picker_state[str(chat_id)] = {
+                "msg_id": msg.message_id,
+                "providers": providers,
+                "session_key": session_key,
+                "on_model_selected": on_model_selected,
+                "current_model": current_model,
+                "current_provider": current_provider,
+            }
+
+            return SendResult(success=True, message_id=str(msg.message_id))
+        except Exception as e:
+            logger.warning("[%s] send_model_picker failed: %s", self.name, e)
+            return SendResult(success=False, error=str(e))
+
+    _MODEL_PAGE_SIZE = 8
+
+    def _build_model_keyboard(self, models: list, page: int) -> tuple:
+        """Build paginated model buttons. Returns (keyboard, page_info_text)."""
+        page_size = self._MODEL_PAGE_SIZE
+        total = len(models)
+        total_pages = max(1, (total + page_size - 1) // page_size)
+        page = max(0, min(page, total_pages - 1))
+
+        start = page * page_size
+        end = min(start + page_size, total)
+        page_models = models[start:end]
+
+        buttons: list = []
+        for i, model_id in enumerate(page_models):
+            abs_idx = start + i
+            short = model_id.split("/")[-1] if "/" in model_id else model_id
+            if len(short) > 38:
+                short = short[:35] + "..."
+            buttons.append(
+                InlineKeyboardButton(short, callback_data=f"mm:{abs_idx}")
+            )
+
+        rows = [buttons[i : i + 2] for i in range(0, len(buttons), 2)]
+
+        # Pagination row (if needed)
+        if total_pages > 1:
+            nav: list = []
+            if page > 0:
+                nav.append(InlineKeyboardButton("◀ Prev", callback_data=f"mg:{page - 1}"))
+            nav.append(InlineKeyboardButton(f"{page + 1}/{total_pages}", callback_data="mx:noop"))
+            if page < total_pages - 1:
+                nav.append(InlineKeyboardButton("Next ▶", callback_data=f"mg:{page + 1}"))
+            rows.append(nav)
+
+        rows.append([
+            InlineKeyboardButton("◀ Back", callback_data="mb"),
+            InlineKeyboardButton("✗ Cancel", callback_data="mx"),
+        ])
+
+        page_info = f" ({start + 1}–{end} of {total})" if total_pages > 1 else ""
+        return InlineKeyboardMarkup(rows), page_info
+
+    async def _handle_model_picker_callback(
+        self, query, data: str, chat_id: str
+    ) -> None:
+        """Handle model picker inline keyboard callbacks (mp:/mm:/mb:/mx:/mg:)."""
+        state = self._model_picker_state.get(chat_id)
+        if not state:
+            await query.answer(text="Picker expired — use /model again.")
+            return
+
+        try:
+            from hermes_cli.providers import get_label
+        except ImportError:
+            def get_label(slug):
+                return slug
+
+        if data.startswith("mp:"):
+            # --- Provider selected: show model buttons (page 0) ---
+            provider_slug = data[3:]
+            provider = next(
+                (p for p in state["providers"] if p["slug"] == provider_slug),
+                None,
+            )
+            if not provider:
+                await query.answer(text="Provider not found.")
+                return
+
+            models = provider.get("models", [])
+            state["selected_provider"] = provider_slug
+            state["selected_provider_name"] = provider.get("name", provider_slug)
+            state["model_list"] = models
+            state["model_page"] = 0
+
+            keyboard, page_info = self._build_model_keyboard(models, 0)
+
+            pname = provider.get("name", provider_slug)
+            total = provider.get("total_models", len(models))
+            shown = len(models)
+            extra = f"\n_{total - shown} more available — type `/model <name>` directly_" if total > shown else ""
+
+            await query.edit_message_text(
+                text=(
+                    f"⚙ *Model Configuration*\n\n"
+                    f"Provider: *{pname}*{page_info}\n"
+                    f"Select a model:{extra}"
+                ),
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=keyboard,
+            )
+            await query.answer()
+
+        elif data.startswith("mg:"):
+            # --- Page navigation ---
+            try:
+                page = int(data[3:])
+            except ValueError:
+                await query.answer(text="Invalid page.")
+                return
+
+            models = state.get("model_list", [])
+            state["model_page"] = page
+
+            keyboard, page_info = self._build_model_keyboard(models, page)
+
+            pname = state.get("selected_provider_name", "")
+            provider_slug = state.get("selected_provider", "")
+            provider = next(
+                (p for p in state["providers"] if p["slug"] == provider_slug),
+                None,
+            )
+            total = provider.get("total_models", len(models)) if provider else len(models)
+            shown = len(models)
+            extra = f"\n_{total - shown} more available — type `/model <name>` directly_" if total > shown else ""
+
+            await query.edit_message_text(
+                text=(
+                    f"⚙ *Model Configuration*\n\n"
+                    f"Provider: *{pname}*{page_info}\n"
+                    f"Select a model:{extra}"
+                ),
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=keyboard,
+            )
+            await query.answer()
+
+        elif data.startswith("mm:"):
+            # --- Model selected: perform the switch ---
+            try:
+                idx = int(data[3:])
+            except ValueError:
+                await query.answer(text="Invalid selection.")
+                return
+
+            model_list = state.get("model_list", [])
+            if idx < 0 or idx >= len(model_list):
+                await query.answer(text="Invalid model index.")
+                return
+
+            model_id = model_list[idx]
+            provider_slug = state.get("selected_provider", "")
+            callback = state.get("on_model_selected")
+
+            if not callback:
+                await query.answer(text="Picker expired.")
+                return
+
+            try:
+                result_text = await callback(chat_id, model_id, provider_slug)
+            except Exception as exc:
+                logger.error("Model picker switch failed: %s", exc)
+                result_text = f"Error switching model: {exc}"
+
+            # Edit message to show confirmation, remove buttons
+            try:
+                await query.edit_message_text(
+                    text=result_text,
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=None,
+                )
+            except Exception:
+                # Markdown parse failure — retry as plain text
+                try:
+                    await query.edit_message_text(
+                        text=result_text,
+                        parse_mode=None,
+                        reply_markup=None,
+                    )
+                except Exception:
+                    pass
+            await query.answer(text="Model switched!")
+
+            # Clean up state
+            self._model_picker_state.pop(chat_id, None)
+
+        elif data == "mb":
+            # --- Back to provider list ---
+            buttons = []
+            for p in state["providers"]:
+                count = p.get("total_models", len(p.get("models", [])))
+                label = f"{p['name']} ({count})"
+                if p.get("is_current"):
+                    label = f"✓ {label}"
+                buttons.append(
+                    InlineKeyboardButton(label, callback_data=f"mp:{p['slug']}")
+                )
+
+            rows = [buttons[i : i + 2] for i in range(0, len(buttons), 2)]
+            rows.append([InlineKeyboardButton("✗ Cancel", callback_data="mx")])
+            keyboard = InlineKeyboardMarkup(rows)
+
+            try:
+                provider_label = get_label(state["current_provider"])
+            except Exception:
+                provider_label = state["current_provider"]
+
+            await query.edit_message_text(
+                text=(
+                    f"⚙ *Model Configuration*\n\n"
+                    f"Current model: `{state['current_model'] or 'unknown'}`\n"
+                    f"Provider: {provider_label}\n\n"
+                    f"Select a provider:"
+                ),
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=keyboard,
+            )
+            await query.answer()
+
+        elif data == "mx":
+            # --- Cancel ---
+            self._model_picker_state.pop(chat_id, None)
+            await query.edit_message_text(
+                text="Model selection cancelled.",
+                reply_markup=None,
+            )
+            await query.answer()
+
+        else:
+            # Catch-all (e.g. page counter button "mx:noop")
+            await query.answer()
+
     async def _handle_callback_query(
         self, update: "Update", context: "ContextTypes.DEFAULT_TYPE"
     ) -> None:
-        """Handle inline keyboard button clicks (update prompts)."""
+        """Handle inline keyboard button clicks."""
         query = update.callback_query
         if not query or not query.data:
             return
         data = query.data
+
+        # --- Model picker callbacks ---
+        if data.startswith(("mp:", "mm:", "mb", "mx", "mg:")):
+            chat_id = str(query.message.chat_id) if query.message else None
+            if chat_id:
+                await self._handle_model_picker_callback(query, data, chat_id)
+            return
+
+        # --- Exec approval callbacks (ea:choice:id) ---
+        if data.startswith("ea:"):
+            parts = data.split(":", 2)
+            if len(parts) == 3:
+                choice = parts[1]  # once, session, always, deny
+                try:
+                    approval_id = int(parts[2])
+                except (ValueError, IndexError):
+                    await query.answer(text="Invalid approval data.")
+                    return
+
+                session_key = self._approval_state.pop(approval_id, None)
+                if not session_key:
+                    await query.answer(text="This approval has already been resolved.")
+                    return
+
+                # Map choice to human-readable label
+                label_map = {
+                    "once": "✅ Approved once",
+                    "session": "✅ Approved for session",
+                    "always": "✅ Approved permanently",
+                    "deny": "❌ Denied",
+                }
+                user_display = getattr(query.from_user, "first_name", "User")
+                label = label_map.get(choice, "Resolved")
+
+                await query.answer(text=label)
+
+                # Edit message to show decision, remove buttons
+                try:
+                    await query.edit_message_text(
+                        text=f"{label} by {user_display}",
+                        parse_mode=ParseMode.MARKDOWN,
+                        reply_markup=None,
+                    )
+                except Exception:
+                    pass  # non-fatal if edit fails
+
+                # Resolve the approval — unblocks the agent thread
+                try:
+                    from tools.approval import resolve_gateway_approval
+                    count = resolve_gateway_approval(session_key, choice)
+                    logger.info(
+                        "Telegram button resolved %d approval(s) for session %s (choice=%s, user=%s)",
+                        count, session_key, choice, user_display,
+                    )
+                except Exception as exc:
+                    logger.error("Failed to resolve gateway approval from Telegram button: %s", exc)
+            return
+
+        # --- Update prompt callbacks ---
         if not data.startswith("update_prompt:"):
             return
         answer = data.split(":", 1)[1]  # "y" or "n"
@@ -1063,7 +1485,7 @@ class TelegramAdapter(BasePlatformAdapter):
             
             with open(audio_path, "rb") as audio_file:
                 # .ogg files -> send as voice (round playable bubble)
-                if audio_path.endswith(".ogg") or audio_path.endswith(".opus"):
+                if audio_path.endswith((".ogg", ".opus")):
                     _voice_thread = metadata.get("thread_id") if metadata else None
                     msg = await self._bot.send_voice(
                         chat_id=int(chat_id),
@@ -1210,7 +1632,12 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         if not self._bot:
             return SendResult(success=False, error="Not connected")
-        
+
+        from tools.url_safety import is_safe_url
+        if not is_safe_url(image_url):
+            logger.warning("[%s] Blocked unsafe image URL (SSRF protection)", self.name)
+            return await super().send_image(chat_id, image_url, caption, reply_to, metadata=metadata)
+
         try:
             # Telegram can send photos directly from URLs (up to ~5MB)
             _photo_thread = metadata.get("thread_id") if metadata else None
@@ -1800,10 +2227,7 @@ class TelegramAdapter(BasePlatformAdapter):
             existing.media_urls.extend(event.media_urls)
             existing.media_types.extend(event.media_types)
             if event.text:
-                if not existing.text:
-                    existing.text = event.text
-                elif event.text not in existing.text:
-                    existing.text = f"{existing.text}\n\n{event.text}".strip()
+                existing.text = self._merge_caption(existing.text, event.text)
 
         prior_task = self._pending_photo_batch_tasks.get(batch_key)
         if prior_task and not prior_task.done():
@@ -1993,11 +2417,7 @@ class TelegramAdapter(BasePlatformAdapter):
             existing.media_urls.extend(event.media_urls)
             existing.media_types.extend(event.media_types)
             if event.text:
-                if existing.text:
-                    if event.text not in existing.text.split("\n\n"):
-                        existing.text = f"{existing.text}\n\n{event.text}"
-                else:
-                    existing.text = event.text
+                existing.text = self._merge_caption(existing.text, event.text)
 
         prior_task = self._media_group_tasks.get(media_group_id)
         if prior_task:
@@ -2253,3 +2673,46 @@ class TelegramAdapter(BasePlatformAdapter):
             auto_skill=topic_skill,
             timestamp=message.date,
         )
+
+    # ── Message reactions (processing lifecycle) ──────────────────────────
+
+    def _reactions_enabled(self) -> bool:
+        """Check if message reactions are enabled via config/env."""
+        return os.getenv("TELEGRAM_REACTIONS", "false").lower() not in ("false", "0", "no")
+
+    async def _set_reaction(self, chat_id: str, message_id: str, emoji: str) -> bool:
+        """Set a single emoji reaction on a Telegram message."""
+        if not self._bot:
+            return False
+        try:
+            await self._bot.set_message_reaction(
+                chat_id=int(chat_id),
+                message_id=int(message_id),
+                reaction=emoji,
+            )
+            return True
+        except Exception as e:
+            logger.debug("[%s] set_message_reaction failed (%s): %s", self.name, emoji, e)
+            return False
+
+    async def on_processing_start(self, event: MessageEvent) -> None:
+        """Add an in-progress reaction when message processing begins."""
+        if not self._reactions_enabled():
+            return
+        chat_id = getattr(event.source, "chat_id", None)
+        message_id = getattr(event, "message_id", None)
+        if chat_id and message_id:
+            await self._set_reaction(chat_id, message_id, "\U0001f440")
+
+    async def on_processing_complete(self, event: MessageEvent, success: bool) -> None:
+        """Swap the in-progress reaction for a final success/failure reaction.
+
+        Unlike Discord (additive reactions), Telegram's set_message_reaction
+        replaces all existing reactions in one call — no remove step needed.
+        """
+        if not self._reactions_enabled():
+            return
+        chat_id = getattr(event.source, "chat_id", None)
+        message_id = getattr(event, "message_id", None)
+        if chat_id and message_id:
+            await self._set_reaction(chat_id, message_id, "\u2705" if success else "\u274c")

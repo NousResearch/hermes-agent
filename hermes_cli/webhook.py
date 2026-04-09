@@ -16,7 +16,7 @@ import re
 import secrets
 import time
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict
 
 from hermes_constants import display_hermes_home
 
@@ -25,9 +25,8 @@ _SUBSCRIPTIONS_FILENAME = "webhook_subscriptions.json"
 
 
 def _hermes_home() -> Path:
-    return Path(
-        os.getenv("HERMES_HOME", str(Path.home() / ".hermes"))
-    ).expanduser()
+    from hermes_constants import get_hermes_home
+    return get_hermes_home()
 
 
 def _subscriptions_path() -> Path:

@@ -8,6 +8,7 @@ from gateway.platforms.base import (
     GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE,
     MessageEvent,
     MessageType,
+    _safe_url_for_log,
 )
 
 
@@ -16,6 +17,31 @@ class TestSecretCaptureGuidance:
         message = GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE
         assert "local cli" in message.lower()
         assert "~/.hermes/.env" in message
+
+
+class TestSafeUrlForLog:
+    def test_strips_query_fragment_and_userinfo(self):
+        url = (
+            "https://user:pass@example.com/private/path/image.png"
+            "?X-Amz-Signature=supersecret&token=abc#frag"
+        )
+        result = _safe_url_for_log(url)
+        assert result == "https://example.com/.../image.png"
+        assert "supersecret" not in result
+        assert "token=abc" not in result
+        assert "user:pass@" not in result
+
+    def test_truncates_long_values(self):
+        long_url = "https://example.com/" + ("a" * 300)
+        result = _safe_url_for_log(long_url, max_len=40)
+        assert len(result) == 40
+        assert result.endswith("...")
+
+    def test_handles_small_and_non_positive_max_len(self):
+        url = "https://example.com/very/long/path/file.png?token=secret"
+        assert _safe_url_for_log(url, max_len=3) == "..."
+        assert _safe_url_for_log(url, max_len=2) == ".."
+        assert _safe_url_for_log(url, max_len=0) == ""
 
 
 # ---------------------------------------------------------------------------

@@ -21,7 +21,6 @@ from typing import Optional, Dict, Any
 
 from hermes_cli.nous_subscription import (
     apply_nous_provider_defaults,
-    get_nous_subscription_explainer_lines,
     get_nous_subscription_features,
 )
 from tools.tool_backend_helpers import managed_nous_tools_enabled
@@ -41,18 +40,6 @@ def _model_config_dict(config: Dict[str, Any]) -> Dict[str, Any]:
     if isinstance(current_model, str) and current_model.strip():
         return {"default": current_model.strip()}
     return {}
-
-
-def _set_model_provider(
-    config: Dict[str, Any], provider_id: str, base_url: str = ""
-) -> None:
-    model_cfg = _model_config_dict(config)
-    model_cfg["provider"] = provider_id
-    if base_url:
-        model_cfg["base_url"] = base_url.rstrip("/")
-    else:
-        model_cfg.pop("base_url", None)
-    config["model"] = model_cfg
 
 
 def _set_default_model(config: Dict[str, Any], model_name: str) -> None:
@@ -118,8 +105,8 @@ _DEFAULT_PROVIDER_MODELS = {
     ],
     "zai": ["glm-5", "glm-4.7", "glm-4.5", "glm-4.5-flash"],
     "kimi-coding": ["kimi-k2.5", "kimi-k2-thinking", "kimi-k2-turbo-preview"],
-    "minimax": ["MiniMax-M2.7", "MiniMax-M2.7-highspeed", "MiniMax-M2.5", "MiniMax-M2.5-highspeed", "MiniMax-M2.1"],
-    "minimax-cn": ["MiniMax-M2.7", "MiniMax-M2.7-highspeed", "MiniMax-M2.5", "MiniMax-M2.5-highspeed", "MiniMax-M2.1"],
+    "minimax": ["MiniMax-M1", "MiniMax-M1-40k", "MiniMax-M1-80k", "MiniMax-M1-128k", "MiniMax-M1-256k", "MiniMax-M2.5", "MiniMax-M2.7"],
+    "minimax-cn": ["MiniMax-M1", "MiniMax-M1-40k", "MiniMax-M1-80k", "MiniMax-M1-128k", "MiniMax-M1-256k", "MiniMax-M2.5", "MiniMax-M2.7"],
     "ai-gateway": ["anthropic/claude-opus-4.6", "anthropic/claude-sonnet-4.6", "openai/gpt-5", "google/gemini-3-flash"],
     "kilocode": ["anthropic/claude-opus-4.6", "anthropic/claude-sonnet-4.6", "openai/gpt-5.4", "google/gemini-3-pro-preview", "google/gemini-3-flash-preview"],
     "opencode-zen": ["gpt-5.4", "gpt-5.3-codex", "claude-sonnet-4-6", "gemini-3-flash", "glm-5", "kimi-k2.5", "minimax-m2.7"],
@@ -327,16 +314,6 @@ def _setup_provider_model_selection(config, provider_id, current_model, prompt_c
         config["model"] = model_cfg
 
 
-def _sync_model_from_disk(config: Dict[str, Any]) -> None:
-    disk_model = load_config().get("model")
-    if isinstance(disk_model, dict):
-        model_cfg = _model_config_dict(config)
-        model_cfg.update(disk_model)
-        config["model"] = model_cfg
-    elif isinstance(disk_model, str) and disk_model.strip():
-        _set_default_model(config, disk_model.strip())
-
-
 # Import config helpers
 from hermes_cli.config import (
     get_hermes_home,
@@ -444,10 +421,22 @@ def _curses_prompt_choice(question: str, choices: list, default: int = 0) -> int
                 curses.init_pair(1, curses.COLOR_GREEN, -1)
                 curses.init_pair(2, curses.COLOR_YELLOW, -1)
             cursor = default
+            scroll_offset = 0
 
             while True:
                 stdscr.clear()
                 max_y, max_x = stdscr.getmaxyx()
+
+                # Rows available for list items: rows 2..(max_y-2) inclusive.
+                visible = max(1, max_y - 3)
+
+                # Scroll the viewport so the cursor is always visible.
+                if cursor < scroll_offset:
+                    scroll_offset = cursor
+                elif cursor >= scroll_offset + visible:
+                    scroll_offset = cursor - visible + 1
+                scroll_offset = max(0, min(scroll_offset, max(0, len(choices) - visible)))
+
                 try:
                     stdscr.addnstr(
                         0,
@@ -459,12 +448,12 @@ def _curses_prompt_choice(question: str, choices: list, default: int = 0) -> int
                 except curses.error:
                     pass
 
-                for i, choice in enumerate(choices):
-                    y = i + 2
+                for row, i in enumerate(range(scroll_offset, min(scroll_offset + visible, len(choices)))):
+                    y = row + 2
                     if y >= max_y - 1:
                         break
                     arrow = "→" if i == cursor else " "
-                    line = f" {arrow}  {choice}"
+                    line = f" {arrow}  {choices[i]}"
                     attr = curses.A_NORMAL
                     if i == cursor:
                         attr = curses.A_BOLD
@@ -660,14 +649,14 @@ def _print_setup_summary(config: dict, hermes_home):
     # Browser tools (local Chromium, Camofox, Browserbase, Browser Use, or Firecrawl)
     browser_provider = subscription_features.browser.current_provider
     if subscription_features.browser.managed_by_nous:
-        tool_status.append(("Browser Automation (Nous Browserbase)", True, None))
+        tool_status.append(("Browser Automation (Nous Browser Use)", True, None))
     elif subscription_features.browser.available:
         label = "Browser Automation"
         if browser_provider:
             label = f"Browser Automation ({browser_provider})"
         tool_status.append((label, True, None))
     else:
-        missing_browser_hint = "npm install -g agent-browser, set CAMOFOX_URL, or configure Browserbase"
+        missing_browser_hint = "npm install -g agent-browser, set CAMOFOX_URL, or configure Browser Use or Browserbase"
         if browser_provider == "Browserbase":
             missing_browser_hint = (
                 "npm install -g agent-browser and set "
@@ -1347,8 +1336,6 @@ def setup_terminal_backend(config: dict):
     keep_current_idx = next_idx
     terminal_choices.append(f"Keep current ({current_backend})")
     idx_to_backend[keep_current_idx] = current_backend
-
-    default_terminal = backend_to_idx.get(current_backend, 0)
 
     terminal_idx = prompt_choice(
         "Select terminal backend:", terminal_choices, keep_current_idx

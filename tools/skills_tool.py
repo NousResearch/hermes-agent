@@ -72,13 +72,11 @@ import logging
 from hermes_constants import get_hermes_home
 import os
 import re
-import sys
 from enum import Enum
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Set, Tuple
 
-import yaml
-from tools.registry import registry
+from tools.registry import registry, tool_error
 
 logger = logging.getLogger(__name__)
 
@@ -715,7 +713,7 @@ def skills_categories(verbose: bool = False, task_id: str = None) -> str:
         )
 
     except Exception as e:
-        return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
+        return tool_error(str(e), success=False)
 
 
 def skills_list(category: str = None, task_id: str = None) -> str:
@@ -783,7 +781,7 @@ def skills_list(category: str = None, task_id: str = None) -> str:
         )
 
     except Exception as e:
-        return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
+        return tool_error(str(e), success=False)
 
 
 def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
@@ -1257,7 +1255,7 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
         return json.dumps(result, ensure_ascii=False)
 
     except Exception as e:
-        return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
+        return tool_error(str(e), success=False)
 
 
 # Tool description for model_tools.py

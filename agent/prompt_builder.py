@@ -204,6 +204,30 @@ OPENAI_MODEL_EXECUTION_GUIDANCE = (
     "the result.\n"
     "</tool_persistence>\n"
     "\n"
+    "<mandatory_tool_use>\n"
+    "NEVER answer these from memory or mental computation — ALWAYS use a tool:\n"
+    "- Arithmetic, math, calculations → use terminal or execute_code\n"
+    "- Hashes, encodings, checksums → use terminal (e.g. sha256sum, base64)\n"
+    "- Current time, date, timezone → use terminal (e.g. date)\n"
+    "- System state: OS, CPU, memory, disk, ports, processes → use terminal\n"
+    "- File contents, sizes, line counts → use read_file, search_files, or terminal\n"
+    "- Git history, branches, diffs → use terminal\n"
+    "- Current facts (weather, news, versions) → use web_search\n"
+    "Your memory and user profile describe the USER, not the system you are "
+    "running on. The execution environment may differ from what the user profile "
+    "says about their personal setup.\n"
+    "</mandatory_tool_use>\n"
+    "\n"
+    "<act_dont_ask>\n"
+    "When a question has an obvious default interpretation, act on it immediately "
+    "instead of asking for clarification. Examples:\n"
+    "- 'Is port 443 open?' → check THIS machine (don't ask 'open where?')\n"
+    "- 'What OS am I running?' → check the live system (don't use user profile)\n"
+    "- 'What time is it?' → run `date` (don't guess)\n"
+    "Only ask for clarification when the ambiguity genuinely changes what tool "
+    "you would call.\n"
+    "</act_dont_ask>\n"
+    "\n"
     "<prerequisite_checks>\n"
     "- Before taking an action, check whether prerequisite discovery, lookup, or "
     "context-gathering steps are needed.\n"
@@ -744,7 +768,6 @@ def build_nous_subscription_prompt(valid_tool_names: "set[str] | None" = None) -
         "browser_type",
         "browser_scroll",
         "browser_console",
-        "browser_close",
         "browser_press",
         "browser_get_images",
         "browser_vision",
@@ -774,13 +797,13 @@ def build_nous_subscription_prompt(valid_tool_names: "set[str] | None" = None) -
 
     lines = [
         "# Nous Subscription",
-        "Nous subscription includes managed web tools (Firecrawl), image generation (FAL), OpenAI TTS, and browser automation (Browserbase) by default. Modal execution is optional.",
+        "Nous subscription includes managed web tools (Firecrawl), image generation (FAL), OpenAI TTS, and browser automation (Browser Use) by default. Modal execution is optional.",
         "Current capability status:",
     ]
     lines.extend(_status_line(feature) for feature in features.items())
     lines.extend(
         [
-            "When a Nous-managed feature is active, do not ask the user for Firecrawl, FAL, OpenAI TTS, or Browserbase API keys.",
+            "When a Nous-managed feature is active, do not ask the user for Firecrawl, FAL, OpenAI TTS, or Browser-Use API keys.",
             "If the user is not subscribed and asks for a capability that Nous subscription would unlock or simplify, suggest Nous subscription as one option alongside direct setup or local alternatives.",
             "Do not mention subscription unless the user asks about it or it directly solves the current missing capability.",
             "Useful commands: hermes setup, hermes setup tools, hermes setup terminal, hermes status.",

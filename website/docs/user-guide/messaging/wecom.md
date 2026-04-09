@@ -50,7 +50,7 @@ WECOM_HOME_CHANNEL=chat_id
 ### 3. Start the gateway
 
 ```bash
-hermes gateway start
+hermes gateway
 ```
 
 ## Features

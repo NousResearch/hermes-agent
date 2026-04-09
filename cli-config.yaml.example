@@ -539,7 +539,7 @@ platform_toolsets:
 #   terminal     - terminal, process
 #   file         - read_file, write_file, patch, search
 #   browser      - browser_navigate, browser_snapshot, browser_click, browser_type,
-#                  browser_scroll, browser_back, browser_press, browser_close,
+#                  browser_scroll, browser_back, browser_press,
 #                  browser_get_images, browser_vision  (requires BROWSERBASE_API_KEY)
 #   vision       - vision_analyze  (requires OPENROUTER_API_KEY)
 #   image_gen    - image_generate  (requires FAL_KEY)
@@ -644,10 +644,14 @@ platform_toolsets:
 # Voice Transcription (Speech-to-Text)
 # =============================================================================
 # Automatically transcribe voice messages on messaging platforms.
-# Requires OPENAI_API_KEY in .env (uses OpenAI Whisper API directly).
+# Providers: local (free, faster-whisper) | groq (free tier) | openai (Whisper API) | mistral (Voxtral Transcribe)
+# Set the corresponding API key in .env: GROQ_API_KEY, OPENAI_API_KEY, or MISTRAL_API_KEY.
 stt:
   enabled: true
+  # provider: "local"          # auto-detected if omitted
   model: "whisper-1"  # whisper-1 (cheapest) | gpt-4o-mini-transcribe | gpt-4o-transcribe
+  # mistral:
+  #   model: "voxtral-mini-latest"  # voxtral-mini-latest | voxtral-mini-2602
 
 # =============================================================================
 # Response Pacing (Messaging Platforms)

@@ -1,5 +1,5 @@
 ---
-sidebar_position: 3
+sidebar_position: 4
 title: "Tutorial: Team Telegram Assistant"
 description: "Step-by-step guide to setting up a Telegram bot that your whole team can use for code help, research, system admin, and more"
 ---
@@ -24,7 +24,7 @@ A Telegram bot that:
 
 Before starting, make sure you have:
 
-- **Hermes Agent installed** on a server or VPS (not your laptop — the bot needs to stay running). Follow the [installation guide](/getting-started/learning-path) if you haven't yet.
+- **Hermes Agent installed** on a server or VPS (not your laptop — the bot needs to stay running). Follow the [installation guide](/docs/getting-started/installation) if you haven't yet.
 - **A Telegram account** for yourself (the bot owner)
 - **An LLM provider configured** — at minimum, an API key for OpenAI, Anthropic, or another supported provider in `~/.hermes/.env`
 
@@ -428,13 +428,13 @@ hermes gateway stop && hermes gateway start
 
 You've got a working team Telegram assistant. Here are some next steps:
 
-- **[Security Guide](/user-guide/security)** — deep dive into authorization, container isolation, and command approval
-- **[Messaging Gateway](/user-guide/messaging)** — full reference for gateway architecture, session management, and chat commands
-- **[Telegram Setup](/user-guide/messaging/telegram)** — platform-specific details including voice messages and TTS
-- **[Scheduled Tasks](/user-guide/features/cron)** — advanced cron scheduling with delivery options and cron expressions
-- **[Context Files](/user-guide/features/context-files)** — AGENTS.md, SOUL.md, and .cursorrules for project knowledge
-- **[Personality](/user-guide/features/personality)** — built-in personality presets and custom persona definitions
-- **Add more platforms** — the same gateway can simultaneously run [Discord](/user-guide/messaging/discord), [Slack](/user-guide/messaging/slack), and [WhatsApp](/user-guide/messaging/whatsapp)
+- **[Security Guide](/docs/user-guide/security)** — deep dive into authorization, container isolation, and command approval
+- **[Messaging Gateway](/docs/user-guide/messaging)** — full reference for gateway architecture, session management, and chat commands
+- **[Telegram Setup](/docs/user-guide/messaging/telegram)** — platform-specific details including voice messages and TTS
+- **[Scheduled Tasks](/docs/user-guide/features/cron)** — advanced cron scheduling with delivery options and cron expressions
+- **[Context Files](/docs/user-guide/features/context-files)** — AGENTS.md, SOUL.md, and .cursorrules for project knowledge
+- **[Personality](/docs/user-guide/features/personality)** — built-in personality presets and custom persona definitions
+- **Add more platforms** — the same gateway can simultaneously run [Discord](/docs/user-guide/messaging/discord), [Slack](/docs/user-guide/messaging/slack), and [WhatsApp](/docs/user-guide/messaging/whatsapp)
 
 ---
 

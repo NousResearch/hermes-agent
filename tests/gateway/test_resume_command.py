@@ -201,8 +201,8 @@ class TestHandleResumeCommand:
         db.close()
 
     @pytest.mark.asyncio
-    async def test_resume_flushes_memories_with_gateway_session_key(self, tmp_path):
-        """Resume should preserve the gateway session key for Honcho flushes."""
+    async def test_resume_flushes_memories(self, tmp_path):
+        """Resume should flush memories from the current session before switching."""
         from hermes_state import SessionDB
 
         db = SessionDB(db_path=tmp_path / "state.db")
@@ -221,6 +221,5 @@ class TestHandleResumeCommand:
 
         runner._async_flush_memories.assert_called_once_with(
             "current_session_001",
-            _session_key_for_event(event),
         )
         db.close()

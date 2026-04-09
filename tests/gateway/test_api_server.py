@@ -439,7 +439,7 @@ class TestChatCompletionsEndpoint:
                 tp_cb = kwargs.get("tool_progress_callback")
                 # Simulate tool progress before streaming content
                 if tp_cb:
-                    tp_cb("terminal", "ls -la", {"command": "ls -la"})
+                    tp_cb("tool.started", "terminal", "ls -la", {"command": "ls -la"})
                 if cb:
                     await asyncio.sleep(0.05)
                     cb("Here are the files.")
@@ -476,8 +476,8 @@ class TestChatCompletionsEndpoint:
                 cb = kwargs.get("stream_delta_callback")
                 tp_cb = kwargs.get("tool_progress_callback")
                 if tp_cb:
-                    tp_cb("_thinking", "some internal state", {})
-                    tp_cb("web_search", "Python docs", {"query": "Python docs"})
+                    tp_cb("tool.started", "_thinking", "some internal state", {})
+                    tp_cb("tool.started", "web_search", "Python docs", {"query": "Python docs"})
                 if cb:
                     await asyncio.sleep(0.05)
                     cb("Found it.")

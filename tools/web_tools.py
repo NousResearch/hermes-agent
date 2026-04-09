@@ -1079,7 +1079,7 @@ def web_search_tool(query: str, limit: int = 5) -> str:
     try:
         from tools.interrupt import is_interrupted
         if is_interrupted():
-            return json.dumps({"error": "Interrupted", "success": False})
+            return tool_error("Interrupted", success=False)
 
         # Dispatch to the configured backend
         backend = _get_backend()
@@ -1158,7 +1158,7 @@ def web_search_tool(query: str, limit: int = 5) -> str:
         _debug.log_call("web_search_tool", debug_call_data)
         _debug.save()
 
-        return json.dumps({"error": error_msg}, ensure_ascii=False)
+        return tool_error(error_msg)
 
 
 async def web_extract_tool(
@@ -1458,7 +1458,7 @@ async def web_extract_tool(
         trimmed_response = {"results": trimmed_results}
 
         if trimmed_response.get("results") == []:
-            result_json = json.dumps({"error": "Content was inaccessible or not found"}, ensure_ascii=False)
+            result_json = tool_error("Content was inaccessible or not found")
 
             cleaned_result = clean_base64_images(result_json)
         
@@ -1484,7 +1484,7 @@ async def web_extract_tool(
         _debug.log_call("web_extract_tool", debug_call_data)
         _debug.save()
         
-        return json.dumps({"error": error_msg}, ensure_ascii=False)
+        return tool_error(error_msg)
 
 
 async def web_crawl_tool(
@@ -1560,7 +1560,7 @@ async def web_crawl_tool(
 
             from tools.interrupt import is_interrupted as _is_int
             if _is_int():
-                return json.dumps({"error": "Interrupted", "success": False})
+                return tool_error("Interrupted", success=False)
 
             logger.info("Tavily crawl: %s", url)
             payload: Dict[str, Any] = {
@@ -1671,7 +1671,7 @@ async def web_crawl_tool(
         
         from tools.interrupt import is_interrupted as _is_int
         if _is_int():
-            return json.dumps({"error": "Interrupted", "success": False})
+            return tool_error("Interrupted", success=False)
 
         try:
             crawl_result = _get_firecrawl_client().crawl(
@@ -1897,7 +1897,7 @@ async def web_crawl_tool(
         _debug.log_call("web_crawl_tool", debug_call_data)
         _debug.save()
         
-        return json.dumps({"error": error_msg}, ensure_ascii=False)
+        return tool_error(error_msg)
 
 
 # Convenience function to check Firecrawl credentials
@@ -2043,7 +2043,7 @@ if __name__ == "__main__":
 # ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
-from tools.registry import registry
+from tools.registry import registry, tool_error
 
 WEB_SEARCH_SCHEMA = {
     "name": "web_search",
@@ -2085,6 +2085,7 @@ registry.register(
     check_fn=check_web_api_key,
     requires_env=_web_requires_env(),
     emoji="🔍",
+    max_result_size_chars=100_000,
 )
 registry.register(
     name="web_extract",
@@ -2096,4 +2097,5 @@ registry.register(
     requires_env=_web_requires_env(),
     is_async=True,
     emoji="📄",
+    max_result_size_chars=100_000,
 )

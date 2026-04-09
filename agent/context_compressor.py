@@ -14,6 +14,7 @@ Improvements over v1:
 """
 
 import logging
+import time
 from typing import Any, Dict, List, Optional
 
 from agent.auxiliary_client import call_llm
@@ -46,6 +47,7 @@ _PRUNED_TOOL_PLACEHOLDER = "[Old tool output cleared to save context space]"
 
 # Chars per token rough estimate
 _CHARS_PER_TOKEN = 4
+_SUMMARY_FAILURE_COOLDOWN_SECONDS = 600
 
 
 class ContextCompressor:
@@ -118,6 +120,7 @@ class ContextCompressor:
 
         # Stores the previous compaction summary for iterative updates
         self._previous_summary: Optional[str] = None
+        self._summary_failure_cooldown_until: float = 0.0
 
     def update_from_response(self, usage: Dict[str, Any]):
         """Update tracked token usage from API response."""
@@ -258,6 +261,14 @@ class ContextCompressor:
         the middle turns without a summary rather than inject a useless
         placeholder.
         """
+        now = time.monotonic()
+        if now < self._summary_failure_cooldown_until:
+            logger.debug(
+                "Skipping context summary during cooldown (%.0fs remaining)",
+                self._summary_failure_cooldown_until - now,
+            )
+            return None
+
         summary_budget = self._compute_summary_budget(turns_to_summarize)
         content_to_summarize = self._serialize_for_summary(turns_to_summarize)
 
@@ -345,7 +356,6 @@ Write only the summary body. Do not include any preamble or prefix."""
             call_kwargs = {
                 "task": "compression",
                 "messages": [{"role": "user", "content": prompt}],
-                "temperature": 0.3,
                 "max_tokens": summary_budget * 2,
                 # timeout resolved from auxiliary.compression.timeout config by call_llm
             }
@@ -359,13 +369,23 @@ Write only the summary body. Do not include any preamble or prefix."""
             summary = content.strip()
             # Store for iterative updates on next compaction
             self._previous_summary = summary
+            self._summary_failure_cooldown_until = 0.0
             return self._with_summary_prefix(summary)
         except RuntimeError:
+            self._summary_failure_cooldown_until = time.monotonic() + _SUMMARY_FAILURE_COOLDOWN_SECONDS
             logging.warning("Context compression: no provider available for "
-                            "summary. Middle turns will be dropped without summary.")
+                            "summary. Middle turns will be dropped without summary "
+                            "for %d seconds.",
+                            _SUMMARY_FAILURE_COOLDOWN_SECONDS)
             return None
         except Exception as e:
-            logging.warning("Failed to generate context summary: %s", e)
+            self._summary_failure_cooldown_until = time.monotonic() + _SUMMARY_FAILURE_COOLDOWN_SECONDS
+            logging.warning(
+                "Failed to generate context summary: %s. "
+                "Further summary attempts paused for %d seconds.",
+                e,
+                _SUMMARY_FAILURE_COOLDOWN_SECONDS,
+            )
             return None
 
     @staticmethod
@@ -648,7 +668,7 @@ Write only the summary body. Do not include any preamble or prefix."""
                 compressed.append({"role": summary_role, "content": summary})
         else:
             if not self.quiet_mode:
-                logger.warning("No summary model available — middle turns dropped without summary")
+                logger.debug("No summary model available — middle turns dropped without summary")
 
         for i in range(compress_end, n_messages):
             msg = messages[i].copy()

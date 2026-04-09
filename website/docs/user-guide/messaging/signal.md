@@ -25,16 +25,20 @@ The Signal adapter uses `httpx` (already a core Hermes dependency) for all commu
 ### Installing signal-cli
 
 ```bash
-# Linux (Debian/Ubuntu)
-sudo apt install signal-cli
-
 # macOS
 brew install signal-cli
 
-# Manual install (any platform)
-# Download from https://github.com/AsamK/signal-cli/releases
-# Extract and add to PATH
+# Linux (download latest release)
+VERSION=$(curl -Ls -o /dev/null -w %{url_effective} \
+  https://github.com/AsamK/signal-cli/releases/latest | sed 's/^.*\/v//')
+curl -L -O "https://github.com/AsamK/signal-cli/releases/download/v${VERSION}/signal-cli-${VERSION}.tar.gz"
+sudo tar xf "signal-cli-${VERSION}.tar.gz" -C /opt
+sudo ln -sf "/opt/signal-cli-${VERSION}/bin/signal-cli" /usr/local/bin/
 ```
+
+:::caution
+signal-cli is **not** in apt or snap repositories. The Linux install above downloads directly from [GitHub releases](https://github.com/AsamK/signal-cli/releases).
+:::
 
 ---
 
@@ -143,13 +147,26 @@ Group access is controlled by the `SIGNAL_GROUP_ALLOWED_USERS` env var:
 
 ### Attachments
 
-The adapter supports sending and receiving:
+The adapter supports sending and receiving media in both directions.
+
+**Incoming** (user → agent):
 
 - **Images** — PNG, JPEG, GIF, WebP (auto-detected via magic bytes)
 - **Audio** — MP3, OGG, WAV, M4A (voice messages transcribed if Whisper is configured)
 - **Documents** — PDF, ZIP, and other file types
 
-Attachment size limit: **100 MB**.
+**Outgoing** (agent → user):
+
+The agent can send media files via `MEDIA:` tags in responses. The following delivery methods are supported:
+
+- **Images** — `send_image_file` sends PNG, JPEG, GIF, WebP as native Signal attachments
+- **Voice** — `send_voice` sends audio files (OGG, MP3, WAV, M4A, AAC) as attachments
+- **Video** — `send_video` sends MP4 video files
+- **Documents** — `send_document` sends any file type (PDF, ZIP, etc.)
+
+All outgoing media goes through Signal's standard attachment API. Unlike some platforms, Signal does not distinguish between voice messages and file attachments at the protocol level.
+
+Attachment size limit: **100 MB** (both directions).
 
 ### Typing Indicators
 

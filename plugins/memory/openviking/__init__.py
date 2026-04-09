@@ -23,6 +23,7 @@ Capabilities:
 
 from __future__ import annotations
 
+import atexit
 import json
 import logging
 import os
@@ -30,11 +31,36 @@ import threading
 from typing import Any, Dict, List, Optional
 
 from agent.memory_provider import MemoryProvider
+from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
 
 _DEFAULT_ENDPOINT = "http://127.0.0.1:1933"
 _TIMEOUT = 30.0
+
+
+# ---------------------------------------------------------------------------
+# Process-level atexit safety net — ensures pending sessions are committed
+# even if shutdown_memory_provider is never called (e.g. gateway crash,
+# SIGKILL, or exception in _async_flush_memories preventing shutdown).
+# ---------------------------------------------------------------------------
+_last_active_provider: Optional["OpenVikingMemoryProvider"] = None
+
+
+def _atexit_commit_sessions():
+    """Fire on_session_end for the last active provider on process exit."""
+    global _last_active_provider
+    provider = _last_active_provider
+    if provider is None:
+        return
+    _last_active_provider = None
+    try:
+        provider.on_session_end([])
+    except Exception:
+        pass  # best-effort at shutdown time
+
+
+atexit.register(_atexit_commit_sessions)
 
 
 # ---------------------------------------------------------------------------
@@ -277,6 +303,10 @@ class OpenVikingMemoryProvider(MemoryProvider):
             logger.warning("httpx not installed — OpenViking plugin disabled")
             self._client = None
 
+        # Register as the last active provider for atexit safety net
+        global _last_active_provider
+        _last_active_provider = self
+
     def system_prompt_block(self) -> str:
         if not self._client:
             return ""
@@ -387,12 +417,17 @@ class OpenVikingMemoryProvider(MemoryProvider):
         OpenViking automatically extracts 6 categories of memories:
         profile, preferences, entities, events, cases, and patterns.
         """
-        if not self._client or self._turn_count == 0:
+        if not self._client:
             return
 
-        # Wait for any pending sync to finish first
+        # Wait for any pending sync to finish first — do this before the
+        # turn_count check so the last turn's messages are flushed even if
+        # the count hasn't been incremented yet.
         if self._sync_thread and self._sync_thread.is_alive():
             self._sync_thread.join(timeout=10.0)
+
+        if self._turn_count == 0:
+            return
 
         try:
             self._client.post(f"/api/v1/sessions/{self._session_id}/commit")
@@ -427,7 +462,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
 
     def handle_tool_call(self, tool_name: str, args: dict, **kwargs) -> str:
         if not self._client:
-            return json.dumps({"error": "OpenViking server not connected"})
+            return tool_error("OpenViking server not connected")
 
         try:
             if tool_name == "viking_search":
@@ -440,22 +475,26 @@ class OpenVikingMemoryProvider(MemoryProvider):
                 return self._tool_remember(args)
             elif tool_name == "viking_add_resource":
                 return self._tool_add_resource(args)
-            return json.dumps({"error": f"Unknown tool: {tool_name}"})
+            return tool_error(f"Unknown tool: {tool_name}")
         except Exception as e:
-            return json.dumps({"error": str(e)})
+            return tool_error(str(e))
 
     def shutdown(self) -> None:
         # Wait for background threads to finish
         for t in (self._sync_thread, self._prefetch_thread):
             if t and t.is_alive():
                 t.join(timeout=5.0)
+        # Clear atexit reference so it doesn't double-commit
+        global _last_active_provider
+        if _last_active_provider is self:
+            _last_active_provider = None
 
     # -- Tool implementations ------------------------------------------------
 
     def _tool_search(self, args: dict) -> str:
         query = args.get("query", "")
         if not query:
-            return json.dumps({"error": "query is required"})
+            return tool_error("query is required")
 
         payload: Dict[str, Any] = {"query": query}
         mode = args.get("mode", "auto")
@@ -492,7 +531,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
     def _tool_read(self, args: dict) -> str:
         uri = args.get("uri", "")
         if not uri:
-            return json.dumps({"error": "uri is required"})
+            return tool_error("uri is required")
 
         level = args.get("level", "overview")
         # Map our level names to OpenViking GET endpoints
@@ -544,7 +583,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
     def _tool_remember(self, args: dict) -> str:
         content = args.get("content", "")
         if not content:
-            return json.dumps({"error": "content is required"})
+            return tool_error("content is required")
 
         # Store as a session message that will be extracted during commit.
         # The category hint helps OpenViking's extraction classify correctly.
@@ -568,7 +607,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
     def _tool_add_resource(self, args: dict) -> str:
         url = args.get("url", "")
         if not url:
-            return json.dumps({"error": "url is required"})
+            return tool_error("url is required")
 
         payload: Dict[str, Any] = {"path": url}
         if args.get("reason"):

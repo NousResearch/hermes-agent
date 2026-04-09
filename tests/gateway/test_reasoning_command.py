@@ -87,7 +87,6 @@ class TestReasoningCommand:
         )
 
         monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
-        monkeypatch.delenv("HERMES_REASONING_EFFORT", raising=False)
 
         runner = _make_runner()
         runner._reasoning_config = {"enabled": True, "effort": "xhigh"}
@@ -108,7 +107,6 @@ class TestReasoningCommand:
         config_path.write_text("agent:\n  reasoning_effort: medium\n", encoding="utf-8")
 
         monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
-        monkeypatch.delenv("HERMES_REASONING_EFFORT", raising=False)
 
         runner = _make_runner()
         runner._reasoning_config = {"enabled": True, "effort": "medium"}
@@ -138,7 +136,6 @@ class TestReasoningCommand:
                 "api_key": "test-key",
             },
         )
-        monkeypatch.delenv("HERMES_REASONING_EFFORT", raising=False)
         fake_run_agent = types.ModuleType("run_agent")
         fake_run_agent.AIAgent = _CapturingAgent
         monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
@@ -169,55 +166,6 @@ class TestReasoningCommand:
         assert result["final_response"] == "ok"
         assert _CapturingAgent.last_init is not None
         assert _CapturingAgent.last_init["reasoning_config"] == {"enabled": True, "effort": "low"}
-
-    def test_run_agent_prefers_config_over_stale_reasoning_env(self, tmp_path, monkeypatch):
-        hermes_home = tmp_path / "hermes"
-        hermes_home.mkdir()
-        (hermes_home / "config.yaml").write_text("agent:\n  reasoning_effort: none\n", encoding="utf-8")
-
-        monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
-        monkeypatch.setattr(gateway_run, "_env_path", hermes_home / ".env")
-        monkeypatch.setattr(gateway_run, "load_dotenv", lambda *args, **kwargs: None)
-        monkeypatch.setattr(
-            gateway_run,
-            "_resolve_runtime_agent_kwargs",
-            lambda: {
-                "provider": "openrouter",
-                "api_mode": "chat_completions",
-                "base_url": "https://openrouter.ai/api/v1",
-                "api_key": "test-key",
-            },
-        )
-        monkeypatch.setenv("HERMES_REASONING_EFFORT", "low")
-        fake_run_agent = types.ModuleType("run_agent")
-        fake_run_agent.AIAgent = _CapturingAgent
-        monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
-
-        _CapturingAgent.last_init = None
-        runner = _make_runner()
-
-        source = SessionSource(
-            platform=Platform.LOCAL,
-            chat_id="cli",
-            chat_name="CLI",
-            chat_type="dm",
-            user_id="user-1",
-        )
-
-        result = asyncio.run(
-            runner._run_agent(
-                message="ping",
-                context_prompt="",
-                history=[],
-                source=source,
-                session_id="session-1",
-                session_key="agent:main:local:dm",
-            )
-        )
-
-        assert result["final_response"] == "ok"
-        assert _CapturingAgent.last_init is not None
-        assert _CapturingAgent.last_init["reasoning_config"] == {"enabled": False}
 
     def test_run_agent_includes_enabled_mcp_servers_in_gateway_toolsets(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / "hermes"

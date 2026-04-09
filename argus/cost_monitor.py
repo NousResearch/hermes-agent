@@ -94,8 +94,9 @@ class CostMonitor:
         """
         cm_config = self.config.get("cost_monitoring", {})
         
+        # Default is disabled - user must explicitly enable in config.yaml
         return {
-            "enabled": cm_config.get("enabled", True),
+            "enabled": cm_config.get("enabled", False),
             "daily_budget": cm_config.get("daily_budget", _DEFAULT_DAILY_BUDGET),
             "alert_at_percent": cm_config.get("alert_at_percent", _DEFAULT_ALERT_PERCENT),
             "expensive_session_threshold": cm_config.get(

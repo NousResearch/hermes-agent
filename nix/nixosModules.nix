@@ -569,7 +569,7 @@
 
       # ── Activation: link config + auth + documents ────────────────────
       {
-        system.activationScripts."hermes-agent-setup" = lib.stringAfter [ "users" "setupSecrets" ] ''
+        system.activationScripts."hermes-agent-setup" = lib.stringAfter ([ "users" ] ++ lib.optional (config.system.activationScripts ? setupSecrets) "setupSecrets") ''
           # Ensure directories exist (activation runs before tmpfiles)
           mkdir -p ${cfg.stateDir}/.hermes
           mkdir -p ${cfg.stateDir}/home

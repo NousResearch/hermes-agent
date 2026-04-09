@@ -1064,6 +1064,94 @@ def _detect_file_drop(user_input: str) -> "dict | None":
     }
 
 
+# ---------------------------------------------------------------------------
+# Interrupt/pending payload helpers — extracted as pure functions so the
+# queue reassembly path can safely handle multimodal image payloads.
+# ---------------------------------------------------------------------------
+
+
+def _split_input_payload(payload: Any) -> tuple[str, list[Path]]:
+    """Normalize a queued CLI input payload into ``(text, images)``.
+
+    Interactive input is queued as either:
+      - ``str`` for text-only turns
+      - ``(text, [Path, ...])`` when clipboard/dragged images are attached
+
+    The interrupt requeue path may have to merge multiple queued payloads, so
+    this helper defensively tolerates tuples, lists, strings, ``None``, and
+    path-like values without crashing the CLI.
+    """
+    if payload is None:
+        return "", []
+
+    if isinstance(payload, str):
+        return payload, []
+
+    if isinstance(payload, tuple) and len(payload) == 2:
+        text, images = payload
+        text_value = text if isinstance(text, str) else ("" if text is None else str(text))
+        if images is None:
+            return text_value, []
+        if isinstance(images, (list, tuple)):
+            coerced = [
+                img if isinstance(img, Path) else Path(img)
+                for img in images
+                if img is not None
+            ]
+            return text_value, coerced
+        return text_value, [images if isinstance(images, Path) else Path(images)]
+
+    return str(payload), []
+
+
+def _merge_input_payloads(payloads: list[Any]) -> str | tuple[str, list[Path]] | None:
+    """Merge queued CLI inputs while preserving attached image payloads.
+
+    Text payloads are joined with newlines in arrival order. Any attached image
+    paths are concatenated in the same order. Returns:
+      - ``str`` when only text is present
+      - ``(text, [Path, ...])`` when one or more images are present
+      - ``None`` when every payload is empty
+    """
+    text_parts: list[str] = []
+    image_paths: list[Path] = []
+
+    for payload in payloads:
+        text, images = _split_input_payload(payload)
+        if text:
+            text_parts.append(text)
+        if images:
+            image_paths.extend(images)
+
+    if image_paths:
+        return ("\n".join(text_parts), image_paths)
+    if text_parts:
+        return "\n".join(text_parts)
+    return None
+
+
+def _preview_input_payload(payload: Any, max_chars: int = 50) -> str:
+    """Return a human-readable preview for queued/interrupted CLI payloads."""
+    text, images = _split_input_payload(payload)
+    text = text.strip()
+    image_label = (
+        f"[{len(images)} image{'s' if len(images) != 1 else ''} attached]"
+        if images
+        else ""
+    )
+
+    if text and image_label:
+        preview = f"{text} {image_label}"
+    elif text:
+        preview = text
+    else:
+        preview = image_label
+
+    if len(preview) > max_chars:
+        return preview[:max_chars] + "..."
+    return preview
+
+
 class ChatConsole:
     """Rich Console adapter for prompt_toolkit's patch_stdout context.
 
@@ -6813,14 +6901,15 @@ class HermesCLI:
                             all_parts.append(extra)
                     except queue.Empty:
                         break
-                combined = "\n".join(all_parts)
-                n = len(all_parts)
-                preview = combined[:50] + ("..." if len(combined) > 50 else "")
-                if n > 1:
-                    print(f"\n⚡ Sending {n} messages after interrupt: '{preview}'")
-                else:
-                    print(f"\n⚡ Sending after interrupt: '{preview}'")
-                self._pending_input.put(combined)
+                combined = _merge_input_payloads(all_parts)
+                if combined:
+                    n = len(all_parts)
+                    preview = _preview_input_payload(combined)
+                    if n > 1:
+                        print(f"\n⚡ Sending {n} messages after interrupt: '{preview}'")
+                    else:
+                        print(f"\n⚡ Sending after interrupt: '{preview}'")
+                    self._pending_input.put(combined)
             
             return response
             
@@ -8272,13 +8361,9 @@ class HermesCLI:
                                 pass
                         continue
                     
-                    if not user_input:
+                    user_input, submit_images = _split_input_payload(user_input)
+                    if not user_input and not submit_images:
                         continue
-
-                    # Unpack image payload: (text, [Path, ...]) or plain str
-                    submit_images = []
-                    if isinstance(user_input, tuple):
-                        user_input, submit_images = user_input
                     
                     # Check for commands — but detect dragged/pasted file paths first.
                     # See _detect_file_drop() for details.
@@ -8337,19 +8422,22 @@ class HermesCLI:
                         user_input = expanded
                     else:
                         _user_bar = f"[{_accent_hex()}]{'─' * 40}[/]"
-                        if '\n' in user_input:
+                        print()
+                        ChatConsole().print(_user_bar)
+                        if user_input and '\n' in user_input:
                             first_line = user_input.split('\n')[0]
                             line_count = user_input.count('\n') + 1
-                            print()
-                            ChatConsole().print(_user_bar)
                             ChatConsole().print(
                                 f"[bold {_accent_hex()}]●[/] [bold]{_escape(first_line)}[/] "
                                 f"[dim](+{line_count - 1} lines)[/]"
                             )
-                        else:
-                            print()
-                            ChatConsole().print(_user_bar)
+                        elif user_input:
                             ChatConsole().print(f"[bold {_accent_hex()}]●[/] [bold]{_escape(user_input)}[/]")
+                        else:
+                            image_summary = f"[Attached {len(submit_images)} image{'s' if len(submit_images) != 1 else ''}]"
+                            ChatConsole().print(
+                                f"[bold {_accent_hex()}]●[/] [bold]{_escape(image_summary)}[/]"
+                            )
                     
                     # Show image attachment count
                     if submit_images:

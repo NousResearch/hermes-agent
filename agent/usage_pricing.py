@@ -633,6 +633,29 @@ def format_duration_compact(seconds: float) -> str:
     return f"{days:.1f}d"
 
 
+def build_progress_bar(percent: float, width: int = 20) -> str:
+    """Build a visual progress bar string, e.g. [████████░░░░░░░░░░░░].
+
+    Shared by CLI status bar, /usage display, and gateway /usage.
+    Clamps percent to [0, 100].
+    """
+    safe_pct = max(0.0, min(100.0, float(percent or 0)))
+    filled = round((safe_pct / 100) * width)
+    return f"[{'█' * filled}{'░' * max(0, width - filled)}]"
+
+
+def cache_hit_rate_pct(input_tokens: int, cache_read_tokens: int) -> float | None:
+    """Compute cache hit rate as a percentage.
+
+    Returns None if there are no billable tokens to compute a rate from.
+    Hit rate = cache_read / (input + cache_read) * 100.
+    """
+    total = input_tokens + cache_read_tokens
+    if total <= 0 or cache_read_tokens <= 0:
+        return None
+    return (cache_read_tokens / total) * 100
+
+
 def format_token_count_compact(value: int) -> str:
     abs_value = abs(int(value))
     if abs_value < 1_000:

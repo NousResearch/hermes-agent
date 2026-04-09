@@ -5266,19 +5266,83 @@ class GatewayRunner:
 
         agent = self._running_agents.get(session_key)
         if agent and hasattr(agent, "session_total_tokens") and agent.session_api_calls > 0:
+            input_tokens = getattr(agent, "session_input_tokens", 0) or 0
+            output_tokens = getattr(agent, "session_output_tokens", 0) or 0
+            cache_read = getattr(agent, "session_cache_read_tokens", 0) or 0
+            cache_write = getattr(agent, "session_cache_write_tokens", 0) or 0
+            reasoning = getattr(agent, "session_reasoning_tokens", 0) or 0
+
             lines = [
                 "📊 **Session Token Usage**",
-                f"Prompt (input): {agent.session_prompt_tokens:,}",
-                f"Completion (output): {agent.session_completion_tokens:,}",
-                f"Total: {agent.session_total_tokens:,}",
-                f"API calls: {agent.session_api_calls}",
+                f"🧠 Model: {agent.model}",
+                f"🔢 Input: {input_tokens:,} · Output: {output_tokens:,} · Total: {agent.session_total_tokens:,}",
             ]
-            ctx = agent.context_compressor
-            if ctx.last_prompt_tokens:
-                pct = min(100, ctx.last_prompt_tokens / ctx.context_length * 100) if ctx.context_length else 0
-                lines.append(f"Context: {ctx.last_prompt_tokens:,} / {ctx.context_length:,} ({pct:.0f}%)")
-            if ctx.compression_count:
-                lines.append(f"Compressions: {ctx.compression_count}")
+
+            # Cache info
+            if cache_read or cache_write:
+                from agent.usage_pricing import cache_hit_rate_pct
+                hr = cache_hit_rate_pct(input_tokens, cache_read)
+                hit_rate = f" ({hr:.0f}% hit)" if hr is not None else ""
+                lines.append(f"🗄️ Cache: {cache_read:,} read{hit_rate} · {cache_write:,} written")
+
+            if reasoning:
+                lines.append(f"💭 Reasoning: {reasoning:,}")
+
+            lines.append(f"📡 API calls: {agent.session_api_calls}")
+
+            # Iteration budget
+            budget = getattr(agent, "iteration_budget", None)
+            if budget and budget.max_total:
+                lines.append(f"⚙️ Budget: {budget.used}/{budget.max_total} iterations")
+
+            # Context window
+            ctx = getattr(agent, "context_compressor", None)
+            last_prompt = ctx.last_prompt_tokens if ctx else 0
+            ctx_len = ctx.context_length if ctx else 0
+
+            # Fallback: estimate from session history if last_prompt_tokens is 0
+            # (common with local models where prompt_eval_count may be missing)
+            context_estimated = False
+            if last_prompt == 0:
+                session_entry = self.session_store.get_or_create_session(source)
+                history = self.session_store.load_transcript(session_entry.session_id)
+                if history:
+                    from agent.model_metadata import estimate_messages_tokens_rough
+                    last_prompt = estimate_messages_tokens_rough(history)
+                    context_estimated = True
+
+            if last_prompt and ctx_len:
+                from agent.usage_pricing import build_progress_bar, format_token_count_compact
+                pct = min(100, last_prompt / ctx_len * 100)
+                est = " ~est" if context_estimated else ""
+                bar = build_progress_bar(pct, width=15)
+                lines.append(f"📚 Context: {format_token_count_compact(last_prompt)}{est} / {format_token_count_compact(ctx_len)} ({pct:.0f}%)")
+                lines.append(f"{bar} {pct:.0f}%")
+            if ctx and ctx.compression_count:
+                lines.append(f"🧹 Compressions: {ctx.compression_count}")
+
+            # Cost
+            try:
+                from agent.usage_pricing import CanonicalUsage, estimate_usage_cost
+                cost_result = estimate_usage_cost(
+                    agent.model,
+                    CanonicalUsage(
+                        input_tokens=input_tokens,
+                        output_tokens=output_tokens,
+                        cache_read_tokens=cache_read,
+                        cache_write_tokens=cache_write,
+                    ),
+                    provider=getattr(agent, "provider", None),
+                    base_url=getattr(agent, "base_url", None),
+                )
+                if cost_result.amount_usd is not None:
+                    prefix = "~" if cost_result.status == "estimated" else ""
+                    lines.append(f"💵 Cost: {prefix}${float(cost_result.amount_usd):.4f}")
+                elif cost_result.status == "included":
+                    lines.append("💵 Cost: included")
+            except Exception:
+                logger.debug("Cost estimation failed in /usage", exc_info=True)
+
             return "\n".join(lines)
 
         # No running agent -- check session history for a rough count

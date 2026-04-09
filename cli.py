@@ -59,6 +59,8 @@ import queue
 
 from agent.usage_pricing import (
     CanonicalUsage,
+    build_progress_bar,
+    cache_hit_rate_pct,
     estimate_usage_cost,
     format_duration_compact,
     format_token_count_compact,
@@ -1597,9 +1599,7 @@ class HermesCLI:
         return "class:status-bar-good"
 
     def _build_context_bar(self, percent_used: Optional[int], width: int = 10) -> str:
-        safe_percent = max(0, min(100, percent_used or 0))
-        filled = round((safe_percent / 100) * width)
-        return f"[{('█' * filled) + ('░' * max(0, width - filled))}]"
+        return build_progress_bar(percent_used or 0, width=width)
 
     def _get_status_bar_snapshot(self) -> Dict[str, Any]:
         model_name = self.model or "unknown"
@@ -5418,8 +5418,7 @@ class HermesCLI:
         output_tokens = getattr(agent, "session_output_tokens", 0) or 0
         cache_read_tokens = getattr(agent, "session_cache_read_tokens", 0) or 0
         cache_write_tokens = getattr(agent, "session_cache_write_tokens", 0) or 0
-        prompt = agent.session_prompt_tokens
-        completion = agent.session_completion_tokens
+        reasoning_tokens = getattr(agent, "session_reasoning_tokens", 0) or 0
         total = agent.session_total_tokens
         calls = agent.session_api_calls
 
@@ -5431,10 +5430,22 @@ class HermesCLI:
         compressor = agent.context_compressor
         last_prompt = compressor.last_prompt_tokens
         ctx_len = compressor.context_length
-        pct = min(100, (last_prompt / ctx_len * 100)) if ctx_len else 0
         compressions = compressor.compression_count
 
+        # Fallback: when last_prompt_tokens is 0 (common with local models
+        # where prompt_eval_count may be missing due to KV cache), estimate
+        # from the conversation history so context usage is still meaningful.
+        context_estimated = False
+        if last_prompt == 0 and self.conversation_history:
+            from agent.model_metadata import estimate_messages_tokens_rough
+            last_prompt = estimate_messages_tokens_rough(self.conversation_history)
+            context_estimated = True
+
+        pct = min(100, (last_prompt / ctx_len * 100)) if ctx_len else 0
+        remaining = max(0, ctx_len - last_prompt) if ctx_len else 0
+
         msg_count = len(self.conversation_history)
+        user_turns = getattr(agent, "_user_turn_count", 0) or 0
         cost_result = estimate_usage_cost(
             agent.model,
             CanonicalUsage(
@@ -5448,33 +5459,72 @@ class HermesCLI:
         )
         elapsed = format_duration_compact((datetime.now() - self.session_start).total_seconds())
 
+        # Iteration budget
+        budget = getattr(agent, "iteration_budget", None)
+        budget_used = budget.used if budget else 0
+        budget_max = budget.max_total if budget else 0
+
+        # Cache hit rate
+        hit_rate = cache_hit_rate_pct(input_tokens, cache_read_tokens)
+        cache_hit_pct = f" ({hit_rate:.0f}% hit)" if hit_rate is not None else ""
+
+        # Tokens per turn
+        tokens_per_turn = ""
+        if user_turns > 0:
+            avg_in = input_tokens // user_turns
+            avg_out = output_tokens // user_turns
+            tokens_per_turn = f"~{avg_in:,} in / ~{avg_out:,} out"
+
         print("  📊 Session Token Usage")
-        print(f"  {'─' * 40}")
+        print(f"  {'─' * 44}")
         print(f"  Model:                     {agent.model}")
+        provider = getattr(agent, "provider", None) or ""
+        if provider:
+            print(f"  Provider:                  {provider}")
+        print(f"  {'─' * 44}")
         print(f"  Input tokens:              {input_tokens:>10,}")
-        print(f"  Cache read tokens:         {cache_read_tokens:>10,}")
-        print(f"  Cache write tokens:        {cache_write_tokens:>10,}")
         print(f"  Output tokens:             {output_tokens:>10,}")
-        print(f"  Prompt tokens (total):     {prompt:>10,}")
-        print(f"  Completion tokens:         {completion:>10,}")
+        if cache_read_tokens or cache_write_tokens:
+            print(f"  Cache read tokens:         {cache_read_tokens:>10,}{cache_hit_pct}")
+            print(f"  Cache write tokens:        {cache_write_tokens:>10,}")
+        if reasoning_tokens:
+            print(f"  Reasoning tokens:          {reasoning_tokens:>10,}")
         print(f"  Total tokens:              {total:>10,}")
         print(f"  API calls:                 {calls:>10,}")
+        if user_turns:
+            print(f"  User turns:                {user_turns:>10,}")
+        if budget_max:
+            print(f"  Iteration budget:      {budget_used:>5} / {budget_max}")
         print(f"  Session duration:          {elapsed:>10}")
-        print(f"  Cost status:              {cost_result.status:>10}")
-        print(f"  Cost source:              {cost_result.source:>10}")
+        print(f"  {'─' * 44}")
+
+        # Cost section
         if cost_result.amount_usd is not None:
             prefix = "~" if cost_result.status == "estimated" else ""
-            print(f"  Total cost:              {prefix}${float(cost_result.amount_usd):>10.4f}")
+            print(f"  💵 Cost:                 {prefix}${float(cost_result.amount_usd):>10.4f}")
+            if user_turns > 1:
+                per_turn = float(cost_result.amount_usd) / user_turns
+                print(f"     Per turn:             ~${per_turn:>10.4f}")
         elif cost_result.status == "included":
-            print(f"  Total cost:              {'included':>10}")
+            print(f"  💵 Cost:                 {'included':>10}")
         else:
-            print(f"  Total cost:              {'n/a':>10}")
-        print(f"  {'─' * 40}")
-        print(f"  Current context:  {last_prompt:,} / {ctx_len:,} ({pct:.0f}%)")
-        print(f"  Messages:         {msg_count}")
-        print(f"  Compressions:     {compressions}")
+            print(f"  💵 Cost:                 {'n/a':>10}")
         if cost_result.status == "unknown":
-            print(f"  Note:             Pricing unknown for {agent.model}")
+            print(f"     Pricing unknown for {agent.model}")
+        print(f"  {'─' * 44}")
+
+        # Context window section with visual bar
+        est_marker = " ~est" if context_estimated else ""
+        bar = build_progress_bar(pct)
+        print(f"  📚 Context:  {format_token_count_compact(last_prompt)}{est_marker} / {format_token_count_compact(ctx_len)} ({pct:.0f}%)")
+        print(f"     {bar} {pct:.0f}%")
+        if remaining:
+            print(f"     Remaining:            {remaining:>10,}")
+        print(f"     Messages:             {msg_count:>10}")
+        if compressions:
+            print(f"     Compressions:         {compressions:>10}")
+        if tokens_per_turn:
+            print(f"     Avg per turn:         {tokens_per_turn}")
 
         if self.verbose:
             logging.getLogger().setLevel(logging.DEBUG)

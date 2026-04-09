@@ -2,6 +2,7 @@ from datetime import datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+from agent.usage_pricing import build_progress_bar, cache_hit_rate_pct
 from cli import HermesCLI
 
 
@@ -21,6 +22,7 @@ def _attach_agent(
     output_tokens: int | None = None,
     cache_read_tokens: int = 0,
     cache_write_tokens: int = 0,
+    reasoning_tokens: int = 0,
     prompt_tokens: int,
     completion_tokens: int,
     total_tokens: int,
@@ -28,6 +30,9 @@ def _attach_agent(
     context_tokens: int,
     context_length: int,
     compressions: int = 0,
+    user_turns: int = 0,
+    budget_used: int = 0,
+    budget_max: int = 90,
 ):
     cli_obj.agent = SimpleNamespace(
         model=cli_obj.model,
@@ -37,10 +42,13 @@ def _attach_agent(
         session_output_tokens=output_tokens if output_tokens is not None else completion_tokens,
         session_cache_read_tokens=cache_read_tokens,
         session_cache_write_tokens=cache_write_tokens,
+        session_reasoning_tokens=reasoning_tokens,
         session_prompt_tokens=prompt_tokens,
         session_completion_tokens=completion_tokens,
         session_total_tokens=total_tokens,
         session_api_calls=api_calls,
+        _user_turn_count=user_turns,
+        iteration_budget=SimpleNamespace(used=budget_used, max_total=budget_max),
         context_compressor=SimpleNamespace(
             last_prompt_tokens=context_tokens,
             context_length=context_length,
@@ -217,6 +225,7 @@ class TestCLIUsageReport:
             context_tokens=12_450,
             context_length=200_000,
             compressions=1,
+            user_turns=3,
         )
         cli_obj.verbose = False
 
@@ -224,9 +233,7 @@ class TestCLIUsageReport:
         output = capsys.readouterr().out
 
         assert "Model:" in output
-        assert "Cost status:" in output
-        assert "Cost source:" in output
-        assert "Total cost:" in output
+        assert "💵 Cost:" in output
         assert "$" in output
         assert "0.064" in output
         assert "Session duration:" in output
@@ -247,7 +254,7 @@ class TestCLIUsageReport:
         cli_obj._show_usage()
         output = capsys.readouterr().out
 
-        assert "Total cost:" in output
+        assert "💵 Cost:" in output
         assert "n/a" in output
         assert "Pricing unknown for local/my-custom-model" in output
 
@@ -266,9 +273,156 @@ class TestCLIUsageReport:
         cli_obj._show_usage()
         output = capsys.readouterr().out
 
-        assert "Total cost:" in output
+        assert "💵 Cost:" in output
         assert "n/a" in output
         assert "Pricing unknown for glm-5" in output
+
+    def test_show_usage_context_progress_bar(self, capsys):
+        """Context section shows a visual progress bar."""
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=50_000,
+            completion_tokens=10_000,
+            total_tokens=60_000,
+            api_calls=5,
+            context_tokens=50_000,
+            context_length=200_000,
+        )
+        cli_obj.verbose = False
+
+        cli_obj._show_usage()
+        output = capsys.readouterr().out
+
+        assert "📚 Context:" in output
+        assert "█" in output
+        assert "░" in output
+        assert "25%" in output
+
+    def test_show_usage_context_fallback_estimation(self, capsys):
+        """When last_prompt_tokens=0 (local model), estimate from history."""
+        cli_obj = _attach_agent(
+            _make_cli(model="ollama/llama3.2"),
+            prompt_tokens=0,
+            completion_tokens=500,
+            total_tokens=500,
+            api_calls=3,
+            context_tokens=0,  # Simulates missing prompt_eval_count
+            context_length=131_072,
+        )
+        cli_obj.conversation_history = [
+            {"role": "user", "content": "Hello " * 100},
+            {"role": "assistant", "content": "Hi " * 200},
+        ]
+        cli_obj.verbose = False
+
+        cli_obj._show_usage()
+        output = capsys.readouterr().out
+
+        assert "~est" in output
+        assert "📚 Context:" in output
+        assert "█" in output or "░" in output
+
+    def test_show_usage_reasoning_tokens_shown(self, capsys):
+        """Reasoning tokens are displayed when present."""
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_000,
+            completion_tokens=5_000,
+            total_tokens=15_000,
+            api_calls=3,
+            context_tokens=10_000,
+            context_length=200_000,
+            reasoning_tokens=2_500,
+        )
+        cli_obj.verbose = False
+
+        cli_obj._show_usage()
+        output = capsys.readouterr().out
+
+        assert "Reasoning tokens:" in output
+        assert "2,500" in output
+
+    def test_show_usage_cache_hit_rate(self, capsys):
+        """Cache hit rate percentage is shown when cache tokens exist."""
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_000,
+            completion_tokens=5_000,
+            total_tokens=15_000,
+            api_calls=3,
+            cache_read_tokens=80_000,
+            cache_write_tokens=10_000,
+            context_tokens=10_000,
+            context_length=200_000,
+        )
+        cli_obj.verbose = False
+
+        cli_obj._show_usage()
+        output = capsys.readouterr().out
+
+        assert "Cache read tokens:" in output
+        assert "hit" in output
+        # 80000 / (10000 + 80000) = 88.9% -> 89%
+        assert "89% hit" in output
+
+    def test_show_usage_iteration_budget(self, capsys):
+        """Iteration budget is displayed."""
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_000,
+            completion_tokens=5_000,
+            total_tokens=15_000,
+            api_calls=10,
+            context_tokens=10_000,
+            context_length=200_000,
+            budget_used=10,
+            budget_max=90,
+        )
+        cli_obj.verbose = False
+
+        cli_obj._show_usage()
+        output = capsys.readouterr().out
+
+        assert "Iteration budget:" in output
+        assert "10" in output
+        assert "90" in output
+
+    def test_show_usage_per_turn_cost(self, capsys):
+        """Per-turn cost is shown when there are multiple user turns."""
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=30_000,
+            completion_tokens=6_000,
+            total_tokens=36_000,
+            api_calls=10,
+            context_tokens=30_000,
+            context_length=200_000,
+            user_turns=3,
+        )
+        cli_obj.verbose = False
+
+        cli_obj._show_usage()
+        output = capsys.readouterr().out
+
+        assert "Per turn:" in output
+
+    def test_usage_context_bar_extremes(self):
+        """Progress bar handles edge cases."""
+        assert build_progress_bar(0, width=10) == "[░░░░░░░░░░]"
+        assert build_progress_bar(100, width=10) == "[██████████]"
+        assert build_progress_bar(50, width=10) == "[█████░░░░░]"
+        # Clamps out-of-range
+        assert build_progress_bar(-10, width=10) == "[░░░░░░░░░░]"
+        assert build_progress_bar(200, width=10) == "[██████████]"
+
+    def test_cache_hit_rate_pct_shared_utility(self):
+        """Shared cache_hit_rate_pct returns correct values."""
+        assert cache_hit_rate_pct(10_000, 80_000) is not None
+        assert round(cache_hit_rate_pct(10_000, 80_000)) == 89
+        # No cache reads -> None
+        assert cache_hit_rate_pct(10_000, 0) is None
+        # No tokens at all -> None
+        assert cache_hit_rate_pct(0, 0) is None
 
 
 class TestStatusBarWidthSource:

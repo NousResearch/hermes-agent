@@ -284,3 +284,98 @@ class TestElevenLabsTavilyExaKeys:
         assert "XYZ789abcdef" not in result
         assert "HOME=/home/user" in result
         assert "SHELL=/bin/bash" in result
+
+
+class TestSSHConfigRedaction:
+    """Reading an SSH config file should not leak private-key paths or
+    internal bastion hosts even though the file is on disk under the
+    user's own home directory. See security audit finding #2."""
+
+    def test_identity_file_redacted(self):
+        text = "  IdentityFile ~/.ssh/id_ed25519"
+        result = redact_sensitive_text(text)
+        assert "id_ed25519" not in result
+        assert "IdentityFile" in result
+        assert "***" in result
+
+    def test_identity_file_absolute_path_redacted(self):
+        text = "IdentityFile /home/alice/.ssh/production_key"
+        result = redact_sensitive_text(text)
+        assert "production_key" not in result
+        assert "/home/alice" not in result
+
+    def test_proxy_jump_redacted(self):
+        text = "  ProxyJump bastion.internal.corp:2222"
+        result = redact_sensitive_text(text)
+        assert "bastion.internal.corp" not in result
+        assert "ProxyJump" in result
+
+    def test_proxy_command_redacted(self):
+        text = "  ProxyCommand ssh -W %h:%p jump.example.com"
+        result = redact_sensitive_text(text)
+        assert "jump.example.com" not in result
+        assert "%h:%p" not in result
+        assert "ProxyCommand" in result
+
+    def test_identity_agent_redacted(self):
+        text = "IdentityAgent /tmp/ssh-agent.sock"
+        result = redact_sensitive_text(text)
+        assert "/tmp/ssh-agent.sock" not in result
+
+    def test_certificate_file_redacted(self):
+        text = "  CertificateFile ~/.ssh/id_ed25519-cert.pub"
+        result = redact_sensitive_text(text)
+        assert "id_ed25519-cert" not in result
+
+    def test_case_insensitive_keyword(self):
+        # SSH config keywords are case-insensitive per sshd_config(5)
+        text = "identityfile ~/.ssh/lowercase_key"
+        result = redact_sensitive_text(text)
+        assert "lowercase_key" not in result
+
+    def test_host_directive_not_redacted(self):
+        # Host/HostName/User/Port should stay visible for debugging
+        text = (
+            "Host github.com\n"
+            "  HostName github.com\n"
+            "  User git\n"
+            "  Port 22\n"
+        )
+        result = redact_sensitive_text(text)
+        assert "Host github.com" in result
+        assert "HostName github.com" in result
+        assert "User git" in result
+        assert "Port 22" in result
+
+    def test_full_ssh_config_preserves_structure(self):
+        config = (
+            "Host github.com\n"
+            "  HostName github.com\n"
+            "  User git\n"
+            "  IdentityFile ~/.ssh/id_ed25519\n"
+            "  AddKeysToAgent yes\n"
+            "\n"
+            "Host internal\n"
+            "  HostName 10.0.0.5\n"
+            "  ProxyJump bastion.corp:2222\n"
+            "  IdentityFile ~/.ssh/prod_key\n"
+        )
+        result = redact_sensitive_text(config)
+        # Keywords and block structure preserved
+        assert "Host github.com" in result
+        assert "Host internal" in result
+        assert "HostName github.com" in result
+        assert "AddKeysToAgent yes" in result
+        # Sensitive values masked
+        assert "id_ed25519" not in result
+        assert "prod_key" not in result
+        assert "bastion.corp" not in result
+        # Masked markers present for each sensitive line
+        assert result.count("***") >= 3
+
+    def test_unrelated_text_not_matched(self):
+        # The keyword must appear at line start (with optional whitespace).
+        # An inline mention inside prose should not be redacted.
+        text = "The IdentityFile directive points at the key path."
+        result = redact_sensitive_text(text)
+        assert result == text

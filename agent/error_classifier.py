@@ -97,6 +97,7 @@ _BILLING_PATTERNS = [
     "exceeded your current quota",
     "account is deactivated",
     "plan does not include",
+    "out of extra usage",
 ]
 
 # Patterns that indicate rate limiting (transient, will resolve)

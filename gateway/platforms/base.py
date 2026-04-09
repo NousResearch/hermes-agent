@@ -55,28 +55,97 @@ def _detect_macos_system_proxy() -> str | None:
     return None
 
 
-def resolve_proxy_url() -> str | None:
-    """Return an HTTP(S) proxy URL from env vars, or macOS system proxy.
+def resolve_proxy_url(platform_env_var: str | None = None) -> str | None:
+    """Return a proxy URL from env vars, or macOS system proxy.
 
     Check order:
+      0. *platform_env_var* (e.g. ``DISCORD_PROXY``) — highest priority
       1. HTTPS_PROXY / HTTP_PROXY / ALL_PROXY (and lowercase variants)
       2. macOS system proxy via ``scutil --proxy`` (auto-detect)
 
     Returns *None* if no proxy is found.
     """
+    if platform_env_var:
+        value = (os.environ.get(platform_env_var) or "").strip()
+        if value:
+            return value
     for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",
                 "https_proxy", "http_proxy", "all_proxy"):
         value = (os.environ.get(key) or "").strip()
         if value:
             return value
     return _detect_macos_system_proxy()
+
+
+def proxy_kwargs_for_bot(proxy_url: str | None) -> dict:
+    """Build kwargs for ``commands.Bot()`` / ``discord.Client()`` with proxy.
+
+    Returns:
+      - SOCKS URL  → ``{"connector": ProxyConnector(..., rdns=True)}``
+      - HTTP URL   → ``{"proxy": url}``
+      - *None*     → ``{}``
+
+    ``rdns=True`` forces remote DNS resolution through the proxy — required
+    by many SOCKS implementations (Shadowrocket, Clash) and essential for
+    bypassing DNS pollution behind the GFW.
+    """
+    if not proxy_url:
+        return {}
+    if proxy_url.lower().startswith("socks"):
+        try:
+            from aiohttp_socks import ProxyConnector
+
+            connector = ProxyConnector.from_url(proxy_url, rdns=True)
+            return {"connector": connector}
+        except ImportError:
+            logger.warning(
+                "aiohttp_socks not installed — SOCKS proxy %s ignored. "
+                "Run: pip install aiohttp-socks",
+                proxy_url,
+            )
+            return {}
+    return {"proxy": proxy_url}
+
+
+def proxy_kwargs_for_aiohttp(proxy_url: str | None) -> tuple[dict, dict]:
+    """Build kwargs for standalone ``aiohttp.ClientSession`` with proxy.
+
+    Returns ``(session_kwargs, request_kwargs)`` where:
+      - SOCKS → ``({"connector": ProxyConnector(...)}, {})``
+      - HTTP  → ``({}, {"proxy": url})``
+      - None  → ``({}, {})``
+
+    Usage::
+
+        sess_kw, req_kw = proxy_kwargs_for_aiohttp(proxy_url)
+        async with aiohttp.ClientSession(**sess_kw) as session:
+            async with session.get(url, **req_kw) as resp:
+                ...
+    """
+    if not proxy_url:
+        return {}, {}
+    if proxy_url.lower().startswith("socks"):
+        try:
+            from aiohttp_socks import ProxyConnector
+
+            connector = ProxyConnector.from_url(proxy_url, rdns=True)
+            return {"connector": connector}, {}
+        except ImportError:
+            logger.warning(
+                "aiohttp_socks not installed — SOCKS proxy %s ignored. "
+                "Run: pip install aiohttp-socks",
+                proxy_url,
+            )
+            return {}, {}
+    return {}, {"proxy": proxy_url}
+
+
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Callable, Awaitable, Tuple
 from enum import Enum
 
-import sys
 from pathlib import Path as _Path
 sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
 

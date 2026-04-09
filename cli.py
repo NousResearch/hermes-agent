@@ -5409,12 +5409,27 @@ class HermesCLI:
             print(f"  ❌ Compression failed: {e}")
 
     def _show_usage(self):
-        """Show cumulative token usage for the current session."""
+        """Show rate limits (if available) and session token usage."""
         if not self.agent:
             print("(._.) No active agent -- send a message first.")
             return
 
         agent = self.agent
+        calls = agent.session_api_calls
+
+        if calls == 0:
+            print("(._.) No API calls made yet in this session.")
+            return
+
+        # ── Rate limits (shown first when available) ────────────────
+        rl_state = agent.get_rate_limit_state()
+        if rl_state and rl_state.has_data:
+            from agent.rate_limit_tracker import format_rate_limit_display
+            print()
+            print(format_rate_limit_display(rl_state))
+            print()
+
+        # ── Session token usage ─────────────────────────────────────
         input_tokens = getattr(agent, "session_input_tokens", 0) or 0
         output_tokens = getattr(agent, "session_output_tokens", 0) or 0
         cache_read_tokens = getattr(agent, "session_cache_read_tokens", 0) or 0
@@ -5422,13 +5437,7 @@ class HermesCLI:
         prompt = agent.session_prompt_tokens
         completion = agent.session_completion_tokens
         total = agent.session_total_tokens
-        calls = agent.session_api_calls
 
-        if calls == 0:
-            print("(._.) No API calls made yet in this session.")
-            return
-
-        # Current context window state
         compressor = agent.context_compressor
         last_prompt = compressor.last_prompt_tokens
         ctx_len = compressor.context_length

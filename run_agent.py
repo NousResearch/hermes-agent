@@ -692,6 +692,10 @@ class AIAgent:
         self._current_tool: str | None = None
         self._api_call_count: int = 0
 
+        # Rate limit tracking — updated from x-ratelimit-* response headers
+        # after each API call.  Accessed by /usage slash command.
+        self._rate_limit_state: Optional["RateLimitState"] = None
+
         # Centralized logging — agent.log (INFO+) and errors.log (WARNING+)
         # both live under ~/.hermes/logs/.  Idempotent, so gateway mode
         # (which creates a new AIAgent per message) won't duplicate handlers.
@@ -2544,6 +2548,29 @@ class AIAgent:
         """Update the last-activity timestamp and description (thread-safe)."""
         self._last_activity_ts = time.time()
         self._last_activity_desc = desc
+
+    def _capture_rate_limits(self, http_response: Any) -> None:
+        """Parse x-ratelimit-* headers from an HTTP response and cache the state.
+
+        Called after each streaming API call.  The httpx Response object is
+        available on the OpenAI SDK Stream via ``stream.response``.
+        """
+        if http_response is None:
+            return
+        headers = getattr(http_response, "headers", None)
+        if not headers:
+            return
+        try:
+            from agent.rate_limit_tracker import parse_rate_limit_headers
+            state = parse_rate_limit_headers(headers, provider=self.provider)
+            if state is not None:
+                self._rate_limit_state = state
+        except Exception:
+            pass  # Never let header parsing break the agent loop
+
+    def get_rate_limit_state(self):
+        """Return the last captured RateLimitState, or None."""
+        return self._rate_limit_state
 
     def get_activity_summary(self) -> dict:
         """Return a snapshot of the agent's current activity for diagnostics.
@@ -4398,6 +4425,11 @@ class AIAgent:
             last_chunk_time["t"] = time.time()
             self._touch_activity("waiting for provider response (streaming)")
             stream = request_client_holder["client"].chat.completions.create(**stream_kwargs)
+
+            # Capture rate limit headers from the initial HTTP response.
+            # The OpenAI SDK Stream object exposes the underlying httpx
+            # response via .response before any chunks are consumed.
+            self._capture_rate_limits(getattr(stream, "response", None))
 
             content_parts: list = []
             tool_calls_acc: dict = {}

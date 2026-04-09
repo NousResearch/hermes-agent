@@ -289,7 +289,7 @@ TOOLSETS = {
         "description": "OpenAI-compatible API server — full agent tools accessible via HTTP (no interactive UI tools like clarify or send_message)",
         "tools": [
             # Web
-            "web_search", "web_extract",
+            "web_search", "web_extract", "probe_targets",
             # Terminal + process management
             "terminal", "process",
             # File manipulation

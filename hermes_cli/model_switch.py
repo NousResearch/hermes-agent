@@ -757,6 +757,10 @@ def list_authenticated_providers(
         if not isinstance(env_vars, list):
             continue
 
+        # Fix models.dev registry returning incorrect env mapping for minimax-cn
+        if hermes_id == "minimax-cn":
+            env_vars = ["MINIMAX_CN_API_KEY"]
+
         # Check if any env var is set
         has_creds = any(os.environ.get(ev) for ev in env_vars)
         if not has_creds:

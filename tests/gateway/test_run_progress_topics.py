@@ -144,7 +144,7 @@ async def test_run_agent_progress_stays_in_originating_topic(monkeypatch, tmp_pa
     assert adapter.sent == [
         {
             "chat_id": "-1001",
-            "content": '💻 terminal: "pwd"',
+            "content": '⚙️ terminal: "pwd"',
             "reply_to": None,
             "metadata": {"thread_id": "17585"},
         }

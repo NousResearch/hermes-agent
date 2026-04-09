@@ -1683,3 +1683,69 @@ class TestSessionIdHeader:
             call_kwargs = mock_run.call_args.kwargs
             assert call_kwargs["conversation_history"] == []
             assert call_kwargs["session_id"] == "some-session"
+
+
+class TestIsLocalhost:
+    """Tests for APIServerAdapter._is_localhost helper."""
+
+    def test_127_0_0_1(self):
+        assert APIServerAdapter._is_localhost("127.0.0.1") is True
+
+    def test_localhost(self):
+        assert APIServerAdapter._is_localhost("localhost") is True
+
+    def test_ipv6_loopback(self):
+        assert APIServerAdapter._is_localhost("::1") is True
+
+    def test_127_any(self):
+        assert APIServerAdapter._is_localhost("127.0.0.2") is True
+        assert APIServerAdapter._is_localhost("127.255.255.255") is True
+
+    def test_0_0_0_0(self):
+        assert APIServerAdapter._is_localhost("0.0.0.0") is False
+
+    def test_public_ip(self):
+        assert APIServerAdapter._is_localhost("10.0.0.1") is False
+        assert APIServerAdapter._is_localhost("192.168.1.1") is False
+
+    def test_empty_string(self):
+        assert APIServerAdapter._is_localhost("") is False
+
+    def test_none(self):
+        assert APIServerAdapter._is_localhost(None) is False
+
+    def test_hostname(self):
+        assert APIServerAdapter._is_localhost("myserver.local") is False
+
+
+class TestNonLocalhostAuthGuard:
+    """Tests that the server refuses to start on non-localhost without auth."""
+
+    @pytest.mark.asyncio
+    async def test_localhost_no_key_starts(self):
+        """Binding to 127.0.0.1 without an API key should succeed."""
+        config = PlatformConfig(enabled=True, extra={"host": "127.0.0.1"})
+        adapter = APIServerAdapter(config)
+        result = await adapter.connect()
+        # May fail for other reasons (port conflict), but should NOT fail
+        # due to the auth guard. Check the log output or just verify no ValueError.
+        if result:
+            await adapter.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_public_host_no_key_refuses(self):
+        """Binding to a public address without an API key should be refused."""
+        config = PlatformConfig(enabled=True, extra={"host": "0.0.0.0"})
+        adapter = APIServerAdapter(config)
+        result = await adapter.connect()
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_public_host_with_key_starts(self):
+        """Binding to a public address WITH an API key should be allowed."""
+        config = PlatformConfig(enabled=True, extra={"host": "0.0.0.0", "key": "sk-test-secret"})
+        adapter = APIServerAdapter(config)
+        result = await adapter.connect()
+        if result:
+            await adapter.disconnect()
+        # May fail for port conflict, but should pass the auth guard

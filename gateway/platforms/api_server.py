@@ -354,6 +354,22 @@ class APIServerAdapter(BasePlatformAdapter):
 
         return "*" in self._cors_origins or origin in self._cors_origins
 
+
+    @staticmethod
+    def _is_localhost(host: str) -> bool:
+        """Check whether *host* is a loopback / localhost address."""
+        if not host:
+            return False
+        low = host.lower()
+        if low in ("localhost", "127.0.0.1", "::1"):
+            return True
+        # 127.0.0.0/8 - any 127.x.x.x is loopback
+        import ipaddress
+        try:
+            return ipaddress.ip_address(host).is_loopback
+        except ValueError:
+            return False
+
     # ------------------------------------------------------------------
     # Auth helper
     # ------------------------------------------------------------------
@@ -1634,6 +1650,16 @@ class APIServerAdapter(BasePlatformAdapter):
                 pass
             if hasattr(sweep_task, "add_done_callback"):
                 sweep_task.add_done_callback(self._background_tasks.discard)
+
+            # Security guard: refuse to bind to non-localhost without authentication
+            if not self._is_localhost(self._host) and not self._api_key:
+                logger.critical(
+                    "[%s] Refusing to start API server on %s:%d without authentication. "
+                    "Set API_SERVER_KEY (env) or platforms.api_server.key (config) "
+                    "to require Bearer token auth, or bind to 127.0.0.1/localhost.",
+                    self.name, self._host, self._port,
+                )
+                return False
 
             # Port conflict detection — fail fast if port is already in use
             import socket as _socket

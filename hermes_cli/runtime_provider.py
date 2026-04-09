@@ -14,6 +14,7 @@ from agent.credential_pool import CredentialPool, PooledCredential, get_custom_p
 from hermes_cli.auth import (
     AuthError,
     DEFAULT_CODEX_BASE_URL,
+    DEFAULT_CHATGPT_WEB_BASE_URL,
     DEFAULT_QWEN_BASE_URL,
     DEFAULT_XAI_OAUTH_BASE_URL,
     PROVIDER_REGISTRY,
@@ -29,6 +30,7 @@ from hermes_cli.auth import (
     resolve_external_process_provider_credentials,
     has_usable_secret,
 )
+from hermes_cli.chatgpt_web import resolve_chatgpt_web_runtime_credentials
 from hermes_cli.config import get_compatible_custom_providers, load_config
 from hermes_constants import OPENROUTER_BASE_URL
 from utils import base_url_host_matches, base_url_hostname
@@ -79,6 +81,8 @@ def _detect_api_mode_for_url(base_url: str) -> Optional[str]:
     hostname = base_url_hostname(base_url)
     if hostname == "api.x.ai":
         return "codex_responses"
+    if "chatgpt.com/backend-api/f" in normalized or "chatgpt.com/backend-anon/f" in normalized:
+        return "chatgpt_web"
     if hostname == "api.openai.com":
         return "codex_responses"
     if normalized.endswith("/anthropic"):
@@ -173,12 +177,7 @@ _VALID_API_MODES = {
     "codex_responses",
     "anthropic_messages",
     "bedrock_converse",
-    # Optional opt-in: hand the entire turn to a `codex app-server` subprocess
-    # so terminal/file-ops/patching/sandboxing run inside Codex's own runtime
-    # instead of Hermes' tool dispatch. Gated behind config key
-    # `model.openai_runtime == "codex_app_server"` AND provider in
-    # {"openai", "openai-codex"}. Default is unchanged.
-    "codex_app_server",
+    "chatgpt_web",
 }
 
 
@@ -240,9 +239,9 @@ def _resolve_runtime_from_pool_entry(
     if provider == "openai-codex":
         api_mode = "codex_responses"
         base_url = base_url or DEFAULT_CODEX_BASE_URL
-    elif provider == "xai-oauth":
-        api_mode = "codex_responses"
-        base_url = base_url or DEFAULT_XAI_OAUTH_BASE_URL
+    elif provider == "chatgpt-web":
+        api_mode = "chatgpt_web"
+        base_url = base_url or DEFAULT_CHATGPT_WEB_BASE_URL
     elif provider == "qwen-oauth":
         api_mode = "chat_completions"
         base_url = base_url or DEFAULT_QWEN_BASE_URL
@@ -1225,22 +1224,21 @@ def resolve_runtime_provider(
             logger.info("Auto-detected Codex provider but credentials failed; "
                         "falling through to next provider.")
 
-    if provider == "xai-oauth":
+    if provider == "chatgpt-web":
         try:
-            creds = resolve_xai_oauth_runtime_credentials()
+            creds = resolve_chatgpt_web_runtime_credentials()
             return {
-                "provider": "xai-oauth",
-                "api_mode": "codex_responses",
-                "base_url": (creds.get("base_url") or "").rstrip("/") or DEFAULT_XAI_OAUTH_BASE_URL,
+                "provider": "chatgpt-web",
+                "api_mode": "chatgpt_web",
+                "base_url": (creds.get("base_url") or DEFAULT_CHATGPT_WEB_BASE_URL).rstrip("/"),
                 "api_key": creds.get("api_key", ""),
-                "source": creds.get("source", "hermes-auth-store"),
-                "last_refresh": creds.get("last_refresh"),
+                "source": creds.get("source", "codex-oauth"),
                 "requested_provider": requested_provider,
             }
         except AuthError:
             if requested_provider != "auto":
                 raise
-            logger.info("Auto-detected xAI OAuth provider but credentials failed; "
+            logger.info("Auto-detected ChatGPT Web provider but credentials failed; "
                         "falling through to next provider.")
 
     if provider == "qwen-oauth":

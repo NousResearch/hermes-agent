@@ -200,7 +200,15 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "gpt-4o-mini",
     ],
     "openai-codex": _codex_curated_models(),
-    "xai-oauth": _xai_curated_models(),
+    "chatgpt-web": [
+        "gpt-5-thinking",
+        "gpt-5-instant",
+        "gpt-5",
+        "gpt-4o",
+        "gpt-4.1",
+        "o3",
+        "o4-mini",
+    ],
     "copilot-acp": [
         "copilot-acp",
     ],
@@ -929,7 +937,7 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("anthropic",      "Anthropic",                "Anthropic (Claude models — API key or Claude Code)"),
     ProviderEntry("openai-codex",   "OpenAI Codex",             "OpenAI Codex"),
     ProviderEntry("alibaba",        "Qwen Cloud",               "Qwen Cloud / DashScope Coding (Qwen + multi-provider)"),
-    ProviderEntry("xai-oauth",      "xAI Grok OAuth (SuperGrok Subscription)", "xAI Grok OAuth (SuperGrok Subscription)"),
+    ProviderEntry("chatgpt-web",    "ChatGPT Web",              "ChatGPT Web (ChatGPT.com web-app models)"),
     ProviderEntry("xiaomi",         "Xiaomi MiMo",              "Xiaomi MiMo (MiMo-V2.5 and V2 models — pro, omni, flash)"),
     ProviderEntry("tencent-tokenhub", "Tencent TokenHub",       "Tencent TokenHub (Hy3 Preview — direct API via tokenhub.tencentmaas.com)"),
     ProviderEntry("nvidia",         "NVIDIA NIM",               "NVIDIA NIM (Nemotron models — build.nvidia.com or local NIM)"),
@@ -988,6 +996,9 @@ _PROVIDER_ALIASES = {
     "z-ai": "zai",
     "z.ai": "zai",
     "zhipu": "zai",
+    "chatgpt": "chatgpt-web",
+    "chatgpt.com": "chatgpt-web",
+    "openai-chatgpt": "chatgpt-web",
     "github": "copilot",
     "github-copilot": "copilot",
     "github-models": "copilot",
@@ -1627,7 +1638,6 @@ def list_available_providers() -> list[dict[str, str]]:
     """
     # Derive display order from canonical list + custom
     provider_order = [p.slug for p in CANONICAL_PROVIDERS] + ["custom"]
-
     # Build reverse alias map
     aliases_for: dict[str, list[str]] = {}
     for alias, canonical in _PROVIDER_ALIASES.items():
@@ -2182,8 +2192,19 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
         except Exception:
             access_token = None
         return get_codex_model_ids(access_token=access_token)
-    if normalized == "xai-oauth":
-        return list(_PROVIDER_MODELS.get("xai-oauth", _PROVIDER_MODELS.get("xai", [])))
+    if normalized == "chatgpt-web":
+        try:
+            from hermes_cli.chatgpt_web import (
+                fetch_chatgpt_web_model_ids,
+                resolve_chatgpt_web_runtime_credentials,
+            )
+
+            creds = resolve_chatgpt_web_runtime_credentials()
+            live = fetch_chatgpt_web_model_ids(access_token=creds.get("api_key", ""))
+            if live:
+                return live
+        except Exception:
+            pass
     if normalized in {"copilot", "copilot-acp"}:
         try:
             live = _fetch_github_models(_resolve_copilot_catalog_api_key())

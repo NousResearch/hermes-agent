@@ -1040,7 +1040,8 @@ class SessionStore:
 def build_session_context(
     source: SessionSource,
     config: GatewayConfig,
-    session_entry: Optional[SessionEntry] = None
+    session_entry: Optional[SessionEntry] = None,
+    available_tools: Optional[List[str]] = None,
 ) -> SessionContext:
     """
     Build a full session context from a source and config.
@@ -1059,6 +1060,7 @@ def build_session_context(
         source=source,
         connected_platforms=connected,
         home_channels=home_channels,
+        available_tools=available_tools,
     )
     
     if session_entry:

@@ -2143,8 +2143,13 @@ class GatewayRunner:
                 "session_key": session_key,
             })
         
-        # Build session context
-        context = build_session_context(source, self.config, session_entry)
+        # Build session context — pass available tool names for capability-aware platform notes
+        try:
+            from model_tools import get_all_tool_names as _get_tool_names
+            _available_tools = _get_tool_names()
+        except Exception:
+            _available_tools = None
+        context = build_session_context(source, self.config, session_entry, available_tools=_available_tools)
         
         # Set environment variables for tools
         self._set_session_env(context)

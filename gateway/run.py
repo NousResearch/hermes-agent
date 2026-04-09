@@ -2976,6 +2976,14 @@ class GatewayRunner:
                 **hook_ctx,
                 "response": (response or "")[:500],
             })
+
+            task_payload = agent_result.get("task_completion_payload")
+            if task_payload:
+                await self.hooks.emit("agent:task_complete", {
+                    **hook_ctx,
+                    "response": (response or "")[:500],
+                    "task_payload": task_payload,
+                })
             
             # Check for pending process watchers (check_interval on background processes)
             try:

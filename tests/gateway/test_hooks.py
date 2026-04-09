@@ -112,6 +112,17 @@ class TestDiscoverAndLoad:
 
         assert len(reg.loaded_hooks) == 2
 
+    def test_loads_task_complete_hook(self, tmp_path):
+        _create_hook(tmp_path, "task-complete-hook", '["agent:task_complete"]',
+                      "def handle(event_type, context):\n    pass\n")
+
+        reg = HookRegistry()
+        with patch("gateway.hooks.HOOKS_DIR", tmp_path), _patch_no_builtins(reg):
+            reg.discover_and_load()
+
+        assert len(reg.loaded_hooks) == 1
+        assert reg.loaded_hooks[0]["events"] == ["agent:task_complete"]
+
 
 class TestEmit:
     @pytest.mark.asyncio

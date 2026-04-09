@@ -61,6 +61,7 @@ VALID_HOOKS: Set[str] = {
     "post_api_request",
     "on_session_start",
     "on_session_end",
+    "on_task_complete",
 }
 
 ENTRY_POINTS_GROUP = "hermes_agent.plugins"

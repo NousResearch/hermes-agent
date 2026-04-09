@@ -1848,6 +1848,67 @@ class AIAgent:
         t = threading.Thread(target=_run_review, daemon=True, name="bg-review")
         t.start()
 
+    def _build_task_completion_payload(
+        self,
+        *,
+        original_user_message: str,
+        final_response: str,
+        messages: List[Dict],
+        completed: bool,
+        interrupted: bool,
+    ) -> Dict[str, Any]:
+        """Build a compact, stable payload describing a completed task."""
+        tools_used = []
+        for msg in messages:
+            if msg.get("role") == "tool" and msg.get("tool_name"):
+                tools_used.append(msg["tool_name"])
+                continue
+            if msg.get("role") != "assistant":
+                continue
+            for tool_call in msg.get("tool_calls") or []:
+                try:
+                    tool_name = tool_call.get("function", {}).get("name")
+                except AttributeError:
+                    tool_name = None
+                if tool_name:
+                    tools_used.append(tool_name)
+        tools_used = list(dict.fromkeys(tools_used))
+
+        trigger_reasons = []
+        if tools_used:
+            trigger_reasons.append("tool_used")
+
+        user_lc = (original_user_message or "").lower()
+        if any(phrase in user_lc for phrase in (
+            "remember this",
+            "save this",
+            "remember that",
+            "save that",
+        )):
+            trigger_reasons.append("explicit_memory_request")
+
+        return {
+            "session_id": self.session_id,
+            "platform": getattr(self, "platform", None) or "",
+            "model": self.model,
+            "completed": bool(completed),
+            "interrupted": bool(interrupted),
+            "original_user_message": original_user_message or "",
+            "final_response": final_response or "",
+            "tool_call_count": len(tools_used),
+            "tools_used": tools_used,
+            "trigger_reasons": trigger_reasons,
+        }
+
+    def _should_run_task_completion_review(self, task_payload: Dict[str, Any]) -> bool:
+        """Return True when this turn looks like a meaningful completed task."""
+        return bool(
+            task_payload.get("completed")
+            and not task_payload.get("interrupted")
+            and task_payload.get("final_response")
+            and task_payload.get("trigger_reasons")
+        )
+
     def _apply_persist_user_message_override(self, messages: List[Dict]) -> None:
         """Rewrite the current-turn user message before persistence/return.
 
@@ -9089,7 +9150,19 @@ class AIAgent:
             "estimated_cost_usd": self.session_estimated_cost_usd,
             "cost_status": self.session_cost_status,
             "cost_source": self.session_cost_source,
+            "task_completion_payload": None,
         }
+
+        task_completion_payload = self._build_task_completion_payload(
+            original_user_message=original_user_message,
+            final_response=final_response,
+            messages=messages,
+            completed=completed,
+            interrupted=interrupted,
+        )
+        if self._should_run_task_completion_review(task_completion_payload):
+            result["task_completion_payload"] = task_completion_payload
+
         self._response_was_previewed = False
         
         # Include interrupt message if one triggered the interrupt
@@ -9131,6 +9204,21 @@ class AIAgent:
                 )
             except Exception:
                 pass  # Background review is best-effort
+
+        if result.get("task_completion_payload"):
+            try:
+                from hermes_cli.plugins import invoke_hook as _invoke_hook
+                _invoke_hook(
+                    "on_task_complete",
+                    session_id=self.session_id,
+                    task_payload=result["task_completion_payload"],
+                    completed=completed,
+                    interrupted=interrupted,
+                    model=self.model,
+                    platform=getattr(self, "platform", None) or "",
+                )
+            except Exception as exc:
+                logger.warning("on_task_complete hook failed: %s", exc)
 
         # Note: Memory provider on_session_end() + shutdown_all() are NOT
         # called here — run_conversation() is called once per user message in

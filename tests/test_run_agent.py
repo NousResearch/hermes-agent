@@ -1487,6 +1487,63 @@ class TestRunConversation:
         assert all("message_count" in c and "messages" not in c for c in pre_request_calls)
         assert all("usage" in c and "response" not in c for c in post_request_calls)
 
+    def test_task_complete_hook_emitted_for_completed_tool_run(self, agent):
+        self._setup_agent(agent)
+        tc = _mock_tool_call(name="web_search", arguments='{"q":"test"}', call_id="c1")
+        resp1 = _mock_response(content="", finish_reason="tool_calls", tool_calls=[tc])
+        resp2 = _mock_response(content="Done searching", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [resp1, resp2]
+
+        hook_calls = []
+
+        def _record_hook(name, **kwargs):
+            hook_calls.append((name, kwargs))
+            return []
+
+        with (
+            patch("run_agent.handle_function_call", return_value="search result"),
+            patch("hermes_cli.plugins.invoke_hook", side_effect=_record_hook),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("search something")
+
+        assert result["final_response"] == "Done searching"
+        task_complete_calls = [kw for name, kw in hook_calls if name == "on_task_complete"]
+        assert len(task_complete_calls) == 1
+        payload = task_complete_calls[0]["task_payload"]
+        assert payload["completed"] is True
+        assert payload["interrupted"] is False
+        assert payload["tool_call_count"] == 1
+        assert payload["tools_used"] == ["web_search"]
+        assert payload["trigger_reasons"] == ["tool_used"]
+        assert payload["final_response"] == "Done searching"
+
+    def test_task_complete_hook_not_emitted_for_trivial_no_tool_reply(self, agent):
+        self._setup_agent(agent)
+        agent.client.chat.completions.create.return_value = _mock_response(
+            content="hello",
+            finish_reason="stop",
+        )
+
+        hook_calls = []
+
+        def _record_hook(name, **kwargs):
+            hook_calls.append((name, kwargs))
+            return []
+
+        with (
+            patch("hermes_cli.plugins.invoke_hook", side_effect=_record_hook),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result["final_response"] == "hello"
+        assert not any(name == "on_task_complete" for name, _ in hook_calls)
+
     def test_interrupt_breaks_loop(self, agent):
         self._setup_agent(agent)
 

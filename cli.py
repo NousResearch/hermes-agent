@@ -9342,6 +9342,45 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         return True
 
 
+    def _handle_export_command(self, cmd: str):
+        """Handle /export command to export session history to file."""
+        if not self._session_db:
+            _cprint("  Session database not available.")
+            return
+
+        parts = cmd.split()
+        format_type = "markdown"
+        filename = f"session_{self.session_id}.md"
+
+        if len(parts) > 1:
+            arg = parts[1].lower()
+            if arg in ["json", "md", "markdown"]:
+                format_type = "json" if arg == "json" else "markdown"
+                filename = f"session_{self.session_id}.{'json' if format_type == 'json' else 'md'}"
+            else:
+                filename = arg
+
+        if len(parts) > 2:
+            filename = parts[2]
+
+        export_data = self._session_db.export_session(self.session_id)
+        if not export_data:
+            _cprint(f"  Failed to export session {self.session_id}.")
+            return
+
+        try:
+            with open(filename, "w", encoding="utf-8") as f:
+                if format_type == "json":
+                    import json
+                    json.dump(export_data, f, indent=2, ensure_ascii=False)
+                else:
+                    from hermes_state import SessionDB
+                    f.write(SessionDB.format_session_as_markdown(export_data))
+    
+            _cprint(f"  Session exported successfully to {filename}")
+        except Exception as e:
+            _cprint(f"  Error writing export file: {e}")
+
     def save_conversation(self):
         """Save the current conversation to a JSON snapshot under ~/.hermes/sessions/saved/.
 
@@ -11129,6 +11168,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             self._handle_branch_command(cmd_original)
         elif canonical == "save":
             self.save_conversation()
+        elif canonical == "export":
+            self._handle_export_command(cmd_original)
         elif canonical == "cron":
             self._handle_cron_command(cmd_original)
         elif canonical == "suggestions":

@@ -4531,6 +4531,70 @@ class GatewaySlashCommandsMixin:
 
         return await self._telegram_topic_root_status_message(source)
 
+    async def _handle_export_command(self, event: MessageEvent) -> str:
+        """Handle /export command — export session history and send it as a document."""
+        source = event.source
+        session_entry = self.session_store.get_or_create_session(source)
+        session_id = session_entry.session_id
+
+        if not self._session_db:
+            return "Session database not available."
+
+        args = event.get_command_args().split()
+        format_type = "markdown"
+        filename = f"session_{session_id}.md"
+
+        if len(args) > 0:
+            arg = args[0].lower()
+            if arg in ["json", "md", "markdown"]:
+                format_type = "json" if arg == "json" else "markdown"
+                filename = f"session_{session_id}.{'json' if format_type == 'json' else 'md'}"
+            else:
+                filename = arg
+
+        if len(args) > 1:
+            filename = args[1]
+
+        export_data = self._session_db.export_session(session_id)
+        if not export_data:
+            return f"Failed to export session {session_id}."
+
+        import json
+        import tempfile
+        import os
+
+        # Write to a temp file, then send it via adapter
+        temp_dir = tempfile.mkdtemp(prefix="hermes_export_")
+        temp_path = os.path.join(temp_dir, filename)
+
+        try:
+            with open(temp_path, "w", encoding="utf-8") as f:
+                if format_type == "json":
+                    json.dump(export_data, f, indent=2, ensure_ascii=False)
+                else:
+                    from hermes_state import SessionDB
+                    f.write(SessionDB.format_session_as_markdown(export_data))
+
+            adapter = self.get_adapter(source.platform)
+            if adapter:
+                await adapter.send_document(
+                    chat_id=source.chat_id,
+                    file_path=temp_path,
+                    caption=f"Here is your exported session: {filename}",
+                    file_name=filename
+                )
+                return "Export complete."
+            else:
+                return "Platform adapter not found to send the document."
+        except Exception as e:
+            return f"Error exporting session: {e}"
+        finally:
+            try:
+                os.remove(temp_path)
+                os.rmdir(temp_dir)
+            except Exception:
+                pass
+
     async def _handle_title_command(self, event: MessageEvent) -> str:
         """Handle /title command — set or show the current session's title."""
         source = event.source

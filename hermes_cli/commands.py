@@ -156,6 +156,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                cli_only=True),
     CommandDef("save", "Save the current conversation", "Session",
                cli_only=True),
+    CommandDef("export", "Export the current session history to a file", "Session",
+               args_hint="[format] [filename]"),
     CommandDef("retry", "Retry the last message (resend to agent)", "Session"),
     CommandDef("prompt", "Compose your next prompt in $EDITOR (markdown), then send it", "Session",
                cli_only=True, args_hint="[initial text]", aliases=("compose",)),

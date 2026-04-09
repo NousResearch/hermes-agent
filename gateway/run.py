@@ -2027,6 +2027,9 @@ class GatewayRunner:
         if canonical == "talk":
             return await self._handle_talk_command(event)
 
+        if canonical == "send":
+            return await self._handle_send_command(event)
+
         if canonical == "done":
             return await self._handle_exit_command(event)
 
@@ -4105,6 +4108,78 @@ class GatewayRunner:
         if previous:
             return f"Left conversation with {previous}. Back to CEO."
         return "Not in a /talk session. Already talking to CEO."
+
+    async def _handle_send_command(self, event: MessageEvent) -> str:
+        """Handle /send <profile> <message> — fire-and-forget to any hierarchy profile.
+
+        Works from anywhere (CEO chat or inside a /talk session) without
+        needing to switch context. The profile works on the task in the
+        background and the response is delivered here when ready.
+
+        Usage: /send pm-bookmark-analysis look into UI/UX examples
+        """
+        args = event.get_command_args().strip()
+        if not args or " " not in args:
+            return (
+                "Usage: /send <profile> <message>\n"
+                "Example: /send pm-bookmark-analysis look into UI/UX examples"
+            )
+
+        profile_name, _, message_text = args.partition(" ")
+        profile_name = profile_name.lower().strip()
+        message_text = message_text.strip()
+
+        if not message_text:
+            return "Usage: /send <profile> <message>"
+
+        source = event.source
+
+        try:
+            import sys as _sys
+            _project_root = str(__import__("pathlib").Path.home() / "hermes_work" / "projects" / "hierarchical-agents")
+            if _project_root not in _sys.path:
+                _sys.path.insert(0, _project_root)
+            from core.ipc.message_bus import MessageBus
+            from core.ipc.models import MessageType
+            from core.registry.profile_registry import ProfileRegistry
+            from pathlib import Path as _Path
+
+            _hier_dir = _Path.home() / ".hermes" / "hierarchy"
+
+            # Validate profile exists
+            reg = ProfileRegistry(str(_hier_dir / "registry.db"))
+            try:
+                profile = reg.get_profile(profile_name)
+                if profile is None:
+                    profiles = [p.profile_name for p in reg.list_profiles()]
+                    return (
+                        f"Profile '{profile_name}' not found.\n"
+                        f"Available: {', '.join(profiles)}"
+                    )
+            finally:
+                reg.close()
+
+            bus = MessageBus(str(_hier_dir / "ipc.db"))
+            bus.send(
+                from_profile="hermes",
+                to_profile=profile_name,
+                message_type=MessageType.TASK_REQUEST,
+                payload={
+                    "task": message_text,
+                    "user_talk": True,
+                    "deliver_to": "origin",
+                    "origin_platform": source.platform.value if source.platform else "",
+                    "origin_chat_id": source.chat_id,
+                },
+            )
+            bus.close()
+
+            logger.info("Sent direct message to '%s': %.100s", profile_name, message_text)
+            return f"Sent to {profile_name}. Response will be delivered here when ready."
+
+        except Exception as e:
+            logger.error("Failed to send to '%s': %s", profile_name, e)
+            return f"Failed to send to {profile_name}: {e}"
 
     async def _route_to_focused_profile(
         self, event: MessageEvent, session_key: str

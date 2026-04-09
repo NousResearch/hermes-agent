@@ -234,9 +234,11 @@ def build_release_artifacts(semver: str) -> list[Path]:
         stderr = result.stderr.strip()
         stdout = result.stdout.strip()
         if stderr:
-            print(f"    {stderr.splitlines()[-1]}")
+            lines = stderr.splitlines()
+            print(f"    {lines[-1]}") if lines else None
         elif stdout:
-            print(f"    {stdout.splitlines()[-1]}")
+            lines = stdout.splitlines()
+            print(f"    {lines[-1]}") if lines else None
         print("    Install the 'build' package to attach semver-named sdist/wheel assets.")
         return []
 

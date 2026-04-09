@@ -1552,7 +1552,9 @@ def setup_terminal_backend(config: dict):
             else:
                 print_warning("Install failed — run manually: pip install daytona")
                 if result.stderr:
-                    print_info(f"  Error: {result.stderr.strip().splitlines()[-1]}")
+                    err_lines = result.stderr.strip().splitlines()
+                    if err_lines:
+                        print_info(f"  Error: {err_lines[-1]}")
 
         # Daytona API key
         print()
@@ -2084,7 +2086,9 @@ def _setup_matrix():
             else:
                 print_warning(f"Install failed — run manually: pip install '{matrix_pkg}'")
                 if result.stderr:
-                    print_info(f"  Error: {result.stderr.strip().splitlines()[-1]}")
+                    err_lines = result.stderr.strip().splitlines()
+                    if err_lines:
+                        print_info(f"  Error: {err_lines[-1]}")
 
         print()
         print_info("🔒 Security: Restrict who can use your bot")

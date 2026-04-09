@@ -7,8 +7,10 @@ consistently.
 """
 
 import os
+import threading
 
 _client = None
+_lock = threading.Lock()
 
 
 def get_async_client():
@@ -16,15 +18,18 @@ def get_async_client():
 
     The client is created lazily on first call and reused thereafter.
     Uses the centralized provider router for auth and client construction.
+    Thread-safe: uses double-checked locking to prevent duplicate client creation.
     Raises ValueError if OPENROUTER_API_KEY is not set.
     """
     global _client
     if _client is None:
-        from agent.auxiliary_client import resolve_provider_client
-        client, _model = resolve_provider_client("openrouter", async_mode=True)
-        if client is None:
-            raise ValueError("OPENROUTER_API_KEY environment variable not set")
-        _client = client
+        with _lock:
+            if _client is None:
+                from agent.auxiliary_client import resolve_provider_client
+                client, _model = resolve_provider_client("openrouter", async_mode=True)
+                if client is None:
+                    raise ValueError("OPENROUTER_API_KEY environment variable not set")
+                _client = client
     return _client
 
 

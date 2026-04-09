@@ -569,7 +569,10 @@ class HindsightMemoryProvider(MemoryProvider):
                     # would capture output from other threads.
                     import hindsight_embed.daemon_embed_manager as dem
                     from rich.console import Console
-                    dem.console = Console(file=open(log_path, "a"), force_terminal=False)
+                    import atexit
+                    _log_fh = open(log_path, "a")
+                    atexit.register(_log_fh.close)
+                    dem.console = Console(file=_log_fh, force_terminal=False)
 
                     client = self._get_client()
                     profile = self._config.get("profile", "hermes")

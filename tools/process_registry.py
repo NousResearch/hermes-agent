@@ -407,7 +407,8 @@ class ProcessRegistry:
                     timeout=5,
                 )
                 check_output = check.get("output", "").strip()
-                if check_output and check_output.splitlines()[-1].strip() != "0":
+                check_lines = check_output.splitlines()
+                if check_lines and check_lines[-1].strip() != "0":
                     # Process has exited -- get exit code
                     exit_result = env.execute(
                         f"wait $(cat {pid_path} 2>/dev/null) 2>/dev/null; echo $?",
@@ -415,7 +416,8 @@ class ProcessRegistry:
                     )
                     exit_str = exit_result.get("output", "").strip()
                     try:
-                        session.exit_code = int(exit_str.splitlines()[-1].strip())
+                        exit_lines = exit_str.splitlines()
+                        session.exit_code = int(exit_lines[-1].strip()) if exit_lines else -1
                     except (ValueError, IndexError):
                         session.exit_code = -1
                     session.exited = True

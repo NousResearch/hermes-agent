@@ -1239,10 +1239,9 @@ class SlackAdapter(BasePlatformAdapter):
         }
         choice = choice_map.get(action_id, "deny")
 
-        # Prevent double-clicks
-        if self._approval_resolved.get(msg_ts, False):
+        # Prevent double-clicks — atomic pop; first caller gets False, others get True (default)
+        if self._approval_resolved.pop(msg_ts, True):
             return
-        self._approval_resolved[msg_ts] = True
 
         # Update the message to show the decision and remove buttons
         label_map = {
@@ -1297,8 +1296,7 @@ class SlackAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.error("Failed to resolve gateway approval from Slack button: %s", exc)
 
-        # Clean up stale approval state
-        self._approval_resolved.pop(msg_ts, None)
+        # (approval state already consumed by atomic pop above)
 
     # ----- Thread context fetching -----
 

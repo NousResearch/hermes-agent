@@ -3,6 +3,10 @@ import type { ReactNode } from 'react'
 
 import type { Theme } from '../theme.js'
 
+/** OSC 8 hyperlink — wrap-ansi / Ink keep the link active across soft line wraps. */
+const osc8 = (url: string) => '\x1b]8;;' + url + '\x1b\\'
+const OSC8_END = '\x1b]8;;\x1b\\'
+
 function MdInline({ t, text }: { t: Theme; text: string }) {
   const parts: ReactNode[] = []
   const re = /(\[(.+?)\]\((https?:\/\/[^\s)]+)\)|\*\*(.+?)\*\*|`([^`]+)`|\*(.+?)\*|(https?:\/\/[^\s]+))/g
@@ -18,8 +22,12 @@ function MdInline({ t, text }: { t: Theme; text: string }) {
 
     if (m[2] && m[3]) {
       parts.push(
-        <Text color={t.color.amber} key={parts.length} underline>
-          {m[2]}
+        <Text key={parts.length}>
+          {osc8(m[3])}
+          <Text color={t.color.amber} underline>
+            {m[2]}
+          </Text>
+          {OSC8_END}
         </Text>
       )
     } else if (m[4]) {
@@ -41,9 +49,14 @@ function MdInline({ t, text }: { t: Theme; text: string }) {
         </Text>
       )
     } else if (m[7]) {
+      const u = m[7]
       parts.push(
-        <Text color={t.color.amber} key={parts.length} underline>
-          {m[7]}
+        <Text key={parts.length}>
+          {osc8(u)}
+          <Text color={t.color.amber} underline>
+            {u}
+          </Text>
+          {OSC8_END}
         </Text>
       )
     }

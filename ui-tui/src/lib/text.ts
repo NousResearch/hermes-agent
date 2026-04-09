@@ -5,7 +5,7 @@ const ANSI_RE = /\x1b\[[0-9;]*m/g
 
 export const stripAnsi = (s: string) => s.replace(ANSI_RE, '')
 
-export const hasAnsi = (s: string) => s.includes('\x1b[')
+export const hasAnsi = (s: string) => s.includes('\x1b[') || s.includes('\x1b]')
 
 const renderEstimateLine = (line: string) => {
   const trimmed = line.trim()

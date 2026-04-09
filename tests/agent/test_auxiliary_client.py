@@ -658,6 +658,19 @@ class TestGetTextAuxiliaryClient:
         assert client is None
         assert model is None
 
+    def test_custom_endpoint_uses_codex_wrapper_when_runtime_requests_responses_api(self):
+        with patch("agent.auxiliary_client._resolve_custom_runtime",
+                   return_value=("https://api.openai.com/v1", "sk-test", "codex_responses")), \
+             patch("agent.auxiliary_client._read_main_model", return_value="gpt-5.3-codex"), \
+             patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            client, model = get_text_auxiliary_client()
+
+        from agent.auxiliary_client import CodexAuxiliaryClient
+        assert isinstance(client, CodexAuxiliaryClient)
+        assert model == "gpt-5.3-codex"
+        assert mock_openai.call_args.kwargs["base_url"] == "https://api.openai.com/v1"
+        assert mock_openai.call_args.kwargs["api_key"] == "sk-test"
+
 
 class TestVisionClientFallback:
     """Vision client auto mode resolves known-good multimodal backends."""
@@ -836,6 +849,123 @@ class TestGetAuxiliaryProvider:
     def test_main_provider(self, monkeypatch):
         monkeypatch.setenv("AUXILIARY_WEB_EXTRACT_PROVIDER", "main")
         assert _get_auxiliary_provider("web_extract") == "main"
+
+
+class TestResolveForcedProvider:
+    """Tests for _resolve_forced_provider with explicit provider selection."""
+
+    def test_forced_openrouter(self, monkeypatch):
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+        with patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            client, model = _resolve_forced_provider("openrouter")
+        assert model == "google/gemini-3-flash-preview"
+        assert client is not None
+
+    def test_forced_openrouter_no_key(self, monkeypatch):
+        with patch("agent.auxiliary_client._read_nous_auth", return_value=None):
+            client, model = _resolve_forced_provider("openrouter")
+        assert client is None
+        assert model is None
+
+    def test_forced_nous(self, monkeypatch):
+        with patch("agent.auxiliary_client._read_nous_auth") as mock_nous, \
+             patch("agent.auxiliary_client.OpenAI"):
+            mock_nous.return_value = {"access_token": "nous-tok"}
+            client, model = _resolve_forced_provider("nous")
+        assert model == "google/gemini-3-flash-preview"
+        assert client is not None
+
+    def test_forced_nous_not_configured(self, monkeypatch):
+        with patch("agent.auxiliary_client._read_nous_auth", return_value=None):
+            client, model = _resolve_forced_provider("nous")
+        assert client is None
+        assert model is None
+
+    def test_forced_main_uses_custom(self, monkeypatch):
+        config = {
+            "model": {
+                "provider": "custom",
+                "base_url": "http://local:8080/v1",
+                "default": "my-local-model",
+            }
+        }
+        monkeypatch.setenv("OPENAI_API_KEY", "local-key")
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: config)
+        monkeypatch.setattr("hermes_cli.runtime_provider.load_config", lambda: config)
+        with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
+             patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            client, model = _resolve_forced_provider("main")
+        assert model == "my-local-model"
+
+    def test_forced_main_uses_config_saved_custom_endpoint(self, monkeypatch):
+        config = {
+            "model": {
+                "provider": "custom",
+                "base_url": "http://local:8080/v1",
+                "default": "my-local-model",
+            }
+        }
+        monkeypatch.setenv("OPENAI_API_KEY", "local-key")
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: config)
+        monkeypatch.setattr("hermes_cli.runtime_provider.load_config", lambda: config)
+        with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
+             patch("agent.auxiliary_client._read_codex_access_token", return_value=None), \
+             patch("agent.auxiliary_client._resolve_api_key_provider", return_value=(None, None)), \
+             patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            client, model = _resolve_forced_provider("main")
+        assert client is not None
+        assert model == "my-local-model"
+        call_kwargs = mock_openai.call_args
+        assert call_kwargs.kwargs["base_url"] == "http://local:8080/v1"
+
+    def test_forced_main_skips_openrouter_nous(self, monkeypatch):
+        """Even if OpenRouter key is set, 'main' skips it."""
+        config = {
+            "model": {
+                "provider": "custom",
+                "base_url": "http://local:8080/v1",
+                "default": "my-local-model",
+            }
+        }
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+        monkeypatch.setenv("OPENAI_API_KEY", "local-key")
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: config)
+        monkeypatch.setattr("hermes_cli.runtime_provider.load_config", lambda: config)
+        with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
+             patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            client, model = _resolve_forced_provider("main")
+        # Should use custom endpoint, not OpenRouter
+        assert model == "my-local-model"
+
+    def test_forced_main_falls_to_codex(self, codex_auth_dir, monkeypatch):
+        with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
+             patch("agent.auxiliary_client._resolve_custom_runtime", return_value=(None, None, None)), \
+             patch("agent.auxiliary_client.OpenAI"):
+            client, model = _resolve_forced_provider("main")
+        from agent.auxiliary_client import CodexAuxiliaryClient
+        assert isinstance(client, CodexAuxiliaryClient)
+        assert model == "gpt-5.2-codex"
+
+    def test_forced_codex(self, codex_auth_dir, monkeypatch):
+        with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
+             patch("agent.auxiliary_client.OpenAI"):
+            client, model = _resolve_forced_provider("codex")
+        from agent.auxiliary_client import CodexAuxiliaryClient
+        assert isinstance(client, CodexAuxiliaryClient)
+        assert model == "gpt-5.2-codex"
+
+    def test_forced_codex_no_token(self, monkeypatch):
+        with patch("agent.auxiliary_client._read_codex_access_token", return_value=None):
+            client, model = _resolve_forced_provider("codex")
+        assert client is None
+        assert model is None
+
+    def test_forced_unknown_returns_none(self, monkeypatch):
+        with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
+             patch("agent.auxiliary_client._read_codex_access_token", return_value=None):
+            client, model = _resolve_forced_provider("invalid-provider")
+        assert client is None
+        assert model is None
 
 
 class TestTaskSpecificOverrides:

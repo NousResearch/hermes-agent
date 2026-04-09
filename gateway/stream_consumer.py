@@ -136,26 +136,30 @@ class GatewayStreamConsumer:
 
                 if should_edit and self._accumulated:
                     # Split overflow: if accumulated text exceeds the platform
-                    # limit, finalize the current message and start a new one.
-                    while (
-                        len(self._accumulated) > _safe_limit
-                        and self._message_id is not None
-                        and self._edit_supported
-                    ):
-                        split_at = self._accumulated.rfind("\n", 0, _safe_limit)
-                        if split_at < _safe_limit // 2:
-                            split_at = _safe_limit
-                        chunk = self._accumulated[:split_at]
-                        await self._send_or_edit(chunk)
-                        if self._fallback_final_send:
-                            # Edit failed while attempting to split an oversized
-                            # message. Keep the full accumulated text intact so
-                            # the fallback final-send path can deliver the
-                            # remaining continuation without dropping content.
-                            break
-                        self._accumulated = self._accumulated[split_at:].lstrip("\n")
-                        self._message_id = None
+                    # limit, use truncate_message (same as the non-streaming path)
+                    # to split with proper chunk indicators like "(1/2)".
+                    if len(self._accumulated) > _safe_limit:
+                        chunks = self.adapter.truncate_message(
+                            self._accumulated, _raw_limit
+                        )
+                        prev_id = self._message_id
+                        for i, chunk in enumerate(chunks):
+                            display_text = chunk
+                            if i < len(chunks) - 1:
+                                import re as _re
+                                display_text = _re.sub(
+                                    r" \((\d+)/(\d+)\)$",
+                                    r" \(\1/\\2\\)",
+                                    chunk,
+                                )
+                            prev_id = await self._send_new_chunk(
+                                display_text, prev_id
+                            )
+                        self._accumulated = ""
+                        self._message_id = prev_id
                         self._last_sent_text = ""
+                        self._last_edit_time = time.monotonic()
+                        continue
 
                     display_text = self._accumulated
                     if not got_done and not got_segment_break:
@@ -225,6 +229,34 @@ class GatewayStreamConsumer:
         cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
         # Strip trailing whitespace/newlines but preserve leading content
         return cleaned.rstrip()
+
+    async def _send_new_chunk(self, text: str, reply_to_id: Optional[str]) -> Optional[str]:
+        """Send a new message chunk, optionally threaded to a previous message.
+
+        Returns the message_id so callers can thread subsequent chunks to it.
+        """
+        text = self._clean_for_display(text)
+        if not text.strip():
+            return reply_to_id
+        try:
+            meta = dict(self.metadata) if self.metadata else {}
+            result = await self.adapter.send(
+                chat_id=self.chat_id,
+                content=text,
+                reply_to=reply_to_id,
+                metadata=meta,
+            )
+            if result.success and result.message_id:
+                self._message_id = str(result.message_id)
+                self._already_sent = True
+                self._last_sent_text = text
+                return str(result.message_id)
+            else:
+                self._edit_supported = False
+                return reply_to_id
+        except Exception as e:
+            logger.error("Stream send chunk error: %s", e)
+            return reply_to_id
 
     def _visible_prefix(self) -> str:
         """Return the visible text already shown in the streamed message."""

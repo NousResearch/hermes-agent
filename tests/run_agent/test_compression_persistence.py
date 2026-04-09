@@ -383,6 +383,141 @@ class TestPreCompressionFlush:
                     f"got {len(rows)}. Rapid compression chain loses messages!"
                 )
 
+    def test_flush_failure_does_not_crash_compression(self):
+        """Failure-path: if pre-compression flush raises, compression still succeeds.
+
+        Simulates a DB write error (e.g., disk full, DB locked) during the
+        pre-compression flush. The try/except in _compress_context() should
+        catch the error, log a warning, and still return valid compressed
+        messages. The agent should remain usable.
+
+        Suggested by gerliczkowalczuk in PR #6785 review.
+        """
+        from hermes_state import SessionDB
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test.db"
+            db = SessionDB(db_path=db_path)
+
+            agent = self._make_agent(db)
+            db.create_session(session_id="original-session", source="test", model="test/model")
+
+            messages = [
+                {"role": "user", "content": "hello"},
+                {"role": "assistant", "content": "world"},
+                {"role": "user", "content": "more"},
+                {"role": "assistant", "content": "stuff"},
+            ]
+
+            # Set up compression mocks
+            agent.compression_enabled = True
+            agent.context_compressor = MagicMock()
+            expected_compressed = [
+                {"role": "user", "content": "[CONTEXT COMPACTION] Summary..."},
+            ]
+            agent.context_compressor.compress.return_value = expected_compressed.copy()
+            agent.context_compressor.compression_count = 1
+            agent.context_compressor.threshold_tokens = 100000
+            agent.context_compressor.last_prompt_tokens = 5000
+            agent._build_system_prompt = MagicMock(return_value="sys")
+            agent._invalidate_system_prompt = MagicMock()
+            agent._cached_system_prompt = "sys"
+            agent._context_pressure_warned = False
+            agent.flush_memories = MagicMock()
+            agent._memory_manager = None
+            agent._todo_store = MagicMock()
+            agent._todo_store.format_for_injection.return_value = None
+
+            # Patch _flush_messages_to_session_db to raise an error
+            # simulating a DB write failure (disk full, locked, etc.)
+            original_flush = agent._flush_messages_to_session_db
+            agent._flush_messages_to_session_db = MagicMock(
+                side_effect=Exception("simulated DB write failure: disk full")
+            )
+
+            old_session_id = agent.session_id
+
+            # Compression should NOT raise — the try/except should catch it
+            compressed, new_sys = agent._compress_context(
+                messages, "sys", approx_tokens=50000, task_id="test"
+            )
+
+            # Compression should still return valid results
+            assert compressed is not None, "Compression should return messages even on flush failure"
+            assert len(compressed) >= 1, "Should have at least the summary message"
+            assert any("[CONTEXT COMPACTION]" in str(m.get("content", "")) for m in compressed), \
+                "Compressed messages should contain the compaction summary"
+
+            # The flush was attempted (called once)
+            agent._flush_messages_to_session_db.assert_called_once()
+
+            # Session ID should NOT have changed (the entire try block failed
+            # before reaching the session switch)
+            assert agent.session_id == old_session_id, (
+                "Session ID should remain unchanged when the DB try block fails. "
+                f"Expected '{old_session_id}', got '{agent.session_id}'"
+            )
+
+            # Agent should still be usable — verify key state
+            assert agent.context_compressor is not None
+            assert agent._cached_system_prompt == "sys"
+
+    def test_flush_failure_leaves_old_session_intact(self):
+        """When flush fails, the old session should not be marked as ended.
+
+        If the flush raises inside the try block, end_session() should NOT be
+        called, so the old session remains in 'active' state. This is the
+        preferable failure mode: we don't lose the session state.
+        """
+        from hermes_state import SessionDB
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = Path(tmpdir) / "test.db"
+            db = SessionDB(db_path=db_path)
+
+            agent = self._make_agent(db)
+            db.create_session(session_id="original-session", source="test", model="test/model")
+
+            messages = [
+                {"role": "user", "content": "test"},
+                {"role": "assistant", "content": "reply"},
+            ]
+
+            # Set up compression mocks
+            agent.compression_enabled = True
+            agent.context_compressor = MagicMock()
+            agent.context_compressor.compress.return_value = [
+                {"role": "user", "content": "[Summary]"},
+            ]
+            agent.context_compressor.compression_count = 1
+            agent.context_compressor.threshold_tokens = 100000
+            agent.context_compressor.last_prompt_tokens = 5000
+            agent._build_system_prompt = MagicMock(return_value="sys")
+            agent._invalidate_system_prompt = MagicMock()
+            agent._cached_system_prompt = "sys"
+            agent._context_pressure_warned = False
+            agent.flush_memories = MagicMock()
+            agent._memory_manager = None
+            agent._todo_store = MagicMock()
+            agent._todo_store.format_for_injection.return_value = None
+
+            # Make flush raise
+            agent._flush_messages_to_session_db = MagicMock(
+                side_effect=Exception("simulated DB lock")
+            )
+
+            agent._compress_context(messages, "sys", approx_tokens=50000, task_id="test")
+
+            # Old session should NOT have end_reason set (end_session was never called)
+            session = db.get_session("original-session")
+            assert session is not None, "Original session should still exist"
+            # The session should still be active (no end_reason)
+            end_reason = session.get("end_reason") if isinstance(session, dict) else getattr(session, "end_reason", None)
+            assert end_reason is None, (
+                f"Old session should not be ended when flush fails, "
+                f"but end_reason={end_reason}"
+            )
+
     def test_flush_before_switch_is_idempotent(self):
         """If messages were already flushed (via intermediate _persist_session),
         the pre-compression flush should not duplicate them."""

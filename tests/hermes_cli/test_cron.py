@@ -96,6 +96,10 @@ class TestCronCommandLifecycle:
                 repeat=None,
                 skill=None,
                 skills=["blogwatcher", "find-nearby"],
+                model=None,
+                provider=None,
+                base_url=None,
+                script=None,
             )
         )
         out = capsys.readouterr().out
@@ -105,3 +109,30 @@ class TestCronCommandLifecycle:
         assert len(jobs) == 1
         assert jobs[0]["skills"] == ["blogwatcher", "find-nearby"]
         assert jobs[0]["name"] == "Skill combo"
+
+    def test_create_forwards_model_provider_and_base_url(self, tmp_cron_dir, capsys):
+        cron_command(
+            Namespace(
+                cron_command="create",
+                schedule="every 1h",
+                prompt="Use this exact runtime",
+                name="Pinned runtime",
+                deliver=None,
+                repeat=None,
+                skill=None,
+                skills=None,
+                model='{"model":"gemma4:31b","provider":"custom"}',
+                provider="custom",
+                base_url="http://localhost:11434/v1/",
+                script=None,
+            )
+        )
+
+        out = capsys.readouterr().out
+        assert "Created job" in out
+
+        jobs = list_jobs()
+        assert len(jobs) == 1
+        assert jobs[0]["model"] == '{"model":"gemma4:31b","provider":"custom"}'
+        assert jobs[0]["provider"] == "custom"
+        assert jobs[0]["base_url"] == "http://localhost:11434/v1"

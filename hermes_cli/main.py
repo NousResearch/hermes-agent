@@ -4648,6 +4648,9 @@ For more help on a command:
     cron_create.add_argument("--deliver", help="Delivery target: origin, local, telegram, discord, signal, or platform:chat_id")
     cron_create.add_argument("--repeat", type=int, help="Optional repeat count")
     cron_create.add_argument("--skill", dest="skills", action="append", help="Attach a skill. Repeat to add multiple skills.")
+    cron_create.add_argument("--model", help="Optional per-job model override")
+    cron_create.add_argument("--provider", help="Optional per-job provider override")
+    cron_create.add_argument("--base-url", help="Optional per-job base URL override")
     cron_create.add_argument("--script", help="Path to a Python script whose stdout is injected into the prompt each run")
 
     # cron edit

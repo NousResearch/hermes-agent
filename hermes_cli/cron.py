@@ -167,6 +167,9 @@ def cron_create(args):
         repeat=getattr(args, "repeat", None),
         skill=getattr(args, "skill", None),
         skills=_normalize_skills(getattr(args, "skill", None), getattr(args, "skills", None)),
+        model=getattr(args, "model", None),
+        provider=getattr(args, "provider", None),
+        base_url=getattr(args, "base_url", None),
         script=getattr(args, "script", None),
     )
     if not result.get("success"):

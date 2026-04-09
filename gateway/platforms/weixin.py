@@ -698,6 +698,45 @@ def _split_markdown_blocks(content: str) -> List[str]:
     return [block for block in blocks if block]
 
 
+def _split_delivery_units_for_weixin(content: str) -> List[str]:
+    """Split formatted content into chat-friendly delivery units.
+
+    Weixin can render Markdown, but chat readability is better when top-level
+    line breaks become separate messages. Keep fenced code blocks intact and
+    attach indented continuation lines to the previous top-level line so
+    transformed tables/lists do not get torn apart.
+    """
+    units: List[str] = []
+
+    for block in _split_markdown_blocks(content):
+        if _FENCE_RE.match(block.splitlines()[0].strip()):
+            units.append(block)
+            continue
+
+        current: List[str] = []
+        for raw_line in block.splitlines():
+            line = raw_line.rstrip()
+            if not line.strip():
+                if current:
+                    units.append("\n".join(current).strip())
+                    current = []
+                continue
+
+            is_continuation = bool(current) and raw_line.startswith((" ", "\t"))
+            if is_continuation:
+                current.append(line)
+                continue
+
+            if current:
+                units.append("\n".join(current).strip())
+            current = [line]
+
+        if current:
+            units.append("\n".join(current).strip())
+
+    return [unit for unit in units if unit]
+
+
 def _pack_markdown_blocks_for_weixin(content: str, max_length: int) -> List[str]:
     if len(content) <= max_length:
         return [content]
@@ -719,6 +758,25 @@ def _pack_markdown_blocks_for_weixin(content: str, max_length: int) -> List[str]
     if current:
         packed.append(current)
     return packed
+
+
+def _split_text_for_weixin_delivery(content: str, max_length: int) -> List[str]:
+    """Split content into sequential Weixin messages.
+
+    Prefer one message per top-level line/markdown unit when the author used
+    explicit line breaks. Oversized units fall back to block-aware packing so
+    long code fences still split safely.
+    """
+    if len(content) <= max_length and "\n" not in content:
+        return [content]
+
+    chunks: List[str] = []
+    for unit in _split_delivery_units_for_weixin(content):
+        if len(unit) <= max_length:
+            chunks.append(unit)
+            continue
+        chunks.extend(_pack_markdown_blocks_for_weixin(unit, max_length))
+    return chunks or [content]
 
 
 def _extract_text(item_list: List[Dict[str, Any]]) -> str:
@@ -1248,7 +1306,7 @@ class WeixinAdapter(BasePlatformAdapter):
             logger.debug("[%s] getConfig failed for %s: %s", self.name, _safe_id(user_id), exc)
 
     def _split_text(self, content: str) -> List[str]:
-        return _pack_markdown_blocks_for_weixin(content, self.MAX_MESSAGE_LENGTH)
+        return _split_text_for_weixin_delivery(content, self.MAX_MESSAGE_LENGTH)
 
     async def send(
         self,

@@ -62,6 +62,30 @@ class TestWeixinFormatting:
 
 
 class TestWeixinChunking:
+    def test_split_text_sends_top_level_newlines_as_separate_messages(self):
+        adapter = _make_adapter()
+
+        content = adapter.format_message("第一行\n第二行\n第三行")
+        chunks = adapter._split_text(content)
+
+        assert chunks == ["第一行", "第二行", "第三行"]
+
+    def test_split_text_keeps_indented_followup_with_previous_line(self):
+        adapter = _make_adapter()
+
+        content = adapter.format_message(
+            "| Setting | Value |\n"
+            "| --- | --- |\n"
+            "| Timeout | 30s |\n"
+            "| Retries | 3 |\n"
+        )
+        chunks = adapter._split_text(content)
+
+        assert chunks == [
+            "- Setting: Timeout\n  Value: 30s",
+            "- Setting: Retries\n  Value: 3",
+        ]
+
     def test_split_text_keeps_complete_code_block_together_when_possible(self):
         adapter = _make_adapter()
         adapter.MAX_MESSAGE_LENGTH = 80

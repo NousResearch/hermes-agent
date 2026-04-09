@@ -1782,6 +1782,11 @@ class GatewayRunner:
         # Check if user is authorized
         if not self._is_user_authorized(source):
             logger.warning("Unauthorized user: %s (%s) on %s", source.user_id, source.user_name, source.platform.value)
+            # WhatsApp safety policy: never auto-reply to unauthorized DMs.
+            # Silent ignore avoids leaking the bot's presence or sending pairing
+            # instructions to third parties who message the linked account.
+            if source.platform == Platform.WHATSAPP:
+                return None
             # In DMs: offer pairing code. In groups: silently ignore.
             if source.chat_type == "dm" and self._get_unauthorized_dm_behavior(source.platform) == "pair":
                 platform_name = source.platform.value if source.platform else "unknown"
@@ -6149,9 +6154,19 @@ class GatewayRunner:
                             from gateway.session import SessionSource
                             from gateway.config import Platform
                             _platform_enum = Platform(platform_name)
+                            _chat_type = "dm"
+                            if ":group:" in session_key:
+                                _chat_type = "group"
+                            elif ":channel:" in session_key:
+                                _chat_type = "channel"
+                            elif ":thread:" in session_key:
+                                _chat_type = "thread"
                             _source = SessionSource(
                                 platform=_platform_enum,
                                 chat_id=chat_id,
+                                chat_type=_chat_type,
+                                user_id=(chat_id if _chat_type == "dm" else None),
+                                user_name=("system" if _chat_type == "dm" else None),
                                 thread_id=thread_id or None,
                             )
                             synth_event = MessageEvent(

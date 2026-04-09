@@ -23,7 +23,7 @@ import express from 'express';
 import { Boom } from '@hapi/boom';
 import pino from 'pino';
 import path from 'path';
-import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync } from 'fs';
+import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, appendFileSync } from 'fs';
 import { randomBytes } from 'crypto';
 import qrcode from 'qrcode-terminal';
 import { matchesAllowedUser, parseAllowedUsers } from './allowlist.js';
@@ -43,12 +43,20 @@ const WHATSAPP_DEBUG =
 
 const PORT = parseInt(getArg('port', '3000'), 10);
 const SESSION_DIR = getArg('session', path.join(process.env.HOME || '~', '.hermes', 'whatsapp', 'session'));
+const WHATSAPP_HOME = path.join(process.env.HOME || '~', '.hermes', 'whatsapp');
+const MONITOR_TAP_FILE = path.join(WHATSAPP_HOME, 'group_events.jsonl');
 const IMAGE_CACHE_DIR = path.join(process.env.HOME || '~', '.hermes', 'image_cache');
 const DOCUMENT_CACHE_DIR = path.join(process.env.HOME || '~', '.hermes', 'document_cache');
 const AUDIO_CACHE_DIR = path.join(process.env.HOME || '~', '.hermes', 'audio_cache');
 const PAIR_ONLY = args.includes('--pair-only');
 const WHATSAPP_MODE = getArg('mode', process.env.WHATSAPP_MODE || 'self-chat'); // "bot" or "self-chat"
 const ALLOWED_USERS = parseAllowedUsers(process.env.WHATSAPP_ALLOWED_USERS || '');
+const MONITOR_GROUP_IDS = new Set(
+  String(process.env.WHATSAPP_MONITOR_GROUPS || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean)
+);
 const DEFAULT_REPLY_PREFIX = '⚕ *Hermes Agent*\n────────────\n';
 const REPLY_PREFIX = process.env.WHATSAPP_REPLY_PREFIX === undefined
   ? DEFAULT_REPLY_PREFIX
@@ -90,6 +98,8 @@ function getContextInfo(messageContent) {
 }
 
 mkdirSync(SESSION_DIR, { recursive: true });
+mkdirSync(WHATSAPP_HOME, { recursive: true });
+if (!existsSync(MONITOR_TAP_FILE)) writeFileSync(MONITOR_TAP_FILE, '');
 
 // Build LID → phone reverse map from session files (lid-mapping-{phone}.json)
 function buildLidMap() {
@@ -205,11 +215,12 @@ async function startSocket() {
       }
       const senderId = msg.key.participant || chatId;
       const isGroup = chatId.endsWith('@g.us');
+      const isMonitoredGroup = isGroup && MONITOR_GROUP_IDS.has(chatId);
       const senderNumber = senderId.replace(/@.*/, '');
 
       // Handle fromMe messages based on mode
       if (msg.key.fromMe) {
-        if (isGroup || chatId.includes('status')) continue;
+        if ((isGroup && !isMonitoredGroup) || chatId.includes('status')) continue;
 
         if (WHATSAPP_MODE === 'bot') {
           // Bot mode: separate number. ALL fromMe are echo-backs of our own replies — skip.
@@ -220,15 +231,17 @@ async function startSocket() {
         // WhatsApp now uses LID (Linked Identity Device) format: 67427329167522@lid
         // AND classic format: 34652029134@s.whatsapp.net
         // sock.user has both: { id: "number:10@s.whatsapp.net", lid: "lid_number:10@lid" }
-        const myNumber = (sock.user?.id || '').replace(/:.*@/, '@').replace(/@.*/, '');
-        const myLid = (sock.user?.lid || '').replace(/:.*@/, '@').replace(/@.*/, '');
-        const chatNumber = chatId.replace(/@.*/, '');
-        const isSelfChat = (myNumber && chatNumber === myNumber) || (myLid && chatNumber === myLid);
-        if (!isSelfChat) continue;
+        if (!isMonitoredGroup) {
+          const myNumber = (sock.user?.id || '').replace(/:.*@/, '@').replace(/@.*/, '');
+          const myLid = (sock.user?.lid || '').replace(/:.*@/, '@').replace(/@.*/, '');
+          const chatNumber = chatId.replace(/@.*/, '');
+          const isSelfChat = (myNumber && chatNumber === myNumber) || (myLid && chatNumber === myLid);
+          if (!isSelfChat) continue;
+        }
       }
 
       // Check allowlist for messages from others (resolve LID ↔ phone aliases)
-      if (!msg.key.fromMe && !matchesAllowedUser(senderId, ALLOWED_USERS, SESSION_DIR)) {
+      if (!msg.key.fromMe && !isMonitoredGroup && !matchesAllowedUser(senderId, ALLOWED_USERS, SESSION_DIR)) {
         continue;
       }
 
@@ -355,6 +368,11 @@ async function startSocket() {
       messageQueue.push(event);
       if (messageQueue.length > MAX_QUEUE_SIZE) {
         messageQueue.shift();
+      }
+      try {
+        appendFileSync(MONITOR_TAP_FILE, `${JSON.stringify(event)}\n`);
+      } catch (err) {
+        console.error('[bridge] Failed to append monitor tap:', err.message);
       }
     }
   });

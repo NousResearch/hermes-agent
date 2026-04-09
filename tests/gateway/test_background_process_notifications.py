@@ -45,7 +45,7 @@ def _build_runner(monkeypatch, tmp_path, mode: str) -> GatewayRunner:
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
 
     runner = GatewayRunner(GatewayConfig())
-    adapter = SimpleNamespace(send=AsyncMock())
+    adapter = SimpleNamespace(send=AsyncMock(), handle_message=AsyncMock())
     runner.adapters[Platform.TELEGRAM] = adapter
     return runner
 
@@ -243,3 +243,39 @@ async def test_no_thread_id_sends_no_metadata(monkeypatch, tmp_path):
     assert adapter.send.await_count == 1
     _, kwargs = adapter.send.call_args
     assert kwargs["metadata"] is None
+
+
+@pytest.mark.asyncio
+async def test_agent_notify_uses_dm_identity_for_synthetic_events(monkeypatch, tmp_path):
+    """Synthetic completion events in DMs should preserve an authorized DM identity."""
+    import tools.process_registry as pr_module
+
+    sessions = [
+        SimpleNamespace(
+            output_buffer="done\n",
+            exited=True,
+            exit_code=0,
+            command="sleep 1",
+        )
+    ]
+    monkeypatch.setattr(pr_module, "process_registry", _FakeRegistry(sessions))
+
+    async def _instant_sleep(*_a, **_kw):
+        pass
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    adapter = runner.adapters[Platform.TELEGRAM]
+
+    watcher = _watcher_dict()
+    watcher["notify_on_complete"] = True
+    watcher["session_key"] = "agent:main:telegram:dm:123"
+
+    await runner._run_process_watcher(watcher)
+
+    assert adapter.handle_message.await_count == 1
+    event = adapter.handle_message.await_args.args[0]
+    assert event.source.chat_type == "dm"
+    assert event.source.user_id == "123"
+    assert event.source.user_name == "system"
+    assert event.source.chat_id == "123"

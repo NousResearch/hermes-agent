@@ -392,6 +392,9 @@ def cmd_mcp_list(args=None):
     print(f"  {'─' * 16} {'─' * 30} {'─' * 12} {'─' * 10}")
 
     for name, cfg in servers.items():
+        if not isinstance(cfg, dict):
+            # Malformed entry (e.g., stray bool from misindented YAML). Skip quietly.
+            continue
         # Transport info
         if "url" in cfg:
             url = cfg["url"]
@@ -451,6 +454,13 @@ def cmd_mcp_test(args):
         return
 
     cfg = servers[name]
+    if not isinstance(cfg, dict):
+        _error(
+            f"Server '{name}' has a malformed config entry "
+            f"(expected dict, got {type(cfg).__name__}). "
+            f"Check mcp_servers indentation in ~/.hermes/config.yaml."
+        )
+        return
     print()
     print(color(f"  Testing '{name}'...", Colors.CYAN))
 
@@ -526,6 +536,13 @@ def cmd_mcp_configure(args):
         return
 
     cfg = servers[name]
+    if not isinstance(cfg, dict):
+        _error(
+            f"Server '{name}' has a malformed config entry "
+            f"(expected dict, got {type(cfg).__name__}). "
+            f"Check mcp_servers indentation in ~/.hermes/config.yaml."
+        )
+        return
 
     # Discover all available tools
     print()

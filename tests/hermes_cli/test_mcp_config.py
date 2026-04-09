@@ -118,6 +118,50 @@ class TestMcpList:
 
 
 # ---------------------------------------------------------------------------
+# Tests: malformed mcp_servers entries (regression)
+# ---------------------------------------------------------------------------
+
+class TestMalformedServers:
+    """Regression: non-dict entries in mcp_servers must not crash the CLI.
+
+    This happened when a user accidentally put ``tandem: true`` inside the
+    ``mcp_servers:`` block instead of under ``smart_model_routing:``.
+    The bare bool made ``if "url" in cfg`` raise TypeError.
+    """
+
+    def test_list_skips_non_dict_servers(self, tmp_path, capsys):
+        _seed_config(tmp_path, {
+            "good": {"url": "https://example.com/mcp"},
+            "stray_bool": True,
+            "stray_string": "oops",
+        })
+        from hermes_cli.mcp_config import cmd_mcp_list
+
+        cmd_mcp_list()  # Must not raise
+        out = capsys.readouterr().out
+        assert "good" in out
+        assert "stray_bool" not in out
+        assert "stray_string" not in out
+
+    def test_test_rejects_non_dict_server(self, tmp_path, capsys):
+        _seed_config(tmp_path, {"stray_bool": True})
+        from hermes_cli.mcp_config import cmd_mcp_test
+
+        cmd_mcp_test(_make_args(name="stray_bool"))
+        out = capsys.readouterr().out
+        assert "malformed" in out.lower()
+
+    def test_configure_rejects_non_dict_server(self, tmp_path, capsys, monkeypatch):
+        _seed_config(tmp_path, {"stray_bool": True})
+        monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+        from hermes_cli.mcp_config import cmd_mcp_configure
+
+        cmd_mcp_configure(_make_args(name="stray_bool"))
+        out = capsys.readouterr().out
+        assert "malformed" in out.lower()
+
+
+# ---------------------------------------------------------------------------
 # Tests: cmd_mcp_remove
 # ---------------------------------------------------------------------------
 

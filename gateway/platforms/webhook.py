@@ -193,6 +193,7 @@ class WebhookAdapter(BasePlatformAdapter):
             "slack",
             "signal",
             "sms",
+            "mattermost",
         ):
             return await self._deliver_cross_platform(
                 deliver_type, content, delivery

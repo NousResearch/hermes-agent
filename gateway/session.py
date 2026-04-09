@@ -193,6 +193,7 @@ _PII_SAFE_PLATFORMS = frozenset({
     Platform.WHATSAPP,
     Platform.SIGNAL,
     Platform.TELEGRAM,
+    Platform.BLUEBUBBLES,
 })
 """Platforms where user IDs can be safely redacted (no in-message mention system
 that requires raw IDs).  Discord is excluded because mentions use ``<@user_id>``

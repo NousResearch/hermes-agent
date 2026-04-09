@@ -228,6 +228,13 @@ For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETI
 | `WECOM_WEBSOCKET_URL` | Custom WebSocket URL (default: `wss://openws.work.weixin.qq.com`) |
 | `WECOM_ALLOWED_USERS` | Comma-separated WeCom user IDs allowed to message the bot |
 | `WECOM_HOME_CHANNEL` | WeCom chat ID for cron delivery and notifications |
+| `BLUEBUBBLES_SERVER_URL` | BlueBubbles server URL (e.g. `http://192.168.1.10:1234`) |
+| `BLUEBUBBLES_PASSWORD` | BlueBubbles server password |
+| `BLUEBUBBLES_WEBHOOK_HOST` | Webhook listener bind address (default: `127.0.0.1`) |
+| `BLUEBUBBLES_WEBHOOK_PORT` | Webhook listener port (default: `8645`) |
+| `BLUEBUBBLES_HOME_CHANNEL` | Phone/email for cron/notification delivery |
+| `BLUEBUBBLES_ALLOWED_USERS` | Comma-separated authorized users |
+| `BLUEBUBBLES_ALLOW_ALL_USERS` | Allow all users (`true`/`false`) |
 | `MATTERMOST_URL` | Mattermost server URL (e.g. `https://mm.example.com`) |
 | `MATTERMOST_TOKEN` | Bot token or personal access token for Mattermost |
 | `MATTERMOST_ALLOWED_USERS` | Comma-separated Mattermost user IDs allowed to message the bot |

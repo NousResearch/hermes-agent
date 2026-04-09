@@ -58,6 +58,7 @@ from datetime import datetime
 from pathlib import Path
 
 from hermes_constants import get_hermes_home
+from hermes_cli import chatgpt_web as _chatgpt_web
 
 
 _OPENAI_CLS_CACHE: Optional[type] = None
@@ -1054,10 +1055,18 @@ class AIAgent:
         self.provider = provider_name or ""
         self.acp_command = acp_command or command
         self.acp_args = list(acp_args or args or [])
-        if api_mode in {"chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse"}:
+        if api_mode in {
+            "chat_completions",
+            "codex_responses",
+            "anthropic_messages",
+            "bedrock_converse",
+            "chatgpt_web",
+        }:
             self.api_mode = api_mode
         elif self.provider == "openai-codex":
             self.api_mode = "codex_responses"
+        elif self.provider == "chatgpt-web":
+            self.api_mode = "chatgpt_web"
         elif self.provider == "xai":
             self.api_mode = "codex_responses"
         elif (provider_name is None) and (
@@ -1066,6 +1075,9 @@ class AIAgent:
         ):
             self.api_mode = "codex_responses"
             self.provider = "openai-codex"
+        elif (provider_name is None) and "chatgpt.com/backend-api/f" in self._base_url_lower:
+            self.api_mode = "chatgpt_web"
+            self.provider = "chatgpt-web"
         elif (provider_name is None) and self._base_url_hostname == "api.x.ai":
             self.api_mode = "codex_responses"
             self.provider = "xai"
@@ -1158,6 +1170,8 @@ class AIAgent:
         self.tool_start_callback = tool_start_callback
         self.tool_complete_callback = tool_complete_callback
         self.suppress_status_output = False
+        self._chatgpt_web_conversation_id = None
+        self._chatgpt_web_parent_message_id = None
         self.thinking_callback = thinking_callback
         self.reasoning_callback = reasoning_callback
         self.clarify_callback = clarify_callback
@@ -6456,6 +6470,64 @@ class AIAgent:
                 timeout=get_provider_request_timeout(self.provider, self.model),
                 drop_context_1m_beta=_drop_1m,
             )
+    def _chatgpt_web_messages(self, api_messages: list) -> tuple[str, list[dict[str, Any]]]:
+        instructions = ""
+        payload_messages = api_messages
+        if api_messages and api_messages[0].get("role") == "system":
+            instructions = str(api_messages[0].get("content") or "").strip()
+            payload_messages = api_messages[1:]
+        if not instructions:
+            instructions = DEFAULT_AGENT_IDENTITY
+        if self.tools:
+            instructions = (
+                instructions.rstrip()
+                + "\n\nImportant runtime limitation: this ChatGPT Web transport currently does not support Hermes tool calls. "
+                  "Never claim to have run a tool or accessed live system state through a tool."
+            )
+        if self._chatgpt_web_conversation_id and payload_messages:
+            latest_user = None
+            for item in reversed(payload_messages):
+                if isinstance(item, dict) and item.get("role") == "user":
+                    latest_user = item
+                    break
+            payload_messages = [latest_user] if latest_user else payload_messages[-1:]
+        return instructions, payload_messages
+
+    def _wrap_chatgpt_web_response(self, result: dict[str, Any]):
+        message_text = str(result.get("content") or "")
+        finish_reason = str(result.get("finish_reason") or "stop")
+        assistant_message = SimpleNamespace(content=message_text, tool_calls=None, role="assistant")
+        choice = SimpleNamespace(message=assistant_message, finish_reason=finish_reason)
+        return SimpleNamespace(
+            id=result.get("message_id") or result.get("parent_message_id") or str(uuid.uuid4()),
+            model=result.get("model") or self.model,
+            choices=[choice],
+            usage=None,
+        )
+
+    def _run_chatgpt_web_completion(self, api_kwargs: dict, *, client=None):
+        def _on_delta(text: str):
+            if not text:
+                return
+            callback = getattr(self, "_chatgpt_web_on_delta", None)
+            if callback is not None:
+                callback(text)
+
+        result = _chatgpt_web.stream_chatgpt_web_completion(
+            access_token=self.api_key,
+            model=api_kwargs.get("model") or self.model,
+            messages=api_kwargs.get("messages") or [],
+            instructions=api_kwargs.get("instructions") or DEFAULT_AGENT_IDENTITY,
+            conversation_id=api_kwargs.get("conversation_id") or None,
+            parent_message_id=api_kwargs.get("parent_message_id") or None,
+            timeout=api_kwargs.get("timeout") or float(os.getenv("HERMES_API_TIMEOUT", 1800.0)),
+            history_and_training_disabled=bool(api_kwargs.get("history_and_training_disabled", False)),
+            on_delta=_on_delta,
+            client=client,
+        )
+        self._chatgpt_web_conversation_id = result.get("conversation_id") or self._chatgpt_web_conversation_id
+        self._chatgpt_web_parent_message_id = result.get("parent_message_id") or self._chatgpt_web_parent_message_id
+        return self._wrap_chatgpt_web_response(result)
 
     def _interruptible_api_call(self, api_kwargs: dict):
         """
@@ -6485,6 +6557,17 @@ class AIAgent:
                         api_kwargs,
                         client=request_client_holder["client"],
                         on_first_delta=getattr(self, "_codex_on_first_delta", None),
+                    )
+                elif self.api_mode == "chatgpt_web":
+                    import httpx as _httpx
+
+                    request_client_holder["client"] = _httpx.Client(
+                        timeout=api_kwargs.get("timeout") or float(os.getenv("HERMES_API_TIMEOUT", 1800.0)),
+                        follow_redirects=True,
+                    )
+                    result["response"] = self._run_chatgpt_web_completion(
+                        api_kwargs,
+                        client=request_client_holder["client"],
                     )
                 elif self.api_mode == "anthropic_messages":
                     result["response"] = self._anthropic_messages_create(api_kwargs)
@@ -6806,6 +6889,12 @@ class AIAgent:
                 return self._interruptible_api_call(api_kwargs)
             finally:
                 self._codex_on_first_delta = None
+        if self.api_mode == "chatgpt_web":
+            self._chatgpt_web_on_delta = on_first_delta or self._fire_stream_delta
+            try:
+                return self._interruptible_api_call(api_kwargs)
+            finally:
+                self._chatgpt_web_on_delta = None
 
         # Bedrock Converse uses boto3's converse_stream() with real-time delta
         # callbacks — same UX as Anthropic and chat_completions streaming.
@@ -8519,6 +8608,140 @@ class AIAgent:
 
         # Temperature: _fixed_temperature_for_model may return OMIT_TEMPERATURE
         # sentinel (temperature omitted entirely), a numeric override, or None.
+            kwargs = {
+                "model": self.model,
+                "instructions": instructions,
+                "input": self._chat_messages_to_responses_input(payload_messages),
+                "tools": self._responses_tools(),
+                "tool_choice": "auto",
+                "parallel_tool_calls": True,
+                "store": False,
+            }
+
+            if not is_github_responses:
+                kwargs["prompt_cache_key"] = self.session_id
+
+            is_xai_responses = self.provider == "xai" or "api.x.ai" in (self.base_url or "").lower()
+
+            if reasoning_enabled and is_xai_responses:
+                # xAI reasons automatically — no effort param, just include encrypted content
+                kwargs["include"] = ["reasoning.encrypted_content"]
+            elif reasoning_enabled:
+                if is_github_responses:
+                    # Copilot's Responses route advertises reasoning-effort support,
+                    # but not OpenAI-specific prompt cache or encrypted reasoning
+                    # fields. Keep the payload to the documented subset.
+                    github_reasoning = self._github_models_reasoning_extra_body()
+                    if github_reasoning is not None:
+                        kwargs["reasoning"] = github_reasoning
+                else:
+                    kwargs["reasoning"] = {"effort": reasoning_effort, "summary": "auto"}
+                    kwargs["include"] = ["reasoning.encrypted_content"]
+            elif not is_github_responses and not is_xai_responses:
+                kwargs["include"] = []
+
+            if self.request_overrides:
+                kwargs.update(self.request_overrides)
+
+            if self.max_tokens is not None and not is_codex_backend:
+                kwargs["max_output_tokens"] = self.max_tokens
+
+            if is_xai_responses and getattr(self, "session_id", None):
+                kwargs["extra_headers"] = {"x-grok-conv-id": self.session_id}
+
+            return kwargs
+
+        if self.api_mode == "chatgpt_web":
+            instructions, payload_messages = self._chatgpt_web_messages(api_messages)
+            return {
+                "model": self.model,
+                "instructions": instructions,
+                "messages": payload_messages,
+                "conversation_id": self._chatgpt_web_conversation_id,
+                "parent_message_id": self._chatgpt_web_parent_message_id,
+                "timeout": float(os.getenv("HERMES_API_TIMEOUT", 1800.0)),
+                "history_and_training_disabled": False,
+            }
+
+        sanitized_messages = api_messages
+        needs_sanitization = False
+        for msg in api_messages:
+            if not isinstance(msg, dict):
+                continue
+            if "codex_reasoning_items" in msg:
+                needs_sanitization = True
+                break
+
+            tool_calls = msg.get("tool_calls")
+            if isinstance(tool_calls, list):
+                for tool_call in tool_calls:
+                    if not isinstance(tool_call, dict):
+                        continue
+                    if "call_id" in tool_call or "response_item_id" in tool_call:
+                        needs_sanitization = True
+                        break
+                if needs_sanitization:
+                    break
+
+        if needs_sanitization:
+            sanitized_messages = copy.deepcopy(api_messages)
+            for msg in sanitized_messages:
+                if not isinstance(msg, dict):
+                    continue
+
+                # Codex-only replay state must not leak into strict chat-completions APIs.
+                msg.pop("codex_reasoning_items", None)
+
+                tool_calls = msg.get("tool_calls")
+                if isinstance(tool_calls, list):
+                    for tool_call in tool_calls:
+                        if isinstance(tool_call, dict):
+                            tool_call.pop("call_id", None)
+                            tool_call.pop("response_item_id", None)
+
+        # Qwen portal: normalize content to list-of-dicts, inject cache_control.
+        # Must run AFTER codex sanitization so we transform the final messages.
+        # If sanitization already deepcopied, reuse that copy (in-place).
+        if self._is_qwen_portal():
+            if sanitized_messages is api_messages:
+                # No sanitization was done — we need our own copy.
+                sanitized_messages = self._qwen_prepare_chat_messages(sanitized_messages)
+            else:
+                # Already a deepcopy — transform in place to avoid a second deepcopy.
+                self._qwen_prepare_chat_messages_inplace(sanitized_messages)
+
+        # GPT-5 and Codex models respond better to 'developer' than 'system'
+        # for instruction-following.  Swap the role at the API boundary so
+        # internal message representation stays uniform ("system").
+        _model_lower = (self.model or "").lower()
+        if (
+            sanitized_messages
+            and sanitized_messages[0].get("role") == "system"
+            and any(p in _model_lower for p in DEVELOPER_ROLE_MODELS)
+        ):
+            # Shallow-copy the list + first message only — rest stays shared.
+            sanitized_messages = list(sanitized_messages)
+            sanitized_messages[0] = {**sanitized_messages[0], "role": "developer"}
+
+        provider_preferences = {}
+        if self.providers_allowed:
+            provider_preferences["only"] = self.providers_allowed
+        if self.providers_ignored:
+            provider_preferences["ignore"] = self.providers_ignored
+        if self.providers_order:
+            provider_preferences["order"] = self.providers_order
+        if self.provider_sort:
+            provider_preferences["sort"] = self.provider_sort
+        if self.provider_require_parameters:
+            provider_preferences["require_parameters"] = True
+        if self.provider_data_collection:
+            provider_preferences["data_collection"] = self.provider_data_collection
+
+        api_kwargs = {
+            "model": self.model,
+            "messages": sanitized_messages,
+            "timeout": float(os.getenv("HERMES_API_TIMEOUT", 1800.0)),
+        }
         try:
             from agent.auxiliary_client import _fixed_temperature_for_model, OMIT_TEMPERATURE
             _ft = _fixed_temperature_for_model(self.model, self.base_url)

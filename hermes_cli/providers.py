@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 class HermesOverlay:
     """Hermes-specific provider metadata layered on top of models.dev."""
 
-    transport: str = "openai_chat"        # openai_chat | anthropic_messages | codex_responses
+    transport: str = "openai_chat"        # openai_chat | anthropic_messages | codex_responses | chatgpt_web
     is_aggregator: bool = False
     auth_type: str = "api_key"            # api_key | oauth_device_code | oauth_external | external_process
     extra_env_vars: Tuple[str, ...] = ()  # env vars models.dev doesn't list
@@ -59,6 +59,12 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         transport="codex_responses",
         auth_type="oauth_external",
         base_url_override="https://chatgpt.com/backend-api/codex",
+    ),
+    "chatgpt-web": HermesOverlay(
+        transport="chatgpt_web",
+        auth_type="oauth_external",
+        extra_env_vars=("CHATGPT_WEB_ACCESS_TOKEN", "CHATGPT_WEB_SESSION_TOKEN"),
+        base_url_override="https://chatgpt.com/backend-api/f",
     ),
     "qwen-oauth": HermesOverlay(
         transport="openai_chat",
@@ -371,6 +377,7 @@ TRANSPORT_TO_API_MODE: Dict[str, str] = {
     "anthropic_messages": "anthropic_messages",
     "codex_responses": "codex_responses",
     "bedrock_converse": "bedrock_converse",
+    "chatgpt_web": "chatgpt_web",
 }
 
 

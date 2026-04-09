@@ -14,6 +14,7 @@ from agent.credential_pool import CredentialPool, PooledCredential, get_custom_p
 from hermes_cli.auth import (
     AuthError,
     DEFAULT_CODEX_BASE_URL,
+    DEFAULT_CHATGPT_WEB_BASE_URL,
     DEFAULT_QWEN_BASE_URL,
     PROVIDER_REGISTRY,
     _agent_key_is_usable,
@@ -27,6 +28,7 @@ from hermes_cli.auth import (
     resolve_external_process_provider_credentials,
     has_usable_secret,
 )
+from hermes_cli.chatgpt_web import resolve_chatgpt_web_runtime_credentials
 from hermes_cli.config import get_compatible_custom_providers, load_config
 from hermes_constants import OPENROUTER_BASE_URL
 from utils import base_url_host_matches, base_url_hostname
@@ -77,6 +79,8 @@ def _detect_api_mode_for_url(base_url: str) -> Optional[str]:
     hostname = base_url_hostname(base_url)
     if hostname == "api.x.ai":
         return "codex_responses"
+    if "chatgpt.com/backend-api/f" in normalized or "chatgpt.com/backend-anon/f" in normalized:
+        return "chatgpt_web"
     if hostname == "api.openai.com":
         return "codex_responses"
     if normalized.endswith("/anthropic"):
@@ -164,7 +168,13 @@ def _copilot_runtime_api_mode(model_cfg: Dict[str, Any], api_key: str) -> str:
         return "chat_completions"
 
 
-_VALID_API_MODES = {"chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse"}
+_VALID_API_MODES = {
+    "chat_completions",
+    "codex_responses",
+    "anthropic_messages",
+    "bedrock_converse",
+    "chatgpt_web",
+}
 
 
 def _parse_api_mode(raw: Any) -> Optional[str]:
@@ -199,6 +209,9 @@ def _resolve_runtime_from_pool_entry(
     if provider == "openai-codex":
         api_mode = "codex_responses"
         base_url = base_url or DEFAULT_CODEX_BASE_URL
+    elif provider == "chatgpt-web":
+        api_mode = "chatgpt_web"
+        base_url = base_url or DEFAULT_CHATGPT_WEB_BASE_URL
     elif provider == "qwen-oauth":
         api_mode = "chat_completions"
         base_url = base_url or DEFAULT_QWEN_BASE_URL
@@ -1066,6 +1079,23 @@ def resolve_runtime_provider(
             # Auto-detected Codex but credentials are stale/revoked —
             # fall through to env-var providers (e.g. OpenRouter).
             logger.info("Auto-detected Codex provider but credentials failed; "
+                        "falling through to next provider.")
+
+    if provider == "chatgpt-web":
+        try:
+            creds = resolve_chatgpt_web_runtime_credentials()
+            return {
+                "provider": "chatgpt-web",
+                "api_mode": "chatgpt_web",
+                "base_url": (creds.get("base_url") or DEFAULT_CHATGPT_WEB_BASE_URL).rstrip("/"),
+                "api_key": creds.get("api_key", ""),
+                "source": creds.get("source", "codex-oauth"),
+                "requested_provider": requested_provider,
+            }
+        except AuthError:
+            if requested_provider != "auto":
+                raise
+            logger.info("Auto-detected ChatGPT Web provider but credentials failed; "
                         "falling through to next provider.")
 
     if provider == "qwen-oauth":

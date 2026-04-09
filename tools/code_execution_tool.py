@@ -74,6 +74,20 @@ def check_sandbox_requirements() -> bool:
     return SANDBOX_AVAILABLE
 
 
+def _resolve_sandbox_tools(enabled_tools: Optional[List[str]]) -> frozenset[str]:
+    """Resolve the exact tool set exposed inside execute_code.
+
+    Security boundary:
+    - ``enabled_tools is None`` means the caller did not provide session tool
+      context, so we preserve the historical fallback to all sandbox tools.
+    - Any explicit list, including an empty list or a non-overlapping list,
+      is treated as authoritative session policy and must not widen access.
+    """
+    if enabled_tools is None:
+        return SANDBOX_ALLOWED_TOOLS
+    return frozenset(SANDBOX_ALLOWED_TOOLS & set(enabled_tools))
+
+
 # ---------------------------------------------------------------------------
 # hermes_tools.py code generator
 # ---------------------------------------------------------------------------
@@ -698,10 +712,7 @@ def _execute_remote(
     timeout = _cfg.get("timeout", DEFAULT_TIMEOUT)
     max_tool_calls = _cfg.get("max_tool_calls", DEFAULT_MAX_TOOL_CALLS)
 
-    session_tools = set(enabled_tools) if enabled_tools else set()
-    sandbox_tools = frozenset(SANDBOX_ALLOWED_TOOLS & session_tools)
-    if not sandbox_tools:
-        sandbox_tools = SANDBOX_ALLOWED_TOOLS
+    sandbox_tools = _resolve_sandbox_tools(enabled_tools)
 
     effective_task_id = task_id or "default"
     env, env_type = _get_or_create_env(effective_task_id)
@@ -909,11 +920,7 @@ def execute_code(
     max_tool_calls = _cfg.get("max_tool_calls", DEFAULT_MAX_TOOL_CALLS)
 
     # Determine which tools the sandbox can call
-    session_tools = set(enabled_tools) if enabled_tools else set()
-    sandbox_tools = frozenset(SANDBOX_ALLOWED_TOOLS & session_tools)
-
-    if not sandbox_tools:
-        sandbox_tools = SANDBOX_ALLOWED_TOOLS
+    sandbox_tools = _resolve_sandbox_tools(enabled_tools)
 
     # --- Set up temp directory with hermes_tools.py and script.py ---
     tmpdir = tempfile.mkdtemp(prefix="hermes_sandbox_")
@@ -930,8 +937,7 @@ def execute_code(
 
     try:
         # Write the auto-generated hermes_tools module
-        # sandbox_tools is already the correct set (intersection with session
-        # tools, or SANDBOX_ALLOWED_TOOLS as fallback — see lines above).
+        # sandbox_tools is already the exact session-bounded allow-list.
         tools_src = generate_hermes_tools_module(list(sandbox_tools))
         with open(os.path.join(tmpdir, "hermes_tools.py"), "w") as f:
             f.write(tools_src)

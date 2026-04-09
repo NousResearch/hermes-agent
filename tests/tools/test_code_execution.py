@@ -44,6 +44,7 @@ from tools.code_execution_tool import (
     build_execute_code_schema,
     EXECUTE_CODE_SCHEMA,
     _TOOL_DOC_LINES,
+    _resolve_sandbox_tools,
 )
 
 
@@ -114,6 +115,26 @@ class TestHermesToolsGeneration(unittest.TestCase):
         self.assertIn("def shell_quote(", src)
         self.assertIn("def retry(", src)
         self.assertIn("import json, os, socket, shlex, time", src)
+
+
+class TestSandboxToolResolution(unittest.TestCase):
+    def test_none_preserves_legacy_full_access(self):
+        self.assertEqual(_resolve_sandbox_tools(None), SANDBOX_ALLOWED_TOOLS)
+
+    def test_empty_list_is_authoritative(self):
+        self.assertEqual(_resolve_sandbox_tools([]), frozenset())
+
+    def test_nonoverlapping_tools_do_not_expand_access(self):
+        self.assertEqual(
+            _resolve_sandbox_tools(["execute_code", "vision_analyze"]),
+            frozenset(),
+        )
+
+    def test_intersection_only_exposes_session_allowed_tools(self):
+        self.assertEqual(
+            _resolve_sandbox_tools(["execute_code", "terminal", "read_file"]),
+            frozenset({"terminal", "read_file"}),
+        )
 
 
 @unittest.skipIf(sys.platform == "win32", "UDS not available on Windows")
@@ -679,8 +700,8 @@ class TestExecuteCodeEdgeCases(unittest.TestCase):
         self.assertIn("all imports ok", result["output"])
 
     @unittest.skipIf(sys.platform == "win32", "UDS not available on Windows")
-    def test_empty_enabled_tools_uses_all(self):
-        """When enabled_tools is [] (empty), all sandbox tools should be available."""
+    def test_empty_enabled_tools_blocks_all_sandbox_tools(self):
+        """An explicit empty session tool list must not widen sandbox access."""
         code = (
             "from hermes_tools import terminal, web_search\n"
             "print('imports ok')\n"
@@ -689,13 +710,12 @@ class TestExecuteCodeEdgeCases(unittest.TestCase):
                     return_value=json.dumps({"ok": True})):
             result = json.loads(execute_code(code, task_id="test-empty",
                                              enabled_tools=[]))
-        self.assertEqual(result["status"], "success")
-        self.assertIn("imports ok", result["output"])
+        self.assertEqual(result["status"], "error")
+        self.assertIn("ImportError", result.get("error", "") + result.get("output", ""))
 
     @unittest.skipIf(sys.platform == "win32", "UDS not available on Windows")
-    def test_nonoverlapping_tools_fallback(self):
-        """When enabled_tools has no overlap with SANDBOX_ALLOWED_TOOLS,
-        should fall back to all allowed tools."""
+    def test_nonoverlapping_tools_do_not_fallback(self):
+        """A non-overlapping explicit policy must not restore sandbox tools."""
         code = (
             "from hermes_tools import terminal\n"
             "print('fallback ok')\n"
@@ -706,8 +726,24 @@ class TestExecuteCodeEdgeCases(unittest.TestCase):
                 code, task_id="test-nonoverlap",
                 enabled_tools=["vision_analyze", "browser_snapshot"],
             ))
-        self.assertEqual(result["status"], "success")
-        self.assertIn("fallback ok", result["output"])
+        self.assertEqual(result["status"], "error")
+        self.assertIn("ImportError", result.get("error", "") + result.get("output", ""))
+
+    @unittest.skipIf(sys.platform == "win32", "UDS not available on Windows")
+    def test_execute_code_only_session_cannot_regain_terminal(self):
+        """Real policy case: leaving only execute_code enabled must not expose terminal."""
+        code = (
+            "from hermes_tools import terminal\n"
+            "print('terminal regained')\n"
+        )
+        with patch("model_tools.handle_function_call",
+                    return_value=json.dumps({"ok": True})):
+            result = json.loads(execute_code(
+                code, task_id="test-execute-code-only",
+                enabled_tools=["execute_code"],
+            ))
+        self.assertEqual(result["status"], "error")
+        self.assertIn("ImportError", result.get("error", "") + result.get("output", ""))
 
 
 # ---------------------------------------------------------------------------

@@ -1,0 +1,101 @@
+"""Tests for plugins/memory/openviking/__init__.py — URI normalization and payload handling."""
+
+import json
+
+from plugins.memory.openviking import OpenVikingMemoryProvider
+
+
+class FakeVikingClient:
+    def __init__(self, responses):
+        self.responses = responses
+        self.calls = []
+
+    def get(self, path, params=None, **kwargs):
+        self.calls.append((path, params or {}))
+        return self.responses[(path, tuple(sorted((params or {}).items())))]
+
+
+class TestOpenVikingSummaryUriNormalization:
+    def test_normalize_summary_uri_maps_pseudo_files_to_parent_directory(self):
+        assert OpenVikingMemoryProvider._normalize_summary_uri("viking://user/hermes/.overview.md") == "viking://user/hermes"
+        assert OpenVikingMemoryProvider._normalize_summary_uri("viking://resources/.abstract.md") == "viking://resources"
+        assert OpenVikingMemoryProvider._normalize_summary_uri("viking://") == "viking://"
+        assert OpenVikingMemoryProvider._normalize_summary_uri("viking://user/hermes/memories/profile.md") == "viking://user/hermes/memories/profile.md"
+
+
+class TestOpenVikingRead:
+    def test_overview_read_normalizes_uri_and_unwraps_result(self):
+        provider = OpenVikingMemoryProvider()
+        provider._client = FakeVikingClient(
+            {
+                (
+                    "/api/v1/content/overview",
+                    (("uri", "viking://user/hermes"),),
+                ): {"result": {"content": "overview text"}},
+            }
+        )
+
+        result = json.loads(provider._tool_read({"uri": "viking://user/hermes/.overview.md", "level": "overview"}))
+
+        assert result["uri"] == "viking://user/hermes/.overview.md"
+        assert result["resolved_uri"] == "viking://user/hermes"
+        assert result["level"] == "overview"
+        assert result["content"] == "overview text"
+        assert provider._client.calls == [(
+            "/api/v1/content/overview",
+            {"uri": "viking://user/hermes"},
+        )]
+
+    def test_full_read_keeps_original_uri(self):
+        provider = OpenVikingMemoryProvider()
+        provider._client = FakeVikingClient(
+            {
+                (
+                    "/api/v1/content/read",
+                    (("uri", "viking://user/hermes/memories/profile.md"),),
+                ): {"result": "full text"},
+            }
+        )
+
+        result = json.loads(provider._tool_read({"uri": "viking://user/hermes/memories/profile.md", "level": "full"}))
+
+        assert result["uri"] == "viking://user/hermes/memories/profile.md"
+        assert result["resolved_uri"] == "viking://user/hermes/memories/profile.md"
+        assert result["level"] == "full"
+        assert result["content"] == "full text"
+        assert provider._client.calls == [(
+            "/api/v1/content/read",
+            {"uri": "viking://user/hermes/memories/profile.md"},
+        )]
+
+
+class TestOpenVikingBrowse:
+    def test_list_browse_unwraps_and_normalizes_entry_shapes(self):
+        provider = OpenVikingMemoryProvider()
+        provider._client = FakeVikingClient(
+            {
+                (
+                    "/api/v1/fs/ls",
+                    (("uri", "viking://user/hermes"),),
+                ): {
+                    "result": {
+                        "entries": [
+                            {"name": "memories", "uri": "viking://user/hermes/memories", "type": "dir"},
+                            {"rel_path": "profile.md", "uri": "viking://user/hermes/memories/profile.md", "isDir": False, "abstract": "Profile"},
+                        ]
+                    }
+                },
+            }
+        )
+
+        result = json.loads(provider._tool_browse({"action": "list", "path": "viking://user/hermes"}))
+
+        assert result["path"] == "viking://user/hermes"
+        assert result["entries"] == [
+            {"name": "memories", "uri": "viking://user/hermes/memories", "type": "dir", "abstract": ""},
+            {"name": "profile.md", "uri": "viking://user/hermes/memories/profile.md", "type": "file", "abstract": "Profile"},
+        ]
+        assert provider._client.calls == [(
+            "/api/v1/fs/ls",
+            {"uri": "viking://user/hermes"},
+        )]

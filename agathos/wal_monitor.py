@@ -8,7 +8,12 @@ Follows the same pattern as mcp_serve.EventBridge:
   - Background daemon thread (non-blocking)
   - In-memory queue with cursor (structured events)
 
-Consumed by ARGUS for entropy detection.
+Consumed by Agathos for real-time entropy detection.
+
+Event types produced:
+- tool_call: New tool execution detected
+- repeat_detected: Same tool called repeatedly
+- stuck_loop_detected: Repeating pattern detected
 """
 
 import os
@@ -44,7 +49,23 @@ logger = logging.getLogger("agathos.wal")
 
 @dataclass
 class ToolCallEvent:
-    """A detected tool call or entropy pattern."""
+    """A detected tool call or entropy pattern from WAL monitoring.
+
+    Represents a single event detected by ToolCallMonitor during state.db
+    polling. Events are queued in-memory and consumed by Agathos daemon.
+
+    Attributes:
+        cursor: Event sequence number (for cursor-based consumption)
+        session_id: Hermes session ID where event occurred
+        event_type: Type of event detected:
+            - "tool_call": New tool execution
+            - "repeat_detected": Repeated tool calls (entropy)
+            - "stuck_loop_detected": Repeating pattern (entropy)
+        tool_name: Name of the tool called (e.g., "read_file")
+        tool_args: JSON string of tool arguments
+        timestamp: Unix timestamp when event was detected
+        details: Dict with additional context (e.g., repeat count)
+    """
 
     cursor: int
     session_id: str
@@ -56,7 +77,7 @@ class ToolCallEvent:
 
 
 class ToolCallMonitor:
-    """Polls state.db for new tool calls, detects entropy patterns.
+    """Polls state.db for new tool calls, detects entropy patterns in real-time.
 
     Same architecture as mcp_serve.EventBridge:
       - mtime gate (~1μs check, skip when DB unchanged)
@@ -64,17 +85,30 @@ class ToolCallMonitor:
       - Background daemon thread at configurable interval
       - Thread-safe event queue with cursor
 
+    The monitor runs continuously in the background, populating an in-memory
+    event queue. The Agathos daemon consumes events on each poll cycle.
+
     Usage:
         monitor = ToolCallMonitor()
         monitor.start()
 
-        # On each ARGUS poll cycle:
+        # On each Agathos poll cycle:
         events = monitor.get_events()
         for e in events:
             if e.event_type == 'repeat_detected':
-                # Trigger ARGUS action
+                # Trigger Agathos action
 
         monitor.stop()
+
+    Attributes:
+        db_path: Path to state.db being monitored
+        poll_interval: Seconds between polls (default: 5.0)
+        _last_mtime: Last state.db mtime (for mtime gate optimization)
+        _session_positions: Dict mapping session_id -> last processed timestamp
+        _events: Thread-safe deque of ToolCallEvent objects
+        _cursor: Monotonic event counter
+        _running: Boolean indicating if monitor thread is active
+        _thread: Background daemon thread handle
     """
 
     def __init__(
@@ -401,7 +435,29 @@ def check_session_entropy(
 ) -> Dict:
     """One-shot entropy check on a session (no daemon needed).
 
-    Returns dict with tool call counts, repeat patterns, stuck loops.
+    Standalone function for ad-hoc entropy analysis without running the
+    full ToolCallMonitor daemon. Queries state.db directly, analyzes
+    message history for tool patterns.
+
+    Args:
+        session_id: Hermes session to analyze
+        db_path: Path to state.db (defaults to ~/.hermes/state.db)
+        repeat_threshold: Minimum repeats to flag as entropy (default: 3)
+
+    Returns:
+        Dict with keys:
+        - session_id: Session analyzed
+        - tool_calls: Total tool call count
+        - entropy: "none", "repeat_detected", or "stuck_loop_detected"
+        - counts: Dict mapping tool_name -> call count
+        - repeated_tools: List of tools exceeding repeat_threshold
+        - loop_detected: Boolean if stuck loop pattern found
+
+    Returns {"error": "hermes internals unavailable"} if SessionDB cannot be imported.
+
+    Side effects:
+        - Opens/closes SessionDB connection
+        - Queries all messages for session from state.db
     """
     if not _HERMES_INTERNALS_AVAILABLE:
         return {"error": "hermes internals unavailable"}

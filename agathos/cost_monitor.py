@@ -1,9 +1,17 @@
-"""AGATHOS cost monitoring — integration with Hermes insights for budget alerts.
+"""Agathos cost monitoring — integration with Hermes insights for budget alerts.
 
 Discovers providers dynamically from session history and user profile.
 No hardcoded providers — all configuration via config.yaml.
 
 Uses Hermes insights engine for data, doesn't duplicate cost tracking.
+
+Configuration (agathos.cost_monitoring in config.yaml):
+    agathos:
+      cost_monitoring:
+        enabled: false           # Disabled by default - opt-in
+        daily_budget: 20.00      # USD daily limit
+        alert_at_percent: 80     # Alert when budget % reached
+        expensive_session_threshold: 2.00  # Flag sessions above this
 """
 
 import logging
@@ -24,9 +32,31 @@ _DEFAULT_EXPENSIVE_SESSION_THRESHOLD = 2.0  # USD
 
 class CostMonitor:
     """Monitor costs using Hermes insights data.
-    
-    Discovers providers dynamically from session history.
-    Respects user's provider_routing and custom_providers config.
+
+    Discovers providers dynamically from session history rather than using
+    hardcoded lists. Integrates with Hermes InsightsEngine for cost data,
+    avoiding duplicate cost tracking logic.
+
+    Key capabilities:
+    - Provider discovery from actual usage history
+    - Budget threshold monitoring (daily limits)
+    - Expensive session detection
+    - Budget percentage alerts
+
+    Attributes:
+        config: Cost monitoring configuration dict from config.yaml
+        _insights_engine: Cached InsightsEngine instance (lazy-loaded)
+        _db: Cached SessionDB instance (lazy-loaded)
+
+    Configuration keys read:
+    - enabled: Boolean to enable/disable monitoring
+    - daily_budget: Float USD amount for daily spending limit
+    - alert_at_percent: Int percentage to trigger alerts (default: 80)
+    - expensive_session_threshold: Float USD amount for expensive session flag
+
+    Side effects:
+        - Queries Hermes insights engine for cost data
+        - May read SessionDB for provider discovery
     """
     
     def __init__(self, config: Optional[Dict] = None):
@@ -306,8 +336,27 @@ class CostMonitor:
 
 def format_cost_alert(check_results: Dict[str, Any]) -> Optional[str]:
     """Format cost check results as human-readable alert message.
-    
-    Returns message string if alert warranted, None otherwise.
+
+    Converts cost check results into a multi-line notification message
+    suitable for Telegram, Discord, Slack, or logging. Returns None if
+    cost monitoring disabled or no alert conditions triggered.
+
+    Args:
+        check_results: Dict from CostMonitor.check() or check_costs() with:
+            - enabled: Boolean if cost monitoring is active
+            - has_alert: Boolean if any alert condition triggered
+            - daily_budget: Dict with spent, budget, percent_used, alert
+            - provider_alerts: List of provider-specific alert dicts
+            - expensive_sessions: List of expensive session dicts
+
+    Returns:
+        Formatted alert message string with emoji header and detail lines,
+        or None if no alert warranted.
+
+    Example output:
+        "💰 Cost Alert
+        Daily budget: $18.50 / $20.00 (92.5%)
+        Provider openrouter: $12.00 / $15.00 (80.0%)"
     """
     if not check_results.get("enabled"):
         return None
@@ -345,13 +394,29 @@ def format_cost_alert(check_results: Dict[str, Any]) -> Optional[str]:
 
 # Convenience function for integration
 def check_costs(config: Optional[Dict] = None) -> Dict[str, Any]:
-    """Quick cost check function for use in Agathos main loop.
-    
+    """Run cost monitoring checks and return alert status.
+
+    Convenience function for Agathos main loop integration. Instantiates
+    CostMonitor, runs full check cycle, and returns results.
+
     Args:
-        config: Agathos config dict (passed from Argus.CONFIG)
-        
+        config: Agathos config dict with cost_monitoring section
+
     Returns:
-        Dict with cost status and alerts
+        Dict with keys:
+        - enabled: Boolean if cost monitoring active
+        - has_alert: Boolean if any alert condition triggered
+        - daily_budget: Dict with spent, budget, percent_used, alert status
+        - provider_alerts: List of provider-specific budget alerts
+        - expensive_sessions: List of sessions exceeding threshold
+        - total_cost: Float total USD spent (all time or windowed)
+
+    Side effects:
+        - Instantiates CostMonitor (queries insights engine)
+        - Opens/closes database connections
+        - May query Hermes InsightsEngine for cost data
+
+    Resource management: Automatically closes CostMonitor on completion.
     """
     monitor = CostMonitor(config)
     try:

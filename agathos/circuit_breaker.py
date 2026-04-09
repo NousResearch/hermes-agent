@@ -1,4 +1,4 @@
-"""AGATHOS Circuit Breaker — automatic provider disable on failure.
+"""Agathos Circuit Breaker — automatic provider disable on failure.
 
 Integrates with Hermes config.yaml to dynamically manage provider_routing.
 Uses Agathos provider_health for failure detection.
@@ -8,7 +8,7 @@ States:
 - OPEN: Circuit tripped (provider disabled via provider_routing.ignore)
 - HALF_OPEN: Testing provider after recovery timeout
 
-Configuration (argus.circuit_breaker in config.yaml):
+Configuration (agathos.circuit_breaker in config.yaml):
     agathos:
       circuit_breaker:
         enabled: true
@@ -60,9 +60,30 @@ _DEFAULT_CIRCUIT_BREAKER_CONFIG = {
 
 class CircuitBreaker:
     """Circuit breaker for provider failover.
-    
+
     Manages provider state via Hermes config.yaml provider_routing.
-    Tracks circuit state in argus.db for persistence.
+    Tracks circuit state in agathos.db for persistence.
+
+    The circuit breaker monitors provider health metrics (consecutive failures,
+    error rates) and automatically disables failing providers by adding them
+    to provider_routing.ignore in config.yaml.
+
+    State transitions:
+    - CLOSED -> OPEN: When failure_threshold consecutive errors or error_rate_threshold exceeded
+    - OPEN -> HALF_OPEN: After recovery_timeout seconds
+    - HALF_OPEN -> CLOSED: After half_open_requests successful requests
+    - HALF_OPEN -> OPEN: On any failure during testing
+
+    Attributes:
+        cursor: Database cursor for agathos.db
+        conn: Database connection for commits
+        config: Circuit breaker configuration dict (from config.yaml)
+        _hermes_available: Cached boolean for Hermes API availability
+
+    Side effects:
+        - Reads/writes provider_routing in ~/.hermes/config.yaml
+        - Creates circuit_breaker_states table in agathos.db
+        - Sends notifications when circuits open/close (if configured)
     """
     
     def __init__(self, cursor: sqlite3.Cursor, conn: sqlite3.Connection, config: Optional[Dict] = None):
@@ -387,15 +408,30 @@ class CircuitBreaker:
 
 
 def check_circuits(cursor: sqlite3.Cursor, conn: sqlite3.Connection, config: Optional[Dict] = None) -> List[Dict[str, Any]]:
-    """Quick function to run circuit breaker checks.
-    
+    """Run circuit breaker checks for all providers.
+
+    Convenience function that instantiates CircuitBreaker and runs the
+    full check_and_transition_circuits() cycle. Used by Agathos daemon
+    during periodic health checks.
+
     Args:
-        cursor: Database cursor
-        conn: Database connection
-        config: Agathos config dict
-        
+        cursor: Database cursor for agathos.db
+        conn: Database connection for commits
+        config: Agathos config dict with circuit_breaker section
+
     Returns:
-        List of state transition events
+        List of state transition event dicts, each with:
+        - provider: Provider name
+        - transition: State change (e.g., "CLOSED -> OPEN")
+        - reason: Human-readable explanation
+        - timestamp: Unix timestamp
+
+    Side effects:
+        - May update provider_routing.ignore in config.yaml
+        - Inserts/updates circuit_breaker_states table
+        - Commits database changes
+
+    Connection management: Does NOT close conn (caller manages lifecycle).
     """
     breaker = CircuitBreaker(cursor, conn, config)
     try:
@@ -405,10 +441,28 @@ def check_circuits(cursor: sqlite3.Cursor, conn: sqlite3.Connection, config: Opt
 
 
 def format_circuit_event(event: Dict[str, Any]) -> str:
-    """Format a circuit event for notification."""
+    """Format a circuit state transition event for notification.
+
+    Converts a circuit event dict into a human-readable message suitable
+    for Telegram, Discord, Slack, or other notification channels.
+
+    Args:
+        event: Event dict from check_circuits with keys:
+            - provider: Provider name
+            - transition: State change string (e.g., "CLOSED -> OPEN")
+            - reason: Explanation of why transition occurred
+
+    Returns:
+        Formatted notification string with emoji indicator:
+        - "🔴" for OPEN (problem)
+        - "🟢" for CLOSE/ recovery
+
+    Example:
+        "🔴 Circuit CLOSED -> OPEN for openrouter: 5 consecutive failures"
+    """
     provider = event["provider"]
     transition = event["transition"]
     reason = event["reason"]
-    
+
     emoji = "🔴" if "OPEN" in transition else "🟢"
     return f"{emoji} Circuit {transition} for {provider}: {reason}"

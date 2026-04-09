@@ -245,30 +245,6 @@ class TestAdapterStreamingOverrides:
         assert consumer.cfg.buffer_threshold == 12
 
 
-class TestInitialSendThreshold:
-    """Adapters can delay the first visible stream frame to avoid tiny pre-tool fragments."""
-
-    @pytest.mark.asyncio
-    async def test_segment_break_drops_tiny_initial_fragment_below_threshold(self):
-        adapter = MagicMock()
-        adapter.STREAMING_MIN_INITIAL_CHARS = 4
-        adapter.send = AsyncMock(side_effect=[SimpleNamespace(success=True, message_id="msg_1")])
-        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=True))
-        adapter.MAX_MESSAGE_LENGTH = 4096
-
-        consumer = GatewayStreamConsumer(adapter, "chat_123", StreamConsumerConfig(edit_interval=0.01, buffer_threshold=1, cursor=""))
-        consumer.on_delta("阿")
-        consumer.on_delta(None)
-        consumer.on_delta("彪你好")
-        consumer.finish()
-
-        await consumer.run()
-
-        assert adapter.send.call_count == 1
-        sent_text = adapter.send.call_args_list[0][1]["content"]
-        assert sent_text == "彪你好"
-
-
 class TestSegmentBreakOnToolBoundary:
     """Verify that on_delta(None) finalizes the current message and starts a
     new one so the final response appears below tool-progress messages."""

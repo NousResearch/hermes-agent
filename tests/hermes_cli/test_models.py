@@ -3,7 +3,7 @@
 from unittest.mock import patch, MagicMock
 
 from hermes_cli.models import (
-    OPENROUTER_MODELS, menu_labels, model_ids, detect_provider_for_model,
+    OPENROUTER_MODELS, fetch_openrouter_models, menu_labels, model_ids, detect_provider_for_model,
     filter_nous_free_models, _NOUS_ALLOWED_FREE_MODELS,
     is_nous_free_tier, partition_nous_models_by_tier,
     check_nous_free_tier, clear_nous_free_tier_cache,
@@ -11,43 +11,57 @@ from hermes_cli.models import (
 )
 import hermes_cli.models as _models_mod
 
+LIVE_OPENROUTER_MODELS = [
+    ("anthropic/claude-opus-4.6", "recommended"),
+    ("qwen/qwen3.6-plus", ""),
+    ("nvidia/nemotron-3-super-120b-a12b:free", "free"),
+]
+
 
 class TestModelIds:
     def test_returns_non_empty_list(self):
-        ids = model_ids()
+        with patch("hermes_cli.models.fetch_openrouter_models", return_value=LIVE_OPENROUTER_MODELS):
+            ids = model_ids()
         assert isinstance(ids, list)
         assert len(ids) > 0
 
-    def test_ids_match_models_list(self):
-        ids = model_ids()
-        expected = [mid for mid, _ in OPENROUTER_MODELS]
+    def test_ids_match_fetched_catalog(self):
+        with patch("hermes_cli.models.fetch_openrouter_models", return_value=LIVE_OPENROUTER_MODELS):
+            ids = model_ids()
+        expected = [mid for mid, _ in LIVE_OPENROUTER_MODELS]
         assert ids == expected
 
     def test_all_ids_contain_provider_slash(self):
         """Model IDs should follow the provider/model format."""
-        for mid in model_ids():
-            assert "/" in mid, f"Model ID '{mid}' missing provider/ prefix"
+        with patch("hermes_cli.models.fetch_openrouter_models", return_value=LIVE_OPENROUTER_MODELS):
+            for mid in model_ids():
+                assert "/" in mid, f"Model ID '{mid}' missing provider/ prefix"
 
     def test_no_duplicate_ids(self):
-        ids = model_ids()
+        with patch("hermes_cli.models.fetch_openrouter_models", return_value=LIVE_OPENROUTER_MODELS):
+            ids = model_ids()
         assert len(ids) == len(set(ids)), "Duplicate model IDs found"
 
 
 class TestMenuLabels:
     def test_same_length_as_model_ids(self):
-        assert len(menu_labels()) == len(model_ids())
+        with patch("hermes_cli.models.fetch_openrouter_models", return_value=LIVE_OPENROUTER_MODELS):
+            assert len(menu_labels()) == len(model_ids())
 
     def test_first_label_marked_recommended(self):
-        labels = menu_labels()
+        with patch("hermes_cli.models.fetch_openrouter_models", return_value=LIVE_OPENROUTER_MODELS):
+            labels = menu_labels()
         assert "recommended" in labels[0].lower()
 
     def test_each_label_contains_its_model_id(self):
-        for label, mid in zip(menu_labels(), model_ids()):
-            assert mid in label, f"Label '{label}' doesn't contain model ID '{mid}'"
+        with patch("hermes_cli.models.fetch_openrouter_models", return_value=LIVE_OPENROUTER_MODELS):
+            for label, mid in zip(menu_labels(), model_ids()):
+                assert mid in label, f"Label '{label}' doesn't contain model ID '{mid}'"
 
     def test_non_recommended_labels_have_no_tag(self):
         """Only the first model should have (recommended)."""
-        labels = menu_labels()
+        with patch("hermes_cli.models.fetch_openrouter_models", return_value=LIVE_OPENROUTER_MODELS):
+            labels = menu_labels()
         for label in labels[1:]:
             assert "recommended" not in label.lower(), f"Unexpected 'recommended' in '{label}'"
 
@@ -65,30 +79,65 @@ class TestOpenRouterModels:
         assert len(OPENROUTER_MODELS) >= 5
 
 
+class TestFetchOpenRouterModels:
+    def test_live_fetch_recomputes_free_tags(self, monkeypatch):
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return b'{"data":[{"id":"anthropic/claude-opus-4.6","pricing":{"prompt":"0.000015","completion":"0.000075"}},{"id":"qwen/qwen3.6-plus","pricing":{"prompt":"0.000000325","completion":"0.00000195"}},{"id":"nvidia/nemotron-3-super-120b-a12b:free","pricing":{"prompt":"0","completion":"0"}}]}'
+
+        monkeypatch.setattr(_models_mod, "_openrouter_catalog_cache", None)
+        with patch("hermes_cli.models.urllib.request.urlopen", return_value=_Resp()):
+            models = fetch_openrouter_models(force_refresh=True)
+
+        assert models == [
+            ("anthropic/claude-opus-4.6", "recommended"),
+            ("qwen/qwen3.6-plus", ""),
+            ("nvidia/nemotron-3-super-120b-a12b:free", "free"),
+        ]
+
+    def test_falls_back_to_static_snapshot_on_fetch_failure(self, monkeypatch):
+        monkeypatch.setattr(_models_mod, "_openrouter_catalog_cache", None)
+        with patch("hermes_cli.models.urllib.request.urlopen", side_effect=OSError("boom")):
+            models = fetch_openrouter_models(force_refresh=True)
+
+        assert models == OPENROUTER_MODELS
+
+
 class TestFindOpenrouterSlug:
     def test_exact_match(self):
         from hermes_cli.models import _find_openrouter_slug
-        assert _find_openrouter_slug("anthropic/claude-opus-4.6") == "anthropic/claude-opus-4.6"
+        with patch("hermes_cli.models.fetch_openrouter_models", return_value=LIVE_OPENROUTER_MODELS):
+            assert _find_openrouter_slug("anthropic/claude-opus-4.6") == "anthropic/claude-opus-4.6"
 
     def test_bare_name_match(self):
         from hermes_cli.models import _find_openrouter_slug
-        result = _find_openrouter_slug("claude-opus-4.6")
+        with patch("hermes_cli.models.fetch_openrouter_models", return_value=LIVE_OPENROUTER_MODELS):
+            result = _find_openrouter_slug("claude-opus-4.6")
         assert result == "anthropic/claude-opus-4.6"
 
     def test_case_insensitive(self):
         from hermes_cli.models import _find_openrouter_slug
-        result = _find_openrouter_slug("Anthropic/Claude-Opus-4.6")
+        with patch("hermes_cli.models.fetch_openrouter_models", return_value=LIVE_OPENROUTER_MODELS):
+            result = _find_openrouter_slug("Anthropic/Claude-Opus-4.6")
         assert result is not None
 
     def test_unknown_returns_none(self):
         from hermes_cli.models import _find_openrouter_slug
-        assert _find_openrouter_slug("totally-fake-model-xyz") is None
+        with patch("hermes_cli.models.fetch_openrouter_models", return_value=LIVE_OPENROUTER_MODELS):
+            assert _find_openrouter_slug("totally-fake-model-xyz") is None
 
 
 class TestDetectProviderForModel:
     def test_anthropic_model_detected(self):
         """claude-opus-4-6 should resolve to anthropic provider."""
-        result = detect_provider_for_model("claude-opus-4-6", "openai-codex")
+        with patch("hermes_cli.models.fetch_openrouter_models", return_value=LIVE_OPENROUTER_MODELS):
+            result = detect_provider_for_model("claude-opus-4-6", "openai-codex")
         assert result is not None
         assert result[0] == "anthropic"
 
@@ -105,7 +154,8 @@ class TestDetectProviderForModel:
 
     def test_openrouter_slug_match(self):
         """Models in the OpenRouter catalog should be found."""
-        result = detect_provider_for_model("anthropic/claude-opus-4.6", "openai-codex")
+        with patch("hermes_cli.models.fetch_openrouter_models", return_value=LIVE_OPENROUTER_MODELS):
+            result = detect_provider_for_model("anthropic/claude-opus-4.6", "openai-codex")
         assert result is not None
         assert result[0] == "openrouter"
         assert result[1] == "anthropic/claude-opus-4.6"
@@ -119,18 +169,21 @@ class TestDetectProviderForModel:
         ):
             monkeypatch.delenv(env_var, raising=False)
         """Bare model names should get mapped to full OpenRouter slugs."""
-        result = detect_provider_for_model("claude-opus-4.6", "openai-codex")
+        with patch("hermes_cli.models.fetch_openrouter_models", return_value=LIVE_OPENROUTER_MODELS):
+            result = detect_provider_for_model("claude-opus-4.6", "openai-codex")
         assert result is not None
         # Should find it on OpenRouter with full slug
         assert result[1] == "anthropic/claude-opus-4.6"
 
     def test_unknown_model_returns_none(self):
         """Completely unknown model names should return None."""
-        assert detect_provider_for_model("nonexistent-model-xyz", "openai-codex") is None
+        with patch("hermes_cli.models.fetch_openrouter_models", return_value=LIVE_OPENROUTER_MODELS):
+            assert detect_provider_for_model("nonexistent-model-xyz", "openai-codex") is None
 
     def test_aggregator_not_suggested(self):
         """nous/openrouter should never be auto-suggested as target provider."""
-        result = detect_provider_for_model("claude-opus-4-6", "openai-codex")
+        with patch("hermes_cli.models.fetch_openrouter_models", return_value=LIVE_OPENROUTER_MODELS):
+            result = detect_provider_for_model("claude-opus-4-6", "openai-codex")
         assert result is not None
         assert result[0] not in ("nous",)  # nous has claude models but shouldn't be suggested
 

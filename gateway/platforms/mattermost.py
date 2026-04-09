@@ -271,9 +271,14 @@ class MattermostAdapter(BasePlatformAdapter):
                 "channel_id": chat_id,
                 "message": chunk,
             }
-            # Thread support: reply_to is the root post ID.
-            if reply_to and self._reply_mode == "thread":
-                payload["root_id"] = reply_to
+            # Thread support: prefer thread_id from metadata (existing
+            # thread) over reply_to (creates a new thread).
+            if self._reply_mode == "thread":
+                thread_root = (
+                    (metadata or {}).get("thread_id") or reply_to
+                )
+                if thread_root:
+                    payload["root_id"] = thread_root
 
             data = await self._api_post("posts", payload)
             if not data or "id" not in data:
@@ -454,8 +459,12 @@ class MattermostAdapter(BasePlatformAdapter):
             "message": caption or "",
             "file_ids": [file_id],
         }
-        if reply_to and self._reply_mode == "thread":
-            payload["root_id"] = reply_to
+        if self._reply_mode == "thread":
+            thread_root = (
+                (metadata or {}).get("thread_id") or reply_to
+            )
+            if thread_root:
+                payload["root_id"] = thread_root
 
         data = await self._api_post("posts", payload)
         if not data or "id" not in data:

@@ -47,10 +47,11 @@ def has_clipboard_image() -> bool:
         return _macos_has_image()
     if sys.platform == "win32":
         return _windows_has_image()
-    if _is_wsl():
-        return _wsl_has_image()
-    if os.environ.get("WAYLAND_DISPLAY"):
-        return _wayland_has_image()
+    # Match _linux_save fallthrough order: WSL → Wayland → X11
+    if _is_wsl() and _wsl_has_image():
+        return True
+    if os.environ.get("WAYLAND_DISPLAY") and _wayland_has_image():
+        return True
     return _xclip_has_image()
 
 

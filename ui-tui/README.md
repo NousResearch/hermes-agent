@@ -94,7 +94,7 @@ Current input behavior is split across `app.tsx`, `components/textInput.tsx`, an
 | `Ctrl+D`                        | Exit                                                                                                                                                    |
 | `Ctrl+G`                        | Open `$EDITOR` with the current draft                                                                                                                   |
 | `Ctrl+L`                        | New session (same as `/clear`)                                                                                                                          |
-| `Ctrl+V`                        | Paste clipboard image (same as `/paste`)                                                                                                                |
+| `Ctrl+V` / `Alt+V`              | Paste clipboard image (same as `/paste`)                                                                                                                |
 | `Tab`                           | Apply the active completion                                                                                                                             |
 | `Up/Down`                       | Cycle completions if the completion list is open; otherwise edit queued messages first, then walk input history                                         |
 | `Left/Right`                    | Move the cursor                                                                                                                                         |

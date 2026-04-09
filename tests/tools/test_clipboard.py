@@ -732,6 +732,18 @@ class TestHasClipboardImage:
                     assert has_clipboard_image() is True
                     m.assert_called_once()
 
+    def test_wsl_falls_through_to_wayland_when_windows_path_empty(self):
+        """WSLg often bridges images to wl-paste even when powershell.exe check fails."""
+        with patch("hermes_cli.clipboard.sys") as mock_sys:
+            mock_sys.platform = "linux"
+            with patch("hermes_cli.clipboard._is_wsl", return_value=True):
+                with patch("hermes_cli.clipboard._wsl_has_image", return_value=False) as wsl:
+                    with patch.dict(os.environ, {"WAYLAND_DISPLAY": "wayland-0"}):
+                        with patch("hermes_cli.clipboard._wayland_has_image", return_value=True) as wl:
+                            assert has_clipboard_image() is True
+                            wsl.assert_called_once()
+                            wl.assert_called_once()
+
     def test_linux_wayland_dispatch(self):
         with patch("hermes_cli.clipboard.sys") as mock_sys:
             mock_sys.platform = "linux"

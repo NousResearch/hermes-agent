@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import copy
 import hashlib
 import json
 import os
@@ -318,6 +319,117 @@ def _format_initial_message(
     return "\n\n".join(part for part in prompt_parts if part).strip()
 
 
+def _extract_event_message(event: dict[str, Any]) -> Optional[dict[str, Any]]:
+    message = event.get("message")
+    if isinstance(message, dict):
+        return message
+    nested = event.get("v")
+    if isinstance(nested, dict):
+        message = nested.get("message")
+        if isinstance(message, dict):
+            return message
+    return None
+
+
+def _extract_message_text(message: dict[str, Any]) -> str:
+    content = message.get("content") if isinstance(message.get("content"), dict) else {}
+    if content.get("content_type") != "text":
+        return ""
+    parts = content.get("parts")
+    if not isinstance(parts, list) or not parts:
+        return ""
+    return str(parts[0] or "")
+
+
+def _decode_json_pointer(path: str) -> list[str]:
+    if not isinstance(path, str) or not path.startswith("/"):
+        return []
+    tokens = path.split("/")[1:]
+    return [token.replace("~1", "/").replace("~0", "~") for token in tokens]
+
+
+def _apply_message_patch(message: dict[str, Any], patch_op: dict[str, Any]) -> bool:
+    path = str(patch_op.get("p") or "")
+    op = str(patch_op.get("o") or "").strip().lower()
+    value = patch_op.get("v")
+
+    tokens = _decode_json_pointer(path)
+    if not tokens or tokens[0] != "message":
+        return False
+    tokens = tokens[1:]
+    if not tokens:
+        return False
+
+    current: Any = message
+    for idx, token in enumerate(tokens[:-1]):
+        next_token = tokens[idx + 1]
+        next_is_index = next_token.isdigit()
+        if isinstance(current, dict):
+            child = current.get(token)
+            if child is None:
+                child = [] if next_is_index else {}
+                current[token] = child
+            current = child
+            continue
+        if isinstance(current, list):
+            if not token.isdigit():
+                return False
+            list_index = int(token)
+            while len(current) <= list_index:
+                current.append([] if next_is_index else {})
+            child = current[list_index]
+            if child is None:
+                child = [] if next_is_index else {}
+                current[list_index] = child
+            current = child
+            continue
+        return False
+
+    leaf = tokens[-1]
+    if isinstance(current, dict):
+        existing = current.get(leaf)
+        if op == "append":
+            if existing is None:
+                current[leaf] = value
+            elif isinstance(existing, str) and isinstance(value, str):
+                current[leaf] = existing + value
+            elif isinstance(existing, list):
+                existing.append(value)
+            elif isinstance(existing, dict) and isinstance(value, dict):
+                existing.update(value)
+            else:
+                current[leaf] = value
+            return True
+        if op in {"add", "replace"}:
+            current[leaf] = value
+            return True
+        return False
+
+    if isinstance(current, list):
+        if not leaf.isdigit():
+            return False
+        list_index = int(leaf)
+        while len(current) <= list_index:
+            current.append(None)
+        existing = current[list_index]
+        if op == "append":
+            if existing is None:
+                current[list_index] = value
+            elif isinstance(existing, str) and isinstance(value, str):
+                current[list_index] = existing + value
+            elif isinstance(existing, list):
+                existing.append(value)
+            elif isinstance(existing, dict) and isinstance(value, dict):
+                existing.update(value)
+            else:
+                current[list_index] = value
+            return True
+        if op in {"add", "replace"}:
+            current[list_index] = value
+            return True
+    return False
+
+
 def stream_chatgpt_web_completion(
     *,
     access_token: str,
@@ -412,6 +524,8 @@ def stream_chatgpt_web_completion(
         final_text = ""
         assistant_message_id = parent_id
         final_conversation_id = convo_id
+        assistant_message: Optional[dict[str, Any]] = None
+        saw_stream_complete = False
         with client.stream(
             "POST",
             "https://chatgpt.com/backend-api/f/conversation",
@@ -419,47 +533,80 @@ def stream_chatgpt_web_completion(
             json=payload,
         ) as response:
             response.raise_for_status()
-            for line in response.iter_lines():
-                if not line:
-                    continue
-                if isinstance(line, bytes):
-                    line = line.decode("utf-8", "ignore")
-                if not isinstance(line, str) or not line.startswith("data: "):
-                    continue
-                raw = line[6:].strip()
-                if not raw or raw == "[DONE]":
-                    continue
-                try:
-                    event = json.loads(raw)
-                except Exception:
-                    continue
-                if not isinstance(event, dict):
-                    continue
-                event_conversation_id = str(event.get("conversation_id") or "").strip()
-                if event_conversation_id:
-                    final_conversation_id = event_conversation_id
-                message = event.get("message")
-                if not isinstance(message, dict):
-                    continue
-                author = message.get("author") if isinstance(message.get("author"), dict) else {}
-                if author.get("role") != "assistant":
-                    continue
-                message_id = str(message.get("id") or "").strip()
-                if message_id:
-                    assistant_message_id = message_id
-                content = message.get("content") if isinstance(message.get("content"), dict) else {}
-                if content.get("content_type") != "text":
-                    continue
-                parts = content.get("parts")
-                if not isinstance(parts, list) or not parts:
-                    continue
-                text = str(parts[0] or "")
-                if not text:
-                    continue
-                delta = text[len(final_text):] if text.startswith(final_text) else text
-                final_text = text
-                if delta and on_delta is not None:
-                    on_delta(delta)
+            try:
+                for line in response.iter_lines():
+                    if not line:
+                        continue
+                    if isinstance(line, bytes):
+                        line = line.decode("utf-8", "ignore")
+                    if not isinstance(line, str) or not line.startswith("data: "):
+                        continue
+                    raw = line[6:].strip()
+                    if not raw:
+                        continue
+                    if raw == "[DONE]":
+                        break
+                    try:
+                        event = json.loads(raw)
+                    except Exception:
+                        continue
+                    if not isinstance(event, dict):
+                        continue
+
+                    event_conversation_id = str(event.get("conversation_id") or "").strip()
+                    if not event_conversation_id:
+                        nested_v = event.get("v")
+                        if isinstance(nested_v, dict):
+                            event_conversation_id = str(nested_v.get("conversation_id") or "").strip()
+                    if event_conversation_id:
+                        final_conversation_id = event_conversation_id
+
+                    if str(event.get("type") or "").strip() == "message_stream_complete":
+                        saw_stream_complete = True
+
+                    marker_message_id = str(event.get("message_id") or "").strip()
+                    if marker_message_id:
+                        assistant_message_id = marker_message_id
+
+                    message = _extract_event_message(event)
+                    if isinstance(message, dict):
+                        author = message.get("author") if isinstance(message.get("author"), dict) else {}
+                        if author.get("role") == "assistant":
+                            assistant_message = copy.deepcopy(message)
+                            message_id = str(message.get("id") or "").strip()
+                            if message_id:
+                                assistant_message_id = message_id
+                            text = _extract_message_text(assistant_message)
+                            if text:
+                                delta = text[len(final_text):] if text.startswith(final_text) else text
+                                final_text = text
+                                if delta and on_delta is not None:
+                                    on_delta(delta)
+                        continue
+
+                    if str(event.get("o") or "").strip().lower() == "patch" and isinstance(event.get("v"), list):
+                        if assistant_message is None:
+                            assistant_message = {
+                                "id": assistant_message_id,
+                                "author": {"role": "assistant"},
+                                "content": {"content_type": "text", "parts": [""]},
+                                "metadata": {},
+                            }
+                        for patch_op in event.get("v") or []:
+                            if not isinstance(patch_op, dict):
+                                continue
+                            if not _apply_message_patch(assistant_message, patch_op):
+                                continue
+                            text = _extract_message_text(assistant_message)
+                            if not text:
+                                continue
+                            delta = text[len(final_text):] if text.startswith(final_text) else text
+                            final_text = text
+                            if delta and on_delta is not None:
+                                on_delta(delta)
+            except httpx.RemoteProtocolError:
+                if not final_text.strip() and not saw_stream_complete:
+                    raise
 
     if not final_text.strip():
         raise RuntimeError("ChatGPT web transport returned no assistant text")

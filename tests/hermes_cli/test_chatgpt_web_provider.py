@@ -2,6 +2,8 @@ import json
 import sys
 from unittest.mock import patch
 
+import httpx
+
 from hermes_cli.models import normalize_provider, provider_model_ids
 from hermes_cli.providers import get_label
 from hermes_cli.runtime_provider import resolve_runtime_provider
@@ -355,3 +357,131 @@ def test_resolve_chatgpt_web_runtime_credentials_refreshes_pool_session_token(tm
     assert creds["base_url"] == DEFAULT_CHATGPT_WEB_BASE_URL
     assert creds["source"] == "pool:session-cookie"
     assert creds["session_token"] == "session-cookie-token"
+
+
+def test_stream_chatgpt_web_completion_parses_patch_events(monkeypatch):
+    from hermes_cli.chatgpt_web import stream_chatgpt_web_completion
+
+    deltas = []
+
+    class _JSONResponse:
+        def __init__(self, payload, status_code=200):
+            self._payload = payload
+            self.status_code = status_code
+
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                raise httpx.HTTPStatusError("boom", request=None, response=None)
+
+        def json(self):
+            return self._payload
+
+    class _StreamResponse:
+        def __init__(self, lines):
+            self._lines = lines
+            self.status_code = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def raise_for_status(self):
+            return None
+
+        def iter_lines(self):
+            yield from self._lines
+
+    class _Client:
+        def post(self, url, headers=None, json=None):
+            if url.endswith("/conversation/prepare"):
+                return _JSONResponse({"conduit_token": "conduit-123"})
+            if url.endswith("/sentinel/chat-requirements"):
+                return _JSONResponse({"token": "req-token", "proofofwork": {}})
+            raise AssertionError(f"unexpected POST {url}")
+
+        def stream(self, method, url, headers=None, json=None):
+            assert method == "POST"
+            assert url.endswith("/conversation")
+            return _StreamResponse([
+                'data: "v1"',
+                'data: {"conversation_id":"conv_123","type":"resume_conversation_token"}',
+                'data: {"v":{"message":{"id":"msg_123","author":{"role":"assistant"},"content":{"content_type":"text","parts":[""]},"status":"in_progress","metadata":{}}}}',
+                'data: {"o":"patch","v":[{"p":"/message/content/parts/0","o":"append","v":"Hel"},{"p":"/message/content/parts/0","o":"append","v":"lo"},{"p":"/message/status","o":"replace","v":"finished_successfully"}]}',
+                'data: {"type":"message_stream_complete","conversation_id":"conv_123"}',
+                'data: [DONE]',
+            ])
+
+    result = stream_chatgpt_web_completion(
+        access_token="chatgpt-web-token",
+        model="gpt-5-thinking",
+        messages=[{"role": "user", "content": "hello"}],
+        on_delta=deltas.append,
+        client=_Client(),
+        history_and_training_disabled=True,
+    )
+
+    assert result["content"] == "Hello"
+    assert result["conversation_id"] == "conv_123"
+    assert result["message_id"] == "msg_123"
+    assert deltas == ["Hel", "lo"]
+
+
+
+def test_stream_chatgpt_web_completion_tolerates_protocol_close_after_completion(monkeypatch):
+    from hermes_cli.chatgpt_web import stream_chatgpt_web_completion
+
+    class _JSONResponse:
+        def __init__(self, payload, status_code=200):
+            self._payload = payload
+            self.status_code = status_code
+
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                raise httpx.HTTPStatusError("boom", request=None, response=None)
+
+        def json(self):
+            return self._payload
+
+    class _StreamResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def raise_for_status(self):
+            return None
+
+        def iter_lines(self):
+            yield 'data: {"conversation_id":"conv_456","type":"resume_conversation_token"}'
+            yield 'data: {"v":{"message":{"id":"msg_456","author":{"role":"assistant"},"content":{"content_type":"text","parts":[""]},"status":"in_progress","metadata":{}}}}'
+            yield 'data: {"o":"patch","v":[{"p":"/message/content/parts/0","o":"append","v":"OK"}]}'
+            yield 'data: {"type":"message_stream_complete","conversation_id":"conv_456"}'
+            raise httpx.RemoteProtocolError("incomplete chunked read")
+
+    class _Client:
+        def post(self, url, headers=None, json=None):
+            if url.endswith("/conversation/prepare"):
+                return _JSONResponse({"conduit_token": "conduit-456"})
+            if url.endswith("/sentinel/chat-requirements"):
+                return _JSONResponse({"token": "req-token", "proofofwork": {}})
+            raise AssertionError(f"unexpected POST {url}")
+
+        def stream(self, method, url, headers=None, json=None):
+            assert method == "POST"
+            assert url.endswith("/conversation")
+            return _StreamResponse()
+
+    result = stream_chatgpt_web_completion(
+        access_token="chatgpt-web-token",
+        model="gpt-5-thinking",
+        messages=[{"role": "user", "content": "hello"}],
+        client=_Client(),
+        history_and_training_disabled=True,
+    )
+
+    assert result["content"] == "OK"
+    assert result["conversation_id"] == "conv_456"
+    assert result["message_id"] == "msg_456"

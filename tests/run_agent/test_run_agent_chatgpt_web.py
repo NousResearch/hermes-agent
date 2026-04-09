@@ -126,6 +126,47 @@ def test_interruptible_streaming_api_call_chatgpt_web_emits_deltas(monkeypatch):
     assert agent._chatgpt_web_parent_message_id == "msg_stream"
 
 
+def test_interruptible_streaming_api_call_chatgpt_web_fires_first_delta_without_text_arg(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    deltas = []
+    first_delta_calls = []
+    agent.stream_delta_callback = deltas.append
+
+    def _fake_stream(**kwargs):
+        on_delta = kwargs.get("on_delta")
+        assert on_delta is not None
+        on_delta("Hel")
+        on_delta("lo")
+        return {
+            "content": "Hello",
+            "conversation_id": "conv_first",
+            "parent_message_id": "msg_first",
+            "message_id": "msg_first",
+            "model": "gpt-5-thinking",
+            "finish_reason": "stop",
+        }
+
+    monkeypatch.setattr(
+        "hermes_cli.chatgpt_web.stream_chatgpt_web_completion",
+        _fake_stream,
+    )
+
+    response = agent._interruptible_streaming_api_call(
+        {
+            "model": "gpt-5-thinking",
+            "messages": [{"role": "user", "content": "hi"}],
+            "conversation_id": None,
+            "parent_message_id": None,
+            "instructions": "Be concise.",
+        },
+        on_first_delta=lambda: first_delta_calls.append("fired"),
+    )
+
+    assert first_delta_calls == ["fired"]
+    assert deltas == ["Hel", "lo"]
+    assert response.choices[0].message.content == "Hello"
+
+
 def test_interruptible_api_call_chatgpt_web_closes_request_client_on_interrupt(monkeypatch):
     agent = _build_agent(monkeypatch)
     entered = threading.Event()

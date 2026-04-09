@@ -127,6 +127,7 @@ PLATFORMS = {
     "whatsapp": {"label": "📱 WhatsApp",   "default_toolset": "hermes-whatsapp"},
     "signal":   {"label": "📡 Signal",     "default_toolset": "hermes-signal"},
     "bluebubbles": {"label": "💙 BlueBubbles", "default_toolset": "hermes-bluebubbles"},
+    "nostr":    {"label": "⚡ Nostr",      "default_toolset": "hermes-nostr"},
     "homeassistant": {"label": "🏠 Home Assistant", "default_toolset": "hermes-homeassistant"},
     "email":    {"label": "📧 Email",      "default_toolset": "hermes-email"},
     "matrix":   {"label": "💬 Matrix",     "default_toolset": "hermes-matrix"},

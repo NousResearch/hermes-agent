@@ -1315,6 +1315,30 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False):
 # and prompts needed to configure a messaging platform.
 _PLATFORMS = [
     {
+        "key": "nostr",
+        "label": "Nostr",
+        "emoji": "⚡",
+        "token_var": "NOSTR_SECRET_KEY",
+        "setup_instructions": [
+            "1. Use or create a dedicated Nostr identity for Hermes",
+            "2. Copy the secret key as hex or nsec and keep it private",
+            "3. Choose one or more relays that support standard NIP-17 delivery",
+            "4. Add your own pubkey to NOSTR_ALLOWED_USERS for production use",
+            "5. Optional: set NOSTR_HOME_CHANNEL to your own npub/hex pubkey for cron delivery",
+        ],
+        "vars": [
+            {"name": "NOSTR_SECRET_KEY", "prompt": "Secret key (hex or nsec)", "password": True,
+             "help": "Hermes uses this key to derive its Nostr identity and send NIP-17 DMs."},
+            {"name": "NOSTR_RELAYS", "prompt": "Relay URLs (comma-separated)", "password": False,
+             "help": "Example: wss://relay.damus.io,wss://nos.lol"},
+            {"name": "NOSTR_ALLOWED_USERS", "prompt": "Allowed pubkeys (comma-separated hex or npub)", "password": False,
+             "is_allowlist": True,
+             "help": "Only these Nostr identities can DM Hermes unless allow-all is enabled."},
+            {"name": "NOSTR_HOME_CHANNEL", "prompt": "Home pubkey target (npub or hex, optional)", "password": False,
+             "help": "Used for cron/notification delivery when the target is just 'nostr'."},
+        ],
+    },
+    {
         "key": "telegram",
         "label": "Telegram",
         "emoji": "📱",

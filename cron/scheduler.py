@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 # Valid delivery platforms — used to validate user-supplied platform names
 # in cron delivery targets, preventing env var enumeration via crafted names.
 _KNOWN_DELIVERY_PLATFORMS = frozenset({
-    "telegram", "discord", "slack", "whatsapp", "signal",
+    "telegram", "discord", "slack", "whatsapp", "signal", "nostr",
     "matrix", "mattermost", "homeassistant", "dingtalk", "feishu",
     "wecom", "sms", "email", "webhook", "bluebubbles",
 })
@@ -91,7 +91,7 @@ def _resolve_delivery_target(job: dict) -> Optional[dict]:
             }
         # Origin missing (e.g. job created via API/script) — try each
         # platform's home channel as a fallback instead of silently dropping.
-        for platform_name in ("matrix", "telegram", "discord", "slack", "bluebubbles"):
+        for platform_name in ("nostr", "matrix", "telegram", "discord", "slack", "bluebubbles"):
             chat_id = os.getenv(f"{platform_name.upper()}_HOME_CHANNEL", "")
             if chat_id:
                 logger.info(
@@ -228,6 +228,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         "slack": Platform.SLACK,
         "whatsapp": Platform.WHATSAPP,
         "signal": Platform.SIGNAL,
+        "nostr": Platform.NOSTR,
         "matrix": Platform.MATRIX,
         "mattermost": Platform.MATTERMOST,
         "homeassistant": Platform.HOMEASSISTANT,

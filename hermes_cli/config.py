@@ -33,6 +33,7 @@ _EXTRA_ENV_KEYS = frozenset({
     "OPENAI_API_KEY", "OPENAI_BASE_URL",
     "ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN",
     "AUXILIARY_VISION_MODEL",
+    "NOSTR_HOME_CHANNEL", "NOSTR_HOME_CHANNEL_NAME",
     "DISCORD_HOME_CHANNEL", "TELEGRAM_HOME_CHANNEL",
     "SIGNAL_ACCOUNT", "SIGNAL_HTTP_URL",
     "SIGNAL_ALLOWED_USERS", "SIGNAL_GROUP_ALLOWED_USERS",
@@ -977,6 +978,27 @@ OPTIONAL_ENV_VARS = {
     },
 
     # ── Messaging platforms ──
+    "NOSTR_SECRET_KEY": {
+        "description": "Nostr secret key (hex or nsec) for NIP-17 direct messages",
+        "prompt": "Nostr secret key",
+        "url": "https://nostrapps.github.io/",
+        "password": True,
+        "category": "messaging",
+    },
+    "NOSTR_RELAYS": {
+        "description": "Comma-separated relay URLs Hermes connects to for Nostr",
+        "prompt": "Nostr relay URLs (comma-separated)",
+        "url": "https://nostr.watch/relays/find",
+        "password": False,
+        "category": "messaging",
+    },
+    "NOSTR_ALLOWED_USERS": {
+        "description": "Comma-separated Nostr pubkeys (hex or npub) allowed to use the bot",
+        "prompt": "Allowed Nostr users (comma-separated)",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+    },
     "TELEGRAM_BOT_TOKEN": {
         "description": "Telegram bot token from @BotFather",
         "prompt": "Telegram bot token",

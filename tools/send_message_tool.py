@@ -143,6 +143,7 @@ def _handle_send(args):
         return json.dumps(_error(f"Failed to load gateway config: {e}"))
 
     platform_map = {
+        "nostr": Platform.NOSTR,
         "telegram": Platform.TELEGRAM,
         "discord": Platform.DISCORD,
         "slack": Platform.SLACK,
@@ -223,6 +224,8 @@ def _handle_send(args):
 
 def _parse_target_ref(platform_name: str, target_ref: str):
     """Parse a tool target into chat_id/thread_id and whether it is explicit."""
+    if platform_name == "nostr" and target_ref.strip():
+        return target_ref.strip(), None, True
     if platform_name == "telegram":
         match = _TELEGRAM_TOPIC_TARGET_RE.fullmatch(target_ref)
         if match:
@@ -381,6 +384,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             result = await _send_whatsapp(pconfig.extra, chat_id, chunk)
         elif platform == Platform.SIGNAL:
             result = await _send_signal(pconfig.extra, chat_id, chunk)
+        elif platform == Platform.NOSTR:
+            result = await _send_nostr(pconfig, chat_id, chunk)
         elif platform == Platform.EMAIL:
             result = await _send_email(pconfig.extra, chat_id, chunk)
         elif platform == Platform.SMS:
@@ -642,6 +647,24 @@ async def _send_signal(extra, chat_id, message):
             return {"success": True, "platform": "signal", "chat_id": chat_id}
     except Exception as e:
         return _error(f"Signal send failed: {e}")
+
+
+async def _send_nostr(pconfig, chat_id, message):
+    """Send a NIP-17 DM via a transient Nostr client."""
+    try:
+        from gateway.platforms.nostr import send_nostr_dm_once
+
+        result = await send_nostr_dm_once(
+            pconfig.token or "",
+            (pconfig.extra or {}).get("relays", []),
+            chat_id,
+            message,
+        )
+        if result.success:
+            return {"success": True, "platform": "nostr", "chat_id": chat_id}
+        return _error(result.error or "Unknown Nostr send failure")
+    except Exception as e:
+        return _error(f"Nostr send failed: {e}")
 
 
 async def _send_email(extra, chat_id, message):

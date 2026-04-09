@@ -292,6 +292,7 @@ def show_status(args):
     print(color("◆ Messaging Platforms", Colors.CYAN, Colors.BOLD))
     
     platforms = {
+        "Nostr": ("NOSTR_SECRET_KEY", "NOSTR_HOME_CHANNEL"),
         "Telegram": ("TELEGRAM_BOT_TOKEN", "TELEGRAM_HOME_CHANNEL"),
         "Discord": ("DISCORD_BOT_TOKEN", "DISCORD_HOME_CHANNEL"),
         "WhatsApp": ("WHATSAPP_ENABLED", None),

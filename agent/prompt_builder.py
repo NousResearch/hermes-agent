@@ -325,6 +325,13 @@ PLATFORM_HINTS = {
         "files arrive as downloadable documents. You can also include image "
         "URLs in markdown format ![alt](url) and they will be sent as photos."
     ),
+    "nostr": (
+        "You are on a text messaging communication platform, Nostr. "
+        "Write plain text responses and do not rely on markdown rendering. "
+        "This adapter currently supports direct messages only and is text-first. "
+        "Use send_message with an explicit nostr target when you need to proactively "
+        "message a different Nostr contact."
+    ),
     "email": (
         "You are communicating via email. Write clear, well-structured responses "
         "suitable for email. Use plain text formatting (no markdown). "

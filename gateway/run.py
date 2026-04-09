@@ -1557,6 +1557,13 @@ class GatewayRunner:
                 logger.warning("Telegram: python-telegram-bot not installed")
                 return None
             return TelegramAdapter(config)
+
+        elif platform == Platform.NOSTR:
+            from gateway.platforms.nostr import NostrAdapter, check_nostr_requirements
+            if not check_nostr_requirements(config):
+                logger.warning("Nostr: nostr-sdk not installed or NOSTR_SECRET_KEY/NOSTR_RELAYS not configured")
+                return None
+            return NostrAdapter(config)
         
         elif platform == Platform.DISCORD:
             from gateway.platforms.discord import DiscordAdapter, check_discord_requirements
@@ -1691,6 +1698,7 @@ class GatewayRunner:
             return False
 
         platform_env_map = {
+            Platform.NOSTR: "NOSTR_ALLOWED_USERS",
             Platform.TELEGRAM: "TELEGRAM_ALLOWED_USERS",
             Platform.DISCORD: "DISCORD_ALLOWED_USERS",
             Platform.WHATSAPP: "WHATSAPP_ALLOWED_USERS",
@@ -1706,6 +1714,7 @@ class GatewayRunner:
             Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOWED_USERS",
         }
         platform_allow_all_map = {
+            Platform.NOSTR: "NOSTR_ALLOW_ALL_USERS",
             Platform.TELEGRAM: "TELEGRAM_ALLOW_ALL_USERS",
             Platform.DISCORD: "DISCORD_ALLOW_ALL_USERS",
             Platform.WHATSAPP: "WHATSAPP_ALLOW_ALL_USERS",
@@ -1767,6 +1776,23 @@ class GatewayRunner:
             normalized_user_id = _normalize_whatsapp_identifier(user_id)
             if normalized_user_id:
                 check_ids.add(normalized_user_id)
+
+        if source.platform == Platform.NOSTR:
+            try:
+                from gateway.platforms.nostr import normalize_nostr_identifier
+
+                normalized_allowed_ids = {
+                    normalize_nostr_identifier(allowed_id) for allowed_id in allowed_ids
+                }
+                normalized_allowed_ids.discard("")
+                if normalized_allowed_ids:
+                    allowed_ids = normalized_allowed_ids
+
+                normalized_user_id = normalize_nostr_identifier(user_id)
+                if normalized_user_id:
+                    check_ids.add(normalized_user_id)
+            except Exception:
+                pass
 
         return bool(check_ids & allowed_ids)
 
@@ -5540,6 +5566,7 @@ class GatewayRunner:
     # Platforms where /update is allowed.  ACP, API server, and webhooks are
     # programmatic interfaces that should not trigger system updates.
     _UPDATE_ALLOWED_PLATFORMS = frozenset({
+        Platform.NOSTR,
         Platform.TELEGRAM, Platform.DISCORD, Platform.SLACK, Platform.WHATSAPP,
         Platform.SIGNAL, Platform.MATTERMOST, Platform.MATRIX,
         Platform.HOMEASSISTANT, Platform.EMAIL, Platform.SMS, Platform.DINGTALK,

@@ -48,6 +48,7 @@ def _normalize_unauthorized_dm_behavior(value: Any, default: str = "pair") -> st
 class Platform(Enum):
     """Supported messaging platforms."""
     LOCAL = "local"
+    NOSTR = "nostr"
     TELEGRAM = "telegram"
     DISCORD = "discord"
     WHATSAPP = "whatsapp"
@@ -260,6 +261,11 @@ class GatewayConfig:
         connected = []
         for platform, config in self.platforms.items():
             if not config.enabled:
+                continue
+            if platform == Platform.NOSTR:
+                relays = config.extra.get("relays") if isinstance(config.extra, dict) else None
+                if config.token and relays:
+                    connected.append(platform)
                 continue
             # Platforms that use token/api_key auth
             if config.token or config.api_key:
@@ -646,6 +652,7 @@ def load_gateway_config() -> GatewayConfig:
     # Warn about empty bot tokens — platforms that loaded an empty string
     # won't connect and the cause can be confusing without a log line.
     _token_env_names = {
+        Platform.NOSTR: "NOSTR_SECRET_KEY",
         Platform.TELEGRAM: "TELEGRAM_BOT_TOKEN",
         Platform.DISCORD: "DISCORD_BOT_TOKEN",
         Platform.SLACK: "SLACK_BOT_TOKEN",
@@ -668,6 +675,24 @@ def load_gateway_config() -> GatewayConfig:
 
 def _apply_env_overrides(config: GatewayConfig) -> None:
     """Apply environment variable overrides to config."""
+
+    # Nostr
+    nostr_secret = os.getenv("NOSTR_SECRET_KEY") or os.getenv("NOSTR_NSEC")
+    nostr_relays_raw = os.getenv("NOSTR_RELAYS", "")
+    nostr_relays = [relay.strip() for relay in nostr_relays_raw.split(",") if relay.strip()]
+    if nostr_secret and nostr_relays:
+        if Platform.NOSTR not in config.platforms:
+            config.platforms[Platform.NOSTR] = PlatformConfig()
+        config.platforms[Platform.NOSTR].enabled = True
+        config.platforms[Platform.NOSTR].token = nostr_secret
+        config.platforms[Platform.NOSTR].extra["relays"] = nostr_relays
+    nostr_home = os.getenv("NOSTR_HOME_CHANNEL")
+    if nostr_home and Platform.NOSTR in config.platforms:
+        config.platforms[Platform.NOSTR].home_channel = HomeChannel(
+            platform=Platform.NOSTR,
+            chat_id=nostr_home,
+            name=os.getenv("NOSTR_HOME_CHANNEL_NAME", "Home"),
+        )
     
     # Telegram
     telegram_token = os.getenv("TELEGRAM_BOT_TOKEN")

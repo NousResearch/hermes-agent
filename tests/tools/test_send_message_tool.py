@@ -174,6 +174,107 @@ class TestSendMessageTool:
         )
         mirror_mock.assert_called_once_with("telegram", "-1001", "hello", source_label="cli", thread_id="17585")
 
+    def test_sends_to_explicit_nostr_target(self):
+        nostr_cfg = SimpleNamespace(enabled=True, token="nsec1secret", extra={"relays": ["wss://relay.example"]})
+        config = SimpleNamespace(
+            platforms={Platform.NOSTR: nostr_cfg},
+            get_home_channel=lambda _platform: None,
+        )
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("gateway.mirror.mirror_to_session", return_value=True) as mirror_mock:
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "nostr:npub1target",
+                        "message": "hello",
+                    }
+                )
+            )
+
+        assert result["success"] is True
+        send_mock.assert_awaited_once_with(
+            Platform.NOSTR,
+            nostr_cfg,
+            "npub1target",
+            "hello",
+            thread_id=None,
+            media_files=[],
+        )
+        mirror_mock.assert_called_once_with("nostr", "npub1target", "hello", source_label="cli", thread_id=None)
+
+    def test_sends_to_explicit_nostr_hex_target(self):
+        nostr_cfg = SimpleNamespace(enabled=True, token="nsec1secret", extra={"relays": ["wss://relay.example"]})
+        config = SimpleNamespace(
+            platforms={Platform.NOSTR: nostr_cfg},
+            get_home_channel=lambda _platform: None,
+        )
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("gateway.mirror.mirror_to_session", return_value=True) as mirror_mock:
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "nostr:abcdef1234",
+                        "message": "hello",
+                    }
+                )
+            )
+
+        assert result["success"] is True
+        send_mock.assert_awaited_once_with(
+            Platform.NOSTR,
+            nostr_cfg,
+            "abcdef1234",
+            "hello",
+            thread_id=None,
+            media_files=[],
+        )
+        mirror_mock.assert_called_once_with("nostr", "abcdef1234", "hello", source_label="cli", thread_id=None)
+
+    def test_bare_nostr_target_uses_home_channel(self):
+        nostr_cfg = SimpleNamespace(enabled=True, token="nsec1secret", extra={"relays": ["wss://relay.example"]})
+        home = SimpleNamespace(chat_id="npub1home")
+        config = SimpleNamespace(
+            platforms={Platform.NOSTR: nostr_cfg},
+            get_home_channel=lambda _platform: home,
+        )
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("gateway.mirror.mirror_to_session", return_value=True) as mirror_mock:
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "nostr",
+                        "message": "hello",
+                    }
+                )
+            )
+
+        assert result["success"] is True
+        assert "home channel" in result["note"]
+        send_mock.assert_awaited_once_with(
+            Platform.NOSTR,
+            nostr_cfg,
+            "npub1home",
+            "hello",
+            thread_id=None,
+            media_files=[],
+        )
+        mirror_mock.assert_called_once_with("nostr", "npub1home", "hello", source_label="cli", thread_id=None)
+
     def test_resolved_telegram_topic_name_preserves_thread_id(self):
         config, telegram_cfg = _make_config()
 

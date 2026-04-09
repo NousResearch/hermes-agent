@@ -536,29 +536,14 @@ def switch_model(
                         ),
                     )
             else:
-            # Check if left is already a vendor/model format (e.g., "nvidia/nemotron")
-            # If so, don't convert colon to slash
-            is_already_vendor_model = False
-            if '/' in left:
-                left_vendor_part = left.split('/', 1)[0]
-                from hermes_cli.model_normalize import _VENDOR_PREFIXES
-                if left_vendor_part in _VENDOR_PREFIXES.values():
-                    is_already_vendor_model = True
-            
-            if left and right and not is_already_vendor_model:
-                # Colons become slashes for aggregator slugs
-                new_model = f"{left}/{right}"
-                logger.debug(
-                    "Converted vendor:model '%s' to aggregator slug '%s'",
-                    raw_input, new_model,
-                )
-            elif left and right and is_already_vendor_model:
-                # Already in correct vendor/model:variant format, keep as-is
-                new_model = f"{left}:{right}"
-                logger.debug(
-                    "Kept vendor/model:variant format '%s' as-is",
-                    raw_input,
-                )
+                # --- Step c: On aggregator, convert vendor:model to vendor/model ---
+                colon_pos = raw_input.find(":")
+                if colon_pos > 0 and is_aggregator(current_provider):
+                    left = raw_input[:colon_pos].strip().lower()
+                    right = raw_input[colon_pos + 1:].strip()
+                    if left and right:
+                        # Colons become slashes for aggregator slugs
+                        new_model = f"{left}/{right}"
                         logger.debug(
                             "Converted vendor:model '%s' to aggregator slug '%s'",
                             raw_input, new_model,

@@ -129,7 +129,14 @@ def check_auth():
     from google.auth.transport.requests import Request
 
     try:
-        creds = Credentials.from_authorized_user_file(str(TOKEN_PATH), SCOPES)
+        # Use scopes from the token itself, not the hardcoded list —
+        # user may have authorized only a subset (partial scopes)
+        payload = _load_token_payload(TOKEN_PATH)
+        granted_scopes = payload.get("scopes") or payload.get("scope")
+        if isinstance(granted_scopes, str):
+            granted_scopes = granted_scopes.split()
+        token_scopes = granted_scopes if granted_scopes else SCOPES
+        creds = Credentials.from_authorized_user_file(str(TOKEN_PATH), token_scopes)
     except Exception as e:
         print(f"TOKEN_CORRUPT: {e}")
         return False

@@ -37,6 +37,8 @@ _DEFAULT_VAULT = Path.home() / "Documents" / "Obsidian Vault"
 _DEFAULT_WORKSPACE = "Hermes"
 _MAX_NOTE_SNIPPET = 700
 _MAX_PREFETCH_NOTES = 3
+_MAX_RECENT_USER_MESSAGES = 3
+_MAX_RECENT_ASSISTANT_MESSAGES = 2
 
 _QUERY_TOKEN_RE = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9_-]{2,}")
 
@@ -74,6 +76,8 @@ class ObsidianMemoryProvider(MemoryProvider):
         self._focus_dirty = False
         self._last_prefetch = ""
         self._first_prefetch_done = False
+        self._recent_user_messages: list[str] = []
+        self._recent_assistant_messages: list[str] = []
 
     @property
     def name(self) -> str:
@@ -177,8 +181,16 @@ class ObsidianMemoryProvider(MemoryProvider):
     def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
         if not self._paths or not self._initialized:
             return
+        user_text = self._normalize_message_text(user_content)
+        assistant_text = self._normalize_message_text(assistant_content)
+        if user_text:
+            self._recent_user_messages.append(user_text)
+            self._recent_user_messages = self._recent_user_messages[-_MAX_RECENT_USER_MESSAGES:]
+        if assistant_text:
+            self._recent_assistant_messages.append(assistant_text)
+            self._recent_assistant_messages = self._recent_assistant_messages[-_MAX_RECENT_ASSISTANT_MESSAGES:]
         # Mark focus as dirty when the interaction seems meaningful.
-        if (user_content and user_content.strip()) or (assistant_content and assistant_content.strip()):
+        if user_text or assistant_text:
             self._focus_dirty = True
 
     def on_memory_write(self, action: str, target: str, content: str) -> None:
@@ -290,6 +302,17 @@ class ObsidianMemoryProvider(MemoryProvider):
                 results[name] = ""
         return results
 
+    def _normalize_message_text(self, content: Any) -> str:
+        if isinstance(content, list):
+            pieces = []
+            for item in content:
+                if isinstance(item, dict) and item.get("type") == "text":
+                    pieces.append(str(item.get("text", "")))
+            content = " ".join(pieces)
+        if not isinstance(content, str):
+            return ""
+        return _truncate(content, 220)
+
     def _sync_structured_notes_from_builtin_memory(self) -> None:
         assert self._paths is not None
         store = MemoryStore()
@@ -328,29 +351,22 @@ class ObsidianMemoryProvider(MemoryProvider):
 
     def _write_current_focus(self, messages: List[Dict[str, Any]]) -> None:
         assert self._paths is not None
-        recent_user = []
-        recent_assistant = []
-        for message in messages[-12:]:
-            role = message.get("role")
-            content = message.get("content")
-            if isinstance(content, list):
-                pieces = []
-                for item in content:
-                    if isinstance(item, dict) and item.get("type") == "text":
-                        pieces.append(item.get("text", ""))
-                content = " ".join(pieces)
-            if not isinstance(content, str):
-                continue
-            text = _truncate(content, 220)
-            if not text:
-                continue
-            if role == "user":
-                recent_user.append(text)
-            elif role == "assistant":
-                recent_assistant.append(text)
+        recent_user = list(self._recent_user_messages)
+        recent_assistant = list(self._recent_assistant_messages)
 
-        user_lines = recent_user[-3:] or ["No recent user messages captured."]
-        assistant_lines = recent_assistant[-2:] or ["No recent assistant output captured."]
+        if not recent_user or not recent_assistant:
+            for message in messages[-12:]:
+                role = message.get("role")
+                text = self._normalize_message_text(message.get("content"))
+                if not text:
+                    continue
+                if role == "user":
+                    recent_user.append(text)
+                elif role == "assistant":
+                    recent_assistant.append(text)
+
+        user_lines = recent_user[-_MAX_RECENT_USER_MESSAGES:] or ["No recent user messages captured."]
+        assistant_lines = recent_assistant[-_MAX_RECENT_ASSISTANT_MESSAGES:] or ["No recent assistant output captured."]
         body = (
             "## Snapshot\n\n"
             f"- Last updated: {_utc_now_iso()}\n"

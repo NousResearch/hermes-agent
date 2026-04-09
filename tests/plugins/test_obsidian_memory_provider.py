@@ -87,3 +87,20 @@ def test_obsidian_provider_writes_bounded_current_focus_snapshot(monkeypatch, tm
     assert "Let’s improve the memory system" in focus_text
     assert "I’ll build the Obsidian provider." in focus_text
     assert "Platform: telegram" in focus_text
+
+
+def test_obsidian_provider_current_focus_uses_rolling_buffer_when_session_end_messages_empty(monkeypatch, tmp_path):
+    _seed_memory(monkeypatch, tmp_path)
+    vault = tmp_path / "vault"
+    monkeypatch.setenv("OBSIDIAN_VAULT_PATH", str(vault))
+
+    provider = ObsidianMemoryProvider()
+    provider.initialize(session_id="s2", hermes_home=str(tmp_path / "hermes-home"), platform="cli")
+    provider.sync_turn("We need continuity without retelling context", "Use a structured Obsidian layer owned by Hermes.")
+    provider.on_session_end([])
+
+    focus_text = (vault / "Hermes" / "current-focus.md").read_text(encoding="utf-8")
+    assert "We need continuity without retelling context" in focus_text
+    assert "Use a structured Obsidian layer owned by Hermes." in focus_text
+    assert "No recent user messages captured." not in focus_text
+    assert "No recent assistant output captured." not in focus_text

@@ -271,7 +271,7 @@ def extract_skill_config_vars(frontmatter: Dict[str, Any]) -> List[Dict[str, Any
                 prompt: Wiki directory path
 
     Returns a list of dicts with keys: ``key``, ``description``, ``default``,
-    ``prompt``.  Invalid or incomplete entries are silently skipped.
+    ``env_key``, ``prompt``.  Invalid or incomplete entries are silently skipped.
     """
     metadata = frontmatter.get("metadata")
     if not isinstance(metadata, dict):
@@ -311,6 +311,10 @@ def extract_skill_config_vars(frontmatter: Dict[str, Any]) -> List[Dict[str, Any
             entry["prompt"] = prompt_text.strip()
         else:
             entry["prompt"] = desc
+        # Optional: env var key to check in ~/.hermes/.env before config.yaml
+        env_key = item.get("env_key")
+        if isinstance(env_key, str) and env_key.strip():
+            entry["env_key"] = env_key.strip()
         seen.add(key)
         result.append(entry)
     return result
@@ -373,15 +377,47 @@ def _resolve_dotpath(config: Dict[str, Any], dotted_key: str):
     return current
 
 
+def _read_env_value(key: str) -> str:
+    """Read a single value from ~/.hermes/.env or os.environ.
+
+    Lightweight alternative to hermes_cli.config.get_env_value() that avoids
+    importing the CLI module (which would break the lightweight-import contract
+    of this module).
+    """
+    # Check os.environ first (may already be loaded by the gateway/CLI)
+    env_val = os.environ.get(key)
+    if env_val:
+        return env_val
+
+    # Fall back to reading ~/.hermes/.env directly
+    env_path = get_hermes_home() / ".env"
+    if not env_path.exists():
+        return ""
+    try:
+        with open(env_path, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    k, _, v = line.partition("=")
+                    if k.strip() == key:
+                        return v.strip().strip("\"'")
+    except Exception:
+        pass
+    return ""
+
+
 def resolve_skill_config_values(
     config_vars: List[Dict[str, Any]],
 ) -> Dict[str, Any]:
-    """Resolve current values for skill config vars from config.yaml.
+    """Resolve current values for skill config vars.
 
-    Skill config is stored under ``skills.config.<key>`` in config.yaml.
+    Resolution order per variable:
+      1. ``~/.hermes/.env`` / ``os.environ`` (if ``env_key`` is declared)
+      2. ``config.yaml`` → ``skills.config.<key>``
+      3. Frontmatter ``default`` value
+
     Returns a dict mapping **logical** keys (as declared by skills) to their
-    current values (or the declared default if the key isn't set).
-    Path values are expanded via ``os.path.expanduser``.
+    current values.  Path values are expanded via ``os.path.expanduser``.
     """
     config_path = get_hermes_home() / "config.yaml"
     config: Dict[str, Any] = {}
@@ -396,9 +432,23 @@ def resolve_skill_config_values(
     resolved: Dict[str, Any] = {}
     for var in config_vars:
         logical_key = var["key"]
+
+        # 1. Check .env / os.environ if env_key is declared
+        env_key = var.get("env_key")
+        if isinstance(env_key, str) and env_key.strip():
+            env_val = _read_env_value(env_key.strip())
+            if env_val:
+                # Expand ~ in env values too
+                if "~" in env_val:
+                    env_val = os.path.expanduser(env_val)
+                resolved[logical_key] = env_val
+                continue
+
+        # 2. Check config.yaml
         storage_key = f"{SKILL_CONFIG_PREFIX}.{logical_key}"
         value = _resolve_dotpath(config, storage_key)
 
+        # 3. Fall back to frontmatter default
         if value is None or (isinstance(value, str) and not value.strip()):
             value = var.get("default", "")
 

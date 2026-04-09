@@ -11,6 +11,7 @@ metadata:
     related_skills: [obsidian, arxiv, agentic-research-ideas]
     config:
       - key: wiki.path
+        env_key: LLM_WIKI_PATH
         description: Path to the LLM Wiki knowledge base directory
         default: "~/wiki"
         prompt: Wiki directory path

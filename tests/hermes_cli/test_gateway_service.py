@@ -101,6 +101,38 @@ class TestGeneratedSystemdUnits:
         assert "TimeoutStopSec=60" in unit
         assert "WantedBy=multi-user.target" in unit
 
+    def test_system_unit_uses_probed_target_user_custom_hermes_home(self, monkeypatch):
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: Path("/root")))
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.setattr(
+            gateway_cli, "_system_service_identity",
+            lambda run_as_user=None: ("alice", "alice", "/home/alice"),
+        )
+        monkeypatch.setattr(gateway_cli, "_probe_target_user_hermes_home", lambda username: "/opt/hermes-shared")
+        monkeypatch.setattr(gateway_cli, "_build_user_local_paths", lambda home, existing: [])
+
+        unit = gateway_cli.generate_systemd_unit(system=True, run_as_user="alice")
+
+        assert 'HERMES_HOME=/opt/hermes-shared' in unit
+
+    def test_system_unit_uses_probed_target_user_profile_hermes_home(self, monkeypatch):
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: Path("/root")))
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.setattr(
+            gateway_cli, "_system_service_identity",
+            lambda run_as_user=None: ("alice", "alice", "/home/alice"),
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "_probe_target_user_hermes_home",
+            lambda username: "/home/alice/.hermes/profiles/coder",
+        )
+        monkeypatch.setattr(gateway_cli, "_build_user_local_paths", lambda home, existing: [])
+
+        unit = gateway_cli.generate_systemd_unit(system=True, run_as_user="alice")
+
+        assert 'HERMES_HOME=/home/alice/.hermes/profiles/coder' in unit
+
 
 class TestGatewayStopCleanup:
     def test_stop_only_kills_current_profile_by_default(self, tmp_path, monkeypatch):
@@ -527,6 +559,26 @@ class TestHermesHomeForTargetUser:
         monkeypatch.delenv("HERMES_HOME", raising=False)
 
         result = gateway_cli._hermes_home_for_target_user("/home/alice")
+        assert result == "/home/alice/.hermes"
+
+
+class TestResolveSystemServiceHermesHome:
+    def test_prefers_explicit_current_process_hermes_home(self, monkeypatch):
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: Path("/root")))
+        monkeypatch.setenv("HERMES_HOME", "/root/.hermes/profiles/coder")
+        monkeypatch.setattr(gateway_cli, "_probe_target_user_hermes_home", lambda username: (_ for _ in ()).throw(AssertionError("probe should not run")))
+
+        result = gateway_cli._resolve_system_service_hermes_home("alice", "/home/alice")
+
+        assert result == "/home/alice/.hermes/profiles/coder"
+
+    def test_falls_back_to_default_when_probe_returns_empty(self, monkeypatch):
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: Path("/root")))
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.setattr(gateway_cli, "_probe_target_user_hermes_home", lambda username: None)
+
+        result = gateway_cli._resolve_system_service_hermes_home("alice", "/home/alice")
+
         assert result == "/home/alice/.hermes"
 
 

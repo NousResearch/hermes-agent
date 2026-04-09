@@ -618,7 +618,40 @@ def _build_user_local_paths(home: Path, path_entries: list[str]) -> list[str]:
     return [p for p in candidates if p not in path_entries and Path(p).exists()]
 
 
-def _hermes_home_for_target_user(target_home_dir: str) -> str:
+def _probe_target_user_hermes_home(username: str) -> str | None:
+    """Return the target user's explicit HERMES_HOME from their login env."""
+    if not is_linux():
+        return None
+
+    probe_commands: list[list[str]] = []
+    if shutil.which("su"):
+        probe_commands.append(["su", "-", username, "-c", 'printf "%s" "${HERMES_HOME-}"'])
+    if shutil.which("sudo"):
+        probe_commands.append(["sudo", "-iu", username, "sh", "-lc", 'printf "%s" "${HERMES_HOME-}"'])
+
+    for cmd in probe_commands:
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=10,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+
+        if result.returncode != 0:
+            continue
+
+        value = (result.stdout or "").strip()
+        if value:
+            return value
+
+    return None
+
+
+def _hermes_home_for_target_user(target_home_dir: str, current_hermes: str | Path | None = None) -> str:
     """Remap the current HERMES_HOME to the equivalent under a target user's home.
 
     When installing a system service via sudo, get_hermes_home() resolves to
@@ -627,7 +660,7 @@ def _hermes_home_for_target_user(target_home_dir: str) -> str:
       /root/.hermes/profiles/coder     → /home/alice/.hermes/profiles/coder
       /opt/custom-hermes               → /opt/custom-hermes  (kept as-is)
     """
-    current_hermes = get_hermes_home().resolve()
+    current_hermes = Path(current_hermes).expanduser().resolve() if current_hermes is not None else get_hermes_home().resolve()
     current_default = (Path.home() / ".hermes").resolve()
     target_default = Path(target_home_dir) / ".hermes"
 
@@ -642,6 +675,19 @@ def _hermes_home_for_target_user(target_home_dir: str) -> str:
     except ValueError:
         # Completely custom path (not under ~/.hermes) — keep as-is
         return str(current_hermes)
+
+
+def _resolve_system_service_hermes_home(username: str, target_home_dir: str) -> str:
+    """Resolve HERMES_HOME for Linux system service units."""
+    explicit_current = (os.getenv("HERMES_HOME") or "").strip()
+    if explicit_current:
+        return _hermes_home_for_target_user(target_home_dir, current_hermes=explicit_current)
+
+    probed = _probe_target_user_hermes_home(username)
+    if probed:
+        return probed
+
+    return _hermes_home_for_target_user(target_home_dir)
 
 
 def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) -> str:
@@ -663,7 +709,7 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
 
     if system:
         username, group_name, home_dir = _system_service_identity(run_as_user)
-        hermes_home = _hermes_home_for_target_user(home_dir)
+        hermes_home = _resolve_system_service_hermes_home(username, home_dir)
         profile_arg = _profile_arg(hermes_home)
         path_entries.extend(_build_user_local_paths(Path(home_dir), path_entries))
         path_entries.extend(common_bin_paths)

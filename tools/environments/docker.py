@@ -8,18 +8,14 @@ persistence via bind mounts.
 import logging
 import os
 import re
-import shlex
 import shutil
 import subprocess
 import sys
-import threading
-import time
 import uuid
 from typing import Optional
 
-from tools.environments.base import BaseEnvironment
+from tools.environments.base import BaseEnvironment, _popen_bash
 from tools.environments.local import _HERMES_PROVIDER_ENV_BLOCKLIST
-from tools.interrupt import is_interrupted
 
 logger = logging.getLogger(__name__)
 
@@ -431,6 +427,69 @@ class DockerEnvironment(BaseEnvironment):
         self._container_id = result.stdout.strip()
         logger.info(f"Started container {container_name} ({self._container_id[:12]})")
 
+        # Build the init-time env forwarding args (used only by init_session
+        # to inject host env vars into the snapshot; subsequent commands get
+        # them from the snapshot file).
+        self._init_env_args = self._build_init_env_args()
+
+        # Initialize session snapshot inside the container
+        self.init_session()
+
+    def _build_init_env_args(self) -> list[str]:
+        """Build -e KEY=VALUE args for injecting host env vars into init_session.
+
+        These are used once during init_session() so that export -p captures
+        them into the snapshot.  Subsequent execute() calls don't need -e flags.
+        """
+        exec_env: dict[str, str] = dict(self._env)
+
+        explicit_forward_keys = set(self._forward_env)
+        passthrough_keys: set[str] = set()
+        try:
+            from tools.env_passthrough import get_all_passthrough
+            passthrough_keys = set(get_all_passthrough())
+        except Exception:
+            pass
+        # Explicit docker_forward_env entries are an intentional opt-in and must
+        # win over the generic Hermes secret blocklist. Only implicit passthrough
+        # keys are filtered.
+        forward_keys = explicit_forward_keys | (passthrough_keys - _HERMES_PROVIDER_ENV_BLOCKLIST)
+        hermes_env = _load_hermes_env_vars() if forward_keys else {}
+        for key in sorted(forward_keys):
+            value = os.getenv(key)
+            if value is None:
+                value = hermes_env.get(key)
+            if value is not None:
+                exec_env[key] = value
+
+        args = []
+        for key in sorted(exec_env):
+            args.extend(["-e", f"{key}={exec_env[key]}"])
+        return args
+
+    def _run_bash(self, cmd_string: str, *, login: bool = False,
+                  timeout: int = 120,
+                  stdin_data: str | None = None) -> subprocess.Popen:
+        """Spawn a bash process inside the Docker container."""
+        assert self._container_id, "Container not started"
+        cmd = [self._docker_exe, "exec"]
+        if stdin_data is not None:
+            cmd.append("-i")
+
+        # Only inject -e env args during init_session (login=True).
+        # Subsequent commands get env vars from the snapshot.
+        if login:
+            cmd.extend(self._init_env_args)
+
+        cmd.extend([self._container_id])
+
+        if login:
+            cmd.extend(["bash", "-l", "-c", cmd_string])
+        else:
+            cmd.extend(["bash", "-c", cmd_string])
+
+        return _popen_bash(cmd, stdin_data)
+
     @staticmethod
     def _storage_opt_supported() -> bool:
         """Check if Docker's storage driver supports --storage-opt size=.
@@ -470,109 +529,6 @@ class DockerEnvironment(BaseEnvironment):
             _storage_opt_ok = False
         logger.debug("Docker --storage-opt support: %s", _storage_opt_ok)
         return _storage_opt_ok
-
-    def execute(self, command: str, cwd: str = "", *,
-                timeout: int | None = None,
-                stdin_data: str | None = None) -> dict:
-        exec_command, sudo_stdin = self._prepare_command(command)
-        work_dir = cwd or self.cwd
-        effective_timeout = timeout or self.timeout
-
-        # Merge sudo password (if any) with caller-supplied stdin_data.
-        if sudo_stdin is not None and stdin_data is not None:
-            effective_stdin = sudo_stdin + stdin_data
-        elif sudo_stdin is not None:
-            effective_stdin = sudo_stdin
-        else:
-            effective_stdin = stdin_data
-
-        # docker exec -w doesn't expand ~, so prepend a cd into the command.
-        # Keep ~ unquoted (for shell expansion) and quote only the subpath.
-        if work_dir == "~":
-            exec_command = f"cd ~ && {exec_command}"
-            work_dir = "/"
-        elif work_dir.startswith("~/"):
-            exec_command = f"cd ~/{shlex.quote(work_dir[2:])} && {exec_command}"
-            work_dir = "/"
-
-        assert self._container_id, "Container not started"
-        cmd = [self._docker_exe, "exec"]
-        if effective_stdin is not None:
-            cmd.append("-i")
-        cmd.extend(["-w", work_dir])
-        # Build the per-exec environment: start with explicit docker_env values
-        # (static config), then overlay docker_forward_env / skill env_passthrough
-        # (dynamic from host process).  Forward values take precedence.
-        exec_env: dict[str, str] = dict(self._env)
-
-        forward_keys = set(self._forward_env)
-        try:
-            from tools.env_passthrough import get_all_passthrough
-            forward_keys |= get_all_passthrough()
-        except Exception:
-            pass
-        # Strip Hermes-managed secrets so they never leak into the container.
-        forward_keys -= _HERMES_PROVIDER_ENV_BLOCKLIST
-        hermes_env = _load_hermes_env_vars() if forward_keys else {}
-        for key in sorted(forward_keys):
-            value = os.getenv(key)
-            if value is None:
-                value = hermes_env.get(key)
-            if value is not None:
-                exec_env[key] = value
-
-        for key in sorted(exec_env):
-            cmd.extend(["-e", f"{key}={exec_env[key]}"])
-        cmd.extend([self._container_id, "bash", "-lc", exec_command])
-
-        try:
-            _output_chunks = []
-            proc = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                stdin=subprocess.PIPE if effective_stdin else subprocess.DEVNULL,
-                text=True,
-            )
-            if effective_stdin:
-                try:
-                    proc.stdin.write(effective_stdin)
-                    proc.stdin.close()
-                except Exception:
-                    pass
-
-            def _drain():
-                try:
-                    for line in proc.stdout:
-                        _output_chunks.append(line)
-                except Exception:
-                    pass
-
-            reader = threading.Thread(target=_drain, daemon=True)
-            reader.start()
-            deadline = time.monotonic() + effective_timeout
-
-            while proc.poll() is None:
-                if is_interrupted():
-                    proc.terminate()
-                    try:
-                        proc.wait(timeout=1)
-                    except subprocess.TimeoutExpired:
-                        proc.kill()
-                    reader.join(timeout=2)
-                    return {
-                        "output": "".join(_output_chunks) + "\n[Command interrupted]",
-                        "returncode": 130,
-                    }
-                if time.monotonic() > deadline:
-                    proc.kill()
-                    reader.join(timeout=2)
-                    return self._timeout_result(effective_timeout)
-                time.sleep(0.2)
-
-            reader.join(timeout=5)
-            return {"output": "".join(_output_chunks), "returncode": proc.returncode}
-        except Exception as e:
-            return {"output": f"Docker execution error: {e}", "returncode": 1}
 
     def cleanup(self):
         """Stop and remove the container. Bind-mount dirs persist if persistent=True."""

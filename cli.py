@@ -1546,6 +1546,7 @@ class HermesCLI:
         self._clarify_deadline = 0
         self._sudo_state = None
         self._sudo_deadline = 0
+        self._modal_input_snapshot = None
         self._approval_state = None
         self._approval_deadline = 0
         self._approval_lock = threading.Lock()
@@ -1602,7 +1603,12 @@ class HermesCLI:
         return f"[{('█' * filled) + ('░' * max(0, width - filled))}]"
 
     def _get_status_bar_snapshot(self) -> Dict[str, Any]:
-        model_name = self.model or "unknown"
+        # Prefer the agent's model name — it updates on fallback.
+        # self.model reflects the originally configured model and never
+        # changes mid-session, so the TUI would show a stale name after
+        # _try_activate_fallback() switches provider/model.
+        agent = getattr(self, "agent", None)
+        model_name = (getattr(agent, "model", None) or self.model or "unknown")
         model_short = model_name.split("/")[-1] if "/" in model_name else model_name
         if model_short.endswith(".gguf"):
             model_short = model_short[:-5]
@@ -1628,7 +1634,6 @@ class HermesCLI:
             "compressions": 0,
         }
 
-        agent = getattr(self, "agent", None)
         if not agent:
             return snapshot
 
@@ -4668,13 +4673,13 @@ class HermesCLI:
                             if output:
                                 self.console.print(_rich_text_from_ansi(output))
                             else:
-                                ChatConsole().print("[dim]Command returned no output[/]")
+                                self.console.print("[dim]Command returned no output[/]")
                         except subprocess.TimeoutExpired:
-                            ChatConsole().print("[bold red]Quick command timed out (30s)[/]")
+                            self.console.print("[bold red]Quick command timed out (30s)[/]")
                         except Exception as e:
-                            ChatConsole().print(f"[bold red]Quick command error: {e}[/]")
+                            self.console.print(f"[bold red]Quick command error: {e}[/]")
                     else:
-                        ChatConsole().print(f"[bold red]Quick command '{base_cmd}' has no command defined[/]")
+                        self.console.print(f"[bold red]Quick command '{base_cmd}' has no command defined[/]")
                 elif qcmd.get("type") == "alias":
                     target = qcmd.get("target", "").strip()
                     if target:
@@ -4683,9 +4688,9 @@ class HermesCLI:
                         aliased_command = f"{target} {user_args}".strip()
                         return self.process_command(aliased_command)
                     else:
-                        ChatConsole().print(f"[bold red]Quick command '{base_cmd}' has no target defined[/]")
+                        self.console.print(f"[bold red]Quick command '{base_cmd}' has no target defined[/]")
                 else:
-                    ChatConsole().print(f"[bold red]Quick command '{base_cmd}' has unsupported type (supported: 'exec', 'alias')[/]")
+                    self.console.print(f"[bold red]Quick command '{base_cmd}' has unsupported type (supported: 'exec', 'alias')[/]")
             # Check for plugin-registered slash commands
             elif base_cmd.lstrip("/") in _get_plugin_cmd_handler_names():
                 from hermes_cli.plugins import get_plugin_command_handler
@@ -5408,12 +5413,27 @@ class HermesCLI:
             print(f"  ❌ Compression failed: {e}")
 
     def _show_usage(self):
-        """Show cumulative token usage for the current session."""
+        """Show rate limits (if available) and session token usage."""
         if not self.agent:
             print("(._.) No active agent -- send a message first.")
             return
 
         agent = self.agent
+        calls = agent.session_api_calls
+
+        if calls == 0:
+            print("(._.) No API calls made yet in this session.")
+            return
+
+        # ── Rate limits (shown first when available) ────────────────
+        rl_state = agent.get_rate_limit_state()
+        if rl_state and rl_state.has_data:
+            from agent.rate_limit_tracker import format_rate_limit_display
+            print()
+            print(format_rate_limit_display(rl_state))
+            print()
+
+        # ── Session token usage ─────────────────────────────────────
         input_tokens = getattr(agent, "session_input_tokens", 0) or 0
         output_tokens = getattr(agent, "session_output_tokens", 0) or 0
         cache_read_tokens = getattr(agent, "session_cache_read_tokens", 0) or 0
@@ -5421,13 +5441,7 @@ class HermesCLI:
         prompt = agent.session_prompt_tokens
         completion = agent.session_completion_tokens
         total = agent.session_total_tokens
-        calls = agent.session_api_calls
 
-        if calls == 0:
-            print("(._.) No API calls made yet in this session.")
-            return
-
-        # Current context window state
         compressor = agent.context_compressor
         last_prompt = compressor.last_prompt_tokens
         ctx_len = compressor.context_length
@@ -6205,6 +6219,7 @@ class HermesCLI:
         timeout = 45
         response_queue = queue.Queue()
 
+        self._capture_modal_input_snapshot()
         self._sudo_state = {
             "response_queue": response_queue,
         }
@@ -6217,6 +6232,7 @@ class HermesCLI:
                 result = response_queue.get(timeout=1)
                 self._sudo_state = None
                 self._sudo_deadline = 0
+                self._restore_modal_input_snapshot()
                 self._invalidate()
                 if result:
                     _cprint(f"\n{_DIM}  ✓ Password received (cached for session){_RST}")
@@ -6231,6 +6247,7 @@ class HermesCLI:
 
         self._sudo_state = None
         self._sudo_deadline = 0
+        self._restore_modal_input_snapshot()
         self._invalidate()
         _cprint(f"\n{_DIM}  ⏱ Timeout — continuing without sudo{_RST}")
         return ""
@@ -6402,6 +6419,33 @@ class HermesCLI:
 
     def _secret_capture_callback(self, var_name: str, prompt: str, metadata=None) -> dict:
         return prompt_for_secret(self, var_name, prompt, metadata)
+
+    def _capture_modal_input_snapshot(self) -> None:
+        """Temporarily clear the input buffer and save the user's in-progress draft."""
+        if self._modal_input_snapshot is not None or not getattr(self, "_app", None):
+            return
+        try:
+            buf = self._app.current_buffer
+            self._modal_input_snapshot = {
+                "text": buf.text,
+                "cursor_position": buf.cursor_position,
+            }
+            buf.reset()
+        except Exception:
+            self._modal_input_snapshot = None
+
+    def _restore_modal_input_snapshot(self) -> None:
+        """Restore any draft text that was present before a modal prompt opened."""
+        snapshot = self._modal_input_snapshot
+        self._modal_input_snapshot = None
+        if not snapshot or not getattr(self, "_app", None):
+            return
+        try:
+            buf = self._app.current_buffer
+            buf.text = snapshot.get("text", "")
+            buf.cursor_position = min(snapshot.get("cursor_position", 0), len(buf.text))
+        except Exception:
+            pass
 
     def _submit_secret_response(self, value: str) -> None:
         if not self._secret_state:
@@ -7130,6 +7174,7 @@ class HermesCLI:
         # Sudo password prompt state (similar mechanism to clarify)
         self._sudo_state = None         # dict with response_queue when active
         self._sudo_deadline = 0
+        self._modal_input_snapshot = None
 
         # Dangerous command approval state (similar mechanism to clarify)
         self._approval_state = None     # dict with command, description, choices, selected, response_queue
@@ -7201,7 +7246,6 @@ class HermesCLI:
                 text = event.app.current_buffer.text
                 self._sudo_state["response_queue"].put(text)
                 self._sudo_state = None
-                event.app.current_buffer.reset()
                 event.app.invalidate()
                 return
 
@@ -7406,7 +7450,6 @@ class HermesCLI:
             if self._sudo_state:
                 self._sudo_state["response_queue"].put("")
                 self._sudo_state = None
-                event.app.current_buffer.reset()
                 event.app.invalidate()
                 return
 

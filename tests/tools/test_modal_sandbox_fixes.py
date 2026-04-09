@@ -231,20 +231,20 @@ class TestEnsurepipFix:
     """Verify the pip fix is applied in the ModalEnvironment init."""
 
     def test_modal_environment_creates_image_with_setup_commands(self):
-        """ModalEnvironment.__init__ should create a modal.Image with pip fix."""
+        """_resolve_modal_image should create a modal.Image with pip fix."""
         try:
-            from tools.environments.modal import ModalEnvironment
+            from tools.environments.modal import _resolve_modal_image
         except ImportError:
             pytest.skip("tools.environments.modal not importable")
 
         import inspect
-        source = inspect.getsource(ModalEnvironment.__init__)
+        source = inspect.getsource(_resolve_modal_image)
         assert "ensurepip" in source, (
-            "ModalEnvironment should include ensurepip fix "
+            "_resolve_modal_image should include ensurepip fix "
             "for Modal's legacy image builder"
         )
         assert "setup_dockerfile_commands" in source, (
-            "ModalEnvironment should use setup_dockerfile_commands "
+            "_resolve_modal_image should use setup_dockerfile_commands "
             "to fix pip before Modal's bootstrap"
         )
 

@@ -5,20 +5,22 @@ Supports configurable resource limits and optional filesystem persistence
 via writable overlay directories that survive across sessions.
 """
 
-import json
 import logging
 import os
-import shlex
 import shutil
 import subprocess
 import threading
 import uuid
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Optional
 
 from hermes_constants import get_hermes_home
-from tools.environments.base import BaseEnvironment
-from tools.interrupt import is_interrupted
+from tools.environments.base import (
+    BaseEnvironment,
+    _load_json_store,
+    _popen_bash,
+    _save_json_store,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -26,11 +28,7 @@ _SNAPSHOT_STORE = get_hermes_home() / "singularity_snapshots.json"
 
 
 def _find_singularity_executable() -> str:
-    """Locate the apptainer or singularity CLI binary.
-
-    Returns the executable name (``"apptainer"`` or ``"singularity"``).
-    Raises ``RuntimeError`` with install instructions if neither is found.
-    """
+    """Locate the apptainer or singularity CLI binary."""
     if shutil.which("apptainer"):
         return "apptainer"
     if shutil.which("singularity"):
@@ -43,66 +41,34 @@ def _find_singularity_executable() -> str:
 
 
 def _ensure_singularity_available() -> str:
-    """Preflight check: resolve the executable and verify it responds.
-
-    Returns the executable name on success.
-    Raises ``RuntimeError`` with an actionable message on failure.
-    """
+    """Preflight check: resolve the executable and verify it responds."""
     exe = _find_singularity_executable()
-
     try:
         result = subprocess.run(
-            [exe, "version"],
-            capture_output=True,
-            text=True,
-            timeout=10,
+            [exe, "version"], capture_output=True, text=True, timeout=10,
         )
     except FileNotFoundError:
         raise RuntimeError(
-            f"Singularity backend selected but the resolved executable '{exe}' "
-            "could not be executed. Check your installation."
+            f"Singularity backend selected but '{exe}' could not be executed."
         )
     except subprocess.TimeoutExpired:
-        raise RuntimeError(
-            f"'{exe} version' timed out. The runtime may be misconfigured."
-        )
+        raise RuntimeError(f"'{exe} version' timed out.")
 
     if result.returncode != 0:
         stderr = result.stderr.strip()[:200]
-        raise RuntimeError(
-            f"'{exe} version' failed (exit code {result.returncode}): {stderr}"
-        )
-
+        raise RuntimeError(f"'{exe} version' failed (exit code {result.returncode}): {stderr}")
     return exe
 
 
-def _load_snapshots() -> Dict[str, str]:
-    if _SNAPSHOT_STORE.exists():
-        try:
-            return json.loads(_SNAPSHOT_STORE.read_text())
-        except Exception:
-            pass
-    return {}
+def _load_snapshots() -> dict:
+    return _load_json_store(_SNAPSHOT_STORE)
 
 
-def _save_snapshots(data: Dict[str, str]) -> None:
-    _SNAPSHOT_STORE.parent.mkdir(parents=True, exist_ok=True)
-    _SNAPSHOT_STORE.write_text(json.dumps(data, indent=2))
+def _save_snapshots(data: dict) -> None:
+    _save_json_store(_SNAPSHOT_STORE, data)
 
-
-# -------------------------------------------------------------------------
-# Singularity helpers (scratch dir, SIF cache, SIF building)
-# -------------------------------------------------------------------------
 
 def _get_scratch_dir() -> Path:
-    """Get the best directory for Singularity sandboxes.
-
-    Resolution order:
-      1. TERMINAL_SCRATCH_DIR (explicit override)
-      2. TERMINAL_SANDBOX_DIR / singularity (shared sandbox root)
-      3. /scratch (common on HPC clusters)
-      4. ~/.hermes/sandboxes/singularity (fallback)
-    """
     custom_scratch = os.getenv("TERMINAL_SCRATCH_DIR")
     if custom_scratch:
         scratch_path = Path(custom_scratch)
@@ -124,7 +90,6 @@ def _get_scratch_dir() -> Path:
 
 
 def _get_apptainer_cache_dir() -> Path:
-    """Get the Apptainer cache directory for SIF images."""
     cache_dir = os.getenv("APPTAINER_CACHEDIR")
     if cache_dir:
         cache_path = Path(cache_dir)
@@ -140,11 +105,6 @@ _sif_build_lock = threading.Lock()
 
 
 def _get_or_build_sif(image: str, executable: str = "apptainer") -> str:
-    """Get or build a SIF image from a docker:// URL.
-
-    Returns the path unchanged if it's already a .sif file.
-    For docker:// URLs, checks the cache and builds if needed.
-    """
     if image.endswith('.sif') and Path(image).exists():
         return image
     if not image.startswith('docker://'):
@@ -193,19 +153,12 @@ def _get_or_build_sif(image: str, executable: str = "apptainer") -> str:
             return image
 
 
-# -------------------------------------------------------------------------
-# SingularityEnvironment
-# -------------------------------------------------------------------------
-
 class SingularityEnvironment(BaseEnvironment):
     """Hardened Singularity/Apptainer container with resource limits and persistence.
 
-    Security: --containall (isolated PID/IPC/mount namespaces, no host home mount),
-    --no-home, writable-tmpfs for scratch space. The container cannot see or modify
-    the host filesystem outside of explicitly bound paths.
-
-    Persistence: when enabled, the writable overlay directory is preserved across
-    sessions so installed packages and files survive cleanup/restore.
+    Spawn-per-call: every execute() spawns a fresh ``apptainer exec ... bash -c`` process.
+    Session snapshot preserves env vars across calls.
+    CWD persists via in-band stdout markers.
     """
 
     def __init__(
@@ -227,12 +180,9 @@ class SingularityEnvironment(BaseEnvironment):
         self._persistent = persistent_filesystem
         self._task_id = task_id
         self._overlay_dir: Optional[Path] = None
-
-        # Resource limits
         self._cpu = cpu
         self._memory = memory
 
-        # Persistent overlay directory
         if self._persistent:
             overlay_base = _get_scratch_dir() / "hermes-overlays"
             overlay_base.mkdir(parents=True, exist_ok=True)
@@ -240,42 +190,26 @@ class SingularityEnvironment(BaseEnvironment):
             self._overlay_dir.mkdir(parents=True, exist_ok=True)
 
         self._start_instance()
+        self.init_session()
 
     def _start_instance(self):
         cmd = [self.executable, "instance", "start"]
-
-        # Security: full isolation from host
         cmd.extend(["--containall", "--no-home"])
 
-        # Writable layer
         if self._persistent and self._overlay_dir:
-            # Persistent writable overlay -- survives across restarts
             cmd.extend(["--overlay", str(self._overlay_dir)])
         else:
             cmd.append("--writable-tmpfs")
 
-        # Mount credential files and skills directory (read-only).
         try:
             from tools.credential_files import get_credential_file_mounts, get_skills_directory_mount
-
             for mount_entry in get_credential_file_mounts():
                 cmd.extend(["--bind", f"{mount_entry['host_path']}:{mount_entry['container_path']}:ro"])
-                logger.info(
-                    "Singularity: binding credential %s -> %s",
-                    mount_entry["host_path"],
-                    mount_entry["container_path"],
-                )
             for skills_mount in get_skills_directory_mount():
                 cmd.extend(["--bind", f"{skills_mount['host_path']}:{skills_mount['container_path']}:ro"])
-                logger.info(
-                    "Singularity: binding skills dir %s -> %s",
-                    skills_mount["host_path"],
-                    skills_mount["container_path"],
-                )
         except Exception as e:
             logger.debug("Singularity: could not load credential/skills mounts: %s", e)
 
-        # Resource limits (cgroup-based, may require root or appropriate config)
         if self._memory > 0:
             cmd.extend(["--memory", f"{self._memory}M"])
         if self._cpu > 0:
@@ -288,94 +222,29 @@ class SingularityEnvironment(BaseEnvironment):
             if result.returncode != 0:
                 raise RuntimeError(f"Failed to start instance: {result.stderr}")
             self._instance_started = True
-            logger.info("Singularity instance %s started (persistent=%s)", 
+            logger.info("Singularity instance %s started (persistent=%s)",
                         self.instance_id, self._persistent)
         except subprocess.TimeoutExpired:
             raise RuntimeError("Instance start timed out")
 
-    def execute(self, command: str, cwd: str = "", *,
-                timeout: int | None = None,
-                stdin_data: str | None = None) -> dict:
+    def _run_bash(self, cmd_string: str, *, login: bool = False,
+                  timeout: int = 120,
+                  stdin_data: str | None = None) -> subprocess.Popen:
+        """Spawn a bash process inside the Singularity instance."""
         if not self._instance_started:
-            return {"output": "Instance not started", "returncode": -1}
+            raise RuntimeError("Singularity instance not started")
 
-        effective_timeout = timeout or self.timeout
-        work_dir = cwd or self.cwd
-        exec_command, sudo_stdin = self._prepare_command(command)
-
-        # Merge sudo password (if any) with caller-supplied stdin_data.
-        if sudo_stdin is not None and stdin_data is not None:
-            effective_stdin = sudo_stdin + stdin_data
-        elif sudo_stdin is not None:
-            effective_stdin = sudo_stdin
+        cmd = [self.executable, "exec",
+               f"instance://{self.instance_id}"]
+        if login:
+            cmd.extend(["bash", "-l", "-c", cmd_string])
         else:
-            effective_stdin = stdin_data
+            cmd.extend(["bash", "-c", cmd_string])
 
-        # apptainer exec --pwd doesn't expand ~, so prepend a cd into the command.
-        # Keep ~ unquoted (for shell expansion) and quote only the subpath.
-        if work_dir == "~":
-            exec_command = f"cd ~ && {exec_command}"
-            work_dir = "/tmp"
-        elif work_dir.startswith("~/"):
-            exec_command = f"cd ~/{shlex.quote(work_dir[2:])} && {exec_command}"
-            work_dir = "/tmp"
-
-        cmd = [self.executable, "exec", "--pwd", work_dir,
-               f"instance://{self.instance_id}",
-               "bash", "-c", exec_command]
-
-        try:
-            import time as _time
-            _output_chunks = []
-            proc = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                stdin=subprocess.PIPE if effective_stdin else subprocess.DEVNULL,
-                text=True,
-            )
-            if effective_stdin:
-                try:
-                    proc.stdin.write(effective_stdin)
-                    proc.stdin.close()
-                except Exception:
-                    pass
-
-            def _drain():
-                try:
-                    for line in proc.stdout:
-                        _output_chunks.append(line)
-                except Exception:
-                    pass
-
-            reader = threading.Thread(target=_drain, daemon=True)
-            reader.start()
-            deadline = _time.monotonic() + effective_timeout
-
-            while proc.poll() is None:
-                if is_interrupted():
-                    proc.terminate()
-                    try:
-                        proc.wait(timeout=1)
-                    except subprocess.TimeoutExpired:
-                        proc.kill()
-                    reader.join(timeout=2)
-                    return {
-                        "output": "".join(_output_chunks) + "\n[Command interrupted]",
-                        "returncode": 130,
-                    }
-                if _time.monotonic() > deadline:
-                    proc.kill()
-                    reader.join(timeout=2)
-                    return self._timeout_result(effective_timeout)
-                _time.sleep(0.2)
-
-            reader.join(timeout=5)
-            return {"output": "".join(_output_chunks), "returncode": proc.returncode}
-        except Exception as e:
-            return {"output": f"Singularity execution error: {e}", "returncode": 1}
+        return _popen_bash(cmd, stdin_data)
 
     def cleanup(self):
-        """Stop the instance. If persistent, the overlay dir survives for next creation."""
+        """Stop the instance. If persistent, the overlay dir survives."""
         if self._instance_started:
             try:
                 subprocess.run(
@@ -387,7 +256,6 @@ class SingularityEnvironment(BaseEnvironment):
                 logger.warning("Failed to stop Singularity instance %s: %s", self.instance_id, e)
             self._instance_started = False
 
-        # Record overlay path for persistence restoration
         if self._persistent and self._overlay_dir:
             snapshots = _load_snapshots()
             snapshots[self._task_id] = str(self._overlay_dir)

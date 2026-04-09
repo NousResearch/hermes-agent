@@ -455,6 +455,9 @@ class DiscordAdapter(BasePlatformAdapter):
         self._seen_messages: Dict[str, float] = {}
         self._SEEN_TTL = 300   # 5 minutes
         self._SEEN_MAX = 2000  # prune threshold
+        # Reply threading mode: "off" (no replies), "first" (reply on first
+        # chunk only, default), "all" (reply-reference on every chunk).
+        self._reply_to_mode: str = getattr(config, 'reply_to_mode', 'first') or 'first'
 
     async def connect(self) -> bool:
         """Connect to Discord and start receiving events."""
@@ -774,7 +777,7 @@ class DiscordAdapter(BasePlatformAdapter):
             message_ids = []
             reference = None
 
-            if reply_to:
+            if reply_to and self._reply_to_mode != "off":
                 try:
                     ref_msg = await channel.fetch_message(int(reply_to))
                     reference = ref_msg
@@ -782,7 +785,10 @@ class DiscordAdapter(BasePlatformAdapter):
                     logger.debug("Could not fetch reply-to message: %s", e)
 
             for i, chunk in enumerate(chunks):
-                chunk_reference = reference if i == 0 else None
+                if self._reply_to_mode == "all":
+                    chunk_reference = reference
+                else:  # "first" (default) or "off"
+                    chunk_reference = reference if i == 0 else None
                 try:
                     msg = await channel.send(
                         content=chunk,
@@ -1761,8 +1767,9 @@ class DiscordAdapter(BasePlatformAdapter):
             if hasattr(interaction.channel, "guild") and interaction.channel.guild:
                 chat_name = f"{interaction.channel.guild.name} / #{chat_name}"
 
-        # Get channel topic (if available)
-        chat_topic = getattr(interaction.channel, "topic", None)
+        # Get channel topic (if available).
+        # For forum threads, inherit the parent forum's topic.
+        chat_topic = self._get_effective_topic(interaction.channel, is_thread=is_thread)
 
         source = self.build_source(
             chat_id=str(interaction.channel_id),
@@ -1836,6 +1843,10 @@ class DiscordAdapter(BasePlatformAdapter):
 
         chat_name = f"{guild_name} / {thread_name}" if guild_name else thread_name
 
+        # Inherit forum topic when the thread was created inside a forum channel.
+        _chan = getattr(interaction, "channel", None)
+        chat_topic = self._get_effective_topic(_chan, is_thread=True) if _chan else None
+
         source = self.build_source(
             chat_id=thread_id,
             chat_name=chat_name,
@@ -1843,6 +1854,7 @@ class DiscordAdapter(BasePlatformAdapter):
             user_id=str(interaction.user.id),
             user_name=interaction.user.display_name,
             thread_id=thread_id,
+            chat_topic=chat_topic,
         )
 
         event = MessageEvent(
@@ -2128,6 +2140,15 @@ class DiscordAdapter(BasePlatformAdapter):
                 return True
         return False
 
+    def _get_effective_topic(self, channel: Any, is_thread: bool = False) -> Optional[str]:
+        """Return the channel topic, falling back to the parent forum's topic for forum threads."""
+        topic = getattr(channel, "topic", None)
+        if not topic and is_thread:
+            parent = getattr(channel, "parent", None)
+            if parent and self._is_forum_parent(parent):
+                topic = getattr(parent, "topic", None)
+        return topic
+
     def _format_thread_chat_name(self, thread: Any) -> str:
         """Build a readable chat name for thread-like Discord channels, including forum context when available."""
         thread_name = getattr(thread, "name", None) or str(getattr(thread, "id", "thread"))
@@ -2295,8 +2316,10 @@ class DiscordAdapter(BasePlatformAdapter):
             if hasattr(message.channel, "guild") and message.channel.guild:
                 chat_name = f"{message.channel.guild.name} / #{chat_name}"
 
-        # Get channel topic (if available - TextChannels have topics, DMs/threads don't)
-        chat_topic = getattr(message.channel, "topic", None)
+        # Get channel topic (if available - TextChannels have topics, DMs/threads don't).
+        # For threads whose parent is a forum channel, inherit the parent's topic
+        # so forum descriptions (e.g. project instructions) appear in the session context.
+        chat_topic = self._get_effective_topic(message.channel, is_thread=is_thread)
 
         # Build source
         source = self.build_source(
@@ -2359,7 +2382,7 @@ class DiscordAdapter(BasePlatformAdapter):
                         ext or "unknown", content_type,
                     )
                 else:
-                    MAX_DOC_BYTES = 20 * 1024 * 1024
+                    MAX_DOC_BYTES = 32 * 1024 * 1024
                     if att.size and att.size > MAX_DOC_BYTES:
                         logger.warning(
                             "[Discord] Document too large (%s bytes), skipping: %s",
@@ -2383,9 +2406,9 @@ class DiscordAdapter(BasePlatformAdapter):
                             media_urls.append(cached_path)
                             media_types.append(doc_mime)
                             logger.info("[Discord] Cached user document: %s", cached_path)
-                            # Inject text content for .txt/.md files (capped at 100 KB)
+                            # Inject text content for plain-text documents (capped at 100 KB)
                             MAX_TEXT_INJECT_BYTES = 100 * 1024
-                            if ext in (".md", ".txt") and len(raw_bytes) <= MAX_TEXT_INJECT_BYTES:
+                            if ext in (".md", ".txt", ".log") and len(raw_bytes) <= MAX_TEXT_INJECT_BYTES:
                                 try:
                                     text_content = raw_bytes.decode("utf-8")
                                     display_name = att.filename or f"document{ext}"

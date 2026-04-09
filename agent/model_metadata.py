@@ -26,12 +26,14 @@ _PROVIDER_PREFIXES: frozenset[str] = frozenset({
     "openrouter", "nous", "openai-codex", "copilot", "copilot-acp",
     "gemini", "zai", "kimi-coding", "minimax", "minimax-cn", "anthropic", "deepseek",
     "opencode-zen", "opencode-go", "ai-gateway", "kilocode", "alibaba",
+    "qwen-oauth",
     "custom", "local",
     # Common aliases
     "google", "google-gemini", "google-ai-studio",
     "glm", "z-ai", "z.ai", "zhipu", "github", "github-copilot",
     "github-models", "kimi", "moonshot", "claude", "deep-seek",
     "opencode", "zen", "go", "vercel", "kilo", "dashscope", "aliyun", "qwen",
+    "qwen-portal",
 })
 
 
@@ -134,7 +136,7 @@ DEFAULT_CONTEXT_LENGTHS = {
     "deepseek-ai/DeepSeek-V3.2": 65536,
     "moonshotai/Kimi-K2.5": 262144,
     "moonshotai/Kimi-K2-Thinking": 262144,
-    "minimaxai/minimax-m2.5": 1048576,
+    "MiniMaxAI/MiniMax-M2.5": 1048576,
     "XiaomiMiMo/MiMo-V2-Flash": 32768,
     "mimo-v2-pro": 1048576,
     "mimo-v2-omni": 1048576,
@@ -187,6 +189,7 @@ _URL_TO_PROVIDER: Dict[str, str] = {
     "api.minimax": "minimax",
     "dashscope.aliyuncs.com": "alibaba",
     "dashscope-intl.aliyuncs.com": "alibaba",
+    "portal.qwen.ai": "qwen-oauth",
     "openrouter.ai": "openrouter",
     "generativelanguage.googleapis.com": "gemini",
     "inference-api.nousresearch.com": "nous",
@@ -194,6 +197,7 @@ _URL_TO_PROVIDER: Dict[str, str] = {
     "api.githubcopilot.com": "copilot",
     "models.github.ai": "copilot",
     "api.fireworks.ai": "fireworks",
+    "opencode.ai": "opencode-go",
 }
 
 

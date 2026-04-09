@@ -18,12 +18,14 @@ import hermes_cli.auth as auth_mod
 from hermes_cli.auth import (
     CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
     DEFAULT_AGENT_KEY_MIN_TTL_SECONDS,
+    KIMI_CODE_BASE_URL,
     PROVIDER_REGISTRY,
     _codex_access_token_is_expiring,
     _decode_jwt_claims,
     _import_codex_cli_tokens,
     _load_auth_store,
     _load_provider_state,
+    _resolve_kimi_base_url,
     _resolve_zai_base_url,
     read_credential_pool,
     write_credential_pool,
@@ -64,10 +66,10 @@ SUPPORTED_POOL_STRATEGIES = {
 }
 
 # Cooldown before retrying an exhausted credential.
-# 429 (rate-limited) cools down faster since quotas reset frequently.
-# 402 (billing/quota) and other codes use a longer default.
+# 429 (rate-limited) and 402 (billing/quota) both cool down after 1 hour.
+# Provider-supplied reset_at timestamps override these defaults.
 EXHAUSTED_TTL_429_SECONDS = 60 * 60          # 1 hour
-EXHAUSTED_TTL_DEFAULT_SECONDS = 24 * 60 * 60 # 24 hours
+EXHAUSTED_TTL_DEFAULT_SECONDS = 60 * 60      # 1 hour
 
 # Pool key prefix for custom OpenAI-compatible endpoints.
 # Custom endpoints all share provider='custom' but are keyed by their
@@ -1084,7 +1086,9 @@ def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool
         active_sources.add(source)
         auth_type = AUTH_TYPE_OAUTH if provider == "anthropic" and not token.startswith("sk-ant-api") else AUTH_TYPE_API_KEY
         base_url = env_url or pconfig.inference_base_url
-        if provider == "zai":
+        if provider == "kimi-coding":
+            base_url = _resolve_kimi_base_url(token, pconfig.inference_base_url, env_url)
+        elif provider == "zai":
             base_url = _resolve_zai_base_url(token, pconfig.inference_base_url, env_url)
         changed |= _upsert_entry(
             entries,

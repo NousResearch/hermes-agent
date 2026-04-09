@@ -918,6 +918,7 @@ def select_provider_and_model(args=None):
         "openrouter": "OpenRouter",
         "nous": "Nous Portal",
         "openai-codex": "OpenAI Codex",
+        "qwen-oauth": "Qwen OAuth",
         "copilot-acp": "GitHub Copilot ACP",
         "copilot": "GitHub Copilot",
         "anthropic": "Anthropic",
@@ -947,6 +948,7 @@ def select_provider_and_model(args=None):
         ("openrouter", "OpenRouter (100+ models, pay-per-use)"),
         ("anthropic", "Anthropic (Claude models — API key or Claude Code)"),
         ("openai-codex", "OpenAI Codex"),
+        ("qwen-oauth", "Qwen OAuth (reuses local Qwen CLI login)"),
         ("copilot", "GitHub Copilot (uses GITHUB_TOKEN or gh auth token)"),
         ("huggingface", "Hugging Face Inference Providers (20+ open models)"),
     ]
@@ -1043,6 +1045,8 @@ def select_provider_and_model(args=None):
         _model_flow_nous(config, current_model, args=args)
     elif selected_provider == "openai-codex":
         _model_flow_openai_codex(config, current_model)
+    elif selected_provider == "qwen-oauth":
+        _model_flow_qwen_oauth(config, current_model)
     elif selected_provider == "copilot-acp":
         _model_flow_copilot_acp(config, current_model)
     elif selected_provider == "copilot":
@@ -1359,6 +1363,56 @@ def _model_flow_openai_codex(config, current_model=""):
 
 
 
+_DEFAULT_QWEN_PORTAL_MODELS = [
+    "qwen3-coder-plus",
+    "qwen3-coder",
+]
+
+
+def _model_flow_qwen_oauth(_config, current_model=""):
+    """Qwen OAuth provider: reuse local Qwen CLI login, then pick model."""
+    from hermes_cli.auth import (
+        get_qwen_auth_status,
+        resolve_qwen_runtime_credentials,
+        _prompt_model_selection,
+        _save_model_choice,
+        _update_config_for_provider,
+        DEFAULT_QWEN_BASE_URL,
+    )
+    from hermes_cli.models import fetch_api_models
+
+    status = get_qwen_auth_status()
+    if not status.get("logged_in"):
+        print("Not logged into Qwen CLI OAuth.")
+        print("Run: qwen auth qwen-oauth")
+        auth_file = status.get("auth_file")
+        if auth_file:
+            print(f"Expected credentials file: {auth_file}")
+        if status.get("error"):
+            print(f"Error: {status.get('error')}")
+        return
+
+    # Try live model discovery, fall back to curated list.
+    models = None
+    try:
+        creds = resolve_qwen_runtime_credentials(refresh_if_expiring=True)
+        models = fetch_api_models(creds["api_key"], creds["base_url"])
+    except Exception:
+        pass
+    if not models:
+        models = list(_DEFAULT_QWEN_PORTAL_MODELS)
+
+    default = current_model or (models[0] if models else "qwen3-coder-plus")
+    selected = _prompt_model_selection(models, current_model=default)
+    if selected:
+        _save_model_choice(selected)
+        _update_config_for_provider("qwen-oauth", DEFAULT_QWEN_BASE_URL)
+        print(f"Default model set to: {selected} (via Qwen OAuth)")
+    else:
+        print("No change.")
+
+
+
 def _model_flow_custom(config):
     """Custom endpoint: collect URL, API key, and model name.
 
@@ -1420,7 +1474,11 @@ def _model_flow_custom(config):
             f"Hermes will still save it."
         )
         if probe.get("suggested_base_url"):
-            print(f"  If this server expects /v1, try base URL: {probe['suggested_base_url']}")
+            suggested = probe["suggested_base_url"]
+            if suggested.endswith("/v1"):
+                print(f"  If this server expects /v1 in the path, try base URL: {suggested}")
+            else:
+                print(f"  If /v1 should not be in the base URL, try: {suggested}")
 
     # Select model — use probe results when available, fall back to manual input
     model_name = ""
@@ -2583,6 +2641,12 @@ def cmd_doctor(args):
     """Check configuration and dependencies."""
     from hermes_cli.doctor import run_doctor
     run_doctor(args)
+
+
+def cmd_dump(args):
+    """Dump setup summary for support/debugging."""
+    from hermes_cli.dump import run_dump
+    run_dump(args)
 
 
 def cmd_config(args):
@@ -4666,6 +4730,22 @@ For more help on a command:
         help="Attempt to fix issues automatically"
     )
     doctor_parser.set_defaults(func=cmd_doctor)
+
+    # =========================================================================
+    # dump command
+    # =========================================================================
+    dump_parser = subparsers.add_parser(
+        "dump",
+        help="Dump setup summary for support/debugging",
+        description="Output a compact, plain-text summary of your Hermes setup "
+                    "that can be copy-pasted into Discord/GitHub for support context"
+    )
+    dump_parser.add_argument(
+        "--show-keys",
+        action="store_true",
+        help="Show redacted API key prefixes (first/last 4 chars) instead of just set/not set"
+    )
+    dump_parser.set_defaults(func=cmd_dump)
     
     # =========================================================================
     # config command

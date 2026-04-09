@@ -67,12 +67,16 @@ DEFAULT_AGENT_KEY_MIN_TTL_SECONDS = 30 * 60  # 30 minutes
 ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120       # refresh 2 min before expiry
 DEVICE_AUTH_POLL_INTERVAL_CAP_SECONDS = 1     # poll at most every 1s
 DEFAULT_CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex"
+DEFAULT_QWEN_BASE_URL = "https://portal.qwen.ai/v1"
 DEFAULT_GITHUB_MODELS_BASE_URL = "https://api.githubcopilot.com"
 DEFAULT_COPILOT_ACP_BASE_URL = "acp://copilot"
 DEFAULT_GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai"
 CODEX_OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 CODEX_OAUTH_TOKEN_URL = "https://auth.openai.com/oauth/token"
 CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120
+QWEN_OAUTH_CLIENT_ID = "f0304373b74a44d2b584a3fb70ca9e56"
+QWEN_OAUTH_TOKEN_URL = "https://chat.qwen.ai/api/v1/oauth2/token"
+QWEN_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120
 
 
 # =============================================================================
@@ -111,6 +115,12 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         name="OpenAI Codex",
         auth_type="oauth_external",
         inference_base_url=DEFAULT_CODEX_BASE_URL,
+    ),
+    "qwen-oauth": ProviderConfig(
+        id="qwen-oauth",
+        name="Qwen OAuth",
+        auth_type="oauth_external",
+        inference_base_url=DEFAULT_QWEN_BASE_URL,
     ),
     "copilot": ProviderConfig(
         id="copilot",
@@ -240,7 +250,7 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
 # Kimi Code Endpoint Detection
 # =============================================================================
 
-# Kimi Code (platform.kimi.ai) issues keys prefixed "sk-kimi-" that only work
+# Kimi Code (kimi.com/code) issues keys prefixed "sk-kimi-" that only work
 # on api.kimi.com/coding/v1.  Legacy keys from platform.moonshot.ai work on
 # api.moonshot.ai/v1 (the default).  Auto-detect when user hasn't set
 # KIMI_BASE_URL explicitly.
@@ -817,6 +827,7 @@ def resolve_provider(
         "github-copilot-acp": "copilot-acp", "copilot-acp-agent": "copilot-acp",
         "aigateway": "ai-gateway", "vercel": "ai-gateway", "vercel-ai-gateway": "ai-gateway",
         "opencode": "opencode-zen", "zen": "opencode-zen",
+        "qwen-portal": "qwen-oauth", "qwen-cli": "qwen-oauth", "qwen-oauth": "qwen-oauth",
         "hf": "huggingface", "hugging-face": "huggingface", "huggingface-hub": "huggingface",
         "go": "opencode-go", "opencode-go-sub": "opencode-go",
         "kilo": "kilocode", "kilo-code": "kilocode", "kilo-gateway": "kilocode",
@@ -944,6 +955,176 @@ def _codex_access_token_is_expiring(access_token: Any, skew_seconds: int) -> boo
     if not isinstance(exp, (int, float)):
         return False
     return float(exp) <= (time.time() + max(0, int(skew_seconds)))
+
+
+def _qwen_cli_auth_path() -> Path:
+    return Path.home() / ".qwen" / "oauth_creds.json"
+
+
+def _read_qwen_cli_tokens() -> Dict[str, Any]:
+    auth_path = _qwen_cli_auth_path()
+    if not auth_path.exists():
+        raise AuthError(
+            "Qwen CLI credentials not found. Run 'qwen auth qwen-oauth' first.",
+            provider="qwen-oauth",
+            code="qwen_auth_missing",
+        )
+    try:
+        data = json.loads(auth_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise AuthError(
+            f"Failed to read Qwen CLI credentials from {auth_path}: {exc}",
+            provider="qwen-oauth",
+            code="qwen_auth_read_failed",
+        ) from exc
+    if not isinstance(data, dict):
+        raise AuthError(
+            f"Invalid Qwen CLI credentials in {auth_path}.",
+            provider="qwen-oauth",
+            code="qwen_auth_invalid",
+        )
+    return data
+
+
+def _save_qwen_cli_tokens(tokens: Dict[str, Any]) -> Path:
+    auth_path = _qwen_cli_auth_path()
+    auth_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = auth_path.with_suffix(".tmp")
+    tmp_path.write_text(json.dumps(tokens, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    os.chmod(tmp_path, stat.S_IRUSR | stat.S_IWUSR)
+    tmp_path.replace(auth_path)
+    return auth_path
+
+
+def _qwen_access_token_is_expiring(expiry_date_ms: Any, skew_seconds: int = QWEN_ACCESS_TOKEN_REFRESH_SKEW_SECONDS) -> bool:
+    try:
+        expiry_ms = int(expiry_date_ms)
+    except Exception:
+        return True
+    return (time.time() + max(0, int(skew_seconds))) * 1000 >= expiry_ms
+
+
+def _refresh_qwen_cli_tokens(tokens: Dict[str, Any], timeout_seconds: float = 20.0) -> Dict[str, Any]:
+    refresh_token = str(tokens.get("refresh_token", "") or "").strip()
+    if not refresh_token:
+        raise AuthError(
+            "Qwen OAuth refresh token missing. Re-run 'qwen auth qwen-oauth'.",
+            provider="qwen-oauth",
+            code="qwen_refresh_token_missing",
+        )
+
+    try:
+        response = httpx.post(
+            QWEN_OAUTH_TOKEN_URL,
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Accept": "application/json",
+            },
+            data={
+                "grant_type": "refresh_token",
+                "refresh_token": refresh_token,
+                "client_id": QWEN_OAUTH_CLIENT_ID,
+            },
+            timeout=timeout_seconds,
+        )
+    except Exception as exc:
+        raise AuthError(
+            f"Qwen OAuth refresh failed: {exc}",
+            provider="qwen-oauth",
+            code="qwen_refresh_failed",
+        ) from exc
+
+    if response.status_code >= 400:
+        body = response.text.strip()
+        raise AuthError(
+            "Qwen OAuth refresh failed. Re-run 'qwen auth qwen-oauth'."
+            + (f" Response: {body}" if body else ""),
+            provider="qwen-oauth",
+            code="qwen_refresh_failed",
+        )
+
+    try:
+        payload = response.json()
+    except Exception as exc:
+        raise AuthError(
+            f"Qwen OAuth refresh returned invalid JSON: {exc}",
+            provider="qwen-oauth",
+            code="qwen_refresh_invalid_json",
+        ) from exc
+
+    if not isinstance(payload, dict) or not str(payload.get("access_token", "") or "").strip():
+        raise AuthError(
+            "Qwen OAuth refresh response missing access_token.",
+            provider="qwen-oauth",
+            code="qwen_refresh_invalid_response",
+        )
+
+    expires_in = payload.get("expires_in")
+    try:
+        expires_in_seconds = int(expires_in)
+    except Exception:
+        expires_in_seconds = 6 * 60 * 60
+
+    refreshed = {
+        "access_token": str(payload.get("access_token", "") or "").strip(),
+        "refresh_token": str(payload.get("refresh_token", refresh_token) or refresh_token).strip(),
+        "token_type": str(payload.get("token_type", tokens.get("token_type", "Bearer")) or "Bearer").strip() or "Bearer",
+        "resource_url": str(payload.get("resource_url", tokens.get("resource_url", "portal.qwen.ai")) or "portal.qwen.ai").strip(),
+        "expiry_date": int(time.time() * 1000) + max(1, expires_in_seconds) * 1000,
+    }
+    _save_qwen_cli_tokens(refreshed)
+    return refreshed
+
+
+def resolve_qwen_runtime_credentials(
+    *,
+    force_refresh: bool = False,
+    refresh_if_expiring: bool = True,
+    refresh_skew_seconds: int = QWEN_ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
+) -> Dict[str, Any]:
+    tokens = _read_qwen_cli_tokens()
+    access_token = str(tokens.get("access_token", "") or "").strip()
+    should_refresh = bool(force_refresh)
+    if not should_refresh and refresh_if_expiring:
+        should_refresh = _qwen_access_token_is_expiring(tokens.get("expiry_date"), refresh_skew_seconds)
+    if should_refresh:
+        tokens = _refresh_qwen_cli_tokens(tokens)
+        access_token = str(tokens.get("access_token", "") or "").strip()
+    if not access_token:
+        raise AuthError(
+            "Qwen OAuth access token missing. Re-run 'qwen auth qwen-oauth'.",
+            provider="qwen-oauth",
+            code="qwen_access_token_missing",
+        )
+
+    base_url = os.getenv("HERMES_QWEN_BASE_URL", "").strip().rstrip("/") or DEFAULT_QWEN_BASE_URL
+    return {
+        "provider": "qwen-oauth",
+        "base_url": base_url,
+        "api_key": access_token,
+        "source": "qwen-cli",
+        "expires_at_ms": tokens.get("expiry_date"),
+        "auth_file": str(_qwen_cli_auth_path()),
+    }
+
+
+def get_qwen_auth_status() -> Dict[str, Any]:
+    auth_path = _qwen_cli_auth_path()
+    try:
+        creds = resolve_qwen_runtime_credentials(refresh_if_expiring=False)
+        return {
+            "logged_in": True,
+            "auth_file": str(auth_path),
+            "source": creds.get("source"),
+            "api_key": creds.get("api_key"),
+            "expires_at_ms": creds.get("expires_at_ms"),
+        }
+    except AuthError as exc:
+        return {
+            "logged_in": False,
+            "auth_file": str(auth_path),
+            "error": str(exc),
+        }
 
 
 # =============================================================================
@@ -2072,6 +2253,8 @@ def get_auth_status(provider_id: Optional[str] = None) -> Dict[str, Any]:
         return get_nous_auth_status()
     if target == "openai-codex":
         return get_codex_auth_status()
+    if target == "qwen-oauth":
+        return get_qwen_auth_status()
     if target == "copilot-acp":
         return get_external_process_provider_status(target)
     # API-key providers
@@ -2834,12 +3017,15 @@ def _login_nous(args, pconfig: ProviderConfig) -> None:
             _save_provider_state(auth_store, "nous", auth_state)
             saved_to = _save_auth_store(auth_store)
 
-        config_path = _update_config_for_provider("nous", inference_base_url)
         print()
         print("Login successful!")
         print(f"  Auth state: {saved_to}")
-        print(f"  Config updated: {config_path} (model.provider=nous)")
 
+        # Resolve model BEFORE writing provider to config.yaml so we never
+        # leave the config in a half-updated state (provider=nous but model
+        # still set to the previous provider's model, e.g. opus from
+        # OpenRouter).  The auth.json active_provider was already set above.
+        selected_model = None
         try:
             runtime_key = auth_state.get("agent_key") or auth_state.get("access_token")
             if not isinstance(runtime_key, str) or not runtime_key:
@@ -2873,9 +3059,6 @@ def _login_nous(args, pconfig: ProviderConfig) -> None:
                     unavailable_models=unavailable_models,
                     portal_url=_portal,
                 )
-                if selected_model:
-                    _save_model_choice(selected_model)
-                    print(f"Default model set to: {selected_model}")
             elif unavailable_models:
                 _url = (_portal or DEFAULT_NOUS_PORTAL_URL).rstrip("/")
                 print("No free models currently available.")
@@ -2886,6 +3069,15 @@ def _login_nous(args, pconfig: ProviderConfig) -> None:
             message = format_auth_error(exc) if isinstance(exc, AuthError) else str(exc)
             print()
             print(f"Login succeeded, but could not fetch available models. Reason: {message}")
+
+        # Write provider + model atomically so config is never mismatched.
+        config_path = _update_config_for_provider(
+            "nous", inference_base_url, default_model=selected_model,
+        )
+        if selected_model:
+            _save_model_choice(selected_model)
+            print(f"Default model set to: {selected_model}")
+        print(f"  Config updated: {config_path} (model.provider=nous)")
 
     except KeyboardInterrupt:
         print("\nLogin cancelled.")

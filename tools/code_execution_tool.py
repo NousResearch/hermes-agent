@@ -18,7 +18,7 @@ Architecture (two transports):
   2. Parent ships both files to the remote environment
   3. Script runs inside the terminal backend (Docker/SSH/Modal/Daytona/etc.)
   4. Tool calls are written as request files; a polling thread on the parent
-     reads them via execute_oneshot(), dispatches, and writes response files
+     reads them via env.execute(), dispatches, and writes response files
   5. The script polls for response files and continues
 
 In both cases, only the script's stdout is returned to the LLM; intermediate
@@ -536,7 +536,7 @@ def _ship_file_to_remote(env, remote_path: str, content: str) -> None:
     quotes are fine.
     """
     encoded = base64.b64encode(content.encode("utf-8")).decode("ascii")
-    env.execute_oneshot(
+    env.execute(
         f"echo '{encoded}' | base64 -d > {remote_path}",
         cwd="/",
         timeout=30,
@@ -555,9 +555,9 @@ def _rpc_poll_loop(
 ):
     """Poll the remote filesystem for tool call requests and dispatch them.
 
-    Runs in a background thread.  Uses ``env.execute_oneshot()`` so it can
-    operate concurrently with the script-execution thread that holds
-    ``env.execute()`` (important for persistent-shell backends like SSH).
+    Runs in a background thread.  Each ``env.execute()`` spawns an
+    independent process, so these calls run safely concurrent with the
+    script-execution thread.
     """
     from model_tools import handle_function_call
 
@@ -566,7 +566,7 @@ def _rpc_poll_loop(
     while not stop_event.is_set():
         try:
             # List pending request files (skip .tmp partials)
-            ls_result = env.execute_oneshot(
+            ls_result = env.execute(
                 f"ls -1 {rpc_dir}/req_* 2>/dev/null || true",
                 cwd="/",
                 timeout=10,
@@ -590,7 +590,7 @@ def _rpc_poll_loop(
                 call_start = time.monotonic()
 
                 # Read request
-                read_result = env.execute_oneshot(
+                read_result = env.execute(
                     f"cat {req_file}",
                     cwd="/",
                     timeout=10,
@@ -600,7 +600,7 @@ def _rpc_poll_loop(
                 except (json.JSONDecodeError, ValueError):
                     logger.debug("Malformed RPC request in %s", req_file)
                     # Remove bad request to avoid infinite retry
-                    env.execute_oneshot(f"rm -f {req_file}", cwd="/", timeout=5)
+                    env.execute(f"rm -f {req_file}", cwd="/", timeout=5)
                     continue
 
                 tool_name = request.get("tool", "")
@@ -664,7 +664,7 @@ def _rpc_poll_loop(
                 encoded_result = base64.b64encode(
                     tool_result.encode("utf-8")
                 ).decode("ascii")
-                env.execute_oneshot(
+                env.execute(
                     f"echo '{encoded_result}' | base64 -d > {res_file}.tmp"
                     f" && mv {res_file}.tmp {res_file}",
                     cwd="/",
@@ -672,7 +672,7 @@ def _rpc_poll_loop(
                 )
 
                 # Remove the request file
-                env.execute_oneshot(f"rm -f {req_file}", cwd="/", timeout=5)
+                env.execute(f"rm -f {req_file}", cwd="/", timeout=5)
 
         except Exception as e:
             if not stop_event.is_set():
@@ -717,7 +717,7 @@ def _execute_remote(
 
     try:
         # Verify Python is available on the remote
-        py_check = env.execute_oneshot(
+        py_check = env.execute(
             "command -v python3 >/dev/null 2>&1 && echo OK",
             cwd="/", timeout=15,
         )
@@ -734,7 +734,7 @@ def _execute_remote(
             })
 
         # Create sandbox directory on remote
-        env.execute_oneshot(
+        env.execute(
             f"mkdir -p {sandbox_dir}/rpc", cwd="/", timeout=10,
         )
 
@@ -806,7 +806,7 @@ def _execute_remote(
 
         # Clean up remote sandbox dir
         try:
-            env.execute_oneshot(
+            env.execute(
                 f"rm -rf {sandbox_dir}", cwd="/", timeout=15,
             )
         except Exception:

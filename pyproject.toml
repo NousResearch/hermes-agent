@@ -62,6 +62,7 @@ mcp = ["mcp>=1.2.0,<2"]
 homeassistant = ["aiohttp>=3.9.0,<4"]
 sms = ["aiohttp>=3.9.0,<4"]
 acp = ["agent-client-protocol>=0.9.0,<1.0"]
+mistral = ["mistralai>=2.3.0,<3"]
 dingtalk = ["dingtalk-stream>=0.1.0,<1"]
 feishu = ["lark-oapi>=1.5.3,<2"]
 rl = [
@@ -94,6 +95,7 @@ all = [
   "hermes-agent[voice]",
   "hermes-agent[dingtalk]",
   "hermes-agent[feishu]",
+  "hermes-agent[mistral]",
 ]
 
 [project.scripts]

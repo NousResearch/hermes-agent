@@ -483,6 +483,7 @@ _PROVIDER_LABELS = {
     "ai-gateway": "AI Gateway",
     "kilocode": "Kilo Code",
     "alibaba": "Alibaba Cloud (DashScope)",
+    "qwen-oauth": "Qwen OAuth (Portal)",
     "huggingface": "Hugging Face",
     "custom": "Custom endpoint",
 }
@@ -522,6 +523,7 @@ _PROVIDER_ALIASES = {
     "aliyun": "alibaba",
     "qwen": "alibaba",
     "alibaba-cloud": "alibaba",
+    "qwen-portal": "qwen-oauth",
     "hf": "huggingface",
     "hugging-face": "huggingface",
     "huggingface-hub": "huggingface",
@@ -767,6 +769,7 @@ def list_available_providers() -> list[dict[str, str]]:
         "openrouter", "nous", "openai-codex", "copilot", "copilot-acp",
         "gemini", "huggingface",
         "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode", "anthropic", "alibaba",
+        "qwen-oauth",
         "opencode-zen", "opencode-go",
         "ai-gateway", "deepseek", "custom",
     ]
@@ -1529,7 +1532,7 @@ def probe_api_models(
 
     return {
         "models": None,
-        "probed_url": tried[-1] if tried else normalized.rstrip("/") + "/models",
+        "probed_url": tried[0] if tried else normalized.rstrip("/") + "/models",
         "resolved_base_url": normalized,
         "suggested_base_url": alternate_base if alternate_base != normalized else None,
         "used_fallback": False,

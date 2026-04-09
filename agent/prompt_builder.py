@@ -349,6 +349,13 @@ PLATFORM_HINTS = {
         "only — no markdown, no formatting. SMS messages are limited to ~1600 "
         "characters, so be brief and direct."
     ),
+    "bluebubbles": (
+        "You are chatting via iMessage (BlueBubbles). iMessage does not render "
+        "markdown formatting — use plain text. Keep responses concise as they "
+        "appear as text messages. You can send media files natively: include "
+        "MEDIA:/absolute/path/to/file in your response. Images (.jpg, .png, "
+        ".heic) appear as photos and other files arrive as attachments."
+    ),
 }
 
 CONTEXT_FILE_MAX_CHARS = 20_000

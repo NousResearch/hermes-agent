@@ -163,6 +163,17 @@ def _is_oauth_token(key: str) -> bool:
     return True
 
 
+def _normalize_base_url_text(base_url) -> str:
+    """Normalize SDK/base transport URL values to a plain string for inspection.
+
+    Some client objects expose ``base_url`` as an ``httpx.URL`` instead of a raw
+    string.  Provider/auth detection should accept either shape.
+    """
+    if not base_url:
+        return ""
+    return str(base_url).strip()
+
+
 def _is_third_party_anthropic_endpoint(base_url: str | None) -> bool:
     """Return True for non-Anthropic endpoints using the Anthropic Messages API.
 
@@ -170,9 +181,10 @@ def _is_third_party_anthropic_endpoint(base_url: str | None) -> bool:
     with their own API keys via x-api-key, not Anthropic OAuth tokens. OAuth
     detection should be skipped for these endpoints.
     """
-    if not base_url:
+    normalized = _normalize_base_url_text(base_url)
+    if not normalized:
         return False  # No base_url = direct Anthropic API
-    normalized = base_url.rstrip("/").lower()
+    normalized = normalized.rstrip("/").lower()
     if "anthropic.com" in normalized:
         return False  # Direct Anthropic API — OAuth applies
     return True  # Any other endpoint is a third-party proxy
@@ -182,12 +194,13 @@ def _requires_bearer_auth(base_url: str | None) -> bool:
     """Return True for Anthropic-compatible providers that require Bearer auth.
 
     Some third-party /anthropic endpoints implement Anthropic's Messages API but
-    require Authorization: Bearer instead of Anthropic's native x-api-key header.
+    require Authorization: Bearer *** of Anthropic's native x-api-key header.
     MiniMax's global and China Anthropic-compatible endpoints follow this pattern.
     """
-    if not base_url:
+    normalized = _normalize_base_url_text(base_url)
+    if not normalized:
         return False
-    normalized = base_url.rstrip("/").lower()
+    normalized = normalized.rstrip("/").lower()
     return normalized.startswith(("https://api.minimax.io/anthropic", "https://api.minimaxi.com/anthropic"))
 
 
@@ -203,13 +216,14 @@ def build_anthropic_client(api_key: str, base_url: str = None):
         )
     from httpx import Timeout
 
+    normalized_base_url = _normalize_base_url_text(base_url)
     kwargs = {
         "timeout": Timeout(timeout=900.0, connect=10.0),
     }
-    if base_url:
-        kwargs["base_url"] = base_url
+    if normalized_base_url:
+        kwargs["base_url"] = normalized_base_url
 
-    if _requires_bearer_auth(base_url):
+    if _requires_bearer_auth(normalized_base_url):
         # Some Anthropic-compatible providers (e.g. MiniMax) expect the API key in
         # Authorization: Bearer even for regular API keys. Route those endpoints
         # through auth_token so the SDK sends Bearer auth instead of x-api-key.
@@ -942,12 +956,18 @@ def _convert_content_to_anthropic(content: Any) -> Any:
 
 def convert_messages_to_anthropic(
     messages: List[Dict],
+    base_url: str | None = None,
 ) -> Tuple[Optional[Any], List[Dict]]:
     """Convert OpenAI-format messages to Anthropic format.
 
     Returns (system_prompt, anthropic_messages).
     System messages are extracted since Anthropic takes them as a separate param.
     system_prompt is a string or list of content blocks (when cache_control present).
+
+    When *base_url* is provided and points to a third-party Anthropic-compatible
+    endpoint, all thinking block signatures are stripped.  Signatures are
+    Anthropic-proprietary — third-party endpoints cannot validate them and will
+    reject them with HTTP 400 "Invalid signature in thinking block".
     """
     system = None
     result = []
@@ -1134,7 +1154,14 @@ def convert_messages_to_anthropic(
     # orphan stripping, message merging) invalidates the signature,
     # causing HTTP 400 "Invalid signature in thinking block".
     #
-    # Strategy (following clawdbot/OpenClaw pattern):
+    # Signatures are Anthropic-proprietary.  Third-party endpoints
+    # (MiniMax, Azure AI Foundry, self-hosted proxies) cannot validate
+    # them and will reject them outright.  When targeting a third-party
+    # endpoint, strip ALL thinking/redacted_thinking blocks from every
+    # assistant message — the third-party will generate its own
+    # thinking blocks if it supports extended thinking.
+    #
+    # For direct Anthropic (strategy following clawdbot/OpenClaw):
     # 1. Strip thinking/redacted_thinking from all assistant messages
     #    EXCEPT the last one — preserves reasoning continuity on the
     #    current tool-use chain while avoiding stale signature errors.
@@ -1143,6 +1170,7 @@ def convert_messages_to_anthropic(
     # 3. Strip cache_control from thinking/redacted_thinking blocks —
     #    cache markers can interfere with signature validation.
     _THINKING_TYPES = frozenset(("thinking", "redacted_thinking"))
+    _is_third_party = _is_third_party_anthropic_endpoint(base_url)
 
     last_assistant_idx = None
     for i in range(len(result) - 1, -1, -1):
@@ -1154,16 +1182,19 @@ def convert_messages_to_anthropic(
         if m.get("role") != "assistant" or not isinstance(m.get("content"), list):
             continue
 
-        if idx != last_assistant_idx:
-            # Strip ALL thinking blocks from non-latest assistant messages
+        if _is_third_party or idx != last_assistant_idx:
+            # Third-party endpoint: strip ALL thinking blocks from every
+            # assistant message — signatures are Anthropic-proprietary.
+            # Direct Anthropic: strip from non-latest assistant messages only.
             stripped = [
                 b for b in m["content"]
                 if not (isinstance(b, dict) and b.get("type") in _THINKING_TYPES)
             ]
             m["content"] = stripped or [{"type": "text", "text": "(thinking elided)"}]
         else:
-            # Latest assistant: keep signed thinking blocks for reasoning
-            # continuity; downgrade unsigned ones to plain text.
+            # Latest assistant on direct Anthropic: keep signed thinking
+            # blocks for reasoning continuity; downgrade unsigned ones to
+            # plain text.
             new_content = []
             for b in m["content"]:
                 if not isinstance(b, dict) or b.get("type") not in _THINKING_TYPES:
@@ -1203,6 +1234,7 @@ def build_anthropic_kwargs(
     is_oauth: bool = False,
     preserve_dots: bool = False,
     context_length: Optional[int] = None,
+    base_url: str | None = None,
 ) -> Dict[str, Any]:
     """Build kwargs for anthropic.messages.create().
 
@@ -1216,8 +1248,11 @@ def build_anthropic_kwargs(
 
     When *preserve_dots* is True, model name dots are not converted to hyphens
     (for Alibaba/DashScope anthropic-compatible endpoints: qwen3.5-plus).
+
+    When *base_url* points to a third-party Anthropic-compatible endpoint,
+    thinking block signatures are stripped (they are Anthropic-proprietary).
     """
-    system, anthropic_messages = convert_messages_to_anthropic(messages)
+    system, anthropic_messages = convert_messages_to_anthropic(messages, base_url=base_url)
     anthropic_tools = convert_tools_to_anthropic(tools) if tools else []
 
     model = normalize_model_name(model, preserve_dots=preserve_dots)

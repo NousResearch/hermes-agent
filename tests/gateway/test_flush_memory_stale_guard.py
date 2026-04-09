@@ -222,3 +222,60 @@ class TestFlushPromptStructure:
         assert "Save any important facts" in flush_prompt
         assert "consider saving it as a skill" in flush_prompt
         assert "Do NOT respond to the user" in flush_prompt
+
+
+class TestBackgroundModelSelection:
+    def test_background_model_prefers_summary_model_for_matching_provider(self, monkeypatch):
+        from gateway.run import _resolve_gateway_background_model
+
+        cfg = {
+            "model": {"default": "gpt-5.4"},
+            "compression": {"summary_model": "openai-codex/gpt-5.4-nano"},
+        }
+
+        result = _resolve_gateway_background_model(cfg, runtime_provider="openai-codex")
+
+        assert result == "gpt-5.2-codex"
+
+    def test_background_model_keeps_supported_codex_summary_model(self, monkeypatch):
+        from gateway.run import _resolve_gateway_background_model
+
+        cfg = {
+            "model": {"default": "gpt-5.4"},
+            "compression": {"summary_model": "openai-codex/gpt-5.4-mini"},
+        }
+
+        result = _resolve_gateway_background_model(cfg, runtime_provider="openai-codex")
+
+        assert result == "gpt-5.4-mini"
+
+    def test_flush_uses_background_model(self, monkeypatch, tmp_path):
+        runner = _make_runner()
+        runner.session_store.load_transcript.return_value = _TRANSCRIPT_4_MSGS
+
+        captured_agent = {}
+
+        def _fake_ai_agent(*args, **kwargs):
+            captured_agent["kwargs"] = kwargs
+            agent = MagicMock()
+            captured_agent["instance"] = agent
+            return agent
+
+        fake_run_agent = types.ModuleType("run_agent")
+        fake_run_agent.AIAgent = _fake_ai_agent
+        monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+        with (
+            patch(
+                "gateway.run._resolve_runtime_agent_kwargs",
+                return_value={"api_key": "k", "provider": "openai-codex"},
+            ),
+            patch(
+                "gateway.run._resolve_gateway_background_model",
+                return_value="gpt-5.4-nano",
+            ),
+            patch.dict("sys.modules", {"tools.memory_tool": MagicMock(MEMORY_DIR=tmp_path)}),
+        ):
+            runner._flush_memories_for_session("session_bg")
+
+        assert captured_agent["kwargs"]["model"] == "gpt-5.4-nano"

@@ -682,7 +682,11 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
             return _try_anthropic()
 
         pool_present, entry = _select_pool_entry(provider_id)
-        if pool_present:
+        # Copilot pool entries can point at tokens/endpoints that are valid for the
+        # main runtime but forbidden for auxiliary chat.completions side-tasks.
+        # For auxiliary auto-routing, prefer the explicit Copilot credential resolver
+        # (same path used by resolve_provider_client('copilot')).
+        if pool_present and provider_id != "copilot":
             api_key = _pool_runtime_api_key(entry)
             if not api_key:
                 continue

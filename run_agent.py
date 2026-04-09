@@ -79,7 +79,7 @@ from agent.memory_manager import build_memory_context_block
 from agent.retry_utils import jittered_backoff
 from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY, PLATFORM_HINTS,
-    MEMORY_GUIDANCE, SESSION_SEARCH_GUIDANCE, SKILLS_GUIDANCE,
+    MEMORY_GUIDANCE, PROJECT_MEMORY_GUIDANCE, SESSION_SEARCH_GUIDANCE, SKILLS_GUIDANCE,
     build_nous_subscription_prompt,
 )
 from agent.model_metadata import (
@@ -999,8 +999,10 @@ class AIAgent:
 
         # Persistent memory (MEMORY.md + USER.md) -- loaded from disk
         self._memory_store = None
+        self._project_memory_store = None
         self._memory_enabled = False
         self._user_profile_enabled = False
+        self._project_memory_enabled = False
         self._memory_nudge_interval = 10
         self._memory_flush_min_turns = 6
         self._turns_since_memory = 0
@@ -1010,6 +1012,7 @@ class AIAgent:
                 mem_config = _agent_cfg.get("memory", {})
                 self._memory_enabled = mem_config.get("memory_enabled", False)
                 self._user_profile_enabled = mem_config.get("user_profile_enabled", False)
+                self._project_memory_enabled = mem_config.get("project_memory_enabled", False)
                 self._memory_nudge_interval = int(mem_config.get("nudge_interval", 10))
                 self._memory_flush_min_turns = int(mem_config.get("flush_min_turns", 6))
                 if self._memory_enabled or self._user_profile_enabled:
@@ -1019,6 +1022,14 @@ class AIAgent:
                         user_char_limit=mem_config.get("user_char_limit", 1375),
                     )
                     self._memory_store.load_from_disk()
+                if self._project_memory_enabled:
+                    from tools.project_memory_tool import ProjectMemoryStore
+                    self._project_memory_store = ProjectMemoryStore(
+                        project_root=os.getenv("TERMINAL_CWD") or os.getcwd(),
+                        char_limit=mem_config.get("project_memory_char_limit", 4000),
+                        graph_edge_limit=mem_config.get("project_graph_edge_limit", 200),
+                    )
+                    self._project_memory_store.load_from_disk()
             except Exception:
                 pass  # Memory is optional -- don't break agent init
         
@@ -1800,8 +1811,10 @@ class AIAgent:
                         provider=self.provider,
                     )
                     review_agent._memory_store = self._memory_store
+                    review_agent._project_memory_store = self._project_memory_store
                     review_agent._memory_enabled = self._memory_enabled
                     review_agent._user_profile_enabled = self._user_profile_enabled
+                    review_agent._project_memory_enabled = self._project_memory_enabled
                     review_agent._memory_nudge_interval = 0
                     review_agent._skill_nudge_interval = 0
 
@@ -2659,6 +2672,8 @@ class AIAgent:
         tool_guidance = []
         if "memory" in self.valid_tool_names:
             tool_guidance.append(MEMORY_GUIDANCE)
+        if "project_memory" in self.valid_tool_names:
+            tool_guidance.append(PROJECT_MEMORY_GUIDANCE)
         if "session_search" in self.valid_tool_names:
             tool_guidance.append(SESSION_SEARCH_GUIDANCE)
         if "skill_manage" in self.valid_tool_names:
@@ -2719,6 +2734,11 @@ class AIAgent:
                 user_block = self._memory_store.format_for_system_prompt("user")
                 if user_block:
                     prompt_parts.append(user_block)
+
+        if self._project_memory_store and self._project_memory_enabled:
+            project_block = self._project_memory_store.format_for_system_prompt()
+            if project_block:
+                prompt_parts.append(project_block)
 
         # External memory provider system prompt block (additive to built-in)
         if self._memory_manager:
@@ -2956,6 +2976,8 @@ class AIAgent:
         self._cached_system_prompt = None
         if self._memory_store:
             self._memory_store.load_from_disk()
+        if self._project_memory_store:
+            self._project_memory_store.load_from_disk()
 
     def _responses_tools(self, tools: Optional[List[Dict[str, Any]]] = None) -> Optional[List[Dict[str, Any]]]:
         """Convert chat-completions tool schemas to Responses function-tool schemas."""
@@ -3381,19 +3403,23 @@ class AIAgent:
     def _normalize_codex_response(self, response: Any) -> tuple[Any, str]:
         """Normalize a Responses API object to an assistant_message-like object."""
         output = getattr(response, "output", None)
-        if not isinstance(output, list) or not output:
+        if not isinstance(output, list):
+            output = []
+
+        output_text = getattr(response, "output_text", None)
+        output_text = output_text.strip() if isinstance(output_text, str) else ""
+        if not output:
             # The Codex backend can return empty output when the answer was
             # delivered entirely via stream events. Check output_text as a
             # last-resort fallback before raising.
-            out_text = getattr(response, "output_text", None)
-            if isinstance(out_text, str) and out_text.strip():
+            if output_text:
                 logger.debug(
                     "Codex response has empty output but output_text is present (%d chars); "
-                    "synthesizing output item.", len(out_text.strip()),
+                    "synthesizing output item.", len(output_text),
                 )
                 output = [SimpleNamespace(
                     type="message", role="assistant", status="completed",
-                    content=[SimpleNamespace(type="output_text", text=out_text.strip())],
+                    content=[SimpleNamespace(type="output_text", text=output_text)],
                 )]
                 response.output = output
             else:
@@ -3512,10 +3538,8 @@ class AIAgent:
                 ))
 
         final_text = "\n".join([p for p in content_parts if p]).strip()
-        if not final_text and hasattr(response, "output_text"):
-            out_text = getattr(response, "output_text", "")
-            if isinstance(out_text, str):
-                final_text = out_text.strip()
+        if not final_text and output_text:
+            final_text = output_text
 
         assistant_message = SimpleNamespace(
             content=final_text,
@@ -3827,6 +3851,7 @@ class AIAgent:
         self._codex_streamed_text_parts: list = []
         for attempt in range(max_stream_retries + 1):
             collected_output_items: list = []
+            streamed_function_calls: dict[str, Any] = {}
             try:
                 with active_client.responses.stream(**api_kwargs) as stream:
                     for event in stream:
@@ -3847,6 +3872,20 @@ class AIAgent:
                                         except Exception:
                                             pass
                                 self._fire_stream_delta(delta_text)
+                        elif event_type == "response.output_item.added":
+                            added_item = getattr(event, "item", None)
+                            if added_item is not None and getattr(added_item, "type", None) == "function_call":
+                                has_tool_calls = True
+                                item_id = getattr(added_item, "id", None)
+                                if isinstance(item_id, str) and item_id:
+                                    streamed_function_calls[item_id] = added_item
+                        elif event_type == "response.function_call_arguments.delta":
+                            has_tool_calls = True
+                            item_id = getattr(event, "item_id", None)
+                            delta_args = getattr(event, "delta", "")
+                            if isinstance(item_id, str) and item_id and item_id in streamed_function_calls and isinstance(delta_args, str):
+                                prior_args = getattr(streamed_function_calls[item_id], "arguments", "") or ""
+                                streamed_function_calls[item_id].arguments = prior_args + delta_args
                         # Track tool calls to suppress text streaming
                         elif "function_call" in event_type:
                             has_tool_calls = True
@@ -3887,6 +3926,12 @@ class AIAgent:
                                 "Codex stream: backfilled %d output items from stream events",
                                 len(collected_output_items),
                             )
+                        elif streamed_function_calls:
+                            final_response.output = list(streamed_function_calls.values())
+                            logger.debug(
+                                "Codex stream: recovered %d function calls from stream events",
+                                len(streamed_function_calls),
+                            )
                         elif self._codex_streamed_text_parts and not has_tool_calls:
                             assembled = "".join(self._codex_streamed_text_parts)
                             final_response.output = [SimpleNamespace(
@@ -3895,6 +3940,7 @@ class AIAgent:
                                 status="completed",
                                 content=[SimpleNamespace(type="output_text", text=assembled)],
                             )]
+                            final_response.output_text = assembled
                             logger.debug(
                                 "Codex stream: synthesized output from %d text deltas (%d chars)",
                                 len(self._codex_streamed_text_parts), len(assembled),
@@ -6155,6 +6201,27 @@ class AIAgent:
                 except Exception:
                     pass
             return result
+        elif function_name == "project_memory":
+            from tools.project_memory_tool import project_memory_tool as _project_memory_tool
+
+            return _project_memory_tool(
+                action=function_args.get("action", "read"),
+                content=function_args.get("content"),
+                tags=function_args.get("tags"),
+                summary=function_args.get("summary"),
+                rationale=function_args.get("rationale"),
+                related_files=function_args.get("related_files"),
+                decision_id=function_args.get("decision_id"),
+                outcome=function_args.get("outcome"),
+                status=function_args.get("status"),
+                subject=function_args.get("subject"),
+                predicate=function_args.get("predicate"),
+                object_=function_args.get("object"),
+                paths=function_args.get("paths"),
+                limit=function_args.get("limit", 10),
+                project_root=function_args.get("project_root"),
+                store=self._project_memory_store,
+            )
         elif self._memory_manager and self._memory_manager.has_tool(function_name):
             return self._memory_manager.handle_tool_call(function_name, function_args)
         elif function_name == "clarify":
@@ -6531,6 +6598,30 @@ class AIAgent:
                 tool_duration = time.time() - tool_start_time
                 if self.quiet_mode:
                     self._vprint(f"  {_get_cute_tool_message_impl('memory', function_args, tool_duration, result=function_result)}")
+            elif function_name == "project_memory":
+                from tools.project_memory_tool import project_memory_tool as _project_memory_tool
+
+                function_result = _project_memory_tool(
+                    action=function_args.get("action", "read"),
+                    content=function_args.get("content"),
+                    tags=function_args.get("tags"),
+                    summary=function_args.get("summary"),
+                    rationale=function_args.get("rationale"),
+                    related_files=function_args.get("related_files"),
+                    decision_id=function_args.get("decision_id"),
+                    outcome=function_args.get("outcome"),
+                    status=function_args.get("status"),
+                    subject=function_args.get("subject"),
+                    predicate=function_args.get("predicate"),
+                    object_=function_args.get("object"),
+                    paths=function_args.get("paths"),
+                    limit=function_args.get("limit", 10),
+                    project_root=function_args.get("project_root"),
+                    store=self._project_memory_store,
+                )
+                tool_duration = time.time() - tool_start_time
+                if self.quiet_mode:
+                    self._vprint(f"  {_get_cute_tool_message_impl('project_memory', function_args, tool_duration, result=function_result)}")
             elif function_name == "clarify":
                 from tools.clarify_tool import clarify_tool as _clarify_tool
                 function_result = _clarify_tool(
@@ -7542,37 +7633,39 @@ class AIAgent:
                     error_details = []
                     if self.api_mode == "codex_responses":
                         output_items = getattr(response, "output", None) if response is not None else None
+                        output_text = getattr(response, "output_text", None) if response is not None else None
+                        has_output_text = isinstance(output_text, str) and bool(output_text.strip())
+                        response_status = getattr(response, "status", None) if response is not None else None
+                        incomplete_details = getattr(response, "incomplete_details", None) if response is not None else None
+                        incomplete_reason = None
+                        if isinstance(incomplete_details, dict):
+                            incomplete_reason = incomplete_details.get("reason")
+                        elif incomplete_details is not None:
+                            incomplete_reason = getattr(incomplete_details, "reason", None)
+
                         if response is None:
                             response_invalid = True
                             error_details.append("response is None")
-                        elif not isinstance(output_items, list):
+                        elif isinstance(output_items, list) and len(output_items) > 0:
+                            pass
+                        elif has_output_text:
+                            logger.debug(
+                                "Codex response has no usable output items but output_text is present "
+                                "(%d chars); deferring to normalization.",
+                                len(output_text.strip()),
+                            )
+                        else:
                             response_invalid = True
-                            error_details.append("response.output is not a list")
-                        elif not output_items:
-                            # Stream backfill may have failed, but
-                            # _normalize_codex_response can still recover
-                            # from response.output_text. Only mark invalid
-                            # when that fallback is also absent.
-                            _out_text = getattr(response, "output_text", None)
-                            _out_text_stripped = _out_text.strip() if isinstance(_out_text, str) else ""
-                            if _out_text_stripped:
-                                logger.debug(
-                                    "Codex response.output is empty but output_text is present "
-                                    "(%d chars); deferring to normalization.",
-                                    len(_out_text_stripped),
-                                )
+                            if not isinstance(output_items, list):
+                                error_details.append("response.output is not a list")
                             else:
-                                _resp_status = getattr(response, "status", None)
-                                _resp_incomplete = getattr(response, "incomplete_details", None)
-                                logger.warning(
-                                    "Codex response.output is empty after stream backfill "
-                                    "(status=%s, incomplete_details=%s, model=%s). %s",
-                                    _resp_status, _resp_incomplete,
-                                    getattr(response, "model", None),
-                                    f"api_mode={self.api_mode} provider={self.provider}",
-                                )
-                                response_invalid = True
                                 error_details.append("response.output is empty")
+                            if isinstance(response_status, str) and response_status.strip():
+                                error_details.append(f"response.status={response_status.strip()}")
+                            if isinstance(incomplete_reason, str) and incomplete_reason.strip():
+                                error_details.append(
+                                    f"response.incomplete_details.reason={incomplete_reason.strip()}"
+                                )
                     elif self.api_mode == "anthropic_messages":
                         content_blocks = getattr(response, "content", None) if response is not None else None
                         if response is None:
@@ -7653,11 +7746,15 @@ class AIAgent:
                             self._emit_status(f"❌ Max retries ({max_retries}) exceeded for invalid responses. Giving up.")
                             logging.error(f"{self.log_prefix}Invalid API response after {max_retries} retries.")
                             self._persist_session(messages, conversation_history)
+                            detail_suffix = f": {', '.join(error_details)}" if error_details else ""
                             return {
                                 "messages": messages,
                                 "completed": False,
                                 "api_calls": api_call_count,
-                                "error": "Invalid API response shape. Likely rate limited or malformed provider response.",
+                                "error": (
+                                    "Invalid API response"
+                                    f"{detail_suffix}. Upstream returned no usable assistant output."
+                                ),
                                 "failed": True  # Mark as failure for filtering
                             }
                         

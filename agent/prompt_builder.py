@@ -155,6 +155,14 @@ MEMORY_GUIDANCE = (
     "necessary later, save it as a skill with the skill tool."
 )
 
+PROJECT_MEMORY_GUIDANCE = (
+    "You also have project-scoped persistent memory via the project_memory tool. "
+    "Use it for repo-specific notes, architecture decisions, file drift baselines, "
+    "and graph relationships between modules, files, tasks, and concepts. "
+    "Prefer project_memory over global memory when the fact is only useful inside "
+    "the current codebase or working directory."
+)
+
 SESSION_SEARCH_GUIDANCE = (
     "When the user references something from a past conversation or you suspect "
     "relevant cross-session context exists, use session_search to recall it before "

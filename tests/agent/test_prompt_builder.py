@@ -265,6 +265,17 @@ class TestBuildSkillsSystemPrompt:
         assert "Debug Python scripts" in result
         assert "available_skills" in result
 
+    def test_builds_index_with_nested_mcp_skill(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skills_dir = tmp_path / "skills" / "mcp" / "agent-ops-integrations"
+        skills_dir.mkdir(parents=True)
+        (skills_dir / "SKILL.md").write_text(
+            "---\nname: agent-ops-integrations\ndescription: Connect Hermes to OpenTabs\n---\n"
+        )
+        result = build_skills_system_prompt()
+        assert "agent-ops-integrations" in result
+        assert "Connect Hermes to OpenTabs" in result
+
     def test_deduplicates_skills(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         cat_dir = tmp_path / "skills" / "tools"

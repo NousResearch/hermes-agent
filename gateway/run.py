@@ -433,6 +433,35 @@ def _resolve_gateway_model(config: dict | None = None) -> str:
     return ""
 
 
+def _resolve_gateway_background_model(
+    config: dict | None = None,
+    *,
+    runtime_provider: str | None = None,
+) -> str:
+    """Resolve a lighter-weight model for gateway background tasks."""
+    cfg = config if config is not None else _load_gateway_config()
+    compression_cfg = cfg.get("compression", {})
+    if isinstance(compression_cfg, dict):
+        summary_model = compression_cfg.get("summary_model")
+        if isinstance(summary_model, str):
+            candidate = summary_model.strip()
+            if candidate:
+                if runtime_provider and str(runtime_provider).strip().lower() == "openai-codex":
+                    normalized_candidate = candidate
+                    if "/" in normalized_candidate:
+                        provider_prefix, _, bare_model = normalized_candidate.partition("/")
+                        if provider_prefix.strip().lower() == "openai-codex" and bare_model.strip():
+                            normalized_candidate = bare_model.strip()
+                    if normalized_candidate == "gpt-5.4-nano":
+                        return "gpt-5.2-codex"
+                if runtime_provider and "/" in candidate:
+                    provider_prefix, _, bare_model = candidate.partition("/")
+                    if provider_prefix.strip().lower() == str(runtime_provider).strip().lower() and bare_model.strip():
+                        return bare_model.strip()
+                return candidate
+    return _resolve_gateway_model(cfg)
+
+
 def _resolve_hermes_bin() -> Optional[list[str]]:
     """Resolve the Hermes update command as argv parts.
 
@@ -659,10 +688,11 @@ class GatewayRunner:
             if not runtime_kwargs.get("api_key"):
                 return
 
-            # Resolve model from config — AIAgent's default is OpenRouter-
-            # formatted ("anthropic/claude-opus-4.6") which fails when the
-            # active provider is openai-codex.
-            model = _resolve_gateway_model()
+            # Resolve a lighter-weight background model so housekeeping tasks
+            # don't compete with the interactive session model.
+            model = _resolve_gateway_background_model(
+                runtime_provider=runtime_kwargs.get("provider"),
+            )
 
             tmp_agent = AIAgent(
                 **runtime_kwargs,
@@ -1265,7 +1295,7 @@ class GatewayRunner:
         
         return True
     
-    async def _session_expiry_watcher(self, interval: int = 300):
+    async def _session_expiry_watcher(self, interval: int = 300, startup_delay: int = 60):
         """Background task that proactively flushes memories for expired sessions.
         
         Runs every `interval` seconds (default 5 min).  For each session that
@@ -1275,91 +1305,101 @@ class GatewayRunner:
         This means memories are already saved by the time the user sends their
         next message, so there's no blocking delay.
         """
-        await asyncio.sleep(60)  # initial delay — let the gateway fully start
+        await asyncio.sleep(startup_delay)  # initial delay — let the gateway fully start
         _flush_failures: dict[str, int] = {}  # session_id -> consecutive failure count
         _MAX_FLUSH_RETRIES = 3
         while self._running:
             try:
-                self.session_store._ensure_loaded()
-                # Collect expired sessions first, then log a single summary.
-                _expired_entries = []
-                for key, entry in list(self.session_store._entries.items()):
-                    if entry.memory_flushed:
-                        continue
-                    if not self.session_store._is_session_expired(entry):
-                        continue
-                    _expired_entries.append((key, entry))
-
-                if _expired_entries:
-                    # Extract platform names from session keys for a compact summary.
-                    # Keys look like "agent:main:telegram:dm:12345" — platform is field [2].
-                    _platforms: dict[str, int] = {}
-                    for _k, _e in _expired_entries:
-                        _parts = _k.split(":")
-                        _plat = _parts[2] if len(_parts) > 2 else "unknown"
-                        _platforms[_plat] = _platforms.get(_plat, 0) + 1
-                    _plat_summary = ", ".join(
-                        f"{p}:{c}" for p, c in sorted(_platforms.items())
+                if self._running_agents:
+                    logger.debug(
+                        "Session expiry watcher deferred while %d agent(s) are active",
+                        len(self._running_agents),
                     )
-                    logger.info(
-                        "Session expiry: %d sessions to flush (%s)",
-                        len(_expired_entries), _plat_summary,
-                    )
+                else:
+                    self.session_store._ensure_loaded()
+                    # Collect expired sessions first, then log a single summary.
+                    _expired_entries = []
+                    for key, entry in list(self.session_store._entries.items()):
+                        if entry.memory_flushed:
+                            continue
+                        if not self.session_store._is_session_expired(entry):
+                            continue
+                        _expired_entries.append((key, entry))
 
-                for key, entry in _expired_entries:
-                    try:
-                        await self._async_flush_memories(entry.session_id)
-                        # Shut down memory provider on the cached agent
-                        cached_agent = self._running_agents.get(key)
-                        if cached_agent and cached_agent is not _AGENT_PENDING_SENTINEL:
-                            try:
-                                if hasattr(cached_agent, 'shutdown_memory_provider'):
-                                    cached_agent.shutdown_memory_provider()
-                            except Exception:
-                                pass
-                        # Mark as flushed and persist to disk so the flag
-                        # survives gateway restarts.
-                        with self.session_store._lock:
-                            entry.memory_flushed = True
-                            self.session_store._save()
-                        logger.debug(
-                            "Memory flush completed for session %s",
-                            entry.session_id,
+                    if _expired_entries:
+                        # Extract platform names from session keys for a compact summary.
+                        # Keys look like "agent:main:telegram:dm:12345" — platform is field [2].
+                        _platforms: dict[str, int] = {}
+                        for _k, _e in _expired_entries:
+                            _parts = _k.split(":")
+                            _plat = _parts[2] if len(_parts) > 2 else "unknown"
+                            _platforms[_plat] = _platforms.get(_plat, 0) + 1
+                        _plat_summary = ", ".join(
+                            f"{p}:{c}" for p, c in sorted(_platforms.items())
                         )
-                        _flush_failures.pop(entry.session_id, None)
-                    except Exception as e:
-                        failures = _flush_failures.get(entry.session_id, 0) + 1
-                        _flush_failures[entry.session_id] = failures
-                        if failures >= _MAX_FLUSH_RETRIES:
-                            logger.warning(
-                                "Memory flush gave up after %d attempts for %s: %s. "
-                                "Marking as flushed to prevent infinite retry loop.",
-                                failures, entry.session_id, e,
-                            )
+                        logger.info(
+                            "Session expiry: %d sessions to flush (%s)",
+                            len(_expired_entries), _plat_summary,
+                        )
+
+                    for key, entry in _expired_entries:
+                        try:
+                            await self._async_flush_memories(entry.session_id)
+                            # Shut down memory provider on the cached agent
+                            cached_agent = self._running_agents.get(key)
+                            if cached_agent and cached_agent is not _AGENT_PENDING_SENTINEL:
+                                try:
+                                    if hasattr(cached_agent, 'shutdown_memory_provider'):
+                                        cached_agent.shutdown_memory_provider()
+                                except Exception:
+                                    pass
+                            # Mark as flushed and persist to disk so the flag
+                            # survives gateway restarts.
                             with self.session_store._lock:
                                 entry.memory_flushed = True
                                 self.session_store._save()
-                            _flush_failures.pop(entry.session_id, None)
-                        else:
                             logger.debug(
-                                "Memory flush failed (%d/%d) for %s: %s",
-                                failures, _MAX_FLUSH_RETRIES, entry.session_id, e,
+                                "Memory flush completed for session %s",
+                                entry.session_id,
                             )
+                            _flush_failures.pop(entry.session_id, None)
+                        except Exception as e:
+                            failures = _flush_failures.get(entry.session_id, 0) + 1
+                            _flush_failures[entry.session_id] = failures
+                            if failures >= _MAX_FLUSH_RETRIES:
+                                logger.warning(
+                                    "Memory flush gave up after %d attempts for %s: %s. "
+                                    "Marking as flushed to prevent infinite retry loop.",
+                                    failures, entry.session_id, e,
+                                )
+                                with self.session_store._lock:
+                                    entry.memory_flushed = True
+                                    self.session_store._save()
+                                _flush_failures.pop(entry.session_id, None)
+                            else:
+                                logger.debug(
+                                    "Memory flush failed (%d/%d) for %s: %s",
+                                    failures, _MAX_FLUSH_RETRIES, entry.session_id, e,
+                                )
+                        # Process at most one expired session per pass so
+                        # startup backlog does not stampede the provider and
+                        # interfere with live user turns.
+                        break
 
-                if _expired_entries:
-                    _flushed = sum(
-                        1 for _, e in _expired_entries if e.memory_flushed
-                    )
-                    _failed = len(_expired_entries) - _flushed
-                    if _failed:
-                        logger.info(
-                            "Session expiry done: %d flushed, %d pending retry",
-                            _flushed, _failed,
+                    if _expired_entries:
+                        _flushed = sum(
+                            1 for _, e in _expired_entries if e.memory_flushed
                         )
-                    else:
-                        logger.info(
-                            "Session expiry done: %d flushed", _flushed,
-                        )
+                        _failed = len(_expired_entries) - _flushed
+                        if _failed:
+                            logger.info(
+                                "Session expiry done: %d flushed, %d pending retry",
+                                _flushed, _failed,
+                            )
+                        else:
+                            logger.info(
+                                "Session expiry done: %d flushed", _flushed,
+                            )
             except Exception as e:
                 logger.debug("Session expiry watcher error: %s", e)
             # Sleep in small increments so we can stop quickly

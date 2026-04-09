@@ -584,6 +584,7 @@ class TestGetTextAuxiliaryClient:
 
     def test_codex_fallback_when_nothing_else(self, codex_auth_dir):
         with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
+             patch("agent.auxiliary_client._resolve_custom_runtime", return_value=(None, None)), \
              patch("agent.auxiliary_client.OpenAI") as mock_openai:
             client, model = get_text_auxiliary_client()
         assert model == "gpt-5.2-codex"
@@ -622,6 +623,7 @@ class TestGetTextAuxiliaryClient:
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
         with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
+             patch("agent.auxiliary_client._resolve_custom_runtime", return_value=(None, None)), \
              patch("agent.auxiliary_client._read_codex_access_token", return_value=None), \
              patch("agent.auxiliary_client._resolve_api_key_provider", return_value=(None, None)):
             client, model = get_text_auxiliary_client()
@@ -721,6 +723,38 @@ class TestAuxiliaryPoolAwareness:
         assert call_kwargs["api_key"] == "gh-cli-token"
         assert call_kwargs["base_url"] == "https://api.githubcopilot.com"
         assert call_kwargs["default_headers"]["Editor-Version"]
+
+    def test_api_key_provider_skips_copilot_pool_entries(self):
+        class _CopilotConfig:
+            auth_type = "api_key"
+            name = "GitHub Copilot"
+            inference_base_url = "https://api.githubcopilot.com"
+
+        registry = {"copilot": _CopilotConfig()}
+
+        with (
+            patch("hermes_cli.auth.PROVIDER_REGISTRY", registry, create=True),
+            patch(
+                "hermes_cli.auth.resolve_api_key_provider_credentials",
+                return_value={
+                    "provider": "copilot",
+                    "api_key": "gh-cli-token",
+                    "base_url": "https://api.githubcopilot.com",
+                },
+            ),
+            patch("agent.auxiliary_client._select_pool_entry", return_value=(True, object())),
+            patch("agent.auxiliary_client._pool_runtime_api_key", return_value="pooled-token"),
+            patch("agent.auxiliary_client.OpenAI") as mock_openai,
+        ):
+            from agent.auxiliary_client import _resolve_api_key_provider
+
+            client, model = _resolve_api_key_provider()
+
+        assert client is not None
+        assert model == "default"
+        call_kwargs = mock_openai.call_args.kwargs
+        assert call_kwargs["api_key"] == "gh-cli-token"
+        assert call_kwargs["base_url"] == "https://api.githubcopilot.com"
 
     def test_vision_auto_uses_active_provider_as_fallback(self, monkeypatch):
         """When no OpenRouter/Nous available, vision auto falls back to active provider."""
@@ -1004,6 +1038,7 @@ class TestResolveForcedProvider:
 
     def test_forced_main_falls_to_codex(self, codex_auth_dir, monkeypatch):
         with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
+             patch("agent.auxiliary_client._resolve_custom_runtime", return_value=(None, None)), \
              patch("agent.auxiliary_client.OpenAI"):
             client, model = _resolve_forced_provider("main")
         from agent.auxiliary_client import CodexAuxiliaryClient

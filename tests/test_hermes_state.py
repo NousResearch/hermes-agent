@@ -897,6 +897,86 @@ class TestSchemaInit:
 
         migrated_db.close()
 
+    def test_migration_from_v13_uuid_indexes(self, tmp_path):
+        """Regression: SCHEMA_SQL must not reference columns added by later migrations.
+
+        Bug history: SCHEMA_SQL had `CREATE INDEX ... ON knowledge_notes(uuid)` but
+        the uuid column is added in the v14 migration. On any pre-v14 database,
+        executescript(SCHEMA_SQL) failed at line 211 with `no such column: uuid`,
+        which tanked SessionDB.__init__() entirely and produced the user-visible
+        warning "Failed to initialize SessionDB — no such column: uuid" on every
+        hermes chat call.
+
+        This test seeds a minimal v13 database (knowledge_notes table without
+        uuid column, schema_version = 13) and verifies SessionDB() initializes
+        cleanly and migrates to the latest version with the column added.
+        """
+        import sqlite3
+
+        db_path = tmp_path / "v13_test.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.executescript("""
+            CREATE TABLE schema_version (version INTEGER NOT NULL);
+            INSERT INTO schema_version (version) VALUES (13);
+
+            CREATE TABLE knowledge_notes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                content TEXT NOT NULL,
+                source TEXT,
+                session_id TEXT,
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL
+            );
+            CREATE TABLE knowledge_people (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                role TEXT,
+                organization TEXT,
+                details TEXT,
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL
+            );
+            CREATE TABLE knowledge_projects (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                status TEXT DEFAULT 'active',
+                description TEXT,
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL
+            );
+            CREATE TABLE knowledge_decisions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                rationale TEXT,
+                status TEXT DEFAULT 'active',
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL
+            );
+        """)
+        conn.commit()
+        conn.close()
+
+        # This is the critical line: must NOT raise OperationalError
+        migrated_db = SessionDB(db_path=db_path)
+
+        # Verify migration completed
+        cursor = migrated_db._conn.execute("SELECT version FROM schema_version")
+        version = cursor.fetchone()[0]
+        assert version >= 14, f"Expected schema >= 14, got {version}"
+
+        # Verify uuid column was added by the v14 migration
+        cursor = migrated_db._conn.execute("PRAGMA table_info(knowledge_notes)")
+        columns = {row[1] for row in cursor.fetchall()}
+        assert "uuid" in columns, "v14 migration did not add uuid column"
+
+        # Verify uuid index was created
+        cursor = migrated_db._conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_knowledge_notes_uuid'"
+        )
+        assert cursor.fetchone() is not None, "uuid index was not created by v14 migration"
+
+        migrated_db.close()
+
 
 class TestTitleUniqueness:
     """Tests for unique title enforcement and title-based lookups."""

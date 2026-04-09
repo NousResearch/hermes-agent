@@ -208,10 +208,10 @@ CREATE INDEX IF NOT EXISTS idx_knowledge_people_name ON knowledge_people(name);
 CREATE INDEX IF NOT EXISTS idx_knowledge_projects_status ON knowledge_projects(name, status);
 CREATE INDEX IF NOT EXISTS idx_knowledge_notes_created ON knowledge_notes(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_knowledge_decisions_status ON knowledge_decisions(status);
-CREATE INDEX IF NOT EXISTS idx_knowledge_notes_uuid ON knowledge_notes(uuid);
-CREATE INDEX IF NOT EXISTS idx_knowledge_people_uuid ON knowledge_people(uuid);
-CREATE INDEX IF NOT EXISTS idx_knowledge_projects_uuid ON knowledge_projects(uuid);
-CREATE INDEX IF NOT EXISTS idx_knowledge_decisions_uuid ON knowledge_decisions(uuid);
+-- NOTE: uuid indexes are NOT created here because executescript() runs BEFORE
+-- the migration loop. On a pre-v14 database the uuid column doesn't exist yet,
+-- so these indexes would fail. They are created in the v14 migration block
+-- below, after the ALTER TABLE statements add the column.
 
 CREATE TABLE IF NOT EXISTS implicit_signals (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

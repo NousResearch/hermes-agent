@@ -77,6 +77,7 @@ from hermes_constants import OPENROUTER_BASE_URL
 # Agent internals extracted to agent/ package for modularity
 from agent.memory_manager import build_memory_context_block
 from agent.retry_utils import jittered_backoff
+from agent.error_classifier import classify_api_error, FailoverReason
 from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY, PLATFORM_HINTS,
     MEMORY_GUIDANCE, SESSION_SEARCH_GUIDANCE, SKILLS_GUIDANCE,
@@ -8017,6 +8018,25 @@ class AIAgent:
 
                     status_code = getattr(api_error, "status_code", None)
                     error_context = self._extract_api_error_context(api_error)
+
+                    # ── Classify the error for structured recovery decisions ──
+                    _compressor = getattr(self, "context_compressor", None)
+                    _ctx_len = getattr(_compressor, "context_length", 200000) if _compressor else 200000
+                    classified = classify_api_error(
+                        api_error,
+                        provider=getattr(self, "provider", "") or "",
+                        model=getattr(self, "model", "") or "",
+                        approx_tokens=approx_tokens,
+                        context_length=_ctx_len,
+                        num_messages=len(api_messages) if api_messages else 0,
+                    )
+                    logger.debug(
+                        "Error classified: reason=%s status=%s retryable=%s compress=%s rotate=%s fallback=%s",
+                        classified.reason.value, classified.status_code,
+                        classified.retryable, classified.should_compress,
+                        classified.should_rotate_credential, classified.should_fallback,
+                    )
+
                     recovered_with_pool, has_retried_429 = self._recover_with_credential_pool(
                         status_code=status_code,
                         has_retried_429=has_retried_429,
@@ -8079,27 +8099,24 @@ class AIAgent:
                     # from all messages so the next retry sends no thinking
                     # blocks at all.  One-shot — don't retry infinitely.
                     if (
-                        self.api_mode == "anthropic_messages"
-                        and status_code == 400
+                        classified.reason == FailoverReason.thinking_signature
                         and not thinking_sig_retry_attempted
                     ):
-                        _err_msg_lower = str(api_error).lower()
-                        if "signature" in _err_msg_lower and "thinking" in _err_msg_lower:
-                            thinking_sig_retry_attempted = True
-                            for _m in messages:
-                                if isinstance(_m, dict):
-                                    _m.pop("reasoning_details", None)
-                            self._vprint(
-                                f"{self.log_prefix}⚠️  Thinking block signature invalid — "
-                                f"stripped all thinking blocks, retrying...",
-                                force=True,
-                            )
-                            logging.warning(
-                                "%sThinking block signature recovery: stripped "
-                                "reasoning_details from %d messages",
-                                self.log_prefix, len(messages),
-                            )
-                            continue
+                        thinking_sig_retry_attempted = True
+                        for _m in messages:
+                            if isinstance(_m, dict):
+                                _m.pop("reasoning_details", None)
+                        self._vprint(
+                            f"{self.log_prefix}⚠️  Thinking block signature invalid — "
+                            f"stripped all thinking blocks, retrying...",
+                            force=True,
+                        )
+                        logging.warning(
+                            "%sThinking block signature recovery: stripped "
+                            "reasoning_details from %d messages",
+                            self.log_prefix, len(messages),
+                        )
+                        continue
 
                     retry_count += 1
                     elapsed_time = time.time() - api_start_time
@@ -8156,14 +8173,7 @@ class AIAgent:
                     # is NOT a transient rate limit — retrying or switching
                     # credentials won't help.  Reduce context to 200k (the
                     # standard tier) and compress.
-                    # Only applies to Sonnet — Opus 1M is general access.
-                    _is_long_context_tier_error = (
-                        status_code == 429
-                        and "extra usage" in error_msg
-                        and "long context" in error_msg
-                        and "sonnet" in self.model.lower()
-                    )
-                    if _is_long_context_tier_error:
+                    if classified.reason == FailoverReason.long_context_tier:
                         _reduced_ctx = 200000
                         compressor = self.context_compressor
                         old_ctx = compressor.context_length
@@ -8208,13 +8218,9 @@ class AIAgent:
                     # When a fallback model is configured, switch immediately instead
                     # of burning through retries with exponential backoff -- the
                     # primary provider won't recover within the retry window.
-                    is_rate_limited = (
-                        status_code == 429
-                        or "rate limit" in error_msg
-                        or "too many requests" in error_msg
-                        or "rate_limit" in error_msg
-                        or "usage limit" in error_msg
-                        or "quota" in error_msg
+                    is_rate_limited = classified.reason in (
+                        FailoverReason.rate_limit,
+                        FailoverReason.billing,
                     )
                     if is_rate_limited and self._fallback_index < len(self._fallback_chain):
                         # Don't eagerly fallback if credential pool rotation may
@@ -8230,10 +8236,7 @@ class AIAgent:
                                 continue
 
                     is_payload_too_large = (
-                        status_code == 413
-                        or 'request entity too large' in error_msg
-                        or 'payload too large' in error_msg
-                        or 'error code: 413' in error_msg
+                        classified.reason == FailoverReason.payload_too_large
                     )
 
                     if is_payload_too_large:
@@ -8277,64 +8280,12 @@ class AIAgent:
                             }
 
                     # Check for context-length errors BEFORE generic 4xx handler.
-                    # Local backends (LM Studio, Ollama, llama.cpp) often return
-                    # HTTP 400 with messages like "Context size has been exceeded"
-                    # which must trigger compression, not an immediate abort.
-                    is_context_length_error = any(phrase in error_msg for phrase in [
-                        'context length', 'context size', 'maximum context',
-                        'token limit', 'too many tokens', 'reduce the length',
-                        'exceeds the limit', 'context window',
-                        'request entity too large',  # OpenRouter/Nous 413 safety net
-                        'prompt is too long',  # Anthropic: "prompt is too long: N tokens > M maximum"
-                        'prompt exceeds max length',  # Z.AI / GLM: generic 400 overflow wording
-                    ])
-
-                    # Fallback heuristic: Anthropic sometimes returns a generic
-                    # 400 invalid_request_error with just "Error" as the message
-                    # when the context is too large.  If the error message is very
-                    # short/generic AND the session is large, treat it as a
-                    # probable context-length error and attempt compression rather
-                    # than aborting.  This prevents an infinite failure loop where
-                    # each failed message gets persisted, making the session even
-                    # larger. (#1630)
-                    if not is_context_length_error and status_code == 400:
-                        ctx_len = getattr(getattr(self, 'context_compressor', None), 'context_length', 200000)
-                        is_large_session = approx_tokens > ctx_len * 0.4 or len(api_messages) > 80
-                        is_generic_error = len(error_msg.strip()) < 30  # e.g. just "error"
-                        if is_large_session and is_generic_error:
-                            is_context_length_error = True
-                            self._vprint(
-                                f"{self.log_prefix}⚠️  Generic 400 with large session "
-                                f"(~{approx_tokens:,} tokens, {len(api_messages)} msgs) — "
-                                f"treating as probable context overflow.",
-                                force=True,
-                            )
-
-                    # Server disconnects on large sessions are often caused by
-                    # the request exceeding the provider's context/payload limit
-                    # without a proper HTTP error response.  Treat these as
-                    # context-length errors to trigger compression rather than
-                    # burning through retries that will all fail the same way.
-                    # This breaks the death spiral: disconnect → no token data
-                    # → no compression → bigger session → more disconnects.
-                    # (#2153)
-                    if not is_context_length_error and not status_code:
-                        _is_server_disconnect = (
-                            'server disconnected' in error_msg
-                            or 'peer closed connection' in error_msg
-                            or error_type in ('ReadError', 'RemoteProtocolError', 'ServerDisconnectedError')
-                        )
-                        if _is_server_disconnect:
-                            ctx_len = getattr(getattr(self, 'context_compressor', None), 'context_length', 200000)
-                            _is_large = approx_tokens > ctx_len * 0.6 or len(api_messages) > 200
-                            if _is_large:
-                                is_context_length_error = True
-                                self._vprint(
-                                    f"{self.log_prefix}⚠️  Server disconnected with large session "
-                                    f"(~{approx_tokens:,} tokens, {len(api_messages)} msgs) — "
-                                    f"treating as context-length error, attempting compression.",
-                                    force=True,
-                                )
+                    # The classifier detects context overflow from: explicit error
+                    # messages, generic 400 + large session heuristic (#1630), and
+                    # server disconnect + large session pattern (#2153).
+                    is_context_length_error = (
+                        classified.reason == FailoverReason.context_overflow
+                    )
 
                     if is_context_length_error:
                         compressor = self.context_compressor
@@ -8406,35 +8357,30 @@ class AIAgent:
                                 "partial": True
                             }
 
-                    # Check for non-retryable client errors (4xx HTTP status codes).
-                    # These indicate a problem with the request itself (bad model ID,
-                    # invalid API key, forbidden, etc.) and will never succeed on retry.
-                    # Note: 413 and context-length errors are excluded — handled above.
-                    # 429 (rate limit) is transient and MUST be retried with backoff.
-                    # 529 (Anthropic overloaded) is also transient.
-                    # Also catch local validation errors (ValueError, TypeError) — these
-                    # are programming bugs, not transient failures.
-                    # Exclude UnicodeEncodeError — it's a ValueError subclass but is
-                    # handled separately by the surrogate sanitization path above.
-                    _RETRYABLE_STATUS_CODES = {413, 429, 529}
+                    # Check for non-retryable client errors.  The classifier
+                    # already accounts for 413, 429, 529 (transient), context
+                    # overflow, and generic-400 heuristics.  Local validation
+                    # errors (ValueError, TypeError) are programming bugs.
                     is_local_validation_error = (
                         isinstance(api_error, (ValueError, TypeError))
                         and not isinstance(api_error, UnicodeEncodeError)
                     )
-                    # Detect generic 400s from Anthropic OAuth (transient server-side failures).
-                    # Real invalid_request_error responses include a descriptive message;
-                    # transient ones contain only "Error" or are empty. (ref: issue #1608)
-                    _err_body = getattr(api_error, "body", None) or {}
-                    _err_message = (_err_body.get("error", {}).get("message", "") if isinstance(_err_body, dict) else "")
-                    _is_generic_400 = (status_code == 400 and _err_message.strip().lower() in ("error", ""))
-                    is_client_status_error = isinstance(status_code, int) and 400 <= status_code < 500 and status_code not in _RETRYABLE_STATUS_CODES and not _is_generic_400
-                    is_client_error = (is_local_validation_error or is_client_status_error or any(phrase in error_msg for phrase in [
-                        'error code: 401', 'error code: 403',
-                        'error code: 404', 'error code: 422',
-                        'is not a valid model', 'invalid model', 'model not found',
-                        'invalid api key', 'invalid_api_key', 'authentication',
-                        'unauthorized', 'forbidden', 'not found',
-                    ])) and not is_context_length_error
+                    is_client_error = (
+                        is_local_validation_error
+                        or (
+                            not classified.retryable
+                            and not classified.should_compress
+                            and classified.reason not in (
+                                FailoverReason.rate_limit,
+                                FailoverReason.billing,
+                                FailoverReason.overloaded,
+                                FailoverReason.context_overflow,
+                                FailoverReason.payload_too_large,
+                                FailoverReason.long_context_tier,
+                                FailoverReason.thinking_signature,
+                            )
+                        )
+                    ) and not is_context_length_error
 
                     if is_client_error:
                         # Try fallback before aborting — a different provider
@@ -8454,7 +8400,7 @@ class AIAgent:
                         self._vprint(f"{self.log_prefix}   🔌 Provider: {_provider}  Model: {_model}", force=True)
                         self._vprint(f"{self.log_prefix}   🌐 Endpoint: {_base}", force=True)
                         # Actionable guidance for common auth errors
-                        if status_code in (401, 403) or "unauthorized" in error_msg or "forbidden" in error_msg or "permission" in error_msg:
+                        if classified.is_auth or classified.reason == FailoverReason.billing:
                             if _provider == "openai-codex" and status_code == 401:
                                 self._vprint(f"{self.log_prefix}   💡 Codex OAuth token was rejected (HTTP 401). Your token may have been", force=True)
                                 self._vprint(f"{self.log_prefix}      refreshed by another client (Codex CLI, VS Code). To fix:", force=True)

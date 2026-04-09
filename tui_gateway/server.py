@@ -230,12 +230,21 @@ def _resolve_model() -> str:
 
 def _get_usage(agent) -> dict:
     g = lambda k, fb=None: getattr(agent, k, 0) or (getattr(agent, fb, 0) if fb else 0)
-    return {
+    usage = {
         "input": g("session_input_tokens", "session_prompt_tokens"),
         "output": g("session_output_tokens", "session_completion_tokens"),
         "total": g("session_total_tokens"),
         "calls": g("session_api_calls"),
     }
+    comp = getattr(agent, "context_compressor", None)
+    if comp:
+        ctx_used = getattr(comp, "last_prompt_tokens", 0) or usage["total"] or 0
+        ctx_max = getattr(comp, "context_length", 0) or 0
+        if ctx_max:
+            usage["context_used"] = ctx_used
+            usage["context_max"] = ctx_max
+            usage["context_percent"] = max(0, min(100, round(ctx_used / ctx_max * 100)))
+    return usage
 
 
 def _session_info(agent) -> dict:
@@ -248,6 +257,7 @@ def _session_info(agent) -> dict:
         "release_date": "",
         "update_behind": None,
         "update_command": "",
+        "usage": _get_usage(agent),
     }
     try:
         from hermes_cli import __version__, __release_date__

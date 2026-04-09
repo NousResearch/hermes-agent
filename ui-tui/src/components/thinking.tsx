@@ -44,6 +44,7 @@ export const Thinking = memo(function Thinking({
   const verb = VERBS[tick % VERBS.length] ?? 'thinking'
   const face = FACES[tick % FACES.length] ?? '(•_•)'
   const tail = reasoning.slice(-160).replace(/\n/g, ' ')
+  const hasReasoning = !!tail
 
   return (
     <>
@@ -54,7 +55,7 @@ export const Thinking = memo(function Thinking({
         </Text>
       ))}
 
-      {!tools.length && (
+      {!tools.length && !hasReasoning && (
         <Text color={t.color.dim}>
           <Spinner color={t.color.dim} /> {face} {verb}…
         </Text>

@@ -104,30 +104,83 @@ const stripTokens = (text: string, re: RegExp) =>
 
 // ── StatusRule ────────────────────────────────────────────────────────
 
+function ctxBarColor(pct: number | undefined, t: Theme) {
+  if (pct == null) {
+    return t.color.dim
+  }
+
+  if (pct >= 95) {
+    return t.color.statusCritical
+  }
+
+  if (pct > 80) {
+    return t.color.statusBad
+  }
+
+  if (pct >= 50) {
+    return t.color.statusWarn
+  }
+
+  return t.color.statusGood
+}
+
+function ctxBar(pct: number | undefined, w = 10) {
+  const p = Math.max(0, Math.min(100, pct ?? 0))
+  const filled = Math.round((p / 100) * w)
+
+  return '█'.repeat(filled) + '░'.repeat(w - filled)
+}
+
 function StatusRule({
   cols,
-  color,
-  dimColor,
+  status,
   statusColor,
-  parts
+  model,
+  usage,
+  bgCount,
+  t
 }: {
   cols: number
-  color: string
-  dimColor: string
+  status: string
   statusColor: string
-  parts: (string | false | undefined | null)[]
+  model: string
+  usage: Usage
+  bgCount: number
+  t: Theme
 }) {
-  const label = parts.filter(Boolean).join(' · ')
-  const lead = String(parts[0] ?? '')
+  const pct = usage.context_percent
+  const barColor = ctxBarColor(pct, t)
+
+  const ctxLabel = usage.context_max
+    ? `${fmtK(usage.context_used ?? 0)}/${fmtK(usage.context_max)}`
+    : usage.total > 0
+      ? `${fmtK(usage.total)} tok`
+      : ''
+
+  const pctLabel = pct != null ? `${pct}%` : ''
+  const bar = usage.context_max ? ctxBar(pct) : ''
+
+  const segs = [status, model, ctxLabel, bar ? `[${bar}]` : '', pctLabel, bgCount > 0 ? `${bgCount} bg` : ''].filter(
+    Boolean
+  )
+
+  const inner = segs.join(' │ ')
+  const pad = Math.max(0, cols - inner.length - 5)
 
   return (
-    <Text color={color}>
+    <Text color={t.color.bronze}>
       {'─ '}
-      <Text color={dimColor}>
-        <Text color={statusColor}>{parts[0]}</Text>
-        {label.slice(lead.length)}
-      </Text>
-      {' ' + '─'.repeat(Math.max(0, cols - label.length - 5))}
+      <Text color={statusColor}>{status}</Text>
+      <Text color={t.color.dim}> │ {model}</Text>
+      {ctxLabel ? <Text color={t.color.dim}> │ {ctxLabel}</Text> : null}
+      {bar ? (
+        <Text color={t.color.dim}>
+          {' │ '}
+          <Text color={barColor}>[{bar}]</Text> <Text color={barColor}>{pctLabel}</Text>
+        </Text>
+      ) : null}
+      {bgCount > 0 ? <Text color={t.color.dim}> │ {bgCount} bg</Text> : null}
+      {' ' + '─'.repeat(pad)}
     </Text>
   )
 }
@@ -186,7 +239,6 @@ export function App({ gw }: { gw: GatewayClient }) {
   const [secret, setSecret] = useState<SecretReq | null>(null)
   const [picker, setPicker] = useState(false)
   const [reasoning, setReasoning] = useState('')
-  const [thinkingText, setThinkingText] = useState('')
   const [statusBar, setStatusBar] = useState(true)
   const [lastUserMsg, setLastUserMsg] = useState('')
   const [pastes, setPastes] = useState<PendingPaste[]>([])
@@ -201,13 +253,16 @@ export function App({ gw }: { gw: GatewayClient }) {
   const buf = useRef('')
   const inflightPasteIdsRef = useRef<number[]>([])
   const interruptedRef = useRef(false)
+  const reasoningRef = useRef('')
   const slashRef = useRef<(cmd: string) => boolean>(() => false)
   const lastEmptyAt = useRef(0)
   const lastStatusNoteRef = useRef('')
   const protocolWarnedRef = useRef(false)
   const pasteCounterRef = useRef(0)
   const colsRef = useRef(cols)
+  const turnToolsRef = useRef<string[]>([])
   colsRef.current = cols
+  reasoningRef.current = reasoning
 
   // ── Hooks ────────────────────────────────────────────────────────
 
@@ -275,15 +330,12 @@ export function App({ gw }: { gw: GatewayClient }) {
   const idle = () => {
     setThinking(false)
     setTools([])
-    setActivity([])
     setBusy(false)
     setClarify(null)
     setApproval(null)
     setPasteReview(null)
     setSudo(null)
     setSecret(null)
-    setReasoning('')
-    setThinkingText('')
     setStreaming('')
     buf.current = ''
   }
@@ -330,6 +382,11 @@ export function App({ gw }: { gw: GatewayClient }) {
 
         if (r.info) {
           setInfo(r.info)
+
+          if (r.info.usage) {
+            setUsage(prev => ({ ...prev, ...r.info.usage }))
+          }
+
           appendHistory(introMsg(r.info))
         } else {
           setInfo(null)
@@ -766,6 +823,9 @@ export function App({ gw }: { gw: GatewayClient }) {
         }
 
         idle()
+        setReasoning('')
+        setActivity([])
+        turnToolsRef.current = []
         setStatus('interrupted')
         setTimeout(() => setStatus('ready'), 1500)
       } else if (input || inputBuf.length) {
@@ -796,10 +856,6 @@ export function App({ gw }: { gw: GatewayClient }) {
 
     if (key.ctrl && ch === 'g') {
       return openEditor()
-    }
-
-    if (key.escape) {
-      clearIn()
     }
   })
 
@@ -839,13 +895,13 @@ export function App({ gw }: { gw: GatewayClient }) {
         case 'session.info':
           setInfo(p as SessionInfo)
 
+          if (p?.usage) {
+            setUsage(prev => ({ ...prev, ...p.usage }))
+          }
+
           break
 
         case 'thinking.delta':
-          if (p?.text) {
-            setThinkingText(prev => prev + p.text)
-          }
-
           break
 
         case 'message.start':
@@ -853,7 +909,8 @@ export function App({ gw }: { gw: GatewayClient }) {
           setTurnKey(k => k + 1)
           setBusy(true)
           setReasoning('')
-          setThinkingText('')
+          setActivity([])
+          turnToolsRef.current = []
 
           break
 
@@ -913,7 +970,9 @@ export function App({ gw }: { gw: GatewayClient }) {
             const done = prev.find(t => t.id === p.tool_id)
             const label = TOOL_VERBS[done?.name ?? p.name] ?? done?.name ?? p.name
             const ctx = (p.error as string) || done?.context || ''
-            pushActivity(`${label}${ctx ? ': ' + ctx : ''} ${mark}`, p.error ? 'error' : 'info')
+            const line = `${label}${ctx ? ': ' + compactPreview(ctx, 72) : ''} ${mark}`
+            pushActivity(line, p.error ? 'error' : 'info')
+            turnToolsRef.current = [...turnToolsRef.current, line].slice(-8)
 
             return prev.filter(t => t.id !== p.tool_id)
           })
@@ -976,7 +1035,10 @@ export function App({ gw }: { gw: GatewayClient }) {
           break
         case 'message.complete': {
           const wasInterrupted = interruptedRef.current
+          const savedReasoning = reasoningRef.current.trim()
+          const savedTools = [...turnToolsRef.current]
           idle()
+          setReasoning('')
           setStreaming('')
 
           if (inflightPasteIdsRef.current.length) {
@@ -985,8 +1047,16 @@ export function App({ gw }: { gw: GatewayClient }) {
           }
 
           if (!wasInterrupted) {
-            appendMessage({ role: 'assistant', text: (p?.rendered ?? p?.text ?? buf.current).trimStart() })
+            appendMessage({
+              role: 'assistant',
+              text: (p?.rendered ?? p?.text ?? buf.current).trimStart(),
+              thinking: savedReasoning || undefined,
+              tools: savedTools.length ? savedTools : undefined
+            })
           }
+
+          turnToolsRef.current = []
+          setActivity([])
 
           buf.current = ''
           setStatus('ready')
@@ -1012,6 +1082,9 @@ export function App({ gw }: { gw: GatewayClient }) {
           inflightPasteIdsRef.current = []
           sys(`error: ${p?.message}`)
           idle()
+          setReasoning('')
+          setActivity([])
+          turnToolsRef.current = []
           setStatus('ready')
 
           break
@@ -1498,6 +1571,9 @@ export function App({ gw }: { gw: GatewayClient }) {
           }
 
           idle()
+          setReasoning('')
+          setActivity([])
+          turnToolsRef.current = []
           setStatus('interrupted')
           setTimeout(() => setStatus('ready'), 1500)
 
@@ -1577,7 +1653,7 @@ export function App({ gw }: { gw: GatewayClient }) {
           <Thinking key={turnKey} reasoning={reasoning} t={theme} tools={tools} />
         )}
 
-        <ActivityLane items={activity} t={theme} />
+        {busy && <ActivityLane items={activity} t={theme} />}
 
         {pasteReview && (
           <PromptBox color={theme.color.warn}>
@@ -1663,6 +1739,10 @@ export function App({ gw }: { gw: GatewayClient }) {
                     setSid(r.session_id)
                     setInfo(r.info ?? null)
 
+                    if (r.info?.usage) {
+                      setUsage(prev => ({ ...prev, ...r.info.usage }))
+                    }
+
                     if (r.info) {
                       appendHistory(introMsg(r.info))
                     }
@@ -1692,43 +1772,43 @@ export function App({ gw }: { gw: GatewayClient }) {
 
         {statusBar && (
           <StatusRule
-            color={theme.color.bronze}
+            bgCount={bgTasks.size}
             cols={cols}
-            dimColor={theme.color.dim}
-            parts={[
-              status,
-              sid,
-              info?.model?.split('/').pop(),
-              bgTasks.size > 0 && `${bgTasks.size} bg`,
-              usage.total > 0 && `${fmtK(usage.total)} tok`
-            ]}
+            model={info?.model?.split('/').pop() ?? ''}
+            status={status}
             statusColor={statusColor}
+            t={theme}
+            usage={usage}
           />
         )}
 
         {!isBlocked && (
-          <Box>
-            <Box width={3}>
-              <Text bold color={theme.color.gold}>
-                {inputBuf.length ? '… ' : `${theme.brand.prompt} `}
-              </Text>
-            </Box>
+          <Box flexDirection="column">
+            {inputBuf.map((line, i) => (
+              <Box key={i}>
+                <Box width={3}>
+                  <Text color={theme.color.dim}>{i === 0 ? `${theme.brand.prompt} ` : '  '}</Text>
+                </Box>
 
-            <TextInput
-              onChange={setInput}
-              onPaste={handleTextPaste}
-              onSubmit={submit}
-              placeholder={
-                empty
-                  ? PLACEHOLDER
-                  : busy
-                    ? 'Ctrl+C to interrupt…'
-                    : inputBuf.length
-                      ? 'continue (or Enter to send)'
-                      : ''
-              }
-              value={input}
-            />
+                <Text color={theme.color.cornsilk}>{line || ' '}</Text>
+              </Box>
+            ))}
+
+            <Box>
+              <Box width={3}>
+                <Text bold color={theme.color.gold}>
+                  {inputBuf.length ? '  ' : `${theme.brand.prompt} `}
+                </Text>
+              </Box>
+
+              <TextInput
+                onChange={setInput}
+                onPaste={handleTextPaste}
+                onSubmit={submit}
+                placeholder={empty ? PLACEHOLDER : busy ? 'Ctrl+C to interrupt…' : ''}
+                value={input}
+              />
+            </Box>
           </Box>
         )}
 

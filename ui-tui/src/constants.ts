@@ -27,13 +27,13 @@ export const HOTKEYS: [string, string][] = [
   ['Ctrl+V', 'paste clipboard image'],
   ['Tab', 'apply completion'],
   ['↑/↓', 'completions / queue edit / history'],
-  ['Esc', 'clear input'],
   ['Ctrl+A/E', 'home / end of line'],
   ['Ctrl+W', 'delete word'],
   ['Ctrl+U/K', 'delete to start / end'],
   ['Ctrl+←/→', 'jump word'],
   ['Home/End', 'start / end of line'],
-  ['\\+Enter', 'multi-line continuation'],
+  ['Shift+Enter / Alt+Enter', 'insert newline'],
+  ['\\+Enter', 'multi-line continuation (fallback)'],
   ['!cmd', 'run shell command'],
   ['{!cmd}', 'interpolate shell output inline']
 ]

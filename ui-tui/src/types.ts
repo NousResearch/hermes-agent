@@ -26,6 +26,8 @@ export interface Msg {
   text: string
   kind?: 'intro'
   info?: SessionInfo
+  thinking?: string
+  tools?: string[]
 }
 
 export type Role = 'assistant' | 'system' | 'tool' | 'user'
@@ -43,6 +45,9 @@ export interface SessionInfo {
 
 export interface Usage {
   calls: number
+  context_max?: number
+  context_percent?: number
+  context_used?: number
   input: number
   output: number
   total: number

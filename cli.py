@@ -1603,7 +1603,12 @@ class HermesCLI:
         return f"[{('█' * filled) + ('░' * max(0, width - filled))}]"
 
     def _get_status_bar_snapshot(self) -> Dict[str, Any]:
-        model_name = self.model or "unknown"
+        # Prefer the agent's model name — it updates on fallback.
+        # self.model reflects the originally configured model and never
+        # changes mid-session, so the TUI would show a stale name after
+        # _try_activate_fallback() switches provider/model.
+        agent = getattr(self, "agent", None)
+        model_name = (getattr(agent, "model", None) or self.model or "unknown")
         model_short = model_name.split("/")[-1] if "/" in model_name else model_name
         if model_short.endswith(".gguf"):
             model_short = model_short[:-5]
@@ -1629,7 +1634,6 @@ class HermesCLI:
             "compressions": 0,
         }
 
-        agent = getattr(self, "agent", None)
         if not agent:
             return snapshot
 

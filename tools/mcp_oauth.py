@@ -11,6 +11,7 @@ redirect_host, client_name, client_metadata_url, cimd, user_agent, timeout."""
 import asyncio
 import contextlib
 import contextvars
+import html
 import importlib.util as _importlib_util
 import json
 import logging
@@ -473,7 +474,7 @@ def _make_callback_handler() -> tuple[type, dict]:
             parsed = _parse_redirect_query(urlparse(self.path).query)
             result.update(auth_code=parsed["code"], state=parsed["state"], error=parsed["error"], iss=parsed["iss"])
             body = ("<h2>Authorization Successful</h2><p>You can close this tab and return to Hermes.</p>" if parsed["code"]
-                    else f"<h2>Authorization Failed</h2><p>Error: {parsed['error'] or 'unknown'}</p>")
+                    else f"<h2>Authorization Failed</h2><p>Error: {html.escape(parsed['error'] or 'unknown')}</p>")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()

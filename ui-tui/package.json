@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "tsx --watch src/entry.tsx",
     "start": "tsx src/entry.tsx",
-    "build": "tsc",
+    "build": "tsc && chmod +x dist/entry.js",
     "lint": "eslint src/",
     "lint:fix": "eslint src/ --fix",
     "fmt": "prettier --write 'src/**/*.{ts,tsx}'",

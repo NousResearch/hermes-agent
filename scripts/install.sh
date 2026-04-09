@@ -28,7 +28,8 @@ BOLD='\033[1m'
 # Configuration
 REPO_URL_SSH="git@github.com:NousResearch/hermes-agent.git"
 REPO_URL_HTTPS="https://github.com/NousResearch/hermes-agent.git"
-HERMES_HOME="$HOME/.hermes"
+DEFAULT_HERMES_HOME="$HOME/.hermes"
+HERMES_HOME="${HERMES_HOME:-$DEFAULT_HERMES_HOME}"
 INSTALL_DIR="${HERMES_INSTALL_DIR:-$HERMES_HOME/hermes-agent}"
 PYTHON_VERSION="3.11"
 NODE_VERSION="22"
@@ -64,6 +65,9 @@ while [[ $# -gt 0 ]]; do
             ;;
         --dir)
             INSTALL_DIR="$2"
+            if [ -z "${HERMES_HOME:-}" ] || [ "$HERMES_HOME" = "$DEFAULT_HERMES_HOME" ]; then
+                HERMES_HOME="$INSTALL_DIR"
+            fi
             shift 2
             ;;
         -h|--help)
@@ -809,30 +813,30 @@ setup_path() {
 copy_config_templates() {
     log_info "Setting up configuration files..."
 
-    # Create ~/.hermes directory structure (config at top level, code in subdir)
+    # Create Hermes home directory structure (config at top level, code in subdir)
     mkdir -p "$HERMES_HOME"/{cron,sessions,logs,pairing,hooks,image_cache,audio_cache,memories,skills,whatsapp/session}
 
-    # Create .env at ~/.hermes/.env (top level, easy to find)
+    # Create .env at $HERMES_HOME/.env (top level, easy to find)
     if [ ! -f "$HERMES_HOME/.env" ]; then
         if [ -f "$INSTALL_DIR/.env.example" ]; then
             cp "$INSTALL_DIR/.env.example" "$HERMES_HOME/.env"
-            log_success "Created ~/.hermes/.env from template"
+            log_success "Created $HERMES_HOME/.env from template"
         else
             touch "$HERMES_HOME/.env"
-            log_success "Created ~/.hermes/.env"
+            log_success "Created $HERMES_HOME/.env"
         fi
     else
-        log_info "~/.hermes/.env already exists, keeping it"
+        log_info "$HERMES_HOME/.env already exists, keeping it"
     fi
 
-    # Create config.yaml at ~/.hermes/config.yaml (top level, easy to find)
+    # Create config.yaml at $HERMES_HOME/config.yaml (top level, easy to find)
     if [ ! -f "$HERMES_HOME/config.yaml" ]; then
         if [ -f "$INSTALL_DIR/cli-config.yaml.example" ]; then
             cp "$INSTALL_DIR/cli-config.yaml.example" "$HERMES_HOME/config.yaml"
-            log_success "Created ~/.hermes/config.yaml from template"
+            log_success "Created $HERMES_HOME/config.yaml from template"
         fi
     else
-        log_info "~/.hermes/config.yaml already exists, keeping it"
+        log_info "$HERMES_HOME/config.yaml already exists, keeping it"
     fi
 
     # Create SOUL.md if it doesn't exist (global persona file)
@@ -854,20 +858,20 @@ This file is loaded fresh each message -- no restart needed.
 Delete the contents (or this file) to use the default personality.
 -->
 SOUL_EOF
-        log_success "Created ~/.hermes/SOUL.md (edit to customize personality)"
+        log_success "Created $HERMES_HOME/SOUL.md (edit to customize personality)"
     fi
 
-    log_success "Configuration directory ready: ~/.hermes/"
+    log_success "Configuration directory ready: $HERMES_HOME/"
 
-    # Seed bundled skills into ~/.hermes/skills/ (manifest-based, one-time per skill)
-    log_info "Syncing bundled skills to ~/.hermes/skills/ ..."
-    if "$INSTALL_DIR/venv/bin/python" "$INSTALL_DIR/tools/skills_sync.py" 2>/dev/null; then
-        log_success "Skills synced to ~/.hermes/skills/"
+    # Seed bundled skills into $HERMES_HOME/skills/ (manifest-based, one-time per skill)
+    log_info "Syncing bundled skills to $HERMES_HOME/skills/ ..."
+    if HERMES_HOME="$HERMES_HOME" "$INSTALL_DIR/venv/bin/python" "$INSTALL_DIR/tools/skills_sync.py" 2>/dev/null; then
+        log_success "Skills synced to $HERMES_HOME/skills/"
     else
         # Fallback: simple directory copy if Python sync fails
         if [ -d "$INSTALL_DIR/skills" ] && [ ! "$(ls -A "$HERMES_HOME/skills/" 2>/dev/null | grep -v '.bundled_manifest')" ]; then
             cp -r "$INSTALL_DIR/skills/"* "$HERMES_HOME/skills/" 2>/dev/null || true
-            log_success "Skills copied to ~/.hermes/skills/"
+            log_success "Skills copied to $HERMES_HOME/skills/"
         fi
     fi
 }
@@ -1051,12 +1055,13 @@ print_success() {
     echo ""
 
     # Show file locations
-    echo -e "${CYAN}${BOLD}📁 Your files (all in ~/.hermes/):${NC}"
+    echo -e "${CYAN}${BOLD}📁 Your Hermes home:${NC}"
     echo ""
-    echo -e "   ${YELLOW}Config:${NC}    ~/.hermes/config.yaml"
-    echo -e "   ${YELLOW}API Keys:${NC}  ~/.hermes/.env"
-    echo -e "   ${YELLOW}Data:${NC}      ~/.hermes/cron/, sessions/, logs/"
-    echo -e "   ${YELLOW}Code:${NC}      ~/.hermes/hermes-agent/"
+    echo -e "   ${YELLOW}Root:${NC}      $HERMES_HOME"
+    echo -e "   ${YELLOW}Config:${NC}    $HERMES_HOME/config.yaml"
+    echo -e "   ${YELLOW}API Keys:${NC}  $HERMES_HOME/.env"
+    echo -e "   ${YELLOW}Data:${NC}      $HERMES_HOME/cron/, sessions/, logs/"
+    echo -e "   ${YELLOW}Code:${NC}      $INSTALL_DIR"
     echo ""
 
     echo -e "${CYAN}─────────────────────────────────────────────────────────${NC}"

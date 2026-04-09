@@ -1137,7 +1137,7 @@ def _resolve_auto() -> Tuple[Optional[OpenAI], Optional[str]]:
     main_model = _read_main_model()
     if (main_provider and main_model
             and main_provider not in _AGGREGATOR_PROVIDERS
-            and main_provider not in ("auto", "custom", "")):
+            and main_provider not in ("auto", "")):
         client, resolved = resolve_provider_client(main_provider, main_model)
         if client is not None:
             logger.info("Auxiliary auto-detect: using main provider %s (%s)",

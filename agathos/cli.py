@@ -74,7 +74,7 @@ def _print_banner() -> None:
 def _print_status():
     """Print ARGUS daemon status."""
     try:
-        from argus import is_agathos_running, get_agathos_running_pid, agathos_launchd_status
+        from agathos import is_agathos_running, get_agathos_running_pid, agathos_launchd_status
         
         _print_banner()
         
@@ -192,7 +192,7 @@ def cmd_status(args):
 def cmd_start(args):
     """Start ARGUS daemon."""
     try:
-        from argus import Argus
+        from agathos import Agathos
         from agathos.daemon_mgmt import write_agathos_pid_file, is_agathos_running
         
         if is_agathos_running():
@@ -200,19 +200,19 @@ def cmd_start(args):
             return
         
         print("\033[96m  Starting ARGUS...\033[0m")
-        argus = Argus()
+        agathos_daemon = Agathos()
         
         # Handle signals
         import signal
         def _signal_handler(signum, frame):
             print("\n\033[93m  Received signal, stopping...\033[0m")
-            daemon.stop()
+            agathos_daemon.stop()
             sys.exit(0)
         
         signal.signal(signal.SIGINT, _signal_handler)
         signal.signal(signal.SIGTERM, _signal_handler)
         
-        daemon.run()
+        agathos_daemon.run()
         
     except Exception as e:
         print(f"\033[91m  Error starting ARGUS: {e}\033[0m", file=sys.stderr)
@@ -222,7 +222,7 @@ def cmd_start(args):
 def cmd_stop(args):
     """Stop ARGUS daemon."""
     try:
-        from argus import get_agathos_running_pid
+        from agathos import get_agathos_running_pid
         import os
         
         pid = get_agathos_running_pid()
@@ -286,7 +286,7 @@ def cmd_logs(args):
 def cmd_service_install(args):
     """Install ARGUS as system service."""
     try:
-        from argus import agathos_launchd_install
+        from agathos import agathos_launchd_install
 
         # Check platform support
         if not _IS_MACOS:
@@ -310,7 +310,7 @@ def cmd_service_install(args):
 def cmd_service_uninstall(args):
     """Uninstall ARGUS system service."""
     try:
-        from argus import agathos_launchd_uninstall
+        from agathos import agathos_launchd_uninstall
 
         print("\033[96m  Uninstalling ARGUS system service...\033[0m")
         if agathos_launchd_uninstall():
@@ -326,7 +326,7 @@ def cmd_service_uninstall(args):
 def cmd_service_status(args):
     """Check ARGUS service status."""
     try:
-        from argus import agathos_launchd_status
+        from agathos import agathos_launchd_status
 
         status = agathos_launchd_status()
 
@@ -354,7 +354,7 @@ def cmd_service_status(args):
 def cmd_service_list(args):
     """List ARGUS service details."""
     try:
-        from argus import agathos_launchd_status, is_agathos_running, get_agathos_running_pid
+        from agathos import agathos_launchd_status, is_agathos_running, get_agathos_running_pid
         import subprocess
 
         _print_banner()

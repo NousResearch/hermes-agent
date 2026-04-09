@@ -28,7 +28,7 @@ class MLDataExporter:
     """
     
     def __init__(self, output_dir: Optional[Path] = None):
-        self.output_dir = output_dir or Path.home() / ".hermes" / "argus" / "ml_data"
+        self.output_dir = output_dir or Path.home() / ".hermes" / "agathos" / "ml_data"
         self.output_dir.mkdir(parents=True, exist_ok=True)
         
     def export_detection_trajectory(

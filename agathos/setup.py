@@ -426,7 +426,7 @@ def setup_launchd_integration(config: Dict[str, Any]):
         print_info("Service integration is available on macOS and Linux (systemd).")
         print_info("Windows support is planned.")
         print()
-        print_info("You can run ARGUS manually: python -m argus.argus")
+        print_info("You can run ARGUS manually: python -m agathos")
         return
 
     print()
@@ -438,17 +438,17 @@ def setup_launchd_integration(config: Dict[str, Any]):
 
     if install_service:
         try:
-            from .daemon_mgmt import argus_launchd_install
-            if argus_launchd_install():
+            from .daemon_mgmt import agathos_launchd_install
+            if agathos_launchd_install():
                 print_success("ARGUS service installed")
-                print_info("Use 'launchctl list com.hermes.argus' to check status")
+                print_info("Use 'launchctl list com.hermes.agathos' to check status")
             else:
                 print_error("Failed to install service")
         except Exception as e:
             print_error(f"Service setup failed: {e}")
     else:
         print_info("System service not installed")
-        print_info("You can run ARGUS manually: python -m argus.argus")
+        print_info("You can run ARGUS manually: python -m agathos")
 
 
 # === Main Wizard ===
@@ -632,15 +632,15 @@ def main():
     print()
     print_header("Next Steps")
     print_info("Run ARGUS:")
-    print("    python -m argus.argus")
+    print("    python -m agathos")
     print()
 
     # Platform-specific status check hints
     _is_macos = sys.platform == 'darwin'
     print_info("Check status:")
     if _is_macos:
-        print("    launchctl list com.hermes.argus  # if service installed")
-    print("    python -m argus.cli status         # manual daemon status")
+        print("    launchctl list com.hermes.agathos  # if service installed")
+    print("    python -m agathos.cli status       # manual daemon status")
     print()
 
     print_info("Edit config directly:")

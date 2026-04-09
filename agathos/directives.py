@@ -215,7 +215,7 @@ def _check_count_threshold(
 def _check_entropy_threshold(
     check: Dict, cursor: sqlite3.Cursor, session_id: str
 ) -> Dict:
-    """Execute an entropy_threshold check against argus.db."""
+    """Execute an entropy_threshold check against agathos.db."""
     entropy_type = check.get("entropy_type", "")
     min_count = check.get("min_count", 3)
     window = _parse_window(check.get("window", "10m"))

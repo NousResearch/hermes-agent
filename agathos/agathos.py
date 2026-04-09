@@ -75,7 +75,7 @@ except (ImportError, TypeError) as _e:
     _logging.getLogger("agathos").warning(
         "Internals unavailable (%s), using subprocess fallback", _e
     )
-    from hermes_fallback import (
+    from .hermes_fallback import (
         list_jobs,
         SessionDB,
         DEFAULT_DB_PATH,

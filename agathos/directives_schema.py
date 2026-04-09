@@ -75,7 +75,7 @@ checks:
   # Drop .py files in the custom_checks_dir.
   # Each file must define: def check(session_id, cursor, config) -> dict
   #   Returns: {"check_type": str, "passed": bool, "details": str}
-  # custom_checks_dir: ~/.hermes/argus/checks/
+  # custom_checks_dir: ~/.hermes/agathos/checks/
 
 # Sessions to ignore (glob patterns on session_id)
 # ignore:
@@ -98,7 +98,7 @@ BUILTIN_CHECK_TYPES = {
         "defaults": {"severity": "warning", "enabled": True},
     },
     "entropy_threshold": {
-        "description": "Check entropy detection count in argus.db",
+        "description": "Check entropy detection count in agathos.db",
         "required": ["entropy_type", "min_count"],
         "optional": ["window", "severity", "enabled"],
         "defaults": {"window": "10m", "severity": "warning", "enabled": True},

@@ -24,7 +24,7 @@ try:
 except (ImportError, TypeError):
     # Subprocess fallback — hermes_fallback exports the same names
     try:
-        from hermes_fallback import (
+        from .hermes_fallback import (
             pause_job,
             resume_job,
             trigger_job,

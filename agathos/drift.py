@@ -2,15 +2,15 @@
 ARGUS config drift detection — monitor config/credential/skill changes at runtime.
 
 Tracks mtime + sha256 of key files between poll cycles. On change, logs the
-drift and records in argus.db for audit. Does NOT restart — running sessions
+drift and records in agathos.db for audit. Does NOT restart — running sessions
 use their loaded config. Alerts notify operators of changes.
 
 Monitored files:
   ~/.hermes/config.yaml       — main hermes config
   ~/.hermes/.env              — credentials
   ~/.hermes/skills/           — installed skills (mtime + count)
-  ~/.hermes/argus/directives.yaml — ARGUS prime directives
-  argus/watcher_schema.sql    — ARGUS DB schema
+  ~/.hermes/agathos/directives.yaml — ARGUS prime directives
+  agathos/watcher_schema.sql  — AGATHOS DB schema
 """
 
 import hashlib
@@ -40,7 +40,7 @@ def _monitored_files() -> List[Tuple[str, Path]]:
     files = [
         ("config.yaml", home / "config.yaml"),
         (".env", home / ".env"),
-        ("directives.yaml", home / "argus" / "directives.yaml"),
+        ("directives.yaml", home / "agathos" / "directives.yaml"),
     ]
 
     # Skills directory — monitor mtime and file count
@@ -48,7 +48,7 @@ def _monitored_files() -> List[Tuple[str, Path]]:
     if skills_dir.is_dir():
         files.append(("skills/", skills_dir))
 
-    # watcher_schema.sql — relative to argus module
+    # watcher_schema.sql — relative to agathos module
     schema_path = Path(__file__).parent / "watcher_schema.sql"
     if schema_path.exists():
         files.append(("watcher_schema.sql", schema_path))

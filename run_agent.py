@@ -5143,6 +5143,7 @@ class AIAgent:
     _TRANSIENT_TRANSPORT_ERRORS = frozenset({
         "ReadTimeout", "ConnectTimeout", "PoolTimeout",
         "ConnectError", "RemoteProtocolError",
+        "APIConnectionError", "APITimeoutError",
     })
 
     def _try_recover_primary_transport(

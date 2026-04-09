@@ -116,6 +116,10 @@ def _api_key_default_label(count: int) -> str:
     return f"api-key-{count}"
 
 
+def _looks_like_jwt(token: str) -> bool:
+    return isinstance(token, str) and token.count(".") == 2
+
+
 def _display_source(source: str) -> str:
     return source.split(":", 1)[1] if source.startswith("manual:") else source
 
@@ -203,6 +207,54 @@ def auth_add_command(args) -> None:
 
     if requested_type == AUTH_TYPE_API_KEY:
         token = (getattr(args, "api_key", None) or "").strip()
+        if provider == "chatgpt-web":
+            token_mode = str(getattr(args, "token_mode", "") or "").strip().lower()
+            if not token:
+                if token_mode == "session_token":
+                    token = getpass("Paste your ChatGPT Web session token: ").strip()
+                elif token_mode == "access_token":
+                    token = getpass("Paste your ChatGPT Web API key or access token: ").strip()
+                else:
+                    token = getpass("Paste your ChatGPT Web access token or session token: ").strip()
+            if not token:
+                raise SystemExit("No ChatGPT Web token provided.")
+            default_label = _api_key_default_label(len(pool.entries()) + 1)
+            label = (getattr(args, "label", None) or "").strip()
+            if not label:
+                label = input(f"Label (optional, default: {default_label}): ").strip() or default_label
+
+            source = SOURCE_MANUAL
+            access_token = token
+            extra = {}
+            should_exchange_session = (
+                token_mode == "session_token"
+                or (token_mode not in {"access_token", "session_token"} and not _looks_like_jwt(token))
+            )
+            if should_exchange_session:
+                from hermes_cli.chatgpt_web import _fetch_chatgpt_web_access_token_from_session
+
+                try:
+                    access_token = _fetch_chatgpt_web_access_token_from_session(token)
+                except Exception as exc:
+                    raise SystemExit(f"Could not exchange ChatGPT Web session token: {exc}") from exc
+                source = f"{SOURCE_MANUAL}:session_token"
+                extra["session_token"] = token
+
+            entry = PooledCredential(
+                provider=provider,
+                id=uuid.uuid4().hex[:6],
+                label=label,
+                auth_type=AUTH_TYPE_API_KEY,
+                priority=0,
+                source=source,
+                access_token=access_token,
+                base_url=_provider_base_url(provider),
+                extra=extra,
+            )
+            pool.add_entry(entry)
+            print(f'Added {provider} credential #{len(pool.entries())}: "{label}"')
+            return
+
         if not token:
             token = getpass("Paste your API key: ").strip()
         if not token:
@@ -674,7 +726,25 @@ def _interactive_add() -> None:
         raise SystemExit(f"Unknown provider: {provider}")
 
     # For OAuth-capable providers, ask which type
-    if provider in _OAUTH_CAPABLE_PROVIDERS or provider == "chatgpt-web":
+    token_mode = None
+    if provider == "chatgpt-web":
+        print(f"\n{provider} supports API keys/access tokens, OAuth login, and session tokens.")
+        print("  1. API key / access token")
+        print("  2. OAuth login (authenticate via browser/device code)")
+        print("  3. Session token (paste __Secure-next-auth.session-token)")
+        try:
+            type_choice = input("Type [1/2/3]: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            return
+        if type_choice == "2":
+            auth_type = "oauth"
+        elif type_choice == "3":
+            auth_type = "api_key"
+            token_mode = "session_token"
+        else:
+            auth_type = "api_key"
+            token_mode = "access_token"
+    elif provider in _OAUTH_CAPABLE_PROVIDERS:
         print(f"\n{provider} supports both API keys and OAuth login.")
         print("  1. API key (paste a key from the provider dashboard)")
         print("  2. OAuth login (authenticate via browser)")
@@ -701,6 +771,7 @@ def _interactive_add() -> None:
         provider=provider, auth_type=auth_type, label=label, api_key=None,
         portal_url=None, inference_url=None, client_id=None, scope=None,
         no_browser=False, timeout=None, insecure=False, ca_bundle=None,
+        token_mode=token_mode,
     ))
 
 

@@ -134,19 +134,23 @@ def resolve_chatgpt_web_runtime_credentials(*, force_refresh: bool = False) -> d
 
     try:
         from agent.credential_pool import load_pool
+        from hermes_cli.auth import _codex_access_token_is_expiring
 
         pool = load_pool("chatgpt-web")
         if pool and pool.has_credentials():
             entry = pool.select()
             if entry is not None:
-                pool_api_key = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")
+                pool_api_key = str(getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "") or "").strip()
+                pool_session_token = str(getattr(entry, "session_token", "") or "").strip()
+                if pool_session_token and (not pool_api_key or _codex_access_token_is_expiring(pool_api_key, 0)):
+                    pool_api_key = _fetch_chatgpt_web_access_token_from_session(pool_session_token)
                 if pool_api_key:
                     return {
                         "provider": "chatgpt-web",
-                        "api_key": str(pool_api_key).strip(),
+                        "api_key": pool_api_key,
                         "base_url": (getattr(entry, "runtime_base_url", None) or getattr(entry, "base_url", "") or DEFAULT_CHATGPT_WEB_BASE_URL).rstrip("/"),
                         "source": f"pool:{getattr(entry, 'label', 'unknown')}",
-                        "session_token": "",
+                        "session_token": pool_session_token,
                     }
     except Exception:
         pass

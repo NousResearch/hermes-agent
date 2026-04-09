@@ -5352,16 +5352,27 @@ def get_chatgpt_web_auth_status() -> Dict[str, Any]:
         if pool and pool.has_credentials():
             entry = pool.select()
             if entry is not None:
-                api_key = (
+                api_key = str(
                     getattr(entry, "runtime_api_key", None)
                     or getattr(entry, "access_token", "")
-                )
+                    or ""
+                ).strip()
+                session_token = str(getattr(entry, "session_token", "") or "").strip()
                 if api_key and not _codex_access_token_is_expiring(api_key, 0):
                     return {
                         "logged_in": True,
                         "auth_store": str(_auth_file_path()),
                         "last_refresh": getattr(entry, "last_refresh", None),
                         "auth_mode": getattr(entry, "auth_type", None) or "oauth",
+                        "source": f"pool:{getattr(entry, 'label', 'unknown')}",
+                        "api_key": api_key,
+                    }
+                if session_token:
+                    return {
+                        "logged_in": True,
+                        "auth_store": str(_auth_file_path()),
+                        "last_refresh": getattr(entry, "last_refresh", None),
+                        "auth_mode": "session_token",
                         "source": f"pool:{getattr(entry, 'label', 'unknown')}",
                         "api_key": api_key,
                     }

@@ -4840,7 +4840,7 @@ class GatewayRunner:
 
         Usage:
             /reasoning              Show current effort level and display state
-            /reasoning <level>      Set reasoning effort (none, low, medium, high, xhigh)
+            /reasoning <level>      Set reasoning effort (none, minimal, low, medium, high, xhigh)
             /reasoning show|on      Show model reasoning in responses
             /reasoning hide|off     Hide model reasoning from responses
         """
@@ -4885,7 +4885,7 @@ class GatewayRunner:
                 "🧠 **Reasoning Settings**\n\n"
                 f"**Effort:** `{level}`\n"
                 f"**Display:** {display_state}\n\n"
-                "_Usage:_ `/reasoning <none|low|medium|high|xhigh|show|hide>`"
+                "_Usage:_ `/reasoning <none|minimal|low|medium|high|xhigh|show|hide>`"
             )
 
         # Display toggle
@@ -4908,7 +4908,7 @@ class GatewayRunner:
         else:
             return (
                 f"⚠️ Unknown argument: `{effort}`\n\n"
-                "**Valid levels:** none, low, minimal, medium, high, xhigh\n"
+                "**Valid levels:** none, minimal, low, medium, high, xhigh\n"
                 "**Display:** show, hide"
             )
 

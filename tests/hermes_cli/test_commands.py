@@ -68,6 +68,17 @@ class TestCommandRegistry:
         for cmd in COMMAND_REGISTRY:
             assert cmd.category in valid_categories, f"{cmd.name} has invalid category '{cmd.category}'"
 
+    def test_reasoning_subcommands_are_in_logical_order(self):
+        reasoning = next(cmd for cmd in COMMAND_REGISTRY if cmd.name == "reasoning")
+        assert reasoning.subcommands[:6] == (
+            "none",
+            "minimal",
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+        )
+
     def test_cli_only_and_gateway_only_are_mutually_exclusive(self):
         for cmd in COMMAND_REGISTRY:
             assert not (cmd.cli_only and cmd.gateway_only), \

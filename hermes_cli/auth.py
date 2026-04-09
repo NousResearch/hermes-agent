@@ -5325,7 +5325,8 @@ def get_codex_auth_status() -> Dict[str, Any]:
 def get_chatgpt_web_auth_status() -> Dict[str, Any]:
     """Status snapshot for ChatGPT Web auth.
 
-    Reuses Codex OAuth credentials when no explicit ChatGPT web env vars are set.
+    Prefers explicit ChatGPT Web credentials, then ChatGPT Web pool entries,
+    then falls back to Codex OAuth credentials.
     """
     access_token = os.getenv("CHATGPT_WEB_ACCESS_TOKEN", "").strip()
     session_token = os.getenv("CHATGPT_WEB_SESSION_TOKEN", "").strip()
@@ -5343,6 +5344,29 @@ def get_chatgpt_web_auth_status() -> Dict[str, Any]:
             "source": "env:CHATGPT_WEB_SESSION_TOKEN",
             "api_key": "",
         }
+
+    try:
+        from agent.credential_pool import load_pool
+
+        pool = load_pool("chatgpt-web")
+        if pool and pool.has_credentials():
+            entry = pool.select()
+            if entry is not None:
+                api_key = (
+                    getattr(entry, "runtime_api_key", None)
+                    or getattr(entry, "access_token", "")
+                )
+                if api_key and not _codex_access_token_is_expiring(api_key, 0):
+                    return {
+                        "logged_in": True,
+                        "auth_store": str(_auth_file_path()),
+                        "last_refresh": getattr(entry, "last_refresh", None),
+                        "auth_mode": getattr(entry, "auth_type", None) or "oauth",
+                        "source": f"pool:{getattr(entry, 'label', 'unknown')}",
+                        "api_key": api_key,
+                    }
+    except Exception:
+        pass
 
     codex_status = get_codex_auth_status()
     if codex_status.get("logged_in"):

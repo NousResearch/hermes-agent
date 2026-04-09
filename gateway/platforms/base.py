@@ -10,11 +10,66 @@ import logging
 import os
 import random
 import re
+import subprocess
+import sys
 import uuid
 from abc import ABC, abstractmethod
 from urllib.parse import urlsplit
 
 logger = logging.getLogger(__name__)
+
+
+def _detect_macos_system_proxy() -> str | None:
+    """Read the macOS system HTTP(S) proxy via ``scutil --proxy``.
+
+    Returns an ``http://host:port`` URL string if an HTTP or HTTPS proxy is
+    enabled, otherwise *None*.  Falls back silently on non-macOS or on any
+    subprocess error.
+    """
+    if sys.platform != "darwin":
+        return None
+    try:
+        out = subprocess.check_output(
+            ["scutil", "--proxy"], timeout=3, text=True, stderr=subprocess.DEVNULL,
+        )
+    except Exception:
+        return None
+
+    props: dict[str, str] = {}
+    for line in out.splitlines():
+        line = line.strip()
+        if " : " in line:
+            key, _, val = line.partition(" : ")
+            props[key.strip()] = val.strip()
+
+    # Prefer HTTPS, fall back to HTTP
+    for enable_key, host_key, port_key in (
+        ("HTTPSEnable", "HTTPSProxy", "HTTPSPort"),
+        ("HTTPEnable", "HTTPProxy", "HTTPPort"),
+    ):
+        if props.get(enable_key) == "1":
+            host = props.get(host_key)
+            port = props.get(port_key)
+            if host and port:
+                return f"http://{host}:{port}"
+    return None
+
+
+def resolve_proxy_url() -> str | None:
+    """Return an HTTP(S) proxy URL from env vars, or macOS system proxy.
+
+    Check order:
+      1. HTTPS_PROXY / HTTP_PROXY / ALL_PROXY (and lowercase variants)
+      2. macOS system proxy via ``scutil --proxy`` (auto-detect)
+
+    Returns *None* if no proxy is found.
+    """
+    for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",
+                "https_proxy", "http_proxy", "all_proxy"):
+        value = (os.environ.get(key) or "").strip()
+        if value:
+            return value
+    return _detect_macos_system_proxy()
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path

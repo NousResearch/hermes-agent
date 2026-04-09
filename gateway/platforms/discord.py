@@ -529,10 +529,17 @@ class DiscordAdapter(BasePlatformAdapter):
             intents.members = any(not entry.isdigit() for entry in self._allowed_user_ids)
             intents.voice_states = True
 
+            # Resolve HTTP proxy (env vars first, then macOS system proxy)
+            from gateway.platforms.base import resolve_proxy_url
+            proxy_url = resolve_proxy_url()
+            if proxy_url:
+                logger.info("[%s] Using HTTP proxy: %s", self.name, proxy_url)
+
             # Create bot
             self._client = commands.Bot(
                 command_prefix="!",  # Not really used, we handle raw messages
                 intents=intents,
+                proxy=proxy_url,
             )
             adapter_self = self  # capture for closure
 

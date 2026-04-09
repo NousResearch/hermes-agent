@@ -1284,21 +1284,36 @@ class SessionDB:
                 )
             session_ids = set(row["id"] for row in cursor.fetchall())
 
-            # Delete children first whose parents are in the prune set
-            # (avoids FK constraint errors)
-            for sid in list(session_ids):
-                child_ids = [r[0] for r in conn.execute(
+            # Collect ALL descendant session IDs (not just direct children)
+            # to handle chains like A -> B -> C -> D
+            all_to_delete = set()
+            queue = list(session_ids)
+            while queue:
+                sid = queue.pop()
+                if sid in all_to_delete:
+                    continue
+                all_to_delete.add(sid)
+                children = [r[0] for r in conn.execute(
                     "SELECT id FROM sessions WHERE parent_session_id = ?",
                     (sid,),
                 ).fetchall()]
-                for cid in child_ids:
-                    conn.execute("DELETE FROM messages WHERE session_id = ?", (cid,))
-                    conn.execute("DELETE FROM sessions WHERE id = ?", (cid,))
-                    session_ids.discard(cid)  # don't double-delete
+                queue.extend(children)
 
-            for sid in session_ids:
+            # Null out parent references for sessions NOT being deleted
+            # that reference sessions being deleted as their parent
+            # (avoids FK constraint: sessions.parent_session_id -> sessions.id)
+            for sid in all_to_delete:
+                conn.execute(
+                    "UPDATE sessions SET parent_session_id = NULL WHERE parent_session_id = ? AND id NOT IN ({})".format(
+                        ",".join("?" * len(all_to_delete))
+                    ),
+                    (sid, *all_to_delete),
+                )
+
+            for sid in all_to_delete:
                 conn.execute("DELETE FROM messages WHERE session_id = ?", (sid,))
+            for sid in all_to_delete:
                 conn.execute("DELETE FROM sessions WHERE id = ?", (sid,))
-            return len(session_ids)
+            return len(all_to_delete)
 
         return self._execute_write(_do)

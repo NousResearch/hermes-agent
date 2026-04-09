@@ -3997,6 +3997,15 @@ class GatewayRunner:
         if canonical == "model":
             return await self._handle_model_command(event)
 
+        if canonical == "provider":
+            return await self._handle_provider_command(event)
+
+        if canonical == "topup":
+            return await self._handle_topup_command(event)
+
+        if canonical == "balance":
+            return await self._handle_balance_command(event)
+
         if canonical == "personality":
             return await self._handle_personality_command(event)
 
@@ -6185,6 +6194,156 @@ class GatewayRunner:
         else:
             lines.append("_(session only -- add `--global` to persist)_")
 
+        return "\n".join(lines)
+
+    async def _handle_provider_command(self, event: MessageEvent) -> str:
+        """Handle /provider command - show available providers."""
+        import yaml
+        from hermes_cli.models import (
+            list_available_providers,
+            normalize_provider,
+            _PROVIDER_LABELS,
+        )
+
+        # Resolve current provider from config
+        current_provider = "openrouter"
+        model_cfg = {}
+        config_path = _hermes_home / 'config.yaml'
+        try:
+            if config_path.exists():
+                with open(config_path, encoding="utf-8") as f:
+                    cfg = yaml.safe_load(f) or {}
+                model_cfg = cfg.get("model", {})
+                if isinstance(model_cfg, dict):
+                    current_provider = model_cfg.get("provider", current_provider)
+        except Exception:
+            pass
+
+        current_provider = normalize_provider(current_provider)
+        if current_provider == "auto":
+            try:
+                from hermes_cli.auth import resolve_provider as _resolve_provider
+                current_provider = _resolve_provider(current_provider)
+            except Exception:
+                current_provider = "openrouter"
+
+        # Detect custom endpoint from config base_url
+        if current_provider == "openrouter":
+            _cfg_base = model_cfg.get("base_url", "") if isinstance(model_cfg, dict) else ""
+            if _cfg_base and "openrouter.ai" not in _cfg_base:
+                current_provider = "custom"
+
+        current_label = _PROVIDER_LABELS.get(current_provider, current_provider)
+
+        lines = [
+            f"🔌 **Current provider:** {current_label} (`{current_provider}`)",
+            "",
+            "**Available providers:**",
+        ]
+
+        providers = list_available_providers()
+        for p in providers:
+            marker = " ← active" if p["id"] == current_provider else ""
+            auth = "✅" if p["authenticated"] else "❌"
+            aliases = f"  _(also: {', '.join(p['aliases'])})_" if p["aliases"] else ""
+            lines.append(f"{auth} `{p['id']}` — {p['label']}{aliases}{marker}")
+
+        lines.append("")
+        lines.append("Switch: `/model provider:model-name`")
+        lines.append("Setup: `hermes setup`")
+        return "\n".join(lines)
+
+    async def _handle_balance_command(self, event: MessageEvent) -> str:
+        """Handle /balance command — show PPQ account balance."""
+        from hermes_cli.config import get_env_value
+        api_key = get_env_value("PPQ_API_KEY") or os.getenv("PPQ_API_KEY", "")
+        if not api_key:
+            return "No PPQ API key configured. Set `PPQ_API_KEY` or run `hermes model` to create an account."
+        try:
+            import httpx
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(
+                    "https://api.ppq.ai/credits/balance",
+                    headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                    json={}, timeout=5.0,
+                )
+            if resp.status_code == 200:
+                balance = resp.json().get("balance")
+                if balance is not None:
+                    return f"💰 **PPQ Balance:** ${float(balance):.2f}\n\nTop up: `/topup [amount]`"
+            return "Failed to fetch balance."
+        except Exception as e:
+            return f"Failed to fetch balance: {e}"
+
+    async def _handle_topup_command(self, event: MessageEvent) -> str:
+        """Handle /topup command — create a Lightning invoice for PPQ top-up.
+
+        Usage:
+            /topup          — default $1 via Lightning
+            /topup 5        — $5 via Lightning
+            /topup 10 btc   — $10 via Bitcoin
+        """
+        from hermes_cli.config import get_env_value
+        api_key = get_env_value("PPQ_API_KEY") or os.getenv("PPQ_API_KEY", "")
+        if not api_key:
+            return "No PPQ API key configured. Set `PPQ_API_KEY` or run `hermes model` to create an account."
+
+        args = event.get_command_args().strip().split()
+        amount = 1.0
+        method = "btc-lightning"
+        _method_aliases = {
+            "lightning": "btc-lightning",
+            "bitcoin": "btc",
+            "monero": "xmr",
+            "litecoin": "ltc",
+        }
+        _method_labels = {
+            "btc-lightning": "Lightning",
+            "btc": "Bitcoin",
+            "xmr": "Monero",
+            "ltc": "Litecoin",
+        }
+
+        if args:
+            try:
+                amount = float(args[0])
+            except ValueError:
+                return f"Invalid amount: `{args[0]}`. Usage: `/topup [amount] [lightning|btc|xmr|ltc]`"
+        if len(args) >= 2:
+            raw_method = args[1].lower()
+            method = _method_aliases.get(raw_method, raw_method)
+
+        method_label = _method_labels.get(method, method)
+
+        try:
+            import httpx
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(
+                    f"https://api.ppq.ai/topup/create/{method}",
+                    headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                    json={"amount": amount, "currency": "USD"},
+                    timeout=15.0,
+                )
+                resp.raise_for_status()
+                result = resp.json()
+        except Exception as e:
+            return f"Failed to create invoice: {e}"
+
+        checkout_url = result.get("checkout_url", "")
+        lightning_invoice = result.get("lightning_invoice", "")
+
+        lines = [f"⚡ **PPQ Top-Up: ${amount:.2f} via {method_label}**", ""]
+
+        if checkout_url:
+            lines.append(f"🔗 **Pay here:** {checkout_url}")
+            lines.append("")
+
+        if lightning_invoice:
+            lines.append(f"📋 **Lightning invoice:**")
+            lines.append(f"`{lightning_invoice}`")
+            lines.append("")
+
+        lines.append("Check status: `/balance`")
         return "\n".join(lines)
 
     async def _handle_personality_command(self, event: MessageEvent) -> str:

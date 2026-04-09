@@ -351,6 +351,21 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "glm-4.7",
         "MiniMax-M2.5",
     ],
+    "ppq": [
+        "claude-opus-4.6",
+        "claude-sonnet-4.6",
+        "gpt-5.4",
+        "gpt-5.3-codex",
+        "google/gemini-3.1-pro-preview",
+        "google/gemini-3-flash-preview",
+        "deepseek/deepseek-v3.2",
+        "x-ai/grok-4.1-fast",
+        "z-ai/glm-5",
+        "moonshotai/kimi-k2.5",
+        "minimax/minimax-m2.7",
+        "qwen/qwen3.5-397b-a17b",
+        "qwen/qwen3-coder-plus",
+    ],
     # Curated HF model list — only agentic models that map to OpenRouter defaults.
     "huggingface": [
         "moonshotai/Kimi-K2.5",
@@ -740,12 +755,12 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("opencode-go",    "OpenCode Go",              "OpenCode Go (open models, $10/month subscription)"),
     ProviderEntry("bedrock",        "AWS Bedrock",              "AWS Bedrock (Claude, Nova, Llama, DeepSeek — IAM or API key)"),
     ProviderEntry("azure-foundry",  "Azure Foundry",            "Azure Foundry (OpenAI-style or Anthropic-style endpoint — your Azure AI deployment)"),
+    ProviderEntry("ppq",            "PPQ",                      "PPQ (330+ models, pay-per-query, no account needed)"),
 ]
 
 # Derived dicts — used throughout the codebase
 _PROVIDER_LABELS = {p.slug: p.label for p in CANONICAL_PROVIDERS}
 _PROVIDER_LABELS["custom"] = "Custom endpoint"  # special case: not a named provider
-
 
 _PROVIDER_ALIASES = {
     "glm": "zai",
@@ -809,6 +824,9 @@ _PROVIDER_ALIASES = {
     "nemotron": "nvidia",
     "ollama": "custom",  # bare "ollama" = local; use "ollama-cloud" for cloud
     "ollama_cloud": "ollama-cloud",
+    "payperq": "ppq",
+    "pay-per-query": "ppq",
+    "ppq-ai": "ppq",
 }
 
 
@@ -1849,6 +1867,16 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
                     return live
             except Exception:
                 pass
+    if normalized == "ppq":
+        try:
+            from hermes_cli.auth import resolve_api_key_provider_credentials
+            creds = resolve_api_key_provider_credentials("ppq")
+            if creds.get("api_key"):
+                live = fetch_api_models(creds["api_key"], creds["base_url"])
+                if live:
+                    return live
+        except Exception:
+            pass
     if normalized == "custom":
         base_url = _get_custom_base_url()
         if base_url:

@@ -1722,6 +1722,8 @@ def select_provider_and_model(args=None):
         _model_flow_bedrock(config, current_model)
     elif selected_provider == "azure-foundry":
         _model_flow_azure_foundry(config, current_model)
+    elif selected_provider == "ppq":
+        _model_flow_ppq(config, current_model)
     elif selected_provider in (
         "gemini",
         "deepseek",
@@ -3893,6 +3895,273 @@ def _infer_stepfun_region(base_url: str) -> str:
     if "api.stepfun.com" in normalized:
         return "china"
     return "international"
+
+
+def _ppq_check_balance(api_key: str) -> "float | None":
+    """Check PPQ account balance. Returns balance or None on failure."""
+    try:
+        import httpx
+        resp = httpx.post(
+            "https://api.ppq.ai/credits/balance",
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            json={}, timeout=5.0,
+        )
+        if resp.status_code == 200:
+            balance = resp.json().get("balance")
+            if balance is not None:
+                return float(balance)
+    except Exception:
+        pass
+    return None
+
+
+def _ppq_topup(api_key: str):
+    """Interactive Lightning top-up flow for PPQ."""
+    import time
+
+    amounts = ["$1", "$2", "$5", "$10"]
+    print("  Top-up amount:")
+    for i, a in enumerate(amounts):
+        print(f"    [{i + 1}] {a}")
+    print(f"    [c] Custom amount")
+    print()
+    try:
+        pick = input("  Choose amount [Enter to skip]: ").strip()
+    except (KeyboardInterrupt, EOFError):
+        print()
+        return
+
+    if not pick:
+        return
+
+    if pick == "c":
+        try:
+            custom = input("  Amount in USD (e.g. 3.50): $").strip()
+            amount = float(custom)
+        except (ValueError, KeyboardInterrupt, EOFError):
+            print("  Invalid amount.")
+            return
+    elif pick in ("1", "2", "3", "4"):
+        amount = [1, 2, 5, 10][int(pick) - 1]
+    else:
+        print("  Invalid choice.")
+        return
+
+    methods = [
+        ("btc-lightning", "Lightning"),
+        ("btc", "Bitcoin"),
+        ("xmr", "Monero"),
+        ("ltc", "Litecoin"),
+    ]
+    print()
+    print("  Payment method:")
+    for i, (_, label) in enumerate(methods):
+        print(f"    [{i + 1}] {label}")
+    print()
+    try:
+        mpick = input("  Choose method [1]: ").strip() or "1"
+    except (KeyboardInterrupt, EOFError):
+        print()
+        return
+
+    try:
+        method_id = methods[int(mpick) - 1][0]
+        method_label = methods[int(mpick) - 1][1]
+    except (ValueError, IndexError):
+        print("  Invalid choice.")
+        return
+
+    print(f"\n  Creating ${amount:.2f} {method_label} invoice...", end="", flush=True)
+    try:
+        import httpx
+        resp = httpx.post(
+            f"https://api.ppq.ai/topup/create/{method_id}",
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            json={"amount": amount, "currency": "USD"},
+            timeout=15.0,
+        )
+        resp.raise_for_status()
+        result = resp.json()
+    except Exception as e:
+        print(f" failed: {e}")
+        return
+
+    invoice_id = result.get("invoice_id", "")
+    checkout_url = result.get("checkout_url", "")
+    lightning_invoice = result.get("lightning_invoice", "")
+    print(" done!")
+    print()
+
+    # Checkout URL — clickable in terminals, tappable in Messenger
+    if checkout_url:
+        print(f"  Pay ${amount:.2f} via {method_label}:")
+        print(f"  {checkout_url}")
+        print()
+
+    # Raw invoice for wallet paste / Messenger tap-to-copy
+    if lightning_invoice:
+        print(f"  Lightning invoice:")
+        print(f"  {lightning_invoice}")
+        print()
+
+    if not invoice_id:
+        return
+
+    print("  Waiting for payment...", end="", flush=True)
+    try:
+        import httpx
+        for _ in range(90):  # 3 minutes max
+            time.sleep(2)
+            try:
+                sr = httpx.get(
+                    f"https://api.ppq.ai/topup/status/{invoice_id}",
+                    headers={"Authorization": f"Bearer {api_key}"},
+                    timeout=5.0,
+                )
+                if sr.status_code == 200:
+                    status = sr.json().get("status", "")
+                    if status == "paid":
+                        print(" paid!")
+                        new_balance = _ppq_check_balance(api_key)
+                        if new_balance is not None:
+                            print(f"  New balance: ${new_balance:.2f}")
+                        return
+                    elif status == "expired":
+                        print(" expired.")
+                        return
+            except Exception:
+                pass
+            print(".", end="", flush=True)
+    except KeyboardInterrupt:
+        pass
+    print(" timed out. Check balance later with `hermes model`.")
+
+
+def _model_flow_ppq(config, current_model=""):
+    """PPQ flow with inline account creation and top-up — no browser needed."""
+    from hermes_cli.auth import (
+        PROVIDER_REGISTRY, _prompt_model_selection, _save_model_choice,
+        deactivate_provider,
+    )
+    from hermes_cli.config import get_env_value, save_env_value, load_config, save_config
+    from hermes_cli.models import fetch_api_models
+
+    pconfig = PROVIDER_REGISTRY["ppq"]
+    existing_key = get_env_value("PPQ_API_KEY") or os.getenv("PPQ_API_KEY", "")
+
+    if existing_key:
+        print(f"  PPQ API key: {existing_key[:8]}... ✓")
+        balance = _ppq_check_balance(existing_key)
+        if balance is not None:
+            print(f"  Balance: ${balance:.2f}")
+            if balance < 0.10:
+                print()
+                _ppq_topup(existing_key)
+        print()
+    else:
+        print("  No PPQ API key configured.")
+        print()
+        print("  PPQ is a pay-per-query AI aggregator. No email, no KYC.")
+        print("  You can create an account instantly or enter an existing key.")
+        print()
+        try:
+            choice = input("  [1] Create new account  [2] Enter existing key  [Enter] Cancel: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print()
+            return
+
+        if choice == "1":
+            print("  Creating PPQ account...", end="", flush=True)
+            try:
+                import httpx
+                resp = httpx.post("https://api.ppq.ai/accounts/create", timeout=15.0)
+                resp.raise_for_status()
+                result = resp.json()
+                api_key = result.get("api_key", "")
+                credit_id = result.get("credit_id", "")
+                print(" done!")
+                print()
+                print(f"  API Key:   {api_key}")
+                print(f"  Credit ID: {credit_id}")
+                print()
+                print("  ⚠  Save both values now — PPQ accounts are anonymous,")
+                print("     there is no way to recover a lost key.")
+                print("     Enter the Credit ID at ppq.ai to access your account on the web.")
+                print()
+                save_env_value("PPQ_API_KEY", api_key)
+                existing_key = api_key
+                print("  API key saved to ~/.hermes/.env")
+                print()
+                _ppq_topup(existing_key)
+            except Exception as e:
+                print(f" failed: {e}")
+                return
+        elif choice == "2":
+            try:
+                import getpass
+                new_key = getpass.getpass("  PPQ API key: ").strip()
+            except (KeyboardInterrupt, EOFError):
+                print()
+                return
+            if not new_key:
+                print("  Cancelled.")
+                return
+            save_env_value("PPQ_API_KEY", new_key)
+            existing_key = new_key
+            print("  API key saved.")
+        else:
+            print("  Cancelled.")
+            return
+        print()
+
+    # Model selection
+    effective_base = pconfig.inference_base_url
+    curated = _PROVIDER_MODELS.get("ppq", [])
+
+    mdev_models: list = []
+    try:
+        from agent.models_dev import list_agentic_models
+        mdev_models = list_agentic_models("ppq")
+    except Exception:
+        pass
+
+    if mdev_models:
+        model_list = mdev_models
+        print(f"  Found {len(model_list)} model(s) from models.dev registry")
+    elif curated and len(curated) >= 8:
+        model_list = curated
+        print(f"  Showing {len(model_list)} curated models — use \"Enter custom model name\" for others.")
+    else:
+        live_models = fetch_api_models(existing_key, effective_base)
+        if live_models and len(live_models) >= len(curated):
+            model_list = live_models
+            print(f"  Found {len(model_list)} model(s) from PPQ API")
+        else:
+            model_list = curated
+
+    if model_list:
+        selected = _prompt_model_selection(model_list, current_model=current_model)
+    else:
+        try:
+            selected = input("Model name: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            selected = None
+
+    if selected:
+        _save_model_choice(selected)
+        cfg = load_config()
+        model = cfg.get("model")
+        if not isinstance(model, dict):
+            model = {"default": model} if model else {}
+            cfg["model"] = model
+        model["provider"] = "ppq"
+        model["base_url"] = effective_base
+        model.pop("api_mode", None)
+        save_config(cfg)
+        deactivate_provider()
+        print(f"Default model set to: {selected} (via PPQ)")
+    else:
+        print("No change.")
 
 
 def _stepfun_base_url_for_region(region: str) -> str:
@@ -7752,6 +8021,7 @@ For more help on a command:
             "xiaomi",
             "arcee",
             "nvidia",
+            "ppq",
         ],
         default=None,
         help="Inference provider (default: auto)",

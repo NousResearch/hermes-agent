@@ -5,6 +5,7 @@ pieces. The OpenAI client and tool loading are mocked so no network calls
 are made.
 """
 
+import io
 import json
 import logging
 import re
@@ -1120,15 +1121,17 @@ class TestExecuteToolCalls:
         agent._save_trajectory = lambda *args, **kwargs: None
         agent._save_session_log = lambda *args, **kwargs: None
 
-        with patch("run_agent.time.sleep", return_value=None), \
-             patch.object(agent, "_vprint") as mock_vprint:
+        captured = io.StringIO()
+        agent._print_fn = lambda *args, **kw: print(*args, file=captured, **kw)
+
+        with patch("run_agent.time.sleep", return_value=None):
             result = agent.run_conversation("hello")
 
         assert result["completed"] is True
         assert result["final_response"] == "Recovered"
-        rendered = [" ".join(str(arg) for arg in call.args) for call in mock_vprint.call_args_list]
-        assert not any("API call failed" in line for line in rendered)
-        assert not any("Rate limit reached" in line for line in rendered)
+        output = captured.getvalue()
+        assert "API call failed" not in output
+        assert "Rate limit reached" not in output
 
 
 class TestConcurrentToolExecution:

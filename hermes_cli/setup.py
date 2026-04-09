@@ -486,13 +486,87 @@ def _curses_prompt_choice(question: str, choices: list, default: int = 0) -> int
 
 
 
+def _msvcrt_prompt_choice(question: str, choices: list, default: int = 0) -> int:
+    """Arrow-key menu using Windows console API (msvcrt).
+
+    Arrow keys work on Windows cmd.exe / PowerShell / Windows Terminal.
+    Returns selected index on Enter, or -1 if the terminal doesn't support this.
+    """
+    try:
+        import msvcrt
+    except ImportError:
+        return -1
+
+    cursor = default
+    n = len(choices)
+    # Lines printed per draw: question + choices + hint
+    total_lines = 1 + n + 1
+
+    def clear_menu():
+        """Move cursor up and clear each line so redraws are clean."""
+        sys.stdout.write(f"\033[{total_lines}A")
+        sys.stdout.flush()
+        for _ in range(total_lines):
+            sys.stdout.write("\033[2K")  # clear entire line
+            sys.stdout.write("\033[B")   # move down one row
+        sys.stdout.write("\033[2K")  # clear the hint line we landed on
+        sys.stdout.write(f"\033[{total_lines}A")  # move back to top
+        sys.stdout.flush()
+
+    def draw():
+        clear_menu()
+        print(color(question, Colors.YELLOW))
+        for i, choice in enumerate(choices):
+            marker = "→" if i == cursor else " "
+            line = f"  {marker}  {choice}"
+            if i == cursor:
+                sys.stdout.write(f"\033[2K\r{color(line, Colors.GREEN)}\n")
+            else:
+                sys.stdout.write(f"\033[2K\r{line}\n")
+        print_info(f"  ↑↓ navigate  Enter select  Ctrl+C exit")
+
+    try:
+        draw()
+        while True:
+            if not msvcrt.kbhit():
+                continue
+            ch = msvcrt.getch()
+            if ch == b"\r" or ch == b"\n":  # Enter
+                return cursor
+            elif ch == b"\x1b":  # Escape
+                print()
+                return -1
+            elif ch == b"q" or ch == b"Q":
+                print()
+                sys.exit(0)
+            elif ch == b"\xe0":  # Arrow key prefix on Windows
+                key = msvcrt.getch()
+                if key == b"H":  # Up
+                    cursor = (cursor - 1) % n
+                    draw()
+                elif key == b"P":  # Down
+                    cursor = (cursor + 1) % n
+                    draw()
+            elif ch == b"k" or ch == b"K":  # vim up (fallback)
+                cursor = (cursor - 1) % n
+                draw()
+            elif ch == b"j" or ch == b"J":  # vim down (fallback)
+                cursor = (cursor + 1) % n
+                draw()
+    except KeyboardInterrupt:
+        print()
+        sys.exit(1)
+
+
 def prompt_choice(question: str, choices: list, default: int = 0) -> int:
     """Prompt for a choice from a list with arrow key navigation.
 
-    Escape keeps the current default (skips the question).
+    Tries curses (Unix), then msvcrt (Windows), then falls back to numbered input.
     Ctrl+C exits the wizard.
     """
     idx = _curses_prompt_choice(question, choices, default)
+    if idx < 0:
+        idx = _msvcrt_prompt_choice(question, choices, default)
     if idx >= 0:
         if idx == default:
             print_info("  Skipped (keeping current)")
@@ -2781,18 +2855,14 @@ def run_setup_wizard(args):
         menu_choices = [
             "Quick Setup - configure missing items only",
             "Full Setup - reconfigure everything",
-            "---",
             "Model & Provider",
             "Terminal Backend",
             "Messaging Platforms (Gateway)",
             "Tools",
             "Agent Settings",
-            "---",
             "Exit",
         ]
 
-        # Separator indices (not selectable, but prompt_choice doesn't filter them,
-        # so we handle them below)
         choice = prompt_choice("What would you like to do?", menu_choices, 0)
 
         if choice == 0:
@@ -2802,18 +2872,14 @@ def run_setup_wizard(args):
         elif choice == 1:
             # Full setup — fall through to run all sections
             pass
-        elif choice in (2, 8):
-            # Separator — treat as exit
+        elif choice == 7:
             print_info("Exiting. Run 'hermes setup' again when ready.")
             return
-        elif choice == 9:
-            print_info("Exiting. Run 'hermes setup' again when ready.")
-            return
-        elif 3 <= choice <= 7:
+        elif 2 <= choice <= 6:
             # Individual section — map by key, not by position.
             # SETUP_SECTIONS includes TTS but the returning-user menu skips it,
-            # so positional indexing (choice - 3) would dispatch the wrong section.
-            section_key = RETURNING_USER_MENU_SECTION_KEYS[choice - 3]
+            # so positional indexing (choice - 2) would dispatch the wrong section.
+            section_key = RETURNING_USER_MENU_SECTION_KEYS[choice - 2]
             section = next((s for s in SETUP_SECTIONS if s[0] == section_key), None)
             if section:
                 _, label, func = section

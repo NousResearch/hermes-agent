@@ -2161,8 +2161,148 @@ def _prompt_model_selection(model_ids: List[str], current_model: str = "") -> Op
 
     # Default cursor on the current model (index 0 if it was reordered to top)
     default_idx = 0
+    n_ordered = len(ordered)
+    # Last two slots are "Enter custom" and "Skip"
+    custom_idx = n_ordered
+    skip_idx = n_ordered + 1
 
-    # Try arrow-key menu first, fall back to number input
+    # Try curses (Unix arrow keys) — most reliable
+    try:
+        import curses
+        import sys
+
+        all_choices = [f"  {_label(mid)}" for mid in ordered] + [
+            "  Enter custom model name",
+            "  Skip (keep current)",
+        ]
+
+        def _curses_menu(stdscr):
+            curses.curs_set(0)
+            if curses.has_colors():
+                curses.start_color()
+                curses.use_default_colors()
+                curses.init_pair(1, curses.COLOR_GREEN, -1)
+            cursor = default_idx
+
+            while True:
+                stdscr.clear()
+                max_y, max_x = stdscr.getmaxyx()
+                try:
+                    stdscr.addnstr(0, 0, "Select default model:", max_x - 1,
+                                   curses.A_BOLD | curses.color_pair(1))
+                except curses.error:
+                    pass
+
+                for i, choice in enumerate(all_choices):
+                    y = i + 2
+                    if y >= max_y - 1:
+                        break
+                    arrow = "-> " if i == cursor else "   "
+                    line = f" {arrow}{choice}"
+                    attr = curses.A_NORMAL
+                    if i == cursor:
+                        attr = curses.A_BOLD | curses.color_pair(1)
+                    try:
+                        stdscr.addnstr(y, 0, line, max_x - 1, attr)
+                    except curses.error:
+                        pass
+
+                stdscr.refresh()
+                key = stdscr.getch()
+                if key in (curses.KEY_UP, ord("k")):
+                    cursor = (cursor - 1) % len(all_choices)
+                elif key in (curses.KEY_DOWN, ord("j")):
+                    cursor = (cursor + 1) % len(all_choices)
+                elif key in (curses.KEY_ENTER, 10, 13):
+                    return cursor
+                elif key in (27, ord("q")):
+                    return None
+
+        result = [None]
+        def _runner(stdscr):
+            result[0] = _curses_menu(stdscr)
+        curses.wrapper(_runner)
+        if result[0] is not None:
+            print()
+            idx = result[0]
+            if idx < n_ordered:
+                return ordered[idx]
+            elif idx == custom_idx:
+                custom = input("Enter model name: ").strip()
+                return custom if custom else None
+            return None
+        return None
+    except Exception:
+        pass
+
+    # Windows msvcrt fallback
+    try:
+        import msvcrt
+        import sys as _sys
+
+        all_choices = [_label(mid) for mid in ordered] + [
+            "Enter custom model name",
+            "Skip (keep current)",
+        ]
+        cursor = default_idx
+        total_lines = 2 + len(all_choices)
+
+        def _clear():
+            _sys.stdout.write(f"\033[{total_lines}A")
+            _sys.stdout.flush()
+            for _ in range(total_lines):
+                _sys.stdout.write("\033[2K\033[B")
+            _sys.stdout.write("\033[2K")
+            _sys.stdout.write(f"\033[{total_lines}A")
+            _sys.stdout.flush()
+
+        def _draw():
+            _clear()
+            print("Select default model:")
+            for i, choice in enumerate(all_choices):
+                arrow = "-> " if i == cursor else "   "
+                prefix = "\033[92m\033[1m" if i == cursor else ""
+                suffix = "\033[0m" if i == cursor else ""
+                print(f"{prefix} {arrow}{choice}{suffix}")
+            print("  ↑↓ navigate  Enter select  Ctrl+C cancel")
+
+        _draw()
+        while True:
+            if not msvcrt.kbhit():
+                continue
+            ch = msvcrt.getch()
+            if ch == b"\r" or ch == b"\n":
+                idx = cursor
+                if idx < n_ordered:
+                    return ordered[idx]
+                elif idx == custom_idx:
+                    custom = input("Enter model name: ").strip()
+                    return custom if custom else None
+                return None
+            elif ch == b"\x1b":
+                print()
+                return None
+            elif ch == b"q" or ch == b"Q":
+                print()
+                return None
+            elif ch == b"\xe0":
+                key = msvcrt.getch()
+                if key == b"H":
+                    cursor = (cursor - 1) % len(all_choices)
+                    _draw()
+                elif key == b"P":
+                    cursor = (cursor + 1) % len(all_choices)
+                    _draw()
+            elif ch in (b"k", b"K"):
+                cursor = (cursor - 1) % len(all_choices)
+                _draw()
+            elif ch in (b"j", b"J"):
+                cursor = (cursor + 1) % len(all_choices)
+                _draw()
+    except ImportError:
+        pass
+
+    # Try simple_term_menu
     try:
         from simple_term_menu import TerminalMenu
         choices = [f"  {_label(mid)}" for mid in ordered]
@@ -2188,7 +2328,7 @@ def _prompt_model_selection(model_ids: List[str], current_model: str = "") -> Op
             custom = input("Enter model name: ").strip()
             return custom if custom else None
         return None
-    except (ImportError, NotImplementedError):
+    except (ImportError, NotImplementedError, OSError, subprocess.SubprocessError):
         pass
 
     # Fallback: numbered list

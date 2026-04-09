@@ -1027,25 +1027,128 @@ def select_provider_and_model(args=None):
         _model_flow_api_key_provider(config, selected_provider, current_model)
 
 
-def _prompt_provider_choice(choices):
-    """Show provider selection menu. Returns index or None."""
+def _prompt_provider_choice(choices, default: int = 0):
+    """Show provider selection menu with arrow-key navigation.
+
+    Tries curses (Unix), then msvcrt (Windows), then falls back to numbered input.
+    Returns selected index, or None on cancel/Ctrl+C.
+    """
     try:
-        from simple_term_menu import TerminalMenu
-        menu_items = [f"  {c}" for c in choices]
-        menu = TerminalMenu(
-            menu_items, cursor_index=0,
-            menu_cursor="-> ", menu_cursor_style=("fg_green", "bold"),
-            menu_highlight_style=("fg_green",),
-            cycle_cursor=True, clear_screen=False,
-            title="Select provider:",
-        )
-        idx = menu.show()
-        print()
-        return idx
-    except (ImportError, NotImplementedError):
+        import curses
+        import sys
+
+        def _curses_menu(stdscr):
+            curses.curs_set(0)
+            if curses.has_colors():
+                curses.start_color()
+                curses.use_default_colors()
+                curses.init_pair(1, curses.COLOR_GREEN, -1)
+            cursor = default
+            n = len(choices)
+
+            while True:
+                stdscr.clear()
+                max_y, max_x = stdscr.getmaxyx()
+                try:
+                    stdscr.addnstr(0, 0, "Select provider:", max_x - 1,
+                                   curses.A_BOLD | curses.color_pair(1))
+                except curses.error:
+                    pass
+
+                for i, choice in enumerate(choices):
+                    y = i + 2
+                    if y >= max_y - 1:
+                        break
+                    arrow = "-> " if i == cursor else "   "
+                    line = f" {arrow}{choice}"
+                    attr = curses.A_NORMAL
+                    if i == cursor:
+                        attr = curses.A_BOLD | curses.color_pair(1)
+                    try:
+                        stdscr.addnstr(y, 0, line, max_x - 1, attr)
+                    except curses.error:
+                        pass
+
+                stdscr.refresh()
+                key = stdscr.getch()
+                if key in (curses.KEY_UP, ord("k")):
+                    cursor = (cursor - 1) % n
+                elif key in (curses.KEY_DOWN, ord("j")):
+                    cursor = (cursor + 1) % n
+                elif key in (curses.KEY_ENTER, 10, 13):
+                    return cursor
+                elif key in (27, ord("q")):
+                    return None
+
+        result = [None]
+        def _runner(stdscr):
+            result[0] = _curses_menu(stdscr)
+        curses.wrapper(_runner)
+        if result[0] is not None:
+            print()
+        return result[0]
+    except Exception:
         pass
 
-    # Fallback: numbered list
+    # Windows msvcrt fallback
+    try:
+        import msvcrt
+        import sys as _sys
+
+        cursor = default
+        n = len(choices)
+        total_lines = 2 + n
+
+        def _clear():
+            _sys.stdout.write(f"\033[{total_lines}A")
+            _sys.stdout.flush()
+            for _ in range(total_lines):
+                _sys.stdout.write("\033[2K\033[B")
+            _sys.stdout.write("\033[2K")
+            _sys.stdout.write(f"\033[{total_lines}A")
+            _sys.stdout.flush()
+
+        def _draw():
+            _clear()
+            print("Select provider:")
+            for i, choice in enumerate(choices):
+                arrow = "-> " if i == cursor else "   "
+                prefix = "\033[92m\033[1m" if i == cursor else ""
+                suffix = "\033[0m" if i == cursor else ""
+                print(f"{prefix} {arrow}{choice}{suffix}")
+            print("  ↑↓ navigate  Enter select  Ctrl+C cancel")
+
+        _draw()
+        while True:
+            if not msvcrt.kbhit():
+                continue
+            ch = msvcrt.getch()
+            if ch == b"\r" or ch == b"\n":
+                return cursor
+            elif ch == b"\x1b":
+                print()
+                return None
+            elif ch == b"q" or ch == b"Q":
+                print()
+                return None
+            elif ch == b"\xe0":
+                key = msvcrt.getch()
+                if key == b"H":
+                    cursor = (cursor - 1) % n
+                    _draw()
+                elif key == b"P":
+                    cursor = (cursor + 1) % n
+                    _draw()
+            elif ch in (b"k", b"K"):
+                cursor = (cursor - 1) % n
+                _draw()
+            elif ch in (b"j", b"J"):
+                cursor = (cursor + 1) % n
+                _draw()
+    except ImportError:
+        pass
+
+    # Numbered fallback
     print("Select provider:")
     for i, c in enumerate(choices, 1):
         print(f"  {i}. {c}")
@@ -1502,18 +1605,122 @@ def _remove_custom_provider(config):
             choices.append(str(entry))
     choices.append("Cancel")
 
+    # Try curses (Unix arrow keys)
     try:
-        from simple_term_menu import TerminalMenu
-        menu = TerminalMenu(
-            [f"  {c}" for c in choices], cursor_index=0,
-            menu_cursor="-> ", menu_cursor_style=("fg_red", "bold"),
-            menu_highlight_style=("fg_red",),
-            cycle_cursor=True, clear_screen=False,
-            title="Select provider to remove:",
-        )
-        idx = menu.show()
-        print()
-    except (ImportError, NotImplementedError):
+        import curses
+        n = len(choices)
+        result = [None]
+
+        def _menu(stdscr):
+            curses.curs_set(0)
+            if curses.has_colors():
+                curses.start_color()
+                curses.use_default_colors()
+                curses.init_pair(1, curses.COLOR_RED, -1)
+            cursor = 0
+            while True:
+                stdscr.clear()
+                max_y, max_x = stdscr.getmaxyx()
+                try:
+                    stdscr.addnstr(0, 0, "Select provider to remove:", max_x - 1,
+                                   curses.A_BOLD | curses.color_pair(1))
+                except curses.error:
+                    pass
+                for i, choice in enumerate(choices):
+                    y = i + 2
+                    if y >= max_y - 1:
+                        break
+                    arrow = "-> " if i == cursor else "   "
+                    line = f" {arrow}{choice}"
+                    attr = curses.A_BOLD | curses.color_pair(1) if i == cursor else curses.A_NORMAL
+                    try:
+                        stdscr.addnstr(y, 0, line, max_x - 1, attr)
+                    except curses.error:
+                        pass
+                stdscr.refresh()
+                key = stdscr.getch()
+                if key in (curses.KEY_UP, ord("k")):
+                    cursor = (cursor - 1) % n
+                elif key in (curses.KEY_DOWN, ord("j")):
+                    cursor = (cursor + 1) % n
+                elif key in (curses.KEY_ENTER, 10, 13):
+                    result[0] = cursor
+                    return
+                elif key in (27, ord("q")):
+                    return
+
+        curses.wrapper(_menu)
+        if result[0] is not None:
+            print()
+            idx = result[0]
+        else:
+            idx = None
+    except Exception:
+        idx = None
+
+    # Windows msvcrt fallback
+    if idx is None:
+        try:
+            import msvcrt
+            import sys as _sys
+            cursor = 0
+            n = len(choices)
+            total_lines = 2 + n
+
+            def _clear():
+                _sys.stdout.write(f"\033[{total_lines}A")
+                _sys.stdout.flush()
+                for _ in range(total_lines):
+                    _sys.stdout.write("\033[2K\033[B")
+                _sys.stdout.write("\033[2K")
+                _sys.stdout.write(f"\033[{total_lines}A")
+                _sys.stdout.flush()
+
+            def _draw():
+                _clear()
+                print("Select provider to remove:")
+                for i, choice in enumerate(choices):
+                    arrow = "-> " if i == cursor else "   "
+                    prefix = "\033[91m\033[1m" if i == cursor else ""
+                    suffix = "\033[0m" if i == cursor else ""
+                    print(f"{prefix} {arrow}{choice}{suffix}")
+                print("  ↑↓ navigate  Enter select  Ctrl+C cancel")
+
+            _draw()
+            while True:
+                if not msvcrt.kbhit():
+                    continue
+                ch = msvcrt.getch()
+                if ch == b"\r" or ch == b"\n":
+                    idx = cursor
+                    break
+                elif ch == b"\x1b":
+                    print()
+                    idx = None
+                    break
+                elif ch == b"q" or ch == b"Q":
+                    print()
+                    idx = None
+                    break
+                elif ch == b"\xe0":
+                    key = msvcrt.getch()
+                    if key == b"H":
+                        cursor = (cursor - 1) % n
+                        _draw()
+                    elif key == b"P":
+                        cursor = (cursor + 1) % n
+                        _draw()
+                elif ch in (b"k", b"K"):
+                    cursor = (cursor - 1) % n
+                    _draw()
+                elif ch in (b"j", b"J"):
+                    cursor = (cursor + 1) % n
+                    _draw()
+        except ImportError:
+            pass
+
+    # Numbered fallback
+    if idx is None:
         for i, c in enumerate(choices, 1):
             print(f"  {i}. {c}")
         print()
@@ -1578,23 +1785,124 @@ def _model_flow_named_custom(config, provider_info):
 
     if models:
         print(f"Found {len(models)} model(s):\n")
+
+        # Try curses (Unix arrow keys)
+        idx = None
         try:
-            from simple_term_menu import TerminalMenu
-            menu_items = [f"  {m}" for m in models] + ["  Cancel"]
-            menu = TerminalMenu(
-                menu_items, cursor_index=0,
-                menu_cursor="-> ", menu_cursor_style=("fg_green", "bold"),
-                menu_highlight_style=("fg_green",),
-                cycle_cursor=True, clear_screen=False,
-                title=f"Select model from {name}:",
-            )
-            idx = menu.show()
-            print()
-            if idx is None or idx >= len(models):
-                print("Cancelled.")
-                return
-            model_name = models[idx]
-        except (ImportError, NotImplementedError):
+            import curses
+            n = len(models)
+            result = [None]
+
+            def _menu(stdscr):
+                curses.curs_set(0)
+                if curses.has_colors():
+                    curses.start_color()
+                    curses.use_default_colors()
+                    curses.init_pair(1, curses.COLOR_GREEN, -1)
+                cursor = 0
+                while True:
+                    stdscr.clear()
+                    max_y, max_x = stdscr.getmaxyx()
+                    try:
+                        stdscr.addnstr(0, 0, f"Select model from {name}:", max_x - 1,
+                                       curses.A_BOLD | curses.color_pair(1))
+                    except curses.error:
+                        pass
+                    all_items = models + ["Cancel"]
+                    for i, item in enumerate(all_items):
+                        y = i + 2
+                        if y >= max_y - 1:
+                            break
+                        arrow = "-> " if i == cursor else "   "
+                        line = f" {arrow}{item}"
+                        attr = curses.A_BOLD | curses.color_pair(1) if i == cursor else curses.A_NORMAL
+                        try:
+                            stdscr.addnstr(y, 0, line, max_x - 1, attr)
+                        except curses.error:
+                            pass
+                    stdscr.refresh()
+                    key = stdscr.getch()
+                    if key in (curses.KEY_UP, ord("k")):
+                        cursor = (cursor - 1) % len(all_items)
+                    elif key in (curses.KEY_DOWN, ord("j")):
+                        cursor = (cursor + 1) % len(all_items)
+                    elif key in (curses.KEY_ENTER, 10, 13):
+                        result[0] = cursor
+                        return
+                    elif key in (27, ord("q")):
+                        return
+
+            curses.wrapper(_menu)
+            if result[0] is not None:
+                print()
+                idx = result[0]
+        except Exception:
+            pass
+
+        # Windows msvcrt fallback
+        if idx is None and models:
+            try:
+                import msvcrt
+                import sys as _sys
+                cursor = 0
+                all_items = models + ["Cancel"]
+                n = len(all_items)
+                total_lines = 2 + n
+
+                def _clear():
+                    _sys.stdout.write(f"\033[{total_lines}A")
+                    _sys.stdout.flush()
+                    for _ in range(total_lines):
+                        _sys.stdout.write("\033[2K\033[B")
+                    _sys.stdout.write("\033[2K")
+                    _sys.stdout.write(f"\033[{total_lines}A")
+                    _sys.stdout.flush()
+
+                def _draw():
+                    _clear()
+                    print(f"Select model from {name}:")
+                    for i, item in enumerate(all_items):
+                        arrow = "-> " if i == cursor else "   "
+                        prefix = "\033[92m\033[1m" if i == cursor else ""
+                        suffix = "\033[0m" if i == cursor else ""
+                        print(f"{prefix} {arrow}{item}{suffix}")
+                    print("  ↑↓ navigate  Enter select  Ctrl+C cancel")
+
+                _draw()
+                while True:
+                    if not msvcrt.kbhit():
+                        continue
+                    ch = msvcrt.getch()
+                    if ch == b"\r" or ch == b"\n":
+                        idx = cursor
+                        break
+                    elif ch == b"\x1b":
+                        print()
+                        idx = None
+                        break
+                    elif ch == b"q" or ch == b"Q":
+                        print()
+                        idx = None
+                        break
+                    elif ch == b"\xe0":
+                        key = msvcrt.getch()
+                        if key == b"H":
+                            cursor = (cursor - 1) % n
+                            _draw()
+                        elif key == b"P":
+                            cursor = (cursor + 1) % n
+                            _draw()
+                    elif ch in (b"k", b"K"):
+                        cursor = (cursor - 1) % n
+                        _draw()
+                    elif ch in (b"j", b"J"):
+                        cursor = (cursor + 1) % n
+                        _draw()
+            except ImportError:
+                pass
+
+        # Numbered fallback
+        if idx is None:
             for i, m in enumerate(models, 1):
                 print(f"  {i}. {m}")
             print(f"  {len(models) + 1}. Cancel")
@@ -1608,10 +1916,15 @@ def _model_flow_named_custom(config, provider_info):
                 if idx < 0 or idx >= len(models):
                     print("Cancelled.")
                     return
-                model_name = models[idx]
             except (ValueError, KeyboardInterrupt, EOFError):
                 print("\nCancelled.")
                 return
+
+        if idx is not None and idx < len(models):
+            model_name = models[idx]
+        else:
+            print("Cancelled.")
+            return
     else:
         print("Could not fetch models from endpoint. Enter model name manually.")
         try:
@@ -1687,6 +2000,129 @@ def _prompt_reasoning_effort_selection(efforts, current_effort=""):
     else:
         default_idx = 0
 
+    # Try curses (Unix arrow keys)
+    try:
+        import curses
+        all_choices = [_label(eff) for ef in ordered] + [disable_label, skip_label]
+        n_ordered = len(ordered)
+        result = [None]
+
+        def _menu(stdscr):
+            curses.curs_set(0)
+            if curses.has_colors():
+                curses.start_color()
+                curses.use_default_colors()
+                curses.init_pair(1, curses.COLOR_GREEN, -1)
+            cursor = default_idx
+            n = len(all_choices)
+            while True:
+                stdscr.clear()
+                max_y, max_x = stdscr.getmaxyx()
+                try:
+                    stdscr.addnstr(0, 0, "Select reasoning effort:", max_x - 1,
+                                   curses.A_BOLD | curses.color_pair(1))
+                except curses.error:
+                    pass
+                for i, choice in enumerate(all_choices):
+                    y = i + 2
+                    if y >= max_y - 1:
+                        break
+                    arrow = "-> " if i == cursor else "   "
+                    line = f" {arrow}{choice}"
+                    attr = curses.A_BOLD | curses.color_pair(1) if i == cursor else curses.A_NORMAL
+                    try:
+                        stdscr.addnstr(y, 0, line, max_x - 1, attr)
+                    except curses.error:
+                        pass
+                stdscr.refresh()
+                key = stdscr.getch()
+                if key in (curses.KEY_UP, ord("k")):
+                    cursor = (cursor - 1) % n
+                elif key in (curses.KEY_DOWN, ord("j")):
+                    cursor = (cursor + 1) % n
+                elif key in (curses.KEY_ENTER, 10, 13):
+                    result[0] = cursor
+                    return
+                elif key in (27, ord("q")):
+                    return
+
+        curses.wrapper(_menu)
+        if result[0] is not None:
+            print()
+            idx = result[0]
+            if idx < n_ordered:
+                return ordered[idx]
+            if idx == n_ordered:
+                return "none"
+            return None
+        return None
+    except Exception:
+        pass
+
+    # Windows msvcrt fallback
+    try:
+        import msvcrt
+        import sys as _sys
+        all_choices = [_label(ef) for ef in ordered] + [disable_label, skip_label]
+        n_ordered = len(ordered)
+        cursor = default_idx
+        n = len(all_choices)
+        total_lines = 2 + n
+
+        def _clear():
+            _sys.stdout.write(f"\033[{total_lines}A")
+            _sys.stdout.flush()
+            for _ in range(total_lines):
+                _sys.stdout.write("\033[2K\033[B")
+            _sys.stdout.write("\033[2K")
+            _sys.stdout.write(f"\033[{total_lines}A")
+            _sys.stdout.flush()
+
+        def _draw():
+            _clear()
+            print("Select reasoning effort:")
+            for i, choice in enumerate(all_choices):
+                arrow = "-> " if i == cursor else "   "
+                prefix = "\033[92m\033[1m" if i == cursor else ""
+                suffix = "\033[0m" if i == cursor else ""
+                print(f"{prefix} {arrow}{choice}{suffix}")
+            print("  ↑↓ navigate  Enter select  Ctrl+C cancel")
+
+        _draw()
+        while True:
+            if not msvcrt.kbhit():
+                continue
+            ch = msvcrt.getch()
+            if ch == b"\r" or ch == b"\n":
+                if cursor < n_ordered:
+                    return ordered[cursor]
+                if cursor == n_ordered:
+                    return "none"
+                return None
+            elif ch == b"\x1b":
+                print()
+                return None
+            elif ch == b"q" or ch == b"Q":
+                print()
+                return None
+            elif ch == b"\xe0":
+                key = msvcrt.getch()
+                if key == b"H":
+                    cursor = (cursor - 1) % n
+                    _draw()
+                elif key == b"P":
+                    cursor = (cursor + 1) % n
+                    _draw()
+            elif ch in (b"k", b"K"):
+                cursor = (cursor - 1) % n
+                _draw()
+            elif ch in (b"j", b"J"):
+                cursor = (cursor + 1) % n
+                _draw()
+    except ImportError:
+        pass
+
+    # Try simple_term_menu
     try:
         from simple_term_menu import TerminalMenu
 
@@ -1712,7 +2148,7 @@ def _prompt_reasoning_effort_selection(efforts, current_effort=""):
         if idx == len(ordered):
             return "none"
         return None
-    except (ImportError, NotImplementedError):
+    except (ImportError, NotImplementedError, OSError, subprocess.SubprocessError):
         pass
 
     print("Select reasoning effort:")

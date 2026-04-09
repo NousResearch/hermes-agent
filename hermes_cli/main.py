@@ -1654,7 +1654,7 @@ def _remove_custom_provider(config):
         )
         idx = menu.show()
         print()
-    except (ImportError, NotImplementedError):
+    except Exception:
         for i, c in enumerate(choices, 1):
             print(f"  {i}. {c}")
         print()
@@ -1735,7 +1735,7 @@ def _model_flow_named_custom(config, provider_info):
                 print("Cancelled.")
                 return
             model_name = models[idx]
-        except (ImportError, NotImplementedError):
+        except Exception:
             for i, m in enumerate(models, 1):
                 print(f"  {i}. {m}")
             print(f"  {len(models) + 1}. Cancel")
@@ -1853,7 +1853,7 @@ def _prompt_reasoning_effort_selection(efforts, current_effort=""):
         if idx == len(ordered):
             return "none"
         return None
-    except (ImportError, NotImplementedError):
+    except Exception:
         pass
 
     print("Select reasoning effort:")

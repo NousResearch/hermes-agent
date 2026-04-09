@@ -898,7 +898,27 @@ def _current_custom_base_url() -> str:
     return custom_base or ""
 
 
+def _validate_proxy_environment_urls() -> None:
+    """Fail fast with a clear error when inherited proxy env vars are malformed."""
+    from urllib.parse import urlparse
+
+    for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy", "http_proxy", "all_proxy"):
+        candidate = str(os.environ.get(key) or "").strip()
+        if not candidate:
+            continue
+        try:
+            parsed = urlparse(candidate)
+            if parsed.scheme:
+                _ = parsed.port  # raises ValueError for malformed ports like '6153export'
+        except ValueError as exc:
+            raise RuntimeError(
+                f"Malformed proxy environment variable {key}={candidate!r}. "
+                "Fix or unset your proxy settings and try again."
+            ) from exc
+
+
 def _try_custom_endpoint() -> Tuple[Optional[OpenAI], Optional[str]]:
+    _validate_proxy_environment_urls()
     runtime = _resolve_custom_runtime()
     if len(runtime) == 2:
         custom_base, custom_key = runtime
@@ -918,6 +938,7 @@ def _try_custom_endpoint() -> Tuple[Optional[OpenAI], Optional[str]]:
 
 
 def _try_codex() -> Tuple[Optional[Any], Optional[str]]:
+    _validate_proxy_environment_urls()
     pool_present, entry = _select_pool_entry("openai-codex")
     if pool_present:
         codex_token = _pool_runtime_api_key(entry)
@@ -1262,14 +1283,14 @@ def resolve_provider_client(
     provider: str,
     model: str = None,
     async_mode: bool = False,
+    *,
+    explicit_base_url: Optional[str] = None,
+    explicit_api_key: Optional[str] = None,
     raw_codex: bool = False,
-    explicit_base_url: str = None,
-    explicit_api_key: str = None,
     api_mode: str = None,
     main_runtime: Optional[Dict[str, Any]] = None,
 ) -> Tuple[Optional[Any], Optional[str]]:
-    """Central router: given a provider name and optional model, return a
-    configured client with the correct auth, base URL, and API format.
+    """Resolve a runtime client for the requested provider.
 
     The returned client always exposes ``.chat.completions.create()`` — for
     Codex/Responses API providers, an adapter handles the translation
@@ -1298,6 +1319,7 @@ def resolve_provider_client(
     Returns:
         (client, resolved_model) or (None, None) if auth is unavailable.
     """
+    _validate_proxy_environment_urls()
     # Normalise aliases
     provider = _normalize_aux_provider(provider)
 

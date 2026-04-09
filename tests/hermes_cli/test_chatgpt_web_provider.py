@@ -1,3 +1,4 @@
+import json
 import sys
 from unittest.mock import patch
 
@@ -159,3 +160,82 @@ def test_main_accepts_chatgpt_web_for_chat_provider(monkeypatch):
 
 def test_provider_label_chatgpt_web_is_human_readable():
     assert get_label("chatgpt-web") == "ChatGPT Web"
+
+
+def test_get_chatgpt_web_auth_status_prefers_chatgpt_web_pool(tmp_path, monkeypatch):
+    from hermes_cli.auth import get_chatgpt_web_auth_status
+    from hermes_cli.chatgpt_web import DEFAULT_CHATGPT_WEB_BASE_URL
+
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.delenv("CHATGPT_WEB_ACCESS_TOKEN", raising=False)
+    monkeypatch.delenv("CHATGPT_WEB_SESSION_TOKEN", raising=False)
+
+    (hermes_home / "auth.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "credential_pool": {
+                    "chatgpt-web": [
+                        {
+                            "id": "cred-web",
+                            "label": "web-account",
+                            "auth_type": "oauth",
+                            "priority": 0,
+                            "source": "manual:device_code",
+                            "access_token": "chatgpt-web-token",
+                            "base_url": DEFAULT_CHATGPT_WEB_BASE_URL,
+                            "last_refresh": "2026-03-23T10:00:00Z",
+                        }
+                    ]
+                },
+            }
+        )
+    )
+
+    status = get_chatgpt_web_auth_status()
+
+    assert status["logged_in"] is True
+    assert status["auth_mode"] == "oauth"
+    assert status["source"] == "pool:web-account"
+    assert status["api_key"] == "chatgpt-web-token"
+
+
+def test_resolve_chatgpt_web_runtime_credentials_prefers_pool_entry(tmp_path, monkeypatch):
+    from hermes_cli.chatgpt_web import DEFAULT_CHATGPT_WEB_BASE_URL, resolve_chatgpt_web_runtime_credentials
+
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.delenv("CHATGPT_WEB_ACCESS_TOKEN", raising=False)
+    monkeypatch.delenv("CHATGPT_WEB_SESSION_TOKEN", raising=False)
+
+    (hermes_home / "auth.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "credential_pool": {
+                    "chatgpt-web": [
+                        {
+                            "id": "cred-web",
+                            "label": "web-account",
+                            "auth_type": "oauth",
+                            "priority": 0,
+                            "source": "manual:device_code",
+                            "access_token": "chatgpt-web-token",
+                            "base_url": DEFAULT_CHATGPT_WEB_BASE_URL,
+                            "last_refresh": "2026-03-23T10:00:00Z",
+                        }
+                    ]
+                },
+            }
+        )
+    )
+
+    creds = resolve_chatgpt_web_runtime_credentials()
+
+    assert creds["provider"] == "chatgpt-web"
+    assert creds["api_key"] == "chatgpt-web-token"
+    assert creds["base_url"] == DEFAULT_CHATGPT_WEB_BASE_URL
+    assert creds["source"] == "pool:web-account"

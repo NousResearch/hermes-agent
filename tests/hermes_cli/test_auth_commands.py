@@ -266,6 +266,64 @@ def test_auth_add_codex_oauth_persists_pool_entry(tmp_path, monkeypatch):
     assert entry["base_url"] == "https://chatgpt.com/backend-api/codex"
 
 
+def test_auth_add_chatgpt_web_oauth_persists_pool_entry(tmp_path, monkeypatch):
+    from hermes_cli.chatgpt_web import DEFAULT_CHATGPT_WEB_BASE_URL
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+    token = _jwt_with_email("chatgpt-web@example.com")
+    monkeypatch.setattr(
+        "hermes_cli.auth._codex_device_code_login",
+        lambda: {
+            "tokens": {
+                "access_token": token,
+                "refresh_token": "refresh-token",
+            },
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "last_refresh": "2026-03-23T10:00:00Z",
+        },
+    )
+
+    from hermes_cli.auth_commands import auth_add_command
+
+    class _Args:
+        provider = "chatgpt-web"
+        auth_type = "oauth"
+        api_key = None
+        label = None
+
+    auth_add_command(_Args())
+
+    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    entries = payload["credential_pool"]["chatgpt-web"]
+    entry = next(item for item in entries if item["source"] == "manual:device_code")
+    assert entry["label"] == "chatgpt-web@example.com"
+    assert entry["source"] == "manual:device_code"
+    assert entry["refresh_token"] == "refresh-token"
+    assert entry["base_url"] == DEFAULT_CHATGPT_WEB_BASE_URL
+
+
+def test_interactive_add_chatgpt_web_selects_oauth(monkeypatch):
+    from hermes_cli import auth_commands as auth_commands_mod
+
+    captured = {}
+    monkeypatch.setattr(auth_commands_mod, "_pick_provider", lambda prompt="Provider": "chatgpt-web")
+
+    answers = iter(["2", "web-account"])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
+    monkeypatch.setattr(
+        auth_commands_mod,
+        "auth_add_command",
+        lambda args: captured.setdefault("args", args),
+    )
+
+    auth_commands_mod._interactive_add()
+
+    assert captured["args"].provider == "chatgpt-web"
+    assert captured["args"].auth_type == "oauth"
+    assert captured["args"].label == "web-account"
+
+
 def test_auth_remove_reindexes_priorities(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     # Prevent pool auto-seeding from host env vars and file-backed sources

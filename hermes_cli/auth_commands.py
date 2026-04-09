@@ -33,7 +33,15 @@ from hermes_constants import OPENROUTER_BASE_URL
 
 
 # Providers that support OAuth login in addition to API keys.
-_OAUTH_CAPABLE_PROVIDERS = {"anthropic", "nous", "openai-codex", "qwen-oauth", "google-gemini-cli", "minimax-oauth"}
+_OAUTH_CAPABLE_PROVIDERS = {
+    "anthropic",
+    "nous",
+    "openai-codex",
+    "chatgpt-web",
+    "qwen-oauth",
+    "google-gemini-cli",
+    "minimax-oauth",
+}
 
 
 def _get_custom_provider_names() -> list:
@@ -170,7 +178,7 @@ def auth_add_command(args) -> None:
         if provider.startswith(CUSTOM_POOL_PREFIX):
             requested_type = AUTH_TYPE_API_KEY
         else:
-            requested_type = AUTH_TYPE_OAUTH if provider in {"anthropic", "nous", "openai-codex", "qwen-oauth", "google-gemini-cli", "minimax-oauth"} else AUTH_TYPE_API_KEY
+            requested_type = AUTH_TYPE_OAUTH if provider in _OAUTH_CAPABLE_PROVIDERS else AUTH_TYPE_API_KEY
 
     pool = load_pool(provider)
 
@@ -327,6 +335,28 @@ def auth_add_command(args) -> None:
             access_token=creds["tokens"]["access_token"],
             refresh_token=creds["tokens"].get("refresh_token"),
             base_url=creds.get("base_url"),
+            last_refresh=creds.get("last_refresh"),
+        )
+        pool.add_entry(entry)
+        print(f'Added {provider} OAuth credential #{len(pool.entries())}: "{entry.label}"')
+        return
+
+    if provider == "chatgpt-web":
+        creds = auth_mod._codex_device_code_login()
+        label = (getattr(args, "label", None) or "").strip() or label_from_token(
+            creds["tokens"]["access_token"],
+            _oauth_default_label(provider, len(pool.entries()) + 1),
+        )
+        entry = PooledCredential(
+            provider=provider,
+            id=uuid.uuid4().hex[:6],
+            label=label,
+            auth_type=AUTH_TYPE_OAUTH,
+            priority=0,
+            source=f"{SOURCE_MANUAL}:device_code",
+            access_token=creds["tokens"]["access_token"],
+            refresh_token=creds["tokens"].get("refresh_token"),
+            base_url=_provider_base_url(provider),
             last_refresh=creds.get("last_refresh"),
         )
         pool.add_entry(entry)
@@ -591,7 +621,7 @@ def _interactive_add() -> None:
         raise SystemExit(f"Unknown provider: {provider}")
 
     # For OAuth-capable providers, ask which type
-    if provider in _OAUTH_CAPABLE_PROVIDERS:
+    if provider in _OAUTH_CAPABLE_PROVIDERS or provider == "chatgpt-web":
         print(f"\n{provider} supports both API keys and OAuth login.")
         print("  1. API key (paste a key from the provider dashboard)")
         print("  2. OAuth login (authenticate via browser)")

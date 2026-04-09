@@ -1666,9 +1666,17 @@ class GatewayRunner:
             return BlueBubblesAdapter(config)
 
         elif platform in (Platform.LINE, Platform.LINE_LYNX):
-            from gateway.platforms.line import LineAdapter, check_line_requirements
-            if not check_line_requirements():
-                logger.warning("LINE: httpx missing or LINE_CHANNEL_ACCESS_TOKEN/LINE_CHANNEL_SECRET not configured")
+            from gateway.platforms.line import LineAdapter, LINE_SDK_AVAILABLE
+            if not LINE_SDK_AVAILABLE:
+                logger.warning("LINE: line-bot-sdk not installed")
+                return None
+            # Credentials can come from config.extra (config.yaml) OR environment variables
+            has_creds = bool(config.extra.get("channel_access_token"))
+            if not has_creds:
+                import os as _os
+                has_creds = bool(_os.getenv("LINE_CHANNEL_ACCESS_TOKEN")) or bool(_os.getenv("LINE_LYNX_CHANNEL_ACCESS_TOKEN"))
+            if not has_creds:
+                logger.warning("LINE: no credentials found in config.extra or environment")
                 return None
             return LineAdapter(config, platform=platform)
 

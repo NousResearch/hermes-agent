@@ -42,7 +42,7 @@ If `web.backend` is not set, the backend is auto-detected from whichever API key
 
 ### Exa
 
-[Exa](https://exa.ai) provides neural (embedding-based) web search optimized for AI applications. Unlike keyword-based backends, Exa finds semantically relevant results — ideal for research, content discovery, and knowledge retrieval.
+[Exa](https://exa.ai) is a search engine built for AI. It returns clean, relevant results optimized for LLM consumption — ideal for research, content discovery, and knowledge retrieval.
 
 **Setup:**
 

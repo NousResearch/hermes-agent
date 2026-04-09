@@ -1042,7 +1042,7 @@ web:
 
 **Parallel search modes:** Set `PARALLEL_SEARCH_MODE` to control search behavior — `fast`, `one-shot`, or `agentic` (default: `agentic`).
 
-**Exa search:** Exa uses neural (embedding-based) search by default, which excels at finding semantically relevant results rather than keyword matches. It supports `category` filtering (`company`, `research paper`, `news`, `tweet`, `personal site`, `pdf`) and domain/date filters for targeted searches. Set `EXA_API_KEY` in `~/.hermes/.env` to enable. Exa supports `web_search` and `web_extract` but not `web_crawl`.
+**Exa search:** Exa is a search engine built for AI — it returns clean, relevant results optimized for LLM consumption. It supports `category` filtering (`company`, `research paper`, `news`, `tweet`, `personal site`, `pdf`) and domain/date filters for targeted searches. Set `EXA_API_KEY` in `~/.hermes/.env` to enable. Exa supports `web_search` and `web_extract` but not `web_crawl`.
 
 ## Browser
 

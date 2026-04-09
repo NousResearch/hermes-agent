@@ -403,7 +403,11 @@ DEFAULT_CONFIG = {
         "container_persistent": True,   # Persist filesystem across sessions
         # Docker volume mounts — share host directories with the container.
         # Each entry is "host_path:container_path" (standard Docker -v syntax).
-        # Example: ["/home/user/projects:/workspace/projects", "/data:/data"]
+        # Example:
+        # ["/home/user/projects:/workspace/projects",
+        #  "/home/user/.hermes/cache/documents:/output"]
+        # For gateway MEDIA delivery, write inside Docker to /output/... and emit
+        # the host-visible path in MEDIA:, not the container path.
         "docker_volumes": [],
         # Explicit opt-in: mount the host cwd into /workspace for Docker sessions.
         # Default off because passing host directories into a sandbox weakens isolation.

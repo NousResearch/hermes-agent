@@ -484,6 +484,19 @@ class TestSendDocument:
         connected_adapter._bot.send_document.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_send_document_workspace_path_has_docker_hint(self, connected_adapter):
+        """Container-local-looking paths get a more actionable Docker hint."""
+        result = await connected_adapter.send_document(
+            chat_id="12345",
+            file_path="/workspace/report.txt",
+        )
+
+        assert result.success is False
+        assert "docker sandbox" in result.error.lower()
+        assert "host-visible path" in result.error.lower()
+        connected_adapter._bot.send_document.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_send_document_not_connected(self, adapter):
         """If bot is None, returns not connected error."""
         result = await adapter.send_document(

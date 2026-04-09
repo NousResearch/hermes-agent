@@ -257,13 +257,29 @@ terminal:
   docker_volumes:
     - "/home/user/projects:/workspace/projects"   # Read-write (default)
     - "/home/user/datasets:/data:ro"              # Read-only
-    - "/home/user/outputs:/outputs"               # Agent writes, you read
+    - "/home/user/.hermes/cache/documents:/output" # Gateway-visible exports
 ```
 
 This is useful for:
 - **Providing files** to the agent (datasets, configs, reference code)
 - **Receiving files** from the agent (generated code, reports, exports)
 - **Shared workspaces** where both you and the agent access the same files
+
+If you use a messaging gateway and want the agent to send generated files via
+`MEDIA:/...`, prefer a dedicated host-visible export mount such as
+`/home/user/.hermes/cache/documents:/output`.
+
+- Write files inside Docker to `/output/...`
+- Emit the **host path** in `MEDIA:`, for example:
+  `MEDIA:/home/user/.hermes/cache/documents/report.txt`
+- Do **not** emit `/workspace/...` or `/output/...` unless that exact path also
+  exists for the gateway process on the host
+
+:::warning
+YAML duplicate keys silently override earlier ones. If you already have a
+`docker_volumes:` block, merge new mounts into the same list instead of adding
+another `docker_volumes:` key later in the file.
+:::
 
 Can also be set via environment variable: `TERMINAL_DOCKER_VOLUMES='["/host:/container"]'` (JSON array).
 

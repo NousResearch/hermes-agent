@@ -59,6 +59,23 @@ else:
     logger.info("No .env file found. Using system environment variables.")
 
 
+def _format_openai_client_init_error(error: Exception) -> str:
+    """Return a clearer remediation for known OpenAI/httpx init failures."""
+    message = str(error).strip()
+    lower = message.lower()
+    if "using socks proxy" in lower and "socksio" in lower:
+        message = re.sub(
+            r"\s*Make sure to install httpx using `pip install httpx`\.\s*$",
+            "",
+            message,
+        ).rstrip(". ")
+        return (
+            f"{message}. Install SOCKS proxy support with "
+            '`pip install "httpx[socks]"` or `pip install socksio`.'
+        )
+    return message
+
+
 # Import our tool system
 from model_tools import (
     get_tool_definitions,
@@ -856,7 +873,10 @@ class AIAgent:
                     else:
                         print(f"⚠️  Warning: API key appears invalid or missing (got: '{key_used[:20] if key_used else 'none'}...')")
             except Exception as e:
-                raise RuntimeError(f"Failed to initialize OpenAI client: {e}")
+                raise RuntimeError(
+                    "Failed to initialize OpenAI client: "
+                    f"{_format_openai_client_init_error(e)}"
+                ) from e
         
         # Provider fallback chain — ordered list of backup providers tried
         # when the primary is exhausted (rate-limit, overload, connection

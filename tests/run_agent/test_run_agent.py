@@ -136,6 +136,34 @@ def test_aiagent_reuses_existing_errors_log_handler():
             root_logger.addHandler(handler)
 
 
+def test_aiagent_socks_proxy_init_error_has_actionable_install_hint():
+    socks_error = RuntimeError(
+        "Using SOCKS proxy, but the 'socksio' package is not installed. "
+        "Make sure to install httpx using `pip install httpx`."
+    )
+
+    with (
+        patch(
+            "run_agent.get_tool_definitions",
+            return_value=_make_tool_defs("web_search"),
+        ),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI", side_effect=socks_error),
+    ):
+        with pytest.raises(RuntimeError) as excinfo:
+            AIAgent(
+                api_key="test-k...7890",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+    message = str(excinfo.value)
+    assert 'pip install "httpx[socks]"' in message
+    assert "pip install socksio" in message
+    assert "Make sure to install httpx using `pip install httpx`." not in message
+
+
 # ---------------------------------------------------------------------------
 # Helper to build mock assistant messages (API response objects)
 # ---------------------------------------------------------------------------

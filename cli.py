@@ -1899,7 +1899,26 @@ class HermesCLI:
             return 0
         return 0 if self._use_minimal_tui_chrome(width=width) else 1
 
+    def _get_voice_status_fragments(self, width: Optional[int] = None):
+        """Return the voice status bar fragments for the interactive TUI."""
+        width = width or self._get_tui_terminal_width()
+        compact = self._use_minimal_tui_chrome(width=width)
+        if self._voice_recording:
+            if compact:
+                return [("class:voice-status-recording", " ● REC ")]
+            return [("class:voice-status-recording", " ● REC  Ctrl+B to stop ")]
+        if self._voice_processing:
+            if compact:
+                return [("class:voice-status", " ◉ STT ")]
+            return [("class:voice-status", " ◉ Transcribing... ")]
+        if compact:
+            return [("class:voice-status", " 🎤 Ctrl+B ")]
+        tts = " | TTS on" if self._voice_tts else ""
+        cont = " | Continuous" if self._voice_continuous else ""
+        return [("class:voice-status", f" 🎤 Voice mode{tts}{cont}  —  Ctrl+B to record ")]
+
     def _build_status_bar_text(self, width: Optional[int] = None) -> str:
+        """Return a compact one-line session status string for the TUI footer."""
         try:
             snapshot = self._get_status_bar_snapshot()
             if width is None:
@@ -5979,6 +5998,13 @@ class HermesCLI:
         reqs = check_voice_requirements()
         if not reqs["audio_available"]:
             if _is_termux_environment():
+                details = reqs.get("details", "")
+                if "Termux:API Android app is not installed" in details:
+                    raise RuntimeError(
+                        "Termux:API command package detected, but the Android app is missing.\n"
+                        "Install/update the Termux:API Android app, then retry /voice on.\n"
+                        "Fallback: pkg install python-numpy portaudio && python -m pip install sounddevice"
+                    )
                 raise RuntimeError(
                     "Voice mode requires either Termux:API microphone access or Python audio libraries.\n"
                     "Option 1: pkg install termux-api and install the Termux:API Android app\n"
@@ -8338,13 +8364,7 @@ class HermesCLI:
 
         # Persistent voice mode status bar (visible only when voice mode is on)
         def _get_voice_status():
-            if cli_ref._voice_recording:
-                return [('class:voice-status-recording', ' ● REC  Ctrl+B to stop ')]
-            if cli_ref._voice_processing:
-                return [('class:voice-status', ' ◉ Transcribing... ')]
-            tts = " | TTS on" if cli_ref._voice_tts else ""
-            cont = " | Continuous" if cli_ref._voice_continuous else ""
-            return [('class:voice-status', f' 🎤 Voice mode{tts}{cont}  —  Ctrl+B to record ')]
+            return cli_ref._get_voice_status_fragments()
 
         voice_status_bar = ConditionalContainer(
             Window(

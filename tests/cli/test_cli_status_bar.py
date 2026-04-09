@@ -237,6 +237,28 @@ class TestCLIStatusBar:
         cli_obj._spinner_text = ""
         assert cli_obj._spinner_widget_height(width=90) == 0
 
+    def test_voice_status_bar_compacts_on_narrow_terminals(self):
+        cli_obj = _make_cli()
+        cli_obj._voice_mode = True
+        cli_obj._voice_recording = False
+        cli_obj._voice_processing = False
+        cli_obj._voice_tts = True
+        cli_obj._voice_continuous = True
+
+        fragments = cli_obj._get_voice_status_fragments(width=50)
+
+        assert fragments == [("class:voice-status", " 🎤 Ctrl+B ")]
+
+    def test_voice_recording_status_bar_compacts_on_narrow_terminals(self):
+        cli_obj = _make_cli()
+        cli_obj._voice_mode = True
+        cli_obj._voice_recording = True
+        cli_obj._voice_processing = False
+
+        fragments = cli_obj._get_voice_status_fragments(width=50)
+
+        assert fragments == [("class:voice-status-recording", " ● REC ")]
+
 
 class TestCLIUsageReport:
     def test_show_usage_includes_estimated_cost(self, capsys):

@@ -1,6 +1,6 @@
 ---
 name: quantum-memory
-description: Quantum-optimized memory retrieval for AI agents. Knowledge graphs + QAOA find connected memory clusters instead of individual matches. Use when building agent memory, upgrading from flat similarity search (Mem0, LangChain), or needing relationship-aware recall with recency boost. 96.6% Recall@5 on LongMemEval (ICLR 2025) — #1 to our knowledge among published results.
+description: Quantum-optimized memory retrieval for AI agents. Knowledge graphs + QAOA find connected memory clusters instead of individual matches. Use when building agent memory, upgrading from flat similarity search (Mem0, LangChain), or needing relationship-aware recall with recency boost. Benchmarked on LongMemEval (ICLR 2025).
 version: 0.4.0
 author: Coinkong (Chef's Attraction AI Lab)
 license: MIT

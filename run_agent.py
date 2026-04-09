@@ -167,6 +167,8 @@ def _install_safe_stdio() -> None:
 
 def _coerce_positive_int(value: Any, default: int) -> int:
     """Return a positive integer config value, or default for invalid input."""
+    if isinstance(value, bool):
+        return default
     try:
         parsed = int(value)
     except (TypeError, ValueError):

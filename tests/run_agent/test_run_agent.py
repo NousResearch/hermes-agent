@@ -122,7 +122,7 @@ def test_api_max_retries_reads_positive_integer_from_config():
     assert agent._api_max_retries == 20
 
 
-@pytest.mark.parametrize("invalid_value", [0, -1, "abc", None])
+@pytest.mark.parametrize("invalid_value", [0, -1, "abc", None, False, True])
 def test_api_max_retries_invalid_values_fall_back_to_3(invalid_value):
     with (
         patch(
@@ -141,46 +141,6 @@ def test_api_max_retries_invalid_values_fall_back_to_3(invalid_value):
         )
 
     assert agent._api_max_retries == 3
-
-
-def test_api_max_retries_false_falls_back_to_3():
-    with (
-        patch(
-            "run_agent.get_tool_definitions",
-            return_value=_make_tool_defs("web_search"),
-        ),
-        patch("run_agent.check_toolset_requirements", return_value={}),
-        patch("run_agent.OpenAI"),
-        patch("hermes_cli.config.load_config", return_value={"agent": {"api_max_retries": False}}),
-    ):
-        agent = AIAgent(
-            api_key="test-key-1234567890",
-            quiet_mode=True,
-            skip_context_files=True,
-            skip_memory=True,
-        )
-
-    assert agent._api_max_retries == 3
-
-
-def test_api_max_retries_true_is_parsed_as_1():
-    with (
-        patch(
-            "run_agent.get_tool_definitions",
-            return_value=_make_tool_defs("web_search"),
-        ),
-        patch("run_agent.check_toolset_requirements", return_value={}),
-        patch("run_agent.OpenAI"),
-        patch("hermes_cli.config.load_config", return_value={"agent": {"api_max_retries": True}}),
-    ):
-        agent = AIAgent(
-            api_key="test-key-1234567890",
-            quiet_mode=True,
-            skip_context_files=True,
-            skip_memory=True,
-        )
-
-    assert agent._api_max_retries == 1
 
 
 def test_aiagent_reuses_existing_errors_log_handler():

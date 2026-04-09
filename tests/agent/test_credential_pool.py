@@ -214,6 +214,42 @@ def test_exhausted_entry_resets_after_ttl(tmp_path, monkeypatch):
     assert entry.last_status == "ok"
 
 
+def test_exhausted_402_entry_resets_after_one_hour(tmp_path, monkeypatch):
+    """402-exhausted credentials recover after 1 hour, not 24."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "openrouter": [
+                    {
+                        "id": "cred-1",
+                        "label": "primary",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": "***",
+                        "base_url": "https://openrouter.ai/api/v1",
+                        "last_status": "exhausted",
+                        "last_status_at": time.time() - 3700,  # ~1h2m ago
+                        "last_error_code": 402,
+                    }
+                ]
+            },
+        },
+    )
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("openrouter")
+    entry = pool.select()
+
+    assert entry is not None
+    assert entry.id == "cred-1"
+    assert entry.last_status == "ok"
+
+
 def test_explicit_reset_timestamp_overrides_default_429_ttl(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     _write_auth_store(

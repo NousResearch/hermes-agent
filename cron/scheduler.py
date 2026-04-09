@@ -461,7 +461,7 @@ def _build_job_prompt(job: dict) -> str:
     # Always prepend cron execution guidance so the agent knows how
     # delivery works and can suppress delivery when appropriate.
     cron_hint = (
-        "[SYSTEM: You are running as a scheduled cron job. "
+        "[IMPORTANT: You are running as a scheduled cron job. "
         "DELIVERY: Your final response will be automatically delivered "
         "to the user — do NOT use send_message or try to deliver "
         "the output yourself. Just produce your report/output as your "
@@ -497,7 +497,7 @@ def _build_job_prompt(job: dict) -> str:
             parts.append("")
         parts.extend(
             [
-                f'[SYSTEM: The user has invoked the "{skill_name}" skill, indicating they want you to follow its instructions. The full skill content is loaded below.]',
+                f'[IMPORTANT: The user has invoked the "{skill_name}" skill, indicating they want you to follow its instructions. The full skill content is loaded below.]',
                 "",
                 content,
             ]
@@ -505,7 +505,7 @@ def _build_job_prompt(job: dict) -> str:
 
     if skipped:
         notice = (
-            f"[SYSTEM: The following skill(s) were listed for this job but could not be found "
+            f"[IMPORTANT: The following skill(s) were listed for this job but could not be found "
             f"and were skipped: {', '.join(skipped)}. "
             f"Start your response with a brief notice so the user is aware, e.g.: "
             f"'⚠️ Skill(s) not found and skipped: {', '.join(skipped)}']"

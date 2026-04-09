@@ -75,6 +75,9 @@ from tools.tool_backend_helpers import (
 )
 
 
+# Hard cap on foreground timeout; override via TERMINAL_MAX_FOREGROUND_TIMEOUT env var.
+FOREGROUND_MAX_TIMEOUT = int(os.getenv("TERMINAL_MAX_FOREGROUND_TIMEOUT", "600"))
+
 # Disk usage warning threshold (in GB)
 DISK_USAGE_WARNING_THRESHOLD_GB = float(os.getenv("TERMINAL_DISK_WARNING_GB", "500"))
 
@@ -1207,6 +1210,16 @@ def terminal_tool(
         cwd = overrides.get("cwd") or config["cwd"]
         default_timeout = config["timeout"]
         effective_timeout = timeout or default_timeout
+        unclamped_timeout = effective_timeout
+
+        # Clamp foreground commands to FOREGROUND_MAX_TIMEOUT to prevent
+        # a single tool call from blocking the entire agent session.
+        if not background and effective_timeout > FOREGROUND_MAX_TIMEOUT:
+            logger.info(
+                "Clamping foreground timeout from %ds to %ds (max: TERMINAL_MAX_FOREGROUND_TIMEOUT=%d)",
+                effective_timeout, FOREGROUND_MAX_TIMEOUT, FOREGROUND_MAX_TIMEOUT,
+            )
+            effective_timeout = FOREGROUND_MAX_TIMEOUT
 
         # Start cleanup thread
         _start_cleanup_thread()
@@ -1398,14 +1411,6 @@ def terminal_tool(
                 if pty_disabled_reason:
                     result_data["pty_note"] = pty_disabled_reason
 
-                # Transparent timeout clamping note
-                max_timeout = effective_timeout
-                if timeout and timeout > max_timeout:
-                    result_data["timeout_note"] = (
-                        f"Requested timeout {timeout}s was clamped to "
-                        f"configured limit of {max_timeout}s"
-                    )
-
                 # Mark for agent notification on completion
                 if notify_on_complete and background:
                     proc_session.notify_on_complete = True
@@ -1480,11 +1485,18 @@ def terminal_tool(
                 except Exception as e:
                     error_str = str(e).lower()
                     if "timeout" in error_str:
-                        return json.dumps({
+                        timeout_result = {
                             "output": "",
                             "exit_code": 124,
                             "error": f"Command timed out after {effective_timeout} seconds"
-                        }, ensure_ascii=False)
+                        }
+                        if unclamped_timeout != effective_timeout:
+                            timeout_result["timeout_note"] = (
+                                f"Timeout of {unclamped_timeout}s was clamped to "
+                                f"the foreground maximum of {FOREGROUND_MAX_TIMEOUT}s. "
+                                f"Use background=true for long-running processes."
+                            )
+                        return json.dumps(timeout_result, ensure_ascii=False)
                     
                     # Retry on transient errors
                     if retry_count < max_retries:
@@ -1547,6 +1559,12 @@ def terminal_tool(
                 result_dict["approval"] = approval_note
             if exit_note:
                 result_dict["exit_code_meaning"] = exit_note
+            if unclamped_timeout != effective_timeout:
+                result_dict["timeout_note"] = (
+                    f"Timeout of {unclamped_timeout}s was clamped to "
+                    f"the foreground maximum of {FOREGROUND_MAX_TIMEOUT}s. "
+                    f"Use background=true for long-running processes."
+                )
 
             return json.dumps(result_dict, ensure_ascii=False)
 
@@ -1733,7 +1751,7 @@ TERMINAL_SCHEMA = {
             },
             "timeout": {
                 "type": "integer",
-                "description": "Max seconds to wait (default: 180). Returns INSTANTLY when command finishes — set high for long tasks, you won't wait unnecessarily.",
+                "description": f"Max seconds to wait (default: 180, max: {FOREGROUND_MAX_TIMEOUT}). Returns INSTANTLY when command finishes — set high for long tasks, you won't wait unnecessarily.",
                 "minimum": 1
             },
             "workdir": {

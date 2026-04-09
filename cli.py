@@ -18,6 +18,8 @@ import os
 import shutil
 import sys
 import json
+import re
+import base64
 import atexit
 import tempfile
 import time
@@ -76,6 +78,42 @@ from hermes_cli.env_loader import load_hermes_dotenv
 _hermes_home = get_hermes_home()
 _project_env = Path(__file__).parent / '.env'
 load_hermes_dotenv(hermes_home=_hermes_home, project_env=_project_env)
+
+
+_REASONING_TAGS = (
+    "REASONING_SCRATCHPAD",
+    "think",
+    "reasoning",
+    "THINKING",
+    "thinking",
+)
+
+
+def _strip_reasoning_tags(text: str) -> str:
+    cleaned = text
+    for tag in _REASONING_TAGS:
+        cleaned = re.sub(rf"<{tag}>.*?</{tag}>\s*", "", cleaned, flags=re.DOTALL)
+        cleaned = re.sub(rf"<{tag}>.*$", "", cleaned, flags=re.DOTALL)
+    return cleaned.strip()
+
+
+def _assistant_content_as_text(content: Any) -> str:
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = [
+            str(part.get("text", ""))
+            for part in content
+            if isinstance(part, dict) and part.get("type") == "text"
+        ]
+        return "\n".join(p for p in parts if p)
+    return str(content)
+
+
+def _assistant_copy_text(content: Any) -> str:
+    return _strip_reasoning_tags(_assistant_content_as_text(content))
 
 
 # =============================================================================
@@ -2659,21 +2697,6 @@ class HermesCLI:
         MAX_ASST_LEN = 200           # truncate assistant text
         MAX_ASST_LINES = 3           # max lines of assistant text
 
-        def _strip_reasoning(text: str) -> str:
-            """Remove <REASONING_SCRATCHPAD>...</REASONING_SCRATCHPAD> blocks
-            from displayed text (reasoning model internal thoughts)."""
-            import re
-            cleaned = re.sub(
-                r"<REASONING_SCRATCHPAD>.*?</REASONING_SCRATCHPAD>\s*",
-                "", text, flags=re.DOTALL,
-            )
-            # Also strip unclosed reasoning tags at the end
-            cleaned = re.sub(
-                r"<REASONING_SCRATCHPAD>.*$",
-                "", cleaned, flags=re.DOTALL,
-            )
-            return cleaned.strip()
-
         # Collect displayable entries (skip system, tool-result messages)
         entries = []  # list of (role, display_text)
         for msg in self.conversation_history:
@@ -2703,7 +2726,7 @@ class HermesCLI:
 
             elif role == "assistant":
                 text = "" if content is None else str(content)
-                text = _strip_reasoning(text)
+                text = _strip_reasoning_tags(text)
                 parts = []
                 if text:
                     lines = text.splitlines()
@@ -2935,6 +2958,26 @@ class HermesCLI:
         killed = process_registry.kill_all()
         print(f"  ✅ Stopped {killed} process(es).")
 
+    def _handle_agents_command(self):
+        """Handle /agents — show background processes and agent status."""
+        from tools.process_registry import format_uptime_short, process_registry
+
+        processes = process_registry.list_sessions()
+        running = [p for p in processes if p.get("status") == "running"]
+        finished = [p for p in processes if p.get("status") != "running"]
+
+        _cprint(f"  Running processes: {len(running)}")
+        for p in running:
+            cmd = p.get("command", "")[:80]
+            up = format_uptime_short(p.get("uptime_seconds", 0))
+            _cprint(f"    {p.get('session_id', '?')} · {up} · {cmd}")
+
+        if finished:
+            _cprint(f"  Recently finished: {len(finished)}")
+
+        agent_running = getattr(self, "_agent_running", False)
+        _cprint(f"  Agent: {'running' if agent_running else 'idle'}")
+
     def _handle_paste_command(self):
         """Handle /paste — explicitly check clipboard for an image.
 
@@ -2951,6 +2994,61 @@ class HermesCLI:
                 _cprint(f"  {_DIM}(>_<) Clipboard has an image but extraction failed{_RST}")
         else:
             _cprint(f"  {_DIM}(._.) No image found in clipboard{_RST}")
+
+    def _write_osc52_clipboard(self, text: str) -> None:
+        """Copy *text* to terminal clipboard via OSC 52."""
+        payload = base64.b64encode(text.encode("utf-8")).decode("ascii")
+        seq = f"\x1b]52;c;{payload}\x07"
+        out = getattr(self, "_app", None)
+        output = getattr(out, "output", None) if out else None
+        if output and hasattr(output, "write_raw"):
+            output.write_raw(seq)
+            output.flush()
+            return
+        if output and hasattr(output, "write"):
+            output.write(seq)
+            output.flush()
+            return
+        sys.stdout.write(seq)
+        sys.stdout.flush()
+
+    def _handle_copy_command(self, cmd_original: str) -> None:
+        """Handle /copy [number] — copy assistant output to clipboard."""
+        parts = cmd_original.split(maxsplit=1)
+        arg = parts[1].strip() if len(parts) > 1 else ""
+
+        assistant = [m for m in self.conversation_history if m.get("role") == "assistant"]
+        if not assistant:
+            _cprint("  Nothing to copy yet.")
+            return
+
+        if arg:
+            try:
+                idx = int(arg) - 1
+            except ValueError:
+                _cprint("  Usage: /copy [number]")
+                return
+            if idx < 0 or idx >= len(assistant):
+                _cprint(f"  Invalid response number. Use 1-{len(assistant)}.")
+                return
+        else:
+            idx = len(assistant) - 1
+            while idx >= 0 and not _assistant_copy_text(assistant[idx].get("content")):
+                idx -= 1
+            if idx < 0:
+                _cprint("  Nothing to copy in assistant responses yet.")
+                return
+
+        text = _assistant_copy_text(assistant[idx].get("content"))
+        if not text:
+            _cprint("  Nothing to copy in that assistant response.")
+            return
+
+        try:
+            self._write_osc52_clipboard(text)
+            _cprint(f"  Copied assistant response #{idx + 1} to clipboard")
+        except Exception as e:
+            _cprint(f"  Clipboard copy failed: {e}")
 
     def _preprocess_images_with_vision(self, text: str, images: list) -> str:
         """Analyze attached images via the vision tool and return enriched text.
@@ -4598,6 +4696,8 @@ class HermesCLI:
             self._show_usage()
         elif canonical == "insights":
             self._show_insights(cmd_original)
+        elif canonical == "copy":
+            self._handle_copy_command(cmd_original)
         elif canonical == "paste":
             self._handle_paste_command()
         elif canonical == "reload-mcp":
@@ -4630,6 +4730,8 @@ class HermesCLI:
             self._handle_rollback_command(cmd_original)
         elif canonical == "stop":
             self._handle_stop_command()
+        elif canonical == "agents":
+            self._handle_agents_command()
         elif canonical == "background":
             self._handle_background_command(cmd_original)
         elif canonical == "btw":

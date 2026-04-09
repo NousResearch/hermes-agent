@@ -297,8 +297,10 @@ export function App({ gw }: { gw: GatewayClient }) {
   const colsRef = useRef(cols)
   const turnToolsRef = useRef<string[]>([])
   const statusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const busyRef = useRef(busy)
   const onEventRef = useRef<(ev: GatewayEvent) => void>(() => {})
   colsRef.current = cols
+  busyRef.current = busy
   reasoningRef.current = reasoning
 
   // ── Hooks ────────────────────────────────────────────────────────
@@ -1011,12 +1013,19 @@ export function App({ gw }: { gw: GatewayClient }) {
           if (p?.text) {
             setStatus(p.text)
 
-            if (p.kind && p.kind !== 'status' && lastStatusNoteRef.current !== p.text) {
-              lastStatusNoteRef.current = p.text
-              pushActivity(
-                p.text,
-                p.kind === 'error' ? 'error' : p.kind === 'warn' || p.kind === 'approval' ? 'warn' : 'info'
-              )
+            if (p.kind && p.kind !== 'status') {
+              if (lastStatusNoteRef.current !== p.text) {
+                lastStatusNoteRef.current = p.text
+                pushActivity(
+                  p.text,
+                  p.kind === 'error' ? 'error' : p.kind === 'warn' || p.kind === 'approval' ? 'warn' : 'info'
+                )
+              }
+              if (statusTimerRef.current) clearTimeout(statusTimerRef.current)
+              statusTimerRef.current = setTimeout(() => {
+                statusTimerRef.current = null
+                setStatus(busyRef.current ? 'running…' : 'ready')
+              }, 4000)
             }
           }
 

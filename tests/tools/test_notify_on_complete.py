@@ -262,15 +262,16 @@ class TestTerminalSchema:
 
     def test_gateway_notify_watcher_captures_user_identity(self, monkeypatch):
         from tools.terminal_tool import terminal_tool
-        from tools.process_registry import process_registry
+        from tools.process_registry import ProcessRegistry
+
+        isolated_registry = ProcessRegistry()
+        monkeypatch.setattr("tools.process_registry.process_registry", isolated_registry)
 
         monkeypatch.setenv("HERMES_SESSION_PLATFORM", "telegram")
         monkeypatch.setenv("HERMES_SESSION_CHAT_ID", "123")
         monkeypatch.setenv("HERMES_SESSION_USER_ID", "u123")
         monkeypatch.setenv("HERMES_SESSION_USER_NAME", "alice")
         monkeypatch.setenv("HERMES_SESSION_THREAD_ID", "42")
-
-        process_registry.pending_watchers.clear()
 
         result = json.loads(
             terminal_tool(
@@ -282,7 +283,7 @@ class TestTerminalSchema:
             )
         )
 
-        watcher = next(w for w in process_registry.pending_watchers if w["session_id"] == result["session_id"])
+        watcher = next(w for w in isolated_registry.pending_watchers if w["session_id"] == result["session_id"])
         assert watcher["platform"] == "telegram"
         assert watcher["chat_id"] == "123"
         assert watcher["user_id"] == "u123"

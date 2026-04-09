@@ -11671,7 +11671,20 @@ class AIAgent:
             finally:
                 self._codex_on_first_delta = None
         if self.api_mode == "chatgpt_web":
-            self._chatgpt_web_on_delta = on_first_delta or self._fire_stream_delta
+            first_delta_fired = {"done": False}
+
+            def _chatgpt_web_stream_callback(text: str):
+                if not text:
+                    return
+                if not first_delta_fired["done"] and on_first_delta:
+                    first_delta_fired["done"] = True
+                    try:
+                        on_first_delta()
+                    except Exception:
+                        pass
+                self._fire_stream_delta(text)
+
+            self._chatgpt_web_on_delta = _chatgpt_web_stream_callback
             try:
                 return self._interruptible_api_call(api_kwargs)
             finally:

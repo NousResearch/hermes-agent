@@ -1787,6 +1787,7 @@ class DiscordAdapter(BasePlatformAdapter):
             message_type=msg_type,
             source=source,
             raw_message=interaction,
+            auto_skill=self._resolve_auto_skills_for_channel(interaction.channel),
         )
 
     # ------------------------------------------------------------------
@@ -1862,6 +1863,7 @@ class DiscordAdapter(BasePlatformAdapter):
             message_type=MessageType.TEXT,
             source=source,
             raw_message=interaction,
+            auto_skill=self._resolve_auto_skills_for_channel(_chan),
         )
         await self.handle_message(event)
 
@@ -2148,6 +2150,66 @@ class DiscordAdapter(BasePlatformAdapter):
             if parent and self._is_forum_parent(parent):
                 topic = getattr(parent, "topic", None)
         return topic
+
+    @staticmethod
+    def _normalize_skill_names(value: Any) -> list[str]:
+        if not value:
+            return []
+        if isinstance(value, str):
+            items = [value]
+        elif isinstance(value, (list, tuple, set)):
+            items = list(value)
+        else:
+            items = [value]
+
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for item in items:
+            name = str(item or "").strip()
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            normalized.append(name)
+        return normalized
+
+    def _resolve_auto_skills_for_channel(self, channel: Any) -> Optional[list[str]]:
+        """Resolve ordered auto-loaded skills for a Discord channel or forum thread."""
+        bindings = self.config.extra.get("forum_skill_bindings", []) or []
+        shared_global = self._normalize_skill_names(self.config.extra.get("shared_auto_skills", []))
+        if not bindings:
+            return shared_global or None
+
+        candidate_ids: list[str] = []
+        channel_id = getattr(channel, "id", None)
+        if channel_id is not None:
+            candidate_ids.append(str(channel_id))
+        parent = getattr(channel, "parent", None)
+        parent_id = getattr(parent, "id", None)
+        if parent_id is not None:
+            candidate_ids.append(str(parent_id))
+
+        for binding in bindings:
+            if not isinstance(binding, dict):
+                continue
+            binding_channel_id = binding.get("channel_id") or binding.get("forum_id") or binding.get("id")
+            if str(binding_channel_id or "") not in candidate_ids:
+                continue
+
+            binding_shared = self._normalize_skill_names(binding.get("shared_skills", []))
+            binding_skills = self._normalize_skill_names(binding.get("skills", []))
+            if not binding_skills:
+                binding_skills = self._normalize_skill_names(binding.get("skill"))
+
+            combined: list[str] = []
+            seen: set[str] = set()
+            for name in [*shared_global, *binding_shared, *binding_skills]:
+                if name in seen:
+                    continue
+                seen.add(name)
+                combined.append(name)
+            return combined or None
+
+        return None
 
     def _format_thread_chat_name(self, thread: Any) -> str:
         """Build a readable chat name for thread-like Discord channels, including forum context when available."""
@@ -2444,6 +2506,7 @@ class DiscordAdapter(BasePlatformAdapter):
             media_urls=media_urls,
             media_types=media_types,
             reply_to_message_id=str(message.reference.message_id) if message.reference else None,
+            auto_skill=self._resolve_auto_skills_for_channel(message.channel),
             timestamp=message.created_at,
         )
 

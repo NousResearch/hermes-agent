@@ -223,6 +223,30 @@ class TestLoadGatewayConfig:
         assert config.unauthorized_dm_behavior == "ignore"
         assert config.platforms[Platform.WHATSAPP].extra["unauthorized_dm_behavior"] == "pair"
 
+    def test_bridges_discord_auto_skill_bindings_from_config_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "discord:\n"
+            "  shared_auto_skills:\n"
+            "    - neomesh-core\n"
+            "  forum_skill_bindings:\n"
+            "    - channel_id: '123'\n"
+            "      skills:\n"
+            "        - backend\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.platforms[Platform.DISCORD].extra["shared_auto_skills"] == ["neomesh-core"]
+        assert config.platforms[Platform.DISCORD].extra["forum_skill_bindings"] == [
+            {"channel_id": "123", "skills": ["backend"]}
+        ]
+
 
 class TestHomeChannelEnvOverrides:
     """Home channel env vars should apply even when the platform was already

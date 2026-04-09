@@ -904,13 +904,15 @@ def get_model_context_length(
                 if local_ctx and local_ctx > 0:
                     save_context_length(model, base_url, local_ctx)
                     return local_ctx
+            # Fall through to remaining resolution steps (4-8) instead of
+            # returning DEFAULT_FALLBACK_CONTEXT immediately. The hardcoded
+            # DEFAULT_CONTEXT_LENGTHS dict (step 8) may still resolve the
+            # context length correctly via substring matching.
             logger.info(
-                "Could not detect context length for model %r at %s — "
-                "defaulting to %s tokens (probe-down). Set model.context_length "
-                "in config.yaml to override.",
-                model, base_url, f"{DEFAULT_FALLBACK_CONTEXT:,}",
+                "Custom endpoint probe for model %r at %s did not return "
+                "context_length — falling through to remaining lookups.",
+                model, base_url,
             )
-            return DEFAULT_FALLBACK_CONTEXT
 
     # 4. Anthropic /v1/models API (only for regular API keys, not OAuth)
     if provider == "anthropic" or (

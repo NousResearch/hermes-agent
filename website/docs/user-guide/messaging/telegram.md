@@ -465,9 +465,28 @@ You usually don't need to configure this manually. The auto-discovery via DoH ha
 
 ## Proxy Support
 
-If your network requires an HTTP proxy to reach the internet (common in corporate environments), the Telegram adapter automatically reads standard proxy environment variables and routes all connections through the proxy.
+If your network requires an HTTP proxy to reach the internet (common in restricted networks/corporate environments), Hermes supports two ways to configure a proxy for Telegram:
 
-### Supported variables
+### Option 1: Config File (Recommended)
+
+Add `proxy_url` directly in your `config.yaml` under the `telegram` section. This keeps the proxy configuration with your other Hermes settings and doesn't affect other applications:
+
+```yaml
+telegram:
+  proxy_url: "http://your-proxy-host:port"
+```
+
+Example with authentication:
+```yaml
+telegram:
+  proxy_url: "http://username:password@proxy.example.com:8080"
+```
+
+When `proxy_url` is configured, Hermes automatically routes all Telegram API requests through the proxy and skips the fallback IP discovery logic (since the proxy already handles network routing).
+
+### Option 2: Environment Variables
+
+The Telegram adapter also automatically reads standard proxy environment variables and routes all connections through the proxy:
 
 The adapter checks these environment variables in order, using the first one that is set:
 
@@ -475,8 +494,6 @@ The adapter checks these environment variables in order, using the first one tha
 2. `HTTP_PROXY`
 3. `ALL_PROXY`
 4. `https_proxy` / `http_proxy` / `all_proxy` (lowercase variants)
-
-### Configuration
 
 Set the proxy in your environment before starting the gateway:
 
@@ -491,7 +508,11 @@ Or add it to `~/.hermes/.env`:
 HTTPS_PROXY=http://proxy.example.com:8080
 ```
 
-The proxy applies to both the primary transport and all fallback IP transports. No additional Hermes configuration is needed — if the environment variable is set, it's used automatically.
+The proxy applies to both the primary transport and all fallback IP transports.
+
+:::note
+`proxy_url` in the config takes precedence over environment variables. This lets you configure a proxy specifically for Telegram without affecting other network requests made by Hermes.
+:::
 
 :::note
 This covers the custom fallback transport layer that Hermes uses for Telegram connections. The standard `httpx` client used elsewhere already respects proxy env vars natively.

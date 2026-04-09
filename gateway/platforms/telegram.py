@@ -514,7 +514,13 @@ class TelegramAdapter(BasePlatformAdapter):
             # Build the application
             builder = Application.builder().token(self.config.token)
             fallback_ips = self._fallback_ips()
-            if not fallback_ips:
+            httpx_kwargs = {}
+            # Pass proxy from config if available
+            proxy_url = self.config.extra.get("proxy_url")
+            if proxy_url:
+                httpx_kwargs["proxy"] = proxy_url
+            # When proxy is already configured don't do fallback IPs - proxy already handles routing
+            if not proxy_url and not fallback_ips:
                 fallback_ips = await discover_fallback_ips()
                 logger.info(
                     "[%s] Auto-discovered Telegram fallback IPs: %s",
@@ -527,9 +533,14 @@ class TelegramAdapter(BasePlatformAdapter):
                     self.name,
                     ", ".join(fallback_ips),
                 )
-                transport = TelegramFallbackTransport(fallback_ips)
+                transport = TelegramFallbackTransport(fallback_ips, **httpx_kwargs)
                 request = HTTPXRequest(httpx_kwargs={"transport": transport})
                 get_updates_request = HTTPXRequest(httpx_kwargs={"transport": transport})
+                builder = builder.request(request).get_updates_request(get_updates_request)
+            elif proxy_url:
+                # No fallback IPs but proxy configured - just add proxy
+                request = HTTPXRequest(httpx_kwargs={"proxy": proxy_url})
+                get_updates_request = HTTPXRequest(httpx_kwargs={"proxy": proxy_url})
                 builder = builder.request(request).get_updates_request(get_updates_request)
             self._app = builder.build()
             self._bot = self._app.bot

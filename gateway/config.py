@@ -534,6 +534,13 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["require_mention"] = platform_cfg["require_mention"]
                 if "mention_patterns" in platform_cfg:
                     bridged["mention_patterns"] = platform_cfg["mention_patterns"]
+                # Telegram-specific settings
+                if "proxy_url" in platform_cfg:
+                    bridged["proxy_url"] = platform_cfg["proxy_url"]
+                if "allowed_users" in platform_cfg:
+                    bridged["allowed_users"] = platform_cfg["allowed_users"]
+                if "webhook_mode" in platform_cfg:
+                    bridged["webhook_mode"] = platform_cfg["webhook_mode"]
                 if not bridged:
                     continue
                 plat_data = platforms_data.setdefault(plat.value, {})

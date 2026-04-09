@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 
 _TELEGRAM_TOPIC_TARGET_RE = re.compile(r"^\s*(-?\d+)(?::(\d+))?\s*$")
 _FEISHU_TARGET_RE = re.compile(r"^\s*((?:oc|ou|on|chat|open)_[-A-Za-z0-9]+)(?::([-A-Za-z0-9_]+))?\s*$")
+_WEIXIN_TARGET_RE = re.compile(r"^\s*((?:wxid|gh|v\d+|wm|wb)_[A-Za-z0-9_-]+|[A-Za-z0-9._-]+@chatroom|filehelper)\s*$")
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".3gp"}
 _AUDIO_EXTS = {".ogg", ".opus", ".mp3", ".wav", ".m4a"}
@@ -65,7 +66,7 @@ SEND_MESSAGE_SCHEMA = {
             },
             "target": {
                 "type": "string",
-                "description": "Delivery target. Format: 'platform' (uses home channel), 'platform:#channel-name', 'platform:chat_id', or Telegram topic 'telegram:chat_id:thread_id'. Examples: 'telegram', 'telegram:-1001234567890:17585', 'discord:#bot-home', 'slack:#engineering', 'signal:+15551234567'"
+                "description": "Delivery target. Format: 'platform' (uses home channel), 'platform:#channel-name', 'platform:chat_id', or Telegram topic 'telegram:chat_id:thread_id'. Examples: 'telegram', 'telegram:-1001234567890:17585', 'discord:#bot-home', 'slack:#engineering', 'signal:+15551234567', 'weixin:wxid_example'"
             },
             "message": {
                 "type": "string",
@@ -154,6 +155,7 @@ def _handle_send(args):
         "dingtalk": Platform.DINGTALK,
         "feishu": Platform.FEISHU,
         "wecom": Platform.WECOM,
+        "weixin": Platform.WEIXIN,
         "email": Platform.EMAIL,
         "sms": Platform.SMS,
     }
@@ -230,6 +232,10 @@ def _parse_target_ref(platform_name: str, target_ref: str):
         match = _FEISHU_TARGET_RE.fullmatch(target_ref)
         if match:
             return match.group(1), match.group(2), True
+    if platform_name == "weixin":
+        match = _WEIXIN_TARGET_RE.fullmatch(target_ref)
+        if match:
+            return match.group(1), None, True
     if target_ref.lstrip("-").isdigit():
         return target_ref, None, True
     return None, None, False
@@ -355,6 +361,10 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             last_result = result
         return last_result
 
+    # --- Weixin: use the native one-shot adapter helper for text + media ---
+    if platform == Platform.WEIXIN:
+        return await _send_weixin(pconfig, chat_id, message, media_files=media_files)
+
     # --- Non-Telegram platforms ---
     if media_files and not message.strip():
         return {
@@ -396,6 +406,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             result = await _send_feishu(pconfig, chat_id, chunk, thread_id=thread_id)
         elif platform == Platform.WECOM:
             result = await _send_wecom(pconfig.extra, chat_id, chunk)
+        elif platform == Platform.WEIXIN:
+            result = await _send_weixin(pconfig, chat_id, chunk)
         else:
             result = {"error": f"Direct sending not yet implemented for {platform.value}"}
 
@@ -868,6 +880,27 @@ async def _send_wecom(extra, chat_id, message):
             await adapter.disconnect()
     except Exception as e:
         return _error(f"WeCom send failed: {e}")
+
+
+async def _send_weixin(pconfig, chat_id, message, media_files=None):
+    """Send via Weixin iLink using the native adapter helper."""
+    try:
+        from gateway.platforms.weixin import check_weixin_requirements, send_weixin_direct
+        if not check_weixin_requirements():
+            return {"error": "Weixin requirements not met. Need aiohttp + cryptography."}
+    except ImportError:
+        return {"error": "Weixin adapter not available."}
+
+    try:
+        return await send_weixin_direct(
+            extra=pconfig.extra,
+            token=pconfig.token,
+            chat_id=chat_id,
+            message=message,
+            media_files=media_files,
+        )
+    except Exception as e:
+        return _error(f"Weixin send failed: {e}")
 
 
 async def _send_feishu(pconfig, chat_id, message, media_files=None, thread_id=None):

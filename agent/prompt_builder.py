@@ -325,6 +325,14 @@ PLATFORM_HINTS = {
         "files arrive as downloadable documents. You can also include image "
         "URLs in markdown format ![alt](url) and they will be sent as photos."
     ),
+    "weixin": (
+        "You are on Weixin/WeChat. Markdown formatting is supported, so you may use it when "
+        "it improves readability, but keep the message compact and chat-friendly. You can send media files natively: "
+        "include MEDIA:/absolute/path/to/file in your response. Images are sent as native "
+        "photos, videos play inline when supported, and other files arrive as downloadable "
+        "documents. You can also include image URLs in markdown format ![alt](url) and they "
+        "will be downloaded and sent as native media when possible."
+    ),
     "email": (
         "You are communicating via email. Write clear, well-structured responses "
         "suitable for email. Use plain text formatting (no markdown). "

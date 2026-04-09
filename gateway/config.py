@@ -63,6 +63,7 @@ class Platform(Enum):
     WEBHOOK = "webhook"
     FEISHU = "feishu"
     WECOM = "wecom"
+    WEIXIN = "weixin"
 
 
 @dataclass
@@ -286,6 +287,16 @@ class GatewayConfig:
                 connected.append(platform)
             # WeCom uses extra dict for bot credentials
             elif platform == Platform.WECOM and config.extra.get("bot_id"):
+                connected.append(platform)
+            # Weixin uses token + account_id, sometimes stored in extra for config.yaml users
+            elif platform == Platform.WEIXIN and (
+                config.token
+                or config.extra.get("token")
+                or (
+                    config.extra.get("account_id")
+                    and (config.token or config.extra.get("token"))
+                )
+            ):
                 connected.append(platform)
         return connected
     
@@ -647,6 +658,7 @@ def load_gateway_config() -> GatewayConfig:
         Platform.SLACK: "SLACK_BOT_TOKEN",
         Platform.MATTERMOST: "MATTERMOST_TOKEN",
         Platform.MATRIX: "MATRIX_ACCESS_TOKEN",
+        Platform.WEIXIN: "WEIXIN_TOKEN",
     }
     for platform, pconfig in config.platforms.items():
         if not pconfig.enabled:
@@ -939,6 +951,44 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 platform=Platform.WECOM,
                 chat_id=wecom_home,
                 name=os.getenv("WECOM_HOME_CHANNEL_NAME", "Home"),
+            )
+
+    # Weixin (personal WeChat via iLink Bot API)
+    weixin_token = os.getenv("WEIXIN_TOKEN")
+    weixin_account_id = os.getenv("WEIXIN_ACCOUNT_ID")
+    if weixin_token or weixin_account_id:
+        if Platform.WEIXIN not in config.platforms:
+            config.platforms[Platform.WEIXIN] = PlatformConfig()
+        config.platforms[Platform.WEIXIN].enabled = True
+        if weixin_token:
+            config.platforms[Platform.WEIXIN].token = weixin_token
+        extra = config.platforms[Platform.WEIXIN].extra
+        if weixin_account_id:
+            extra["account_id"] = weixin_account_id
+        weixin_base_url = os.getenv("WEIXIN_BASE_URL", "").strip()
+        if weixin_base_url:
+            extra["base_url"] = weixin_base_url.rstrip("/")
+        weixin_cdn_base_url = os.getenv("WEIXIN_CDN_BASE_URL", "").strip()
+        if weixin_cdn_base_url:
+            extra["cdn_base_url"] = weixin_cdn_base_url.rstrip("/")
+        weixin_dm_policy = os.getenv("WEIXIN_DM_POLICY", "").strip().lower()
+        if weixin_dm_policy:
+            extra["dm_policy"] = weixin_dm_policy
+        weixin_group_policy = os.getenv("WEIXIN_GROUP_POLICY", "").strip().lower()
+        if weixin_group_policy:
+            extra["group_policy"] = weixin_group_policy
+        weixin_allowed_users = os.getenv("WEIXIN_ALLOWED_USERS", "").strip()
+        if weixin_allowed_users:
+            extra["allow_from"] = weixin_allowed_users
+        weixin_group_allowed_users = os.getenv("WEIXIN_GROUP_ALLOWED_USERS", "").strip()
+        if weixin_group_allowed_users:
+            extra["group_allow_from"] = weixin_group_allowed_users
+        weixin_home = os.getenv("WEIXIN_HOME_CHANNEL", "").strip()
+        if weixin_home:
+            config.platforms[Platform.WEIXIN].home_channel = HomeChannel(
+                platform=Platform.WEIXIN,
+                chat_id=weixin_home,
+                name=os.getenv("WEIXIN_HOME_CHANNEL_NAME", "Home"),
             )
 
     # Session settings

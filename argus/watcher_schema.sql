@@ -85,7 +85,7 @@ CREATE TABLE IF NOT EXISTS quality_metrics (
 CREATE TABLE IF NOT EXISTS entropy_detections (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id TEXT NOT NULL,
-    entropy_type TEXT NOT NULL, -- 'repeat_tool_calls', 'repeat_commands', 'stuck_loop', 'no_file_changes', 'error_cascade'
+    entropy_type TEXT NOT NULL, -- 'repeat_tool_calls', 'repeat_commands', 'stuck_loop', 'no_file_changes', 'error_cascade', 'budget_pressure'
     severity TEXT NOT NULL, -- 'warning', 'critical'
     timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     detection_count INTEGER DEFAULT 1,

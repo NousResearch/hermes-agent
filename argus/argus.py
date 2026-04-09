@@ -137,6 +137,13 @@ CORRECTIVE_PROMPTS = {
         "Check file paths, command syntax, and prerequisites before retrying. "
         "If a tool keeps failing, try a different approach or use a different tool."
     ),
+    'budget_pressure': (
+        "BUDGET CORRECTION: You are burning through your iteration budget fast "
+        "without productive output. "
+        "Step back. Summarize what you have accomplished so far and what remains. "
+        "Pick the simplest remaining task and complete it in one pass. "
+        "Avoid exploratory tool calls — read once, then act."
+    ),
     'quality_gate': (
         "QUALITY CORRECTION: Your output quality is below the 0.92 threshold. "
         "Provide mechanistic explanations, not surface descriptions. "
@@ -859,6 +866,9 @@ class Argus:
         # 5. Check for error cascades (consecutive tool failures)
         detections.extend(self._detect_error_cascade(session_id))
         
+        # 6. Check for iteration budget pressure
+        detections.extend(self._detect_budget_pressure(session_id))
+        
         return detections
     
     def _detect_repeat_tool_calls(self, session_id: str) -> List[Dict]:
@@ -1054,6 +1064,114 @@ class Argus:
         except Exception as e:
             logger.error("Error detecting error cascade: %s", e, exc_info=True)
         
+        return detections
+
+    def _detect_budget_pressure(self, session_id: str) -> List[Dict]:
+        """Detect unproductive iteration budget burn.
+
+        Counts assistant messages from state.db (each = 1 API call / iteration).
+        Flags when budget ratio is high AND session shows entropy or errors.
+        """
+        detections = []
+
+        # Strip type prefix: cron_ec1a5e9f4c12 -> ec1a5e9f4c12
+        parts = session_id.split('_', 1)
+        real_session_id = parts[1] if len(parts) == 2 else session_id
+
+        try:
+            db = SessionDB(DEFAULT_DB_PATH)
+            try:
+                messages = db.get_messages(real_session_id)
+            finally:
+                db.close()
+        except Exception:
+            return detections
+
+        if not messages:
+            return detections
+
+        # Count assistant messages (each = 1 iteration consumed)
+        iterations_used = sum(1 for m in messages if m.get('role') == 'assistant')
+        if iterations_used == 0:
+            return detections
+
+        # Get max budget from config (default 90 for parent agents)
+        max_budget = CONFIG.get('max_iterations', 90)
+
+        # Compute session age from first message timestamp
+        timestamps = []
+        for m in messages:
+            ts = m.get('timestamp')
+            if ts:
+                try:
+                    timestamps.append(float(ts))
+                except (ValueError, TypeError):
+                    pass
+
+        if timestamps:
+            session_age_sec = max(timestamps) - min(timestamps)
+            session_age_min = max(session_age_sec / 60.0, 1.0)
+        else:
+            session_age_min = 1.0
+
+        burn_rate = iterations_used / session_age_min
+        budget_ratio = iterations_used / max_budget
+
+        # Check recent error rate from argus.db
+        self.cursor.execute('''
+            SELECT
+                COUNT(*) as total,
+                SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END) as errors
+            FROM tool_calls
+            WHERE session_id = ?
+            AND timestamp > datetime('now', '-5 minutes')
+        ''', (session_id,))
+        row = self.cursor.fetchone()
+        total_recent = row['total'] if row and row['total'] else 0
+        error_recent = row['errors'] if row and row['errors'] else 0
+        error_rate = error_recent / total_recent if total_recent > 0 else 0.0
+
+        # Check for existing entropy detections in last 10 min
+        self.cursor.execute('''
+            SELECT COUNT(*) as cnt FROM entropy_detections
+            WHERE session_id = ?
+            AND timestamp > datetime('now', '-10 minutes')
+        ''', (session_id,))
+        entropy_row = self.cursor.fetchone()
+        has_entropy = (entropy_row['cnt'] > 0) if entropy_row else False
+
+        # Decision: flag when budget is draining unproductively
+        has_problems = has_entropy or error_rate > 0.5
+
+        if budget_ratio >= 0.85 and has_problems:
+            severity = 'critical'
+        elif budget_ratio >= 0.70 and has_problems:
+            severity = 'warning'
+        elif budget_ratio >= 0.90:
+            # Near exhaustion even without entropy
+            severity = 'warning'
+        else:
+            return detections
+
+        detections.append({
+            'entropy_type': 'budget_pressure',
+            'severity': severity,
+            'details': json.dumps({
+                'iterations_used': iterations_used,
+                'max_budget': max_budget,
+                'budget_ratio': round(budget_ratio, 3),
+                'burn_rate_per_min': round(burn_rate, 2),
+                'session_age_min': round(session_age_min, 1),
+                'error_rate': round(error_rate, 3),
+                'has_entropy': has_entropy,
+            })
+        })
+        logger.warning(
+            "Budget pressure in session %s: %d/%d iterations (%.0f%%), burn %.1f/min",
+            session_id[:15], iterations_used, max_budget,
+            budget_ratio * 100, burn_rate
+        )
+
         return detections
 
     def check_prime_directive(self, session_id: str) -> List[Dict]:

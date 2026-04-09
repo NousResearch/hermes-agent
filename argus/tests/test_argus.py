@@ -10,6 +10,7 @@ import sys
 import json
 import sqlite3
 import tempfile
+import time
 import unittest
 from unittest.mock import Mock, patch, MagicMock
 from datetime import datetime, timedelta
@@ -331,6 +332,118 @@ class TestArgus(unittest.TestCase):
         # Empty/None
         is_err, _ = self.argus._detect_tool_error('terminal', '')
         self.assertFalse(is_err)
+    
+    def test_budget_pressure_high_ratio_with_entropy(self):
+        """Test budget pressure triggers when ratio is high and entropy exists."""
+        session_id = 'test_session_budget'
+        
+        self.argus.register_session({
+            'session_id': session_id,
+            'session_type': 'cron',
+            'task_description': 'Test session'
+        })
+        
+        # Insert an entropy detection to make has_entropy=True
+        from datetime import timezone
+        utc_now = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
+        self.argus.cursor.execute('''
+            INSERT INTO entropy_detections (session_id, entropy_type, severity, timestamp)
+            VALUES (?, 'repeat_tool_calls', 'warning', ?)
+        ''', (session_id, utc_now))
+        self.argus.conn.commit()
+        
+        # Mock SessionDB to return messages simulating 75 assistant messages (75/90 = 83%)
+        mock_messages = [{'role': 'assistant', 'timestamp': str(time.time() - 300)}] * 75
+        mock_messages += [{'role': 'user', 'timestamp': str(time.time() - 300)}] * 75
+        
+        mock_db = MagicMock()
+        mock_db.get_messages.return_value = mock_messages
+        
+        with patch('argus.SessionDB', return_value=mock_db):
+            detections = self.argus._detect_budget_pressure(session_id)
+        
+        self.assertEqual(len(detections), 1)
+        self.assertEqual(detections[0]['entropy_type'], 'budget_pressure')
+        self.assertEqual(detections[0]['severity'], 'warning')
+        details = json.loads(detections[0]['details'])
+        self.assertEqual(details['iterations_used'], 75)
+        self.assertTrue(details['has_entropy'])
+    
+    def test_budget_pressure_critical_at_85_percent(self):
+        """Test budget pressure escalates to critical at 85% with entropy."""
+        session_id = 'test_session_budget_critical'
+        
+        self.argus.register_session({
+            'session_id': session_id,
+            'session_type': 'manual',
+            'task_description': 'Test session'
+        })
+        
+        from datetime import timezone
+        utc_now = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
+        self.argus.cursor.execute('''
+            INSERT INTO entropy_detections (session_id, entropy_type, severity, timestamp)
+            VALUES (?, 'stuck_loop', 'critical', ?)
+        ''', (session_id, utc_now))
+        self.argus.conn.commit()
+        
+        # 80/90 = 89% with entropy -> critical
+        mock_messages = [{'role': 'assistant', 'timestamp': str(time.time() - 600)}] * 80
+        mock_messages += [{'role': 'user', 'timestamp': str(time.time() - 600)}] * 80
+        
+        mock_db = MagicMock()
+        mock_db.get_messages.return_value = mock_messages
+        
+        with patch('argus.SessionDB', return_value=mock_db):
+            detections = self.argus._detect_budget_pressure(session_id)
+        
+        self.assertEqual(len(detections), 1)
+        self.assertEqual(detections[0]['severity'], 'critical')
+    
+    def test_budget_pressure_no_flag_low_ratio(self):
+        """Test budget pressure does not flag when ratio is low."""
+        session_id = 'test_session_budget_low'
+        
+        self.argus.register_session({
+            'session_id': session_id,
+            'session_type': 'manual',
+            'task_description': 'Test session'
+        })
+        
+        # 20/90 = 22% — should not flag regardless of entropy
+        mock_messages = [{'role': 'assistant', 'timestamp': str(time.time() - 120)}] * 20
+        
+        mock_db = MagicMock()
+        mock_db.get_messages.return_value = mock_messages
+        
+        with patch('argus.SessionDB', return_value=mock_db):
+            detections = self.argus._detect_budget_pressure(session_id)
+        
+        self.assertEqual(len(detections), 0)
+    
+    def test_budget_pressure_warning_near_exhaustion(self):
+        """Test budget pressure warns at 90% even without entropy."""
+        session_id = 'test_session_budget_exhaustion'
+        
+        self.argus.register_session({
+            'session_id': session_id,
+            'session_type': 'manual',
+            'task_description': 'Test session'
+        })
+        
+        # 85/90 = 94% — should warn even without entropy
+        mock_messages = [{'role': 'assistant', 'timestamp': str(time.time() - 300)}] * 85
+        
+        mock_db = MagicMock()
+        mock_db.get_messages.return_value = mock_messages
+        
+        with patch('argus.SessionDB', return_value=mock_db):
+            detections = self.argus._detect_budget_pressure(session_id)
+        
+        self.assertEqual(len(detections), 1)
+        self.assertEqual(detections[0]['severity'], 'warning')
+        details = json.loads(detections[0]['details'])
+        self.assertFalse(details['has_entropy'])
 
     def test_decision_restart_on_critical_entropy(self):
         """Test decision to restart on critical entropy."""

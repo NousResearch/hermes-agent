@@ -465,6 +465,33 @@ export function App({ gw }: { gw: GatewayClient }) {
     [rpc, sys]
   )
 
+  const resumeById = useCallback(
+    (id: string) => {
+      setPicker(false)
+      setStatus('resuming…')
+      gw.request('session.resume', { cols: colsRef.current, session_id: id })
+        .then((r: any) => {
+          resetSession()
+          setSid(r.session_id)
+          setInfo(r.info ?? null)
+          const resumed = toTranscriptMessages(r.messages)
+
+          if (r.info?.usage) {
+            setUsage(prev => ({ ...prev, ...r.info.usage }))
+          }
+
+          setMessages(resumed)
+          setHistoryItems(r.info ? [introMsg(r.info), ...resumed] : resumed)
+          setStatus('ready')
+        })
+        .catch((e: Error) => {
+          sys(`error: ${e.message}`)
+          setStatus('ready')
+        })
+    },
+    [gw, sys]
+  )
+
   // ── Paste pipeline ───────────────────────────────────────────────
 
   const listPasteIds = useCallback((text: string) => {
@@ -1344,7 +1371,8 @@ export function App({ gw }: { gw: GatewayClient }) {
           return true
 
         case 'resume':
-          setPicker(true)
+          if (arg) resumeById(arg)
+          else setPicker(true)
 
           return true
 
@@ -2012,29 +2040,7 @@ export function App({ gw }: { gw: GatewayClient }) {
             <SessionPicker
               gw={gw}
               onCancel={() => setPicker(false)}
-              onSelect={id => {
-                setPicker(false)
-                setStatus('resuming…')
-                gw.request('session.resume', { cols: colsRef.current, session_id: id })
-                  .then((r: any) => {
-                    resetSession()
-                    setSid(r.session_id)
-                    setInfo(r.info ?? null)
-                    const resumed = toTranscriptMessages(r.messages)
-
-                    if (r.info?.usage) {
-                      setUsage(prev => ({ ...prev, ...r.info.usage }))
-                    }
-
-                    setMessages(resumed)
-                    setHistoryItems(r.info ? [introMsg(r.info), ...resumed] : resumed)
-                    setStatus('ready')
-                  })
-                  .catch((e: Error) => {
-                    sys(`error: ${e.message}`)
-                    setStatus('ready')
-                  })
-              }}
+              onSelect={resumeById}
               t={theme}
             />
           </PromptBox>

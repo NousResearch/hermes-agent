@@ -142,6 +142,31 @@ def test_setup_custom_providers_synced(tmp_path, monkeypatch):
     assert reloaded.get("custom_providers") == [{"name": "Local", "base_url": "http://localhost:8080/v1"}]
 
 
+def test_setup_syncs_custom_provider_removal_from_disk(tmp_path, monkeypatch):
+    """Removing the last custom provider in model setup should persist."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _clear_provider_env(monkeypatch)
+    _stub_tts(monkeypatch)
+
+    config = load_config()
+    config["custom_providers"] = [{"name": "Local", "base_url": "http://localhost:8080/v1"}]
+    save_config(config)
+
+    def fake_select():
+        cfg = load_config()
+        cfg["model"] = {"provider": "openrouter", "default": "anthropic/claude-opus-4.6"}
+        cfg["custom_providers"] = []
+        save_config(cfg)
+
+    monkeypatch.setattr("hermes_cli.main.select_provider_and_model", fake_select)
+
+    setup_model_provider(config)
+    save_config(config)
+
+    reloaded = load_config()
+    assert reloaded.get("custom_providers") == []
+
+
 def test_setup_cancel_preserves_existing_config(tmp_path, monkeypatch):
     """When the user cancels provider selection, existing config is preserved."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -199,6 +224,38 @@ def test_setup_keyboard_interrupt_gracefully_handled(tmp_path, monkeypatch):
     monkeypatch.setattr("hermes_cli.main.select_provider_and_model", fake_select)
 
     setup_model_provider(config)
+
+
+def test_select_provider_and_model_warns_if_named_custom_provider_disappears(
+    tmp_path, monkeypatch, capsys
+):
+    """If a saved custom provider is deleted mid-selection, show a warning instead of silently doing nothing."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _clear_provider_env(monkeypatch)
+
+    cfg = load_config()
+    cfg["custom_providers"] = [{"name": "Local", "base_url": "http://localhost:8080/v1"}]
+    save_config(cfg)
+
+    def fake_prompt_provider_choice(choices, default=0):
+        current = load_config()
+        current["custom_providers"] = []
+        save_config(current)
+        return next(i for i, label in enumerate(choices) if label.startswith("Local (localhost:8080/v1)"))
+
+    monkeypatch.setattr("hermes_cli.auth.resolve_provider", lambda provider: None)
+    monkeypatch.setattr("hermes_cli.main._prompt_provider_choice", fake_prompt_provider_choice)
+    monkeypatch.setattr(
+        "hermes_cli.main._model_flow_named_custom",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("named custom flow should not run")),
+    )
+
+    from hermes_cli.main import select_provider_and_model
+
+    select_provider_and_model()
+
+    out = capsys.readouterr().out
+    assert "selected saved custom provider is no longer available" in out
 
 
 def test_codex_setup_uses_runtime_access_token_for_live_model_list(tmp_path, monkeypatch):

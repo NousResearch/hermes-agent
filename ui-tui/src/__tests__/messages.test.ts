@@ -2,9 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import { upsert } from '../lib/messages.js'
 
-
 describe('upsert', () => {
-
   it('appends when last role differs', () => {
     expect(upsert([{ role: 'user', text: 'hi' }], 'assistant', 'hello')).toHaveLength(2)
   })

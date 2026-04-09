@@ -11,9 +11,7 @@ import {
   userDisplay
 } from '../lib/text.js'
 
-
 describe('stripAnsi / hasAnsi', () => {
-
   it('strips ANSI codes', () => {
     expect(stripAnsi('\x1b[31mred\x1b[0m')).toBe('red')
   })
@@ -28,9 +26,7 @@ describe('stripAnsi / hasAnsi', () => {
   })
 })
 
-
 describe('compactPreview', () => {
-
   it('truncates with ellipsis', () => {
     expect(compactPreview('a'.repeat(100), 20)).toHaveLength(20)
     expect(compactPreview('a'.repeat(100), 20).at(-1)).toBe('…')
@@ -49,9 +45,7 @@ describe('compactPreview', () => {
   })
 })
 
-
 describe('estimateRows', () => {
-
   it('single line', () => expect(estimateRows('hello', 80)).toBe(1))
 
   it('wraps long lines', () => expect(estimateRows('a'.repeat(160), 80)).toBe(2))
@@ -72,9 +66,7 @@ describe('estimateRows', () => {
   })
 })
 
-
 describe('fmtK', () => {
-
   it('formats thousands', () => expect(fmtK(1500)).toBe('1.5k'))
 
   it('keeps small numbers', () => expect(fmtK(42)).toBe('42'))
@@ -85,25 +77,19 @@ describe('fmtK', () => {
   })
 })
 
-
 describe('hasInterpolation', () => {
-
   it('detects {!cmd}', () => expect(hasInterpolation('echo {!date}')).toBe(true))
 
   it('rejects plain text', () => expect(hasInterpolation('plain')).toBe(false))
 })
 
-
 describe('pick', () => {
-
   it('returns element from array', () => {
     expect([1, 2, 3]).toContain(pick([1, 2, 3]))
   })
 })
 
-
 describe('userDisplay', () => {
-
   it('returns short messages as-is', () => expect(userDisplay('hello')).toBe('hello'))
 
   it('truncates long messages', () => {

@@ -809,8 +809,9 @@ def list_authenticated_providers(
         })
         seen_slugs.add(slug)
 
-    # --- 2. Check Hermes-only providers (nous, openai-codex, copilot) ---
+    # --- 2. Check Hermes-only providers (nous, openai-codex, copilot, opencode-go) ---
     from hermes_cli.providers import HERMES_OVERLAYS
+    from hermes_cli.auth import PROVIDER_REGISTRY as _auth_registry
     for pid, overlay in HERMES_OVERLAYS.items():
         if pid in seen_slugs:
             continue
@@ -818,6 +819,11 @@ def list_authenticated_providers(
         has_creds = False
         if overlay.extra_env_vars:
             has_creds = any(os.environ.get(ev) for ev in overlay.extra_env_vars)
+        # Also check api_key_env_vars from PROVIDER_REGISTRY for api_key auth_type
+        if not has_creds and overlay.auth_type == "api_key":
+            pcfg = _auth_registry.get(pid)
+            if pcfg and pcfg.api_key_env_vars:
+                has_creds = any(os.environ.get(ev) for ev in pcfg.api_key_env_vars)
         if overlay.auth_type in ("oauth_device_code", "oauth_external", "external_process"):
             # These use auth stores, not env vars — check for auth.json entries
             try:

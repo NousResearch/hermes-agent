@@ -1047,6 +1047,32 @@ def _is_payment_error(exc: Exception) -> bool:
     return False
 
 
+def _is_connection_error(exc: Exception) -> bool:
+    """Detect connection/network errors that warrant provider fallback.
+
+    Returns True for errors indicating the provider endpoint is unreachable
+    (DNS failure, connection refused, TLS errors, timeouts).  These are
+    distinct from API errors (4xx/5xx) which indicate the provider IS
+    reachable but returned an error.
+    """
+    from openai import APIConnectionError, APITimeoutError
+
+    if isinstance(exc, (APIConnectionError, APITimeoutError)):
+        return True
+    # urllib3 / httpx / httpcore connection errors
+    err_type = type(exc).__name__
+    if any(kw in err_type for kw in ("Connection", "Timeout", "DNS", "SSL")):
+        return True
+    err_lower = str(exc).lower()
+    if any(kw in err_lower for kw in (
+        "connection refused", "name or service not known",
+        "no route to host", "network is unreachable",
+        "timed out", "connection reset",
+    )):
+        return True
+    return False
+
+
 def _try_payment_fallback(
     failed_provider: str,
     task: str = None,
@@ -2093,7 +2119,18 @@ def call_llm(
         # try alternative providers instead of giving up.  This handles the
         # common case where a user runs out of OpenRouter credits but has
         # Codex OAuth or another provider available.
-        if _is_payment_error(first_err):
+        #
+        # ── Connection error fallback ────────────────────────────────
+        # When a provider endpoint is unreachable (DNS failure, connection
+        # refused, timeout), try alternative providers.  This handles stale
+        # Codex/OAuth tokens that authenticate but whose endpoint is down,
+        # and providers the user never configured that got picked up by
+        # the auto-detection chain.
+        should_fallback = _is_payment_error(first_err) or _is_connection_error(first_err)
+        if should_fallback:
+            reason = "payment error" if _is_payment_error(first_err) else "connection error"
+            logger.info("Auxiliary %s: %s on %s (%s), trying fallback",
+                        task or "call", reason, resolved_provider, first_err)
             fb_client, fb_model, fb_label = _try_payment_fallback(
                 resolved_provider, task)
             if fb_client is not None:

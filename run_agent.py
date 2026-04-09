@@ -3568,7 +3568,26 @@ class AIAgent:
             return bool(getattr(http_client, "is_closed", False))
         return False
 
+    @staticmethod
+    def _validate_openai_base_url(base_url: Any) -> None:
+        """Validate custom OpenAI-compatible base URLs before client creation."""
+        from urllib.parse import urlparse
+
+        candidate = str(base_url or "").strip()
+        if not candidate or candidate.startswith("acp://"):
+            return
+        try:
+            parsed = urlparse(candidate)
+            if parsed.scheme in {"http", "https"}:
+                _ = parsed.port  # raises ValueError for malformed ports like '6153export'
+        except ValueError as exc:
+            raise RuntimeError(
+                "Malformed custom endpoint URL: "
+                f"{candidate!r}. Run `hermes setup` or `hermes model` and enter a valid http(s) base URL."
+            ) from exc
+
     def _create_openai_client(self, client_kwargs: dict, *, reason: str, shared: bool) -> Any:
+        self._validate_openai_base_url(client_kwargs.get("base_url"))
         if self.provider == "copilot-acp" or str(client_kwargs.get("base_url", "")).startswith("acp://copilot"):
             from agent.copilot_acp_client import CopilotACPClient
 

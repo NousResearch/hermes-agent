@@ -242,7 +242,7 @@ Server-side LLM fact extraction with semantic search, reranking, and automatic d
 | **Data storage** | Mem0 Cloud |
 | **Cost** | Mem0 pricing |
 
-**Tools:** `mem0_profile` (all stored memories), `mem0_search` (semantic search + reranking), `mem0_conclude` (store verbatim facts)
+**Tools:** `mem0_profile` (all stored memories + IDs), `mem0_search` (semantic search + reranking + IDs), `mem0_conclude` (store verbatim facts), `mem0_update` (update by ID), `mem0_delete` (delete by ID)
 
 **Setup:**
 ```bash

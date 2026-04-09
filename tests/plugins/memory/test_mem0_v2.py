@@ -4,9 +4,11 @@ Salvaged from PRs #5301 (qaqcvc) and #5117 (vvvanguards).
 """
 
 import json
+from pathlib import Path
+
 import pytest
 
-from plugins.memory.mem0 import Mem0MemoryProvider
+from plugins.memory.mem0 import Mem0MemoryProvider, _load_config
 
 
 class FakeClientV2:
@@ -18,6 +20,8 @@ class FakeClientV2:
         self.captured_search = {}
         self.captured_get_all = {}
         self.captured_add = []
+        self.captured_update = []
+        self.captured_delete = []
 
     def search(self, **kwargs):
         self.captured_search = kwargs
@@ -29,6 +33,14 @@ class FakeClientV2:
 
     def add(self, messages, **kwargs):
         self.captured_add.append({"messages": messages, **kwargs})
+
+    def update(self, memory_id, **kwargs):
+        self.captured_update.append({"memory_id": memory_id, **kwargs})
+        return {"memory_id": memory_id, **kwargs}
+
+    def delete(self, memory_id):
+        self.captured_delete.append(memory_id)
+        return {"memory_id": memory_id, "deleted": True}
 
 
 # ---------------------------------------------------------------------------
@@ -134,7 +146,10 @@ class TestMem0ResponseUnwrapping:
         return provider
 
     def test_profile_dict_response(self, monkeypatch):
-        client = FakeClientV2(all_results={"results": [{"memory": "alpha"}, {"memory": "beta"}]})
+        client = FakeClientV2(all_results={"results": [
+            {"id": "m1", "memory": "alpha"},
+            {"memory_id": "m2", "memory": "beta"},
+        ]})
         provider = self._make_provider(monkeypatch, client)
 
         result = json.loads(provider.handle_tool_call("mem0_profile", {}))
@@ -142,6 +157,8 @@ class TestMem0ResponseUnwrapping:
         assert result["count"] == 2
         assert "alpha" in result["result"]
         assert "beta" in result["result"]
+        assert result["items"][0]["id"] == "m1"
+        assert result["items"][1]["id"] == "m2"
 
     def test_profile_list_response_backward_compat(self, monkeypatch):
         """Old API returned bare lists — still works."""
@@ -154,7 +171,10 @@ class TestMem0ResponseUnwrapping:
 
     def test_search_dict_response(self, monkeypatch):
         client = FakeClientV2(search_results={
-            "results": [{"memory": "foo", "score": 0.9}, {"memory": "bar", "score": 0.7}]
+            "results": [
+                {"id": "m1", "memory": "foo", "score": 0.9},
+                {"memory_id": "m2", "memory": "bar", "score": 0.7},
+            ]
         })
         provider = self._make_provider(monkeypatch, client)
 
@@ -164,6 +184,8 @@ class TestMem0ResponseUnwrapping:
 
         assert result["count"] == 2
         assert result["results"][0]["memory"] == "foo"
+        assert result["results"][0]["id"] == "m1"
+        assert result["results"][1]["id"] == "m2"
 
     def test_search_list_response_backward_compat(self, monkeypatch):
         """Old API returned bare lists — still works."""
@@ -225,3 +247,76 @@ class TestMem0Defaults:
         provider.initialize("test")
 
         assert provider._agent_id == "hermes"
+
+
+class TestMem0LifecycleTools:
+    """Explicit Mem0 lifecycle tools should expose update/delete functionality."""
+
+    def _make_provider(self, monkeypatch, client):
+        provider = Mem0MemoryProvider()
+        provider.initialize("test-session")
+        provider._user_id = "u123"
+        provider._agent_id = "hermes"
+        monkeypatch.setattr(provider, "_get_client", lambda: client)
+        return provider
+
+    def test_update_tool_updates_memory_by_id(self, monkeypatch):
+        client = FakeClientV2()
+        provider = self._make_provider(monkeypatch, client)
+
+        result = json.loads(provider.handle_tool_call(
+            "mem0_update", {"memory_id": "m1", "text": "corrected fact"}
+        ))
+
+        assert client.captured_update == [{"memory_id": "m1", "text": "corrected fact"}]
+        assert result["result"] == "Memory updated."
+        assert result["id"] == "m1"
+
+    def test_delete_tool_deletes_memory_by_id(self, monkeypatch):
+        client = FakeClientV2()
+        provider = self._make_provider(monkeypatch, client)
+
+        result = json.loads(provider.handle_tool_call("mem0_delete", {"memory_id": "m1"}))
+
+        assert client.captured_delete == ["m1"]
+        assert result["result"] == "Memory deleted."
+        assert result["id"] == "m1"
+
+
+class TestMem0ConfigNormalization:
+    """Config should normalize bool-ish values from setup/env input."""
+
+    def test_load_config_coerces_rerank_string_to_bool(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("MEM0_API_KEY", "test-key")
+        (tmp_path / "mem0.json").write_text(
+            json.dumps({"user_id": "u1", "agent_id": "a1", "rerank": "false"}),
+            encoding="utf-8",
+        )
+
+        cfg = _load_config()
+
+        assert cfg["rerank"] is False
+
+    def test_initialize_coerces_rerank_string_to_bool(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("MEM0_API_KEY", "test-key")
+        (tmp_path / "mem0.json").write_text(
+            json.dumps({"user_id": "u1", "agent_id": "a1", "rerank": "true"}),
+            encoding="utf-8",
+        )
+
+        provider = Mem0MemoryProvider()
+        provider.initialize("test")
+
+        assert provider._rerank is True
+        assert isinstance(provider._rerank, bool)
+
+    def test_save_config_writes_rerank_as_boolean(self, tmp_path):
+        provider = Mem0MemoryProvider()
+
+        provider.save_config({"user_id": "u1", "agent_id": "a1", "rerank": "false"}, tmp_path)
+
+        saved = json.loads((Path(tmp_path) / "mem0.json").read_text(encoding="utf-8"))
+        assert saved["rerank"] is False
+        assert isinstance(saved["rerank"], bool)

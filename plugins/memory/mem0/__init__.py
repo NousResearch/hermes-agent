@@ -24,6 +24,7 @@ from typing import Any, Dict, List
 
 from agent.memory_provider import MemoryProvider
 from tools.registry import tool_error
+from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +37,16 @@ _BREAKER_COOLDOWN_SECS = 120
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
+
+def _normalize_config_values(config: dict) -> dict:
+    """Normalize bool-ish fields loaded from env/setup prompts into booleans."""
+    normalized = dict(config)
+    normalized["rerank"] = is_truthy_value(normalized.get("rerank"), default=True)
+    normalized["keyword_search"] = is_truthy_value(
+        normalized.get("keyword_search"), default=False
+    )
+    return normalized
+
 
 def _load_config() -> dict:
     """Load config from env vars, with $HERMES_HOME/mem0.json overrides.
@@ -63,7 +74,7 @@ def _load_config() -> dict:
         except Exception:
             pass
 
-    return config
+    return _normalize_config_values(config)
 
 
 # ---------------------------------------------------------------------------
@@ -111,6 +122,36 @@ CONCLUDE_SCHEMA = {
     },
 }
 
+UPDATE_SCHEMA = {
+    "name": "mem0_update",
+    "description": (
+        "Update an existing Mem0 memory by ID. Use this when a stored fact is wrong, stale, "
+        "or needs correction without keeping the old version."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "memory_id": {"type": "string", "description": "The Mem0 memory ID to update."},
+            "text": {"type": "string", "description": "The replacement memory text."},
+        },
+        "required": ["memory_id", "text"],
+    },
+}
+
+DELETE_SCHEMA = {
+    "name": "mem0_delete",
+    "description": (
+        "Delete an existing Mem0 memory by ID. Use this to remove wrong, duplicate, or stale memories."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "memory_id": {"type": "string", "description": "The Mem0 memory ID to delete."},
+        },
+        "required": ["memory_id"],
+    },
+}
+
 
 # ---------------------------------------------------------------------------
 # MemoryProvider implementation
@@ -155,7 +196,7 @@ class Mem0MemoryProvider(MemoryProvider):
             except Exception:
                 pass
         existing.update(values)
-        config_path.write_text(json.dumps(existing, indent=2))
+        config_path.write_text(json.dumps(_normalize_config_values(existing), indent=2))
 
     def get_config_schema(self):
         return [
@@ -219,12 +260,17 @@ class Mem0MemoryProvider(MemoryProvider):
 
     @staticmethod
     def _unwrap_results(response: Any) -> list:
-        """Normalize Mem0 API response — v2 wraps results in {"results": [...]}."""
+        """Normalize Mem0 API response — v2 wraps results in {"results": [...]}"""
         if isinstance(response, dict):
             return response.get("results", [])
         if isinstance(response, list):
             return response
         return []
+
+    @staticmethod
+    def _memory_id(item: dict) -> str:
+        """Extract Mem0 memory ID across response variants."""
+        return str(item.get("id") or item.get("memory_id") or "")
 
     def system_prompt_block(self) -> str:
         return (
@@ -295,7 +341,7 @@ class Mem0MemoryProvider(MemoryProvider):
         self._sync_thread.start()
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
-        return [PROFILE_SCHEMA, SEARCH_SCHEMA, CONCLUDE_SCHEMA]
+        return [PROFILE_SCHEMA, SEARCH_SCHEMA, CONCLUDE_SCHEMA, UPDATE_SCHEMA, DELETE_SCHEMA]
 
     def handle_tool_call(self, tool_name: str, args: dict, **kwargs) -> str:
         if self._is_breaker_open():
@@ -314,8 +360,12 @@ class Mem0MemoryProvider(MemoryProvider):
                 self._record_success()
                 if not memories:
                     return json.dumps({"result": "No memories stored yet."})
-                lines = [m.get("memory", "") for m in memories if m.get("memory")]
-                return json.dumps({"result": "\n".join(lines), "count": len(lines)})
+                items = [
+                    {"id": self._memory_id(m), "memory": m.get("memory", "")}
+                    for m in memories if m.get("memory")
+                ]
+                lines = [item["memory"] for item in items]
+                return json.dumps({"result": "\n".join(lines), "count": len(items), "items": items})
             except Exception as e:
                 self._record_failure()
                 return tool_error(f"Failed to fetch profile: {e}")
@@ -336,7 +386,14 @@ class Mem0MemoryProvider(MemoryProvider):
                 self._record_success()
                 if not results:
                     return json.dumps({"result": "No relevant memories found."})
-                items = [{"memory": r.get("memory", ""), "score": r.get("score", 0)} for r in results]
+                items = [
+                    {
+                        "id": self._memory_id(r),
+                        "memory": r.get("memory", ""),
+                        "score": r.get("score", 0),
+                    }
+                    for r in results
+                ]
                 return json.dumps({"results": items, "count": len(items)})
             except Exception as e:
                 self._record_failure()
@@ -357,6 +414,33 @@ class Mem0MemoryProvider(MemoryProvider):
             except Exception as e:
                 self._record_failure()
                 return tool_error(f"Failed to store: {e}")
+
+        elif tool_name == "mem0_update":
+            memory_id = str(args.get("memory_id", "")).strip()
+            text = str(args.get("text", "")).strip()
+            if not memory_id:
+                return tool_error("Missing required parameter: memory_id")
+            if not text:
+                return tool_error("Missing required parameter: text")
+            try:
+                client.update(memory_id=memory_id, text=text)
+                self._record_success()
+                return json.dumps({"result": "Memory updated.", "id": memory_id})
+            except Exception as e:
+                self._record_failure()
+                return tool_error(f"Failed to update: {e}")
+
+        elif tool_name == "mem0_delete":
+            memory_id = str(args.get("memory_id", "")).strip()
+            if not memory_id:
+                return tool_error("Missing required parameter: memory_id")
+            try:
+                client.delete(memory_id)
+                self._record_success()
+                return json.dumps({"result": "Memory deleted.", "id": memory_id})
+            except Exception as e:
+                self._record_failure()
+                return tool_error(f"Failed to delete: {e}")
 
         return tool_error(f"Unknown tool: {tool_name}")
 

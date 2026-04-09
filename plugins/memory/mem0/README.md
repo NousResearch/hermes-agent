@@ -33,6 +33,8 @@ Config file: `$HERMES_HOME/mem0.json`
 
 | Tool | Description |
 |------|-------------|
-| `mem0_profile` | All stored memories about the user |
-| `mem0_search` | Semantic search with optional reranking |
+| `mem0_profile` | All stored memories about the user, including memory IDs for curation |
+| `mem0_search` | Semantic search with optional reranking, returning memory IDs |
 | `mem0_conclude` | Store a fact verbatim (no LLM extraction) |
+| `mem0_update` | Update an existing memory by ID |
+| `mem0_delete` | Delete an existing memory by ID |

@@ -2680,15 +2680,17 @@ class TelegramAdapter(BasePlatformAdapter):
         """Check if message reactions are enabled via config/env."""
         return os.getenv("TELEGRAM_REACTIONS", "false").lower() not in ("false", "0", "no")
 
-    async def _set_reaction(self, chat_id: str, message_id: str, emoji: str) -> bool:
+    async def _set_reaction(self, chat_id: str, message_id: str, emoji) -> bool:
         """Set a single emoji reaction on a Telegram message."""
         if not self._bot:
             return False
         try:
+            from telegram import ReactionTypeEmoji
+            reactions = [ReactionTypeEmoji(e) if isinstance(e, str) else e for e in emoji]
             await self._bot.set_message_reaction(
                 chat_id=int(chat_id),
                 message_id=int(message_id),
-                reaction=emoji,
+                reaction=reactions,
             )
             return True
         except Exception as e:
@@ -2702,7 +2704,7 @@ class TelegramAdapter(BasePlatformAdapter):
         chat_id = getattr(event.source, "chat_id", None)
         message_id = getattr(event, "message_id", None)
         if chat_id and message_id:
-            await self._set_reaction(chat_id, message_id, "\U0001f440")
+            await self._set_reaction(chat_id, message_id, ["\U0001f440"])
 
     async def on_processing_complete(self, event: MessageEvent, success: bool) -> None:
         """Swap the in-progress reaction for a final success/failure reaction.
@@ -2715,4 +2717,5 @@ class TelegramAdapter(BasePlatformAdapter):
         chat_id = getattr(event.source, "chat_id", None)
         message_id = getattr(event, "message_id", None)
         if chat_id and message_id:
-            await self._set_reaction(chat_id, message_id, "\u2705" if success else "\u274c")
+            emoji = ["👍"] if success else ["👎"]
+            await self._set_reaction(chat_id, message_id, emoji)

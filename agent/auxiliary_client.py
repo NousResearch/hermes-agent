@@ -2086,6 +2086,9 @@ def call_llm(
                 # fall through to the payment fallback below.
                 if not _is_payment_error(retry_err):
                     raise
+                # Preserve the original error as context for diagnostics
+                # instead of silently discarding it.
+                retry_err.__cause__ = first_err
                 first_err = retry_err
 
         # ── Payment / credit exhaustion fallback ──────────────────────
@@ -2102,7 +2105,13 @@ def call_llm(
                     temperature=temperature, max_tokens=max_tokens,
                     tools=tools, timeout=effective_timeout,
                     extra_body=extra_body)
-                return fb_client.chat.completions.create(**fb_kwargs)
+                try:
+                    return fb_client.chat.completions.create(**fb_kwargs)
+                except Exception as fb_err:
+                    logger.warning(
+                        "Auxiliary %s: fallback to %s also failed: %s",
+                        task or "call", fb_label, fb_err)
+                    raise
         raise
 
 

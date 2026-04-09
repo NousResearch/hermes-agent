@@ -469,7 +469,8 @@ class PluginManager:
         """Call all registered callbacks for *hook_name*.
 
         Each callback is wrapped in its own try/except so a misbehaving
-        plugin cannot break the core agent loop.
+        plugin cannot break the core agent loop.  Callbacks that take
+        longer than ``_HOOK_TIMEOUT`` seconds are interrupted.
 
         Returns a list of non-``None`` return values from callbacks.
 
@@ -485,13 +486,28 @@ class PluginManager:
         are reused.  All injected context is ephemeral — never
         persisted to session DB.
         """
+        import concurrent.futures
+
+        _HOOK_TIMEOUT = 30  # seconds — generous but prevents indefinite hangs
+
         callbacks = self._hooks.get(hook_name, [])
         results: List[Any] = []
         for cb in callbacks:
             try:
-                ret = cb(**kwargs)
+                # Run with a timeout to prevent misbehaving plugins from
+                # blocking the agent loop indefinitely.
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                    future = executor.submit(cb, **kwargs)
+                    ret = future.result(timeout=_HOOK_TIMEOUT)
                 if ret is not None:
                     results.append(ret)
+            except concurrent.futures.TimeoutError:
+                logger.warning(
+                    "Hook '%s' callback %s timed out after %ds — skipping",
+                    hook_name,
+                    getattr(cb, "__name__", repr(cb)),
+                    _HOOK_TIMEOUT,
+                )
             except Exception as exc:
                 logger.warning(
                     "Hook '%s' callback %s raised: %s",

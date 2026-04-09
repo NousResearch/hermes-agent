@@ -134,6 +134,17 @@ class MemoryStore:
         if "hrr_vector" not in columns:
             self._conn.execute("ALTER TABLE facts ADD COLUMN hrr_vector BLOB")
         self._conn.commit()
+        self._write_count = 0
+
+    def _try_wal_checkpoint(self) -> None:
+        """Best-effort PASSIVE WAL checkpoint to prevent unbounded WAL growth.
+
+        Called periodically after writes.  Never blocks, never raises.
+        """
+        try:
+            self._conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+        except Exception:
+            pass  # Best effort — never fatal.
 
     # ------------------------------------------------------------------
     # Public API
@@ -181,6 +192,11 @@ class MemoryStore:
             # Compute HRR vector after entity linking
             self._compute_hrr_vector(fact_id, content)
             self._rebuild_bank(category)
+
+            # Periodic WAL checkpoint to prevent unbounded WAL growth.
+            self._write_count += 1
+            if self._write_count % 50 == 0:
+                self._try_wal_checkpoint()
 
             return fact_id
 
@@ -564,7 +580,8 @@ class MemoryStore:
         return dict(row)
 
     def close(self) -> None:
-        """Close the database connection."""
+        """Close the database connection after a final WAL checkpoint."""
+        self._try_wal_checkpoint()
         self._conn.close()
 
     def __enter__(self) -> "MemoryStore":

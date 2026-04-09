@@ -1474,7 +1474,11 @@ def _model_flow_custom(config):
             f"Hermes will still save it."
         )
         if probe.get("suggested_base_url"):
-            print(f"  If this server expects /v1, try base URL: {probe['suggested_base_url']}")
+            suggested = probe["suggested_base_url"]
+            if suggested.endswith("/v1"):
+                print(f"  If this server expects /v1 in the path, try base URL: {suggested}")
+            else:
+                print(f"  If /v1 should not be in the base URL, try: {suggested}")
 
     # Select model — use probe results when available, fall back to manual input
     model_name = ""

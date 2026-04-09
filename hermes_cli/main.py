@@ -6276,7 +6276,7 @@ def cmd_import(args):
 
 
 def _print_version_info(*, check_updates: bool = True) -> None:
-    print(f"Hermes Agent v{__version__} ({__release_date__})")
+    print(f"Autolycus Agent v0.0.2")
     print(f"Project: {PROJECT_ROOT}")
 
     # Show Python version

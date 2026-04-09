@@ -544,13 +544,19 @@ class DiscordAdapter(BasePlatformAdapter):
                 # Resolve any usernames in the allowed list to numeric IDs
                 await adapter_self._resolve_allowed_usernames()
 
+                # Mark the adapter ready as soon as the bot session is usable.
+                # Slash-command sync can take longer on first install when the
+                # guild has many commands to create/update, and startup should
+                # not be treated as failed just because command registration is
+                # still in flight.
+                adapter_self._ready_event.set()
+
                 # Sync slash commands with Discord
                 try:
                     synced = await adapter_self._client.tree.sync()
                     logger.info("[%s] Synced %d slash command(s)", adapter_self.name, len(synced))
                 except Exception as e:  # pragma: no cover - defensive logging
                     logger.warning("[%s] Slash command sync failed: %s", adapter_self.name, e, exc_info=True)
-                adapter_self._ready_event.set()
 
             @self._client.event
             async def on_message(message: DiscordMessage):

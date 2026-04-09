@@ -30,6 +30,64 @@ from typing import List, Dict, Any, Optional
 
 logger = logging.getLogger(__name__)
 
+
+def _normalize_browser_connect_endpoint(endpoint: str) -> str:
+    """Normalize user-supplied browser connect endpoints for local host:port inputs."""
+    raw = (endpoint or "").strip().rstrip("/")
+    if not raw:
+        return raw
+
+    lowered = raw.lower()
+    if lowered.startswith(("http://", "https://", "ws://", "wss://")):
+        return raw
+
+    host, sep, port = raw.rpartition(":")
+    if sep and host.lower() in {"localhost", "127.0.0.1", "0.0.0.0"} and port.isdigit():
+        return f"http://{raw}"
+    if raw.startswith("[::1]:") and raw[len("[::1]:"):].isdigit():
+        return f"http://{raw}"
+
+    return raw
+
+
+def _detect_browser_connect_backend(endpoint: str) -> tuple[str, str]:
+    """Classify a /browser connect endpoint as CDP or Camofox."""
+    raw = _normalize_browser_connect_endpoint(endpoint)
+    if not raw:
+        return "unknown", raw
+
+    lowered = raw.lower()
+    if "/devtools/browser/" in lowered:
+        return "cdp", raw
+
+    discovery_url = raw
+    if lowered.startswith(("ws://", "wss://")):
+        if raw.count(":") == 2 and raw.rstrip("/").rsplit(":", 1)[-1].isdigit() and "/" not in raw.split(":", 2)[-1]:
+            discovery_url = ("http://" if lowered.startswith("ws://") else "https://") + raw.split("://", 1)[1]
+        else:
+            return "cdp", raw
+
+    try:
+        import requests as _requests
+        version_url = discovery_url if discovery_url.lower().endswith("/json/version") else discovery_url + "/json/version"
+        response = _requests.get(version_url, timeout=5)
+        response.raise_for_status()
+        payload = response.json()
+        if str(payload.get("webSocketDebuggerUrl") or "").strip():
+            return "cdp", raw
+    except Exception:
+        pass
+
+    try:
+        import requests as _requests
+        health = _requests.get(raw + "/health", timeout=5)
+        if health.status_code == 200:
+            return "camofox", raw
+    except Exception:
+        pass
+
+    return "unknown", raw
+
 # Suppress startup messages for clean CLI experience
 os.environ["HERMES_QUIET"] = "1"  # Our own modules
 
@@ -5010,7 +5068,7 @@ class HermesCLI:
             return False
 
     def _handle_browser_command(self, cmd: str):
-        """Handle /browser connect|disconnect|status — manage live Chrome CDP connection."""
+        """Handle /browser connect|disconnect|status — manage browser backend overrides."""
         import platform as _plat
 
         parts = cmd.strip().split(None, 1)
@@ -5018,13 +5076,15 @@ class HermesCLI:
 
         _DEFAULT_CDP = "http://localhost:9222"
         current = os.environ.get("BROWSER_CDP_URL", "").strip()
+        current_mode = os.environ.get("BROWSER_CONNECT_MODE", "").strip().lower()
+        current_camofox = os.environ.get("CAMOFOX_URL", "").strip().rstrip("/")
 
         if sub.startswith("connect"):
-            # Optionally accept a custom CDP URL: /browser connect ws://host:port
-            connect_parts = cmd.strip().split(None, 2)  # ["/browser", "connect", "ws://..."]
+            connect_parts = cmd.strip().split(None, 2)
             cdp_url = connect_parts[2].strip() if len(connect_parts) > 2 else _DEFAULT_CDP
+            detected_mode, normalized_endpoint = _detect_browser_connect_backend(cdp_url)
+            cdp_url = normalized_endpoint or cdp_url
 
-            # Clear any existing browser sessions so the next tool call uses the new backend
             try:
                 from tools.browser_tool import cleanup_all_browsers
                 cleanup_all_browsers()
@@ -5033,14 +5093,40 @@ class HermesCLI:
 
             print()
 
-            # Extract port for connectivity checks
+            if detected_mode == "camofox":
+                previous_camofox = os.environ.get("CAMOFOX_URL", "").strip().rstrip("/")
+                if previous_camofox and previous_camofox != normalized_endpoint:
+                    os.environ["BROWSER_PREV_CAMOFOX_URL"] = previous_camofox
+                else:
+                    os.environ.pop("BROWSER_PREV_CAMOFOX_URL", None)
+
+                os.environ.pop("BROWSER_CDP_URL", None)
+                os.environ["CAMOFOX_URL"] = normalized_endpoint
+                os.environ["BROWSER_CONNECT_MODE"] = "camofox"
+
+                print(f"   ✓ Camofox detected at {normalized_endpoint}")
+                print()
+                print("🌐 Browser connected to Camofox")
+                print(f"   Endpoint: {normalized_endpoint}")
+                print()
+
+                if hasattr(self, '_pending_input'):
+                    self._pending_input.put(
+                        "[System note: The user has connected your browser tools to a live Camofox browser backend. "
+                        "Your browser tools now route through Camofox instead of the default browser backend. "
+                        "Camofox may preserve cookies or sessions depending on its server-side profile configuration. "
+                        "Please await the user's instruction before attempting to operate the browser.]"
+                    )
+                return
+
+            os.environ.pop("BROWSER_CONNECT_MODE", None)
+
             _port = 9222
             try:
                 _port = int(cdp_url.rsplit(":", 1)[-1].split("/")[0])
             except (ValueError, IndexError):
                 pass
 
-            # Check if Chrome is already listening on the debug port
             import socket
             _already_open = False
             try:
@@ -5055,11 +5141,9 @@ class HermesCLI:
             if _already_open:
                 print(f"   ✓ Chrome is already listening on port {_port}")
             elif cdp_url == _DEFAULT_CDP:
-                # Try to auto-launch Chrome with remote debugging
                 print("   Chrome isn't running with remote debugging — attempting to launch...")
                 _launched = self._try_launch_chrome_debug(_port, _plat.system())
                 if _launched:
-                    # Wait for the port to come up
                     import time as _time
                     for _wait in range(10):
                         try:
@@ -5078,7 +5162,6 @@ class HermesCLI:
                         print("     You may need to close existing Chrome windows first and retry")
                 else:
                     print("   ⚠ Could not auto-launch Chrome")
-                    # Show manual instructions as fallback
                     sys_name = _plat.system()
                     if sys_name == "Darwin":
                         chrome_cmd = 'open -a "Google Chrome" --args --remote-debugging-port=9222'
@@ -5096,7 +5179,6 @@ class HermesCLI:
             print(f"   Endpoint: {cdp_url}")
             print()
 
-            # Inject context message so the model knows
             if hasattr(self, '_pending_input'):
                 self._pending_input.put(
                     "[System note: The user has connected your browser tools to their live Chrome browser "
@@ -5109,31 +5191,43 @@ class HermesCLI:
                 )
 
         elif sub == "disconnect":
-            if current:
+            if current or current_mode == "camofox":
+                was_camofox = current_mode == "camofox"
                 os.environ.pop("BROWSER_CDP_URL", None)
+                os.environ.pop("BROWSER_CONNECT_MODE", None)
+                previous_camofox = os.environ.pop("BROWSER_PREV_CAMOFOX_URL", "").strip().rstrip("/")
+                if was_camofox:
+                    if previous_camofox:
+                        os.environ["CAMOFOX_URL"] = previous_camofox
+                    else:
+                        os.environ.pop("CAMOFOX_URL", None)
                 try:
                     from tools.browser_tool import cleanup_all_browsers
                     cleanup_all_browsers()
                 except Exception:
                     pass
                 print()
-                print("🌐 Browser disconnected from live Chrome")
+                print("🌐 Browser disconnected from Camofox" if was_camofox else "🌐 Browser disconnected from live Chrome")
                 print("   Browser tools reverted to default mode (local headless or cloud provider)")
                 print()
 
                 if hasattr(self, '_pending_input'):
                     self._pending_input.put(
-                        "[System note: The user has disconnected the browser tools from their live Chrome. "
+                        "[System note: The user has disconnected the browser tools from their explicit browser backend override. "
                         "Browser tools are back to default mode (headless local browser or cloud provider).]"
                     )
             else:
                 print()
-                print("Browser is not connected to live Chrome (already using default mode)")
+                print("Browser is not connected to an explicit browser override (already using default mode)")
                 print()
 
         elif sub == "status":
             print()
-            if current:
+            if current_camofox:
+                print("🌐 Browser: connected to Camofox" if current_mode == "camofox" else "🌐 Browser: Camofox (configured)")
+                print(f"   Endpoint: {current_camofox}")
+                print("   Status: ✓ configured")
+            elif current:
                 print("🌐 Browser: connected to live Chrome via CDP")
                 print(f"   Endpoint: {current}")
 
@@ -5163,7 +5257,7 @@ class HermesCLI:
                 else:
                     print("🌐 Browser: local headless Chromium (agent-browser)")
             print()
-            print("   /browser connect      — connect to your live Chrome")
+            print("   /browser connect      — connect to Chrome or Camofox")
             print("   /browser disconnect   — revert to default")
             print()
 
@@ -5171,7 +5265,7 @@ class HermesCLI:
             print()
             print("Usage: /browser connect|disconnect|status")
             print()
-            print("   connect      Connect browser tools to your live Chrome session")
+            print("   connect      Connect browser tools to Chrome CDP or Camofox")
             print("   disconnect   Revert to default browser backend")
             print("   status       Show current browser mode")
             print()

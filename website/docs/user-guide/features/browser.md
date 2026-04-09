@@ -126,18 +126,21 @@ The Camofox server must also be configured with `CAMOFOX_PROFILE_DIR` on the ser
 
 When Camofox runs in headed mode (with a visible browser window), it exposes a VNC port in its health check response. Hermes automatically discovers this and includes the VNC URL in navigation responses, so the agent can share a link for you to watch the browser live.
 
-### Local Chrome via CDP (`/browser connect`)
+### Local Chrome via CDP or Camofox (`/browser connect`)
 
-Instead of a cloud provider, you can attach Hermes browser tools to your own running Chrome instance via the Chrome DevTools Protocol (CDP). This is useful when you want to see what the agent is doing in real-time, interact with pages that require your own cookies/sessions, or avoid cloud browser costs.
+Instead of a cloud provider, you can attach Hermes browser tools to your own running Chrome instance via the Chrome DevTools Protocol (CDP), or point `/browser connect` at a Camofox server endpoint. This is useful when you want to see what the agent is doing in real-time, interact with pages that require your own cookies/sessions, or use a local anti-detection backend without changing config first.
 
 In the CLI, use:
 
 ```
-/browser connect              # Connect to Chrome at ws://localhost:9222
-/browser connect ws://host:port  # Connect to a specific CDP endpoint
+/browser connect                   # Connect to Chrome at ws://localhost:9222
+/browser connect ws://host:port    # Connect to a specific CDP endpoint
+/browser connect http://localhost:9377  # Auto-detect and connect to Camofox
 /browser status               # Check current connection
 /browser disconnect            # Detach and return to cloud/local mode
 ```
+
+If the target looks like Chrome CDP, Hermes resolves `/json/version` and uses the DevTools websocket. If the target exposes a Camofox `/health` endpoint instead, Hermes switches the browser tools to the Camofox backend automatically.
 
 If Chrome isn't already running with remote debugging, Hermes will attempt to auto-launch it with `--remote-debugging-port=9222`.
 

@@ -1585,7 +1585,11 @@ def _model_flow_custom(config):
             f"Hermes will still save it."
         )
         if probe.get("suggested_base_url"):
-            print(f"  If this server expects /v1, try base URL: {probe['suggested_base_url']}")
+            suggested = probe["suggested_base_url"]
+            if suggested.endswith("/v1"):
+                print(f"  If this server expects /v1 in the path, try base URL: {suggested}")
+            else:
+                print(f"  If /v1 should not be in the base URL, try: {suggested}")
 
     # Select model — use probe results when available, fall back to manual input
     model_name = ""
@@ -2748,6 +2752,12 @@ def cmd_doctor(args):
     """Check configuration and dependencies."""
     from hermes_cli.doctor import run_doctor
     run_doctor(args)
+
+
+def cmd_dump(args):
+    """Dump setup summary for support/debugging."""
+    from hermes_cli.dump import run_dump
+    run_dump(args)
 
 
 def cmd_config(args):
@@ -4843,6 +4853,22 @@ For more help on a command:
         help="Attempt to fix issues automatically"
     )
     doctor_parser.set_defaults(func=cmd_doctor)
+
+    # =========================================================================
+    # dump command
+    # =========================================================================
+    dump_parser = subparsers.add_parser(
+        "dump",
+        help="Dump setup summary for support/debugging",
+        description="Output a compact, plain-text summary of your Hermes setup "
+                    "that can be copy-pasted into Discord/GitHub for support context"
+    )
+    dump_parser.add_argument(
+        "--show-keys",
+        action="store_true",
+        help="Show redacted API key prefixes (first/last 4 chars) instead of just set/not set"
+    )
+    dump_parser.set_defaults(func=cmd_dump)
     
     # =========================================================================
     # config command

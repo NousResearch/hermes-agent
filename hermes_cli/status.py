@@ -302,6 +302,7 @@ def show_status(args):
         "DingTalk": ("DINGTALK_CLIENT_ID", None),
         "Feishu": ("FEISHU_APP_ID", "FEISHU_HOME_CHANNEL"),
         "WeCom": ("WECOM_BOT_ID", "WECOM_HOME_CHANNEL"),
+        "BlueBubbles": ("BLUEBUBBLES_SERVER_URL", "BLUEBUBBLES_HOME_CHANNEL"),
     }
     
     for name, (token_var, home_var) in platforms.items():

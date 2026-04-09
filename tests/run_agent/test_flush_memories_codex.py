@@ -91,6 +91,61 @@ def _chat_response_with_memory_call():
     )
 
 
+class TestFlushMemoriesRespectsConfigTimeout:
+    """flush_memories() must NOT hardcode timeout=30.0 — it should defer
+    to the config value via auxiliary.flush_memories.timeout."""
+
+    def test_auxiliary_path_omits_explicit_timeout(self, monkeypatch):
+        """When calling _call_llm, timeout should NOT be passed so that
+        _get_task_timeout('flush_memories') reads from config."""
+        agent = _make_agent(monkeypatch, api_mode="chat_completions", provider="openrouter")
+
+        mock_response = _chat_response_with_memory_call()
+
+        with patch("agent.auxiliary_client.call_llm", return_value=mock_response) as mock_call:
+            messages = [
+                {"role": "user", "content": "Hello"},
+                {"role": "assistant", "content": "Hi"},
+                {"role": "user", "content": "Note this"},
+            ]
+            with patch("tools.memory_tool.memory_tool", return_value="Saved."):
+                agent.flush_memories(messages)
+
+        mock_call.assert_called_once()
+        call_kwargs = mock_call.call_args
+        # timeout must NOT be explicitly passed (so _get_task_timeout resolves it)
+        assert "timeout" not in call_kwargs.kwargs, (
+            "flush_memories should not pass explicit timeout to _call_llm; "
+            "let _get_task_timeout('flush_memories') resolve from config"
+        )
+
+    def test_fallback_path_uses_config_timeout(self, monkeypatch):
+        """When auxiliary client is unavailable and we fall back to direct
+        OpenAI client, timeout should come from _get_task_timeout, not hardcoded."""
+        agent = _make_agent(monkeypatch, api_mode="chat_completions", provider="openrouter")
+        agent.client = MagicMock()
+        agent.client.chat.completions.create.return_value = _chat_response_with_memory_call()
+
+        custom_timeout = 180.0
+
+        with patch("agent.auxiliary_client.call_llm", side_effect=RuntimeError("no provider")), \
+             patch("agent.auxiliary_client._get_task_timeout", return_value=custom_timeout) as mock_gtt, \
+             patch("tools.memory_tool.memory_tool", return_value="Saved."):
+            messages = [
+                {"role": "user", "content": "Hello"},
+                {"role": "assistant", "content": "Hi"},
+                {"role": "user", "content": "Save this"},
+            ]
+            agent.flush_memories(messages)
+
+        mock_gtt.assert_called_once_with("flush_memories")
+        agent.client.chat.completions.create.assert_called_once()
+        call_kwargs = agent.client.chat.completions.create.call_args
+        assert call_kwargs.kwargs.get("timeout") == custom_timeout, (
+            f"Expected timeout={custom_timeout} from config, got {call_kwargs.kwargs.get('timeout')}"
+        )
+
+
 class TestFlushMemoriesUsesAuxiliaryClient:
     """When an auxiliary client is available, flush_memories should use it
     instead of self.client -- especially critical in Codex mode."""

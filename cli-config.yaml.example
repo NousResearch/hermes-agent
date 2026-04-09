@@ -117,7 +117,8 @@ terminal:
   timeout: 180
   docker_mount_cwd_to_workspace: false  # SECURITY: off by default. Opt in to mount the launch cwd into Docker /workspace.
   lifetime_seconds: 300
-  # sudo_password: ""  # Enable sudo commands (pipes via sudo -S) - SECURITY WARNING: plaintext!
+  # sudo_password: "hunter2"  # Optional: pipe a sudo password via sudo -S. SECURITY WARNING: plaintext.
+  # sudo_password: ""         # Explicit empty password: try empty and never open the interactive sudo prompt.
 
 # -----------------------------------------------------------------------------
 # OPTION 2: SSH remote execution
@@ -208,12 +209,17 @@ terminal:
 #
 # SECURITY WARNING: Password stored in plaintext!
 #
-# INTERACTIVE PROMPT: If no sudo_password is set and the CLI is running,
+# INTERACTIVE PROMPT: If sudo_password is unset and the CLI is running,
 # you'll be prompted to enter your password when sudo is needed:
 # - 45-second timeout (auto-skips if no input)
 # - Press Enter to skip (command fails gracefully)
 # - Password is hidden while typing
 # - Password is cached for the session
+#
+# EMPTY PASSWORDS: Setting sudo_password to an explicit empty string is different
+# from leaving it unset. Hermes will try an empty password via `sudo -S` and
+# will not open the interactive prompt. This is useful for passwordless sudo,
+# Touch ID sudo setups, and environments where prompting is just noise.
 #
 # ALTERNATIVES:
 # - SSH backend: Configure passwordless sudo on the remote server
@@ -445,6 +451,16 @@ agent:
   # Higher = more room for complex tasks, but costs more tokens
   # Recommended: 20-30 for focused tasks, 50-100 for open exploration
   max_turns: 60
+
+  # Inactivity timeout for gateway agent runs (seconds, 0 = unlimited).
+  # The agent can run indefinitely when actively calling tools or receiving
+  # API responses.  Only fires after the agent has been idle for this duration.
+  # gateway_timeout: 1800
+
+  # Staged warning: send a warning before escalating to full timeout.
+  # Fires once per run when inactivity reaches this threshold (seconds).
+  # Set to 0 to disable the warning.
+  # gateway_timeout_warning: 900
   
   # Enable verbose logging
   verbose: false

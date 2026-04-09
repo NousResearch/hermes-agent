@@ -13,6 +13,7 @@ secrets are never written to disk.
 """
 
 import logging
+import os
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Optional
@@ -177,6 +178,38 @@ def setup_verbose_logging() -> None:
 # Internal helpers
 # ---------------------------------------------------------------------------
 
+class _ManagedRotatingFileHandler(RotatingFileHandler):
+    """RotatingFileHandler that ensures group-writable perms in managed mode.
+
+    In managed mode (NixOS), the stateDir uses setgid (2770) so new files
+    inherit the hermes group. However, both _open() (initial creation) and
+    doRollover() create files via open(), which uses the process umask —
+    typically 0022, producing 0644. This subclass applies chmod 0660 after
+    both operations so the gateway and interactive users can share log files.
+    """
+
+    def __init__(self, *args, **kwargs):
+        from hermes_cli.config import is_managed
+        self._managed = is_managed()
+        super().__init__(*args, **kwargs)
+
+    def _chmod_if_managed(self):
+        if self._managed:
+            try:
+                os.chmod(self.baseFilename, 0o660)
+            except OSError:
+                pass
+
+    def _open(self):
+        stream = super()._open()
+        self._chmod_if_managed()
+        return stream
+
+    def doRollover(self):
+        super().doRollover()
+        self._chmod_if_managed()
+
+
 def _add_rotating_handler(
     logger: logging.Logger,
     path: Path,
@@ -198,7 +231,7 @@ def _add_rotating_handler(
             return  # already attached
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    handler = RotatingFileHandler(
+    handler = _ManagedRotatingFileHandler(
         str(path), maxBytes=max_bytes, backupCount=backup_count,
     )
     handler.setLevel(level)

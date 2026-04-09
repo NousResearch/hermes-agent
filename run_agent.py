@@ -6064,6 +6064,14 @@ class AIAgent:
 
         if self._session_db:
             try:
+                # Flush accumulated messages to the OLD session's SQLite BEFORE
+                # ending it and switching to the new session_id.  Without this,
+                # any messages written since the last flush are lost in SQLite
+                # (the JSON log is unaffected because _save_session_log uses the
+                # file handle, not session_id).  This was the root cause of
+                # compressed sessions showing "no messages" on --resume (#TBD).
+                self._flush_messages_to_session_db(messages, None)
+
                 # Propagate title to the new session with auto-numbering
                 old_title = self._session_db.get_session_title(self.session_id)
                 self._session_db.end_session(self.session_id, "compression")

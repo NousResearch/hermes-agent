@@ -80,7 +80,12 @@ export const estimateRows = (text: string, w: number, compact = false) => {
 
 export const flat = (r: Record<string, string[]>) => Object.values(r).flat()
 
-export const fmtK = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : `${n}`)
+const COMPACT_NUMBER = new Intl.NumberFormat('en-US', {
+  maximumFractionDigits: 1,
+  notation: 'compact'
+})
+
+export const fmtK = (n: number) => COMPACT_NUMBER.format(n)
 
 export const hasInterpolation = (s: string) => {
   INTERPOLATION_RE.lastIndex = 0

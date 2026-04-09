@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { Box, Static, Text, useApp, useInput, useStdout } from 'ink'
+import { Box, Text, useApp, useInput, useStdout } from 'ink'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { ActivityLane } from './components/activityLane.js'
@@ -250,7 +250,6 @@ export function App({ gw }: { gw: GatewayClient }) {
   const [sid, setSid] = useState<string | null>(null)
   const [theme, setTheme] = useState<Theme>(DEFAULT_THEME)
   const [info, setInfo] = useState<SessionInfo | null>(null)
-  const [introCollapsed, setIntroCollapsed] = useState(false)
   const [thinking, setThinking] = useState(false)
   const [turnKey, setTurnKey] = useState(0)
   const [activity, setActivity] = useState<ActivityItem[]>([])
@@ -385,7 +384,6 @@ export function App({ gw }: { gw: GatewayClient }) {
     setPastes([])
     setActivity([])
     setBgTasks(new Set())
-    setIntroCollapsed(false)
     setUsage(ZERO)
     lastStatusNoteRef.current = ''
     protocolWarnedRef.current = false
@@ -545,7 +543,6 @@ export function App({ gw }: { gw: GatewayClient }) {
 
     inflightPasteIdsRef.current = payload.usedIds
     setLastUserMsg(text)
-    setIntroCollapsed(true)
     appendMessage({ role: 'user', text })
     setBusy(true)
     setStatus('running…')
@@ -1683,28 +1680,18 @@ export function App({ gw }: { gw: GatewayClient }) {
 
   return (
     <Box flexDirection="column">
-      <Static items={historyItems}>
-        {(m, i) => (
-          <Box flexDirection="column" key={i} paddingX={1}>
-            {m.kind === 'intro' && m.info ? (
-              <Box flexDirection="column" paddingTop={1}>
-                {introCollapsed ? (
-                  <Text color={theme.color.dim}>
-                    {theme.brand.icon} {theme.brand.name} · {m.info.model.split('/').pop()}
-                  </Text>
-                ) : (
-                  <>
-                    <Banner t={theme} />
-                    <SessionPanel info={m.info} sid={sid} t={theme} />
-                  </>
-                )}
-              </Box>
-            ) : (
-              <MessageLine cols={cols} compact={compact} msg={m} t={theme} />
-            )}
-          </Box>
-        )}
-      </Static>
+      {historyItems.map((m, i) => (
+        <Box flexDirection="column" key={i} paddingX={1}>
+          {m.kind === 'intro' && m.info ? (
+            <Box flexDirection="column" paddingTop={1}>
+              <Banner t={theme} />
+              <SessionPanel info={m.info} sid={sid} t={theme} />
+            </Box>
+          ) : (
+            <MessageLine cols={cols} compact={compact} msg={m} t={theme} />
+          )}
+        </Box>
+      ))}
 
       <Box flexDirection="column" paddingX={1}>
         {streaming && (

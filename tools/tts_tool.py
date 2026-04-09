@@ -485,7 +485,14 @@ def text_to_speech_tool(
 
     # Determine output path
     if output_path:
-        file_path = Path(output_path).expanduser()
+        file_path = Path(output_path).expanduser().resolve()
+        # Prevent path traversal — confine output to DEFAULT_OUTPUT_DIR or CWD
+        _allowed_parents = (Path(DEFAULT_OUTPUT_DIR).resolve(), Path.cwd().resolve())
+        if not any(file_path == p or file_path.is_relative_to(p) for p in _allowed_parents):
+            return json.dumps({
+                "success": False,
+                "error": f"output_path must be under {DEFAULT_OUTPUT_DIR} or the current directory"
+            }, ensure_ascii=False)
     else:
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         out_dir = Path(DEFAULT_OUTPUT_DIR)
@@ -579,10 +586,16 @@ def text_to_speech_tool(
         # Edge TTS outputs MP3, NeuTTS outputs WAV — both need ffmpeg conversion
         voice_compatible = False
         if provider in ("edge", "neutts", "minimax") and not file_str.endswith(".ogg"):
+            original_file = file_str
             opus_path = _convert_to_opus(file_str)
             if opus_path:
                 file_str = opus_path
                 voice_compatible = True
+                # Clean up the original file after successful conversion
+                try:
+                    os.remove(original_file)
+                except OSError:
+                    pass
         elif provider in ("elevenlabs", "openai"):
             # These providers can output Opus natively if the path ends in .ogg
             voice_compatible = file_str.endswith(".ogg")

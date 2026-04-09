@@ -164,11 +164,19 @@ def _build_skill_message(
             supporting.extend(entries)
 
     if not supporting and skill_dir:
+        _resolved_skill_dir = skill_dir.resolve()
         for subdir in ("references", "templates", "scripts", "assets"):
             subdir_path = skill_dir / subdir
             if subdir_path.exists():
                 for f in sorted(subdir_path.rglob("*")):
+                    if f.is_symlink():
+                        continue
                     if f.is_file():
+                        try:
+                            if not f.resolve().is_relative_to(_resolved_skill_dir):
+                                continue
+                        except (OSError, ValueError):
+                            continue
                         rel = str(f.relative_to(skill_dir))
                         supporting.append(rel)
 

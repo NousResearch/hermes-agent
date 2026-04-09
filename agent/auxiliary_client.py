@@ -643,32 +643,43 @@ def _read_codex_access_token() -> Optional[str]:
         if token:
             return token
 
+    tokens: Optional[Dict[str, Any]] = None
     try:
-        from hermes_cli.auth import _read_codex_tokens
+        from hermes_cli.auth import _read_codex_tokens, _sync_codex_tokens_from_cli
         data = _read_codex_tokens()
         tokens = data.get("tokens", {})
-        access_token = tokens.get("access_token")
-        if not isinstance(access_token, str) or not access_token.strip():
-            return None
-
-        # Check JWT expiry — expired tokens block the auto chain and
-        # prevent fallback to working providers (e.g. Anthropic).
-        try:
-            import base64
-            payload = access_token.split(".")[1]
-            payload += "=" * (-len(payload) % 4)
-            claims = json.loads(base64.urlsafe_b64decode(payload))
-            exp = claims.get("exp", 0)
-            if exp and time.time() > exp:
-                logger.debug("Codex access token expired (exp=%s), skipping", exp)
-                return None
-        except Exception:
-            pass  # Non-JWT token or decode error — use as-is
-
-        return access_token.strip()
+        tokens, _ = _sync_codex_tokens_from_cli(tokens if isinstance(tokens, dict) else None)
     except Exception as exc:
         logger.debug("Could not read Codex auth for auxiliary client: %s", exc)
+        try:
+            from hermes_cli.auth import _sync_codex_tokens_from_cli
+
+            tokens, _ = _sync_codex_tokens_from_cli(None)
+        except Exception:
+            tokens = None
+
+    if not isinstance(tokens, dict):
         return None
+
+    access_token = tokens.get("access_token")
+    if not isinstance(access_token, str) or not access_token.strip():
+        return None
+
+    # Check JWT expiry — expired tokens block the auto chain and
+    # prevent fallback to working providers (e.g. Anthropic).
+    try:
+        import base64
+        payload = access_token.split(".")[1]
+        payload += "=" * (-len(payload) % 4)
+        claims = json.loads(base64.urlsafe_b64decode(payload))
+        exp = claims.get("exp", 0)
+        if exp and time.time() > exp:
+            logger.debug("Codex access token expired (exp=%s), skipping", exp)
+            return None
+    except Exception:
+        pass  # Non-JWT token or decode error — use as-is
+
+    return access_token.strip()
 
 
 def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:

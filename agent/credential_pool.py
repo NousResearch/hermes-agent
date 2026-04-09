@@ -82,6 +82,25 @@ _EXTRA_KEYS = frozenset({
     "agent_key_obtained_at", "tls",
 })
 
+_RUNTIME_STATE_FIELDS = {
+    "last_status": None,
+    "last_status_at": None,
+    "last_error_code": None,
+    "last_error_reason": None,
+    "last_error_message": None,
+    "last_error_reset_at": None,
+}
+
+_CREDENTIAL_MATERIAL_FIELDS = frozenset({
+    "access_token",
+    "refresh_token",
+    "expires_at",
+    "expires_at_ms",
+    "last_refresh",
+    "agent_key",
+    "agent_key_expires_at",
+})
+
 
 @dataclass
 class PooledCredential:
@@ -919,6 +938,11 @@ def _upsert_entry(entries: List[PooledCredential], provider: str, source: str, p
         elif key in _EXTRA_KEYS:
             if existing.extra.get(key) != value:
                 extra_updates[key] = value
+
+    if any(key in field_updates for key in _CREDENTIAL_MATERIAL_FIELDS):
+        for field_name, cleared_value in _RUNTIME_STATE_FIELDS.items():
+            if getattr(existing, field_name) != cleared_value:
+                field_updates.setdefault(field_name, cleared_value)
     if field_updates or extra_updates:
         if extra_updates:
             field_updates["extra"] = {**existing.extra, **extra_updates}

@@ -388,6 +388,61 @@ def test_try_refresh_current_updates_only_current_entry(tmp_path, monkeypatch):
     assert secondary["refresh_token"] == "refresh-other"
 
 
+def test_load_pool_clears_stale_exhaustion_when_singleton_tokens_change(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "providers": {
+                "openai-codex": {
+                    "tokens": {
+                        "access_token": "access-new",
+                        "refresh_token": "refresh-new",
+                    },
+                    "last_refresh": "2026-04-09T12:00:00Z",
+                }
+            },
+            "credential_pool": {
+                "openai-codex": [
+                    {
+                        "id": "cred-1",
+                        "label": "device_code",
+                        "auth_type": "oauth",
+                        "priority": 0,
+                        "source": "device_code",
+                        "access_token": "access-old",
+                        "refresh_token": "refresh-old",
+                        "base_url": "https://chatgpt.com/backend-api/codex",
+                        "last_status": "exhausted",
+                        "last_status_at": time.time(),
+                        "last_error_code": 429,
+                        "last_error_reason": "device_code_exhausted",
+                        "last_error_reset_at": time.time() + 3600,
+                    }
+                ]
+            },
+        },
+    )
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("openai-codex")
+    entry = pool.select()
+
+    assert entry is not None
+    assert entry.access_token == "access-new"
+    assert entry.refresh_token == "refresh-new"
+    assert entry.last_status is None
+
+    auth_payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    persisted = auth_payload["credential_pool"]["openai-codex"][0]
+    assert persisted["access_token"] == "access-new"
+    assert persisted["refresh_token"] == "refresh-new"
+    assert persisted["last_status"] is None
+    assert persisted["last_error_code"] is None
+
+
 def test_load_pool_seeds_env_api_key(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-seeded")

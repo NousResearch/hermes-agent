@@ -50,6 +50,11 @@ def _jwt_with_exp(exp_epoch: int) -> str:
     return f"h.{encoded}.s"
 
 
+@pytest.fixture(autouse=True)
+def _clear_codex_home(monkeypatch):
+    monkeypatch.setenv("CODEX_HOME", "/var/empty/hermes-pytest-no-codex")
+
+
 def test_read_codex_tokens_success(tmp_path, monkeypatch):
     hermes_home = tmp_path / "hermes"
     _setup_hermes_auth(hermes_home)
@@ -120,6 +125,28 @@ def test_resolve_codex_runtime_credentials_force_refresh(tmp_path, monkeypatch):
 
     assert called["count"] == 1
     assert resolved["api_key"] == "access-forced"
+
+
+def test_resolve_codex_runtime_credentials_syncs_updated_cli_tokens(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes"
+    codex_home = tmp_path / "codex-cli"
+    _setup_hermes_auth(hermes_home, access_token="access-stale", refresh_token="refresh-stale")
+    codex_home.mkdir(parents=True, exist_ok=True)
+    (codex_home / "auth.json").write_text(json.dumps({
+        "tokens": {
+            "access_token": "cli-access",
+            "refresh_token": "cli-refresh",
+        },
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+
+    resolved = resolve_codex_runtime_credentials(refresh_if_expiring=False)
+
+    assert resolved["api_key"] == "cli-access"
+    data = _read_codex_tokens()
+    assert data["tokens"]["access_token"] == "cli-access"
+    assert data["tokens"]["refresh_token"] == "cli-refresh"
 
 
 def test_resolve_provider_explicit_codex_does_not_fallback(monkeypatch):

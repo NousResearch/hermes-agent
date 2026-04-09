@@ -40,6 +40,7 @@ def _clean_env(monkeypatch):
         "CONTEXT_COMPRESSION_PROVIDER", "CONTEXT_COMPRESSION_MODEL",
     ):
         monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("CODEX_HOME", "/var/empty/hermes-pytest-no-codex")
 
 
 @pytest.fixture
@@ -195,6 +196,37 @@ class TestReadCodexAccessToken:
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
         result = _read_codex_access_token()
         assert result == "plain-token-no-jwt"
+
+    def test_pool_without_selected_entry_syncs_updated_cli_token(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / "hermes"
+        codex_home = tmp_path / "codex-cli"
+        hermes_home.mkdir(parents=True, exist_ok=True)
+        codex_home.mkdir(parents=True, exist_ok=True)
+        (hermes_home / "auth.json").write_text(json.dumps({
+            "version": 1,
+            "providers": {
+                "openai-codex": {
+                    "tokens": {"access_token": "stale-token", "refresh_token": "stale-refresh"},
+                },
+            },
+        }))
+        (codex_home / "auth.json").write_text(json.dumps({
+            "tokens": {
+                "access_token": "cli-fresh-token",
+                "refresh_token": "cli-fresh-refresh",
+            },
+        }))
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("CODEX_HOME", str(codex_home))
+
+        with patch("agent.auxiliary_client._select_pool_entry", return_value=(True, None)):
+            result = _read_codex_access_token()
+
+        assert result == "cli-fresh-token"
+        auth_payload = json.loads((hermes_home / "auth.json").read_text())
+        tokens = auth_payload["providers"]["openai-codex"]["tokens"]
+        assert tokens["access_token"] == "cli-fresh-token"
+        assert tokens["refresh_token"] == "cli-fresh-refresh"
 
 
 class TestAnthropicOAuthFlag:

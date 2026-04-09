@@ -1352,6 +1352,28 @@ def _import_codex_cli_tokens() -> Optional[Dict[str, str]]:
         return None
 
 
+def _sync_codex_tokens_from_cli(current_tokens: Optional[Dict[str, str]] = None) -> Tuple[Optional[Dict[str, str]], bool]:
+    """Sync Hermes auth store from ~/.codex/auth.json when the token pair changed."""
+    current = dict(current_tokens or {}) if current_tokens else None
+    try:
+        cli_tokens = _import_codex_cli_tokens()
+        if not cli_tokens:
+            return current, False
+
+        cli_access = str(cli_tokens.get("access_token", "") or "").strip()
+        cli_refresh = str(cli_tokens.get("refresh_token", "") or "").strip()
+        current_access = str((current or {}).get("access_token", "") or "").strip()
+        current_refresh = str((current or {}).get("refresh_token", "") or "").strip()
+        if current_access == cli_access and current_refresh == cli_refresh:
+            return dict(cli_tokens), False
+
+        _save_codex_tokens(dict(cli_tokens))
+        return dict(cli_tokens), True
+    except Exception as exc:
+        logger.debug("Failed to sync Codex tokens from ~/.codex/auth.json: %s", exc)
+        return current, False
+
+
 def resolve_codex_runtime_credentials(
     *,
     force_refresh: bool = False,
@@ -1359,25 +1381,32 @@ def resolve_codex_runtime_credentials(
     refresh_skew_seconds: int = CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
 ) -> Dict[str, Any]:
     """Resolve runtime credentials from Hermes's own Codex token store."""
+    data: Optional[Dict[str, Any]] = None
+    read_error: Optional[AuthError] = None
     try:
         data = _read_codex_tokens()
     except AuthError as orig_err:
-        # Only attempt migration when there are NO tokens stored at all
-        # (code == "codex_auth_missing"), not when tokens exist but are invalid.
-        if orig_err.code != "codex_auth_missing":
-            raise
+        read_error = orig_err
 
-        # Migration: user had Codex as active provider with old storage (~/.codex/).
-        cli_tokens = _import_codex_cli_tokens()
-        if cli_tokens:
+    current_tokens = dict(data["tokens"]) if data else None
+    _synced_tokens, synced_from_cli = _sync_codex_tokens_from_cli(current_tokens)
+    if synced_from_cli:
+        if read_error and read_error.code == "codex_auth_missing":
             logger.info("Migrating Codex credentials from ~/.codex/ to Hermes auth store")
             print("⚠️  Migrating Codex credentials to Hermes's own auth store.")
             print("   This avoids conflicts with Codex CLI and VS Code.")
             print("   Run `hermes auth` to create a fully independent session.\n")
-            _save_codex_tokens(cli_tokens)
-            data = _read_codex_tokens()
+        elif read_error:
+            logger.info(
+                "Repairing Codex credentials from ~/.codex/auth.json after %s",
+                read_error.code,
+            )
         else:
-            raise
+            logger.info("Syncing updated Codex credentials from ~/.codex/auth.json into Hermes auth store")
+        data = _read_codex_tokens()
+    elif read_error:
+        raise read_error
+
     tokens = dict(data["tokens"])
     access_token = str(tokens.get("access_token", "") or "").strip()
     refresh_timeout_seconds = float(os.getenv("HERMES_CODEX_REFRESH_TIMEOUT_SECONDS", "20"))

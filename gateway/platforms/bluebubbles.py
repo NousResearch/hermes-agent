@@ -207,9 +207,17 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             self.webhook_port,
             self.webhook_path,
         )
+
+        # Register webhook with BlueBubbles server
+        # This is required for the server to know where to send events
+        await self._register_webhook()
+
         return True
 
     async def disconnect(self) -> None:
+        # Unregister webhook before cleaning up
+        await self._unregister_webhook()
+
         if self.client:
             await self.client.aclose()
             self.client = None
@@ -217,6 +225,91 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             await self._runner.cleanup()
             self._runner = None
         self._mark_disconnected()
+
+    async def _register_webhook(self) -> bool:
+        """Register this webhook URL with the BlueBubbles server.
+
+        BlueBubbles requires webhooks to be registered via API before
+        it will send events. This method registers our listener URL
+        for new-message and updated-message events.
+        """
+        if not self.client:
+            return False
+
+        webhook_url = f"http://{self.webhook_host}:{self.webhook_port}{self.webhook_path}"
+        # Use host.docker.internal or public IP if webhook is 0.0.0.0/127.0.0.1
+        # and server is on a different host
+        if self.webhook_host in ("0.0.0.0", "127.0.0.1", "localhost", "::"):
+            # For local development, we need the external IP that BlueBubbles can reach
+            # Default to localhost for same-machine setups
+            external_host = "localhost"
+            webhook_url = f"http://{external_host}:{self.webhook_port}{self.webhook_path}"
+
+        payload = {
+            "url": webhook_url,
+            "events": ["new-message", "updated-message", "message"],
+        }
+
+        try:
+            res = await self._api_post("/api/v1/webhook", payload)
+            if res.get("status") == 200:
+                logger.info(
+                    "[bluebubbles] webhook registered successfully with server: %s",
+                    webhook_url,
+                )
+                return True
+            else:
+                logger.warning(
+                    "[bluebubbles] webhook registration returned non-200 status: %s - %s",
+                    res.get("status"),
+                    res.get("message"),
+                )
+                return False
+        except Exception as exc:
+            logger.warning(
+                "[bluebubbles] failed to register webhook with server: %s",
+                exc,
+            )
+            return False
+
+    async def _unregister_webhook(self) -> bool:
+        """Unregister this webhook URL from the BlueBubbles server.
+
+        Cleans up the webhook registration when the gateway shuts down.
+        """
+        if not self.client:
+            return False
+
+        webhook_url = f"http://{self.webhook_host}:{self.webhook_port}{self.webhook_path}"
+        if self.webhook_host in ("0.0.0.0", "127.0.0.1", "localhost", "::"):
+            external_host = "localhost"
+            webhook_url = f"http://{external_host}:{self.webhook_port}{self.webhook_path}"
+
+        try:
+            # Get current webhooks
+            webhooks = await self._api_get("/api/v1/webhook")
+            if webhooks.get("status") == 200:
+                data = webhooks.get("data", [])
+                for webhook in data:
+                    if webhook.get("url") == webhook_url:
+                        # Delete this specific webhook
+                        webhook_id = webhook.get("id")
+                        if webhook_id:
+                            res = await self.client.delete(
+                                self._api_url(f"/api/v1/webhook/{webhook_id}")
+                            )
+                            res.raise_for_status()
+                            logger.info(
+                                "[bluebubbles] webhook unregistered: %s",
+                                webhook_url,
+                            )
+                            return True
+        except Exception as exc:
+            logger.debug(
+                "[bluebubbles] failed to unregister webhook (non-critical): %s",
+                exc,
+            )
+        return False
 
     # ------------------------------------------------------------------
     # Chat GUID resolution
@@ -826,3 +919,4 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             asyncio.create_task(self.mark_read(session_chat_id))
 
         return web.Response(text="ok")
+

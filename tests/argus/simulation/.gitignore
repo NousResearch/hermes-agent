@@ -1,0 +1,8 @@
+# Ignore the dummy database file (generated during testing)
+dummy_argus.db
+*.db
+
+# Ignore Python cache
+__pycache__/
+*.pyc
+*.pyo

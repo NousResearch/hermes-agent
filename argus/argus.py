@@ -18,16 +18,16 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Union
 
-from wal_monitor import ToolCallMonitor
-import entropy as _entropy
-import directives as _directives
-import actions as _actions
-import notifications as _notifications
-import audit as _audit
-import resources as _resources
-import cleanup as _cleanup
-import drift as _drift
-import provider_health as _provider_health
+from .wal_monitor import ToolCallMonitor
+from . import entropy as _entropy
+from . import directives as _directives
+from . import actions as _actions
+from . import notifications as _notifications
+from . import audit as _audit
+from . import resources as _resources
+from . import cleanup as _cleanup
+from . import drift as _drift
+from . import provider_health as _provider_health
 
 # === PATH RESOLUTION ===
 # Add hermes-agent to path for module imports

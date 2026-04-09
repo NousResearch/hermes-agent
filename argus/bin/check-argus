@@ -1,0 +1,33 @@
+#!/bin/bash
+# Check-argus - Verify Argus package structure
+# Usage: check-argus [--full]
+
+set -e
+
+HERMES_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$HERMES_ROOT"
+
+echo ""
+echo "=== Argus Module Structure ==="
+echo "Module: argus/__init__.py"
+echo "Public exports:"
+grep -E '^\s+"' argus/__init__.py | sed 's/^/  /'
+
+echo ""
+echo "=== File Structure ==="
+ls -la argus/*.py argus/*.sql 2>/dev/null | awk '{print $9, $5 " bytes"}'
+
+echo ""
+echo "=== Syntax Check ==="
+python3 -m py_compile argus/__init__.py argus/entropy.py argus/actions.py argus/notifications.py 2>&1 && echo "✓ Core modules have valid syntax"
+
+if [[ "$1" == "--full" ]]; then
+    echo ""
+    echo "=== Quick Smoke Test ==="
+    cd tests/argus/simulation
+    python3 run_all_tests.py --quick
+fi
+
+echo ""
+echo "=== Check Complete ==="
+echo "Note: Full import test requires Python 3.10+ environment (hermes-agent dependency)"

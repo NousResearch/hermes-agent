@@ -6,7 +6,7 @@ import sys
 import unittest
 from unittest.mock import patch
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+# Tests moved to tests/argus/ - use direct package imports
 
 from wal_monitor import ToolCallMonitor, check_session_entropy, ToolCallEvent
 

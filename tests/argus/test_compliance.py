@@ -18,7 +18,7 @@ import unittest
 from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).parent
-ARGUS_DIR = SCRIPT_DIR.parent  # argus/ directory (parent of tests/)
+ARGUS_DIR = SCRIPT_DIR.parent.parent / "argus"  # argus/ directory (two levels up from tests/argus/)
 ARGUS_PATH = ARGUS_DIR / "argus.py"
 WAL_PATH = ARGUS_DIR / "wal_monitor.py"
 

@@ -15,7 +15,7 @@ from unittest.mock import patch, MagicMock
 from datetime import datetime
 
 # Add parent directory to path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+# Tests moved to tests/argus/ - use direct package imports
 
 from argus import Argus
 import entropy as _entropy

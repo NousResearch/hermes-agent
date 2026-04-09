@@ -7,6 +7,7 @@
 # Uses hermes-native patterns:
 #   - PID file management (same as gateway/status.py)
 #   - launchd integration (same as gateway.py)
+#   - Virtual environment detection and preservation
 #
 
 set -e
@@ -15,14 +16,72 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ARGUS_SCRIPT="$SCRIPT_DIR/../argus.py"
 LOG_DIR="$HOME/hermes/logs/argus"
 
-# Colors for output
+# Virtual Environment Detection
+ARGUS_PYTHON=""
+
+validate_python() {
+    local py="$1"
+    if [ -x "$py" ]; then
+        local version
+        version=$("$py" -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>/dev/null || echo "")
+        if [ -n "$version" ]; then
+            local major minor
+            major=$(echo "$version" | cut -d. -f1)
+            minor=$(echo "$version" | cut -d. -f2)
+            if [ "$major" -ge 3 ] && [ "$minor" -ge 11 ]; then
+                return 0
+            fi
+        fi
+    fi
+    return 1
+}
+
+# Priority 1: HERMES_VENV environment variable override
+if [ -n "$HERMES_VENV" ] && [ -d "$HERMES_VENV" ]; then
+    if validate_python "$HERMES_VENV/bin/python3"; then
+        ARGUS_PYTHON="$HERMES_VENV/bin/python3"
+    elif validate_python "$HERMES_VENV/bin/python"; then
+        ARGUS_PYTHON="$HERMES_VENV/bin/python"
+    fi
+fi
+
+# Priority 2: Dev environment venv
+if [ -z "$ARGUS_PYTHON" ] && [ -d "$HOME/Projects/hermes-dev/.local/venv" ]; then
+    if validate_python "$HOME/Projects/hermes-dev/.local/venv/bin/python3"; then
+        ARGUS_PYTHON="$HOME/Projects/hermes-dev/.local/venv/bin/python3"
+    fi
+fi
+
+# Priority 3: Production hermes-agent venv
+if [ -z "$ARGUS_PYTHON" ] && [ -d "$HOME/.hermes/hermes-agent/venv" ]; then
+    if validate_python "$HOME/.hermes/hermes-agent/venv/bin/python3"; then
+        ARGUS_PYTHON="$HOME/.hermes/hermes-agent/venv/bin/python3"
+    fi
+fi
+
+# Priority 4: System python3 (must be 3.11+)
+if [ -z "$ARGUS_PYTHON" ]; then
+    if validate_python "/usr/bin/python3"; then
+        ARGUS_PYTHON="/usr/bin/python3"
+    elif validate_python "$(which python3)"; then
+        ARGUS_PYTHON="$(which python3)"
+    fi
+fi
+
+if [ -z "$ARGUS_PYTHON" ]; then
+    echo -e "\033[0;31m[ERROR]\033[0m No suitable Python (3.11+) found"
+    echo "Checked: HERMES_VENV, ~/Projects/hermes-dev/.local/venv, ~/.hermes/hermes-agent/venv, system python3"
+    exit 1
+fi
+
+export ARGUS_PYTHON
+
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
-# Helper functions
 log_info() {
     echo -e "${BLUE}[INFO]${NC} $1"
 }
@@ -39,9 +98,8 @@ log_error() {
     echo -e "${RED}[ERROR]${NC} $1"
 }
 
-# Check if running (uses Python PID file check — same as gateway)
 is_running() {
-    python3 -c "
+    "$ARGUS_PYTHON" -c "
 import sys, os, json
 pid_path = os.path.expanduser('~/hermes/data/watcher/argus.pid')
 if not os.path.exists(pid_path):
@@ -56,7 +114,6 @@ except (ValueError, json.JSONDecodeError, ProcessLookupError, OSError):
 " 2>/dev/null
 }
 
-# Start Argus
 start_argus() {
     log_info "Starting ARGUS..."
 
@@ -65,15 +122,13 @@ start_argus() {
         return 0
     fi
 
-    # Run in background
-    nohup python3 "$ARGUS_SCRIPT" >> "$LOG_DIR/argus.nohup.log" 2>&1 &
+    nohup "$ARGUS_PYTHON" "$ARGUS_SCRIPT" >> "$LOG_DIR/argus.nohup.log" 2>&1 &
     local pid=$!
 
-    # Wait for PID file to appear
     local attempts=0
     while [ $attempts -lt 10 ]; do
         if is_running; then
-            log_success "ARGUS started (PID: $(python3 -c "import json; print(json.load(open(os.path.expanduser('~/hermes/data/watcher/argus.pid')))['pid'])" 2>/dev/null || echo "$pid"))"
+            log_success "ARGUS started (PID: $("$ARGUS_PYTHON" -c "import json; print(json.load(open(os.path.expanduser('~/hermes/data/watcher/argus.pid')))['pid'])" 2>/dev/null || echo "$pid"))"
             return 0
         fi
         sleep 1
@@ -84,20 +139,17 @@ start_argus() {
     return 1
 }
 
-# Stop Argus
 stop_argus() {
     log_info "Stopping ARGUS..."
 
     if ! is_running; then
         log_warning "ARGUS is not running"
-        # Clean up stale PID file
         rm -f ~/hermes/data/watcher/argus.pid 2>/dev/null
         return 0
     fi
 
-    # Get PID from file
     local pid
-    pid=$(python3 -c "
+    pid=$("$ARGUS_PYTHON" -c "
 import json, os
 record = json.load(open(os.path.expanduser('~/hermes/data/watcher/argus.pid')))
 print(record['pid'])
@@ -106,26 +158,22 @@ print(record['pid'])
     if [ -n "$pid" ]; then
         kill -TERM "$pid" 2>/dev/null || true
 
-        # Wait for process to exit
         local attempts=0
         while [ $attempts -lt 10 ] && kill -0 "$pid" 2>/dev/null; do
             sleep 1
             attempts=$((attempts + 1))
         done
 
-        # Force kill if still alive
         if kill -0 "$pid" 2>/dev/null; then
             kill -9 "$pid" 2>/dev/null || true
         fi
     fi
 
-    # Clean up PID file
     rm -f ~/hermes/data/watcher/argus.pid 2>/dev/null
 
     log_success "ARGUS stopped"
 }
 
-# Restart Argus
 restart_argus() {
     log_info "Restarting ARGUS..."
     stop_argus
@@ -133,21 +181,19 @@ restart_argus() {
     start_argus
 }
 
-# Show status
 show_status() {
     echo "=== ARGUS Status ==="
     echo "The Hundred-Eyed Watchman"
+    echo "Using Python: $ARGUS_PYTHON"
     echo ""
 
-    # Use Python status check (same pattern as gateway)
-    python3 -c "
+    "$ARGUS_PYTHON" -c "
 import sys, os, json
 
 pid_path = os.path.expanduser('~/hermes/data/watcher/argus.pid')
 db_path = os.path.expanduser('~/hermes/data/watcher/argus.db')
 log_dir = os.path.expanduser('~/hermes/logs/argus')
 
-# PID status
 if os.path.exists(pid_path):
     try:
         record = json.load(open(pid_path))
@@ -163,7 +209,6 @@ if os.path.exists(pid_path):
 else:
     print('  Status:     STOPPED')
 
-# Database stats
 if os.path.exists(db_path):
     import sqlite3
     conn = sqlite3.connect(db_path)
@@ -185,7 +230,6 @@ if os.path.exists(db_path):
 else:
     print('  DB:         not found')
 
-# Log status
 argus_log = os.path.join(log_dir, 'argus.log')
 if os.path.exists(argus_log):
     size = os.path.getsize(argus_log)
@@ -196,14 +240,12 @@ else:
 
     echo ""
 
-    # Recent logs
     if [ -f "$LOG_DIR/argus.log" ]; then
         echo "=== Recent Logs (last 5 lines) ==="
         tail -5 "$LOG_DIR/argus.log"
     fi
 }
 
-# Show logs
 show_logs() {
     if [ -f "$LOG_DIR/argus.log" ]; then
         tail -f "$LOG_DIR/argus.log"
@@ -212,7 +254,6 @@ show_logs() {
     fi
 }
 
-# Show database
 show_database() {
     local db_path="$HOME/hermes/data/watcher/argus.db"
     if [ -f "$db_path" ]; then
@@ -231,15 +272,12 @@ show_database() {
     fi
 }
 
-# Install Argus (launchd)
 install_argus() {
     log_info "Installing ARGUS..."
 
-    # Create directories
     mkdir -p "$LOG_DIR"
     mkdir -p "$HOME/hermes/data/watcher"
 
-    # Initialize database
     local db_path="$HOME/hermes/data/watcher/argus.db"
     if [ ! -f "$db_path" ]; then
         log_info "Initializing database..."
@@ -247,11 +285,9 @@ install_argus() {
         log_success "Database initialized"
     fi
 
-    # Make script executable
     chmod +x "$ARGUS_SCRIPT"
 
-    # Generate and install launchd plist (same pattern as hermes gateway)
-    python3 -c "
+    "$ARGUS_PYTHON" -c "
 import sys
 sys.path.insert(0, '$SCRIPT_DIR/../scripts/watcher')
 from argus import argus_launchd_install
@@ -266,15 +302,12 @@ sys.exit(0 if success else 1)
     fi
 }
 
-# Uninstall Argus
 uninstall_argus() {
     log_info "Uninstalling ARGUS..."
 
-    # Stop first
     stop_argus
 
-    # Remove launchd service
-    python3 -c "
+    "$ARGUS_PYTHON" -c "
 import sys
 sys.path.insert(0, '$SCRIPT_DIR/../scripts/watcher')
 from argus import argus_launchd_uninstall
@@ -285,7 +318,6 @@ argus_launchd_uninstall()
     log_warning "Database and logs preserved at: ~/hermes/data/watcher/, ~/hermes/logs/argus/"
 }
 
-# Show help
 show_help() {
     echo "ARGUS Control Script"
     echo "The Hundred-Eyed Watchman"
@@ -303,13 +335,19 @@ show_help() {
     echo "  uninstall  Stop and uninstall launchd service"
     echo "  help       Show this help message"
     echo ""
+    echo "Virtual Environment Detection:"
+    echo "  Python selection priority:"
+    echo "    1. HERMES_VENV environment variable (if set and valid)"
+    echo "    2. ~/Projects/hermes-dev/.local/venv (dev environment)"
+    echo "    3. ~/.hermes/hermes-agent/venv (production)"
+    echo "    4. System python3 (must be 3.11+)"
+    echo ""
     echo "Hermes-native patterns:"
     echo "  - PID file: ~/hermes/data/watcher/argus.pid"
     echo "  - launchd:  ~/Library/LaunchAgents/com.hermes.argus.plist"
     echo "  - Logging:  RotatingFileHandler (5MB, 3 backups)"
 }
 
-# Main command handler
 case "${1:-help}" in
     start)
         start_argus

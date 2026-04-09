@@ -9,12 +9,12 @@ Session types: cron, delegate_task, manual.
 
 import json
 import logging
-import os
 import sqlite3
 import subprocess
 import time
-from pathlib import Path
 from typing import Dict, List, Optional, Union
+
+from . import venv_utils as _venv_utils
 
 logger = logging.getLogger("argus.actions")
 
@@ -37,24 +37,12 @@ except (ImportError, TypeError):
 
 
 def _get_cron_env() -> Dict[str, str]:
-    """Build a full environment dict for subprocess calls in sandboxed contexts."""
-    env = os.environ.copy()
-
-    _ARGUS_HOME = Path(os.path.expanduser("~/hermes"))
-    _HERMES_HOME = Path(os.path.expanduser("~/.hermes"))
-
-    paths = [
-        "/opt/homebrew/bin",
-        "/usr/local/bin",
-        str(_ARGUS_HOME / "bin"),
-        str(Path.home() / ".local" / "bin"),
-        str(_HERMES_HOME / "credentials"),
-        "/usr/bin",
-        "/bin",
-    ]
-    env["PATH"] = ":".join(paths)
-    env["HOME"] = os.path.expanduser("~")
-    return env
+    """Build a full environment dict for subprocess calls in sandboxed contexts.
+    
+    Uses venv_utils to ensure virtual environment context is preserved.
+    This ensures subprocesses can find hermes modules and tools.
+    """
+    return _venv_utils.build_argus_subprocess_env()
 
 
 def safe_subprocess(

@@ -30,6 +30,7 @@ from . import drift as _drift
 from . import provider_health as _provider_health
 from . import cost_monitor as _cost_monitor
 from . import circuit_breaker as _circuit_breaker
+from .subprocess_utils import safe_subprocess
 
 # === PATH RESOLUTION ===
 # Add hermes-agent to path for module imports
@@ -209,238 +210,19 @@ def _load_argus_config() -> Dict:
 CONFIG = _load_argus_config()
 
 
-# === PID FILE ===
-_ARGUS_PID_PATH = _argus_path("data", "watcher", "argus.pid")
-_ARGUS_KIND = "argus-watcher"
-
-
-def _get_argus_pid_path() -> Path:
-    """Path to the ARGUS PID file."""
-    return _ARGUS_PID_PATH
-
-
-def _build_argus_pid_record() -> dict:
-    """Build PID record for argus.pid."""
-    return {
-        "pid": os.getpid(),
-        "kind": _ARGUS_KIND,
-        "argv": list(sys.argv),
-        "start_time": time.time(),
-    }
-
-
-def write_argus_pid_file() -> None:
-    """Write ARGUS PID file."""
-    path = _get_argus_pid_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(_build_argus_pid_record()))
-
-
-def remove_argus_pid_file() -> None:
-    """Remove ARGUS PID file."""
-    try:
-        _get_argus_pid_path().unlink(missing_ok=True)
-    except Exception:
-        pass
-
-
-def _read_argus_pid_record() -> Optional[dict]:
-    """Read ARGUS PID file, return dict or None."""
-    path = _get_argus_pid_path()
-    if not path.exists():
-        return None
-    raw = path.read_text().strip()
-    if not raw:
-        return None
-    try:
-        return json.loads(raw)
-    except json.JSONDecodeError:
-        try:
-            return {"pid": int(raw)}
-        except ValueError:
-            return None
-
-
-def get_argus_running_pid() -> Optional[int]:
-    """Return PID of running ARGUS instance, or None."""
-    record = _read_argus_pid_record()
-    if not record:
-        remove_argus_pid_file()
-        return None
-    try:
-        pid = int(record["pid"])
-    except (KeyError, TypeError, ValueError):
-        remove_argus_pid_file()
-        return None
-
-    # Check if process is alive
-    try:
-        os.kill(pid, 0)
-        return pid
-    except (ProcessLookupError, PermissionError):
-        remove_argus_pid_file()
-        return None
-
-
-def is_argus_running() -> bool:
-    """Check if ARGUS daemon is currently running."""
-    return get_argus_running_pid() is not None
-
-
-# === LAUNCHD ===
-_ARGUS_LAUNCHD_LABEL = "com.hermes.argus"
-_ARGUS_SCRIPT = str(_argus_path("scripts", "watcher", "argus.py"))
-
-
-def get_argus_launchd_label() -> str:
-    """Return the launchd service label."""
-    return _ARGUS_LAUNCHD_LABEL
-
-
-def get_argus_launchd_plist_path() -> Path:
-    """Return the launchd plist path."""
-    return _hermes_home_plist_dir() / f"{_ARGUS_LAUNCHD_LABEL}.plist"
-
-
-def _hermes_home_plist_dir() -> Path:
-    """Return ~/Library/LaunchAgents (macOS-specific)."""
-    return Path.home() / "Library" / "LaunchAgents"
-
-
-def generate_argus_launchd_plist() -> str:
-    """Generate launchd plist XML with full PATH, HERMES_HOME, KeepAlive."""
-    import shutil as _shutil
-
-    label = get_argus_launchd_label()
-    script = _ARGUS_SCRIPT
-    log_dir = str(_argus_path("logs", "argus"))
-    hermes_home = str(_HERMES_HOME)
-
-    # Build PATH
-    venv_bin = str(_hermes_path("hermes-agent", "venv", "bin"))
-    priority_dirs = [venv_bin] if os.path.isdir(venv_bin) else []
-
-    hermes_bin = _shutil.which("hermes")
-    if hermes_bin:
-        hermes_dir = str(Path(hermes_bin).resolve().parent)
-        if hermes_dir not in priority_dirs:
-            priority_dirs.append(hermes_dir)
-
-    sane_path = ":".join(
-        dict.fromkeys(
-            priority_dirs + [p for p in os.environ.get("PATH", "").split(":") if p]
-        )
-    )
-
-    # Detect python
-    python = sys.executable or "/usr/bin/python3"
-
-    return f"""<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>{label}</string>
-
-    <key>ProgramArguments</key>
-    <array>
-        <string>{python}</string>
-        <string>{script}</string>
-    </array>
-
-    <key>WorkingDirectory</key>
-    <string>{Path(script).parent}</string>
-
-    <key>EnvironmentVariables</key>
-    <dict>
-        <key>PATH</key>
-        <string>{sane_path}</string>
-        <key>HERMES_HOME</key>
-        <string>{hermes_home}</string>
-    </dict>
-
-    <key>RunAtLoad</key>
-    <true/>
-
-    <key>KeepAlive</key>
-    <dict>
-        <key>SuccessfulExit</key>
-        <false/>
-    </dict>
-
-    <key>StandardOutPath</key>
-    <string>{log_dir}/argus.stdout.log</string>
-
-    <key>StandardErrorPath</key>
-    <string>{log_dir}/argus.stderr.log</string>
-
-    <key>ThrottleInterval</key>
-    <integer>10</integer>
-</dict>
-</plist>"""
-
-
-def argus_launchd_install() -> bool:
-    """Install ARGUS as launchd service."""
-    plist_path = get_argus_launchd_plist_path()
-
-    # Write plist
-    plist_path.parent.mkdir(parents=True, exist_ok=True)
-    plist_path.write_text(generate_argus_launchd_plist())
-    logger.info("ARGUS plist written to: %s", plist_path)
-
-    # Bootstrap via launchctl
-    try:
-        subprocess.run(
-            ["launchctl", "bootstrap", f"gui/{os.getuid()}", str(plist_path)],
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        logger.info("ARGUS launchd service bootstrapped")
-        return True
-    except subprocess.CalledProcessError as e:
-        logger.error("Failed to bootstrap ARGUS: %s", e.stderr, exc_info=True)
-        return False
-
-
-def argus_launchd_uninstall() -> bool:
-    """Uninstall ARGUS launchd service."""
-    label = get_argus_launchd_label()
-    plist_path = get_argus_launchd_plist_path()
-
-    # Bootout
-    try:
-        subprocess.run(
-            ["launchctl", "bootout", f"gui/{os.getuid()}/{label}"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-    except Exception:
-        pass
-
-    # Remove plist
-    plist_path.unlink(missing_ok=True)
-    logger.info("ARGUS launchd service uninstalled")
-    return True
-
-
-def argus_launchd_status() -> dict:
-    """Check ARGUS launchd service status."""
-    label = get_argus_launchd_label()
-    plist_path = get_argus_launchd_plist_path()
-
-    return {
-        "label": label,
-        "plist_exists": plist_path.exists(),
-        "plist_path": str(plist_path),
-        "pid_file_exists": _get_argus_pid_path().exists(),
-        "running_pid": get_argus_running_pid(),
-        "is_running": is_argus_running(),
-    }
-
+# === DAEMON MANAGEMENT ===
+from .daemon_mgmt import (
+    write_argus_pid_file,
+    remove_argus_pid_file,
+    get_argus_running_pid,
+    is_argus_running,
+    get_argus_launchd_label,
+    get_argus_launchd_plist_path,
+    generate_argus_launchd_plist,
+    argus_launchd_install,
+    argus_launchd_uninstall,
+    argus_launchd_status,
+)
 
 # === LOGGING ===
 os.makedirs(CONFIG["log_dir"], exist_ok=True)
@@ -553,75 +335,18 @@ class Argus:
 
         self.conn.commit()
 
-    def _get_cron_env(self) -> Dict[str, str]:
-        """Build a full environment dict for subprocess calls in sandboxed contexts."""
-        env = os.environ.copy()
+    def _discover_by_source(self, source_type: str) -> List[Dict]:
+        """Discover sessions from a specific source (cron, delegate, manual).
 
-        # Ensure PATH includes all critical tool locations
-        paths = [
-            "/opt/homebrew/bin",
-            "/usr/local/bin",
-            str(_argus_path("bin")),  # ~/hermes/bin
-            str(Path.home() / ".local" / "bin"),  # ~/.local/bin
-            str(_hermes_path("credentials")),  # ~/.hermes/credentials
-            "/usr/bin",
-            "/bin",
-        ]
-        env["PATH"] = ":".join(paths)
-
-        # Ensure HOME is set (some launchd contexts may not have it)
-        env["HOME"] = os.path.expanduser("~")
-
-        return env
-
-    def _safe_subprocess(
-        self, cmd: List[str], timeout: int = 10, **kwargs
-    ) -> Optional[subprocess.CompletedProcess]:
-        """Run a subprocess with full env and error handling. Never raises."""
-        try:
-            return subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-                env=self._get_cron_env(),
-                **kwargs,
-            )
-        except FileNotFoundError:
-            logger.warning("Command not found: %s (check PATH)", cmd[0])
-            return None
-        except subprocess.TimeoutExpired:
-            logger.warning("Command timed out after %ss: %s", timeout, " ".join(cmd))
-            return None
-        except Exception as e:
-            logger.error("Subprocess error for %s: %s", cmd[0], e, exc_info=True)
-            return None
-
-    def discover_sessions(self) -> List[Dict]:
-        """Discover all active agent sessions."""
-        sessions = []
-
-        # 1. Cron jobs
-        sessions.extend(self._discover_cron_sessions())
-
-        # 2. Delegate tasks
-        sessions.extend(self._discover_delegate_sessions())
-
-        # 3. Manual sessions
-        sessions.extend(self._discover_manual_sessions())
-
-        return sessions
-
-    def _discover_cron_sessions(self) -> List[Dict]:
-        """Discover active cron job sessions via cron.jobs (same as hermes_cli/cron.py)."""
+        Uses Hermes internals: list_jobs() for cron, SessionDB for delegate/manual.
+        """
         sessions = []
 
         try:
-            jobs = list_jobs(include_disabled=False)
-
-            for job in jobs:
-                sessions.append(
-                    {
+            if source_type == "cron":
+                jobs = list_jobs(include_disabled=False)
+                for job in jobs:
+                    sessions.append({
                         "session_id": f"cron_{job['id']}",
                         "session_type": "cron",
                         "job_id": job["id"],
@@ -629,84 +354,52 @@ class Argus:
                         "model": job.get("model"),
                         "provider": job.get("provider"),
                         "metadata": json.dumps(job),
-                    }
-                )
+                    })
 
-        except Exception as e:
-            logger.error("Error discovering cron sessions: %s", e, exc_info=True)
+            elif source_type in ("delegate", "manual"):
+                db = SessionDB(DEFAULT_DB_PATH)
+                try:
+                    all_sessions = db.list_sessions_rich(limit=50)
+                finally:
+                    db.close()
 
-        return sessions
-
-    def _discover_delegate_sessions(self) -> List[Dict]:
-        """Discover delegate_task sessions via SessionDB (same as hermes_cli)."""
-        sessions = []
-
-        try:
-            db = SessionDB(DEFAULT_DB_PATH)
-            try:
-                all_sessions = db.list_sessions_rich(limit=50)
-            finally:
-                db.close()
-
-            for s in all_sessions:
-                if s.get("source") == "delegate" or s.get("source") == "delegate_task":
-                    sessions.append(
-                        {
-                            "session_id": "delegate_%s" % s["id"],
+                for s in all_sessions:
+                    src = s.get("source", "")
+                    if source_type == "delegate" and src in ("delegate", "delegate_task"):
+                        sessions.append({
+                            "session_id": f"delegate_{s['id']}",
                             "session_type": "delegate_task",
-                            "task_description": s.get(
-                                "title", "Delegate %s" % s["id"][:12]
-                            ),
-                            "metadata": json.dumps(
-                                {
-                                    "session_id": s["id"],
-                                    "source": s.get("source"),
-                                    "started_at": s.get("started_at"),
-                                }
-                            ),
-                        }
-                    )
-
-        except Exception as e:
-            logger.error("Error discovering delegate sessions: %s", e, exc_info=True)
-
-        return sessions
-
-    def _discover_manual_sessions(self) -> List[Dict]:
-        """Discover manual agent sessions via SessionDB (same as hermes_cli)."""
-        sessions = []
-
-        try:
-            db = SessionDB(DEFAULT_DB_PATH)
-            try:
-                all_sessions = db.list_sessions_rich(limit=50)
-            finally:
-                db.close()
-
-            for s in all_sessions:
-                source = s.get("source", "")
-                if source in ("cli", "telegram", "manual", "gateway"):
-                    sessions.append(
-                        {
-                            "session_id": "manual_%s" % s["id"],
+                            "task_description": s.get("title", f"Delegate {s['id'][:12]}"),
+                            "metadata": json.dumps({
+                                "session_id": s["id"],
+                                "source": src,
+                                "started_at": s.get("started_at"),
+                            }),
+                        })
+                    elif source_type == "manual" and src in ("cli", "telegram", "manual", "gateway"):
+                        sessions.append({
+                            "session_id": f"manual_{s['id']}",
                             "session_type": "manual",
-                            "task_description": s.get(
-                                "title", "Session %s" % s["id"][:12]
-                            ),
-                            "metadata": json.dumps(
-                                {
-                                    "session_id": s["id"],
-                                    "source": source,
-                                    "started_at": s.get("started_at"),
-                                }
-                            ),
-                        }
-                    )
+                            "task_description": s.get("title", f"Session {s['id'][:12]}"),
+                            "metadata": json.dumps({
+                                "session_id": s["id"],
+                                "source": src,
+                                "started_at": s.get("started_at"),
+                            }),
+                        })
 
         except Exception as e:
-            logger.error("Error discovering manual sessions: %s", e, exc_info=True)
+            logger.error("Error discovering %s sessions: %s", source_type, e, exc_info=True)
 
         return sessions
+
+    def discover_sessions(self) -> List[Dict]:
+        """Discover all active agent sessions from cron, delegate, and manual sources."""
+        return (
+            self._discover_by_source("cron") +
+            self._discover_by_source("delegate") +
+            self._discover_by_source("manual")
+        )
 
     def register_session(self, session: Dict):
         """Register a session in the database."""
@@ -1077,130 +770,84 @@ class Argus:
         return None
 
     def _run_periodic_checks(self):
-        """Run resource, drift, and cleanup checks every N cycles."""
+        """Run resource, drift, and cleanup checks every N cycles.
+
+        Table-driven: (cycle_offset, config_key, module, check_func, format_func, audit_func, notify_type)
+        """
         cycle = self._cycle_count
-        mod = cycle % 10  # every 10 cycles
+        mod = cycle % 10
 
-        # Resource exhaustion check (every 10 cycles) - if enabled
-        if mod == 0 and CONFIG.get("resource_checks_enabled", True):
+        # Standard periodic checks
+        checks = [
+            # (offset, config_key, module, check_fn, format_fn, audit_fn, notify_type)
+            (0, "resource_checks_enabled", _resources, "run_resource_check", "format_alert", "record_resource_alert", "resource_alert"),
+            (3, "provider_health_enabled", _provider_health, "run_provider_check", "format_alert", "record_provider_alert", "provider_health"),
+            (5, "cleanup_enabled", _cleanup, "run_cleanup", None, "record_cleanup_event", None),
+            (7, "cost_monitoring_enabled", _cost_monitor, "check_costs", "format_cost_alert", "record_cost_alert", "cost_alert"),
+        ]
+
+        for offset, config_key, module, check_fn, format_fn, audit_fn, notify_type in checks:
+            if mod != offset or not CONFIG.get(config_key, True):
+                continue
+
             try:
-                report = _resources.run_resource_check()
-                if report["overall_severity"] in ("warning", "critical"):
-                    alert = _resources.format_alert(report)
-                    if alert:
-                        logger.warning("Resource alert:\n%s", alert)
-                        if CONFIG.get("audit_trail_enabled", True):
-                            _audit.record_resource_alert(
-                                self.cursor,
-                                self.conn,
-                                resource_type="system",
-                                severity=report["overall_severity"],
-                                details=report,
-                            )
-                        if CONFIG.get("notifications_enabled", True):
-                            _notifications.send_notification(
-                                self.cursor,
-                                self.conn,
-                                "system",
-                                "resource_alert",
-                                alert,
-                            )
-            except Exception as e:
-                logger.error("Resource check failed: %s", e)
+                # Run check (some need cursor/conn, some just CONFIG)
+                if check_fn == "check_costs":
+                    report = getattr(module, check_fn)(CONFIG)
+                    has_alert = report.get("has_alert")
+                else:
+                    report = getattr(module, check_fn)(self.cursor, self.conn)
+                    has_alert = report.get("overall_severity") in ("warning", "critical")
 
-        # Config drift check (every cycle) - if enabled
+                if not has_alert:
+                    continue
+
+                # Format alert if formatter exists
+                alert = None
+                if format_fn:
+                    alert = getattr(module, format_fn)(report)
+                elif check_fn == "run_cleanup":
+                    total = sum(len(v) for v in report.values())
+                    if total > 0:
+                        logger.info("Cleanup: %d orphaned sessions found", total)
+                        alert = f"Cleanup: {total} orphaned sessions found"
+                    else:
+                        continue
+
+                if alert:
+                    logger.warning("%s alert:\n%s", config_key.replace("_enabled", "").replace("_", " "), alert)
+
+                # Audit
+                if CONFIG.get("audit_trail_enabled", True) and audit_fn:
+                    audit_method = getattr(_audit, audit_fn)
+                    if check_fn == "run_resource_check":
+                        audit_method(self.cursor, self.conn, resource_type="system", severity=report["overall_severity"], details=report)
+                    elif check_fn == "run_provider_check":
+                        audit_method(self.cursor, self.conn, providers=list(report.get("providers", {}).keys()), severity=report["overall_severity"], details=report)
+                    else:
+                        audit_method(self.cursor, self.conn, details=report)
+
+                # Notify
+                if notify_type and CONFIG.get("notifications_enabled", True):
+                    _notifications.send_notification(self.cursor, self.conn, "system", notify_type, alert)
+
+            except Exception as e:
+                logger.error("%s check failed: %s", config_key.replace("_enabled", ""), e)
+
+        # Config drift check (every cycle) - special handling, not periodic
         if CONFIG.get("drift_detection_enabled", True):
             try:
                 changes = self._drift_detector.check()
                 if changes:
-                    self._drift_detector.record_changes(
-                        self.cursor, self.conn, changes
-                    )
+                    self._drift_detector.record_changes(self.cursor, self.conn, changes)
                     if CONFIG.get("audit_trail_enabled", True):
                         for c in changes:
-                            _audit.record_drift_event(
-                                self.cursor,
-                                self.conn,
-                                file_label=c["file"],
-                                change_type=c["change_type"],
-                                old_hash=c.get("old_hash"),
-                                new_hash=c.get("new_hash"),
-                            )
-                    logger.info(
-                        "Drift: %s %s", c["file"], c["change_type"]
-                    )
+                            _audit.record_drift_event(self.cursor, self.conn, file_label=c["file"], change_type=c["change_type"], old_hash=c.get("old_hash"), new_hash=c.get("new_hash"))
+                    logger.info("Drift: %s %s", c["file"], c["change_type"])
             except Exception as e:
                 logger.error("Drift check failed: %s", e)
 
-        # Provider health check (every 10 cycles, offset by 3) - if enabled
-        if mod == 3 and CONFIG.get("provider_health_enabled", True):
-            try:
-                report = _provider_health.run_provider_check(
-                    self.cursor, self.conn
-                )
-                if report["overall_severity"] in ("warning", "critical"):
-                    alert = _provider_health.format_alert(report)
-                    if alert:
-                        logger.warning("Provider health alert:\n%s", alert)
-                        if CONFIG.get("audit_trail_enabled", True):
-                            _audit.record_provider_alert(
-                                self.cursor,
-                                self.conn,
-                                providers=list(report.get("providers", {}).keys()),
-                                severity=report["overall_severity"],
-                                details=report,
-                            )
-                        if CONFIG.get("notifications_enabled", True):
-                            _notifications.send_notification(
-                                self.cursor,
-                                self.conn,
-                                "system",
-                                "provider_health",
-                                alert,
-                            )
-            except Exception as e:
-                logger.error("Provider health check failed: %s", e)
-
-        # Dead session cleanup (every 10 cycles, offset by 5) - if enabled
-        if mod == 5 and CONFIG.get("cleanup_enabled", True):
-            try:
-                findings = _cleanup.run_cleanup(self.cursor, self.conn)
-                total = sum(len(v) for v in findings.values())
-                if total > 0:
-                    logger.info("Cleanup: %d orphaned sessions found", total)
-                    if CONFIG.get("audit_trail_enabled", True):
-                        _audit.record_cleanup_event(
-                            self.cursor, self.conn, findings
-                        )
-            except Exception as e:
-                logger.error("Cleanup failed: %s", e)
-
-        # Cost monitoring check (every 10 cycles, offset by 7) - if enabled
-        if mod == 7 and CONFIG.get("cost_monitoring_enabled", True):
-            try:
-                cost_status = _cost_monitor.check_costs(CONFIG)
-                if cost_status.get("has_alert"):
-                    alert_msg = _cost_monitor.format_cost_alert(cost_status)
-                    if alert_msg:
-                        logger.warning("Cost alert:\n%s", alert_msg)
-                        if CONFIG.get("audit_trail_enabled", True):
-                            _audit.record_cost_alert(
-                                self.cursor,
-                                self.conn,
-                                details=cost_status,
-                            )
-                        if CONFIG.get("notifications_enabled", True):
-                            _notifications.send_notification(
-                                self.cursor,
-                                self.conn,
-                                "system",
-                                "cost_alert",
-                                alert_msg,
-                            )
-            except Exception as e:
-                logger.error("Cost monitoring failed: %s", e)
-
-        # Circuit breaker checks (every 10 cycles, offset by 8) - if enabled
+        # Circuit breaker check (mod 8, has nested config)
         if mod == 8:
             cb_config = CONFIG.get("circuit_breaker", {})
             if cb_config.get("enabled", False):
@@ -1211,21 +858,9 @@ class Argus:
                             msg = _circuit_breaker.format_circuit_event(event)
                             logger.warning("Circuit breaker: %s", msg)
                             if CONFIG.get("audit_trail_enabled", True):
-                                _audit.record_circuit_event(
-                                    self.cursor,
-                                    self.conn,
-                                    provider=event["provider"],
-                                    transition=event["transition"],
-                                    reason=event["reason"],
-                                )
+                                _audit.record_circuit_event(self.cursor, self.conn, provider=event["provider"], transition=event["transition"], reason=event["reason"])
                             if CONFIG.get("notifications_enabled", True):
-                                _notifications.send_notification(
-                                    self.cursor,
-                                    self.conn,
-                                    "system",
-                                    "circuit_breaker",
-                                    msg,
-                                )
+                                _notifications.send_notification(self.cursor, self.conn, "system", "circuit_breaker", msg)
                 except Exception as e:
                     logger.error("Circuit breaker check failed: %s", e)
 
@@ -1249,17 +884,17 @@ class Argus:
 
         try:
             if action == "restart":
-                self._restart_session(session_id, reason)
+                _actions.restart_session(self.cursor, self.conn, session_id, reason, CORRECTIVE_PROMPTS)
                 if CONFIG.get("notifications_enabled", True):
-                    self._send_notification(session_id, "restart", f"Restarted: {reason}")
+                    _notifications.send_notification(self.cursor, self.conn, session_id, "restart", f"Restarted: {reason}")
 
             elif action == "kill":
-                self._kill_session(session_id, reason)
+                _actions.kill_session(self.cursor, self.conn, session_id, reason)
                 if CONFIG.get("notifications_enabled", True):
-                    self._send_notification(session_id, "kill", f"Killed: {reason}")
+                    _notifications.send_notification(self.cursor, self.conn, session_id, "kill", f"Killed: {reason}")
 
             elif action == "inject_prompt":
-                self._inject_prompt(session_id, decision.get("prompt", ""))
+                _actions.inject_prompt(self.cursor, self.conn, session_id, decision.get("prompt", ""))
 
             # Mark action as successful
             self.cursor.execute(
@@ -1333,74 +968,6 @@ class Argus:
                 )
 
         self.conn.commit()
-
-    # --- Actions (delegates to actions.py module) ---
-
-    def _restart_session(self, session_id: str, reason: str):
-        """Restart a session with tighter constraints."""
-        _actions.restart_session(
-            self.cursor, self.conn, session_id, reason, CORRECTIVE_PROMPTS
-        )
-
-    def _restart_cron_session(self, session: Dict, corrective_prompt: str):
-        """Cron restart: pause job, update prompt, resume."""
-        _actions.restart_cron_session(session, corrective_prompt)
-
-    def _restart_delegate_session(self, session: Dict, corrective_prompt: str) -> None:
-        """Delegate restart: kill process, respawn."""
-        _actions.restart_delegate_session(session, corrective_prompt)
-
-    def _restart_manual_session(self, session: Dict, corrective_prompt: str) -> None:
-        """Manual restart: flag for user intervention."""
-        _actions.restart_manual_session(session, corrective_prompt)
-
-    def _build_corrective_prompt(self, session_id: str, reason: str) -> str:
-        """Build a corrective prompt based on entropy detections."""
-        return _actions.build_corrective_prompt(
-            self.cursor, session_id, reason, CORRECTIVE_PROMPTS
-        )
-
-    def _kill_session(self, session_id: str, reason: str) -> None:
-        """Kill a session based on its type."""
-        _actions.kill_session(self.cursor, self.conn, session_id, reason)
-
-    def _kill_cron_session(self, session: Dict, reason: str) -> None:
-        """Permanently pause a cron job."""
-        _actions.kill_cron_session(session, reason)
-
-    def _kill_delegate_session(self, session: Dict, reason: str) -> None:
-        """Terminate a delegate task subprocess."""
-        _actions.kill_delegate_session(session, reason)
-
-    def _kill_manual_session(self, session: Dict, reason: str) -> None:
-        """Cannot kill manual sessions — record notification for user review."""
-        _actions.kill_manual_session(self.cursor, session, reason)
-
-    def _terminate_pid(self, pid: Union[str, int], context: str = "terminate") -> None:
-        """Send SIGTERM then SIGKILL to a process."""
-        _actions.terminate_pid(pid, context)
-
-    def _inject_prompt(self, session_id: str, prompt: str):
-        """Inject a corrective prompt into a session."""
-        _actions.inject_prompt(self.cursor, self.conn, session_id, prompt)
-
-    def _inject_cron_prompt(self, session: Dict, prompt: str):
-        """Update cron job prompt and trigger."""
-        _actions.inject_cron_prompt(session, prompt)
-
-    def _inject_delegate_prompt(self, session: Dict, prompt: str) -> None:
-        """Kill and respawn delegate with corrective prompt."""
-        _actions.inject_delegate_prompt(session, prompt)
-
-    def _inject_manual_prompt(self, session: Dict, prompt: str):
-        """Store corrective prompt as notification for manual session."""
-        _actions.inject_manual_prompt(self.cursor, session, prompt)
-
-    def _send_notification(self, session_id: str, notification_type: str, message: str):
-        """Send notification via Telegram bot API."""
-        _notifications.send_notification(
-            self.cursor, self.conn, session_id, notification_type, message
-        )
 
     def run(self):
         """Main watcher loop."""

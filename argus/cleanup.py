@@ -225,11 +225,11 @@ def find_ended_but_registered(
     try:
         placeholders = ",".join("?" for _ in real_ids)
         ended = state_conn.execute(
-            f"""
+            f"""  # nosec
             SELECT id, source, ended_at, end_reason, title
             FROM sessions
             WHERE id IN ({placeholders}) AND ended_at IS NOT NULL
-        """,
+        """,  # nosec B608
             list(real_ids),
         ).fetchall()
     except Exception:

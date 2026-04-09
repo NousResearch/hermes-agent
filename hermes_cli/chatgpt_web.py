@@ -348,6 +348,17 @@ def _decode_json_pointer(path: str) -> list[str]:
     return [token.replace("~1", "/").replace("~0", "~") for token in tokens]
 
 
+def _looks_like_message_patch_list(value: Any) -> bool:
+    if not isinstance(value, list) or not value:
+        return False
+    return any(
+        isinstance(item, dict)
+        and str(item.get("p") or "").startswith("/message/")
+        and str(item.get("o") or "").strip().lower() in {"append", "add", "replace"}
+        for item in value
+    )
+
+
 def _apply_message_patch(message: dict[str, Any], patch_op: dict[str, Any]) -> bool:
     path = str(patch_op.get("p") or "")
     op = str(patch_op.get("o") or "").strip().lower()
@@ -584,7 +595,12 @@ def stream_chatgpt_web_completion(
                                     on_delta(delta)
                         continue
 
-                    if str(event.get("o") or "").strip().lower() == "patch" and isinstance(event.get("v"), list):
+                    patch_ops = event.get("v") if isinstance(event.get("v"), list) else None
+                    is_patch_event = (
+                        str(event.get("o") or "").strip().lower() == "patch"
+                        or _looks_like_message_patch_list(patch_ops)
+                    )
+                    if is_patch_event and patch_ops is not None:
                         if assistant_message is None:
                             assistant_message = {
                                 "id": assistant_message_id,
@@ -592,7 +608,7 @@ def stream_chatgpt_web_completion(
                                 "content": {"content_type": "text", "parts": [""]},
                                 "metadata": {},
                             }
-                        for patch_op in event.get("v") or []:
+                        for patch_op in patch_ops:
                             if not isinstance(patch_op, dict):
                                 continue
                             if not _apply_message_patch(assistant_message, patch_op):

@@ -1235,10 +1235,10 @@ class SessionDB:
         self._execute_write(_do)
 
     def delete_session(self, session_id: str) -> bool:
-        """Delete a session, its child sessions, and all their messages.
+        """Delete a session and all its messages.
 
-        Child sessions (subagent runs, compression continuations) are deleted
-        first to satisfy the ``parent_session_id`` foreign key constraint.
+        Child sessions are orphaned (parent_session_id set to NULL) rather
+        than cascade-deleted, so they remain accessible independently.
         Returns True if the session was found and deleted.
         """
         def _do(conn):
@@ -1247,15 +1247,12 @@ class SessionDB:
             )
             if cursor.fetchone()[0] == 0:
                 return False
-            # Delete child sessions first (FK constraint)
-            child_ids = [r[0] for r in conn.execute(
-                "SELECT id FROM sessions WHERE parent_session_id = ?",
+            # Orphan child sessions so FK constraint is satisfied
+            conn.execute(
+                "UPDATE sessions SET parent_session_id = NULL "
+                "WHERE parent_session_id = ?",
                 (session_id,),
-            ).fetchall()]
-            for cid in child_ids:
-                conn.execute("DELETE FROM messages WHERE session_id = ?", (cid,))
-                conn.execute("DELETE FROM sessions WHERE id = ?", (cid,))
-            # Delete the session itself
+            )
             conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
             conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
             return True
@@ -1264,9 +1261,9 @@ class SessionDB:
     def prune_sessions(self, older_than_days: int = 90, source: str = None) -> int:
         """Delete sessions older than N days. Returns count of deleted sessions.
 
-        Only prunes ended sessions (not active ones).  Child sessions whose
-        parents are being pruned are deleted first to satisfy the
-        ``parent_session_id`` foreign key constraint.
+        Only prunes ended sessions (not active ones).  Child sessions outside
+        the prune window are orphaned (parent_session_id set to NULL) rather
+        than cascade-deleted.
         """
         cutoff = time.time() - (older_than_days * 86400)
 
@@ -1284,17 +1281,16 @@ class SessionDB:
                 )
             session_ids = set(row["id"] for row in cursor.fetchall())
 
-            # Delete children first whose parents are in the prune set
-            # (avoids FK constraint errors)
-            for sid in list(session_ids):
-                child_ids = [r[0] for r in conn.execute(
-                    "SELECT id FROM sessions WHERE parent_session_id = ?",
-                    (sid,),
-                ).fetchall()]
-                for cid in child_ids:
-                    conn.execute("DELETE FROM messages WHERE session_id = ?", (cid,))
-                    conn.execute("DELETE FROM sessions WHERE id = ?", (cid,))
-                    session_ids.discard(cid)  # don't double-delete
+            if not session_ids:
+                return 0
+
+            # Orphan any sessions whose parent is about to be deleted
+            placeholders = ",".join("?" * len(session_ids))
+            conn.execute(
+                f"UPDATE sessions SET parent_session_id = NULL "
+                f"WHERE parent_session_id IN ({placeholders})",
+                list(session_ids),
+            )
 
             for sid in session_ids:
                 conn.execute("DELETE FROM messages WHERE session_id = ?", (sid,))

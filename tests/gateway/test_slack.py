@@ -927,6 +927,28 @@ class TestAssistantThreadLifecycle:
         assert msg_event.source.thread_id == "171.000"
         assert msg_event.source.user_name == "Tyler"
 
+    def test_assistant_threads_cache_eviction(self, assistant_adapter):
+        """Cache should evict oldest entries when exceeding the size limit."""
+        assistant_adapter._ASSISTANT_THREADS_MAX = 10
+        # Fill to the limit
+        for i in range(10):
+            assistant_adapter._cache_assistant_thread_metadata({
+                "channel_id": f"D{i}",
+                "thread_ts": f"{i}.000",
+                "user_id": f"U{i}",
+            })
+        assert len(assistant_adapter._assistant_threads) == 10
+
+        # Adding one more should trigger eviction (down to max // 2 = 5)
+        assistant_adapter._cache_assistant_thread_metadata({
+            "channel_id": "D999",
+            "thread_ts": "999.000",
+            "user_id": "U999",
+        })
+        assert len(assistant_adapter._assistant_threads) <= 10
+        # The newest entry must survive eviction
+        assert ("D999", "999.000") in assistant_adapter._assistant_threads
+
 
 # ---------------------------------------------------------------------------
 # TestUserNameResolution

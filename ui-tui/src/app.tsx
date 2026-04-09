@@ -709,7 +709,10 @@ export function App({ gw }: { gw: GatewayClient }) {
         historyDraftRef.current = ''
       }
 
-      if (full.startsWith('/') && slashRef.current(full)) {
+      if (full.startsWith('/')) {
+        appendMessage({ role: 'system', text: full, kind: 'slash' })
+        pushHistory(full)
+        slashRef.current(full)
         clearInput()
 
         return
@@ -793,7 +796,7 @@ export function App({ gw }: { gw: GatewayClient }) {
       send(full)
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [busy, enqueue, gw, listPasteIds, pastes, resolvePasteTokens, sid]
+    [appendMessage, busy, enqueue, gw, listPasteIds, pastes, pushHistory, resolvePasteTokens, sid]
   )
 
   // ── Input handling ───────────────────────────────────────────────

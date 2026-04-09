@@ -53,6 +53,23 @@ export const lastCotTrailIndex = (trail: readonly string[]) => {
   return -1
 }
 
+export const THINKING_COT_MAX = 160
+export const THINKING_COT_FADE = 5
+
+export const thinkingCotTail = (reasoning: string) => reasoning.replace(/\n/g, ' ').slice(-THINKING_COT_MAX)
+
+/** Scale #RRGGBB by k ∈ [0,1] — used for left-edge fade toward terminal bg. */
+export const scaleHex = (hex: string, k: number) => {
+  const h = hex.replace('#', '')
+
+  const ch = (o: number) =>
+    Math.round(parseInt(h.slice(o, o + 2), 16) * k)
+      .toString(16)
+      .padStart(2, '0')
+
+  return `#${ch(0)}${ch(2)}${ch(4)}`
+}
+
 export const estimateRows = (text: string, w: number, compact = false) => {
   let inCode = false
   let rows = 0

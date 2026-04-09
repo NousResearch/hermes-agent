@@ -3,14 +3,20 @@ import { memo, useEffect, useState } from 'react'
 import spinners, { type BrailleSpinnerName } from 'unicode-animations'
 
 import { FACES, TOOL_VERBS, VERBS } from '../constants.js'
-import { isToolTrailResultLine, lastCotTrailIndex } from '../lib/text.js'
+import {
+  isToolTrailResultLine,
+  lastCotTrailIndex,
+  pick,
+  scaleHex,
+  THINKING_COT_FADE,
+  THINKING_COT_MAX,
+  thinkingCotTail
+} from '../lib/text.js'
 import type { Theme } from '../theme.js'
 import type { ActiveTool, ActivityItem } from '../types.js'
 
 const THINK: BrailleSpinnerName[] = ['helix', 'breathe', 'orbit', 'dna', 'waverows', 'snake', 'pulse']
 const TOOL: BrailleSpinnerName[] = ['cascade', 'scan', 'diagswipe', 'fillsweep', 'rain', 'columns', 'sparkle']
-
-const pick = <T,>(a: T[]) => a[Math.floor(Math.random() * a.length)]!
 
 const tone = (item: ActivityItem, t: Theme) =>
   item.tone === 'error' ? t.color.error : item.tone === 'warn' ? t.color.warn : t.color.dim
@@ -128,7 +134,8 @@ export const Thinking = memo(function Thinking({ reasoning, t }: { reasoning: st
     return () => clearInterval(id)
   }, [])
 
-  const tail = reasoning.slice(-160).replace(/\n/g, ' ')
+  const tail = thinkingCotTail(reasoning)
+  const clipped = reasoning.length > THINKING_COT_MAX
 
   return (
     <>
@@ -138,8 +145,17 @@ export const Thinking = memo(function Thinking({ reasoning, t }: { reasoning: st
       </Text>
 
       {tail ? (
-        <Text color={t.color.dim} dimColor wrap="truncate-end">
-          💭 {tail}
+        <Text wrap="truncate-end">
+          {clipped &&
+            Array.from({ length: Math.min(THINKING_COT_FADE, tail.length) }, (_, i) => (
+              <Text color={scaleHex(t.color.dim, (i + 1) / (THINKING_COT_FADE + 1))} key={i}>
+                {tail[i]}
+              </Text>
+            ))}
+
+          <Text color={t.color.dim} dimColor>
+            {clipped ? tail.slice(THINKING_COT_FADE) : tail}
+          </Text>
         </Text>
       ) : null}
     </>

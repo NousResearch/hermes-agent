@@ -219,19 +219,20 @@ class PairingStore:
     def list_pending(self, platform: str = None) -> list:
         """List pending pairing requests, optionally filtered by platform."""
         results = []
-        platforms = [platform] if platform else self._all_platforms("pending")
-        for p in platforms:
-            self._cleanup_expired(p)
-            pending = self._load_json(self._pending_path(p))
-            for code, info in pending.items():
-                age_min = int((time.time() - info["created_at"]) / 60)
-                results.append({
-                    "platform": p,
-                    "code": code,
-                    "user_id": info["user_id"],
-                    "user_name": info.get("user_name", ""),
-                    "age_minutes": age_min,
-                })
+        with self._lock:
+            platforms = [platform] if platform else self._all_platforms("pending")
+            for p in platforms:
+                self._cleanup_expired(p)
+                pending = self._load_json(self._pending_path(p))
+                for code, info in pending.items():
+                    age_min = int((time.time() - info["created_at"]) / 60)
+                    results.append({
+                        "platform": p,
+                        "code": code,
+                        "user_id": info["user_id"],
+                        "user_name": info.get("user_name", ""),
+                        "age_minutes": age_min,
+                    })
         return results
 
     def clear_pending(self, platform: str = None) -> int:

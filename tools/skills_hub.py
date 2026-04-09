@@ -2575,6 +2575,13 @@ def uninstall_skill(skill_name: str) -> Tuple[bool, str]:
         return False, f"'{skill_name}' is not a hub-installed skill (may be a builtin)"
 
     install_path = SKILLS_DIR / entry["install_path"]
+    # Prevent path traversal from poisoned lock.json entries
+    try:
+        resolved = install_path.resolve()
+        if not resolved.is_relative_to(SKILLS_DIR.resolve()):
+            return False, f"Refusing to remove '{entry['install_path']}': resolves outside skills directory"
+    except (ValueError, OSError):
+        return False, f"Refusing to remove '{entry['install_path']}': path resolution failed"
     if install_path.exists():
         shutil.rmtree(install_path)
 
@@ -2588,6 +2595,8 @@ def bundle_content_hash(bundle: SkillBundle) -> str:
     """Compute a deterministic hash for an in-memory skill bundle."""
     h = hashlib.sha256()
     for rel_path in sorted(bundle.files):
+        h.update(rel_path.encode("utf-8"))
+        h.update(b"\x00")
         h.update(bundle.files[rel_path].encode("utf-8"))
     return f"sha256:{h.hexdigest()[:16]}"
 

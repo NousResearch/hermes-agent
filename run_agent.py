@@ -622,6 +622,7 @@ class AIAgent:
         self.tool_progress_callback = tool_progress_callback
         self.tool_start_callback = tool_start_callback
         self.tool_complete_callback = tool_complete_callback
+        self.suppress_status_output = False
         self.thinking_callback = thinking_callback
         self.reasoning_callback = reasoning_callback
         self._reasoning_deltas_fired = False  # Set by _fire_reasoning_delta, reset per API call
@@ -1460,7 +1461,14 @@ class AIAgent:
         After the main response has been delivered and the remaining tool
         calls are post-response housekeeping (``_mute_post_response``),
         all non-forced output is suppressed.
+
+        ``suppress_status_output`` is a stricter CLI automation mode used by
+        parseable single-query flows such as ``hermes chat -q``. In that mode,
+        all status/diagnostic prints routed through ``_vprint`` are suppressed
+        so stdout stays machine-readable.
         """
+        if getattr(self, "suppress_status_output", False):
+            return
         if not force and getattr(self, "_mute_post_response", False):
             return
         if not force and self._has_stream_consumers() and not self._executing_tools:

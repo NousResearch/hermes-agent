@@ -1,5 +1,4 @@
-"""
-ARGUS notification delivery — multi-platform via raw HTTP APIs.
+"""Agathos notification delivery — multi-platform via raw HTTP APIs.
 
 Discovers configured platforms from ~/.hermes/.env and sends alerts
 to all of them. No gateway dependency — works from any process context.
@@ -14,6 +13,12 @@ All senders are fire-and-forget with 10s timeout.
 Gateway Integration (optional):
   If gateway is running, notifications can be routed through it
   for consistent formatting and delivery routing.
+
+Usage:
+    results = send_to_all_platforms("Alert message")
+    for platform, (ok, err) in results.items():
+        if not ok:
+            logger.warning("Failed to send to %s: %s", platform, err)
 """
 
 import json
@@ -71,7 +76,28 @@ def format_notification_message(
     notification_type: str,
     message: str,
 ) -> str:
-    """Build a structured notification message string."""
+    """Build a structured notification message string.
+
+    Formats session information into a human-readable alert message
+    with consistent structure across all notification platforms.
+
+    Args:
+        session_id: Hermes session ID triggering notification
+        session: Session dict with 'session_type', 'task_description', etc.
+        notification_type: Type of alert (e.g., "kill", "restart", "entropy")
+        message: Human-readable alert message body
+
+    Returns:
+        Formatted multi-line string with header and session details:
+            Agent Watcher Alert
+
+            Session: <session_id>
+            Type: <session_type>
+            Task: <task_description>
+            Action: <notification_type>
+
+            <message>
+    """
     return (
         "Agent Watcher Alert\n\n"
         "Session: %s\n"
@@ -144,7 +170,23 @@ def _http_post(
 
 
 def send_telegram(message: str) -> Tuple[bool, Optional[str]]:
-    """Send via Telegram Bot API."""
+    """Send notification via Telegram Bot API.
+
+    Requires TELEGRAM_BOT_TOKEN and TELEGRAM_HOME_CHANNEL in ~/.hermes/.env.
+    Sends message with HTML parse mode for basic formatting.
+
+    Args:
+        message: Notification text to send (HTML allowed)
+
+    Returns:
+        Tuple of (delivered: bool, error: Optional[str])
+        - delivered: True if Telegram API returned success
+        - error: Error message string if delivery failed, None on success
+
+    Environment variables required:
+    - TELEGRAM_BOT_TOKEN: Bot token from @BotFather
+    - TELEGRAM_HOME_CHANNEL: Target chat ID (channel or user)
+    """
     token = _env("TELEGRAM_BOT_TOKEN")
     chat_id = _env("TELEGRAM_HOME_CHANNEL")
 
@@ -166,7 +208,21 @@ def send_telegram(message: str) -> Tuple[bool, Optional[str]]:
 
 
 def send_discord(message: str) -> Tuple[bool, Optional[str]]:
-    """Send via Discord Bot API."""
+    """Send notification via Discord Bot API.
+
+    Requires DISCORD_BOT_TOKEN and DISCORD_HOME_CHANNEL in ~/.hermes/.env.
+    Sends message as bot user to specified channel.
+
+    Args:
+        message: Notification text to send
+
+    Returns:
+        Tuple of (delivered: bool, error: Optional[str])
+
+    Environment variables required:
+    - DISCORD_BOT_TOKEN: Bot token from Discord Developer Portal
+    - DISCORD_HOME_CHANNEL: Target channel ID (numeric)
+    """
     token = _env("DISCORD_BOT_TOKEN")
     channel_id = _env("DISCORD_HOME_CHANNEL")
 
@@ -187,7 +243,21 @@ def send_discord(message: str) -> Tuple[bool, Optional[str]]:
 
 
 def send_slack(message: str) -> Tuple[bool, Optional[str]]:
-    """Send via Slack Web API."""
+    """Send notification via Slack Web API.
+
+    Requires SLACK_BOT_TOKEN and SLACK_HOME_CHANNEL in ~/.hermes/.env.
+    Posts message to specified channel using chat.postMessage.
+
+    Args:
+        message: Notification text to send
+
+    Returns:
+        Tuple of (delivered: bool, error: Optional[str])
+
+    Environment variables required:
+    - SLACK_BOT_TOKEN: Bot user OAuth token (xoxb-...)
+    - SLACK_HOME_CHANNEL: Target channel ID or name (#channel)
+    """
     token = _env("SLACK_BOT_TOKEN")
     channel = _env("SLACK_HOME_CHANNEL")
 
@@ -451,11 +521,30 @@ def send_via_gateway(message: str) -> Tuple[bool, Optional[str]]:
 
 
 def send_to_all_platforms(message: str, prefer_gateway: bool = False) -> Dict[str, Tuple[bool, Optional[str]]]:
-    """Send to all configured platforms in parallel (best-effort).
-    
+    """Send notification to all configured platforms (best-effort broadcast).
+
+    Iterates through all discovered platforms and attempts delivery to each.
+    Failures are logged but don't block other platforms. Returns results
+    for all attempted deliveries.
+
     Args:
-        message: Message to send
-        prefer_gateway: If True, try gateway first before direct platform sends
+        message: Notification text to send
+        prefer_gateway: If True, attempt gateway delivery first before
+            falling back to direct platform sends
+
+    Returns:
+        Dict mapping platform_name -> (delivered, error) tuple for each
+        configured platform. Includes "gateway" key if prefer_gateway=True.
+
+    Side effects:
+        - Sends HTTP requests to each configured notification platform
+        - Logs info/warning/error via agathos.notifications logger
+
+    Example:
+        results = send_to_all_platforms("Alert: High entropy detected")
+        for platform, (ok, err) in results.items():
+            status = "✓" if ok else "✗"
+            print(f"{status} {platform}: {err or 'delivered'}")
     """
     results: Dict[str, Tuple[bool, Optional[str]]] = {}
     
@@ -490,12 +579,31 @@ def send_notification(
     message: str,
     prefer_gateway: bool = False,
 ) -> None:
-    """Send notification to all configured platforms + record in DB.
+    """Send notification to all configured platforms and record in database.
 
-    1. Looks up session metadata for message formatting
-    2. Sends to all configured platforms (Telegram, Discord, Slack, etc.)
-       or through gateway if prefer_gateway=True and gateway available
-    3. Records in notifications table with delivery status per platform
+    Orchestrates the full notification workflow:
+    1. Queries sessions table for session metadata
+    2. Formats message with session context via format_notification_message
+    3. Sends to all platforms via send_to_all_platforms (or gateway if preferred)
+    4. Records delivery results in notifications table
+    5. Commits database changes
+
+    Args:
+        cursor: Database cursor for agathos.db
+        conn: Database connection for commits
+        session_id: Hermes session triggering notification
+        notification_type: Type of alert (e.g., "kill", "restart", "entropy")
+        message: Human-readable alert body
+        prefer_gateway: If True, try gateway first before direct sends
+
+    Side effects:
+        - Queries sessions table for session metadata
+        - Sends HTTP requests to notification platforms
+        - Inserts into notifications table with delivery status
+        - Commits connection
+        - Logs info/warning via agathos.notifications logger
+
+    Delivery status recorded as JSON: {"telegram": true, "discord": false, ...}
     """
     # Look up session for message formatting
     cursor.execute("SELECT * FROM sessions WHERE session_id = ?", (session_id,))

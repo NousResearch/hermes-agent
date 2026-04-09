@@ -1,5 +1,4 @@
-"""
-ARGUS API provider health monitoring — per-provider error rate tracking.
+"""Agathos API provider health monitoring — per-provider error rate tracking.
 
 Detects outages before users notice. Complements the credential pool's
 per-credential exhaustion (which handles rotation) by tracking aggregate
@@ -7,8 +6,8 @@ health across all sessions hitting the same provider.
 
 Data sources:
 - state.db messages: finish_reason, content (error patterns)
-- argus.db tool_calls: error_message, success, duration_ms
-- argus.db sessions: provider, model
+- agathos.db tool_calls: error_message, success, duration_ms
+- agathos.db sessions: provider, model
 
 Detects:
 - HTTP error rate per provider (nous, openrouter, anthropic, etc.)
@@ -107,7 +106,30 @@ def _state_db_path() -> Path:
 
 
 def ensure_table(cursor: sqlite3.Cursor, conn: sqlite3.Connection) -> None:
-    """Create provider_health table if it doesn't exist."""
+    """Create provider_health table and indexes if they don't exist.
+
+    Initializes the database schema for provider health tracking with
+    columns for error rates, latency, and severity classification.
+
+    Args:
+        cursor: Database cursor for agathos.db
+        conn: Database connection for commits
+
+    Side effects:
+        - Creates provider_health table if not exists
+        - Creates indexes on provider and timestamp columns
+        - Commits connection
+
+    Table schema tracks per-snapshot metrics:
+    - provider: Provider name (e.g., "openrouter", "anthropic")
+    - total_calls, error_calls: Call counts in window
+    - error_rate: Calculated error percentage
+    - rate_limit_count, timeout_count, auth_error_count, etc.: Error breakdown
+    - p95_latency_ms: 95th percentile latency
+    - severity: "info", "warning", "critical"
+    - outage_detected: Boolean if provider considered down
+    - details: JSON with additional context
+    """
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS provider_health (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -141,7 +163,28 @@ def ensure_table(cursor: sqlite3.Cursor, conn: sqlite3.Connection) -> None:
 
 
 def classify_error(text: str) -> List[str]:
-    """Classify an error string into one or more error categories."""
+    """Classify an error string into one or more error categories.
+
+    Uses regex patterns (_PATTERNS dict) to categorize error messages
+    into types like rate_limit, timeout, auth_error, billing, etc.
+    Multiple categories can match a single error.
+
+    Args:
+        text: Error message text to classify
+
+    Returns:
+        List of category strings matching the error. Empty list if no match
+        or if text is empty/None.
+
+    Categories defined in _PATTERNS:
+    - rate_limit: 429, "rate limit", "too many requests", "quota exceeded"
+    - timeout: "timeout", "timed out", "connect timeout"
+    - auth_error: 401, "invalid api key", "unauthorized"
+    - billing: 402, "insufficient credits"
+    - server_error: 5xx, "internal server error", "bad gateway"
+    - model_error: "model not found", "invalid model"
+    - context_length: "context length", "token limit"
+    """
     if not text:
         return []
     categories = []
@@ -376,9 +419,33 @@ def run_provider_check(
     agathos_cursor: sqlite3.Cursor,
     agathos_conn: sqlite3.Connection,
 ) -> Dict[str, Any]:
-    """Run a full provider health check. Returns report dict.
+    """Run a full provider health check and return aggregated report.
 
-    Call this every N poll cycles from agathos.py.
+    Collects error data from both state.db (messages) and agathos.db
+    (tool_calls), aggregates by provider, calculates error rates and
+    latency percentiles, detects outages, and records health snapshots.
+
+    Args:
+        agathos_cursor: Database cursor for agathos.db
+        agathos_conn: Database connection for commits
+
+    Returns:
+        Dict report with keys:
+        - timestamp: ISO timestamp of check
+        - window_minutes: Analysis window (default: 10)
+        - providers: Dict mapping provider_name -> provider metrics dict
+        - alerts: List of alert dicts for critical issues
+        - outage_detected: Boolean if any provider in outage state
+        - providers_checked: Count of providers analyzed
+        - total_errors: Total error count across all providers
+
+    Side effects:
+        - Reads from state.db (Hermes messages)
+        - Reads from agathos.db (tool_calls, sessions)
+        - Inserts into provider_health table
+        - Commits agathos_conn
+
+    Call frequency: Recommended every 5-10 Agathos poll cycles.
     """
     now = time.time()
     window_start = now - (_WINDOW_MINUTES * 60)
@@ -507,7 +574,27 @@ def run_provider_check(
 
 
 def format_alert(report: Dict[str, Any]) -> Optional[str]:
-    """Format a provider health report into a human-readable alert string."""
+    """Format a provider health report into a human-readable alert string.
+
+    Converts provider health report into multi-line notification message
+    suitable for Telegram, Discord, Slack, or logging. Returns None if
+    overall severity is "info" (no issues detected).
+
+    Args:
+        report: Dict from run_provider_check with:
+            - overall_severity: "info", "warning", or "critical"
+            - outage_detected: Boolean if provider outage detected
+            - providers: Dict mapping provider -> metrics
+
+    Returns:
+        Formatted alert message with emoji headers and provider details,
+        or None if no alert warranted (severity == "info").
+
+    Alert format:
+        🚨 PROVIDER OUTAGE DETECTED
+        🔴 openrouter: 75% error rate (15 errors / 20 calls)
+        ⚠️ anthropic: 45% timeout rate
+    """
     if report["overall_severity"] == "info":
         return None
 
@@ -557,7 +644,26 @@ def format_alert(report: Dict[str, Any]) -> Optional[str]:
 def cleanup_old_snapshots(
     cursor: sqlite3.Cursor, conn: sqlite3.Connection, keep_hours: int = 72
 ) -> int:
-    """Delete provider_health snapshots older than keep_hours. Returns count deleted."""
+    """Delete provider_health snapshots older than keep_hours.
+
+    Maintenance function to prevent provider_health table from growing
+    indefinitely. Deletes snapshots based on timestamp column.
+
+    Args:
+        cursor: Database cursor for agathos.db
+        conn: Database connection for commits
+        keep_hours: Retention period in hours (default: 72 = 3 days)
+
+    Returns:
+        Integer count of rows deleted
+
+    Side effects:
+        - Deletes from provider_health table where timestamp < cutoff
+        - Commits connection
+        - Logs error on failure (returns 0)
+
+    Recommended call frequency: Daily during low-activity periods.
+    """
     cutoff = (datetime.now(UTC) - timedelta(hours=keep_hours)).isoformat()
     try:
         cursor.execute("DELETE FROM provider_health WHERE timestamp < ?", (cutoff,))

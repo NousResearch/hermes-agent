@@ -219,42 +219,385 @@ Gateway hooks only fire in the **gateway** (Telegram, Discord, Slack, WhatsApp).
 
 ```python
 def register(ctx):
-    ctx.register_hook("pre_tool_call", my_callback)
-    ctx.register_hook("post_tool_call", my_callback)
+    ctx.register_hook("pre_tool_call", my_tool_observer)
+    ctx.register_hook("post_tool_call", my_tool_logger)
+    ctx.register_hook("pre_llm_call", my_memory_callback)
+    ctx.register_hook("post_llm_call", my_sync_callback)
+    ctx.register_hook("on_session_start", my_init_callback)
+    ctx.register_hook("on_session_end", my_cleanup_callback)
 ```
 
-### Available Plugin Hooks
+**General rules for all hooks:**
 
-| Hook | Fires when | Callback receives |
-|------|-----------|-------------------|
-| `pre_tool_call` | Before any tool executes | `tool_name`, `args`, `task_id` |
-| `post_tool_call` | After any tool returns | `tool_name`, `args`, `result`, `task_id` |
-| `pre_llm_call` | Before LLM API request | `session_id`, `user_message`, `conversation_history`, `is_first_turn`, `model`, `platform` |
-| `post_llm_call` | After LLM API response | `session_id`, `user_message`, `assistant_response`, `conversation_history`, `model`, `platform` |
-| `on_session_start` | Session begins | `session_id`, `model`, `platform` |
-| `on_session_end` | Session ends | `session_id`, `completed`, `interrupted`, `model`, `platform` |
+- Callbacks receive **keyword arguments**. Always accept `**kwargs` for forward compatibility — new parameters may be added in future versions without breaking your plugin.
+- If a callback **crashes**, it's logged and skipped. Other hooks and the agent continue normally. A misbehaving plugin can never break the agent.
+- All hooks are **fire-and-forget observers** whose return values are ignored — except `pre_llm_call`, which can [inject context](#pre_llm_call).
 
-Callbacks receive keyword arguments matching the columns above:
+### Quick reference
+
+| Hook | Fires when | Returns |
+|------|-----------|---------|
+| [`pre_tool_call`](#pre_tool_call) | Before any tool executes | ignored |
+| [`post_tool_call`](#post_tool_call) | After any tool returns | ignored |
+| [`pre_llm_call`](#pre_llm_call) | Once per turn, before the tool-calling loop | context injection |
+| [`post_llm_call`](#post_llm_call) | Once per turn, after the tool-calling loop | ignored |
+| [`on_session_start`](#on_session_start) | New session created (first turn only) | ignored |
+| [`on_session_end`](#on_session_end) | Session ends | ignored |
+
+---
+
+### `pre_tool_call`
+
+Fires **immediately before** every tool execution — built-in tools and plugin tools alike.
+
+**Callback signature:**
 
 ```python
-def my_callback(**kwargs):
-    tool = kwargs["tool_name"]
-    args = kwargs["args"]
-    # ...
+def my_callback(tool_name: str, args: dict, task_id: str, **kwargs):
 ```
 
-### Example: Block Dangerous Tools
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `tool_name` | `str` | Name of the tool about to execute (e.g. `"terminal"`, `"web_search"`, `"read_file"`) |
+| `args` | `dict` | The arguments the model passed to the tool |
+| `task_id` | `str` | Session/task identifier. Empty string if not set. |
+
+**Fires:** In `model_tools.py`, inside `handle_function_call()`, before the tool's handler runs. Fires once per tool call — if the model calls 3 tools in parallel, this fires 3 times.
+
+**Return value:** Ignored.
+
+**Use cases:** Logging, audit trails, tool call counters, blocking dangerous operations (print a warning), rate limiting.
+
+**Example — tool call audit log:**
 
 ```python
-# ~/.hermes/plugins/tool-guard/__init__.py
-BLOCKED = {"terminal", "write_file"}
+import json, logging
+from datetime import datetime
 
-def guard(**kwargs):
-    if kwargs["tool_name"] in BLOCKED:
-        print(f"⚠ Blocked tool call: {kwargs['tool_name']}")
+logger = logging.getLogger(__name__)
+
+def audit_tool_call(tool_name, args, task_id, **kwargs):
+    logger.info("TOOL_CALL session=%s tool=%s args=%s",
+                task_id, tool_name, json.dumps(args)[:200])
 
 def register(ctx):
-    ctx.register_hook("pre_tool_call", guard)
+    ctx.register_hook("pre_tool_call", audit_tool_call)
 ```
 
-See the **[Plugins guide](/docs/user-guide/features/plugins)** for full details on creating plugins.
+**Example — warn on dangerous tools:**
+
+```python
+DANGEROUS = {"terminal", "write_file", "patch"}
+
+def warn_dangerous(tool_name, **kwargs):
+    if tool_name in DANGEROUS:
+        print(f"⚠ Executing potentially dangerous tool: {tool_name}")
+
+def register(ctx):
+    ctx.register_hook("pre_tool_call", warn_dangerous)
+```
+
+---
+
+### `post_tool_call`
+
+Fires **immediately after** every tool execution returns.
+
+**Callback signature:**
+
+```python
+def my_callback(tool_name: str, args: dict, result: str, task_id: str, **kwargs):
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `tool_name` | `str` | Name of the tool that just executed |
+| `args` | `dict` | The arguments the model passed to the tool |
+| `result` | `str` | The tool's return value (always a JSON string) |
+| `task_id` | `str` | Session/task identifier. Empty string if not set. |
+
+**Fires:** In `model_tools.py`, inside `handle_function_call()`, after the tool's handler returns. Fires once per tool call. Does **not** fire if the tool raised an unhandled exception (the error is caught and returned as an error JSON string instead, and `post_tool_call` fires with that error string as `result`).
+
+**Return value:** Ignored.
+
+**Use cases:** Logging tool results, metrics collection, tracking tool success/failure rates, sending notifications when specific tools complete.
+
+**Example — track tool usage metrics:**
+
+```python
+from collections import Counter
+import json
+
+_tool_counts = Counter()
+_error_counts = Counter()
+
+def track_metrics(tool_name, result, **kwargs):
+    _tool_counts[tool_name] += 1
+    try:
+        parsed = json.loads(result)
+        if "error" in parsed:
+            _error_counts[tool_name] += 1
+    except (json.JSONDecodeError, TypeError):
+        pass
+
+def register(ctx):
+    ctx.register_hook("post_tool_call", track_metrics)
+```
+
+---
+
+### `pre_llm_call`
+
+Fires **once per turn**, before the tool-calling loop begins. This is the **only hook whose return value is used** — it can inject context into the current turn's user message.
+
+**Callback signature:**
+
+```python
+def my_callback(session_id: str, user_message: str, conversation_history: list,
+                is_first_turn: bool, model: str, platform: str, **kwargs):
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `session_id` | `str` | Unique identifier for the current session |
+| `user_message` | `str` | The user's original message for this turn (before any skill injection) |
+| `conversation_history` | `list` | Copy of the full message list (OpenAI format: `[{"role": "user", "content": "..."}]`) |
+| `is_first_turn` | `bool` | `True` if this is the first turn of a new session, `False` on subsequent turns |
+| `model` | `str` | The model identifier (e.g. `"anthropic/claude-sonnet-4.6"`) |
+| `platform` | `str` | Where the session is running: `"cli"`, `"telegram"`, `"discord"`, etc. |
+
+**Fires:** In `run_agent.py`, inside `run_conversation()`, after context compression but before the main `while` loop. Fires once per `run_conversation()` call (i.e. once per user turn), not once per API call within the tool loop.
+
+**Return value:** If the callback returns a dict with a `"context"` key, or a plain non-empty string, the text is appended to the current turn's user message. Return `None` for no injection.
+
+```python
+# Inject context
+return {"context": "Recalled memories:\n- User likes Python\n- Working on hermes-agent"}
+
+# Plain string (equivalent)
+return "Recalled memories:\n- User likes Python"
+
+# No injection
+return None
+```
+
+**Where context is injected:** Always the **user message**, never the system prompt. This preserves the prompt cache — the system prompt stays identical across turns, so cached tokens are reused. The system prompt is Hermes's territory (model guidance, tool enforcement, personality, skills). Plugins contribute context alongside the user's input.
+
+All injected context is **ephemeral** — added at API call time only. The original user message in the conversation history is never mutated, and nothing is persisted to the session database.
+
+When **multiple plugins** return context, their outputs are joined with double newlines in plugin discovery order (alphabetical by directory name).
+
+**Use cases:** Memory recall, RAG context injection, guardrails, per-turn analytics.
+
+**Example — memory recall:**
+
+```python
+import httpx
+
+MEMORY_API = "https://your-memory-api.example.com"
+
+def recall(session_id, user_message, is_first_turn, **kwargs):
+    try:
+        resp = httpx.post(f"{MEMORY_API}/recall", json={
+            "session_id": session_id,
+            "query": user_message,
+        }, timeout=3)
+        memories = resp.json().get("results", [])
+        if not memories:
+            return None
+        text = "Recalled context:\n" + "\n".join(f"- {m['text']}" for m in memories)
+        return {"context": text}
+    except Exception:
+        return None
+
+def register(ctx):
+    ctx.register_hook("pre_llm_call", recall)
+```
+
+**Example — guardrails:**
+
+```python
+POLICY = "Never execute commands that delete files without explicit user confirmation."
+
+def guardrails(**kwargs):
+    return {"context": POLICY}
+
+def register(ctx):
+    ctx.register_hook("pre_llm_call", guardrails)
+```
+
+---
+
+### `post_llm_call`
+
+Fires **once per turn**, after the tool-calling loop completes and the agent has produced a final response. Only fires on **successful** turns — does not fire if the turn was interrupted.
+
+**Callback signature:**
+
+```python
+def my_callback(session_id: str, user_message: str, assistant_response: str,
+                conversation_history: list, model: str, platform: str, **kwargs):
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `session_id` | `str` | Unique identifier for the current session |
+| `user_message` | `str` | The user's original message for this turn |
+| `assistant_response` | `str` | The agent's final text response for this turn |
+| `conversation_history` | `list` | Copy of the full message list after the turn completed |
+| `model` | `str` | The model identifier |
+| `platform` | `str` | Where the session is running |
+
+**Fires:** In `run_agent.py`, inside `run_conversation()`, after the tool loop exits with a final response. Guarded by `if final_response and not interrupted` — so it does **not** fire when the user interrupts mid-turn or the agent hits the iteration limit without producing a response.
+
+**Return value:** Ignored.
+
+**Use cases:** Syncing conversation data to an external memory system, computing response quality metrics, logging turn summaries, triggering follow-up actions.
+
+**Example — sync to external memory:**
+
+```python
+import httpx
+
+MEMORY_API = "https://your-memory-api.example.com"
+
+def sync_memory(session_id, user_message, assistant_response, **kwargs):
+    try:
+        httpx.post(f"{MEMORY_API}/store", json={
+            "session_id": session_id,
+            "user": user_message,
+            "assistant": assistant_response,
+        }, timeout=5)
+    except Exception:
+        pass  # best-effort
+
+def register(ctx):
+    ctx.register_hook("post_llm_call", sync_memory)
+```
+
+**Example — track response lengths:**
+
+```python
+import logging
+logger = logging.getLogger(__name__)
+
+def log_response_length(session_id, assistant_response, model, **kwargs):
+    logger.info("RESPONSE session=%s model=%s chars=%d",
+                session_id, model, len(assistant_response or ""))
+
+def register(ctx):
+    ctx.register_hook("post_llm_call", log_response_length)
+```
+
+---
+
+### `on_session_start`
+
+Fires **once** when a brand-new session is created. Does **not** fire on session continuation (when the user sends a second message in an existing session).
+
+**Callback signature:**
+
+```python
+def my_callback(session_id: str, model: str, platform: str, **kwargs):
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `session_id` | `str` | Unique identifier for the new session |
+| `model` | `str` | The model identifier |
+| `platform` | `str` | Where the session is running |
+
+**Fires:** In `run_agent.py`, inside `run_conversation()`, during the first turn of a new session — specifically after the system prompt is built but before the tool loop starts. The check is `if not conversation_history` (no prior messages = new session).
+
+**Return value:** Ignored.
+
+**Use cases:** Initializing session-scoped state, warming caches, registering the session with an external service, logging session starts.
+
+**Example — initialize a session cache:**
+
+```python
+_session_caches = {}
+
+def init_session(session_id, model, platform, **kwargs):
+    _session_caches[session_id] = {
+        "model": model,
+        "platform": platform,
+        "tool_calls": 0,
+        "started": __import__("datetime").datetime.now().isoformat(),
+    }
+
+def register(ctx):
+    ctx.register_hook("on_session_start", init_session)
+```
+
+---
+
+### `on_session_end`
+
+Fires at the **very end** of every `run_conversation()` call, regardless of outcome. Also fires from the CLI's exit handler if the agent was mid-turn when the user quit.
+
+**Callback signature:**
+
+```python
+def my_callback(session_id: str, completed: bool, interrupted: bool,
+                model: str, platform: str, **kwargs):
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `session_id` | `str` | Unique identifier for the session |
+| `completed` | `bool` | `True` if the agent produced a final response, `False` otherwise |
+| `interrupted` | `bool` | `True` if the turn was interrupted (user sent new message, `/stop`, or quit) |
+| `model` | `str` | The model identifier |
+| `platform` | `str` | Where the session is running |
+
+**Fires:** In two places:
+1. **`run_agent.py`** — at the end of every `run_conversation()` call, after all cleanup. Always fires, even if the turn errored.
+2. **`cli.py`** — in the CLI's atexit handler, but **only** if the agent was mid-turn (`_agent_running=True`) when the exit occurred. This catches Ctrl+C and `/exit` during processing. In this case, `completed=False` and `interrupted=True`.
+
+**Return value:** Ignored.
+
+**Use cases:** Flushing buffers, closing connections, persisting session state, logging session duration, cleanup of resources initialized in `on_session_start`.
+
+**Example — flush and cleanup:**
+
+```python
+_session_caches = {}
+
+def cleanup_session(session_id, completed, interrupted, **kwargs):
+    cache = _session_caches.pop(session_id, None)
+    if cache:
+        # Flush accumulated data to disk or external service
+        status = "completed" if completed else ("interrupted" if interrupted else "failed")
+        print(f"Session {session_id} ended: {status}, {cache['tool_calls']} tool calls")
+
+def register(ctx):
+    ctx.register_hook("on_session_end", cleanup_session)
+```
+
+**Example — session duration tracking:**
+
+```python
+import time, logging
+logger = logging.getLogger(__name__)
+
+_start_times = {}
+
+def on_start(session_id, **kwargs):
+    _start_times[session_id] = time.time()
+
+def on_end(session_id, completed, interrupted, **kwargs):
+    start = _start_times.pop(session_id, None)
+    if start:
+        duration = time.time() - start
+        logger.info("SESSION_DURATION session=%s seconds=%.1f completed=%s interrupted=%s",
+                     session_id, duration, completed, interrupted)
+
+def register(ctx):
+    ctx.register_hook("on_session_start", on_start)
+    ctx.register_hook("on_session_end", on_end)
+```
+
+---
+
+See the **[Build a Plugin guide](/docs/guides/build-a-hermes-plugin)** for the full walkthrough including tool schemas, handlers, and advanced hook patterns.

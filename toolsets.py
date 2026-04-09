@@ -37,14 +37,12 @@ _HERMES_CORE_TOOLS = [
     "read_file", "write_file", "patch", "search_files",
     # Vision + image generation
     "vision_analyze", "image_generate",
-    # MoA
-    "mixture_of_agents",
     # Skills
     "skills_list", "skill_view", "skill_manage",
     # Browser automation
     "browser_navigate", "browser_snapshot", "browser_click",
     "browser_type", "browser_scroll", "browser_back",
-    "browser_press", "browser_close", "browser_get_images",
+    "browser_press", "browser_get_images",
     "browser_vision", "browser_console",
     # Text-to-speech
     "text_to_speech",
@@ -60,8 +58,6 @@ _HERMES_CORE_TOOLS = [
     "cronjob",
     # Cross-platform messaging (gated on gateway running via check_fn)
     "send_message",
-    # Honcho memory tools (gated on honcho being active via check_fn)
-    "honcho_context", "honcho_profile", "honcho_search", "honcho_conclude",
     # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
     "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
 ]
@@ -118,7 +114,7 @@ TOOLSETS = {
         "tools": [
             "browser_navigate", "browser_snapshot", "browser_click",
             "browser_type", "browser_scroll", "browser_back",
-            "browser_press", "browser_close", "browser_get_images",
+            "browser_press", "browser_get_images",
             "browser_vision", "browser_console", "web_search"
         ],
         "includes": []
@@ -196,11 +192,8 @@ TOOLSETS = {
         "includes": []
     },
 
-    "honcho": {
-        "description": "Honcho AI-native memory for persistent cross-session user modeling",
-        "tools": ["honcho_context", "honcho_profile", "honcho_search", "honcho_conclude"],
-        "includes": []
-    },
+    # "honcho" toolset removed — Honcho is now a memory provider plugin.
+    # Tools are injected via MemoryManager, not the toolset system.
 
     "homeassistant": {
         "description": "Home Assistant smart home control and monitoring",
@@ -219,7 +212,7 @@ TOOLSETS = {
     
     "safe": {
         "description": "Safe toolkit without terminal access",
-        "tools": ["mixture_of_agents"],
+        "tools": [],
         "includes": ["web", "vision", "image_gen"]
     },
     
@@ -240,7 +233,7 @@ TOOLSETS = {
             "skills_list", "skill_view", "skill_manage",
             "browser_navigate", "browser_snapshot", "browser_click",
             "browser_type", "browser_scroll", "browser_back",
-            "browser_press", "browser_close", "browser_get_images",
+            "browser_press", "browser_get_images",
             "browser_vision", "browser_console",
             "todo", "memory",
             "session_search",
@@ -260,14 +253,12 @@ TOOLSETS = {
             "read_file", "write_file", "patch", "search_files",
             # Vision + image generation
             "vision_analyze", "image_generate",
-            # MoA
-            "mixture_of_agents",
             # Skills
             "skills_list", "skill_view", "skill_manage",
             # Browser automation
             "browser_navigate", "browser_snapshot", "browser_click",
             "browser_type", "browser_scroll", "browser_back",
-            "browser_press", "browser_close", "browser_get_images",
+            "browser_press", "browser_get_images",
             "browser_vision", "browser_console",
             # Planning & memory
             "todo", "memory",
@@ -279,8 +270,7 @@ TOOLSETS = {
             "cronjob",
             # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
             "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
-            # Honcho memory tools (gated on honcho being active via check_fn)
-            "honcho_context", "honcho_profile", "honcho_search", "honcho_conclude",
+
         ],
         "includes": []
     },
@@ -317,6 +307,12 @@ TOOLSETS = {
     
     "hermes-signal": {
         "description": "Signal bot toolset - encrypted messaging platform (full access)",
+        "tools": _HERMES_CORE_TOOLS,
+        "includes": []
+    },
+
+    "hermes-bluebubbles": {
+        "description": "BlueBubbles iMessage bot toolset - Apple iMessage via local BlueBubbles server",
         "tools": _HERMES_CORE_TOOLS,
         "includes": []
     },
@@ -369,10 +365,16 @@ TOOLSETS = {
         "includes": []
     },
 
+    "hermes-webhook": {
+        "description": "Webhook toolset - receive and process external webhook events",
+        "tools": _HERMES_CORE_TOOLS,
+        "includes": []
+    },
+
     "hermes-gateway": {
         "description": "Gateway toolset - union of all messaging platform tools",
         "tools": [],
-        "includes": ["hermes-telegram", "hermes-discord", "hermes-whatsapp", "hermes-slack", "hermes-signal", "hermes-homeassistant", "hermes-email", "hermes-sms", "hermes-mattermost", "hermes-matrix", "hermes-dingtalk", "hermes-feishu", "hermes-wecom"]
+        "includes": ["hermes-telegram", "hermes-discord", "hermes-whatsapp", "hermes-slack", "hermes-signal", "hermes-bluebubbles", "hermes-homeassistant", "hermes-email", "hermes-sms", "hermes-mattermost", "hermes-matrix", "hermes-dingtalk", "hermes-feishu", "hermes-wecom", "hermes-webhook"]
     }
 }
 
@@ -596,7 +598,7 @@ def get_toolset_info(name: str) -> Dict[str, Any]:
         "includes": toolset["includes"],
         "resolved_tools": resolved_tools,
         "tool_count": len(resolved_tools),
-        "is_composite": len(toolset["includes"]) > 0
+        "is_composite": bool(toolset["includes"])
     }
 
 

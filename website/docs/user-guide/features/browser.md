@@ -11,6 +11,8 @@ Hermes Agent includes a full browser automation toolset with multiple backend op
 
 - **Browserbase cloud mode** via [Browserbase](https://browserbase.com) for managed cloud browsers and anti-bot tooling
 - **Browser Use cloud mode** via [Browser Use](https://browser-use.com) as an alternative cloud browser provider
+- **Firecrawl cloud mode** via [Firecrawl](https://firecrawl.dev) for cloud browsers with built-in scraping
+- **Camofox local mode** via [Camofox](https://github.com/jo-inc/camofox-browser) for local anti-detection browsing (Firefox-based fingerprint spoofing)
 - **Local Chrome via CDP** — connect browser tools to your own Chrome instance using `/browser connect`
 - **Local browser mode** via the `agent-browser` CLI and a local Chromium installation
 
@@ -22,7 +24,7 @@ Pages are represented as **accessibility trees** (text-based snapshots), making 
 
 Key capabilities:
 
-- **Multi-provider cloud execution** — Browserbase or Browser Use, no local browser needed
+- **Multi-provider cloud execution** — Browserbase, Browser Use, or Firecrawl — no local browser needed
 - **Local Chrome integration** — attach to your running Chrome via CDP for hands-on browsing
 - **Built-in stealth** — random fingerprints, CAPTCHA solving, residential proxies (Browserbase)
 - **Session isolation** — each task gets its own browser session
@@ -53,6 +55,76 @@ BROWSER_USE_API_KEY=***
 ```
 
 Get your API key at [browser-use.com](https://browser-use.com). Browser Use provides a cloud browser via its REST API. If both Browserbase and Browser Use credentials are set, Browserbase takes priority.
+
+### Firecrawl cloud mode
+
+To use Firecrawl as your cloud browser provider, add:
+
+```bash
+# Add to ~/.hermes/.env
+FIRECRAWL_API_KEY=fc-***
+```
+
+Get your API key at [firecrawl.dev](https://firecrawl.dev). Then select Firecrawl as your browser provider:
+
+```bash
+hermes setup tools
+# → Browser Automation → Firecrawl
+```
+
+Optional settings:
+
+```bash
+# Self-hosted Firecrawl instance (default: https://api.firecrawl.dev)
+FIRECRAWL_API_URL=http://localhost:3002
+
+# Session TTL in seconds (default: 300)
+FIRECRAWL_BROWSER_TTL=600
+```
+
+### Camofox local mode
+
+[Camofox](https://github.com/jo-inc/camofox-browser) is a self-hosted Node.js server wrapping Camoufox (a Firefox fork with C++ fingerprint spoofing). It provides local anti-detection browsing without cloud dependencies.
+
+```bash
+# Install and run
+git clone https://github.com/jo-inc/camofox-browser && cd camofox-browser
+npm install && npm start   # downloads Camoufox (~300MB) on first run
+
+# Or via Docker
+docker run -d --network host -e CAMOFOX_PORT=9377 jo-inc/camofox-browser
+```
+
+Then set in `~/.hermes/.env`:
+
+```bash
+CAMOFOX_URL=http://localhost:9377
+```
+
+Or configure via `hermes tools` → Browser Automation → Camofox.
+
+When `CAMOFOX_URL` is set, all browser tools automatically route through Camofox instead of Browserbase or agent-browser.
+
+#### Persistent browser sessions
+
+By default, each Camofox session gets a random identity — cookies and logins don't survive across agent restarts. To enable persistent browser sessions:
+
+```yaml
+# In ~/.hermes/config.yaml
+browser:
+  camofox:
+    managed_persistence: true
+```
+
+When enabled, Hermes sends a stable profile-scoped identity to Camofox. The Camofox server maps this identity to a persistent browser profile directory, so cookies, logins, and localStorage survive across restarts. Different Hermes profiles get different browser profiles (profile isolation).
+
+:::note
+The Camofox server must also be configured with `CAMOFOX_PROFILE_DIR` on the server side for persistence to work.
+:::
+
+#### VNC live view
+
+When Camofox runs in headed mode (with a visible browser window), it exposes a VNC port in its health check response. Hermes automatically discovers this and includes the VNC URL in navigation responses, so the agent can share a link for you to watch the browser live.
 
 ### Local Chrome via CDP (`/browser connect`)
 
@@ -102,8 +174,8 @@ BROWSERBASE_KEEP_ALIVE=true
 # Examples: 600000 (10min), 1800000 (30min)
 BROWSERBASE_SESSION_TIMEOUT=600000
 
-# Inactivity timeout before auto-cleanup in seconds (default: 300)
-BROWSER_INACTIVITY_TIMEOUT=300
+# Inactivity timeout before auto-cleanup in seconds (default: 120)
+BROWSER_INACTIVITY_TIMEOUT=120
 ```
 
 ### Install agent-browser CLI
@@ -193,7 +265,7 @@ The screenshot is saved persistently and the file path is returned alongside the
 What does the chart on this page show?
 ```
 
-Screenshots are stored in `~/.hermes/browser_screenshots/` and automatically cleaned up after 24 hours.
+Screenshots are stored in `~/.hermes/cache/screenshots/` and automatically cleaned up after 24 hours.
 
 ### `browser_console`
 
@@ -204,10 +276,6 @@ Check the browser console for any JavaScript errors
 ```
 
 Use `clear=True` to clear the console after reading, so subsequent calls only show new messages.
-
-### `browser_close`
-
-Close the browser session and release resources. Call this when done to free up Browserbase session quota.
 
 ## Practical Examples
 
@@ -223,7 +291,6 @@ Agent workflow:
 4. browser_type(ref="@e5", text="SecurePass123")
 5. browser_click(ref="@e8")  → clicks "Create Account"
 6. browser_snapshot()  → confirms success
-7. browser_close()
 ```
 
 ### Researching Dynamic Content
@@ -235,7 +302,6 @@ Agent workflow:
 1. browser_navigate("https://github.com/trending")
 2. browser_snapshot(full=true)  → reads trending repo list
 3. Returns formatted results
-4. browser_close()
 ```
 
 ## Session Recording
@@ -267,7 +333,7 @@ If paid features aren't available on your plan, Hermes automatically falls back 
 ## Session Management
 
 - Each task gets an isolated browser session via Browserbase
-- Sessions are automatically cleaned up after inactivity (default: 5 minutes)
+- Sessions are automatically cleaned up after inactivity (default: 2 minutes)
 - A background thread checks every 30 seconds for stale sessions
 - Emergency cleanup runs on process exit to prevent orphaned sessions
 - Sessions are released via the Browserbase API (`REQUEST_RELEASE` status)
@@ -277,5 +343,5 @@ If paid features aren't available on your plan, Hermes automatically falls back 
 - **Text-based interaction** — relies on accessibility tree, not pixel coordinates
 - **Snapshot size** — large pages may be truncated or LLM-summarized at 8000 characters
 - **Session timeout** — cloud sessions expire based on your provider's plan settings
-- **Cost** — cloud sessions consume provider credits; use `browser_close` when done. Use `/browser connect` for free local browsing.
+- **Cost** — cloud sessions consume provider credits; sessions are automatically cleaned up when the conversation ends or after inactivity. Use `/browser connect` for free local browsing.
 - **No file downloads** — cannot download files from the browser

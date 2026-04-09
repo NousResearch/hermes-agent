@@ -13,12 +13,24 @@ from hermes_constants import get_hermes_home
 import copy
 import json
 import logging
+import sys
 import uuid
 from dataclasses import dataclass, field
 from threading import Lock
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
+
+
+def _acp_stderr_print(*args, **kwargs) -> None:
+    """Best-effort human-readable output sink for ACP stdio sessions.
+
+    ACP reserves stdout for JSON-RPC frames, so any incidental CLI/status output
+    from AIAgent must be redirected away from stdout. Route it to stderr instead.
+    """
+    kwargs = dict(kwargs)
+    kwargs.setdefault("file", sys.stderr)
+    print(*args, **kwargs)
 
 
 def _register_task_cwd(task_id: str, cwd: str) -> None:
@@ -250,8 +262,6 @@ class SessionManager:
         if self._db_instance is not None:
             return self._db_instance
         try:
-            import os
-            from pathlib import Path
             from hermes_state import SessionDB
             hermes_home = get_hermes_home()
             self._db_instance = SessionDB(db_path=hermes_home / "state.db")
@@ -426,7 +436,7 @@ class SessionManager:
 
         config = load_config()
         model_cfg = config.get("model")
-        default_model = "anthropic/claude-opus-4.6"
+        default_model = ""
         config_provider = None
         if isinstance(model_cfg, dict):
             default_model = str(model_cfg.get("default") or default_model)
@@ -458,4 +468,8 @@ class SessionManager:
             logger.debug("ACP session falling back to default provider resolution", exc_info=True)
 
         _register_task_cwd(session_id, cwd)
-        return AIAgent(**kwargs)
+        agent = AIAgent(**kwargs)
+        # ACP stdio transport requires stdout to remain protocol-only JSON-RPC.
+        # Route any incidental human-readable agent output to stderr instead.
+        agent._print_fn = _acp_stderr_print
+        return agent

@@ -10,17 +10,74 @@ Hermes Agent is designed with a defense-in-depth security model. This page cover
 
 ## Overview
 
-The security model has five layers:
+The security model has seven layers:
 
 1. **User authorization** — who can talk to the agent (allowlists, DM pairing)
 2. **Dangerous command approval** — human-in-the-loop for destructive operations
 3. **Container isolation** — Docker/Singularity/Modal sandboxing with hardened settings
 4. **MCP credential filtering** — environment variable isolation for MCP subprocesses
 5. **Context file scanning** — prompt injection detection in project files
+6. **Cross-session isolation** — sessions cannot access each other's data or state; cron job storage paths are hardened against path traversal attacks
+7. **Input sanitization** — working directory parameters in terminal tool backends are validated against an allowlist to prevent shell injection
 
 ## Dangerous Command Approval
 
 Before executing any command, Hermes checks it against a curated list of dangerous patterns. If a match is found, the user must explicitly approve it.
+
+### Approval Modes
+
+The approval system supports three modes, configured via `approvals.mode` in `~/.hermes/config.yaml`:
+
+```yaml
+approvals:
+  mode: manual    # manual | smart | off
+  timeout: 60     # seconds to wait for user response (default: 60)
+```
+
+| Mode | Behavior |
+|------|----------|
+| **manual** (default) | Always prompt the user for approval on dangerous commands |
+| **smart** | Use an auxiliary LLM to assess risk. Low-risk commands (e.g., `python -c "print('hello')"`) are auto-approved. Genuinely dangerous commands are auto-denied. Uncertain cases escalate to a manual prompt. |
+| **off** | Disable all approval checks — equivalent to running with `--yolo`. All commands execute without prompts. |
+
+:::warning
+Setting `approvals.mode: off` disables all safety prompts. Use only in trusted environments (CI/CD, containers, etc.).
+:::
+
+### YOLO Mode
+
+YOLO mode bypasses **all** dangerous command approval prompts for the current session. It can be activated three ways:
+
+1. **CLI flag**: Start a session with `hermes --yolo` or `hermes chat --yolo`
+2. **Slash command**: Type `/yolo` during a session to toggle it on/off
+3. **Environment variable**: Set `HERMES_YOLO_MODE=1`
+
+The `/yolo` command is a **toggle** — each use flips the mode on or off:
+
+```
+> /yolo
+  ⚡ YOLO mode ON — all commands auto-approved. Use with caution.
+
+> /yolo
+  ⚠ YOLO mode OFF — dangerous commands will require approval.
+```
+
+YOLO mode is available in both CLI and gateway sessions. Internally, it sets the `HERMES_YOLO_MODE` environment variable which is checked before every command execution.
+
+:::danger
+YOLO mode disables **all** dangerous command safety checks for the session. Use only when you fully trust the commands being generated (e.g., well-tested automation scripts in disposable environments).
+:::
+
+### Approval Timeout
+
+When a dangerous command prompt appears, the user has a configurable amount of time to respond. If no response is given within the timeout, the command is **denied** by default (fail-closed).
+
+Configure the timeout in `~/.hermes/config.yaml`:
+
+```yaml
+approvals:
+  timeout: 60  # seconds (default: 60)
+```
 
 ### What Triggers Approval
 
@@ -30,21 +87,32 @@ The following patterns trigger approval prompts (defined in `tools/approval.py`)
 |---------|-------------|
 | `rm -r` / `rm --recursive` | Recursive delete |
 | `rm ... /` | Delete in root path |
-| `chmod 777` | World-writable permissions |
+| `chmod 777/666` / `o+w` / `a+w` | World/other-writable permissions |
+| `chmod --recursive` with unsafe perms | Recursive world/other-writable (long flag) |
+| `chown -R root` / `chown --recursive root` | Recursive chown to root |
 | `mkfs` | Format filesystem |
 | `dd if=` | Disk copy |
+| `> /dev/sd` | Write to block device |
 | `DROP TABLE/DATABASE` | SQL DROP |
 | `DELETE FROM` (without WHERE) | SQL DELETE without WHERE |
 | `TRUNCATE TABLE` | SQL TRUNCATE |
 | `> /etc/` | Overwrite system config |
 | `systemctl stop/disable/mask` | Stop/disable system services |
 | `kill -9 -1` | Kill all processes |
-| `curl ... \| sh` | Pipe remote content to shell |
-| `bash -c`, `python -e` | Shell/script execution via flags |
-| `find -exec rm`, `find -delete` | Find with destructive actions |
+| `pkill -9` | Force kill processes |
 | Fork bomb patterns | Fork bombs |
+| `bash -c` / `sh -c` / `zsh -c` / `ksh -c` | Shell command execution via `-c` flag (including combined flags like `-lc`) |
+| `python -e` / `perl -e` / `ruby -e` / `node -c` | Script execution via `-e`/`-c` flag |
+| `curl ... \| sh` / `wget ... \| sh` | Pipe remote content to shell |
+| `bash <(curl ...)` / `sh <(wget ...)` | Execute remote script via process substitution |
+| `tee` to `/etc/`, `~/.ssh/`, `~/.hermes/.env` | Overwrite sensitive file via tee |
+| `>` / `>>` to `/etc/`, `~/.ssh/`, `~/.hermes/.env` | Overwrite sensitive file via redirection |
+| `xargs rm` | xargs with rm |
+| `find -exec rm` / `find -delete` | Find with destructive actions |
+| `cp`/`mv`/`install` to `/etc/` | Copy/move file into system config |
+| `sed -i` / `sed --in-place` on `/etc/` | In-place edit of system config |
 | `pkill`/`killall` hermes/gateway | Self-termination prevention |
-| `gateway run` with `&`/`disown`/`nohup` | Prevents starting gateway outside service manager |
+| `gateway run` with `&`/`disown`/`nohup`/`setsid` | Prevents starting gateway outside service manager |
 
 :::info
 **Container bypass**: When running in `docker`, `singularity`, `modal`, or `daytona` backends, dangerous command checks are **skipped** because the container itself is the security boundary. Destructive commands inside a container can't harm the host.
@@ -211,6 +279,9 @@ Every container runs with these flags (defined in `tools/environments/docker.py`
 ```python
 _SECURITY_ARGS = [
     "--cap-drop", "ALL",                          # Drop ALL Linux capabilities
+    "--cap-add", "DAC_OVERRIDE",                  # Root can write to bind-mounted dirs
+    "--cap-add", "CHOWN",                         # Package managers need file ownership
+    "--cap-add", "FOWNER",                        # Package managers need file ownership
     "--security-opt", "no-new-privileges",         # Block privilege escalation
     "--pids-limit", "256",                         # Limit process count
     "--tmpfs", "/tmp:rw,nosuid,size=512m",         # Size-limited /tmp
@@ -297,7 +368,7 @@ terminal:
 
 ### Credential File Passthrough (OAuth tokens, etc.) {#credential-file-passthrough}
 
-Some skills need **files** (not just env vars) in the sandbox — for example, Google Workspace stores OAuth tokens as `google_token.json` in `~/.hermes/`. Skills declare these in frontmatter:
+Some skills need **files** (not just env vars) in the sandbox — for example, Google Workspace stores OAuth tokens as `google_token.json` under the active profile's `HERMES_HOME`. Skills declare these in frontmatter:
 
 ```yaml
 required_credential_files:
@@ -307,7 +378,7 @@ required_credential_files:
     description: Google OAuth2 client credentials
 ```
 
-When loaded, Hermes checks if these files exist in `~/.hermes/` and registers them for mounting:
+When loaded, Hermes checks if these files exist in the active profile's `HERMES_HOME` and registers them for mounting:
 
 - **Docker**: Read-only bind mounts (`-v host:container:ro`)
 - **Modal**: Mounted at sandbox creation + synced before each command (handles mid-session OAuth setup)

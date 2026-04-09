@@ -407,6 +407,11 @@ class MattermostAdapter(BasePlatformAdapter):
         kind: str = "file",
     ) -> SendResult:
         """Download a URL and upload it as a file attachment."""
+        from tools.url_safety import is_safe_url
+        if not is_safe_url(url):
+            logger.warning("Mattermost: blocked unsafe URL (SSRF protection)")
+            return await self.send(chat_id, f"{caption or ''}\n{url}".strip(), reply_to)
+
         import asyncio
         import aiohttp
 
@@ -430,7 +435,6 @@ class MattermostAdapter(BasePlatformAdapter):
                     ct = resp.content_type or "application/octet-stream"
                     break
             except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
-                last_exc = exc
                 if attempt < 2:
                     await asyncio.sleep(1.5 * (attempt + 1))
                     continue
@@ -512,6 +516,16 @@ class MattermostAdapter(BasePlatformAdapter):
                 return
             except Exception as exc:
                 if self._closing:
+                    return
+                # Detect permanent auth/permission failures that will never
+                # succeed on retry — stop reconnecting instead of looping forever.
+                import aiohttp
+                err_str = str(exc).lower()
+                if isinstance(exc, aiohttp.WSServerHandshakeError) and exc.status in (401, 403):
+                    logger.error("Mattermost WS auth failed (HTTP %d) — stopping reconnect", exc.status)
+                    return
+                if "401" in err_str or "403" in err_str or "unauthorized" in err_str:
+                    logger.error("Mattermost WS permanent error: %s — stopping reconnect", exc)
                     return
                 logger.warning("Mattermost WS error: %s — reconnecting in %.0fs", exc, delay)
 
@@ -690,6 +704,15 @@ class MattermostAdapter(BasePlatformAdapter):
                         logger.warning("Mattermost: failed to download file %s: HTTP %s", fid, resp.status)
             except Exception as exc:
                 logger.warning("Mattermost: error downloading file %s: %s", fid, exc)
+
+        # Set message type based on downloaded media types.
+        if media_types and msg_type == MessageType.TEXT:
+            if any(m.startswith("image/") for m in media_types):
+                msg_type = MessageType.PHOTO
+            elif any(m.startswith("audio/") for m in media_types):
+                msg_type = MessageType.VOICE
+            elif media_types:
+                msg_type = MessageType.DOCUMENT
 
         source = self.build_source(
             chat_id=channel_id,

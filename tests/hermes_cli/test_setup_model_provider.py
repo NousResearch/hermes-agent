@@ -1,8 +1,14 @@
-"""Regression tests for interactive setup provider/model persistence."""
+"""Regression tests for interactive setup provider/model persistence.
+
+Since setup_model_provider delegates to select_provider_and_model()
+from hermes_cli.main, these tests mock the delegation point and verify
+that the setup wizard correctly syncs config from disk after the call.
+"""
 
 from __future__ import annotations
 
 from hermes_cli.config import load_config, save_config, save_env_value
+from hermes_cli.nous_subscription import NousFeatureState, NousSubscriptionFeatures
 from hermes_cli.setup import _print_setup_summary, setup_model_provider
 
 
@@ -11,19 +17,6 @@ def _maybe_keep_current_tts(question, choices):
         return None
     assert choices[-1].startswith("Keep current (")
     return len(choices) - 1
-
-
-def _read_env(home):
-    env_path = home / ".env"
-    data = {}
-    if not env_path.exists():
-        return data
-    for line in env_path.read_text().splitlines():
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        k, v = line.split("=", 1)
-        data[k] = v
-    return data
 
 
 def _clear_provider_env(monkeypatch):
@@ -44,419 +37,375 @@ def _clear_provider_env(monkeypatch):
         monkeypatch.delenv(key, raising=False)
 
 
+def _stub_tts(monkeypatch):
+    monkeypatch.setattr("hermes_cli.setup.prompt_choice", lambda q, c, d=0: (
+        _maybe_keep_current_tts(q, c) if _maybe_keep_current_tts(q, c) is not None
+        else d
+    ))
+    monkeypatch.setattr("hermes_cli.setup.prompt_yes_no", lambda *a, **kw: False)
+
+
+def _write_model_config(provider, base_url="", model_name="test-model"):
+    """Simulate what a _model_flow_* function writes to disk."""
+    cfg = load_config()
+    m = cfg.get("model")
+    if not isinstance(m, dict):
+        m = {"default": m} if m else {}
+        cfg["model"] = m
+    m["provider"] = provider
+    if base_url:
+        m["base_url"] = base_url
+    else:
+        m.pop("base_url", None)
+    if model_name:
+        m["default"] = model_name
+    m.pop("api_mode", None)
+    save_config(cfg)
+
+
 def test_setup_keep_current_custom_from_config_does_not_fall_through(tmp_path, monkeypatch):
     """Keep-current custom should not fall through to the generic model menu."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     _clear_provider_env(monkeypatch)
-    save_env_value("OPENAI_BASE_URL", "https://example.invalid/v1")
-    save_env_value("OPENAI_API_KEY", "custom-key")
+    _stub_tts(monkeypatch)
+
+    # Pre-set custom provider
+    _write_model_config("custom", "http://localhost:8080/v1", "local-model")
 
     config = load_config()
-    config["model"] = {
-        "default": "custom/model",
-        "provider": "custom",
-        "base_url": "https://example.invalid/v1",
-    }
-    save_config(config)
+    assert config["model"]["provider"] == "custom"
 
-    def fake_prompt_choice(question, choices, default=0):
-        if question == "Select your inference provider:":
-            assert choices[-1] == "Keep current (Custom: https://example.invalid/v1)"
-            return len(choices) - 1
-        tts_idx = _maybe_keep_current_tts(question, choices)
-        if tts_idx is not None:
-            return tts_idx
-        raise AssertionError("Model menu should not appear for keep-current custom")
+    def fake_select():
+        pass  # user chose "cancel" or "keep current"
 
-    monkeypatch.setattr("hermes_cli.setup.prompt_choice", fake_prompt_choice)
-    monkeypatch.setattr("hermes_cli.setup.prompt", lambda *args, **kwargs: "")
-    monkeypatch.setattr("hermes_cli.setup.prompt_yes_no", lambda *args, **kwargs: False)
-    monkeypatch.setattr("hermes_cli.auth.get_active_provider", lambda: None)
-    monkeypatch.setattr("hermes_cli.auth.detect_external_credentials", lambda: [])
+    monkeypatch.setattr("hermes_cli.main.select_provider_and_model", fake_select)
 
     setup_model_provider(config)
     save_config(config)
 
     reloaded = load_config()
+    assert isinstance(reloaded["model"], dict)
     assert reloaded["model"]["provider"] == "custom"
-    assert reloaded["model"]["default"] == "custom/model"
-    assert reloaded["model"]["base_url"] == "https://example.invalid/v1"
+    assert reloaded["model"]["base_url"] == "http://localhost:8080/v1"
 
 
-def test_setup_custom_endpoint_saves_working_v1_base_url(tmp_path, monkeypatch):
+def test_setup_keep_current_config_provider_uses_provider_specific_model_menu(
+    tmp_path, monkeypatch
+):
+    """Keeping current provider preserves the config on disk."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     _clear_provider_env(monkeypatch)
+    _stub_tts(monkeypatch)
+
+    _write_model_config("zai", "https://open.bigmodel.cn/api/paas/v4", "glm-5")
 
     config = load_config()
 
-    def fake_prompt_choice(question, choices, default=0):
-        if question == "Select your inference provider:":
-            return 3  # Custom endpoint
-        if question == "Configure vision:":
-            return len(choices) - 1  # Skip
-        tts_idx = _maybe_keep_current_tts(question, choices)
-        if tts_idx is not None:
-            return tts_idx
-        raise AssertionError(f"Unexpected prompt_choice call: {question}")
+    def fake_select():
+        pass  # keep current
 
-    # _model_flow_custom uses builtins.input (URL, key, model, context_length)
-    input_values = iter([
-        "http://localhost:8000",
-        "local-key",
-        "llm",
-        "",  # context_length (blank = auto-detect)
-    ])
-    monkeypatch.setattr("builtins.input", lambda _prompt="": next(input_values))
-
-    monkeypatch.setattr("hermes_cli.setup.prompt_choice", fake_prompt_choice)
-    monkeypatch.setattr("hermes_cli.setup.prompt_yes_no", lambda *args, **kwargs: False)
-    monkeypatch.setattr("hermes_cli.auth.get_active_provider", lambda: None)
-    monkeypatch.setattr("hermes_cli.auth.detect_external_credentials", lambda: [])
-    monkeypatch.setattr("agent.auxiliary_client.get_available_vision_backends", lambda: [])
-    monkeypatch.setattr("hermes_cli.main._save_custom_provider", lambda *args, **kwargs: None)
-    monkeypatch.setattr(
-        "hermes_cli.models.probe_api_models",
-        lambda api_key, base_url: {
-            "models": ["llm"],
-            "probed_url": "http://localhost:8000/v1/models",
-            "resolved_base_url": "http://localhost:8000/v1",
-            "suggested_base_url": "http://localhost:8000/v1",
-            "used_fallback": True,
-        },
-    )
-
-    setup_model_provider(config)
-
-    env = _read_env(tmp_path)
-
-    # _model_flow_custom saves env vars and config to disk
-    assert env.get("OPENAI_BASE_URL") == "http://localhost:8000/v1"
-    assert env.get("OPENAI_API_KEY") == "local-key"
-
-    # The model config is saved as a dict by _model_flow_custom
-    reloaded = load_config()
-    model_cfg = reloaded.get("model", {})
-    if isinstance(model_cfg, dict):
-        assert model_cfg.get("provider") == "custom"
-        assert model_cfg.get("default") == "llm"
-
-
-def test_setup_keep_current_config_provider_uses_provider_specific_model_menu(tmp_path, monkeypatch):
-    """Keep-current should respect config-backed providers, not fall back to OpenRouter."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    _clear_provider_env(monkeypatch)
-
-    config = load_config()
-    config["model"] = {
-        "default": "claude-opus-4-6",
-        "provider": "anthropic",
-    }
-    save_config(config)
-
-    captured = {"provider_choices": None, "model_choices": None}
-
-    def fake_prompt_choice(question, choices, default=0):
-        if question == "Select your inference provider:":
-            captured["provider_choices"] = list(choices)
-            assert choices[-1] == "Keep current (Anthropic)"
-            return len(choices) - 1
-        if question == "Configure vision:":
-            assert question == "Configure vision:"
-            assert choices[-1] == "Skip for now"
-            return len(choices) - 1
-        if question == "Select default model:":
-            captured["model_choices"] = list(choices)
-            return len(choices) - 1  # keep current model
-        tts_idx = _maybe_keep_current_tts(question, choices)
-        if tts_idx is not None:
-            return tts_idx
-        raise AssertionError(f"Unexpected prompt_choice call: {question}")
-
-    monkeypatch.setattr("hermes_cli.setup.prompt_choice", fake_prompt_choice)
-    monkeypatch.setattr("hermes_cli.setup.prompt", lambda *args, **kwargs: "")
-    monkeypatch.setattr("hermes_cli.setup.prompt_yes_no", lambda *args, **kwargs: False)
-    monkeypatch.setattr("hermes_cli.auth.get_active_provider", lambda: None)
-    monkeypatch.setattr("hermes_cli.auth.detect_external_credentials", lambda: [])
-    monkeypatch.setattr("hermes_cli.models.provider_model_ids", lambda provider: [])
-    monkeypatch.setattr("agent.auxiliary_client.get_available_vision_backends", lambda: [])
-
-    setup_model_provider(config)
-    save_config(config)
-
-    assert captured["provider_choices"] is not None
-    assert captured["model_choices"] is not None
-    assert captured["model_choices"][0] == "claude-opus-4-6"
-    assert "anthropic/claude-opus-4.6 (recommended)" not in captured["model_choices"]
-
-
-def test_setup_keep_current_anthropic_can_configure_openai_vision_default(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    _clear_provider_env(monkeypatch)
-
-    config = load_config()
-    config["model"] = {
-        "default": "claude-opus-4-6",
-        "provider": "anthropic",
-    }
-    save_config(config)
-
-    def fake_prompt_choice(question, choices, default=0):
-        if question == "Select your inference provider:":
-            assert choices[-1] == "Keep current (Anthropic)"
-            return len(choices) - 1
-        if question == "Configure vision:":
-            return 1
-        if question == "Select vision model:":
-            assert choices[-1] == "Use default (gpt-4o-mini)"
-            return len(choices) - 1
-        if question == "Select default model:":
-            assert choices[-1] == "Keep current (claude-opus-4-6)"
-            return len(choices) - 1
-        tts_idx = _maybe_keep_current_tts(question, choices)
-        if tts_idx is not None:
-            return tts_idx
-        raise AssertionError(f"Unexpected prompt_choice call: {question}")
-
-    monkeypatch.setattr("hermes_cli.setup.prompt_choice", fake_prompt_choice)
-    monkeypatch.setattr(
-        "hermes_cli.setup.prompt",
-        lambda message, *args, **kwargs: "sk-openai" if "OpenAI API key" in message else "",
-    )
-    monkeypatch.setattr("hermes_cli.setup.prompt_yes_no", lambda *args, **kwargs: False)
-    monkeypatch.setattr("hermes_cli.auth.get_active_provider", lambda: None)
-    monkeypatch.setattr("hermes_cli.auth.detect_external_credentials", lambda: [])
-    monkeypatch.setattr("hermes_cli.models.provider_model_ids", lambda provider: [])
-    monkeypatch.setattr("agent.auxiliary_client.get_available_vision_backends", lambda: [])
-
-    setup_model_provider(config)
-    env = _read_env(tmp_path)
-
-    assert env.get("OPENAI_API_KEY") == "sk-openai"
-    assert env.get("OPENAI_BASE_URL") == "https://api.openai.com/v1"
-    assert env.get("AUXILIARY_VISION_MODEL") == "gpt-4o-mini"
-
-
-def test_setup_copilot_uses_gh_auth_and_saves_provider(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    _clear_provider_env(monkeypatch)
-
-    config = load_config()
-
-    def fake_prompt_choice(question, choices, default=0):
-        if question == "Select your inference provider:":
-            assert choices[14] == "GitHub Copilot (uses GITHUB_TOKEN or gh auth token)"
-            return 14
-        if question == "Select default model:":
-            assert "gpt-4.1" in choices
-            assert "gpt-5.4" in choices
-            return choices.index("gpt-5.4")
-        if question == "Select reasoning effort:":
-            assert "low" in choices
-            assert "high" in choices
-            return choices.index("high")
-        if question == "Configure vision:":
-            return len(choices) - 1
-        tts_idx = _maybe_keep_current_tts(question, choices)
-        if tts_idx is not None:
-            return tts_idx
-        raise AssertionError(f"Unexpected prompt_choice call: {question}")
-
-    def fake_prompt(message, *args, **kwargs):
-        raise AssertionError(f"Unexpected prompt call: {message}")
-
-    def fake_get_auth_status(provider_id):
-        if provider_id == "copilot":
-            return {"logged_in": True}
-        return {"logged_in": False}
-
-    monkeypatch.setattr("hermes_cli.setup.prompt_choice", fake_prompt_choice)
-    monkeypatch.setattr("hermes_cli.setup.prompt", fake_prompt)
-    monkeypatch.setattr("hermes_cli.setup.prompt_yes_no", lambda *args, **kwargs: False)
-    monkeypatch.setattr("hermes_cli.auth.get_active_provider", lambda: None)
-    monkeypatch.setattr("hermes_cli.auth.detect_external_credentials", lambda: [])
-    monkeypatch.setattr("hermes_cli.auth.get_auth_status", fake_get_auth_status)
-    monkeypatch.setattr(
-        "hermes_cli.auth.resolve_api_key_provider_credentials",
-        lambda provider_id: {
-            "provider": provider_id,
-            "api_key": "gh-cli-token",
-            "base_url": "https://api.githubcopilot.com",
-            "source": "gh auth token",
-        },
-    )
-    monkeypatch.setattr(
-        "hermes_cli.models.fetch_github_model_catalog",
-        lambda api_key: [
-            {
-                "id": "gpt-4.1",
-                "capabilities": {"type": "chat", "supports": {}},
-                "supported_endpoints": ["/chat/completions"],
-            },
-            {
-                "id": "gpt-5.4",
-                "capabilities": {"type": "chat", "supports": {"reasoning_effort": ["low", "medium", "high"]}},
-                "supported_endpoints": ["/responses"],
-            },
-        ],
-    )
-    monkeypatch.setattr("agent.auxiliary_client.get_available_vision_backends", lambda: [])
-
-    setup_model_provider(config)
-    save_config(config)
-
-    env = _read_env(tmp_path)
-    reloaded = load_config()
-
-    assert env.get("GITHUB_TOKEN") is None
-    assert reloaded["model"]["provider"] == "copilot"
-    assert reloaded["model"]["base_url"] == "https://api.githubcopilot.com"
-    assert reloaded["model"]["default"] == "gpt-5.4"
-    assert reloaded["model"]["api_mode"] == "codex_responses"
-    assert reloaded["agent"]["reasoning_effort"] == "high"
-
-
-def test_setup_copilot_acp_uses_model_picker_and_saves_provider(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    _clear_provider_env(monkeypatch)
-
-    config = load_config()
-
-    def fake_prompt_choice(question, choices, default=0):
-        if question == "Select your inference provider:":
-            assert choices[15] == "GitHub Copilot ACP (spawns `copilot --acp --stdio`)"
-            return 15
-        if question == "Select default model:":
-            assert "gpt-4.1" in choices
-            assert "gpt-5.4" in choices
-            return choices.index("gpt-5.4")
-        if question == "Configure vision:":
-            return len(choices) - 1
-        tts_idx = _maybe_keep_current_tts(question, choices)
-        if tts_idx is not None:
-            return tts_idx
-        raise AssertionError(f"Unexpected prompt_choice call: {question}")
-
-    def fake_prompt(message, *args, **kwargs):
-        raise AssertionError(f"Unexpected prompt call: {message}")
-
-    monkeypatch.setattr("hermes_cli.setup.prompt_choice", fake_prompt_choice)
-    monkeypatch.setattr("hermes_cli.setup.prompt", fake_prompt)
-    monkeypatch.setattr("hermes_cli.setup.prompt_yes_no", lambda *args, **kwargs: False)
-    monkeypatch.setattr("hermes_cli.auth.get_active_provider", lambda: None)
-    monkeypatch.setattr("hermes_cli.auth.detect_external_credentials", lambda: [])
-    monkeypatch.setattr("hermes_cli.auth.get_auth_status", lambda provider_id: {"logged_in": provider_id == "copilot-acp"})
-    monkeypatch.setattr(
-        "hermes_cli.auth.resolve_api_key_provider_credentials",
-        lambda provider_id: {
-            "provider": "copilot",
-            "api_key": "gh-cli-token",
-            "base_url": "https://api.githubcopilot.com",
-            "source": "gh auth token",
-        },
-    )
-    monkeypatch.setattr(
-        "hermes_cli.models.fetch_github_model_catalog",
-        lambda api_key: [
-            {
-                "id": "gpt-4.1",
-                "capabilities": {"type": "chat", "supports": {}},
-                "supported_endpoints": ["/chat/completions"],
-            },
-            {
-                "id": "gpt-5.4",
-                "capabilities": {"type": "chat", "supports": {"reasoning_effort": ["low", "medium", "high"]}},
-                "supported_endpoints": ["/responses"],
-            },
-        ],
-    )
-    monkeypatch.setattr("agent.auxiliary_client.get_available_vision_backends", lambda: [])
+    monkeypatch.setattr("hermes_cli.main.select_provider_and_model", fake_select)
 
     setup_model_provider(config)
     save_config(config)
 
     reloaded = load_config()
-
-    assert reloaded["model"]["provider"] == "copilot-acp"
-    assert reloaded["model"]["base_url"] == "acp://copilot"
-    assert reloaded["model"]["default"] == "gpt-5.4"
-    assert reloaded["model"]["api_mode"] == "chat_completions"
+    assert isinstance(reloaded["model"], dict)
+    assert reloaded["model"]["provider"] == "zai"
 
 
-def test_setup_switch_custom_to_codex_clears_custom_endpoint_and_updates_config(tmp_path, monkeypatch):
-    """Switching from custom to Codex should clear custom endpoint overrides."""
+def test_setup_same_provider_rotation_strategy_saved_for_multi_credential_pool(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     _clear_provider_env(monkeypatch)
+    save_env_value("OPENROUTER_API_KEY", "or-key")
 
-    save_env_value("OPENAI_BASE_URL", "https://example.invalid/v1")
-    save_env_value("OPENAI_API_KEY", "sk-custom")
-    save_env_value("OPENROUTER_API_KEY", "sk-or")
+    # Pre-write config so the pool step sees provider="openrouter"
+    _write_model_config("openrouter", "", "anthropic/claude-opus-4.6")
 
     config = load_config()
-    config["model"] = {
-        "default": "custom/model",
-        "provider": "custom",
-        "base_url": "https://example.invalid/v1",
-    }
-    save_config(config)
+
+    class _Entry:
+        def __init__(self, label):
+            self.label = label
+
+    class _Pool:
+        def entries(self):
+            return [_Entry("primary"), _Entry("secondary")]
+
+    def fake_select():
+        pass  # no-op — config already has provider set
 
     def fake_prompt_choice(question, choices, default=0):
-        if question == "Select your inference provider:":
-            return 2  # OpenAI Codex
-        if question == "Select default model:":
+        if "rotation strategy" in question:
+            return 1  # round robin
+        tts_idx = _maybe_keep_current_tts(question, choices)
+        if tts_idx is not None:
+            return tts_idx
+        return default
+
+    def fake_prompt_yes_no(question, default=True):
+        return False
+
+    # Patch directly on the module objects to ensure local imports pick them up.
+    import hermes_cli.main as _main_mod
+    import hermes_cli.setup as _setup_mod
+    import agent.credential_pool as _pool_mod
+    import agent.auxiliary_client as _aux_mod
+
+    monkeypatch.setattr(_main_mod, "select_provider_and_model", fake_select)
+    # NOTE: _stub_tts overwrites prompt_choice, so set our mock AFTER it.
+    _stub_tts(monkeypatch)
+    monkeypatch.setattr(_setup_mod, "prompt_choice", fake_prompt_choice)
+    monkeypatch.setattr(_setup_mod, "prompt_yes_no", fake_prompt_yes_no)
+    monkeypatch.setattr(_setup_mod, "prompt", lambda *args, **kwargs: "")
+    monkeypatch.setattr(_pool_mod, "load_pool", lambda provider: _Pool())
+    monkeypatch.setattr(_aux_mod, "get_available_vision_backends", lambda: [])
+
+    setup_model_provider(config)
+
+    # The pool has 2 entries, so the strategy prompt should fire
+    strategy = config.get("credential_pool_strategies", {}).get("openrouter")
+    assert strategy == "round_robin", f"Expected round_robin but got {strategy}"
+
+
+def test_setup_same_provider_fallback_can_add_another_credential(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _clear_provider_env(monkeypatch)
+    save_env_value("OPENROUTER_API_KEY", "or-key")
+
+    # Pre-write config so the pool step sees provider="openrouter"
+    _write_model_config("openrouter", "", "anthropic/claude-opus-4.6")
+
+    config = load_config()
+    pool_sizes = iter([1, 2])
+    add_calls = []
+
+    class _Entry:
+        def __init__(self, label):
+            self.label = label
+
+    class _Pool:
+        def __init__(self, size):
+            self._size = size
+
+        def entries(self):
+            return [_Entry(f"cred-{idx}") for idx in range(self._size)]
+
+    def fake_load_pool(provider):
+        return _Pool(next(pool_sizes))
+
+    def fake_auth_add_command(args):
+        add_calls.append(args.provider)
+
+    def fake_select():
+        pass  # no-op — config already has provider set
+
+    def fake_prompt_choice(question, choices, default=0):
+        if question == "Select same-provider rotation strategy:":
             return 0
         tts_idx = _maybe_keep_current_tts(question, choices)
         if tts_idx is not None:
             return tts_idx
+        return default
+
+    yes_no_answers = iter([True, False])
+
+    def fake_prompt_yes_no(question, default=True):
+        if question == "Add another credential for same-provider fallback?":
+            return next(yes_no_answers)
+        return False
+
+    monkeypatch.setattr("hermes_cli.main.select_provider_and_model", fake_select)
+    _stub_tts(monkeypatch)
+    monkeypatch.setattr("hermes_cli.setup.prompt_choice", fake_prompt_choice)
+    monkeypatch.setattr("hermes_cli.setup.prompt_yes_no", fake_prompt_yes_no)
+    monkeypatch.setattr("hermes_cli.setup.prompt", lambda *args, **kwargs: "")
+    monkeypatch.setattr("agent.credential_pool.load_pool", fake_load_pool)
+    monkeypatch.setattr("hermes_cli.auth_commands.auth_add_command", fake_auth_add_command)
+    monkeypatch.setattr("agent.auxiliary_client.get_available_vision_backends", lambda: [])
+
+    setup_model_provider(config)
+
+    assert add_calls == ["openrouter"]
+    assert config.get("credential_pool_strategies", {}).get("openrouter") == "fill_first"
+
+
+def test_setup_pool_step_shows_manual_vs_auto_detected_counts(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _clear_provider_env(monkeypatch)
+    save_env_value("OPENROUTER_API_KEY", "or-key")
+
+    # Pre-write config so the pool step sees provider="openrouter"
+    _write_model_config("openrouter", "", "anthropic/claude-opus-4.6")
+
+    config = load_config()
+
+    class _Entry:
+        def __init__(self, label, source):
+            self.label = label
+            self.source = source
+
+    class _Pool:
+        def entries(self):
+            return [
+                _Entry("primary", "manual"),
+                _Entry("secondary", "manual"),
+                _Entry("OPENROUTER_API_KEY", "env:OPENROUTER_API_KEY"),
+            ]
+
+    def fake_select():
+        pass  # no-op — config already has provider set
+
+    def fake_prompt_choice(question, choices, default=0):
+        if "rotation strategy" in question:
+            return 0
+        tts_idx = _maybe_keep_current_tts(question, choices)
+        if tts_idx is not None:
+            return tts_idx
+        return default
+
+    monkeypatch.setattr("hermes_cli.main.select_provider_and_model", fake_select)
+    _stub_tts(monkeypatch)
+    monkeypatch.setattr("hermes_cli.setup.prompt_choice", fake_prompt_choice)
+    monkeypatch.setattr("hermes_cli.setup.prompt_yes_no", lambda *args, **kwargs: False)
+    monkeypatch.setattr("hermes_cli.setup.prompt", lambda *args, **kwargs: "")
+    monkeypatch.setattr("agent.credential_pool.load_pool", lambda provider: _Pool())
+    monkeypatch.setattr("agent.auxiliary_client.get_available_vision_backends", lambda: [])
+
+    setup_model_provider(config)
+
+    out = capsys.readouterr().out
+    assert "Current pooled credentials for openrouter: 3 (2 manual, 1 auto-detected from env/shared auth)" in out
+
+
+def test_setup_copilot_acp_skips_same_provider_pool_step(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _clear_provider_env(monkeypatch)
+
+    config = load_config()
+
+    def fake_prompt_choice(question, choices, default=0):
+        if question == "Select your inference provider:":
+            return 15  # GitHub Copilot ACP
+        if question == "Select default model:":
+            return 0
+        if question == "Configure vision:":
+            return len(choices) - 1
+        tts_idx = _maybe_keep_current_tts(question, choices)
+        if tts_idx is not None:
+            return tts_idx
         raise AssertionError(f"Unexpected prompt_choice call: {question}")
 
+    def fake_prompt_yes_no(question, default=True):
+        if question == "Add another credential for same-provider fallback?":
+            raise AssertionError("same-provider pool prompt should not appear for copilot-acp")
+        return False
+
     monkeypatch.setattr("hermes_cli.setup.prompt_choice", fake_prompt_choice)
+    monkeypatch.setattr("hermes_cli.setup.prompt_yes_no", fake_prompt_yes_no)
     monkeypatch.setattr("hermes_cli.setup.prompt", lambda *args, **kwargs: "")
-    monkeypatch.setattr("hermes_cli.setup.prompt_yes_no", lambda *args, **kwargs: False)
     monkeypatch.setattr("hermes_cli.auth.get_active_provider", lambda: None)
     monkeypatch.setattr("hermes_cli.auth.detect_external_credentials", lambda: [])
-    monkeypatch.setattr("hermes_cli.auth._login_openai_codex", lambda *args, **kwargs: None)
-    monkeypatch.setattr(
-        "hermes_cli.auth.resolve_codex_runtime_credentials",
-        lambda *args, **kwargs: {
-            "base_url": "https://chatgpt.com/backend-api/codex",
-            "api_key": "codex-...oken",
-        },
-    )
-    monkeypatch.setattr(
-        "hermes_cli.codex_models.get_codex_model_ids",
-        lambda **kwargs: ["openai/gpt-5.3-codex", "openai/gpt-5-codex-mini"],
-    )
+    monkeypatch.setattr("agent.auxiliary_client.get_available_vision_backends", lambda: [])
+
+    setup_model_provider(config)
+
+    assert config.get("credential_pool_strategies", {}) == {}
+
+
+def test_setup_copilot_uses_gh_auth_and_saves_provider(tmp_path, monkeypatch):
+    """Copilot provider saves correctly through delegation."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _clear_provider_env(monkeypatch)
+    _stub_tts(monkeypatch)
+
+    config = load_config()
+
+    def fake_select():
+        _write_model_config("copilot", "https://models.github.ai/inference/v1", "gpt-4o")
+
+    monkeypatch.setattr("hermes_cli.main.select_provider_and_model", fake_select)
 
     setup_model_provider(config)
     save_config(config)
 
-    env = _read_env(tmp_path)
     reloaded = load_config()
-
-    assert env.get("OPENAI_BASE_URL") == ""
-    assert env.get("OPENAI_API_KEY") == ""
-    assert reloaded["model"]["provider"] == "openai-codex"
-    assert reloaded["model"]["default"] == "openai/gpt-5.3-codex"
-    assert reloaded["model"]["base_url"] == "https://chatgpt.com/backend-api/codex"
+    assert isinstance(reloaded["model"], dict)
+    assert reloaded["model"]["provider"] == "copilot"
 
 
-def test_setup_summary_marks_codex_auth_as_vision_available(tmp_path, monkeypatch, capsys):
+def test_setup_copilot_acp_uses_model_picker_and_saves_provider(tmp_path, monkeypatch):
+    """Copilot ACP provider saves correctly through delegation."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     _clear_provider_env(monkeypatch)
+    _stub_tts(monkeypatch)
 
-    (tmp_path / "auth.json").write_text(
-        '{"active_provider":"openai-codex","providers":{"openai-codex":{"tokens":{"access_token": "***", "refresh_token": "***"}}}}'
-    )
+    config = load_config()
 
-    monkeypatch.setattr("shutil.which", lambda _name: None)
+    def fake_select():
+        _write_model_config("copilot-acp", "", "claude-sonnet-4")
 
-    _print_setup_summary(load_config(), tmp_path)
-    output = capsys.readouterr().out
+    monkeypatch.setattr("hermes_cli.main.select_provider_and_model", fake_select)
 
-    assert "Vision (image analysis)" in output
-    assert "missing run 'hermes setup' to configure" not in output
-    assert "Mixture of Agents" in output
-    assert "missing OPENROUTER_API_KEY" in output
+    setup_model_provider(config)
+    save_config(config)
+
+    reloaded = load_config()
+    assert isinstance(reloaded["model"], dict)
+    assert reloaded["model"]["provider"] == "copilot-acp"
+
+
+def test_setup_switch_custom_to_codex_clears_custom_endpoint_and_updates_config(
+    tmp_path, monkeypatch
+):
+    """Switching from custom to codex updates config correctly."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _clear_provider_env(monkeypatch)
+    _stub_tts(monkeypatch)
+
+    # Start with custom
+    _write_model_config("custom", "http://localhost:11434/v1", "qwen3.5:32b")
+
+    config = load_config()
+    assert config["model"]["provider"] == "custom"
+
+    def fake_select():
+        _write_model_config("openai-codex", "https://api.openai.com/v1", "gpt-4o")
+
+    monkeypatch.setattr("hermes_cli.main.select_provider_and_model", fake_select)
+
+    setup_model_provider(config)
+    save_config(config)
+
+    reloaded = load_config()
+    assert isinstance(reloaded["model"], dict)
+    assert reloaded["model"]["provider"] == "openai-codex"
+    assert reloaded["model"]["default"] == "gpt-4o"
+
+
+def test_setup_switch_preserves_non_model_config(tmp_path, monkeypatch):
+    """Provider switch preserves other config sections (terminal, display, etc.)."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _clear_provider_env(monkeypatch)
+    _stub_tts(monkeypatch)
+
+    config = load_config()
+    config["terminal"]["timeout"] = 999
+    save_config(config)
+
+    config = load_config()
+
+    def fake_select():
+        _write_model_config("openrouter", model_name="gpt-4o")
+
+    monkeypatch.setattr("hermes_cli.main.select_provider_and_model", fake_select)
+
+    setup_model_provider(config)
+    save_config(config)
+
+    reloaded = load_config()
+    assert reloaded["terminal"]["timeout"] == 999
+    assert reloaded["model"]["provider"] == "openrouter"
 
 
 def test_setup_summary_marks_anthropic_auth_as_vision_available(tmp_path, monkeypatch, capsys):
@@ -471,3 +420,58 @@ def test_setup_summary_marks_anthropic_auth_as_vision_available(tmp_path, monkey
 
     assert "Vision (image analysis)" in output
     assert "missing run 'hermes setup' to configure" not in output
+
+
+def test_setup_summary_shows_camofox_when_browser_feature_is_camofox(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _clear_provider_env(monkeypatch)
+    monkeypatch.setattr(
+        "hermes_cli.setup.get_nous_subscription_features",
+        lambda config: NousSubscriptionFeatures(
+            subscribed=False,
+            nous_auth_present=False,
+            provider_is_nous=False,
+            features={
+                "web": NousFeatureState("web", "Web tools", True, False, False, False, False, True, ""),
+                "image_gen": NousFeatureState("image_gen", "Image generation", True, False, False, False, False, True, ""),
+                "tts": NousFeatureState("tts", "OpenAI TTS", True, False, False, False, False, True, ""),
+                "browser": NousFeatureState("browser", "Browser automation", True, True, True, False, True, True, "Camofox"),
+                "modal": NousFeatureState("modal", "Modal execution", False, False, False, False, False, True, "local"),
+            },
+        ),
+    )
+    monkeypatch.setattr("agent.auxiliary_client.get_available_vision_backends", lambda: [])
+
+    _print_setup_summary(load_config(), tmp_path)
+    output = capsys.readouterr().out
+
+    assert "Browser Automation (Camofox)" in output
+
+
+def test_setup_summary_does_not_mark_incomplete_browserbase_as_available(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _clear_provider_env(monkeypatch)
+    monkeypatch.setenv("BROWSERBASE_API_KEY", "bb-key")
+    monkeypatch.setattr(
+        "hermes_cli.setup.get_nous_subscription_features",
+        lambda config: NousSubscriptionFeatures(
+            subscribed=False,
+            nous_auth_present=False,
+            provider_is_nous=False,
+            features={
+                "web": NousFeatureState("web", "Web tools", True, False, False, False, False, True, ""),
+                "image_gen": NousFeatureState("image_gen", "Image generation", True, False, False, False, False, True, ""),
+                "tts": NousFeatureState("tts", "OpenAI TTS", True, False, False, False, False, True, ""),
+                "browser": NousFeatureState("browser", "Browser automation", True, False, False, False, False, True, "Browserbase"),
+                "modal": NousFeatureState("modal", "Modal execution", False, False, False, False, False, True, "local"),
+            },
+        ),
+    )
+    monkeypatch.setattr("agent.auxiliary_client.get_available_vision_backends", lambda: [])
+
+    _print_setup_summary(load_config(), tmp_path)
+    output = capsys.readouterr().out
+
+    assert "Browser Automation (Browserbase)" not in output
+    assert "Browser Automation" in output
+    assert "BROWSERBASE_API_KEY/BROWSERBASE_PROJECT_ID" in output

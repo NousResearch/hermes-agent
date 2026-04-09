@@ -187,7 +187,100 @@ TOOL_USE_ENFORCEMENT_GUIDANCE = (
 
 # Model name substrings that trigger tool-use enforcement guidance.
 # Add new patterns here when a model family needs explicit steering.
-TOOL_USE_ENFORCEMENT_MODELS = ("gpt", "codex")
+TOOL_USE_ENFORCEMENT_MODELS = ("gpt", "codex", "gemini", "gemma", "grok")
+
+# OpenAI GPT/Codex-specific execution guidance.  Addresses known failure modes
+# where GPT models abandon work on partial results, skip prerequisite lookups,
+# hallucinate instead of using tools, and declare "done" without verification.
+# Inspired by patterns from OpenAI's GPT-5.4 prompting guide & OpenClaw PR #38953.
+OPENAI_MODEL_EXECUTION_GUIDANCE = (
+    "# Execution discipline\n"
+    "<tool_persistence>\n"
+    "- Use tools whenever they improve correctness, completeness, or grounding.\n"
+    "- Do not stop early when another tool call would materially improve the result.\n"
+    "- If a tool returns empty or partial results, retry with a different query or "
+    "strategy before giving up.\n"
+    "- Keep calling tools until: (1) the task is complete, AND (2) you have verified "
+    "the result.\n"
+    "</tool_persistence>\n"
+    "\n"
+    "<mandatory_tool_use>\n"
+    "NEVER answer these from memory or mental computation — ALWAYS use a tool:\n"
+    "- Arithmetic, math, calculations → use terminal or execute_code\n"
+    "- Hashes, encodings, checksums → use terminal (e.g. sha256sum, base64)\n"
+    "- Current time, date, timezone → use terminal (e.g. date)\n"
+    "- System state: OS, CPU, memory, disk, ports, processes → use terminal\n"
+    "- File contents, sizes, line counts → use read_file, search_files, or terminal\n"
+    "- Git history, branches, diffs → use terminal\n"
+    "- Current facts (weather, news, versions) → use web_search\n"
+    "Your memory and user profile describe the USER, not the system you are "
+    "running on. The execution environment may differ from what the user profile "
+    "says about their personal setup.\n"
+    "</mandatory_tool_use>\n"
+    "\n"
+    "<act_dont_ask>\n"
+    "When a question has an obvious default interpretation, act on it immediately "
+    "instead of asking for clarification. Examples:\n"
+    "- 'Is port 443 open?' → check THIS machine (don't ask 'open where?')\n"
+    "- 'What OS am I running?' → check the live system (don't use user profile)\n"
+    "- 'What time is it?' → run `date` (don't guess)\n"
+    "Only ask for clarification when the ambiguity genuinely changes what tool "
+    "you would call.\n"
+    "</act_dont_ask>\n"
+    "\n"
+    "<prerequisite_checks>\n"
+    "- Before taking an action, check whether prerequisite discovery, lookup, or "
+    "context-gathering steps are needed.\n"
+    "- Do not skip prerequisite steps just because the final action seems obvious.\n"
+    "- If a task depends on output from a prior step, resolve that dependency first.\n"
+    "</prerequisite_checks>\n"
+    "\n"
+    "<verification>\n"
+    "Before finalizing your response:\n"
+    "- Correctness: does the output satisfy every stated requirement?\n"
+    "- Grounding: are factual claims backed by tool outputs or provided context?\n"
+    "- Formatting: does the output match the requested format or schema?\n"
+    "- Safety: if the next step has side effects (file writes, commands, API calls), "
+    "confirm scope before executing.\n"
+    "</verification>\n"
+    "\n"
+    "<missing_context>\n"
+    "- If required context is missing, do NOT guess or hallucinate an answer.\n"
+    "- Use the appropriate lookup tool when missing information is retrievable "
+    "(search_files, web_search, read_file, etc.).\n"
+    "- Ask a clarifying question only when the information cannot be retrieved by tools.\n"
+    "- If you must proceed with incomplete information, label assumptions explicitly.\n"
+    "</missing_context>"
+)
+
+# Gemini/Gemma-specific operational guidance, adapted from OpenCode's gemini.txt.
+# Injected alongside TOOL_USE_ENFORCEMENT_GUIDANCE when the model is Gemini or Gemma.
+GOOGLE_MODEL_OPERATIONAL_GUIDANCE = (
+    "# Google model operational directives\n"
+    "Follow these operational rules strictly:\n"
+    "- **Absolute paths:** Always construct and use absolute file paths for all "
+    "file system operations. Combine the project root with relative paths.\n"
+    "- **Verify first:** Use read_file/search_files to check file contents and "
+    "project structure before making changes. Never guess at file contents.\n"
+    "- **Dependency checks:** Never assume a library is available. Check "
+    "package.json, requirements.txt, Cargo.toml, etc. before importing.\n"
+    "- **Conciseness:** Keep explanatory text brief — a few sentences, not "
+    "paragraphs. Focus on actions and results over narration.\n"
+    "- **Parallel tool calls:** When you need to perform multiple independent "
+    "operations (e.g. reading several files), make all the tool calls in a "
+    "single response rather than sequentially.\n"
+    "- **Non-interactive commands:** Use flags like -y, --yes, --non-interactive "
+    "to prevent CLI tools from hanging on prompts.\n"
+    "- **Keep going:** Work autonomously until the task is fully resolved. "
+    "Don't stop with a plan — execute it.\n"
+)
+
+# Model name substrings that should use the 'developer' role instead of
+# 'system' for the system prompt.  OpenAI's newer models (GPT-5, Codex)
+# give stronger instruction-following weight to the 'developer' role.
+# The swap happens at the API boundary in _build_api_kwargs() so internal
+# message representation stays consistent ("system" everywhere).
+DEVELOPER_ROLE_MODELS = ("gpt-5", "codex")
 
 PLATFORM_HINTS = {
     "whatsapp": (
@@ -255,6 +348,13 @@ PLATFORM_HINTS = {
         "You are communicating via SMS. Keep responses concise and use plain text "
         "only — no markdown, no formatting. SMS messages are limited to ~1600 "
         "characters, so be brief and direct."
+    ),
+    "bluebubbles": (
+        "You are chatting via iMessage (BlueBubbles). iMessage does not render "
+        "markdown formatting — use plain text. Keep responses concise as they "
+        "appear as text messages. You can send media files natively: include "
+        "MEDIA:/absolute/path/to/file in your response. Images (.jpg, .png, "
+        ".heic) appear as photos and other files arrive as attachments."
     ),
 }
 
@@ -459,11 +559,19 @@ def build_skills_system_prompt(
         return ""
 
     # ── Layer 1: in-process LRU cache ─────────────────────────────────
+    # Include the resolved platform so per-platform disabled-skill lists
+    # produce distinct cache entries (gateway serves multiple platforms).
+    _platform_hint = (
+        os.environ.get("HERMES_PLATFORM")
+        or os.environ.get("HERMES_SESSION_PLATFORM")
+        or ""
+    )
     cache_key = (
         str(skills_dir.resolve()),
         tuple(str(d) for d in external_dirs),
         tuple(sorted(str(t) for t in (available_tools or set()))),
         tuple(sorted(str(ts) for ts in (available_toolsets or set()))),
+        _platform_hint,
     )
     with _SKILLS_PROMPT_CACHE_LOCK:
         cached = _SKILLS_PROMPT_CACHE.get(cache_key)
@@ -643,6 +751,72 @@ def build_skills_system_prompt(
             _SKILLS_PROMPT_CACHE.popitem(last=False)
 
     return result
+
+
+def build_nous_subscription_prompt(valid_tool_names: "set[str] | None" = None) -> str:
+    """Build a compact Nous subscription capability block for the system prompt."""
+    try:
+        from hermes_cli.nous_subscription import get_nous_subscription_features
+        from tools.tool_backend_helpers import managed_nous_tools_enabled
+    except Exception as exc:
+        logger.debug("Failed to import Nous subscription helper: %s", exc)
+        return ""
+
+    if not managed_nous_tools_enabled():
+        return ""
+
+    valid_names = set(valid_tool_names or set())
+    relevant_tool_names = {
+        "web_search",
+        "web_extract",
+        "browser_navigate",
+        "browser_snapshot",
+        "browser_click",
+        "browser_type",
+        "browser_scroll",
+        "browser_console",
+        "browser_press",
+        "browser_get_images",
+        "browser_vision",
+        "image_generate",
+        "text_to_speech",
+        "terminal",
+        "process",
+        "execute_code",
+    }
+
+    if valid_names and not (valid_names & relevant_tool_names):
+        return ""
+
+    features = get_nous_subscription_features()
+
+    def _status_line(feature) -> str:
+        if feature.managed_by_nous:
+            return f"- {feature.label}: active via Nous subscription"
+        if feature.active:
+            current = feature.current_provider or "configured provider"
+            return f"- {feature.label}: currently using {current}"
+        if feature.included_by_default and features.nous_auth_present:
+            return f"- {feature.label}: included with Nous subscription, not currently selected"
+        if feature.key == "modal" and features.nous_auth_present:
+            return f"- {feature.label}: optional via Nous subscription"
+        return f"- {feature.label}: not currently available"
+
+    lines = [
+        "# Nous Subscription",
+        "Nous subscription includes managed web tools (Firecrawl), image generation (FAL), OpenAI TTS, and browser automation (Browser Use) by default. Modal execution is optional.",
+        "Current capability status:",
+    ]
+    lines.extend(_status_line(feature) for feature in features.items())
+    lines.extend(
+        [
+            "When a Nous-managed feature is active, do not ask the user for Firecrawl, FAL, OpenAI TTS, or Browser-Use API keys.",
+            "If the user is not subscribed and asks for a capability that Nous subscription would unlock or simplify, suggest Nous subscription as one option alongside direct setup or local alternatives.",
+            "Do not mention subscription unless the user asks about it or it directly solves the current missing capability.",
+            "Useful commands: hermes setup, hermes setup tools, hermes setup terminal, hermes status.",
+        ]
+    )
+    return "\n".join(lines)
 
 
 # =========================================================================

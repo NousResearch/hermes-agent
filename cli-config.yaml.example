@@ -18,7 +18,8 @@ model:
   #   "anthropic"    - Direct Anthropic API (requires: ANTHROPIC_API_KEY)
   #   "openai-codex" - OpenAI Codex (requires: hermes login --provider openai-codex)
   #   "copilot"      - GitHub Copilot / GitHub Models (requires: GITHUB_TOKEN)
-  #   "zai"          - z.ai / ZhipuAI GLM (requires: GLM_API_KEY)
+  #   "gemini"      - Use Google AI Studio direct (requires: GOOGLE_API_KEY or GEMINI_API_KEY)
+  #   "zai"         - Use z.ai / ZhipuAI GLM models (requires: GLM_API_KEY)
   #   "kimi-coding"  - Kimi / Moonshot AI (requires: KIMI_API_KEY)
   #   "minimax"      - MiniMax global (requires: MINIMAX_API_KEY)
   #   "minimax-cn"   - MiniMax China (requires: MINIMAX_CN_API_KEY)
@@ -33,6 +34,12 @@ model:
   #     provider: "lmstudio"
   #     base_url: "http://localhost:1234/v1"
   #   No API key needed — local servers typically ignore auth.
+  #
+  #   For Ollama Cloud (https://ollama.com/pricing):
+  #     provider: "custom"
+  #     base_url: "https://ollama.com/v1"
+  #   Set OLLAMA_API_KEY in .env — automatically picked up when base_url
+  #   points to ollama.com.
   #
   # Can also be overridden with --provider flag or HERMES_INFERENCE_PROVIDER env var.
   provider: "auto"
@@ -110,7 +117,8 @@ terminal:
   timeout: 180
   docker_mount_cwd_to_workspace: false  # SECURITY: off by default. Opt in to mount the launch cwd into Docker /workspace.
   lifetime_seconds: 300
-  # sudo_password: ""  # Enable sudo commands (pipes via sudo -S) - SECURITY WARNING: plaintext!
+  # sudo_password: "hunter2"  # Optional: pipe a sudo password via sudo -S. SECURITY WARNING: plaintext.
+  # sudo_password: ""         # Explicit empty password: try empty and never open the interactive sudo prompt.
 
 # -----------------------------------------------------------------------------
 # OPTION 2: SSH remote execution
@@ -201,12 +209,17 @@ terminal:
 #
 # SECURITY WARNING: Password stored in plaintext!
 #
-# INTERACTIVE PROMPT: If no sudo_password is set and the CLI is running,
+# INTERACTIVE PROMPT: If sudo_password is unset and the CLI is running,
 # you'll be prompted to enter your password when sudo is needed:
 # - 45-second timeout (auto-skips if no input)
 # - Press Enter to skip (command fails gracefully)
 # - Password is hidden while typing
 # - Password is cached for the session
+#
+# EMPTY PASSWORDS: Setting sudo_password to an explicit empty string is different
+# from leaving it unset. Hermes will try an empty password via `sudo -S` and
+# will not open the interactive prompt. This is useful for passwordless sudo,
+# Touch ID sudo setups, and environments where prompting is just noise.
 #
 # ALTERNATIVES:
 # - SSH backend: Configure passwordless sudo on the remote server
@@ -309,7 +322,8 @@ compression:
 #   "auto"       - Best available: OpenRouter → Nous Portal → main endpoint (default)
 #   "openrouter" - Force OpenRouter (requires OPENROUTER_API_KEY)
 #   "nous"       - Force Nous Portal (requires: hermes login)
-#   "codex"      - Force Codex OAuth (requires: hermes model → Codex).
+#   "gemini"      - Force Google AI Studio direct (requires: GOOGLE_API_KEY or GEMINI_API_KEY)
+#   "codex"       - Force Codex OAuth (requires: hermes model → Codex).
 #                  Uses gpt-5.3-codex which supports vision.
 #   "main"       - Use your custom endpoint (OPENAI_BASE_URL + OPENAI_API_KEY).
 #                  Works with OpenAI API, local models, or any OpenAI-compatible
@@ -437,6 +451,16 @@ agent:
   # Higher = more room for complex tasks, but costs more tokens
   # Recommended: 20-30 for focused tasks, 50-100 for open exploration
   max_turns: 60
+
+  # Inactivity timeout for gateway agent runs (seconds, 0 = unlimited).
+  # The agent can run indefinitely when actively calling tools or receiving
+  # API responses.  Only fires after the agent has been idle for this duration.
+  # gateway_timeout: 1800
+
+  # Staged warning: send a warning before escalating to full timeout.
+  # Fires once per run when inactivity reaches this threshold (seconds).
+  # Set to 0 to disable the warning.
+  # gateway_timeout_warning: 900
   
   # Enable verbose logging
   verbose: false
@@ -531,7 +555,7 @@ platform_toolsets:
 #   terminal     - terminal, process
 #   file         - read_file, write_file, patch, search
 #   browser      - browser_navigate, browser_snapshot, browser_click, browser_type,
-#                  browser_scroll, browser_back, browser_press, browser_close,
+#                  browser_scroll, browser_back, browser_press,
 #                  browser_get_images, browser_vision  (requires BROWSERBASE_API_KEY)
 #   vision       - vision_analyze  (requires OPENROUTER_API_KEY)
 #   image_gen    - image_generate  (requires FAL_KEY)
@@ -539,7 +563,7 @@ platform_toolsets:
 #   skills_hub   - skill_hub (search/install/manage from online registries — user-driven only)
 #   moa          - mixture_of_agents  (requires OPENROUTER_API_KEY)
 #   todo         - todo (in-memory task planning, no deps)
-#   tts          - text_to_speech  (Edge TTS free, or ELEVENLABS/OPENAI key)
+#   tts          - text_to_speech  (Edge TTS free, or ELEVENLABS/OPENAI/MINIMAX key)
 #   cronjob      - cronjob (create/list/update/pause/resume/run/remove scheduled tasks)
 #   rl           - rl_list_environments, rl_start_training, etc. (requires TINKER_API_KEY)
 #
@@ -568,7 +592,7 @@ platform_toolsets:
 #   todo         - Task planning and tracking for multi-step work
 #   memory       - Persistent memory across sessions (personal notes + user profile)
 #   session_search - Search and recall past conversations (FTS5 + Gemini Flash summarization)
-#   tts          - Text-to-speech (Edge TTS free, ElevenLabs, OpenAI)
+#   tts          - Text-to-speech (Edge TTS free, ElevenLabs, OpenAI, MiniMax)
 #   cronjob      - Schedule and manage automated tasks (CLI-only)
 #   rl           - RL training tools (Tinker-Atropos)
 #
@@ -636,10 +660,14 @@ platform_toolsets:
 # Voice Transcription (Speech-to-Text)
 # =============================================================================
 # Automatically transcribe voice messages on messaging platforms.
-# Requires OPENAI_API_KEY in .env (uses OpenAI Whisper API directly).
+# Providers: local (free, faster-whisper) | groq (free tier) | openai (Whisper API) | mistral (Voxtral Transcribe)
+# Set the corresponding API key in .env: GROQ_API_KEY, OPENAI_API_KEY, or MISTRAL_API_KEY.
 stt:
   enabled: true
+  # provider: "local"          # auto-detected if omitted
   model: "whisper-1"  # whisper-1 (cheapest) | gpt-4o-mini-transcribe | gpt-4o-transcribe
+  # mistral:
+  #   model: "voxtral-mini-latest"  # voxtral-mini-latest | voxtral-mini-2602
 
 # =============================================================================
 # Response Pacing (Messaging Platforms)
@@ -788,6 +816,27 @@ display:
   #   tool_prefix: "╎"                       # Tool output line prefix (default: ┊)
   #
   skin: default
+
+# =============================================================================
+# Model Aliases — short names for /model command
+# =============================================================================
+# Map short aliases to exact (model, provider, base_url) tuples.
+# Used by /model tab completion and resolve_alias().
+# Aliases are checked BEFORE the models.dev catalog, so they can route
+# to endpoints not in the catalog (e.g. Ollama Cloud, local servers).
+#
+# model_aliases:
+#   opus:
+#     model: claude-opus-4-6
+#     provider: anthropic
+#   qwen:
+#     model: "qwen3.5:397b"
+#     provider: custom
+#     base_url: "https://ollama.com/v1"
+#   glm:
+#     model: glm-4.7
+#     provider: custom
+#     base_url: "https://ollama.com/v1"
 
 # =============================================================================
 # Privacy

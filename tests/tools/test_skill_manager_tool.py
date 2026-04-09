@@ -1,6 +1,7 @@
 """Tests for tools/skill_manager_tool.py — skill creation, editing, and deletion."""
 
 import json
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
 
@@ -22,6 +23,15 @@ from tools.skill_manager_tool import (
     ALLOWED_SUBDIRS,
     MAX_NAME_LENGTH,
 )
+
+
+@contextmanager
+def _skill_dir(tmp_path):
+    """Patch both SKILLS_DIR and get_all_skills_dirs so _find_skill searches
+    only the temp directory — not the real ~/.hermes/skills/."""
+    with patch("tools.skill_manager_tool.SKILLS_DIR", tmp_path), \
+         patch("agent.skill_utils.get_all_skills_dirs", return_value=[tmp_path]):
+        yield
 
 
 VALID_SKILL_CONTENT = """\
@@ -179,32 +189,32 @@ class TestValidateFilePath:
 
 class TestCreateSkill:
     def test_create_skill(self, tmp_path):
-        with patch("tools.skill_manager_tool.SKILLS_DIR", tmp_path):
+        with _skill_dir(tmp_path):
             result = _create_skill("my-skill", VALID_SKILL_CONTENT)
         assert result["success"] is True
         assert (tmp_path / "my-skill" / "SKILL.md").exists()
 
     def test_create_with_category(self, tmp_path):
-        with patch("tools.skill_manager_tool.SKILLS_DIR", tmp_path):
+        with _skill_dir(tmp_path):
             result = _create_skill("my-skill", VALID_SKILL_CONTENT, category="devops")
         assert result["success"] is True
         assert (tmp_path / "devops" / "my-skill" / "SKILL.md").exists()
         assert result["category"] == "devops"
 
     def test_create_duplicate_blocked(self, tmp_path):
-        with patch("tools.skill_manager_tool.SKILLS_DIR", tmp_path):
+        with _skill_dir(tmp_path):
             _create_skill("my-skill", VALID_SKILL_CONTENT)
             result = _create_skill("my-skill", VALID_SKILL_CONTENT)
         assert result["success"] is False
         assert "already exists" in result["error"]
 
     def test_create_invalid_name(self, tmp_path):
-        with patch("tools.skill_manager_tool.SKILLS_DIR", tmp_path):
+        with _skill_dir(tmp_path):
             result = _create_skill("Invalid Name!", VALID_SKILL_CONTENT)
         assert result["success"] is False
 
     def test_create_invalid_content(self, tmp_path):
-        with patch("tools.skill_manager_tool.SKILLS_DIR", tmp_path):
+        with _skill_dir(tmp_path):
             result = _create_skill("my-skill", "no frontmatter here")
         assert result["success"] is False
 
@@ -212,7 +222,8 @@ class TestCreateSkill:
         skills_dir = tmp_path / "skills"
         skills_dir.mkdir()
 
-        with patch("tools.skill_manager_tool.SKILLS_DIR", skills_dir):
+        with patch("tools.skill_manager_tool.SKILLS_DIR", skills_dir), \
+             patch("agent.skill_utils.get_all_skills_dirs", return_value=[skills_dir]):
             result = _create_skill("my-skill", VALID_SKILL_CONTENT, category="../escape")
 
         assert result["success"] is False
@@ -224,7 +235,8 @@ class TestCreateSkill:
         skills_dir.mkdir()
         outside = tmp_path / "outside"
 
-        with patch("tools.skill_manager_tool.SKILLS_DIR", skills_dir):
+        with patch("tools.skill_manager_tool.SKILLS_DIR", skills_dir), \
+             patch("agent.skill_utils.get_all_skills_dirs", return_value=[skills_dir]):
             result = _create_skill("my-skill", VALID_SKILL_CONTENT, category=str(outside))
 
         assert result["success"] is False
@@ -234,7 +246,7 @@ class TestCreateSkill:
 
 class TestEditSkill:
     def test_edit_existing_skill(self, tmp_path):
-        with patch("tools.skill_manager_tool.SKILLS_DIR", tmp_path):
+        with _skill_dir(tmp_path):
             _create_skill("my-skill", VALID_SKILL_CONTENT)
             result = _edit_skill("my-skill", VALID_SKILL_CONTENT_2)
         assert result["success"] is True
@@ -242,13 +254,13 @@ class TestEditSkill:
         assert "Updated description" in content
 
     def test_edit_nonexistent_skill(self, tmp_path):
-        with patch("tools.skill_manager_tool.SKILLS_DIR", tmp_path):
+        with _skill_dir(tmp_path):
             result = _edit_skill("nonexistent", VALID_SKILL_CONTENT)
         assert result["success"] is False
         assert "not found" in result["error"]
 
     def test_edit_invalid_content_rejected(self, tmp_path):
-        with patch("tools.skill_manager_tool.SKILLS_DIR", tmp_path):
+        with _skill_dir(tmp_path):
             _create_skill("my-skill", VALID_SKILL_CONTENT)
             result = _edit_skill("my-skill", "no frontmatter")
         assert result["success"] is False
@@ -259,7 +271,7 @@ class TestEditSkill:
 
 class TestPatchSkill:
     def test_patch_unique_match(self, tmp_path):
-        with patch("tools.skill_manager_tool.SKILLS_DIR", tmp_path):
+        with _skill_dir(tmp_path):
             _create_skill("my-skill", VALID_SKILL_CONTENT)
             result = _patch_skill("my-skill", "Do the thing.", "Do the new thing.")
         assert result["success"] is True
@@ -267,11 +279,11 @@ class TestPatchSkill:
         assert "Do the new thing." in content
 
     def test_patch_nonexistent_string(self, tmp_path):
-        with patch("tools.skill_manager_tool.SKILLS_DIR", tmp_path):
+        with _skill_dir(tmp_path):
             _create_skill("my-skill", VALID_SKILL_CONTENT)
             result = _patch_skill("my-skill", "this text does not exist", "replacement")
         assert result["success"] is False
-        assert "not found" in result["error"]
+        assert "not found" in result["error"].lower() or "could not find" in result["error"].lower()
 
     def test_patch_ambiguous_match_rejected(self, tmp_path):
         content = """\
@@ -284,11 +296,11 @@ description: A test skill.
 
 word word
 """
-        with patch("tools.skill_manager_tool.SKILLS_DIR", tmp_path):
+        with _skill_dir(tmp_path):
             _create_skill("my-skill", content)
             result = _patch_skill("my-skill", "word", "replaced")
         assert result["success"] is False
-        assert "matched" in result["error"]
+        assert "match" in result["error"].lower()
 
     def test_patch_replace_all(self, tmp_path):
         content = """\
@@ -301,39 +313,39 @@ description: A test skill.
 
 word word
 """
-        with patch("tools.skill_manager_tool.SKILLS_DIR", tmp_path):
+        with _skill_dir(tmp_path):
             _create_skill("my-skill", content)
             result = _patch_skill("my-skill", "word", "replaced", replace_all=True)
         assert result["success"] is True
 
     def test_patch_supporting_file(self, tmp_path):
-        with patch("tools.skill_manager_tool.SKILLS_DIR", tmp_path):
+        with _skill_dir(tmp_path):
             _create_skill("my-skill", VALID_SKILL_CONTENT)
             _write_file("my-skill", "references/api.md", "old text here")
             result = _patch_skill("my-skill", "old text", "new text", file_path="references/api.md")
         assert result["success"] is True
 
     def test_patch_skill_not_found(self, tmp_path):
-        with patch("tools.skill_manager_tool.SKILLS_DIR", tmp_path):
+        with _skill_dir(tmp_path):
             result = _patch_skill("nonexistent", "old", "new")
         assert result["success"] is False
 
 
 class TestDeleteSkill:
     def test_delete_existing(self, tmp_path):
-        with patch("tools.skill_manager_tool.SKILLS_DIR", tmp_path):
+        with _skill_dir(tmp_path):
             _create_skill("my-skill", VALID_SKILL_CONTENT)
             result = _delete_skill("my-skill")
         assert result["success"] is True
         assert not (tmp_path / "my-skill").exists()
 
     def test_delete_nonexistent(self, tmp_path):
-        with patch("tools.skill_manager_tool.SKILLS_DIR", tmp_path):
+        with _skill_dir(tmp_path):
             result = _delete_skill("nonexistent")
         assert result["success"] is False
 
     def test_delete_cleans_empty_category_dir(self, tmp_path):
-        with patch("tools.skill_manager_tool.SKILLS_DIR", tmp_path):
+        with _skill_dir(tmp_path):
             _create_skill("my-skill", VALID_SKILL_CONTENT, category="devops")
             _delete_skill("my-skill")
         assert not (tmp_path / "devops").exists()
@@ -346,19 +358,19 @@ class TestDeleteSkill:
 
 class TestWriteFile:
     def test_write_reference_file(self, tmp_path):
-        with patch("tools.skill_manager_tool.SKILLS_DIR", tmp_path):
+        with _skill_dir(tmp_path):
             _create_skill("my-skill", VALID_SKILL_CONTENT)
             result = _write_file("my-skill", "references/api.md", "# API\nEndpoint docs.")
         assert result["success"] is True
         assert (tmp_path / "my-skill" / "references" / "api.md").exists()
 
     def test_write_to_nonexistent_skill(self, tmp_path):
-        with patch("tools.skill_manager_tool.SKILLS_DIR", tmp_path):
+        with _skill_dir(tmp_path):
             result = _write_file("nonexistent", "references/doc.md", "content")
         assert result["success"] is False
 
     def test_write_to_disallowed_path(self, tmp_path):
-        with patch("tools.skill_manager_tool.SKILLS_DIR", tmp_path):
+        with _skill_dir(tmp_path):
             _create_skill("my-skill", VALID_SKILL_CONTENT)
             result = _write_file("my-skill", "secret/evil.py", "malicious")
         assert result["success"] is False
@@ -366,7 +378,7 @@ class TestWriteFile:
 
 class TestRemoveFile:
     def test_remove_existing_file(self, tmp_path):
-        with patch("tools.skill_manager_tool.SKILLS_DIR", tmp_path):
+        with _skill_dir(tmp_path):
             _create_skill("my-skill", VALID_SKILL_CONTENT)
             _write_file("my-skill", "references/api.md", "content")
             result = _remove_file("my-skill", "references/api.md")
@@ -374,7 +386,7 @@ class TestRemoveFile:
         assert not (tmp_path / "my-skill" / "references" / "api.md").exists()
 
     def test_remove_nonexistent_file(self, tmp_path):
-        with patch("tools.skill_manager_tool.SKILLS_DIR", tmp_path):
+        with _skill_dir(tmp_path):
             _create_skill("my-skill", VALID_SKILL_CONTENT)
             result = _remove_file("my-skill", "references/nope.md")
         assert result["success"] is False
@@ -387,27 +399,27 @@ class TestRemoveFile:
 
 class TestSkillManageDispatcher:
     def test_unknown_action(self, tmp_path):
-        with patch("tools.skill_manager_tool.SKILLS_DIR", tmp_path):
+        with _skill_dir(tmp_path):
             raw = skill_manage(action="explode", name="test")
         result = json.loads(raw)
         assert result["success"] is False
         assert "Unknown action" in result["error"]
 
     def test_create_without_content(self, tmp_path):
-        with patch("tools.skill_manager_tool.SKILLS_DIR", tmp_path):
+        with _skill_dir(tmp_path):
             raw = skill_manage(action="create", name="test")
         result = json.loads(raw)
         assert result["success"] is False
         assert "content" in result["error"].lower()
 
     def test_patch_without_old_string(self, tmp_path):
-        with patch("tools.skill_manager_tool.SKILLS_DIR", tmp_path):
+        with _skill_dir(tmp_path):
             raw = skill_manage(action="patch", name="test")
         result = json.loads(raw)
         assert result["success"] is False
 
     def test_full_create_via_dispatcher(self, tmp_path):
-        with patch("tools.skill_manager_tool.SKILLS_DIR", tmp_path):
+        with _skill_dir(tmp_path):
             raw = skill_manage(action="create", name="test-skill", content=VALID_SKILL_CONTENT)
         result = json.loads(raw)
         assert result["success"] is True

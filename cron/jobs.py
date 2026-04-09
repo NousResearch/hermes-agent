@@ -375,6 +375,7 @@ def create_job(
     model: Optional[str] = None,
     provider: Optional[str] = None,
     base_url: Optional[str] = None,
+    script: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Create a new cron job.
@@ -391,6 +392,9 @@ def create_job(
         model: Optional per-job model override
         provider: Optional per-job provider override
         base_url: Optional per-job base URL override
+        script: Optional path to a Python script whose stdout is injected into the
+                prompt each run.  The script runs before the agent turn, and its output
+                is prepended as context.  Useful for data collection / change detection.
 
     Returns:
         The created job dict
@@ -419,6 +423,8 @@ def create_job(
     normalized_model = normalized_model or None
     normalized_provider = normalized_provider or None
     normalized_base_url = normalized_base_url or None
+    normalized_script = str(script).strip() if isinstance(script, str) else None
+    normalized_script = normalized_script or None
 
     label_source = (prompt or (normalized_skills[0] if normalized_skills else None)) or "cron job"
     job = {
@@ -430,6 +436,7 @@ def create_job(
         "model": normalized_model,
         "provider": normalized_provider,
         "base_url": normalized_base_url,
+        "script": normalized_script,
         "schedule": parsed_schedule,
         "schedule_display": parsed_schedule.get("display", schedule),
         "repeat": {
@@ -567,12 +574,16 @@ def remove_job(job_id: str) -> bool:
     return False
 
 
-def mark_job_run(job_id: str, success: bool, error: Optional[str] = None):
+def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
+                 delivery_error: Optional[str] = None):
     """
     Mark a job as having been run.
     
     Updates last_run_at, last_status, increments completed count,
     computes next_run_at, and auto-deletes if repeat limit reached.
+
+    ``delivery_error`` is tracked separately from the agent error — a job
+    can succeed (agent produced output) but fail delivery (platform down).
     """
     jobs = load_jobs()
     for i, job in enumerate(jobs):
@@ -581,6 +592,8 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None):
             job["last_run_at"] = now
             job["last_status"] = "ok" if success else "error"
             job["last_error"] = error if not success else None
+            # Track delivery failures separately — cleared on successful delivery
+            job["last_delivery_error"] = delivery_error
             
             # Increment completed count
             if job.get("repeat"):

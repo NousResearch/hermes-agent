@@ -57,6 +57,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("undo", "Remove the last user/assistant exchange", "Session"),
     CommandDef("title", "Set a title for the current session", "Session",
                args_hint="[name]"),
+    CommandDef("branch", "Branch the current session (explore a different path)", "Session",
+               aliases=("fork",), args_hint="[name]"),
     CommandDef("compress", "Manually compress conversation context", "Session"),
     CommandDef("rollback", "List or restore filesystem checkpoints", "Session",
                args_hint="[number]"),
@@ -67,10 +69,13 @@ COMMAND_REGISTRY: list[CommandDef] = [
                gateway_only=True),
     CommandDef("background", "Run a prompt in the background", "Session",
                aliases=("bg",), args_hint="<prompt>"),
+    CommandDef("btw", "Ephemeral side question using session context (no tools, not persisted)", "Session",
+               args_hint="<question>"),
     CommandDef("queue", "Queue a prompt for the next turn (doesn't interrupt)", "Session",
                aliases=("q",), args_hint="<prompt>"),
     CommandDef("status", "Show session info", "Session",
                gateway_only=True),
+    CommandDef("profile", "Show active profile name and home directory", "Info"),
     CommandDef("sethome", "Set this chat as the home channel", "Session",
                gateway_only=True, aliases=("set-home",)),
     CommandDef("resume", "Resume a previously-named session", "Session",
@@ -79,6 +84,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
     # Configuration
     CommandDef("config", "Show current configuration", "Configuration",
                cli_only=True),
+    CommandDef("model", "Switch model for this session", "Configuration", args_hint="[model] [--global]"),
     CommandDef("provider", "Show available providers and current provider",
                "Configuration"),
     CommandDef("prompt", "View/set custom system prompt", "Configuration",
@@ -90,6 +96,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("verbose", "Cycle tool progress display: off -> new -> all -> verbose",
                "Configuration", cli_only=True,
                gateway_config_gate="display.tool_progress_command"),
+    CommandDef("yolo", "Toggle YOLO mode (skip all dangerous command approvals)",
+               "Configuration"),
     CommandDef("reasoning", "Manage reasoning effort and display", "Configuration",
                args_hint="[level|show|hide]",
                subcommands=("none", "low", "minimal", "medium", "high", "xhigh", "show", "hide", "on", "off")),
@@ -118,8 +126,10 @@ COMMAND_REGISTRY: list[CommandDef] = [
                "Tools & Skills", cli_only=True),
 
     # Info
+    CommandDef("commands", "Browse all commands and skills (paginated)", "Info",
+               gateway_only=True, args_hint="[page]"),
     CommandDef("help", "Show available commands", "Info"),
-    CommandDef("usage", "Show token usage for the current session", "Info"),
+    CommandDef("usage", "Show token usage and rate limits for the current session", "Info"),
     CommandDef("insights", "Show usage insights and analytics", "Info",
                args_hint="[days]"),
     CommandDef("platforms", "Show gateway/messaging platform status", "Info",
@@ -283,16 +293,8 @@ def _resolve_config_gates() -> set[str]:
     if not gated:
         return set()
     try:
-        import yaml
-        config_path = os.path.join(
-            os.getenv("HERMES_HOME", os.path.expanduser("~/.hermes")),
-            "config.yaml",
-        )
-        if os.path.exists(config_path):
-            with open(config_path, encoding="utf-8") as f:
-                cfg = yaml.safe_load(f) or {}
-        else:
-            cfg = {}
+        from hermes_cli.config import read_raw_config
+        cfg = read_raw_config()
     except Exception:
         return set()
     result: set[str] = set()
@@ -356,9 +358,257 @@ def telegram_bot_commands() -> list[tuple[str, str]]:
     for cmd in COMMAND_REGISTRY:
         if not _is_gateway_available(cmd, overrides):
             continue
-        tg_name = cmd.name.replace("-", "_")
-        result.append((tg_name, cmd.description))
+        tg_name = _sanitize_telegram_name(cmd.name)
+        if tg_name:
+            result.append((tg_name, cmd.description))
     return result
+
+
+_CMD_NAME_LIMIT = 32
+"""Max command name length shared by Telegram and Discord."""
+
+# Backward-compat alias — tests and external code may reference the old name.
+_TG_NAME_LIMIT = _CMD_NAME_LIMIT
+
+# Telegram Bot API allows only lowercase a-z, 0-9, and underscores in
+# command names.  This regex strips everything else after initial conversion.
+_TG_INVALID_CHARS = re.compile(r"[^a-z0-9_]")
+_TG_MULTI_UNDERSCORE = re.compile(r"_{2,}")
+
+
+def _sanitize_telegram_name(raw: str) -> str:
+    """Convert a command/skill/plugin name to a valid Telegram command name.
+
+    Telegram requires: 1-32 chars, lowercase a-z, digits 0-9, underscores only.
+    Steps: lowercase → replace hyphens with underscores → strip all other
+    invalid characters → collapse consecutive underscores → strip leading/
+    trailing underscores.
+    """
+    name = raw.lower().replace("-", "_")
+    name = _TG_INVALID_CHARS.sub("", name)
+    name = _TG_MULTI_UNDERSCORE.sub("_", name)
+    return name.strip("_")
+
+
+def _clamp_command_names(
+    entries: list[tuple[str, str]],
+    reserved: set[str],
+) -> list[tuple[str, str]]:
+    """Enforce 32-char command name limit with collision avoidance.
+
+    Both Telegram and Discord cap slash command names at 32 characters.
+    Names exceeding the limit are truncated.  If truncation creates a duplicate
+    (against *reserved* names or earlier entries in the same batch), the name is
+    shortened to 31 chars and a digit ``0``-``9`` is appended to differentiate.
+    If all 10 digit slots are taken the entry is silently dropped.
+    """
+    used: set[str] = set(reserved)
+    result: list[tuple[str, str]] = []
+    for name, desc in entries:
+        if len(name) > _CMD_NAME_LIMIT:
+            candidate = name[:_CMD_NAME_LIMIT]
+            if candidate in used:
+                prefix = name[:_CMD_NAME_LIMIT - 1]
+                for digit in range(10):
+                    candidate = f"{prefix}{digit}"
+                    if candidate not in used:
+                        break
+                else:
+                    # All 10 digit slots exhausted — skip entry
+                    continue
+            name = candidate
+        if name in used:
+            continue
+        used.add(name)
+        result.append((name, desc))
+    return result
+
+
+# Backward-compat alias.
+_clamp_telegram_names = _clamp_command_names
+
+
+# ---------------------------------------------------------------------------
+# Shared skill/plugin collection for gateway platforms
+# ---------------------------------------------------------------------------
+
+def _collect_gateway_skill_entries(
+    platform: str,
+    max_slots: int,
+    reserved_names: set[str],
+    desc_limit: int = 100,
+    sanitize_name: "Callable[[str], str] | None" = None,
+) -> tuple[list[tuple[str, str, str]], int]:
+    """Collect plugin + skill entries for a gateway platform.
+
+    Priority order:
+      1. Plugin slash commands (take precedence over skills)
+      2. Built-in skill commands (fill remaining slots, alphabetical)
+
+    Only skills are trimmed when the cap is reached.
+    Hub-installed skills are excluded.  Per-platform disabled skills are
+    excluded.
+
+    Args:
+        platform: Platform identifier for per-platform skill filtering
+            (``"telegram"``, ``"discord"``, etc.).
+        max_slots: Maximum number of entries to return (remaining slots after
+            built-in/core commands).
+        reserved_names: Names already taken by built-in commands.  Mutated
+            in-place as new names are added.
+        desc_limit: Max description length (40 for Telegram, 100 for Discord).
+        sanitize_name: Optional name transform applied before clamping, e.g.
+            :func:`_sanitize_telegram_name` for Telegram.  May return an
+            empty string to signal "skip this entry".
+
+    Returns:
+        ``(entries, hidden_count)`` where *entries* is a list of
+        ``(name, description, cmd_key)`` triples and *hidden_count* is the
+        number of skill entries dropped due to the cap.  ``cmd_key`` is the
+        original ``/skill-name`` key from :func:`get_skill_commands`.
+    """
+    all_entries: list[tuple[str, str, str]] = []
+
+    # --- Tier 1: Plugin slash commands (never trimmed) ---------------------
+    plugin_pairs: list[tuple[str, str]] = []
+    try:
+        from hermes_cli.plugins import get_plugin_manager
+        pm = get_plugin_manager()
+        plugin_cmds = getattr(pm, "_plugin_commands", {})
+        for cmd_name in sorted(plugin_cmds):
+            name = sanitize_name(cmd_name) if sanitize_name else cmd_name
+            if not name:
+                continue
+            desc = "Plugin command"
+            if len(desc) > desc_limit:
+                desc = desc[:desc_limit - 3] + "..."
+            plugin_pairs.append((name, desc))
+    except Exception:
+        pass
+
+    plugin_pairs = _clamp_command_names(plugin_pairs, reserved_names)
+    reserved_names.update(n for n, _ in plugin_pairs)
+    # Plugins have no cmd_key — use empty string as placeholder
+    for n, d in plugin_pairs:
+        all_entries.append((n, d, ""))
+
+    # --- Tier 2: Built-in skill commands (trimmed at cap) -----------------
+    _platform_disabled: set[str] = set()
+    try:
+        from agent.skill_utils import get_disabled_skill_names
+        _platform_disabled = get_disabled_skill_names(platform=platform)
+    except Exception:
+        pass
+
+    skill_triples: list[tuple[str, str, str]] = []
+    try:
+        from agent.skill_commands import get_skill_commands
+        from tools.skills_tool import SKILLS_DIR
+        _skills_dir = str(SKILLS_DIR.resolve())
+        _hub_dir = str((SKILLS_DIR / ".hub").resolve())
+        skill_cmds = get_skill_commands()
+        for cmd_key in sorted(skill_cmds):
+            info = skill_cmds[cmd_key]
+            skill_path = info.get("skill_md_path", "")
+            if not skill_path.startswith(_skills_dir):
+                continue
+            if skill_path.startswith(_hub_dir):
+                continue
+            skill_name = info.get("name", "")
+            if skill_name in _platform_disabled:
+                continue
+            raw_name = cmd_key.lstrip("/")
+            name = sanitize_name(raw_name) if sanitize_name else raw_name
+            if not name:
+                continue
+            desc = info.get("description", "")
+            if len(desc) > desc_limit:
+                desc = desc[:desc_limit - 3] + "..."
+            skill_triples.append((name, desc, cmd_key))
+    except Exception:
+        pass
+
+    # Clamp names; _clamp_command_names works on (name, desc) pairs so we
+    # need to zip/unzip.
+    skill_pairs = [(n, d) for n, d, _ in skill_triples]
+    key_by_pair = {(n, d): k for n, d, k in skill_triples}
+    skill_pairs = _clamp_command_names(skill_pairs, reserved_names)
+
+    # Skills fill remaining slots — only tier that gets trimmed
+    remaining = max(0, max_slots - len(all_entries))
+    hidden_count = max(0, len(skill_pairs) - remaining)
+    for n, d in skill_pairs[:remaining]:
+        all_entries.append((n, d, key_by_pair.get((n, d), "")))
+
+    return all_entries[:max_slots], hidden_count
+
+
+# ---------------------------------------------------------------------------
+# Platform-specific wrappers
+# ---------------------------------------------------------------------------
+
+def telegram_menu_commands(max_commands: int = 100) -> tuple[list[tuple[str, str]], int]:
+    """Return Telegram menu commands capped to the Bot API limit.
+
+    Priority order (higher priority = never bumped by overflow):
+      1. Core CommandDef commands (always included)
+      2. Plugin slash commands (take precedence over skills)
+      3. Built-in skill commands (fill remaining slots, alphabetical)
+
+    Skills are the only tier that gets trimmed when the cap is hit.
+    User-installed hub skills are excluded — accessible via /skills.
+    Skills disabled for the ``"telegram"`` platform (via ``hermes skills
+    config``) are excluded from the menu entirely.
+
+    Returns:
+        (menu_commands, hidden_count) where hidden_count is the number of
+        skill commands omitted due to the cap.
+    """
+    core_commands = list(telegram_bot_commands())
+    reserved_names = {n for n, _ in core_commands}
+    all_commands = list(core_commands)
+
+    remaining_slots = max(0, max_commands - len(all_commands))
+    entries, hidden_count = _collect_gateway_skill_entries(
+        platform="telegram",
+        max_slots=remaining_slots,
+        reserved_names=reserved_names,
+        desc_limit=40,
+        sanitize_name=_sanitize_telegram_name,
+    )
+    # Drop the cmd_key — Telegram only needs (name, desc) pairs.
+    all_commands.extend((n, d) for n, d, _k in entries)
+    return all_commands[:max_commands], hidden_count
+
+
+def discord_skill_commands(
+    max_slots: int,
+    reserved_names: set[str],
+) -> tuple[list[tuple[str, str, str]], int]:
+    """Return skill entries for Discord slash command registration.
+
+    Same priority and filtering logic as :func:`telegram_menu_commands`
+    (plugins > skills, hub excluded, per-platform disabled excluded), but
+    adapted for Discord's constraints:
+
+    - Hyphens are allowed in names (no ``-`` → ``_`` sanitization)
+    - Descriptions capped at 100 chars (Discord's per-field max)
+
+    Args:
+        max_slots: Available command slots (100 minus existing built-in count).
+        reserved_names: Names of already-registered built-in commands.
+
+    Returns:
+        ``(entries, hidden_count)`` where *entries* is a list of
+        ``(discord_name, description, cmd_key)`` triples.  ``cmd_key`` is
+        the original ``/skill-name`` key needed for the slash handler callback.
+    """
+    return _collect_gateway_skill_entries(
+        platform="discord",
+        max_slots=max_slots,
+        reserved_names=set(reserved_names),  # copy — don't mutate caller's set
+        desc_limit=100,
+    )
 
 
 def slack_subcommand_map() -> dict[str, str]:
@@ -607,6 +857,39 @@ class SlashCommandCompleter(Completer):
             )
             count += 1
 
+    def _model_completions(self, sub_text: str, sub_lower: str):
+        """Yield completions for /model from config aliases + built-in aliases."""
+        seen = set()
+        # Config-based direct aliases (preferred — include provider info)
+        try:
+            from hermes_cli.model_switch import (
+                _ensure_direct_aliases, DIRECT_ALIASES, MODEL_ALIASES,
+            )
+            _ensure_direct_aliases()
+            for name, da in DIRECT_ALIASES.items():
+                if name.startswith(sub_lower) and name != sub_lower:
+                    seen.add(name)
+                    yield Completion(
+                        name,
+                        start_position=-len(sub_text),
+                        display=name,
+                        display_meta=f"{da.model} ({da.provider})",
+                    )
+            # Built-in catalog aliases not already covered
+            for name in sorted(MODEL_ALIASES.keys()):
+                if name in seen:
+                    continue
+                if name.startswith(sub_lower) and name != sub_lower:
+                    identity = MODEL_ALIASES[name]
+                    yield Completion(
+                        name,
+                        start_position=-len(sub_text),
+                        display=name,
+                        display_meta=f"{identity.vendor}/{identity.family}",
+                    )
+        except Exception:
+            pass
+
     def get_completions(self, document, complete_event):
         text = document.text_before_cursor
         if not text.startswith("/"):
@@ -627,6 +910,11 @@ class SlashCommandCompleter(Completer):
         if len(parts) > 1 or (len(parts) == 1 and text.endswith(" ")):
             sub_text = parts[1] if len(parts) > 1 else ""
             sub_lower = sub_text.lower()
+
+            # Dynamic model alias completions for /model
+            if " " not in sub_text and base_cmd == "/model":
+                yield from self._model_completions(sub_text, sub_lower)
+                return
 
             # Static subcommand completions
             if " " not in sub_text and base_cmd in SUBCOMMANDS:

@@ -3,7 +3,7 @@
 Verifies that:
 1. _is_session_expired() works from a SessionEntry alone (no source needed)
 2. The sync callback is no longer called in get_or_create_session
-3. _pre_flushed_sessions tracking works correctly
+3. memory_flushed flag persists across save/load cycles (prevents restart re-flush)
 4. The background watcher can detect expired sessions
 """
 
@@ -115,8 +115,8 @@ class TestIsSessionExpired:
 class TestGetOrCreateSessionNoCallback:
     """get_or_create_session should NOT call a sync flush callback."""
 
-    def test_auto_reset_cleans_pre_flushed_marker(self, idle_store):
-        """When a session auto-resets, the pre_flushed marker should be discarded."""
+    def test_auto_reset_creates_new_session_after_flush(self, idle_store):
+        """When a flushed session auto-resets, a new session_id is created."""
         source = SessionSource(
             platform=Platform.TELEGRAM,
             chat_id="123",
@@ -127,7 +127,7 @@ class TestGetOrCreateSessionNoCallback:
         old_sid = entry1.session_id
 
         # Simulate the watcher having flushed it
-        idle_store._pre_flushed_sessions.add(old_sid)
+        entry1.memory_flushed = True
 
         # Simulate the session going idle
         entry1.updated_at = datetime.now() - timedelta(minutes=120)
@@ -137,9 +137,8 @@ class TestGetOrCreateSessionNoCallback:
         entry2 = idle_store.get_or_create_session(source)
         assert entry2.session_id != old_sid
         assert entry2.was_auto_reset is True
-
-        # The old session_id should be removed from pre_flushed
-        assert old_sid not in idle_store._pre_flushed_sessions
+        # New session starts with memory_flushed=False
+        assert entry2.memory_flushed is False
 
     def test_no_sync_callback_invoked(self, idle_store):
         """No synchronous callback should block during auto-reset."""
@@ -160,21 +159,91 @@ class TestGetOrCreateSessionNoCallback:
         assert entry2.was_auto_reset is True
 
 
-class TestPreFlushedSessionsTracking:
-    """The _pre_flushed_sessions set should prevent double-flushing."""
+class TestMemoryFlushedFlag:
+    """The memory_flushed flag on SessionEntry prevents double-flushing."""
 
-    def test_starts_empty(self, idle_store):
-        assert len(idle_store._pre_flushed_sessions) == 0
+    def test_defaults_to_false(self):
+        entry = SessionEntry(
+            session_key="agent:main:telegram:dm:123",
+            session_id="sid_new",
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+            platform=Platform.TELEGRAM,
+            chat_type="dm",
+        )
+        assert entry.memory_flushed is False
 
-    def test_add_and_check(self, idle_store):
-        idle_store._pre_flushed_sessions.add("sid_old")
-        assert "sid_old" in idle_store._pre_flushed_sessions
-        assert "sid_other" not in idle_store._pre_flushed_sessions
+    def test_persists_through_save_load(self, idle_store):
+        """memory_flushed=True must survive a save/load cycle (simulates restart)."""
+        key = "agent:main:discord:thread:789"
+        entry = SessionEntry(
+            session_key=key,
+            session_id="sid_flushed",
+            created_at=datetime.now() - timedelta(hours=5),
+            updated_at=datetime.now() - timedelta(hours=5),
+            platform=Platform.DISCORD,
+            chat_type="thread",
+            memory_flushed=True,
+        )
+        idle_store._entries[key] = entry
+        idle_store._save()
 
-    def test_discard_on_reset(self, idle_store):
-        """discard should remove without raising if not present."""
-        idle_store._pre_flushed_sessions.add("sid_a")
-        idle_store._pre_flushed_sessions.discard("sid_a")
-        assert "sid_a" not in idle_store._pre_flushed_sessions
-        # discard on non-existent should not raise
-        idle_store._pre_flushed_sessions.discard("sid_nonexistent")
+        # Simulate restart: clear in-memory state, reload from disk
+        idle_store._entries.clear()
+        idle_store._loaded = False
+        idle_store._ensure_loaded()
+
+        reloaded = idle_store._entries[key]
+        assert reloaded.memory_flushed is True
+
+    def test_unflushed_entry_survives_restart_as_unflushed(self, idle_store):
+        """An entry without memory_flushed stays False after reload."""
+        key = "agent:main:telegram:dm:456"
+        entry = SessionEntry(
+            session_key=key,
+            session_id="sid_not_flushed",
+            created_at=datetime.now() - timedelta(hours=2),
+            updated_at=datetime.now() - timedelta(hours=2),
+            platform=Platform.TELEGRAM,
+            chat_type="dm",
+        )
+        idle_store._entries[key] = entry
+        idle_store._save()
+
+        idle_store._entries.clear()
+        idle_store._loaded = False
+        idle_store._ensure_loaded()
+
+        reloaded = idle_store._entries[key]
+        assert reloaded.memory_flushed is False
+
+    def test_roundtrip_to_dict_from_dict(self):
+        """to_dict/from_dict must preserve memory_flushed."""
+        entry = SessionEntry(
+            session_key="agent:main:telegram:dm:999",
+            session_id="sid_rt",
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+            platform=Platform.TELEGRAM,
+            chat_type="dm",
+            memory_flushed=True,
+        )
+        d = entry.to_dict()
+        assert d["memory_flushed"] is True
+
+        restored = SessionEntry.from_dict(d)
+        assert restored.memory_flushed is True
+
+    def test_legacy_entry_without_field_defaults_false(self):
+        """Old sessions.json entries missing memory_flushed should default to False."""
+        data = {
+            "session_key": "agent:main:telegram:dm:legacy",
+            "session_id": "sid_legacy",
+            "created_at": datetime.now().isoformat(),
+            "updated_at": datetime.now().isoformat(),
+            "platform": "telegram",
+            "chat_type": "dm",
+            # no memory_flushed key
+        }
+        entry = SessionEntry.from_dict(data)
+        assert entry.memory_flushed is False

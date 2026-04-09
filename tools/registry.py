@@ -27,10 +27,12 @@ class ToolEntry:
     __slots__ = (
         "name", "toolset", "schema", "handler", "check_fn",
         "requires_env", "is_async", "description", "emoji",
+        "max_result_size_chars",
     )
 
     def __init__(self, name, toolset, schema, handler, check_fn,
-                 requires_env, is_async, description, emoji):
+                 requires_env, is_async, description, emoji,
+                 max_result_size_chars=None):
         self.name = name
         self.toolset = toolset
         self.schema = schema
@@ -40,6 +42,7 @@ class ToolEntry:
         self.is_async = is_async
         self.description = description
         self.emoji = emoji
+        self.max_result_size_chars = max_result_size_chars
 
 
 class ToolRegistry:
@@ -64,6 +67,7 @@ class ToolRegistry:
         is_async: bool = False,
         description: str = "",
         emoji: str = "",
+        max_result_size_chars: int | float | None = None,
     ):
         """Register a tool.  Called at module-import time by each tool file."""
         existing = self._tools.get(name)
@@ -83,6 +87,7 @@ class ToolRegistry:
             is_async=is_async,
             description=description or schema.get("description", ""),
             emoji=emoji,
+            max_result_size_chars=max_result_size_chars,
         )
         if check_fn and toolset not in self._toolset_checks:
             self._toolset_checks[toolset] = check_fn
@@ -163,6 +168,16 @@ class ToolRegistry:
     # ------------------------------------------------------------------
     # Query helpers  (replace redundant dicts in model_tools.py)
     # ------------------------------------------------------------------
+
+    def get_max_result_size(self, name: str, default: int | float | None = None) -> int | float:
+        """Return per-tool max result size, or *default* (or global default)."""
+        entry = self._tools.get(name)
+        if entry and entry.max_result_size_chars is not None:
+            return entry.max_result_size_chars
+        if default is not None:
+            return default
+        from tools.budget_config import DEFAULT_RESULT_SIZE_CHARS
+        return DEFAULT_RESULT_SIZE_CHARS
 
     def get_all_tool_names(self) -> List[str]:
         """Return sorted list of all registered tool names."""
@@ -273,3 +288,48 @@ class ToolRegistry:
 
 # Module-level singleton
 registry = ToolRegistry()
+
+
+# ---------------------------------------------------------------------------
+# Helpers for tool response serialization
+# ---------------------------------------------------------------------------
+# Every tool handler must return a JSON string.  These helpers eliminate the
+# boilerplate ``json.dumps({"error": msg}, ensure_ascii=False)`` that appears
+# hundreds of times across tool files.
+#
+# Usage:
+#   from tools.registry import registry, tool_error, tool_result
+#
+#   return tool_error("something went wrong")
+#   return tool_error("not found", code=404)
+#   return tool_result(success=True, data=payload)
+#   return tool_result(items)            # pass a dict directly
+
+
+def tool_error(message, **extra) -> str:
+    """Return a JSON error string for tool handlers.
+
+    >>> tool_error("file not found")
+    '{"error": "file not found"}'
+    >>> tool_error("bad input", success=False)
+    '{"error": "bad input", "success": false}'
+    """
+    result = {"error": str(message)}
+    if extra:
+        result.update(extra)
+    return json.dumps(result, ensure_ascii=False)
+
+
+def tool_result(data=None, **kwargs) -> str:
+    """Return a JSON result string for tool handlers.
+
+    Accepts a dict positional arg *or* keyword arguments (not both):
+
+    >>> tool_result(success=True, count=42)
+    '{"success": true, "count": 42}'
+    >>> tool_result({"key": "value"})
+    '{"key": "value"}'
+    """
+    if data is not None:
+        return json.dumps(data, ensure_ascii=False)
+    return json.dumps(kwargs, ensure_ascii=False)

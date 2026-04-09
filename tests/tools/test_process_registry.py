@@ -2,6 +2,9 @@
 
 import json
 import os
+import signal
+import subprocess
+import sys
 import time
 import pytest
 from pathlib import Path
@@ -43,6 +46,23 @@ def _make_session(
         output_buffer=output,
     )
     return s
+
+
+def _spawn_python_sleep(seconds: float) -> subprocess.Popen:
+    """Spawn a portable short-lived Python sleep process."""
+    return subprocess.Popen(
+        [sys.executable, "-c", f"import time; time.sleep({seconds})"],
+    )
+
+
+def _wait_until(predicate, timeout: float = 5.0, interval: float = 0.05) -> bool:
+    """Poll a predicate until it returns truthy or the timeout elapses."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(interval)
+    return False
 
 
 # =========================================================================
@@ -349,6 +369,88 @@ class TestCheckpoint:
             assert recovered == 1
             assert len(registry.pending_watchers) == 0
 
+    def test_recovery_keeps_live_checkpoint_entries(self, registry, tmp_path):
+        checkpoint = tmp_path / "procs.json"
+        checkpoint.write_text(json.dumps([{
+            "session_id": "proc_live",
+            "command": "sleep 999",
+            "pid": os.getpid(),
+            "task_id": "t1",
+            "session_key": "sk1",
+        }]))
+
+        with patch("tools.process_registry.CHECKPOINT_PATH", checkpoint):
+            recovered = registry.recover_from_checkpoint()
+            assert recovered == 1
+            assert registry.get("proc_live") is not None
+
+            data = json.loads(checkpoint.read_text())
+            assert len(data) == 1
+            assert data[0]["session_id"] == "proc_live"
+            assert data[0]["pid"] == os.getpid()
+            assert data != []
+
+    def test_recovery_skips_explicit_sandbox_backed_entries(self, registry, tmp_path):
+        checkpoint = tmp_path / "procs.json"
+        original = [{
+            "session_id": "proc_remote",
+            "command": "sleep 999",
+            "pid": os.getpid(),
+            "task_id": "t1",
+            "pid_scope": "sandbox",
+        }]
+        checkpoint.write_text(json.dumps(original))
+
+        with patch("tools.process_registry.CHECKPOINT_PATH", checkpoint):
+            recovered = registry.recover_from_checkpoint()
+            assert recovered == 0
+            assert registry.get("proc_remote") is None
+
+            data = json.loads(checkpoint.read_text())
+            assert data == []
+
+    def test_detached_recovered_process_eventually_exits(self, registry, tmp_path):
+        proc = _spawn_python_sleep(0.4)
+        checkpoint = tmp_path / "procs.json"
+        checkpoint.write_text(json.dumps([{
+            "session_id": "proc_live",
+            "command": "python -c 'import time; time.sleep(0.4)'",
+            "pid": proc.pid,
+            "task_id": "t1",
+            "session_key": "sk1",
+        }]))
+
+        try:
+            with patch("tools.process_registry.CHECKPOINT_PATH", checkpoint):
+                recovered = registry.recover_from_checkpoint()
+                assert recovered == 1
+
+                session = registry.get("proc_live")
+                assert session is not None
+                assert session.detached is True
+
+                proc.wait(timeout=5)
+
+                assert _wait_until(
+                    lambda: registry.get("proc_live") is not None
+                    and registry.get("proc_live").exited,
+                    timeout=5,
+                )
+
+                poll_result = registry.poll("proc_live")
+                assert poll_result["status"] == "exited"
+
+                wait_result = registry.wait("proc_live", timeout=1)
+                assert wait_result["status"] == "exited"
+        finally:
+            if proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except Exception:
+                    proc.kill()
+                    proc.wait(timeout=5)
+
 
 # =========================================================================
 # Kill process
@@ -364,6 +466,27 @@ class TestKillProcess:
         registry._finished[s.id] = s
         result = registry.kill_process(s.id)
         assert result["status"] == "already_exited"
+
+    def test_kill_detached_session_uses_host_pid(self, registry):
+        s = _make_session(sid="proc_detached", command="sleep 999")
+        s.pid = 424242
+        s.detached = True
+        registry._running[s.id] = s
+
+        calls = []
+
+        def fake_kill(pid, sig):
+            calls.append((pid, sig))
+
+        try:
+            with patch("tools.process_registry.os.kill", side_effect=fake_kill):
+                result = registry.kill_process(s.id)
+
+            assert result["status"] == "killed"
+            assert (424242, 0) in calls
+            assert (424242, signal.SIGTERM) in calls
+        finally:
+            registry._running.pop(s.id, None)
 
 
 # =========================================================================

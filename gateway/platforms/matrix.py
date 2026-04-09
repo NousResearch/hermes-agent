@@ -5,13 +5,19 @@ matrix-nio Python SDK.  Supports optional end-to-end encryption (E2EE)
 when installed with ``pip install "matrix-nio[e2e]"``.
 
 Environment variables:
-    MATRIX_HOMESERVER       Homeserver URL (e.g. https://matrix.example.org)
-    MATRIX_ACCESS_TOKEN     Access token (preferred auth method)
-    MATRIX_USER_ID          Full user ID (@bot:server) — required for password login
-    MATRIX_PASSWORD         Password (alternative to access token)
-    MATRIX_ENCRYPTION       Set "true" to enable E2EE
+    MATRIX_HOMESERVER           Homeserver URL (e.g. https://matrix.example.org)
+    MATRIX_ACCESS_TOKEN         Access token (preferred auth method)
+    MATRIX_USER_ID              Full user ID (@bot:server) — required for password login
+    MATRIX_PASSWORD             Password (alternative to access token)
+    MATRIX_ENCRYPTION           Set "true" to enable E2EE
+    MATRIX_DEVICE_ID            Stable device ID for E2EE persistence across restarts
     MATRIX_ALLOWED_USERS    Comma-separated Matrix user IDs (@user:server)
     MATRIX_HOME_ROOM        Room ID for cron/notification delivery
+    MATRIX_REACTIONS        Set "false" to disable processing lifecycle reactions
+                            (eyes/checkmark/cross). Default: true
+    MATRIX_REQUIRE_MENTION      Require @mention in rooms (default: true)
+    MATRIX_FREE_RESPONSE_ROOMS  Comma-separated room IDs exempt from mention requirement
+    MATRIX_AUTO_THREAD          Auto-create threads for room messages (default: true)
 """
 
 from __future__ import annotations
@@ -26,6 +32,8 @@ import re
 import time
 from pathlib import Path
 from typing import Any, Dict, Optional, Set
+
+from html import escape as _html_escape
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
@@ -49,6 +57,29 @@ _STORE_DIR = _get_hermes_dir("platforms/matrix/store", "matrix/store")
 # Grace period: ignore messages older than this many seconds before startup.
 _STARTUP_GRACE_SECONDS = 5
 
+# E2EE key export file for persistence across restarts.
+_KEY_EXPORT_FILE = _STORE_DIR / "exported_keys.txt"
+_KEY_EXPORT_PASSPHRASE = "hermes-matrix-e2ee-keys"
+
+# Pending undecrypted events: cap and TTL for retry buffer.
+_MAX_PENDING_EVENTS = 100
+_PENDING_EVENT_TTL = 300  # seconds — stop retrying after 5 min
+
+
+_E2EE_INSTALL_HINT = (
+    "Install with: pip install 'matrix-nio[e2e]'  "
+    "(requires libolm C library)"
+)
+
+
+def _check_e2ee_deps() -> bool:
+    """Return True if matrix-nio E2EE dependencies (python-olm) are available."""
+    try:
+        from nio.crypto import ENCRYPTION_ENABLED
+        return bool(ENCRYPTION_ENABLED)
+    except (ImportError, AttributeError):
+        return False
+
 
 def check_matrix_requirements() -> bool:
     """Return True if the Matrix adapter can be used."""
@@ -64,13 +95,26 @@ def check_matrix_requirements() -> bool:
         return False
     try:
         import nio  # noqa: F401
-        return True
     except ImportError:
         logger.warning(
             "Matrix: matrix-nio not installed. "
             "Run: pip install 'matrix-nio[e2e]'"
         )
         return False
+
+    # If encryption is requested, verify E2EE deps are available at startup
+    # rather than silently degrading to plaintext-only at connect time.
+    encryption_requested = os.getenv("MATRIX_ENCRYPTION", "").lower() in ("true", "1", "yes")
+    if encryption_requested and not _check_e2ee_deps():
+        logger.error(
+            "Matrix: MATRIX_ENCRYPTION=true but E2EE dependencies are missing. %s. "
+            "Without this, encrypted rooms will not work. "
+            "Set MATRIX_ENCRYPTION=false to disable E2EE.",
+            _E2EE_INSTALL_HINT,
+        )
+        return False
+
+    return True
 
 
 class MatrixAdapter(BasePlatformAdapter):
@@ -96,6 +140,10 @@ class MatrixAdapter(BasePlatformAdapter):
             "encryption",
             os.getenv("MATRIX_ENCRYPTION", "").lower() in ("true", "1", "yes"),
         )
+        self._device_id: str = (
+            config.extra.get("device_id", "")
+            or os.getenv("MATRIX_DEVICE_ID", "")
+        )
 
         self._client: Any = None  # nio.AsyncClient
         self._sync_task: Optional[asyncio.Task] = None
@@ -110,6 +158,19 @@ class MatrixAdapter(BasePlatformAdapter):
         from collections import deque
         self._processed_events: deque = deque(maxlen=1000)
         self._processed_events_set: set = set()
+
+        # Buffer for undecrypted events pending key receipt.
+        # Each entry: (room, event, timestamp)
+        self._pending_megolm: list = []
+
+        # Thread participation tracking (for require_mention bypass)
+        self._bot_participated_threads: set = self._load_participated_threads()
+        self._MAX_TRACKED_THREADS = 500
+
+        # Reactions: configurable via MATRIX_REACTIONS (default: true).
+        self._reactions_enabled: bool = os.getenv(
+            "MATRIX_REACTIONS", "true"
+        ).lower() not in ("false", "0", "no")
 
     def _is_duplicate_event(self, event_id) -> bool:
         """Return True if this event was already processed. Tracks the ID otherwise."""
@@ -141,24 +202,42 @@ class MatrixAdapter(BasePlatformAdapter):
         _STORE_DIR.mkdir(parents=True, exist_ok=True)
 
         # Create the client.
+        # When a stable device_id is configured, pass it to the constructor
+        # so matrix-nio binds to it from the start (important for E2EE
+        # crypto-store persistence across restarts).
+        ctor_device_id = self._device_id or None
         if self._encryption:
+            if not _check_e2ee_deps():
+                logger.error(
+                    "Matrix: MATRIX_ENCRYPTION=true but E2EE dependencies are missing. %s. "
+                    "Refusing to connect — encrypted rooms would silently fail.",
+                    _E2EE_INSTALL_HINT,
+                )
+                return False
             try:
                 client = nio.AsyncClient(
                     self._homeserver,
                     self._user_id or "",
+                    device_id=ctor_device_id,
                     store_path=store_path,
                 )
-                logger.info("Matrix: E2EE enabled (store: %s)", store_path)
-            except Exception as exc:
-                logger.warning(
-                    "Matrix: failed to create E2EE client (%s), "
-                    "falling back to plain client. Install: "
-                    "pip install 'matrix-nio[e2e]'",
-                    exc,
+                logger.info(
+                    "Matrix: E2EE enabled (store: %s%s)",
+                    store_path,
+                    f", device_id={self._device_id}" if self._device_id else "",
                 )
-                client = nio.AsyncClient(self._homeserver, self._user_id or "")
+            except Exception as exc:
+                logger.error(
+                    "Matrix: failed to create E2EE client: %s. %s",
+                    exc, _E2EE_INSTALL_HINT,
+                )
+                return False
         else:
-            client = nio.AsyncClient(self._homeserver, self._user_id or "")
+            client = nio.AsyncClient(
+                self._homeserver,
+                self._user_id or "",
+                device_id=ctor_device_id,
+            )
 
         self._client = client
 
@@ -177,30 +256,36 @@ class MatrixAdapter(BasePlatformAdapter):
                 if resolved_user_id:
                     self._user_id = resolved_user_id
 
+                # Prefer the user-configured device_id (MATRIX_DEVICE_ID) so
+                # the bot reuses a stable identity across restarts.  Fall back
+                # to whatever whoami returned.
+                effective_device_id = self._device_id or resolved_device_id
+
                 # restore_login() is the matrix-nio path that binds the access
                 # token to a specific device and loads the crypto store.
-                if resolved_device_id and hasattr(client, "restore_login"):
+                if effective_device_id and hasattr(client, "restore_login"):
                     client.restore_login(
                         self._user_id or resolved_user_id,
-                        resolved_device_id,
+                        effective_device_id,
                         self._access_token,
                     )
                 else:
                     if self._user_id:
                         client.user_id = self._user_id
-                    if resolved_device_id:
-                        client.device_id = resolved_device_id
+                    if effective_device_id:
+                        client.device_id = effective_device_id
                     client.access_token = self._access_token
                     if self._encryption:
                         logger.warning(
                             "Matrix: access-token login did not restore E2EE state; "
-                            "encrypted rooms may fail until a device_id is available"
+                            "encrypted rooms may fail until a device_id is available. "
+                            "Set MATRIX_DEVICE_ID to a stable value."
                         )
 
                 logger.info(
                     "Matrix: using access token for %s%s",
                     self._user_id or "(unknown user)",
-                    f" (device {resolved_device_id})" if resolved_device_id else "",
+                    f" (device {effective_device_id})" if effective_device_id else "",
                 )
             else:
                 logger.error(
@@ -232,11 +317,26 @@ class MatrixAdapter(BasePlatformAdapter):
                 logger.info("Matrix: E2EE crypto initialized")
             except Exception as exc:
                 logger.warning("Matrix: crypto init issue: %s", exc)
+
+            # Import previously exported Megolm keys (survives restarts).
+            if _KEY_EXPORT_FILE.exists():
+                try:
+                    await client.import_keys(
+                        str(_KEY_EXPORT_FILE), _KEY_EXPORT_PASSPHRASE,
+                    )
+                    logger.info("Matrix: imported Megolm keys from backup")
+                except Exception as exc:
+                    logger.debug("Matrix: could not import keys: %s", exc)
         elif self._encryption:
-            logger.warning(
-                "Matrix: E2EE requested but crypto store is not loaded; "
-                "encrypted rooms may fail"
+            # E2EE was requested but the crypto store failed to load —
+            # this means encrypted rooms will silently not work.  Hard-fail.
+            logger.error(
+                "Matrix: E2EE requested but crypto store is not loaded — "
+                "cannot decrypt or encrypt messages. %s",
+                _E2EE_INSTALL_HINT,
             )
+            await client.close()
+            return False
 
         # Register event callbacks.
         client.add_event_callback(self._on_room_message, nio.RoomMessageText)
@@ -244,7 +344,22 @@ class MatrixAdapter(BasePlatformAdapter):
         client.add_event_callback(self._on_room_message_media, nio.RoomMessageAudio)
         client.add_event_callback(self._on_room_message_media, nio.RoomMessageVideo)
         client.add_event_callback(self._on_room_message_media, nio.RoomMessageFile)
+        for encrypted_media_cls in (
+            getattr(nio, "RoomEncryptedImage", None),
+            getattr(nio, "RoomEncryptedAudio", None),
+            getattr(nio, "RoomEncryptedVideo", None),
+            getattr(nio, "RoomEncryptedFile", None),
+        ):
+            if encrypted_media_cls is not None:
+                client.add_event_callback(self._on_room_message_media, encrypted_media_cls)
         client.add_event_callback(self._on_invite, nio.InviteMemberEvent)
+
+        # Reaction events (m.reaction).
+        if hasattr(nio, "ReactionEvent"):
+            client.add_event_callback(self._on_reaction, nio.ReactionEvent)
+        else:
+            # Older matrix-nio versions: use UnknownEvent fallback.
+            client.add_event_callback(self._on_unknown_event, nio.UnknownEvent)
 
         # If E2EE: handle encrypted events.
         if self._encryption and hasattr(client, "olm"):
@@ -285,6 +400,18 @@ class MatrixAdapter(BasePlatformAdapter):
                 await self._sync_task
             except (asyncio.CancelledError, Exception):
                 pass
+
+        # Export Megolm keys before closing so the next restart can decrypt
+        # events that used sessions from this run.
+        if self._client and self._encryption and getattr(self._client, "olm", None):
+            try:
+                _STORE_DIR.mkdir(parents=True, exist_ok=True)
+                await self._client.export_keys(
+                    str(_KEY_EXPORT_FILE), _KEY_EXPORT_PASSPHRASE,
+                )
+                logger.info("Matrix: exported Megolm keys for next restart")
+            except Exception as exc:
+                logger.debug("Matrix: could not export keys on disconnect: %s", exc)
 
         if self._client:
             await self._client.close()
@@ -459,6 +586,11 @@ class MatrixAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Download an image URL and upload it to Matrix."""
+        from tools.url_safety import is_safe_url
+        if not is_safe_url(image_url):
+            logger.warning("Matrix: blocked unsafe image URL (SSRF protection)")
+            return await super().send_image(chat_id, image_url, caption, reply_to, metadata=metadata)
+
         try:
             # Try aiohttp first (always available), fall back to httpx
             try:
@@ -563,6 +695,7 @@ class MatrixAdapter(BasePlatformAdapter):
             io.BytesIO(data),
             content_type=content_type,
             filename=filename,
+            filesize=len(data),
         )
         if not isinstance(resp, nio.UploadResponse):
             err = getattr(resp, "message", str(resp))
@@ -642,6 +775,13 @@ class MatrixAdapter(BasePlatformAdapter):
                 if isinstance(resp, nio.SyncError):
                     if self._closing:
                         return
+                    err_msg = str(getattr(resp, "message", resp)).lower()
+                    if "m_unknown_token" in err_msg or "m_forbidden" in err_msg or "401" in err_msg:
+                        logger.error(
+                            "Matrix: permanent auth error from sync: %s — stopping sync",
+                            getattr(resp, "message", resp),
+                        )
+                        return
                     logger.warning(
                         "Matrix: sync returned %s: %s — retrying in 5s",
                         type(resp).__name__,
@@ -656,6 +796,12 @@ class MatrixAdapter(BasePlatformAdapter):
             except Exception as exc:
                 if self._closing:
                     return
+                # Detect permanent auth/permission failures that will never
+                # succeed on retry — stop syncing instead of looping forever.
+                err_str = str(exc).lower()
+                if "401" in err_str or "403" in err_str or "unauthorized" in err_str or "forbidden" in err_str:
+                    logger.error("Matrix: permanent auth error: %s — stopping sync", exc)
+                    return
                 logger.warning("Matrix: sync error: %s — retrying in 5s", exc)
                 await asyncio.sleep(5)
 
@@ -665,17 +811,22 @@ class MatrixAdapter(BasePlatformAdapter):
         Hermes uses a custom sync loop instead of matrix-nio's sync_forever(),
         so we need to explicitly drive the key management work that sync_forever()
         normally handles for encrypted rooms.
+
+        Also auto-trusts all devices (so senders share session keys with us)
+        and retries decryption for any buffered MegolmEvents.
         """
         client = self._client
         if not client or not self._encryption or not getattr(client, "olm", None):
             return
+
+        did_query_keys = client.should_query_keys
 
         tasks = [asyncio.create_task(client.send_to_device_messages())]
 
         if client.should_upload_keys:
             tasks.append(asyncio.create_task(client.keys_upload()))
 
-        if client.should_query_keys:
+        if did_query_keys:
             tasks.append(asyncio.create_task(client.keys_query()))
 
         if client.should_claim_keys:
@@ -690,6 +841,111 @@ class MatrixAdapter(BasePlatformAdapter):
                 raise
             except Exception as exc:
                 logger.warning("Matrix: E2EE maintenance task failed: %s", exc)
+
+        # After key queries, auto-trust all devices so senders share keys with
+        # us.  For a bot this is the right default — we want to decrypt
+        # everything, not enforce manual verification.
+        if did_query_keys:
+            self._auto_trust_devices()
+
+        # Retry any buffered undecrypted events now that new keys may have
+        # arrived (from key requests, key queries, or to-device forwarding).
+        if self._pending_megolm:
+            await self._retry_pending_decryptions()
+
+    def _auto_trust_devices(self) -> None:
+        """Trust/verify all unverified devices we know about.
+
+        When other clients see our device as verified, they proactively share
+        Megolm session keys with us.  Without this, many clients will refuse
+        to include an unverified device in key distributions.
+        """
+        client = self._client
+        if not client:
+            return
+
+        device_store = getattr(client, "device_store", None)
+        if not device_store:
+            return
+
+        own_device = getattr(client, "device_id", None)
+        trusted_count = 0
+
+        try:
+            # DeviceStore.__iter__ yields OlmDevice objects directly.
+            for device in device_store:
+                if getattr(device, "device_id", None) == own_device:
+                    continue
+                if not getattr(device, "verified", False):
+                    client.verify_device(device)
+                    trusted_count += 1
+        except Exception as exc:
+            logger.debug("Matrix: auto-trust error: %s", exc)
+
+        if trusted_count:
+            logger.info("Matrix: auto-trusted %d new device(s)", trusted_count)
+
+    async def _retry_pending_decryptions(self) -> None:
+        """Retry decrypting buffered MegolmEvents after new keys arrive."""
+        import nio
+
+        client = self._client
+        if not client or not self._pending_megolm:
+            return
+
+        now = time.time()
+        still_pending: list = []
+
+        for room, event, ts in self._pending_megolm:
+            # Drop events that have aged past the TTL.
+            if now - ts > _PENDING_EVENT_TTL:
+                logger.debug(
+                    "Matrix: dropping expired pending event %s (age %.0fs)",
+                    getattr(event, "event_id", "?"), now - ts,
+                )
+                continue
+
+            try:
+                decrypted = client.decrypt_event(event)
+            except Exception:
+                # Still missing the key — keep in buffer.
+                still_pending.append((room, event, ts))
+                continue
+
+            if isinstance(decrypted, nio.MegolmEvent):
+                # decrypt_event returned the same undecryptable event.
+                still_pending.append((room, event, ts))
+                continue
+
+            logger.info(
+                "Matrix: decrypted buffered event %s (%s)",
+                getattr(event, "event_id", "?"),
+                type(decrypted).__name__,
+            )
+
+            # Route to the appropriate handler based on decrypted type.
+            try:
+                if isinstance(decrypted, nio.RoomMessageText):
+                    await self._on_room_message(room, decrypted)
+                elif isinstance(
+                    decrypted,
+                    (nio.RoomMessageImage, nio.RoomMessageAudio,
+                     nio.RoomMessageVideo, nio.RoomMessageFile),
+                ):
+                    await self._on_room_message_media(room, decrypted)
+                else:
+                    logger.debug(
+                        "Matrix: decrypted event %s has unhandled type %s",
+                        getattr(event, "event_id", "?"),
+                        type(decrypted).__name__,
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "Matrix: error processing decrypted event %s: %s",
+                    getattr(event, "event_id", "?"), exc,
+                )
+
+        self._pending_megolm = still_pending
 
     # ------------------------------------------------------------------
     # Event callbacks
@@ -712,13 +968,29 @@ class MatrixAdapter(BasePlatformAdapter):
         if event_ts and event_ts < self._startup_ts - _STARTUP_GRACE_SECONDS:
             return
 
-        # Handle decrypted MegolmEvents — extract the inner event.
+        # Handle undecryptable MegolmEvents: request the missing session key
+        # and buffer the event for retry once the key arrives.
         if isinstance(event, nio.MegolmEvent):
-            # Failed to decrypt.
             logger.warning(
-                "Matrix: could not decrypt event %s in %s",
+                "Matrix: could not decrypt event %s in %s — requesting key",
                 event.event_id, room.room_id,
             )
+
+            # Ask other devices in the room to forward the session key.
+            try:
+                resp = await self._client.request_room_key(event)
+                if hasattr(resp, "event_id") or not isinstance(resp, Exception):
+                    logger.debug(
+                        "Matrix: room key request sent for session %s",
+                        getattr(event, "session_id", "?"),
+                    )
+            except Exception as exc:
+                logger.debug("Matrix: room key request failed: %s", exc)
+
+            # Buffer for retry on next maintenance cycle.
+            self._pending_megolm.append((room, event, time.time()))
+            if len(self._pending_megolm) > _MAX_PENDING_EVENTS:
+                self._pending_megolm = self._pending_megolm[-_MAX_PENDING_EVENTS:]
             return
 
         # Skip edits (m.replace relation).
@@ -741,6 +1013,30 @@ class MatrixAdapter(BasePlatformAdapter):
         thread_id = None
         if relates_to.get("rel_type") == "m.thread":
             thread_id = relates_to.get("event_id")
+
+        # Require-mention gating.
+        if not is_dm:
+            free_rooms_raw = os.getenv("MATRIX_FREE_RESPONSE_ROOMS", "")
+            free_rooms = {r.strip() for r in free_rooms_raw.split(",") if r.strip()}
+            require_mention = os.getenv("MATRIX_REQUIRE_MENTION", "true").lower() not in ("false", "0", "no")
+            is_free_room = room.room_id in free_rooms
+            in_bot_thread = bool(thread_id and thread_id in self._bot_participated_threads)
+
+            formatted_body = source_content.get("formatted_body")
+            if require_mention and not is_free_room and not in_bot_thread:
+                if not self._is_bot_mentioned(body, formatted_body):
+                    return
+
+        # Strip mention from body when present (including in DMs).
+        if self._is_bot_mentioned(body, source_content.get("formatted_body")):
+            body = self._strip_mention(body)
+
+        # Auto-thread: create a thread for non-DM, non-threaded messages.
+        if not is_dm and not thread_id:
+            auto_thread = os.getenv("MATRIX_AUTO_THREAD", "true").lower() in ("true", "1", "yes")
+            if auto_thread:
+                thread_id = event.event_id
+                self._track_thread(thread_id)
 
         # Reply-to detection.
         reply_to = None
@@ -766,7 +1062,7 @@ class MatrixAdapter(BasePlatformAdapter):
 
         # Message type.
         msg_type = MessageType.TEXT
-        if body.startswith("!") or body.startswith("/"):
+        if body.startswith(("!", "/")):
             msg_type = MessageType.COMMAND
 
         source = self.build_source(
@@ -785,6 +1081,12 @@ class MatrixAdapter(BasePlatformAdapter):
             message_id=event.event_id,
             reply_to_message_id=reply_to,
         )
+
+        if thread_id:
+            self._track_thread(thread_id)
+
+        # Acknowledge receipt so the room shows as read (fire-and-forget).
+        self._background_read_receipt(room.room_id, event.event_id)
 
         await self.handle_message(msg_event)
 
@@ -817,47 +1119,132 @@ class MatrixAdapter(BasePlatformAdapter):
         # Use the MIME type from the event's content info when available,
         # falling back to category-level MIME types for downstream matching
         # (gateway/run.py checks startswith("image/"), startswith("audio/"), etc.)
-        content_info = getattr(event, "content", {}) if isinstance(getattr(event, "content", None), dict) else {}
-        event_mimetype = (content_info.get("info") or {}).get("mimetype", "")
+        source_content = getattr(event, "source", {}).get("content", {})
+        if not isinstance(source_content, dict):
+            source_content = {}
+        event_content = getattr(event, "content", {})
+        if not isinstance(event_content, dict):
+            event_content = {}
+        content_info = event_content.get("info") if isinstance(event_content, dict) else {}
+        if not isinstance(content_info, dict) or not content_info:
+            content_info = source_content.get("info", {}) if isinstance(source_content, dict) else {}
+        event_mimetype = (
+            (content_info.get("mimetype") if isinstance(content_info, dict) else None)
+            or getattr(event, "mimetype", "")
+            or ""
+        )
+        # For encrypted media, the URL may be in file.url instead of event.url.
+        file_content = source_content.get("file", {}) if isinstance(source_content, dict) else {}
+        if not url and isinstance(file_content, dict):
+            url = file_content.get("url", "") or ""
+            if url and url.startswith("mxc://"):
+                http_url = self._mxc_to_http(url)
+
         media_type = "application/octet-stream"
         msg_type = MessageType.DOCUMENT
+
+        # Safely resolve encrypted media classes — they may not exist on older
+        # nio versions, and in test environments nio may be mocked (MagicMock
+        # auto-attributes are not valid types for isinstance).
+        def _safe_isinstance(obj, cls_name):
+            cls = getattr(nio, cls_name, None)
+            if cls is None or not isinstance(cls, type):
+                return False
+            return isinstance(obj, cls)
+
+        is_encrypted_image = _safe_isinstance(event, "RoomEncryptedImage")
+        is_encrypted_audio = _safe_isinstance(event, "RoomEncryptedAudio")
+        is_encrypted_video = _safe_isinstance(event, "RoomEncryptedVideo")
+        is_encrypted_file = _safe_isinstance(event, "RoomEncryptedFile")
+        is_encrypted_media = any((is_encrypted_image, is_encrypted_audio, is_encrypted_video, is_encrypted_file))
         is_voice_message = False
-        
-        if isinstance(event, nio.RoomMessageImage):
+
+        if isinstance(event, nio.RoomMessageImage) or is_encrypted_image:
             msg_type = MessageType.PHOTO
             media_type = event_mimetype or "image/png"
-        elif isinstance(event, nio.RoomMessageAudio):
-            # Check for MSC3245 voice flag: org.matrix.msc3245.voice: {}
-            source_content = getattr(event, "source", {}).get("content", {})
+        elif isinstance(event, nio.RoomMessageAudio) or is_encrypted_audio:
             if source_content.get("org.matrix.msc3245.voice") is not None:
                 is_voice_message = True
                 msg_type = MessageType.VOICE
             else:
                 msg_type = MessageType.AUDIO
             media_type = event_mimetype or "audio/ogg"
-        elif isinstance(event, nio.RoomMessageVideo):
+        elif isinstance(event, nio.RoomMessageVideo) or is_encrypted_video:
             msg_type = MessageType.VIDEO
             media_type = event_mimetype or "video/mp4"
         elif event_mimetype:
             media_type = event_mimetype
 
-        # For images, download and cache locally so vision tools can access them.
-        # Matrix MXC URLs require authentication, so direct URL access fails.
+        # Cache media locally when downstream tools need a real file path:
+        # - photos (vision tools can't access MXC URLs)
+        # - voice messages (transcription tools need local files)
+        # - any encrypted media (HTTP fallback would point at ciphertext)
         cached_path = None
-        if msg_type == MessageType.PHOTO and url:
+        should_cache_locally = (
+            msg_type == MessageType.PHOTO or is_voice_message or is_encrypted_media
+        )
+        if should_cache_locally and url:
             try:
-                ext_map = {
-                    "image/jpeg": ".jpg", "image/png": ".png",
-                    "image/gif": ".gif", "image/webp": ".webp",
-                }
-                ext = ext_map.get(event_mimetype, ".jpg")
-                download_resp = await self._client.download(url)
-                if isinstance(download_resp, nio.DownloadResponse):
-                    from gateway.platforms.base import cache_image_from_bytes
-                    cached_path = cache_image_from_bytes(download_resp.body, ext=ext)
-                    logger.info("[Matrix] Cached user image at %s", cached_path)
+                if is_voice_message:
+                    download_resp = await self._client.download(mxc=url)
+                else:
+                    download_resp = await self._client.download(url)
+                file_bytes = getattr(download_resp, "body", None)
+                if file_bytes is not None:
+                    if is_encrypted_media:
+                        from nio.crypto.attachments import decrypt_attachment
+
+                        hashes_value = getattr(event, "hashes", None)
+                        if hashes_value is None and isinstance(file_content, dict):
+                            hashes_value = file_content.get("hashes")
+                        hash_value = hashes_value.get("sha256") if isinstance(hashes_value, dict) else None
+
+                        key_value = getattr(event, "key", None)
+                        if key_value is None and isinstance(file_content, dict):
+                            key_value = file_content.get("key")
+                        if isinstance(key_value, dict):
+                            key_value = key_value.get("k")
+
+                        iv_value = getattr(event, "iv", None)
+                        if iv_value is None and isinstance(file_content, dict):
+                            iv_value = file_content.get("iv")
+
+                        if key_value and hash_value and iv_value:
+                            file_bytes = decrypt_attachment(file_bytes, key_value, hash_value, iv_value)
+                        else:
+                            logger.warning(
+                                "[Matrix] Encrypted media event missing decryption metadata for %s",
+                                event.event_id,
+                            )
+                            file_bytes = None
+
+                    if file_bytes is not None:
+                        from gateway.platforms.base import (
+                            cache_audio_from_bytes,
+                            cache_document_from_bytes,
+                            cache_image_from_bytes,
+                        )
+
+                        if msg_type == MessageType.PHOTO:
+                            ext_map = {
+                                "image/jpeg": ".jpg",
+                                "image/png": ".png",
+                                "image/gif": ".gif",
+                                "image/webp": ".webp",
+                            }
+                            ext = ext_map.get(media_type, ".jpg")
+                            cached_path = cache_image_from_bytes(file_bytes, ext=ext)
+                            logger.info("[Matrix] Cached user image at %s", cached_path)
+                        elif msg_type in (MessageType.AUDIO, MessageType.VOICE):
+                            ext = Path(body or ("voice.ogg" if is_voice_message else "audio.ogg")).suffix or ".ogg"
+                            cached_path = cache_audio_from_bytes(file_bytes, ext=ext)
+                        else:
+                            filename = body or (
+                                "video.mp4" if msg_type == MessageType.VIDEO else "document"
+                            )
+                            cached_path = cache_document_from_bytes(file_bytes, filename)
             except Exception as e:
-                logger.warning("[Matrix] Failed to cache image: %s", e)
+                logger.warning("[Matrix] Failed to cache media: %s", e)
 
         is_dm = self._dm_rooms.get(room.room_id, False)
         if not is_dm and room.member_count == 2:
@@ -865,36 +1252,34 @@ class MatrixAdapter(BasePlatformAdapter):
         chat_type = "dm" if is_dm else "group"
 
         # Thread/reply detection.
-        source_content = getattr(event, "source", {}).get("content", {})
         relates_to = source_content.get("m.relates_to", {})
         thread_id = None
         if relates_to.get("rel_type") == "m.thread":
             thread_id = relates_to.get("event_id")
 
-        # For voice messages, cache audio locally for transcription tools.
-        # Use the authenticated nio client to download (Matrix requires auth for media).
-        media_urls = [http_url] if http_url else None
-        media_types = [media_type] if http_url else None
-        
-        if is_voice_message and url and url.startswith("mxc://"):
-            try:
-                import nio
-                from gateway.platforms.base import cache_audio_from_bytes
-                
-                resp = await self._client.download(mxc=url)
-                if isinstance(resp, nio.MemoryDownloadResponse):
-                    # Extract extension from mimetype or default to .ogg
-                    ext = ".ogg"
-                    if media_type and "/" in media_type:
-                        subtype = media_type.split("/")[1]
-                        ext = f".{subtype}" if subtype else ".ogg"
-                    local_path = cache_audio_from_bytes(resp.body, ext)
-                    media_urls = [local_path]
-                    logger.debug("Matrix: cached voice message to %s", local_path)
-                else:
-                    logger.warning("Matrix: failed to download voice: %s", getattr(resp, "message", resp))
-            except Exception as e:
-                logger.warning("Matrix: failed to cache voice message, using HTTP URL: %s", e)
+        # Require-mention gating (media messages).
+        if not is_dm:
+            free_rooms_raw = os.getenv("MATRIX_FREE_RESPONSE_ROOMS", "")
+            free_rooms = {r.strip() for r in free_rooms_raw.split(",") if r.strip()}
+            require_mention = os.getenv("MATRIX_REQUIRE_MENTION", "true").lower() not in ("false", "0", "no")
+            is_free_room = room.room_id in free_rooms
+            in_bot_thread = bool(thread_id and thread_id in self._bot_participated_threads)
+
+            if require_mention and not is_free_room and not in_bot_thread:
+                formatted_body = source_content.get("formatted_body")
+                if not self._is_bot_mentioned(body, formatted_body):
+                    return
+
+        # Strip mention from body when present (including in DMs).
+        if self._is_bot_mentioned(body, source_content.get("formatted_body")):
+            body = self._strip_mention(body)
+
+        # Auto-thread: create a thread for non-DM, non-threaded messages.
+        if not is_dm and not thread_id:
+            auto_thread = os.getenv("MATRIX_AUTO_THREAD", "true").lower() in ("true", "1", "yes")
+            if auto_thread:
+                thread_id = event.event_id
+                self._track_thread(thread_id)
 
         source = self.build_source(
             chat_id=room.room_id,
@@ -904,9 +1289,8 @@ class MatrixAdapter(BasePlatformAdapter):
             thread_id=thread_id,
         )
 
-        # Use cached local path for images (voice messages already handled above).
-        if cached_path:
-            media_urls = [cached_path]
+        allow_http_fallback = bool(http_url) and not is_encrypted_media
+        media_urls = [cached_path] if cached_path else ([http_url] if allow_http_fallback else None)
         media_types = [media_type] if media_urls else None
 
         msg_event = MessageEvent(
@@ -918,6 +1302,12 @@ class MatrixAdapter(BasePlatformAdapter):
             media_urls=media_urls,
             media_types=media_types,
         )
+
+        if thread_id:
+            self._track_thread(thread_id)
+
+        # Acknowledge receipt so the room shows as read (fire-and-forget).
+        self._background_read_receipt(room.room_id, event.event_id)
 
         await self.handle_message(msg_event)
 
@@ -953,6 +1343,369 @@ class MatrixAdapter(BasePlatformAdapter):
                 )
         except Exception as exc:
             logger.warning("Matrix: error joining %s: %s", room.room_id, exc)
+
+    # ------------------------------------------------------------------
+    # Reactions (send, receive, processing lifecycle)
+    # ------------------------------------------------------------------
+
+    async def _send_reaction(
+        self, room_id: str, event_id: str, emoji: str,
+    ) -> bool:
+        """Send an emoji reaction to a message in a room."""
+        import nio
+
+        if not self._client:
+            return False
+        content = {
+            "m.relates_to": {
+                "rel_type": "m.annotation",
+                "event_id": event_id,
+                "key": emoji,
+            }
+        }
+        try:
+            resp = await self._client.room_send(
+                room_id, "m.reaction", content,
+                ignore_unverified_devices=True,
+            )
+            if isinstance(resp, nio.RoomSendResponse):
+                logger.debug("Matrix: sent reaction %s to %s", emoji, event_id)
+                return True
+            logger.debug("Matrix: reaction send failed: %s", resp)
+            return False
+        except Exception as exc:
+            logger.debug("Matrix: reaction send error: %s", exc)
+            return False
+
+    async def _redact_reaction(
+        self, room_id: str, reaction_event_id: str, reason: str = "",
+    ) -> bool:
+        """Remove a reaction by redacting its event."""
+        return await self.redact_message(room_id, reaction_event_id, reason)
+
+    async def on_processing_start(self, event: MessageEvent) -> None:
+        """Add eyes reaction when the agent starts processing a message."""
+        if not self._reactions_enabled:
+            return
+        msg_id = event.message_id
+        room_id = event.source.chat_id
+        if msg_id and room_id:
+            await self._send_reaction(room_id, msg_id, "\U0001f440")
+
+    async def on_processing_complete(
+        self, event: MessageEvent, success: bool,
+    ) -> None:
+        """Replace eyes with checkmark (success) or cross (failure)."""
+        if not self._reactions_enabled:
+            return
+        msg_id = event.message_id
+        room_id = event.source.chat_id
+        if not msg_id or not room_id:
+            return
+        # Note: Matrix doesn't support removing a specific reaction easily
+        # without tracking the reaction event_id. We send the new reaction;
+        # the eyes stays (acceptable UX — both are visible).
+        await self._send_reaction(
+            room_id, msg_id, "\u2705" if success else "\u274c",
+        )
+
+    async def _on_reaction(self, room: Any, event: Any) -> None:
+        """Handle incoming reaction events."""
+        if event.sender == self._user_id:
+            return
+        if self._is_duplicate_event(getattr(event, "event_id", None)):
+            return
+        # Log for now; future: trigger agent actions based on emoji.
+        reacts_to = getattr(event, "reacts_to", "")
+        key = getattr(event, "key", "")
+        logger.info(
+            "Matrix: reaction %s from %s on %s in %s",
+            key, event.sender, reacts_to, room.room_id,
+        )
+
+    async def _on_unknown_event(self, room: Any, event: Any) -> None:
+        """Fallback handler for events not natively parsed by matrix-nio.
+
+        Catches m.reaction on older nio versions that lack ReactionEvent.
+        """
+        source = getattr(event, "source", {})
+        if source.get("type") != "m.reaction":
+            return
+        content = source.get("content", {})
+        relates_to = content.get("m.relates_to", {})
+        if relates_to.get("rel_type") != "m.annotation":
+            return
+        if source.get("sender") == self._user_id:
+            return
+        logger.info(
+            "Matrix: reaction %s from %s on %s in %s",
+            relates_to.get("key", "?"),
+            source.get("sender", "?"),
+            relates_to.get("event_id", "?"),
+            room.room_id,
+        )
+
+    # ------------------------------------------------------------------
+    # Read receipts
+    # ------------------------------------------------------------------
+
+    def _background_read_receipt(self, room_id: str, event_id: str) -> None:
+        """Fire-and-forget read receipt with error logging."""
+        async def _send() -> None:
+            try:
+                await self.send_read_receipt(room_id, event_id)
+            except Exception as exc:  # pragma: no cover — defensive
+                logger.debug("Matrix: background read receipt failed: %s", exc)
+        asyncio.ensure_future(_send())
+
+    async def send_read_receipt(self, room_id: str, event_id: str) -> bool:
+        """Send a read receipt (m.read) for an event.
+
+        Also sets the fully-read marker so the room is marked as read
+        in all clients.
+        """
+        if not self._client:
+            return False
+        try:
+            if hasattr(self._client, "room_read_markers"):
+                await self._client.room_read_markers(
+                    room_id,
+                    fully_read_event=event_id,
+                    read_event=event_id,
+                )
+            else:
+                # Fallback for older matrix-nio.
+                await self._client.room_send(
+                    room_id, "m.receipt", {"event_id": event_id},
+                )
+            logger.debug("Matrix: sent read receipt for %s in %s", event_id, room_id)
+            return True
+        except Exception as exc:
+            logger.debug("Matrix: read receipt failed: %s", exc)
+            return False
+
+    # ------------------------------------------------------------------
+    # Message redaction
+    # ------------------------------------------------------------------
+
+    async def redact_message(
+        self, room_id: str, event_id: str, reason: str = "",
+    ) -> bool:
+        """Redact (delete) a message or event from a room."""
+        import nio
+
+        if not self._client:
+            return False
+        try:
+            resp = await self._client.room_redact(
+                room_id, event_id, reason=reason,
+            )
+            if isinstance(resp, nio.RoomRedactResponse):
+                logger.info("Matrix: redacted %s in %s", event_id, room_id)
+                return True
+            logger.warning("Matrix: redact failed: %s", resp)
+            return False
+        except Exception as exc:
+            logger.warning("Matrix: redact error: %s", exc)
+            return False
+
+    # ------------------------------------------------------------------
+    # Room history
+    # ------------------------------------------------------------------
+
+    async def fetch_room_history(
+        self,
+        room_id: str,
+        limit: int = 50,
+        start: str = "",
+    ) -> list:
+        """Fetch recent messages from a room.
+
+        Returns a list of dicts with keys: event_id, sender, body,
+        timestamp, type.  Uses the ``room_messages()`` API.
+        """
+        import nio
+
+        if not self._client:
+            return []
+        try:
+            resp = await self._client.room_messages(
+                room_id,
+                start=start or "",
+                limit=limit,
+                direction=nio.Api.MessageDirection.back
+                if hasattr(nio.Api, "MessageDirection")
+                else "b",
+            )
+        except Exception as exc:
+            logger.warning("Matrix: room_messages failed for %s: %s", room_id, exc)
+            return []
+
+        if not isinstance(resp, nio.RoomMessagesResponse):
+            logger.warning("Matrix: room_messages returned %s", type(resp).__name__)
+            return []
+
+        messages = []
+        for event in reversed(resp.chunk):
+            body = getattr(event, "body", "") or ""
+            messages.append({
+                "event_id": getattr(event, "event_id", ""),
+                "sender": getattr(event, "sender", ""),
+                "body": body,
+                "timestamp": getattr(event, "server_timestamp", 0),
+                "type": type(event).__name__,
+            })
+        return messages
+
+    # ------------------------------------------------------------------
+    # Room creation & management
+    # ------------------------------------------------------------------
+
+    async def create_room(
+        self,
+        name: str = "",
+        topic: str = "",
+        invite: Optional[list] = None,
+        is_direct: bool = False,
+        preset: str = "private_chat",
+    ) -> Optional[str]:
+        """Create a new Matrix room.
+
+        Args:
+            name: Human-readable room name.
+            topic: Room topic.
+            invite: List of user IDs to invite.
+            is_direct: Mark as a DM room.
+            preset: One of private_chat, public_chat, trusted_private_chat.
+
+        Returns the room_id on success, None on failure.
+        """
+        import nio
+
+        if not self._client:
+            return None
+        try:
+            resp = await self._client.room_create(
+                name=name or None,
+                topic=topic or None,
+                invite=invite or [],
+                is_direct=is_direct,
+                preset=getattr(
+                    nio.Api.RoomPreset if hasattr(nio.Api, "RoomPreset") else type("", (), {}),
+                    preset, None,
+                ) or preset,
+            )
+            if isinstance(resp, nio.RoomCreateResponse):
+                room_id = resp.room_id
+                self._joined_rooms.add(room_id)
+                logger.info("Matrix: created room %s (%s)", room_id, name or "unnamed")
+                return room_id
+            logger.warning("Matrix: room_create failed: %s", resp)
+            return None
+        except Exception as exc:
+            logger.warning("Matrix: room_create error: %s", exc)
+            return None
+
+    async def invite_user(self, room_id: str, user_id: str) -> bool:
+        """Invite a user to a room."""
+        import nio
+
+        if not self._client:
+            return False
+        try:
+            resp = await self._client.room_invite(room_id, user_id)
+            if isinstance(resp, nio.RoomInviteResponse):
+                logger.info("Matrix: invited %s to %s", user_id, room_id)
+                return True
+            logger.warning("Matrix: invite failed: %s", resp)
+            return False
+        except Exception as exc:
+            logger.warning("Matrix: invite error: %s", exc)
+            return False
+
+    # ------------------------------------------------------------------
+    # Presence
+    # ------------------------------------------------------------------
+
+    _VALID_PRESENCE_STATES = frozenset(("online", "offline", "unavailable"))
+
+    async def set_presence(self, state: str = "online", status_msg: str = "") -> bool:
+        """Set the bot's presence status."""
+        if not self._client:
+            return False
+        if state not in self._VALID_PRESENCE_STATES:
+            logger.warning("Matrix: invalid presence state %r", state)
+            return False
+        try:
+            if hasattr(self._client, "set_presence"):
+                await self._client.set_presence(state, status_msg=status_msg or None)
+                logger.debug("Matrix: presence set to %s", state)
+                return True
+        except Exception as exc:
+            logger.debug("Matrix: set_presence failed: %s", exc)
+        return False
+
+    # ------------------------------------------------------------------
+    # Emote & notice message types
+    # ------------------------------------------------------------------
+
+    async def send_emote(
+        self, chat_id: str, text: str, metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send an emote message (/me style action)."""
+        import nio
+
+        if not self._client or not text:
+            return SendResult(success=False, error="No client or empty text")
+
+        msg_content: Dict[str, Any] = {
+            "msgtype": "m.emote",
+            "body": text,
+        }
+        html = self._markdown_to_html(text)
+        if html and html != text:
+            msg_content["format"] = "org.matrix.custom.html"
+            msg_content["formatted_body"] = html
+
+        try:
+            resp = await self._client.room_send(
+                chat_id, "m.room.message", msg_content,
+                ignore_unverified_devices=True,
+            )
+            if isinstance(resp, nio.RoomSendResponse):
+                return SendResult(success=True, message_id=resp.event_id)
+            return SendResult(success=False, error=str(resp))
+        except Exception as exc:
+            return SendResult(success=False, error=str(exc))
+
+    async def send_notice(
+        self, chat_id: str, text: str, metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a notice message (bot-appropriate, non-alerting)."""
+        import nio
+
+        if not self._client or not text:
+            return SendResult(success=False, error="No client or empty text")
+
+        msg_content: Dict[str, Any] = {
+            "msgtype": "m.notice",
+            "body": text,
+        }
+        html = self._markdown_to_html(text)
+        if html and html != text:
+            msg_content["format"] = "org.matrix.custom.html"
+            msg_content["formatted_body"] = html
+
+        try:
+            resp = await self._client.room_send(
+                chat_id, "m.room.message", msg_content,
+                ignore_unverified_devices=True,
+            )
+            if isinstance(resp, nio.RoomSendResponse):
+                return SendResult(success=True, message_id=resp.event_id)
+            return SendResult(success=False, error=str(resp))
+        except Exception as exc:
+            return SendResult(success=False, error=str(exc))
 
     # ------------------------------------------------------------------
     # Helpers
@@ -1006,6 +1759,82 @@ class MatrixAdapter(BasePlatformAdapter):
             for rid in self._joined_rooms
         }
 
+    # ------------------------------------------------------------------
+    # Thread participation tracking
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _thread_state_path() -> Path:
+        """Path to the persisted thread participation set."""
+        from hermes_cli.config import get_hermes_home
+        return get_hermes_home() / "matrix_threads.json"
+
+    @classmethod
+    def _load_participated_threads(cls) -> set:
+        """Load persisted thread IDs from disk."""
+        path = cls._thread_state_path()
+        try:
+            if path.exists():
+                data = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(data, list):
+                    return set(data)
+        except Exception as e:
+            logger.debug("Could not load matrix thread state: %s", e)
+        return set()
+
+    def _save_participated_threads(self) -> None:
+        """Persist the current thread set to disk (best-effort)."""
+        path = self._thread_state_path()
+        try:
+            thread_list = list(self._bot_participated_threads)
+            if len(thread_list) > self._MAX_TRACKED_THREADS:
+                thread_list = thread_list[-self._MAX_TRACKED_THREADS:]
+                self._bot_participated_threads = set(thread_list)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(thread_list), encoding="utf-8")
+        except Exception as e:
+            logger.debug("Could not save matrix thread state: %s", e)
+
+    def _track_thread(self, thread_id: str) -> None:
+        """Add a thread to the participation set and persist."""
+        if thread_id not in self._bot_participated_threads:
+            self._bot_participated_threads.add(thread_id)
+            self._save_participated_threads()
+
+    # ------------------------------------------------------------------
+    # Mention detection helpers
+    # ------------------------------------------------------------------
+
+    def _is_bot_mentioned(self, body: str, formatted_body: Optional[str] = None) -> bool:
+        """Return True if the bot is mentioned in the message."""
+        if not body and not formatted_body:
+            return False
+        # Check for full @user:server in body
+        if self._user_id and self._user_id in body:
+            return True
+        # Check for localpart with word boundaries (case-insensitive)
+        if self._user_id and ":" in self._user_id:
+            localpart = self._user_id.split(":")[0].lstrip("@")
+            if localpart and re.search(r'\b' + re.escape(localpart) + r'\b', body, re.IGNORECASE):
+                return True
+        # Check formatted_body for Matrix pill
+        if formatted_body and self._user_id:
+            if f"matrix.to/#/{self._user_id}" in formatted_body:
+                return True
+        return False
+
+    def _strip_mention(self, body: str) -> str:
+        """Remove bot mention from message body."""
+        # Remove full @user:server
+        if self._user_id:
+            body = body.replace(self._user_id, "")
+        # If still contains localpart mention, remove it
+        if self._user_id and ":" in self._user_id:
+            localpart = self._user_id.split(":")[0].lstrip("@")
+            if localpart:
+                body = re.sub(r'\b' + re.escape(localpart) + r'\b', '', body, flags=re.IGNORECASE)
+        return body.strip()
+
     def _get_display_name(self, room: Any, user_id: str) -> str:
         """Get a user's display name in a room, falling back to user_id."""
         if room and hasattr(room, "users"):
@@ -1029,29 +1858,196 @@ class MatrixAdapter(BasePlatformAdapter):
         return f"{self._homeserver}/_matrix/client/v1/media/download/{parts}"
 
     def _markdown_to_html(self, text: str) -> str:
-        """Convert Markdown to Matrix-compatible HTML.
+        """Convert Markdown to Matrix-compatible HTML (org.matrix.custom.html).
 
-        Uses a simple conversion for common patterns.  For full fidelity
-        a markdown-it style library could be used, but this covers the
-        common cases without an extra dependency.
+        Uses the ``markdown`` library when available (installed with the
+        ``matrix`` extra).  Falls back to a comprehensive regex converter
+        that handles fenced code blocks, inline code, headers, bold,
+        italic, strikethrough, links, blockquotes, lists, and horizontal
+        rules — everything the Matrix HTML spec allows.
         """
         try:
-            import markdown
-            html = markdown.markdown(
-                text,
-                extensions=["fenced_code", "tables", "nl2br"],
+            import markdown as _md
+
+            md = _md.Markdown(
+                extensions=["fenced_code", "tables", "nl2br", "sane_lists"],
             )
-            # Strip wrapping <p> tags for single-paragraph messages.
+            # Remove the raw HTML preprocessor so <script> etc. in the
+            # source are escaped rather than passed through.
+            if "html_block" in md.preprocessors:
+                md.preprocessors.deregister("html_block")
+
+            html = md.convert(text)
+            md.reset()
+
+            # Strip wrapping <p> tags for single-paragraph messages so
+            # clients don't add extra spacing around short replies.
             if html.count("<p>") == 1:
                 html = html.replace("<p>", "").replace("</p>", "")
             return html
         except ImportError:
             pass
 
-        # Minimal fallback: just handle bold, italic, code.
-        html = text
-        html = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", html)
-        html = re.sub(r"\*(.+?)\*", r"<em>\1</em>", html)
-        html = re.sub(r"`([^`]+)`", r"<code>\1</code>", html)
-        html = re.sub(r"\n", r"<br>", html)
-        return html
+        return self._markdown_to_html_fallback(text)
+
+    # ------------------------------------------------------------------
+    # Regex-based Markdown -> HTML (no extra dependencies)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _sanitize_link_url(url: str) -> str:
+        """Sanitize a URL for use in an href attribute.
+
+        Rejects dangerous URI schemes (javascript:, data:, vbscript:) and
+        escapes double-quotes to prevent attribute breakout.
+        """
+        stripped = url.strip()
+        scheme = stripped.split(":", 1)[0].lower().strip() if ":" in stripped else ""
+        if scheme in ("javascript", "data", "vbscript"):
+            return ""
+        # Escape double quotes to prevent href attribute breakout.
+        return stripped.replace('"', "&quot;")
+
+    @staticmethod
+    def _markdown_to_html_fallback(text: str) -> str:
+        """Comprehensive regex Markdown-to-HTML for Matrix.
+
+        Handles fenced code blocks, inline code, headers, bold, italic,
+        strikethrough, links, blockquotes, ordered/unordered lists, and
+        horizontal rules.  Code regions are extracted first to prevent
+        inner transformations from mangling them.
+
+        Security: all non-code text is HTML-escaped before markdown
+        transforms to prevent HTML injection via crafted input.  Link
+        URLs are sanitized against dangerous URI schemes.
+        """
+        placeholders: list = []
+
+        def _protect_html(html_fragment: str) -> str:
+            idx = len(placeholders)
+            placeholders.append(html_fragment)
+            return f"\x00PROTECTED{idx}\x00"
+
+        # Fenced code blocks: ```lang\n...\n```
+        result = re.sub(
+            r"```(\w*)\n(.*?)```",
+            lambda m: _protect_html(
+                f'<pre><code class="language-{_html_escape(m.group(1))}">'
+                f"{_html_escape(m.group(2))}</code></pre>"
+                if m.group(1)
+                else f"<pre><code>{_html_escape(m.group(2))}</code></pre>"
+            ),
+            text,
+            flags=re.DOTALL,
+        )
+
+        # Inline code: `code`
+        result = re.sub(
+            r"`([^`\n]+)`",
+            lambda m: _protect_html(
+                f"<code>{_html_escape(m.group(1))}</code>"
+            ),
+            result,
+        )
+
+        # Extract and protect markdown links before escaping.
+        result = re.sub(
+            r"\[([^\]]+)\]\(([^)]+)\)",
+            lambda m: _protect_html(
+                '<a href="{}">{}</a>'.format(
+                    MatrixAdapter._sanitize_link_url(m.group(2)),
+                    _html_escape(m.group(1)),
+                )
+            ),
+            result,
+        )
+
+        # HTML-escape remaining text (neutralises <script>, <img onerror=...>).
+        parts = re.split(r"(\x00PROTECTED\d+\x00)", result)
+        for idx, part in enumerate(parts):
+            if not part.startswith("\x00PROTECTED"):
+                parts[idx] = _html_escape(part)
+        result = "".join(parts)
+
+        # Block-level transforms (line-oriented).
+        lines = result.split("\n")
+        out_lines: list = []
+        i = 0
+        while i < len(lines):
+            line = lines[i]
+
+            # Horizontal rule
+            if re.match(r"^[\s]*([-*_])\s*\1\s*\1[\s\-*_]*$", line):
+                out_lines.append("<hr>")
+                i += 1
+                continue
+
+            # Headers
+            hdr = re.match(r"^(#{1,6})\s+(.+)$", line)
+            if hdr:
+                level = len(hdr.group(1))
+                out_lines.append(f"<h{level}>{hdr.group(2).strip()}</h{level}>")
+                i += 1
+                continue
+
+            # Blockquote (> may be escaped to &gt; by html.escape)
+            if line.startswith("&gt; ") or line == "&gt;" or line.startswith("> ") or line == ">":
+                bq_lines = []
+                while i < len(lines) and (
+                    lines[i].startswith("&gt; ") or lines[i] == "&gt;"
+                    or lines[i].startswith("> ") or lines[i] == ">"
+                ):
+                    ln = lines[i]
+                    if ln.startswith("&gt; "):
+                        bq_lines.append(ln[5:])
+                    elif ln.startswith("> "):
+                        bq_lines.append(ln[2:])
+                    else:
+                        bq_lines.append("")
+                    i += 1
+                out_lines.append(f"<blockquote>{'<br>'.join(bq_lines)}</blockquote>")
+                continue
+
+            # Unordered list
+            ul_match = re.match(r"^[\s]*[-*+]\s+(.+)$", line)
+            if ul_match:
+                items = []
+                while i < len(lines) and re.match(r"^[\s]*[-*+]\s+(.+)$", lines[i]):
+                    items.append(re.match(r"^[\s]*[-*+]\s+(.+)$", lines[i]).group(1))
+                    i += 1
+                li = "".join(f"<li>{item}</li>" for item in items)
+                out_lines.append(f"<ul>{li}</ul>")
+                continue
+
+            # Ordered list
+            ol_match = re.match(r"^[\s]*\d+[.)]\s+(.+)$", line)
+            if ol_match:
+                items = []
+                while i < len(lines) and re.match(r"^[\s]*\d+[.)]\s+(.+)$", lines[i]):
+                    items.append(re.match(r"^[\s]*\d+[.)]\s+(.+)$", lines[i]).group(1))
+                    i += 1
+                li = "".join(f"<li>{item}</li>" for item in items)
+                out_lines.append(f"<ol>{li}</ol>")
+                continue
+
+            out_lines.append(line)
+            i += 1
+
+        result = "\n".join(out_lines)
+
+        # Inline transforms.
+        result = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", result, flags=re.DOTALL)
+        result = re.sub(r"__(.+?)__", r"<strong>\1</strong>", result, flags=re.DOTALL)
+        result = re.sub(r"\*(.+?)\*", r"<em>\1</em>", result, flags=re.DOTALL)
+        result = re.sub(r"(?<!\w)_(.+?)_(?!\w)", r"<em>\1</em>", result, flags=re.DOTALL)
+        result = re.sub(r"~~(.+?)~~", r"<del>\1</del>", result, flags=re.DOTALL)
+        result = re.sub(r"\n", "<br>\n", result)
+        # Clean up excessive <br> around block elements.
+        result = re.sub(r"<br>\n(</?(?:pre|blockquote|h[1-6]|ul|ol|li|hr))", r"\n\1", result)
+        result = re.sub(r"(</(?:pre|blockquote|h[1-6]|ul|ol|li)>)<br>", r"\1", result)
+
+        # Restore protected regions.
+        for idx, original in enumerate(placeholders):
+            result = result.replace(f"\x00PROTECTED{idx}\x00", original)
+
+        return result

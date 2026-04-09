@@ -21,6 +21,7 @@ hermes [global-options] <command> [subcommand/options]
 | Option | Description |
 |--------|-------------|
 | `--version`, `-V` | Show version and exit. |
+| `--profile <name>`, `-p <name>` | Select which Hermes profile to use for this invocation. Overrides the sticky default set by `hermes profile use`. |
 | `--resume <session>`, `-r <session>` | Resume a previous session by ID or title. |
 | `--continue [name]`, `-c [name]` | Resume the most recent session, or the most recent session matching a title. |
 | `--worktree`, `-w` | Start in an isolated git worktree for parallel-agent workflows. |
@@ -36,20 +37,28 @@ hermes [global-options] <command> [subcommand/options]
 | `hermes gateway` | Run or manage the messaging gateway service. |
 | `hermes setup` | Interactive setup wizard for all or part of the configuration. |
 | `hermes whatsapp` | Configure and pair the WhatsApp bridge. |
-| `hermes login` / `logout` | Authenticate with OAuth-backed providers. |
+| `hermes auth` | Manage credentials — add, list, remove, reset, set strategy. Handles OAuth flows for Codex/Nous/Anthropic. |
+| `hermes login` / `logout` | **Deprecated** — use `hermes auth` instead. |
 | `hermes status` | Show agent, auth, and platform status. |
 | `hermes cron` | Inspect and tick the cron scheduler. |
 | `hermes webhook` | Manage dynamic webhook subscriptions for event-driven activation. |
 | `hermes doctor` | Diagnose config and dependency issues. |
+| `hermes dump` | Copy-pasteable setup summary for support/debugging. |
+| `hermes logs` | View, tail, and filter agent/gateway/error log files. |
 | `hermes config` | Show, edit, migrate, and query configuration files. |
 | `hermes pairing` | Approve or revoke messaging pairing codes. |
 | `hermes skills` | Browse, install, publish, audit, and configure skills. |
 | `hermes honcho` | Manage Honcho cross-session memory integration. |
+| `hermes memory` | Configure external memory provider. |
 | `hermes acp` | Run Hermes as an ACP server for editor integration. |
+| `hermes mcp` | Manage MCP server configurations and run Hermes as an MCP server. |
+| `hermes plugins` | Manage Hermes Agent plugins (install, enable, disable, remove). |
 | `hermes tools` | Configure enabled tools per platform. |
 | `hermes sessions` | Browse, export, prune, rename, and delete sessions. |
 | `hermes insights` | Show token/cost/activity analytics. |
 | `hermes claw` | OpenClaw migration helpers. |
+| `hermes profile` | Manage profiles — multiple isolated Hermes instances. |
+| `hermes completion` | Print shell completion scripts (bash/zsh). |
 | `hermes version` | Show version information. |
 | `hermes update` | Pull latest code and reinstall dependencies. |
 | `hermes uninstall` | Remove Hermes from the system. |
@@ -67,7 +76,7 @@ Common options:
 | `-q`, `--query "..."` | One-shot, non-interactive prompt. |
 | `-m`, `--model <model>` | Override the model for this run. |
 | `-t`, `--toolsets <csv>` | Enable a comma-separated set of toolsets. |
-| `--provider <provider>` | Force a provider: `auto`, `openrouter`, `nous`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `huggingface`, `alibaba`, `zai`, `kimi-coding`, `minimax`, `minimax-cn`, `kilocode`. |
+| `--provider <provider>` | Force a provider: `auto`, `openrouter`, `nous`, `openai-codex`, `copilot-acp`, `copilot`, `anthropic`, `huggingface`, `zai`, `kimi-coding`, `minimax`, `minimax-cn`, `deepseek`, `ai-gateway`, `opencode-zen`, `opencode-go`, `kilocode`, `alibaba`. |
 | `-s`, `--skills <name>` | Preload one or more skills for the session (can be repeated or comma-separated). |
 | `-v`, `--verbose` | Verbose output. |
 | `-Q`, `--quiet` | Programmatic mode: suppress banner/spinner/tool previews. |
@@ -76,6 +85,8 @@ Common options:
 | `--checkpoints` | Enable filesystem checkpoints before destructive file changes. |
 | `--yolo` | Skip approval prompts. |
 | `--pass-session-id` | Pass the session ID into the system prompt. |
+| `--source <tag>` | Session source tag for filtering (default: `cli`). Use `tool` for third-party integrations that should not appear in user session lists. |
+| `--max-turns <N>` | Maximum tool-calling iterations per conversation turn (default: 90, or `agent.max_turns` in config). |
 
 Examples:
 
@@ -169,22 +180,27 @@ hermes whatsapp
 
 Runs the WhatsApp pairing/setup flow, including mode selection and QR-code pairing.
 
-## `hermes login` / `hermes logout`
+## `hermes login` / `hermes logout` *(Deprecated)*
+
+:::caution
+`hermes login` has been removed. Use `hermes auth` to manage OAuth credentials, `hermes model` to select a provider, or `hermes setup` for full interactive setup.
+:::
+
+## `hermes auth`
+
+Manage credential pools for same-provider key rotation. See [Credential Pools](/docs/user-guide/features/credential-pools) for full documentation.
 
 ```bash
-hermes login [--provider nous|openai-codex] [--portal-url ...] [--inference-url ...]
-hermes logout [--provider nous|openai-codex]
+hermes auth                                              # Interactive wizard
+hermes auth list                                         # Show all pools
+hermes auth list openrouter                              # Show specific provider
+hermes auth add openrouter --api-key sk-or-v1-xxx        # Add API key
+hermes auth add anthropic --type oauth                   # Add OAuth credential
+hermes auth remove openrouter 2                          # Remove by index
+hermes auth reset openrouter                             # Clear cooldowns
 ```
 
-`login` supports:
-- Nous Portal OAuth/device flow
-- OpenAI Codex OAuth/device flow
-
-Useful options for `login`:
-- `--no-browser`
-- `--timeout <seconds>`
-- `--ca-bundle <pem>`
-- `--insecure`
+Subcommands: `add`, `list`, `remove`, `reset`. When called with no subcommand, launches the interactive management wizard.
 
 ## `hermes status`
 
@@ -257,6 +273,149 @@ hermes doctor [--fix]
 | Option | Description |
 |--------|-------------|
 | `--fix` | Attempt automatic repairs where possible. |
+
+## `hermes dump`
+
+```bash
+hermes dump [--show-keys]
+```
+
+Outputs a compact, plain-text summary of your entire Hermes setup. Designed to be copy-pasted into Discord, GitHub issues, or Telegram when asking for support — no ANSI colors, no special formatting, just data.
+
+| Option | Description |
+|--------|-------------|
+| `--show-keys` | Show redacted API key prefixes (first and last 4 characters) instead of just `set`/`not set`. |
+
+### What it includes
+
+| Section | Details |
+|---------|---------|
+| **Header** | Hermes version, release date, git commit hash |
+| **Environment** | OS, Python version, OpenAI SDK version |
+| **Identity** | Active profile name, HERMES_HOME path |
+| **Model** | Configured default model and provider |
+| **Terminal** | Backend type (local, docker, ssh, etc.) |
+| **API keys** | Presence check for all 22 provider/tool API keys |
+| **Features** | Enabled toolsets, MCP server count, memory provider |
+| **Services** | Gateway status, configured messaging platforms |
+| **Workload** | Cron job counts, installed skill count |
+| **Config overrides** | Any config values that differ from defaults |
+
+### Example output
+
+```
+--- hermes dump ---
+version:          0.8.0 (2026.4.8) [af4abd2f]
+os:               Linux 6.14.0-37-generic x86_64
+python:           3.11.14
+openai_sdk:       2.24.0
+profile:          default
+hermes_home:      ~/.hermes
+model:            anthropic/claude-opus-4.6
+provider:         openrouter
+terminal:         local
+
+api_keys:
+  openrouter           set
+  openai               not set
+  anthropic            set
+  nous                 not set
+  firecrawl            set
+  ...
+
+features:
+  toolsets:           all
+  mcp_servers:        0
+  memory_provider:    built-in
+  gateway:            running (systemd)
+  platforms:          telegram, discord
+  cron_jobs:          3 active / 5 total
+  skills:             42
+
+config_overrides:
+  agent.max_turns: 250
+  compression.threshold: 0.85
+  display.streaming: True
+--- end dump ---
+```
+
+### When to use
+
+- Reporting a bug on GitHub — paste the dump into your issue
+- Asking for help in Discord — share it in a code block
+- Comparing your setup to someone else's
+- Quick sanity check when something isn't working
+
+:::tip
+`hermes dump` is specifically designed for sharing. For interactive diagnostics, use `hermes doctor`. For a visual overview, use `hermes status`.
+:::
+
+## `hermes logs`
+
+```bash
+hermes logs [log_name] [options]
+```
+
+View, tail, and filter Hermes log files. All logs are stored in `~/.hermes/logs/` (or `<profile>/logs/` for non-default profiles).
+
+### Log files
+
+| Name | File | What it captures |
+|------|------|-----------------|
+| `agent` (default) | `agent.log` | All agent activity — API calls, tool dispatch, session lifecycle (INFO and above) |
+| `errors` | `errors.log` | Warnings and errors only — a filtered subset of agent.log |
+| `gateway` | `gateway.log` | Messaging gateway activity — platform connections, message dispatch, webhook events |
+
+### Options
+
+| Option | Description |
+|--------|-------------|
+| `log_name` | Which log to view: `agent` (default), `errors`, `gateway`, or `list` to show available files with sizes. |
+| `-n`, `--lines <N>` | Number of lines to show (default: 50). |
+| `-f`, `--follow` | Follow the log in real time, like `tail -f`. Press Ctrl+C to stop. |
+| `--level <LEVEL>` | Minimum log level to show: `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`. |
+| `--session <ID>` | Filter lines containing a session ID substring. |
+| `--since <TIME>` | Show lines from a relative time ago: `30m`, `1h`, `2d`, etc. Supports `s` (seconds), `m` (minutes), `h` (hours), `d` (days). |
+
+### Examples
+
+```bash
+# View the last 50 lines of agent.log (default)
+hermes logs
+
+# Follow agent.log in real time
+hermes logs -f
+
+# View the last 100 lines of gateway.log
+hermes logs gateway -n 100
+
+# Show only warnings and errors from the last hour
+hermes logs --level WARNING --since 1h
+
+# Filter by a specific session
+hermes logs --session abc123
+
+# Follow errors.log, starting from 30 minutes ago
+hermes logs errors --since 30m -f
+
+# List all log files with their sizes
+hermes logs list
+```
+
+### Filtering
+
+Filters can be combined. When multiple filters are active, a log line must pass **all** of them to be shown:
+
+```bash
+# WARNING+ lines from the last 2 hours containing session "tg-12345"
+hermes logs --level WARNING --since 2h --session tg-12345
+```
+
+Lines without a parseable timestamp are included when `--since` is active (they may be continuation lines from a multi-line log entry). Lines without a detectable level are included when `--level` is active.
+
+### Log rotation
+
+Hermes uses Python's `RotatingFileHandler`. Old logs are rotated automatically — look for `agent.log.1`, `agent.log.2`, etc. The `hermes logs list` subcommand shows all log files including rotated ones.
 
 ## `hermes config`
 
@@ -338,22 +497,46 @@ Notes:
 ## `hermes honcho`
 
 ```bash
-hermes honcho <subcommand>
+hermes honcho [--target-profile NAME] <subcommand>
 ```
+
+Manage Honcho cross-session memory integration. This command is provided by the Honcho memory provider plugin and is only available when `memory.provider` is set to `honcho` in your config.
+
+The `--target-profile` flag lets you manage another profile's Honcho config without switching to it.
 
 Subcommands:
 
 | Subcommand | Description |
 |------------|-------------|
-| `setup` | Interactive Honcho setup wizard. |
-| `status` | Show current Honcho config and connection status. |
+| `setup` | Redirects to `hermes memory setup` (unified setup path). |
+| `status [--all]` | Show current Honcho config and connection status. `--all` shows a cross-profile overview. |
+| `peers` | Show peer identities across all profiles. |
 | `sessions` | List known Honcho session mappings. |
-| `map` | Map the current directory to a Honcho session name. |
-| `peer` | Show or update peer names and dialectic reasoning level. |
-| `mode` | Show or set memory mode: `hybrid`, `honcho`, or `local`. |
-| `tokens` | Show or set token budgets for context and dialectic. |
-| `identity` | Seed or show the AI peer identity representation. |
-| `migrate` | Migration guide from openclaw-honcho to Hermes Honcho. |
+| `map [name]` | Map the current directory to a Honcho session name. Omit `name` to list current mappings. |
+| `peer` | Show or update peer names and dialectic reasoning level. Options: `--user NAME`, `--ai NAME`, `--reasoning LEVEL`. |
+| `mode [mode]` | Show or set recall mode: `hybrid`, `context`, or `tools`. Omit to show current. |
+| `tokens` | Show or set token budgets for context and dialectic. Options: `--context N`, `--dialectic N`. |
+| `identity [file] [--show]` | Seed or show the AI peer identity representation. |
+| `enable` | Enable Honcho for the active profile. |
+| `disable` | Disable Honcho for the active profile. |
+| `sync` | Sync Honcho config to all existing profiles (creates missing host blocks). |
+| `migrate` | Step-by-step migration guide from openclaw-honcho to Hermes Honcho. |
+
+## `hermes memory`
+
+```bash
+hermes memory <subcommand>
+```
+
+Set up and manage external memory provider plugins. Available providers: honcho, openviking, mem0, hindsight, holographic, retaindb, byterover, supermemory. Only one external provider can be active at a time. Built-in memory (MEMORY.md/USER.md) is always active.
+
+Subcommands:
+
+| Subcommand | Description |
+|------------|-------------|
+| `setup` | Interactive provider selection and configuration. |
+| `status` | Show current memory provider config. |
+| `off` | Disable external provider (built-in only). |
 
 ## `hermes acp`
 
@@ -505,6 +688,56 @@ hermes claw migrate --preset user-data --overwrite
 
 # Migrate from a custom OpenClaw path
 hermes claw migrate --source /home/user/old-openclaw
+```
+
+## `hermes profile`
+
+```bash
+hermes profile <subcommand>
+```
+
+Manage profiles — multiple isolated Hermes instances, each with its own config, sessions, skills, and home directory.
+
+| Subcommand | Description |
+|------------|-------------|
+| `list` | List all profiles. |
+| `use <name>` | Set a sticky default profile. |
+| `create <name> [--clone] [--clone-all] [--clone-from <source>] [--no-alias]` | Create a new profile. `--clone` copies config, `.env`, and `SOUL.md` from the active profile. `--clone-all` copies all state. `--clone-from` specifies a source profile. |
+| `delete <name> [-y]` | Delete a profile. |
+| `show <name>` | Show profile details (home directory, config, etc.). |
+| `alias <name> [--remove] [--name NAME]` | Manage wrapper scripts for quick profile access. |
+| `rename <old> <new>` | Rename a profile. |
+| `export <name> [-o FILE]` | Export a profile to a `.tar.gz` archive. |
+| `import <archive> [--name NAME]` | Import a profile from a `.tar.gz` archive. |
+
+Examples:
+
+```bash
+hermes profile list
+hermes profile create work --clone
+hermes profile use work
+hermes profile alias work --name h-work
+hermes profile export work -o work-backup.tar.gz
+hermes profile import work-backup.tar.gz --name restored
+hermes -p work chat -q "Hello from work profile"
+```
+
+## `hermes completion`
+
+```bash
+hermes completion [bash|zsh]
+```
+
+Print a shell completion script to stdout. Source the output in your shell profile for tab-completion of Hermes commands, subcommands, and profile names.
+
+Examples:
+
+```bash
+# Bash
+hermes completion bash >> ~/.bashrc
+
+# Zsh
+hermes completion zsh >> ~/.zshrc
 ```
 
 ## Maintenance commands

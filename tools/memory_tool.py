@@ -36,8 +36,18 @@ from typing import Dict, Any, List, Optional
 
 logger = logging.getLogger(__name__)
 
-# Where memory files live
-MEMORY_DIR = get_hermes_home() / "memories"
+# Where memory files live — resolved dynamically so profile overrides
+# (HERMES_HOME env var changes) are always respected.  The old module-level
+# constant was cached at import time and could go stale if a profile switch
+# happened after the first import.
+def get_memory_dir() -> Path:
+    """Return the profile-scoped memories directory."""
+    return get_hermes_home() / "memories"
+
+# Backward-compatible alias — gateway/run.py imports this at runtime inside
+# a function body, so it gets the correct snapshot for that process.  New code
+# should prefer get_memory_dir().
+MEMORY_DIR = get_memory_dir()
 
 ENTRY_DELIMITER = "\n§\n"
 
@@ -108,10 +118,11 @@ class MemoryStore:
 
     def load_from_disk(self):
         """Load entries from MEMORY.md and USER.md, capture system prompt snapshot."""
-        MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+        mem_dir = get_memory_dir()
+        mem_dir.mkdir(parents=True, exist_ok=True)
 
-        self.memory_entries = self._read_file(MEMORY_DIR / "MEMORY.md")
-        self.user_entries = self._read_file(MEMORY_DIR / "USER.md")
+        self.memory_entries = self._read_file(mem_dir / "MEMORY.md")
+        self.user_entries = self._read_file(mem_dir / "USER.md")
 
         # Deduplicate entries (preserves order, keeps first occurrence)
         self.memory_entries = list(dict.fromkeys(self.memory_entries))
@@ -143,9 +154,10 @@ class MemoryStore:
 
     @staticmethod
     def _path_for(target: str) -> Path:
+        mem_dir = get_memory_dir()
         if target == "user":
-            return MEMORY_DIR / "USER.md"
-        return MEMORY_DIR / "MEMORY.md"
+            return mem_dir / "USER.md"
+        return mem_dir / "MEMORY.md"
 
     def _reload_target(self, target: str):
         """Re-read entries from disk into in-memory state.
@@ -158,7 +170,7 @@ class MemoryStore:
 
     def save_to_disk(self, target: str):
         """Persist entries to the appropriate file. Called after every mutation."""
-        MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+        get_memory_dir().mkdir(parents=True, exist_ok=True)
         self._write_file(self._path_for(target), self._entries_for(target))
 
     def _entries_for(self, target: str) -> List[str]:
@@ -248,7 +260,7 @@ class MemoryStore:
             entries = self._entries_for(target)
             matches = [(i, e) for i, e in enumerate(entries) if old_text in e]
 
-            if len(matches) == 0:
+            if not matches:
                 return {"success": False, "error": f"No entry matched '{old_text}'."}
 
             if len(matches) > 1:
@@ -298,7 +310,7 @@ class MemoryStore:
             entries = self._entries_for(target)
             matches = [(i, e) for i, e in enumerate(entries) if old_text in e]
 
-            if len(matches) == 0:
+            if not matches:
                 return {"success": False, "error": f"No entry matched '{old_text}'."}
 
             if len(matches) > 1:
@@ -437,30 +449,30 @@ def memory_tool(
     Returns JSON string with results.
     """
     if store is None:
-        return json.dumps({"success": False, "error": "Memory is not available. It may be disabled in config or this environment."}, ensure_ascii=False)
+        return tool_error("Memory is not available. It may be disabled in config or this environment.", success=False)
 
     if target not in ("memory", "user"):
-        return json.dumps({"success": False, "error": f"Invalid target '{target}'. Use 'memory' or 'user'."}, ensure_ascii=False)
+        return tool_error(f"Invalid target '{target}'. Use 'memory' or 'user'.", success=False)
 
     if action == "add":
         if not content:
-            return json.dumps({"success": False, "error": "Content is required for 'add' action."}, ensure_ascii=False)
+            return tool_error("Content is required for 'add' action.", success=False)
         result = store.add(target, content)
 
     elif action == "replace":
         if not old_text:
-            return json.dumps({"success": False, "error": "old_text is required for 'replace' action."}, ensure_ascii=False)
+            return tool_error("old_text is required for 'replace' action.", success=False)
         if not content:
-            return json.dumps({"success": False, "error": "content is required for 'replace' action."}, ensure_ascii=False)
+            return tool_error("content is required for 'replace' action.", success=False)
         result = store.replace(target, old_text, content)
 
     elif action == "remove":
         if not old_text:
-            return json.dumps({"success": False, "error": "old_text is required for 'remove' action."}, ensure_ascii=False)
+            return tool_error("old_text is required for 'remove' action.", success=False)
         result = store.remove(target, old_text)
 
     else:
-        return json.dumps({"success": False, "error": f"Unknown action '{action}'. Use: add, replace, remove"}, ensure_ascii=False)
+        return tool_error(f"Unknown action '{action}'. Use: add, replace, remove", success=False)
 
     return json.dumps(result, ensure_ascii=False)
 
@@ -527,7 +539,7 @@ MEMORY_SCHEMA = {
 
 
 # --- Registry ---
-from tools.registry import registry
+from tools.registry import registry, tool_error
 
 registry.register(
     name="memory",

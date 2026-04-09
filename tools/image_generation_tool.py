@@ -32,9 +32,14 @@ import json
 import logging
 import os
 import datetime
+import threading
+import uuid
 from typing import Dict, Any, Optional, Union
+from urllib.parse import urlencode
 import fal_client
 from tools.debug_helpers import DebugSession
+from tools.managed_tool_gateway import resolve_managed_tool_gateway
+from tools.tool_backend_helpers import managed_nous_tools_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +82,137 @@ VALID_OUTPUT_FORMATS = ["jpeg", "png"]
 VALID_ACCELERATION_MODES = ["none", "regular", "high"]
 
 _debug = DebugSession("image_tools", env_var="IMAGE_TOOLS_DEBUG")
+_managed_fal_client = None
+_managed_fal_client_config = None
+_managed_fal_client_lock = threading.Lock()
+
+
+def _resolve_managed_fal_gateway():
+    """Return managed fal-queue gateway config when direct FAL credentials are absent."""
+    if os.getenv("FAL_KEY"):
+        return None
+    return resolve_managed_tool_gateway("fal-queue")
+
+
+def _normalize_fal_queue_url_format(queue_run_origin: str) -> str:
+    normalized_origin = str(queue_run_origin or "").strip().rstrip("/")
+    if not normalized_origin:
+        raise ValueError("Managed FAL queue origin is required")
+    return f"{normalized_origin}/"
+
+
+class _ManagedFalSyncClient:
+    """Small per-instance wrapper around fal_client.SyncClient for managed queue hosts."""
+
+    def __init__(self, *, key: str, queue_run_origin: str):
+        sync_client_class = getattr(fal_client, "SyncClient", None)
+        if sync_client_class is None:
+            raise RuntimeError("fal_client.SyncClient is required for managed FAL gateway mode")
+
+        client_module = getattr(fal_client, "client", None)
+        if client_module is None:
+            raise RuntimeError("fal_client.client is required for managed FAL gateway mode")
+
+        self._queue_url_format = _normalize_fal_queue_url_format(queue_run_origin)
+        self._sync_client = sync_client_class(key=key)
+        self._http_client = getattr(self._sync_client, "_client", None)
+        self._maybe_retry_request = getattr(client_module, "_maybe_retry_request", None)
+        self._raise_for_status = getattr(client_module, "_raise_for_status", None)
+        self._request_handle_class = getattr(client_module, "SyncRequestHandle", None)
+        self._add_hint_header = getattr(client_module, "add_hint_header", None)
+        self._add_priority_header = getattr(client_module, "add_priority_header", None)
+        self._add_timeout_header = getattr(client_module, "add_timeout_header", None)
+
+        if self._http_client is None:
+            raise RuntimeError("fal_client.SyncClient._client is required for managed FAL gateway mode")
+        if self._maybe_retry_request is None or self._raise_for_status is None:
+            raise RuntimeError("fal_client.client request helpers are required for managed FAL gateway mode")
+        if self._request_handle_class is None:
+            raise RuntimeError("fal_client.client.SyncRequestHandle is required for managed FAL gateway mode")
+
+    def submit(
+        self,
+        application: str,
+        arguments: Dict[str, Any],
+        *,
+        path: str = "",
+        hint: Optional[str] = None,
+        webhook_url: Optional[str] = None,
+        priority: Any = None,
+        headers: Optional[Dict[str, str]] = None,
+        start_timeout: Optional[Union[int, float]] = None,
+    ):
+        url = self._queue_url_format + application
+        if path:
+            url += "/" + path.lstrip("/")
+        if webhook_url is not None:
+            url += "?" + urlencode({"fal_webhook": webhook_url})
+
+        request_headers = dict(headers or {})
+        if hint is not None and self._add_hint_header is not None:
+            self._add_hint_header(hint, request_headers)
+        if priority is not None:
+            if self._add_priority_header is None:
+                raise RuntimeError("fal_client.client.add_priority_header is required for priority requests")
+            self._add_priority_header(priority, request_headers)
+        if start_timeout is not None:
+            if self._add_timeout_header is None:
+                raise RuntimeError("fal_client.client.add_timeout_header is required for timeout requests")
+            self._add_timeout_header(start_timeout, request_headers)
+
+        response = self._maybe_retry_request(
+            self._http_client,
+            "POST",
+            url,
+            json=arguments,
+            timeout=getattr(self._sync_client, "default_timeout", 120.0),
+            headers=request_headers,
+        )
+        self._raise_for_status(response)
+
+        data = response.json()
+        return self._request_handle_class(
+            request_id=data["request_id"],
+            response_url=data["response_url"],
+            status_url=data["status_url"],
+            cancel_url=data["cancel_url"],
+            client=self._http_client,
+        )
+
+
+def _get_managed_fal_client(managed_gateway):
+    """Reuse the managed FAL client so its internal httpx.Client is not leaked per call."""
+    global _managed_fal_client, _managed_fal_client_config
+
+    client_config = (
+        managed_gateway.gateway_origin.rstrip("/"),
+        managed_gateway.nous_user_token,
+    )
+    with _managed_fal_client_lock:
+        if _managed_fal_client is not None and _managed_fal_client_config == client_config:
+            return _managed_fal_client
+
+        _managed_fal_client = _ManagedFalSyncClient(
+            key=managed_gateway.nous_user_token,
+            queue_run_origin=managed_gateway.gateway_origin,
+        )
+        _managed_fal_client_config = client_config
+        return _managed_fal_client
+
+
+def _submit_fal_request(model: str, arguments: Dict[str, Any]):
+    """Submit a FAL request using direct credentials or the managed queue gateway."""
+    request_headers = {"x-idempotency-key": str(uuid.uuid4())}
+    managed_gateway = _resolve_managed_fal_gateway()
+    if managed_gateway is None:
+        return fal_client.submit(model, arguments=arguments, headers=request_headers)
+
+    managed_client = _get_managed_fal_client(managed_gateway)
+    return managed_client.submit(
+        model,
+        arguments=arguments,
+        headers=request_headers,
+    )
 
 
 def _validate_parameters(
@@ -186,9 +322,9 @@ def _upscale_image(image_url: str, original_prompt: str) -> Dict[str, Any]:
         # The async API (submit_async) caches a global httpx.AsyncClient via
         # @cached_property, which breaks when asyncio.run() destroys the loop
         # between calls (gateway thread-pool pattern).
-        handler = fal_client.submit(
+        handler = _submit_fal_request(
             UPSCALER_MODEL,
-            arguments=upscaler_arguments
+            arguments=upscaler_arguments,
         )
         
         # Get the upscaled result (sync — blocks until done)
@@ -280,8 +416,11 @@ def image_generate_tool(
             raise ValueError("Prompt is required and must be a non-empty string")
         
         # Check API key availability
-        if not os.getenv("FAL_KEY"):
-            raise ValueError("FAL_KEY environment variable not set")
+        if not (os.getenv("FAL_KEY") or _resolve_managed_fal_gateway()):
+            message = "FAL_KEY environment variable not set"
+            if managed_nous_tools_enabled():
+                message += " and managed FAL gateway is unavailable"
+            raise ValueError(message)
         
         # Validate other parameters
         validated_params = _validate_parameters(
@@ -312,9 +451,9 @@ def image_generate_tool(
         logger.info("  Guidance: %s", validated_params['guidance_scale'])
         
         # Submit request to FAL.ai using sync API (avoids cached event loop issues)
-        handler = fal_client.submit(
+        handler = _submit_fal_request(
             DEFAULT_MODEL,
-            arguments=arguments
+            arguments=arguments,
         )
         
         # Get the result (sync — blocks until done)
@@ -379,10 +518,12 @@ def image_generate_tool(
         error_msg = f"Error generating image: {str(e)}"
         logger.error("%s", error_msg, exc_info=True)
         
-        # Prepare error response - minimal format
+        # Include error details so callers can diagnose failures
         response_data = {
             "success": False,
-            "image": None
+            "image": None,
+            "error": str(e),
+            "error_type": type(e).__name__,
         }
         
         debug_call_data["error"] = error_msg
@@ -400,7 +541,7 @@ def check_fal_api_key() -> bool:
     Returns:
         bool: True if API key is set, False otherwise
     """
-    return bool(os.getenv("FAL_KEY"))
+    return bool(os.getenv("FAL_KEY") or _resolve_managed_fal_gateway())
 
 
 def check_image_generation_requirements() -> bool:
@@ -511,7 +652,7 @@ if __name__ == "__main__":
 # ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
-from tools.registry import registry
+from tools.registry import registry, tool_error
 
 IMAGE_GENERATE_SCHEMA = {
     "name": "image_generate",
@@ -538,7 +679,7 @@ IMAGE_GENERATE_SCHEMA = {
 def _handle_image_generate(args, **kw):
     prompt = args.get("prompt", "")
     if not prompt:
-        return json.dumps({"error": "prompt is required for image generation"})
+        return tool_error("prompt is required for image generation")
     return image_generate_tool(
         prompt=prompt,
         aspect_ratio=args.get("aspect_ratio", "landscape"),
@@ -556,7 +697,7 @@ registry.register(
     schema=IMAGE_GENERATE_SCHEMA,
     handler=_handle_image_generate,
     check_fn=check_image_generation_requirements,
-    requires_env=["FAL_KEY"],
+    requires_env=[],
     is_async=False,  # Switched to sync fal_client API to fix "Event loop is closed" in gateway
     emoji="🎨",
 )

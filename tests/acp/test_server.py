@@ -12,6 +12,7 @@ from acp.agent.router import build_agent_router
 from acp.schema import (
     AgentCapabilities,
     AuthenticateResponse,
+    AvailableCommandsUpdate,
     Implementation,
     InitializeResponse,
     ListSessionsResponse,
@@ -114,6 +115,53 @@ class TestSessionOps:
         assert state.cwd == "/home/user/project"
 
     @pytest.mark.asyncio
+    async def test_available_commands_include_help(self, agent):
+        help_cmd = next(
+            (cmd for cmd in agent._available_commands() if cmd.name == "help"),
+            None,
+        )
+
+        assert help_cmd is not None
+        assert help_cmd.description == "List available commands"
+        assert help_cmd.input is None
+
+    @pytest.mark.asyncio
+    async def test_send_available_commands_update(self, agent):
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        await agent._send_available_commands_update("session-123")
+
+        mock_conn.session_update.assert_awaited_once()
+        call = mock_conn.session_update.await_args
+        assert call.kwargs["session_id"] == "session-123"
+        update = call.kwargs["update"]
+        assert isinstance(update, AvailableCommandsUpdate)
+        assert update.session_update == "available_commands_update"
+        assert [cmd.name for cmd in update.available_commands] == [
+            "help",
+            "model",
+            "tools",
+            "context",
+            "reset",
+            "compact",
+            "version",
+        ]
+        model_cmd = next(
+            cmd for cmd in update.available_commands if cmd.name == "model"
+        )
+        assert model_cmd.input is not None
+        assert model_cmd.input.root.hint == "model name to switch to"
+
+    @pytest.mark.asyncio
+    async def test_new_session_schedules_available_commands_update(self, agent):
+        with patch.object(agent, "_schedule_available_commands_update") as mock_schedule:
+            resp = await agent.new_session(cwd="/home/user/project")
+
+        mock_schedule.assert_called_once_with(resp.session_id)
+
+    @pytest.mark.asyncio
     async def test_cancel_sets_event(self, agent):
         resp = await agent.new_session(cwd=".")
         state = agent.session_manager.get_session(resp.session_id)
@@ -133,6 +181,15 @@ class TestSessionOps:
         assert isinstance(load_resp, LoadSessionResponse)
 
     @pytest.mark.asyncio
+    async def test_load_session_schedules_available_commands_update(self, agent):
+        resp = await agent.new_session(cwd="/tmp")
+        with patch.object(agent, "_schedule_available_commands_update") as mock_schedule:
+            load_resp = await agent.load_session(cwd="/tmp", session_id=resp.session_id)
+
+        assert isinstance(load_resp, LoadSessionResponse)
+        mock_schedule.assert_called_once_with(resp.session_id)
+
+    @pytest.mark.asyncio
     async def test_load_session_not_found_returns_none(self, agent):
         resp = await agent.load_session(cwd="/tmp", session_id="bogus")
         assert resp is None
@@ -142,6 +199,15 @@ class TestSessionOps:
         resp = await agent.new_session(cwd="/tmp")
         resume_resp = await agent.resume_session(cwd="/tmp", session_id=resp.session_id)
         assert isinstance(resume_resp, ResumeSessionResponse)
+
+    @pytest.mark.asyncio
+    async def test_resume_session_schedules_available_commands_update(self, agent):
+        resp = await agent.new_session(cwd="/tmp")
+        with patch.object(agent, "_schedule_available_commands_update") as mock_schedule:
+            resume_resp = await agent.resume_session(cwd="/tmp", session_id=resp.session_id)
+
+        assert isinstance(resume_resp, ResumeSessionResponse)
+        mock_schedule.assert_called_once_with(resp.session_id)
 
     @pytest.mark.asyncio
     async def test_resume_session_creates_new_if_missing(self, agent):
@@ -169,6 +235,15 @@ class TestListAndFork:
         fork_resp = await agent.fork_session(cwd="/forked", session_id=new_resp.session_id)
         assert fork_resp.session_id
         assert fork_resp.session_id != new_resp.session_id
+
+    @pytest.mark.asyncio
+    async def test_fork_session_schedules_available_commands_update(self, agent):
+        new_resp = await agent.new_session(cwd="/original")
+        with patch.object(agent, "_schedule_available_commands_update") as mock_schedule:
+            fork_resp = await agent.fork_session(cwd="/forked", session_id=new_resp.session_id)
+
+        assert fork_resp.session_id
+        mock_schedule.assert_called_once_with(fork_resp.session_id)
 
 
 # ---------------------------------------------------------------------------
@@ -427,6 +502,55 @@ class TestSlashCommands:
         result = agent._handle_slash_command("/version", state)
         assert HERMES_VERSION in result
 
+    def test_compact_compresses_context(self, agent, mock_manager):
+        state = self._make_state(mock_manager)
+        state.history = [
+            {"role": "user", "content": "one"},
+            {"role": "assistant", "content": "two"},
+            {"role": "user", "content": "three"},
+            {"role": "assistant", "content": "four"},
+        ]
+        state.agent.compression_enabled = True
+        state.agent._cached_system_prompt = "system"
+        original_session_db = object()
+        state.agent._session_db = original_session_db
+
+        def _compress_context(messages, system_prompt, *, approx_tokens, task_id):
+            assert state.agent._session_db is None
+            assert messages == state.history
+            assert system_prompt == "system"
+            assert approx_tokens == 40
+            assert task_id == state.session_id
+            return [{"role": "user", "content": "summary"}], "new-system"
+
+        state.agent._compress_context = MagicMock(side_effect=_compress_context)
+
+        with (
+            patch.object(agent.session_manager, "save_session") as mock_save,
+            patch(
+                "agent.model_metadata.estimate_messages_tokens_rough",
+                side_effect=[40, 12],
+            ),
+        ):
+            result = agent._handle_slash_command("/compact", state)
+
+        assert "Context compressed: 4 -> 1 messages" in result
+        assert "~40 -> ~12 tokens" in result
+        assert state.history == [{"role": "user", "content": "summary"}]
+        assert state.agent._session_db is original_session_db
+        state.agent._compress_context.assert_called_once_with(
+            [
+                {"role": "user", "content": "one"},
+                {"role": "assistant", "content": "two"},
+                {"role": "user", "content": "three"},
+                {"role": "assistant", "content": "four"},
+            ],
+            "system",
+            approx_tokens=40,
+            task_id=state.session_id,
+        )
+        mock_save.assert_called_once_with(state.session_id)
+
     def test_unknown_command_returns_none(self, agent, mock_manager):
         state = self._make_state(mock_manager)
         result = agent._handle_slash_command("/nonexistent", state)
@@ -436,7 +560,8 @@ class TestSlashCommands:
     async def test_slash_command_intercepted_in_prompt(self, agent, mock_manager):
         """Slash commands should be handled without calling the LLM."""
         new_resp = await agent.new_session(cwd="/tmp")
-        mock_conn = AsyncMock(spec=acp.Client)
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
         agent._conn = mock_conn
 
         prompt = [TextContentBlock(type="text", text="/help")]
@@ -449,7 +574,9 @@ class TestSlashCommands:
     async def test_unknown_slash_falls_through_to_llm(self, agent, mock_manager):
         """Unknown /commands should be sent to the LLM, not intercepted."""
         new_resp = await agent.new_session(cwd="/tmp")
-        mock_conn = AsyncMock(spec=acp.Client)
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        mock_conn.request_permission = AsyncMock(return_value=None)
         agent._conn = mock_conn
 
         # Mock run_in_executor to avoid actually running the agent
@@ -505,3 +632,179 @@ class TestSlashCommands:
         assert state.agent.provider == "anthropic"
         assert state.agent.base_url == "https://anthropic.example/v1"
         assert runtime_calls[-1] == "anthropic"
+
+
+# ---------------------------------------------------------------------------
+# _register_session_mcp_servers
+# ---------------------------------------------------------------------------
+
+
+class TestRegisterSessionMcpServers:
+    """Tests for ACP MCP server registration in session lifecycle."""
+
+    @pytest.mark.asyncio
+    async def test_noop_when_no_servers(self, agent, mock_manager):
+        """No-op when mcp_servers is None or empty."""
+        state = mock_manager.create_session(cwd="/tmp")
+        # Should not raise
+        await agent._register_session_mcp_servers(state, None)
+        await agent._register_session_mcp_servers(state, [])
+
+    @pytest.mark.asyncio
+    async def test_registers_stdio_servers(self, agent, mock_manager):
+        """McpServerStdio servers are converted and passed to register_mcp_servers."""
+        from acp.schema import McpServerStdio, EnvVariable
+
+        state = mock_manager.create_session(cwd="/tmp")
+        # Give the mock agent the attributes _register_session_mcp_servers reads
+        state.agent.enabled_toolsets = ["hermes-acp"]
+        state.agent.disabled_toolsets = None
+        state.agent.tools = []
+        state.agent.valid_tool_names = set()
+
+        server = McpServerStdio(
+            name="test-server",
+            command="/usr/bin/test",
+            args=["--flag"],
+            env=[EnvVariable(name="KEY", value="val")],
+        )
+
+        registered_config = {}
+        def capture_register(config_map):
+            registered_config.update(config_map)
+            return ["mcp_test_server_tool1"]
+
+        with patch("tools.mcp_tool.register_mcp_servers", side_effect=capture_register), \
+             patch("model_tools.get_tool_definitions", return_value=[]):
+            await agent._register_session_mcp_servers(state, [server])
+
+        assert "test-server" in registered_config
+        cfg = registered_config["test-server"]
+        assert cfg["command"] == "/usr/bin/test"
+        assert cfg["args"] == ["--flag"]
+        assert cfg["env"] == {"KEY": "val"}
+
+    @pytest.mark.asyncio
+    async def test_registers_http_servers(self, agent, mock_manager):
+        """McpServerHttp servers are converted correctly."""
+        from acp.schema import McpServerHttp, HttpHeader
+
+        state = mock_manager.create_session(cwd="/tmp")
+        state.agent.enabled_toolsets = ["hermes-acp"]
+        state.agent.disabled_toolsets = None
+        state.agent.tools = []
+        state.agent.valid_tool_names = set()
+
+        server = McpServerHttp(
+            name="http-server",
+            url="https://api.example.com/mcp",
+            headers=[HttpHeader(name="Authorization", value="Bearer tok")],
+        )
+
+        registered_config = {}
+        def capture_register(config_map):
+            registered_config.update(config_map)
+            return []
+
+        with patch("tools.mcp_tool.register_mcp_servers", side_effect=capture_register), \
+             patch("model_tools.get_tool_definitions", return_value=[]):
+            await agent._register_session_mcp_servers(state, [server])
+
+        assert "http-server" in registered_config
+        cfg = registered_config["http-server"]
+        assert cfg["url"] == "https://api.example.com/mcp"
+        assert cfg["headers"] == {"Authorization": "Bearer tok"}
+
+    @pytest.mark.asyncio
+    async def test_refreshes_agent_tool_surface(self, agent, mock_manager):
+        """After MCP registration, agent.tools and valid_tool_names are refreshed."""
+        from acp.schema import McpServerStdio
+
+        state = mock_manager.create_session(cwd="/tmp")
+        state.agent.enabled_toolsets = ["hermes-acp"]
+        state.agent.disabled_toolsets = None
+        state.agent.tools = []
+        state.agent.valid_tool_names = set()
+        state.agent._cached_system_prompt = "old prompt"
+
+        server = McpServerStdio(
+            name="srv",
+            command="/bin/test",
+            args=[],
+            env=[],
+        )
+
+        fake_tools = [
+            {"function": {"name": "mcp_srv_search"}},
+            {"function": {"name": "terminal"}},
+        ]
+
+        with patch("tools.mcp_tool.register_mcp_servers", return_value=["mcp_srv_search"]), \
+             patch("model_tools.get_tool_definitions", return_value=fake_tools):
+            await agent._register_session_mcp_servers(state, [server])
+
+        assert state.agent.tools == fake_tools
+        assert state.agent.valid_tool_names == {"mcp_srv_search", "terminal"}
+        # _invalidate_system_prompt should have been called
+        state.agent._invalidate_system_prompt.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_register_failure_logs_warning(self, agent, mock_manager):
+        """If register_mcp_servers raises, warning is logged but no crash."""
+        from acp.schema import McpServerStdio
+
+        state = mock_manager.create_session(cwd="/tmp")
+        server = McpServerStdio(
+            name="bad",
+            command="/nonexistent",
+            args=[],
+            env=[],
+        )
+
+        with patch("tools.mcp_tool.register_mcp_servers", side_effect=RuntimeError("boom")):
+            # Should not raise
+            await agent._register_session_mcp_servers(state, [server])
+
+    @pytest.mark.asyncio
+    async def test_new_session_calls_register(self, agent, mock_manager):
+        """new_session passes mcp_servers to _register_session_mcp_servers."""
+        with patch.object(agent, "_register_session_mcp_servers", new_callable=AsyncMock) as mock_reg:
+            resp = await agent.new_session(cwd="/tmp", mcp_servers=["fake"])
+            assert resp is not None
+            mock_reg.assert_called_once()
+            # Second arg should be the mcp_servers list
+            assert mock_reg.call_args[0][1] == ["fake"]
+
+    @pytest.mark.asyncio
+    async def test_load_session_calls_register(self, agent, mock_manager):
+        """load_session passes mcp_servers to _register_session_mcp_servers."""
+        # Create a session first so load can find it
+        state = mock_manager.create_session(cwd="/tmp")
+        sid = state.session_id
+
+        with patch.object(agent, "_register_session_mcp_servers", new_callable=AsyncMock) as mock_reg:
+            resp = await agent.load_session(cwd="/tmp", session_id=sid, mcp_servers=["fake"])
+            assert resp is not None
+            mock_reg.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_resume_session_calls_register(self, agent, mock_manager):
+        """resume_session passes mcp_servers to _register_session_mcp_servers."""
+        state = mock_manager.create_session(cwd="/tmp")
+        sid = state.session_id
+
+        with patch.object(agent, "_register_session_mcp_servers", new_callable=AsyncMock) as mock_reg:
+            resp = await agent.resume_session(cwd="/tmp", session_id=sid, mcp_servers=["fake"])
+            assert resp is not None
+            mock_reg.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_fork_session_calls_register(self, agent, mock_manager):
+        """fork_session passes mcp_servers to _register_session_mcp_servers."""
+        state = mock_manager.create_session(cwd="/tmp")
+        sid = state.session_id
+
+        with patch.object(agent, "_register_session_mcp_servers", new_callable=AsyncMock) as mock_reg:
+            resp = await agent.fork_session(cwd="/tmp", session_id=sid, mcp_servers=["fake"])
+            assert resp is not None
+            mock_reg.assert_called_once()

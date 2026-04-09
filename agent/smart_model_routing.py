@@ -6,6 +6,8 @@ import os
 import re
 from typing import Any, Dict, Optional
 
+from utils import is_truthy_value
+
 _COMPLEX_KEYWORDS = {
     "debug",
     "debugging",
@@ -47,13 +49,7 @@ _URL_RE = re.compile(r"https?://|www\.", re.IGNORECASE)
 
 
 def _coerce_bool(value: Any, default: bool = False) -> bool:
-    if value is None:
-        return default
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        return value.strip().lower() in {"1", "true", "yes", "on"}
-    return bool(value)
+    return is_truthy_value(value, default=default)
 
 
 def _coerce_int(value: Any, default: int) -> int:
@@ -127,6 +123,7 @@ def resolve_turn_route(user_message: str, routing_config: Optional[Dict[str, Any
                 "api_mode": primary.get("api_mode"),
                 "command": primary.get("command"),
                 "args": list(primary.get("args") or []),
+                "credential_pool": primary.get("credential_pool"),
             },
             "label": None,
             "signature": (
@@ -162,6 +159,7 @@ def resolve_turn_route(user_message: str, routing_config: Optional[Dict[str, Any
                 "api_mode": primary.get("api_mode"),
                 "command": primary.get("command"),
                 "args": list(primary.get("args") or []),
+                "credential_pool": primary.get("credential_pool"),
             },
             "label": None,
             "signature": (

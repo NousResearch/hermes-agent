@@ -376,6 +376,20 @@ class TestFTS5Search:
         assert any("chat-send" in (r.get("snippet") or r.get("content", "")).lower()
                     for r in results)
 
+    def test_search_dotted_term_does_not_crash(self, db):
+        """Dotted terms like 'P2.2' or 'simulate.p2.test.ts' should not crash FTS5."""
+        db.create_session(session_id="s1", source="cli")
+        db.append_message("s1", role="user", content="Working on P2.2 session_search edge cases")
+        db.append_message("s1", role="assistant", content="See simulate.p2.test.ts for details")
+
+        results = db.search_messages("P2.2")
+        assert isinstance(results, list)
+        assert len(results) >= 1
+
+        results2 = db.search_messages("simulate.p2.test.ts")
+        assert isinstance(results2, list)
+        assert len(results2) >= 1
+
     def test_search_quoted_phrase_preserved(self, db):
         """User-provided quoted phrases should be preserved for exact matching."""
         db.create_session(session_id="s1", source="cli")
@@ -442,6 +456,27 @@ class TestFTS5Search:
         assert s('"chat-send"') == '"chat-send"'
         # Hyphenated inside a quoted phrase stays as-is
         assert s('"my chat-send thing"') == '"my chat-send thing"'
+
+    def test_sanitize_fts5_quotes_dotted_terms(self):
+        """Dotted terms should be wrapped in quotes to avoid FTS5 query parse edge cases."""
+        from hermes_state import SessionDB
+        s = SessionDB._sanitize_fts5_query
+
+        assert s('P2.2') == '"P2.2"'
+        assert s('simulate.p2') == '"simulate.p2"'
+        assert s('simulate.p2.test.ts') == '"simulate.p2.test.ts"'
+
+        # Already quoted — no double quoting
+        assert s('"P2.2"') == '"P2.2"'
+
+        # Works with boolean syntax
+        result = s('P2.2 OR simulate.p2')
+        assert '"P2.2"' in result
+        assert '"simulate.p2"' in result
+
+        # Mixed dots and hyphens — single pass avoids double-quoting
+        assert s('my-app.config') == '"my-app.config"'
+        assert s('my-app.config.ts') == '"my-app.config.ts"'
 
 
 # =========================================================================
@@ -627,6 +662,84 @@ class TestPruneSessions:
         assert pruned == 1
         assert db.get_session("old_cli") is None
         assert db.get_session("old_tg") is not None
+
+    def test_prune_with_multilevel_chain(self, db):
+        """Pruning old sessions orphans newer children instead of crashing on FK."""
+        old_ts = time.time() - 200 * 86400
+        recent_ts = time.time() - 10 * 86400
+
+        # Chain: A (old) -> B (old) -> C (recent) -> D (recent)
+        db.create_session(session_id="A", source="cli")
+        db.end_session("A", end_reason="compressed")
+        db.create_session(session_id="B", source="cli", parent_session_id="A")
+        db.end_session("B", end_reason="compressed")
+        db.create_session(session_id="C", source="cli", parent_session_id="B")
+        db.end_session("C", end_reason="compressed")
+        db.create_session(session_id="D", source="cli", parent_session_id="C")
+        db.end_session("D", end_reason="done")
+
+        # Backdate A and B to be old; C and D stay recent
+        for sid, ts in [("A", old_ts), ("B", old_ts), ("C", recent_ts), ("D", recent_ts)]:
+            db._conn.execute(
+                "UPDATE sessions SET started_at = ? WHERE id = ?", (ts, sid)
+            )
+        db._conn.commit()
+
+        # Should not raise IntegrityError
+        pruned = db.prune_sessions(older_than_days=90)
+        assert pruned == 2  # only A and B
+        assert db.get_session("A") is None
+        assert db.get_session("B") is None
+        # C and D survive, C is orphaned (parent_session_id NULL)
+        c = db.get_session("C")
+        assert c is not None
+        assert c["parent_session_id"] is None
+        d = db.get_session("D")
+        assert d is not None
+        assert d["parent_session_id"] == "C"
+
+    def test_prune_entire_old_chain(self, db):
+        """All sessions in a chain are old — entire chain is pruned."""
+        old_ts = time.time() - 200 * 86400
+
+        db.create_session(session_id="X", source="cli")
+        db.end_session("X", end_reason="compressed")
+        db.create_session(session_id="Y", source="cli", parent_session_id="X")
+        db.end_session("Y", end_reason="compressed")
+        db.create_session(session_id="Z", source="cli", parent_session_id="Y")
+        db.end_session("Z", end_reason="done")
+
+        for sid in ("X", "Y", "Z"):
+            db._conn.execute(
+                "UPDATE sessions SET started_at = ? WHERE id = ?", (old_ts, sid)
+            )
+        db._conn.commit()
+
+        pruned = db.prune_sessions(older_than_days=90)
+        assert pruned == 3
+        for sid in ("X", "Y", "Z"):
+            assert db.get_session(sid) is None
+
+
+class TestDeleteSessionOrphansChildren:
+    def test_delete_orphans_children(self, db):
+        """Deleting a parent session orphans its children."""
+        db.create_session(session_id="parent", source="cli")
+        db.create_session(session_id="child", source="cli", parent_session_id="parent")
+        db.create_session(session_id="grandchild", source="cli", parent_session_id="child")
+
+        # Should not raise IntegrityError
+        result = db.delete_session("parent")
+        assert result is True
+        assert db.get_session("parent") is None
+        # Child is orphaned, not deleted
+        child = db.get_session("child")
+        assert child is not None
+        assert child["parent_session_id"] is None
+        # Grandchild is untouched
+        grandchild = db.get_session("grandchild")
+        assert grandchild is not None
+        assert grandchild["parent_session_id"] == "child"
 
 
 # =========================================================================

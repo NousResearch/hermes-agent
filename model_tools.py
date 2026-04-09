@@ -156,7 +156,7 @@ def _discover_tools():
         "tools.delegate_tool",
         "tools.process_registry",
         "tools.send_message_tool",
-        "tools.honcho_tools",
+        # "tools.honcho_tools",  # Removed — Honcho is now a memory provider plugin
         "tools.homeassistant_tool",
     ]
     import importlib
@@ -211,7 +211,7 @@ _LEGACY_TOOLSET_MAP = {
     "browser_tools": [
         "browser_navigate", "browser_snapshot", "browser_click",
         "browser_type", "browser_scroll", "browser_back",
-        "browser_press", "browser_close", "browser_get_images",
+        "browser_press", "browser_get_images",
         "browser_vision", "browser_console"
     ],
     "cronjob_tools": ["cronjob"],
@@ -252,7 +252,7 @@ def get_tool_definitions(
     # Determine which tool names the caller wants
     tools_to_include: set = set()
 
-    if enabled_toolsets:
+    if enabled_toolsets is not None:
         for toolset_name in enabled_toolsets:
             if validate_toolset(toolset_name):
                 resolved = resolve_toolset(toolset_name)
@@ -365,14 +365,105 @@ _AGENT_LOOP_TOOLS = {"todo", "memory", "session_search", "delegate_task"}
 _READ_SEARCH_TOOLS = {"read_file", "search_files"}
 
 
+# =========================================================================
+# Tool argument type coercion
+# =========================================================================
+
+def coerce_tool_args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
+    """Coerce tool call arguments to match their JSON Schema types.
+
+    LLMs frequently return numbers as strings (``"42"`` instead of ``42``)
+    and booleans as strings (``"true"`` instead of ``true``).  This compares
+    each argument value against the tool's registered JSON Schema and attempts
+    safe coercion when the value is a string but the schema expects a different
+    type.  Original values are preserved when coercion fails.
+
+    Handles ``"type": "integer"``, ``"type": "number"``, ``"type": "boolean"``,
+    and union types (``"type": ["integer", "string"]``).
+    """
+    if not args or not isinstance(args, dict):
+        return args
+
+    schema = registry.get_schema(tool_name)
+    if not schema:
+        return args
+
+    properties = (schema.get("parameters") or {}).get("properties")
+    if not properties:
+        return args
+
+    for key, value in args.items():
+        if not isinstance(value, str):
+            continue
+        prop_schema = properties.get(key)
+        if not prop_schema:
+            continue
+        expected = prop_schema.get("type")
+        if not expected:
+            continue
+        coerced = _coerce_value(value, expected)
+        if coerced is not value:
+            args[key] = coerced
+
+    return args
+
+
+def _coerce_value(value: str, expected_type):
+    """Attempt to coerce a string *value* to *expected_type*.
+
+    Returns the original string when coercion is not applicable or fails.
+    """
+    if isinstance(expected_type, list):
+        # Union type — try each in order, return first successful coercion
+        for t in expected_type:
+            result = _coerce_value(value, t)
+            if result is not value:
+                return result
+        return value
+
+    if expected_type in ("integer", "number"):
+        return _coerce_number(value, integer_only=(expected_type == "integer"))
+    if expected_type == "boolean":
+        return _coerce_boolean(value)
+    return value
+
+
+def _coerce_number(value: str, integer_only: bool = False):
+    """Try to parse *value* as a number.  Returns original string on failure."""
+    try:
+        f = float(value)
+    except (ValueError, OverflowError):
+        return value
+    # Guard against inf/nan before int() conversion
+    if f != f or f == float("inf") or f == float("-inf"):
+        return f
+    # If it looks like an integer (no fractional part), return int
+    if f == int(f):
+        return int(f)
+    if integer_only:
+        # Schema wants an integer but value has decimals — keep as string
+        return value
+    return f
+
+
+def _coerce_boolean(value: str):
+    """Try to parse *value* as a boolean.  Returns original string on failure."""
+    low = value.strip().lower()
+    if low == "true":
+        return True
+    if low == "false":
+        return False
+    return value
+
+
 def handle_function_call(
     function_name: str,
     function_args: Dict[str, Any],
     task_id: Optional[str] = None,
+    tool_call_id: Optional[str] = None,
+    session_id: Optional[str] = None,
     user_task: Optional[str] = None,
     enabled_tools: Optional[List[str]] = None,
-    honcho_manager: Optional[Any] = None,
-    honcho_session_key: Optional[str] = None,
 ) -> str:
     """
     Main function call dispatcher that routes calls to the tool registry.
@@ -390,6 +481,9 @@ def handle_function_call(
     Returns:
         Function result as a JSON string.
     """
+    # Coerce string arguments to their schema-declared types (e.g. "42"→42)
+    function_args = coerce_tool_args(function_name, function_args)
+
     # Notify the read-loop tracker when a non-read/search tool runs,
     # so the *consecutive* counter resets (reads after other work are fine).
     if function_name not in _READ_SEARCH_TOOLS:
@@ -405,7 +499,14 @@ def handle_function_call(
 
         try:
             from hermes_cli.plugins import invoke_hook
-            invoke_hook("pre_tool_call", tool_name=function_name, args=function_args, task_id=task_id or "")
+            invoke_hook(
+                "pre_tool_call",
+                tool_name=function_name,
+                args=function_args,
+                task_id=task_id or "",
+                session_id=session_id or "",
+                tool_call_id=tool_call_id or "",
+            )
         except Exception:
             pass
 
@@ -417,21 +518,25 @@ def handle_function_call(
                 function_name, function_args,
                 task_id=task_id,
                 enabled_tools=sandbox_enabled,
-                honcho_manager=honcho_manager,
-                honcho_session_key=honcho_session_key,
             )
         else:
             result = registry.dispatch(
                 function_name, function_args,
                 task_id=task_id,
                 user_task=user_task,
-                honcho_manager=honcho_manager,
-                honcho_session_key=honcho_session_key,
             )
 
         try:
             from hermes_cli.plugins import invoke_hook
-            invoke_hook("post_tool_call", tool_name=function_name, args=function_args, result=result, task_id=task_id or "")
+            invoke_hook(
+                "post_tool_call",
+                tool_name=function_name,
+                args=function_args,
+                result=result,
+                task_id=task_id or "",
+                session_id=session_id or "",
+                tool_call_id=tool_call_id or "",
+            )
         except Exception:
             pass
 

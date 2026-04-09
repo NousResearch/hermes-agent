@@ -207,12 +207,15 @@ memory:
   user_char_limit: 1375     # ~500 tokens
 ```
 
-## Honcho Integration (Cross-Session User Modeling)
+## External Memory Providers
 
-For deeper, AI-generated user understanding that works across sessions and platforms, you can enable [Honcho Memory](./honcho.md). Honcho runs alongside built-in memory in `hybrid` mode (the default) — `MEMORY.md` and `USER.md` stay as-is, and Honcho adds a persistent user modeling layer on top.
+For deeper, persistent memory that goes beyond MEMORY.md and USER.md, Hermes ships with 8 external memory provider plugins — including Honcho, OpenViking, Mem0, Hindsight, Holographic, RetainDB, ByteRover, and Supermemory.
+
+External providers run **alongside** built-in memory (never replacing it) and add capabilities like knowledge graphs, semantic search, automatic fact extraction, and cross-session user modeling.
 
 ```bash
-hermes honcho setup
+hermes memory setup      # pick a provider and configure it
+hermes memory status     # check what's active
 ```
 
-See the [Honcho Memory](./honcho.md) docs for full configuration, tools, and CLI reference.
+See the [Memory Providers](./memory-providers.md) guide for full details on each provider, setup instructions, and comparison.

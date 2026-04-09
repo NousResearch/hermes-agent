@@ -792,7 +792,7 @@ class MCPServerTask:
         After the initial ``await`` (list_tools), all mutations are synchronous
         — atomic from the event loop's perspective.
         """
-        from tools.registry import registry
+        from tools.registry import registry, tool_error
         from toolsets import TOOLSETS
 
         async with self._refresh_lock:
@@ -833,6 +833,15 @@ class MCPServerTask:
 
         safe_env = _build_safe_env(user_env)
         command, safe_env = _resolve_stdio_command(command, safe_env)
+
+        # Check package against OSV malware database before spawning
+        from tools.osv_check import check_package_for_malware
+        malware_error = check_package_for_malware(command, args)
+        if malware_error:
+            raise ValueError(
+                f"MCP server '{self.name}': {malware_error}"
+            )
+
         server_params = StdioServerParameters(
             command=command,
             args=args,
@@ -842,13 +851,25 @@ class MCPServerTask:
         sampling_kwargs = self._sampling.session_kwargs() if self._sampling else {}
         if _MCP_NOTIFICATION_TYPES and _MCP_MESSAGE_HANDLER_SUPPORTED:
             sampling_kwargs["message_handler"] = self._make_message_handler()
+
+        # Snapshot child PIDs before spawning so we can track the new one.
+        pids_before = _snapshot_child_pids()
         async with stdio_client(server_params) as (read_stream, write_stream):
+            # Capture the newly spawned subprocess PID for force-kill cleanup.
+            new_pids = _snapshot_child_pids() - pids_before
+            if new_pids:
+                with _lock:
+                    _stdio_pids.update(new_pids)
             async with ClientSession(read_stream, write_stream, **sampling_kwargs) as session:
                 await session.initialize()
                 self.session = session
                 await self._discover_tools()
                 self._ready.set()
                 await self._shutdown_event.wait()
+        # Context exited cleanly — subprocess was terminated by the SDK.
+        if new_pids:
+            with _lock:
+                _stdio_pids.difference_update(new_pids)
 
     async def _run_http(self, config: dict):
         """Run the server using HTTP/StreamableHTTP transport."""
@@ -863,14 +884,20 @@ class MCPServerTask:
         headers = dict(config.get("headers") or {})
         connect_timeout = config.get("connect_timeout", _DEFAULT_CONNECT_TIMEOUT)
 
-        # OAuth 2.1 PKCE: build httpx.Auth handler using the MCP SDK
+        # OAuth 2.1 PKCE: build httpx.Auth handler using the MCP SDK.
+        # If OAuth setup fails (e.g. non-interactive environment without
+        # cached tokens), re-raise so this server is reported as failed
+        # without blocking other MCP servers from connecting.
         _oauth_auth = None
         if self._auth_type == "oauth":
             try:
                 from tools.mcp_oauth import build_oauth_auth
-                _oauth_auth = build_oauth_auth(self.name, url)
+                _oauth_auth = build_oauth_auth(
+                    self.name, url, config.get("oauth")
+                )
             except Exception as exc:
                 logger.warning("MCP OAuth setup failed for '%s': %s", self.name, exc)
+                raise
 
         sampling_kwargs = self._sampling.session_kwargs() if self._sampling else {}
         if _MCP_NOTIFICATION_TYPES and _MCP_MESSAGE_HANDLER_SUPPORTED:
@@ -1044,8 +1071,55 @@ _servers: Dict[str, MCPServerTask] = {}
 _mcp_loop: Optional[asyncio.AbstractEventLoop] = None
 _mcp_thread: Optional[threading.Thread] = None
 
-# Protects _mcp_loop, _mcp_thread, and _servers from concurrent access.
+# Protects _mcp_loop, _mcp_thread, _servers, and _stdio_pids.
 _lock = threading.Lock()
+
+# PIDs of stdio MCP server subprocesses.  Tracked so we can force-kill
+# them on shutdown if the graceful cleanup (SDK context-manager teardown)
+# fails or times out.  PIDs are added after connection and removed on
+# normal server shutdown.
+_stdio_pids: set = set()
+
+
+def _snapshot_child_pids() -> set:
+    """Return a set of current child process PIDs.
+
+    Uses /proc on Linux, falls back to psutil, then empty set.
+    Used by _run_stdio to identify the subprocess spawned by stdio_client.
+    """
+    my_pid = os.getpid()
+
+    # Linux: read from /proc
+    try:
+        children_path = f"/proc/{my_pid}/task/{my_pid}/children"
+        with open(children_path) as f:
+            return {int(p) for p in f.read().split() if p.strip()}
+    except (FileNotFoundError, OSError, ValueError):
+        pass
+
+    # Fallback: psutil
+    try:
+        import psutil
+        return {c.pid for c in psutil.Process(my_pid).children()}
+    except Exception:
+        pass
+
+    return set()
+
+
+def _mcp_loop_exception_handler(loop, context):
+    """Suppress benign 'Event loop is closed' noise during shutdown.
+
+    When the MCP event loop is stopped and closed, httpx/httpcore async
+    transports may fire __del__ finalizers that call call_soon() on the
+    dead loop.  asyncio catches that RuntimeError and routes it here.
+    We silence it because the connection is being torn down anyway; all
+    other exceptions are forwarded to the default handler.
+    """
+    exc = context.get("exception")
+    if isinstance(exc, RuntimeError) and "Event loop is closed" in str(exc):
+        return  # benign shutdown race — suppress
+    loop.default_exception_handler(context)
 
 
 def _ensure_mcp_loop():
@@ -1055,6 +1129,7 @@ def _ensure_mcp_loop():
         if _mcp_loop is not None and _mcp_loop.is_running():
             return
         _mcp_loop = asyncio.new_event_loop()
+        _mcp_loop.set_exception_handler(_mcp_loop_exception_handler)
         _mcp_thread = threading.Thread(
             target=_mcp_loop.run_forever,
             name="mcp-event-loop",
@@ -1178,7 +1253,13 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
             for block in (result.content or []):
                 if hasattr(block, "text"):
                     parts.append(block.text)
-            return json.dumps({"result": "\n".join(parts) if parts else ""})
+            text_result = "\n".join(parts) if parts else ""
+
+            # Prefer structuredContent (machine-readable JSON) over plain text
+            structured = getattr(result, "structuredContent", None)
+            if structured is not None:
+                return json.dumps({"result": structured})
+            return json.dumps({"result": text_result})
 
         try:
             return _run_on_mcp_loop(_call(), timeout=tool_timeout)
@@ -1242,6 +1323,8 @@ def _make_read_resource_handler(server_name: str, tool_timeout: float):
     """Return a sync handler that reads a resource by URI from an MCP server."""
 
     def _handler(args: dict, **kwargs) -> str:
+        from tools.registry import tool_error
+
         with _lock:
             server = _servers.get(server_name)
         if not server or not server.session:
@@ -1251,7 +1334,7 @@ def _make_read_resource_handler(server_name: str, tool_timeout: float):
 
         uri = args.get("uri")
         if not uri:
-            return json.dumps({"error": "Missing required parameter 'uri'"})
+            return tool_error("Missing required parameter 'uri'")
 
         async def _call():
             result = await server.session.read_resource(uri)
@@ -1331,6 +1414,8 @@ def _make_get_prompt_handler(server_name: str, tool_timeout: float):
     """Return a sync handler that gets a prompt by name from an MCP server."""
 
     def _handler(args: dict, **kwargs) -> str:
+        from tools.registry import tool_error
+
         with _lock:
             server = _servers.get(server_name)
         if not server or not server.session:
@@ -1340,7 +1425,7 @@ def _make_get_prompt_handler(server_name: str, tool_timeout: float):
 
         name = args.get("name")
         if not name:
-            return json.dumps({"error": "Missing required parameter 'name'"})
+            return tool_error("Missing required parameter 'name'")
         arguments = args.get("arguments", {})
 
         async def _call():
@@ -1406,6 +1491,17 @@ def _normalize_mcp_input_schema(schema: dict | None) -> dict:
     return schema
 
 
+def sanitize_mcp_name_component(value: str) -> str:
+    """Return an MCP name component safe for tool and prefix generation.
+
+    Preserves Hermes's historical behavior of converting hyphens to
+    underscores, and also replaces any other character outside
+    ``[A-Za-z0-9_]`` with ``_`` so generated tool names are compatible with
+    provider validation rules.
+    """
+    return re.sub(r"[^A-Za-z0-9_]", "_", str(value or ""))
+
+
 def _convert_mcp_schema(server_name: str, mcp_tool) -> dict:
     """Convert an MCP tool listing to the Hermes registry schema format.
 
@@ -1417,9 +1513,8 @@ def _convert_mcp_schema(server_name: str, mcp_tool) -> dict:
     Returns:
         A dict suitable for ``registry.register(schema=...)``.
     """
-    # Sanitize: replace hyphens and dots with underscores for LLM API compatibility
-    safe_tool_name = mcp_tool.name.replace("-", "_").replace(".", "_")
-    safe_server_name = server_name.replace("-", "_").replace(".", "_")
+    safe_tool_name = sanitize_mcp_name_component(mcp_tool.name)
+    safe_server_name = sanitize_mcp_name_component(server_name)
     prefixed_name = f"mcp_{safe_server_name}_{safe_tool_name}"
     return {
         "name": prefixed_name,
@@ -1449,7 +1544,7 @@ def _sync_mcp_toolsets(server_names: Optional[List[str]] = None) -> None:
     all_mcp_tools: List[str] = []
 
     for server_name in server_names:
-        safe_prefix = f"mcp_{server_name.replace('-', '_').replace('.', '_')}_"
+        safe_prefix = f"mcp_{sanitize_mcp_name_component(server_name)}_"
         server_tools = sorted(
             t for t in existing if t.startswith(safe_prefix)
         )
@@ -1485,7 +1580,7 @@ def _build_utility_schemas(server_name: str) -> List[dict]:
     Returns a list of (schema, handler_factory_name) tuples encoded as dicts
     with keys: schema, handler_key.
     """
-    safe_name = server_name.replace("-", "_").replace(".", "_")
+    safe_name = sanitize_mcp_name_component(server_name)
     return [
         {
             "schema": {
@@ -1639,7 +1734,7 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
     Returns:
         List of registered prefixed tool names.
     """
-    from tools.registry import registry
+    from tools.registry import registry, tool_error
     from toolsets import create_custom_toolset, TOOLSETS
 
     registered_names: List[str] = []
@@ -1772,6 +1867,86 @@ async def _discover_and_register_server(name: str, config: dict) -> List[str]:
 # Public API
 # ---------------------------------------------------------------------------
 
+def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
+    """Connect to explicit MCP servers and register their tools.
+
+    Idempotent for already-connected server names. Servers with
+    ``enabled: false`` are skipped without disconnecting existing sessions.
+
+    Args:
+        servers: Mapping of ``{server_name: server_config}``.
+
+    Returns:
+        List of all currently registered MCP tool names.
+    """
+    if not _MCP_AVAILABLE:
+        logger.debug("MCP SDK not available -- skipping explicit MCP registration")
+        return []
+
+    if not servers:
+        logger.debug("No explicit MCP servers provided")
+        return []
+
+    # Only attempt servers that aren't already connected and are enabled
+    # (enabled: false skips the server entirely without removing its config)
+    with _lock:
+        new_servers = {
+            k: v
+            for k, v in servers.items()
+            if k not in _servers and _parse_boolish(v.get("enabled", True), default=True)
+        }
+
+    if not new_servers:
+        _sync_mcp_toolsets(list(servers.keys()))
+        return _existing_tool_names()
+
+    # Start the background event loop for MCP connections
+    _ensure_mcp_loop()
+
+    async def _discover_one(name: str, cfg: dict) -> List[str]:
+        """Connect to a single server and return its registered tool names."""
+        return await _discover_and_register_server(name, cfg)
+
+    async def _discover_all():
+        server_names = list(new_servers.keys())
+        # Connect to all servers in PARALLEL
+        results = await asyncio.gather(
+            *(_discover_one(name, cfg) for name, cfg in new_servers.items()),
+            return_exceptions=True,
+        )
+        for name, result in zip(server_names, results):
+            if isinstance(result, Exception):
+                command = new_servers.get(name, {}).get("command")
+                logger.warning(
+                    "Failed to connect to MCP server '%s'%s: %s",
+                    name,
+                    f" (command={command})" if command else "",
+                    _format_connect_error(result),
+                )
+
+    # Per-server timeouts are handled inside _discover_and_register_server.
+    # The outer timeout is generous: 120s total for parallel discovery.
+    _run_on_mcp_loop(_discover_all(), timeout=120)
+
+    _sync_mcp_toolsets(list(servers.keys()))
+
+    # Log a summary so ACP callers get visibility into what was registered.
+    with _lock:
+        connected = [n for n in new_servers if n in _servers]
+        new_tool_count = sum(
+            len(getattr(_servers[n], "_registered_tool_names", []))
+            for n in connected
+        )
+    failed = len(new_servers) - len(connected)
+    if new_tool_count or failed:
+        summary = f"MCP: registered {new_tool_count} tool(s) from {len(connected)} server(s)"
+        if failed:
+            summary += f" ({failed} failed)"
+        logger.info(summary)
+
+    return _existing_tool_names()
+
+
 def discover_mcp_tools() -> List[str]:
     """Entry point: load config, connect to MCP servers, register tools.
 
@@ -1793,69 +1968,32 @@ def discover_mcp_tools() -> List[str]:
         logger.debug("No MCP servers configured")
         return []
 
-    # Only attempt servers that aren't already connected and are enabled
-    # (enabled: false skips the server entirely without removing its config)
     with _lock:
-        new_servers = {
-            k: v
-            for k, v in servers.items()
-            if k not in _servers and _parse_boolish(v.get("enabled", True), default=True)
-        }
+        new_server_names = [
+            name
+            for name, cfg in servers.items()
+            if name not in _servers and _parse_boolish(cfg.get("enabled", True), default=True)
+        ]
 
-    if not new_servers:
-        _sync_mcp_toolsets(list(servers.keys()))
-        return _existing_tool_names()
+    tool_names = register_mcp_servers(servers)
+    if not new_server_names:
+        return tool_names
 
-    # Start the background event loop for MCP connections
-    _ensure_mcp_loop()
-
-    all_tools: List[str] = []
-    failed_count = 0
-
-    async def _discover_one(name: str, cfg: dict) -> List[str]:
-        """Connect to a single server and return its registered tool names."""
-        return await _discover_and_register_server(name, cfg)
-
-    async def _discover_all():
-        nonlocal failed_count
-        server_names = list(new_servers.keys())
-        # Connect to all servers in PARALLEL
-        results = await asyncio.gather(
-            *(_discover_one(name, cfg) for name, cfg in new_servers.items()),
-            return_exceptions=True,
+    with _lock:
+        connected_server_names = [name for name in new_server_names if name in _servers]
+        new_tool_count = sum(
+            len(getattr(_servers[name], "_registered_tool_names", []))
+            for name in connected_server_names
         )
-        for name, result in zip(server_names, results):
-            if isinstance(result, Exception):
-                failed_count += 1
-                command = new_servers.get(name, {}).get("command")
-                logger.warning(
-                    "Failed to connect to MCP server '%s'%s: %s",
-                    name,
-                    f" (command={command})" if command else "",
-                    _format_connect_error(result),
-                )
-            elif isinstance(result, list):
-                all_tools.extend(result)
-            else:
-                failed_count += 1
 
-    # Per-server timeouts are handled inside _discover_and_register_server.
-    # The outer timeout is generous: 120s total for parallel discovery.
-    _run_on_mcp_loop(_discover_all(), timeout=120)
-
-    _sync_mcp_toolsets(list(servers.keys()))
-
-    # Print summary
-    total_servers = len(new_servers)
-    ok_servers = total_servers - failed_count
-    if all_tools or failed_count:
-        summary = f"  MCP: {len(all_tools)} tool(s) from {ok_servers} server(s)"
+    failed_count = len(new_server_names) - len(connected_server_names)
+    if new_tool_count or failed_count:
+        summary = f"  MCP: {new_tool_count} tool(s) from {len(connected_server_names)} server(s)"
         if failed_count:
             summary += f" ({failed_count} failed)"
         logger.info(summary)
 
-    # Return ALL registered tools (existing + newly discovered)
-    return _existing_tool_names()
+    return tool_names
 
 
 def get_mcp_status() -> List[dict]:
@@ -2004,6 +2142,29 @@ def shutdown_mcp_servers():
     _stop_mcp_loop()
 
 
+def _kill_orphaned_mcp_children() -> None:
+    """Best-effort kill of MCP stdio subprocesses that survived loop shutdown.
+
+    After the MCP event loop is stopped, stdio server subprocesses *should*
+    have been terminated by the SDK's context-manager cleanup.  If the loop
+    was stuck or the shutdown timed out, orphaned children may remain.
+
+    Only kills PIDs tracked in ``_stdio_pids`` — never arbitrary children.
+    """
+    import signal as _signal
+
+    with _lock:
+        pids = list(_stdio_pids)
+        _stdio_pids.clear()
+
+    for pid in pids:
+        try:
+            os.kill(pid, _signal.SIGKILL)
+            logger.debug("Force-killed orphaned MCP stdio process %d", pid)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass  # Already exited or inaccessible
+
+
 def _stop_mcp_loop():
     """Stop the background event loop and join its thread."""
     global _mcp_loop, _mcp_thread
@@ -2016,4 +2177,10 @@ def _stop_mcp_loop():
         loop.call_soon_threadsafe(loop.stop)
         if thread is not None:
             thread.join(timeout=5)
-        loop.close()
+        try:
+            loop.close()
+        except Exception:
+            pass
+        # After closing the loop, any stdio subprocesses that survived the
+        # graceful shutdown are now orphaned.  Force-kill them.
+        _kill_orphaned_mcp_children()

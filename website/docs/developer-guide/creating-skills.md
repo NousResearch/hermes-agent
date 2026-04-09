@@ -61,6 +61,11 @@ metadata:
     requires_tools: [web_search]        # Optional — only show when these tools are available
     fallback_for_toolsets: [browser]    # Optional — hide when these toolsets are active
     fallback_for_tools: [browser_navigate]  # Optional — hide when these tools exist
+    config:                              # Optional — config.yaml settings the skill needs
+      - key: my.setting
+        description: "What this setting controls"
+        default: "sensible-default"
+        prompt: "Display prompt for setup"
 required_environment_variables:          # Optional — env vars the skill needs
   - name: MY_API_KEY
     prompt: "Enter your API key"
@@ -172,6 +177,59 @@ When your skill is loaded, any declared `required_environment_variables` that ar
 :::
 
 Legacy `prerequisites.env_vars` remains supported as a backward-compatible alias.
+
+### Config Settings (config.yaml)
+
+Skills can declare non-secret settings that are stored in `config.yaml` under the `skills.config` namespace. Unlike environment variables (which are secrets stored in `.env`), config settings are for paths, preferences, and other non-sensitive values.
+
+```yaml
+metadata:
+  hermes:
+    config:
+      - key: wiki.path
+        description: Path to the LLM Wiki knowledge base directory
+        default: "~/wiki"
+        prompt: Wiki directory path
+      - key: wiki.domain
+        description: Domain the wiki covers
+        default: ""
+        prompt: Wiki domain (e.g., AI/ML research)
+```
+
+Each entry supports:
+- `key` (required) — dotpath for the setting (e.g., `wiki.path`)
+- `description` (required) — explains what the setting controls
+- `default` (optional) — default value if the user doesn't configure it
+- `prompt` (optional) — prompt text shown during `hermes config migrate`; falls back to `description`
+
+**How it works:**
+
+1. **Storage:** Values are written to `config.yaml` under `skills.config.<key>`:
+   ```yaml
+   skills:
+     config:
+       wiki:
+         path: ~/my-research
+   ```
+
+2. **Discovery:** `hermes config migrate` scans all enabled skills, finds unconfigured settings, and prompts the user. Settings also appear in `hermes config show` under "Skill Settings."
+
+3. **Runtime injection:** When a skill loads, its config values are resolved and appended to the skill message:
+   ```
+   [Skill config (from ~/.hermes/config.yaml):
+     wiki.path = /home/user/my-research
+   ]
+   ```
+   The agent sees the configured values without needing to read `config.yaml` itself.
+
+4. **Manual setup:** Users can also set values directly:
+   ```bash
+   hermes config set skills.config.wiki.path ~/my-wiki
+   ```
+
+:::tip When to use which
+Use `required_environment_variables` for API keys, tokens, and other **secrets** (stored in `~/.hermes/.env`, never shown to the model). Use `config` for **paths, preferences, and non-sensitive settings** (stored in `config.yaml`, visible in config show).
+:::
 
 ### Credential File Requirements (OAuth tokens, etc.)
 

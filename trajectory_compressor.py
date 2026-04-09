@@ -32,7 +32,6 @@ Usage:
 
 import json
 import os
-import re
 import time
 import yaml
 import logging
@@ -45,6 +44,7 @@ import fire
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn, TimeElapsedColumn, TimeRemainingColumn
 from rich.console import Console
 from hermes_constants import OPENROUTER_BASE_URL
+from agent.retry_utils import jittered_backoff
 
 # Load environment variables
 from dotenv import load_dotenv
@@ -350,7 +350,6 @@ class TrajectoryCompressor:
         which handles auth, headers, and provider detection internally.
         For custom endpoints, falls back to raw client construction.
         """
-        from agent.auxiliary_client import call_llm, async_call_llm
 
         provider = self._detect_provider()
         if provider:
@@ -375,14 +374,33 @@ class TrajectoryCompressor:
                 raise RuntimeError(
                     f"Missing API key. Set {self.config.api_key_env} "
                     f"environment variable.")
-            from openai import OpenAI, AsyncOpenAI
+            from openai import OpenAI
             self.client = OpenAI(
                 api_key=api_key, base_url=self.config.base_url)
-            self.async_client = AsyncOpenAI(
-                api_key=api_key, base_url=self.config.base_url)
+            # AsyncOpenAI is created lazily in _get_async_client() so it
+            # binds to the current event loop — avoids "Event loop is closed"
+            # when process_directory() is called multiple times (each call
+            # creates a new loop via asyncio.run()).
+            self.async_client = None
+            self._async_client_api_key = api_key
 
         print(f"✅ Initialized summarizer client: {self.config.summarization_model}")
         print(f"   Max concurrent requests: {self.config.max_concurrent_requests}")
+
+    def _get_async_client(self):
+        """Return an AsyncOpenAI client bound to the current event loop.
+
+        Created lazily so that each ``asyncio.run()`` call in
+        ``process_directory()`` gets a client tied to its own loop,
+        avoiding "Event loop is closed" errors on repeated calls.
+        """
+        from openai import AsyncOpenAI
+        # Always create a fresh client so it binds to the running loop.
+        self.async_client = AsyncOpenAI(
+            api_key=self._async_client_api_key,
+            base_url=self.config.base_url,
+        )
+        return self.async_client
 
     def _detect_provider(self) -> str:
         """Detect the provider name from the configured base_url."""
@@ -568,7 +586,7 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
                 self.logger.warning(f"Summarization attempt {attempt + 1} failed: {e}")
                 
                 if attempt < self.config.max_retries - 1:
-                    time.sleep(self.config.retry_delay * (attempt + 1))
+                    time.sleep(jittered_backoff(attempt + 1, base_delay=self.config.retry_delay, max_delay=30.0))
                 else:
                     # Fallback: create a basic summary
                     return "[CONTEXT SUMMARY]: [Summary generation failed - previous turns contained tool calls and responses that have been compressed to save context space.]"
@@ -615,7 +633,7 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
                         max_tokens=self.config.summary_target_tokens * 2,
                     )
                 else:
-                    response = await self.async_client.chat.completions.create(
+                    response = await self._get_async_client().chat.completions.create(
                         model=self.config.summarization_model,
                         messages=[{"role": "user", "content": prompt}],
                         temperature=self.config.temperature,
@@ -630,7 +648,7 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
                 self.logger.warning(f"Summarization attempt {attempt + 1} failed: {e}")
                 
                 if attempt < self.config.max_retries - 1:
-                    await asyncio.sleep(self.config.retry_delay * (attempt + 1))
+                    await asyncio.sleep(jittered_backoff(attempt + 1, base_delay=self.config.retry_delay, max_delay=30.0))
                 else:
                     # Fallback: create a basic summary
                     return "[CONTEXT SUMMARY]: [Summary generation failed - previous turns contained tool calls and responses that have been compressed to save context space.]"

@@ -2,10 +2,11 @@
 """
 Text-to-Speech Tool Module
 
-Supports four TTS providers:
+Supports five TTS providers:
 - Edge TTS (default, free, no API key): Microsoft Edge neural voices
 - ElevenLabs (premium): High-quality voices, needs ELEVENLABS_API_KEY
 - OpenAI TTS: Good quality, needs OPENAI_API_KEY
+- MiniMax TTS: High-quality with voice cloning, needs MINIMAX_API_KEY
 - NeuTTS (local, free, no API key): On-device TTS via neutts_cli, needs neutts installed
 
 Output formats:
@@ -32,11 +33,14 @@ import shutil
 import subprocess
 import tempfile
 import threading
+import uuid
 from pathlib import Path
-from hermes_constants import get_hermes_home
 from typing import Callable, Dict, Any, Optional
+from urllib.parse import urljoin
 
 logger = logging.getLogger(__name__)
+from tools.managed_tool_gateway import resolve_managed_tool_gateway
+from tools.tool_backend_helpers import managed_nous_tools_enabled, resolve_openai_audio_api_key
 
 # ---------------------------------------------------------------------------
 # Lazy imports -- providers are imported only when actually used to avoid
@@ -74,6 +78,11 @@ DEFAULT_ELEVENLABS_MODEL_ID = "eleven_multilingual_v2"
 DEFAULT_ELEVENLABS_STREAMING_MODEL_ID = "eleven_flash_v2_5"
 DEFAULT_OPENAI_MODEL = "gpt-4o-mini-tts"
 DEFAULT_OPENAI_VOICE = "alloy"
+DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
+DEFAULT_MINIMAX_MODEL = "speech-2.8-hd"
+DEFAULT_MINIMAX_VOICE_ID = "English_Graceful_Lady"
+DEFAULT_MINIMAX_BASE_URL = "https://api.minimax.io/v1/t2a_v2"
+
 def _get_default_output_dir() -> str:
     from hermes_constants import get_hermes_dir
     return str(get_hermes_dir("cache/audio", "audio_cache"))
@@ -237,14 +246,12 @@ def _generate_openai_tts(text: str, output_path: str, tts_config: Dict[str, Any]
     Returns:
         Path to the saved audio file.
     """
-    api_key = os.getenv("VOICE_TOOLS_OPENAI_KEY", "")
-    if not api_key:
-        raise ValueError("VOICE_TOOLS_OPENAI_KEY not set. Get one at https://platform.openai.com/api-keys")
+    api_key, base_url = _resolve_openai_audio_client_config()
 
     oai_config = tts_config.get("openai", {})
     model = oai_config.get("model", DEFAULT_OPENAI_MODEL)
     voice = oai_config.get("voice", DEFAULT_OPENAI_VOICE)
-    base_url = oai_config.get("base_url", "https://api.openai.com/v1")
+    base_url = oai_config.get("base_url", base_url)
 
     # Determine response format from extension
     if output_path.endswith(".ogg"):
@@ -254,14 +261,107 @@ def _generate_openai_tts(text: str, output_path: str, tts_config: Dict[str, Any]
 
     OpenAIClient = _import_openai_client()
     client = OpenAIClient(api_key=api_key, base_url=base_url)
-    response = client.audio.speech.create(
-        model=model,
-        voice=voice,
-        input=text,
-        response_format=response_format,
-    )
+    try:
+        response = client.audio.speech.create(
+            model=model,
+            voice=voice,
+            input=text,
+            response_format=response_format,
+            extra_headers={"x-idempotency-key": str(uuid.uuid4())},
+        )
 
-    response.stream_to_file(output_path)
+        response.stream_to_file(output_path)
+        return output_path
+    finally:
+        close = getattr(client, "close", None)
+        if callable(close):
+            close()
+
+
+# ===========================================================================
+# Provider: MiniMax TTS
+# ===========================================================================
+def _generate_minimax_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
+    """
+    Generate audio using MiniMax TTS API.
+
+    MiniMax returns hex-encoded audio data. Supports streaming (SSE) and
+    non-streaming modes. This implementation uses non-streaming for simplicity.
+
+    Args:
+        text: Text to convert (max 10,000 characters).
+        output_path: Where to save the audio file.
+        tts_config: TTS config dict.
+
+    Returns:
+        Path to the saved audio file.
+    """
+    import requests
+
+    api_key = os.getenv("MINIMAX_API_KEY", "")
+    if not api_key:
+        raise ValueError("MINIMAX_API_KEY not set. Get one at https://platform.minimax.io/")
+
+    mm_config = tts_config.get("minimax", {})
+    model = mm_config.get("model", DEFAULT_MINIMAX_MODEL)
+    voice_id = mm_config.get("voice_id", DEFAULT_MINIMAX_VOICE_ID)
+    speed = mm_config.get("speed", 1)
+    vol = mm_config.get("vol", 1)
+    pitch = mm_config.get("pitch", 0)
+    base_url = mm_config.get("base_url", DEFAULT_MINIMAX_BASE_URL)
+
+    # Determine audio format from output extension
+    if output_path.endswith(".wav"):
+        audio_format = "wav"
+    elif output_path.endswith(".flac"):
+        audio_format = "flac"
+    else:
+        audio_format = "mp3"
+
+    payload = {
+        "model": model,
+        "text": text,
+        "stream": False,
+        "voice_setting": {
+            "voice_id": voice_id,
+            "speed": speed,
+            "vol": vol,
+            "pitch": pitch,
+        },
+        "audio_setting": {
+            "sample_rate": 32000,
+            "bitrate": 128000,
+            "format": audio_format,
+            "channel": 1,
+        },
+    }
+
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}",
+    }
+
+    response = requests.post(base_url, json=payload, headers=headers, timeout=60)
+    response.raise_for_status()
+
+    result = response.json()
+    base_resp = result.get("base_resp", {})
+    status_code = base_resp.get("status_code", -1)
+
+    if status_code != 0:
+        status_msg = base_resp.get("status_msg", "unknown error")
+        raise RuntimeError(f"MiniMax TTS API error (code {status_code}): {status_msg}")
+
+    hex_audio = result.get("data", {}).get("audio", "")
+    if not hex_audio:
+        raise RuntimeError("MiniMax TTS returned empty audio data")
+
+    # MiniMax returns hex-encoded audio (not base64)
+    audio_bytes = bytes.fromhex(hex_audio)
+
+    with open(output_path, "wb") as f:
+        f.write(audio_bytes)
+
     return output_path
 
 
@@ -366,7 +466,7 @@ def text_to_speech_tool(
         str: JSON result with success, file_path, and optionally MEDIA tag.
     """
     if not text or not text.strip():
-        return json.dumps({"success": False, "error": "Text is required"}, ensure_ascii=False)
+        return tool_error("Text is required", success=False)
 
     # Truncate very long text with a warning
     if len(text) > MAX_TEXT_LENGTH:
@@ -425,6 +525,10 @@ def text_to_speech_tool(
             logger.info("Generating speech with OpenAI TTS...")
             _generate_openai_tts(text, file_str, tts_config)
 
+        elif provider == "minimax":
+            logger.info("Generating speech with MiniMax TTS...")
+            _generate_minimax_tts(text, file_str, tts_config)
+
         elif provider == "neutts":
             if not _check_neutts_available():
                 return json.dumps({
@@ -446,7 +550,6 @@ def text_to_speech_tool(
             if edge_available:
                 logger.info("Generating speech with Edge TTS...")
                 try:
-                    loop = asyncio.get_running_loop()
                     import concurrent.futures
                     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
                         pool.submit(
@@ -475,7 +578,7 @@ def text_to_speech_tool(
         # Try Opus conversion for Telegram compatibility
         # Edge TTS outputs MP3, NeuTTS outputs WAV — both need ffmpeg conversion
         voice_compatible = False
-        if provider in ("edge", "neutts") and not file_str.endswith(".ogg"):
+        if provider in ("edge", "neutts", "minimax") and not file_str.endswith(".ogg"):
             opus_path = _convert_to_opus(file_str)
             if opus_path:
                 file_str = opus_path
@@ -504,17 +607,17 @@ def text_to_speech_tool(
         # Configuration errors (missing API keys, etc.)
         error_msg = f"TTS configuration error ({provider}): {e}"
         logger.error("%s", error_msg)
-        return json.dumps({"success": False, "error": error_msg}, ensure_ascii=False)
+        return tool_error(error_msg, success=False)
     except FileNotFoundError as e:
         # Missing dependencies or files
         error_msg = f"TTS dependency missing ({provider}): {e}"
         logger.error("%s", error_msg, exc_info=True)
-        return json.dumps({"success": False, "error": error_msg}, ensure_ascii=False)
+        return tool_error(error_msg, success=False)
     except Exception as e:
         # Unexpected errors
         error_msg = f"TTS generation failed ({provider}): {e}"
         logger.error("%s", error_msg, exc_info=True)
-        return json.dumps({"success": False, "error": error_msg}, ensure_ascii=False)
+        return tool_error(error_msg, success=False)
 
 
 # ===========================================================================
@@ -543,13 +646,38 @@ def check_tts_requirements() -> bool:
         pass
     try:
         _import_openai_client()
-        if os.getenv("VOICE_TOOLS_OPENAI_KEY"):
+        if _has_openai_audio_backend():
             return True
     except ImportError:
         pass
+    if os.getenv("MINIMAX_API_KEY"):
+        return True
     if _check_neutts_available():
         return True
     return False
+
+
+def _resolve_openai_audio_client_config() -> tuple[str, str]:
+    """Return direct OpenAI audio config or a managed gateway fallback."""
+    direct_api_key = resolve_openai_audio_api_key()
+    if direct_api_key:
+        return direct_api_key, DEFAULT_OPENAI_BASE_URL
+
+    managed_gateway = resolve_managed_tool_gateway("openai-audio")
+    if managed_gateway is None:
+        message = "Neither VOICE_TOOLS_OPENAI_KEY nor OPENAI_API_KEY is set"
+        if managed_nous_tools_enabled():
+            message += ", and the managed OpenAI audio gateway is unavailable"
+        raise ValueError(message)
+
+    return managed_gateway.nous_user_token, urljoin(
+        f"{managed_gateway.gateway_origin.rstrip('/')}/", "v1"
+    )
+
+
+def _has_openai_audio_backend() -> bool:
+    """Return True when OpenAI audio can use direct credentials or the managed gateway."""
+    return bool(resolve_openai_audio_api_key() or resolve_managed_tool_gateway("openai-audio"))
 
 
 # ===========================================================================
@@ -806,7 +934,11 @@ if __name__ == "__main__":
     print(f"  ElevenLabs: {'installed' if _check(_import_elevenlabs, 'el') else 'not installed (pip install elevenlabs)'}")
     print(f"    API Key:  {'set' if os.getenv('ELEVENLABS_API_KEY') else 'not set'}")
     print(f"  OpenAI:     {'installed' if _check(_import_openai_client, 'oai') else 'not installed'}")
-    print(f"    API Key:  {'set' if os.getenv('VOICE_TOOLS_OPENAI_KEY') else 'not set (VOICE_TOOLS_OPENAI_KEY)'}")
+    print(
+        "    API Key:  "
+        f"{'set' if resolve_openai_audio_api_key() else 'not set (VOICE_TOOLS_OPENAI_KEY or OPENAI_API_KEY)'}"
+    )
+    print(f"  MiniMax:    {'API key set' if os.getenv('MINIMAX_API_KEY') else 'not set (MINIMAX_API_KEY)'}")
     print(f"  ffmpeg:     {'✅ found' if _has_ffmpeg() else '❌ not found (needed for Telegram Opus)'}")
     print(f"\n  Output dir: {DEFAULT_OUTPUT_DIR}")
 
@@ -818,7 +950,7 @@ if __name__ == "__main__":
 # ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
-from tools.registry import registry
+from tools.registry import registry, tool_error
 
 TTS_SCHEMA = {
     "name": "text_to_speech",

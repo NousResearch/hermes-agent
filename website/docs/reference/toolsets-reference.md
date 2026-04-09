@@ -6,53 +6,151 @@ description: "Reference for Hermes core, composite, platform, and dynamic toolse
 
 # Toolsets Reference
 
-Toolsets are named bundles of tools that you can enable with `hermes chat --toolsets ...`, configure per platform, or resolve inside the agent runtime.
+Toolsets are named bundles of tools that control what the agent can do. They're the primary mechanism for configuring tool availability per platform, per session, or per task.
 
-| Toolset | Kind | Resolves to |
-|---------|------|-------------|
-| `browser` | core | `browser_back`, `browser_click`, `browser_close`, `browser_console`, `browser_get_images`, `browser_navigate`, `browser_press`, `browser_scroll`, `browser_snapshot`, `browser_type`, `browser_vision`, `web_search` |
-| `clarify` | core | `clarify` |
-| `code_execution` | core | `execute_code` |
-| `cronjob` | core | `cronjob` |
-| `debugging` | composite | `patch`, `process`, `read_file`, `search_files`, `terminal`, `web_extract`, `web_search`, `write_file` |
-| `delegation` | core | `delegate_task` |
-| `file` | core | `patch`, `read_file`, `search_files`, `write_file` |
-| `hermes-acp` | platform | `browser_back`, `browser_click`, `browser_close`, `browser_console`, `browser_get_images`, `browser_navigate`, `browser_press`, `browser_scroll`, `browser_snapshot`, `browser_type`, `browser_vision`, `delegate_task`, `execute_code`, `memory`, `patch`, `process`, `read_file`, `search_files`, `session_search`, `skill_manage`, `skill_view`, `skills_list`, `terminal`, `todo`, `vision_analyze`, `web_extract`, `web_search`, `write_file` |
-| `hermes-cli` | platform | `browser_back`, `browser_click`, `browser_close`, `browser_console`, `browser_get_images`, `browser_navigate`, `browser_press`, `browser_scroll`, `browser_snapshot`, `browser_type`, `browser_vision`, `clarify`, `cronjob`, `delegate_task`, `execute_code`, `ha_call_service`, `ha_get_state`, `ha_list_entities`, `ha_list_services`, `honcho_conclude`, `honcho_context`, `honcho_profile`, `honcho_search`, `image_generate`, `memory`, `mixture_of_agents`, `patch`, `process`, `read_file`, `search_files`, `send_message`, `session_search`, `skill_manage`, `skill_view`, `skills_list`, `terminal`, `text_to_speech`, `todo`, `vision_analyze`, `web_extract`, `web_search`, `write_file` |
-| `hermes-api-server` | platform | _(same as hermes-cli)_ |
-| `hermes-dingtalk` | platform | _(same as hermes-cli)_ |
-| `hermes-feishu` | platform | _(same as hermes-cli)_ |
-| `hermes-wecom` | platform | _(same as hermes-cli)_ |
-| `hermes-discord` | platform | _(same as hermes-cli)_ |
-| `hermes-email` | platform | _(same as hermes-cli)_ |
-| `hermes-gateway` | composite | Union of all messaging platform toolsets |
-| `hermes-homeassistant` | platform | _(same as hermes-cli)_ |
-| `hermes-matrix` | platform | _(same as hermes-cli)_ |
-| `hermes-mattermost` | platform | _(same as hermes-cli)_ |
-| `hermes-signal` | platform | _(same as hermes-cli)_ |
-| `hermes-slack` | platform | _(same as hermes-cli)_ |
-| `hermes-sms` | platform | _(same as hermes-cli)_ |
-| `hermes-telegram` | platform | _(same as hermes-cli)_ |
-| `hermes-whatsapp` | platform | _(same as hermes-cli)_ |
-| `homeassistant` | core | `ha_call_service`, `ha_get_state`, `ha_list_entities`, `ha_list_services` |
-| `honcho` | core | `honcho_conclude`, `honcho_context`, `honcho_profile`, `honcho_search` |
-| `image_gen` | core | `image_generate` |
-| `memory` | core | `memory` |
-| `messaging` | core | `send_message` |
-| `moa` | core | `mixture_of_agents` |
-| `rl` | core | `rl_check_status`, `rl_edit_config`, `rl_get_current_config`, `rl_get_results`, `rl_list_environments`, `rl_list_runs`, `rl_select_environment`, `rl_start_training`, `rl_stop_training`, `rl_test_inference` |
-| `safe` | composite | `image_generate`, `mixture_of_agents`, `vision_analyze`, `web_extract`, `web_search` |
-| `search` | core | `web_search` |
-| `session_search` | core | `session_search` |
-| `skills` | core | `skill_manage`, `skill_view`, `skills_list` |
-| `terminal` | core | `process`, `terminal` |
-| `todo` | core | `todo` |
-| `tts` | core | `text_to_speech` |
-| `vision` | core | `vision_analyze` |
-| `web` | core | `web_extract`, `web_search` |
+## How Toolsets Work
 
-## Dynamic toolsets
+Every tool belongs to exactly one toolset. When you enable a toolset, all tools in that bundle become available to the agent. Toolsets come in three kinds:
 
-- `mcp-<server>` — generated at runtime for each configured MCP server.
-- Custom toolsets can be created in configuration and resolved at startup.
-- Wildcards: `all` and `*` expand to every registered toolset.
+- **Core** — A single logical group of related tools (e.g., `file` bundles `read_file`, `write_file`, `patch`, `search_files`)
+- **Composite** — Combines multiple core toolsets for a common scenario (e.g., `debugging` bundles file, terminal, and web tools)
+- **Platform** — A complete tool configuration for a specific deployment context (e.g., `hermes-cli` is the default for interactive CLI sessions)
+
+## Configuring Toolsets
+
+### Per-session (CLI)
+
+```bash
+hermes chat --toolsets web,file,terminal
+hermes chat --toolsets debugging        # composite — expands to file + terminal + web
+hermes chat --toolsets all              # everything
+```
+
+### Per-platform (config.yaml)
+
+```yaml
+toolsets:
+  - hermes-cli          # default for CLI
+  # - hermes-telegram   # override for Telegram gateway
+```
+
+### Interactive management
+
+```bash
+hermes tools                            # curses UI to enable/disable per platform
+```
+
+Or in-session:
+
+```
+/tools list
+/tools disable browser
+/tools enable rl
+```
+
+## Core Toolsets
+
+| Toolset | Tools | Purpose |
+|---------|-------|---------|
+| `browser` | `browser_back`, `browser_click`, `browser_console`, `browser_get_images`, `browser_navigate`, `browser_press`, `browser_scroll`, `browser_snapshot`, `browser_type`, `browser_vision`, `web_search` | Full browser automation. Includes `web_search` as a fallback for quick lookups. |
+| `clarify` | `clarify` | Ask the user a question when the agent needs clarification. |
+| `code_execution` | `execute_code` | Run Python scripts that call Hermes tools programmatically. |
+| `cronjob` | `cronjob` | Schedule and manage recurring tasks. |
+| `delegation` | `delegate_task` | Spawn isolated subagent instances for parallel work. |
+| `file` | `patch`, `read_file`, `search_files`, `write_file` | File reading, writing, searching, and editing. |
+| `homeassistant` | `ha_call_service`, `ha_get_state`, `ha_list_entities`, `ha_list_services` | Smart home control via Home Assistant. Only available when `HASS_TOKEN` is set. |
+| `image_gen` | `image_generate` | Text-to-image generation via FAL.ai. |
+| `memory` | `memory` | Persistent cross-session memory management. |
+| `messaging` | `send_message` | Send messages to other platforms (Telegram, Discord, etc.) from within a session. |
+| `moa` | `mixture_of_agents` | Multi-model consensus via Mixture of Agents. |
+| `rl` | `rl_check_status`, `rl_edit_config`, `rl_get_current_config`, `rl_get_results`, `rl_list_environments`, `rl_list_runs`, `rl_select_environment`, `rl_start_training`, `rl_stop_training`, `rl_test_inference` | RL training environment management (Atropos). |
+| `search` | `web_search` | Web search only (without extract). |
+| `session_search` | `session_search` | Search past conversation sessions. |
+| `skills` | `skill_manage`, `skill_view`, `skills_list` | Skill CRUD and browsing. |
+| `terminal` | `process`, `terminal` | Shell command execution and background process management. |
+| `todo` | `todo` | Task list management within a session. |
+| `tts` | `text_to_speech` | Text-to-speech audio generation. |
+| `vision` | `vision_analyze` | Image analysis via vision-capable models. |
+| `web` | `web_extract`, `web_search` | Web search and page content extraction. |
+
+## Composite Toolsets
+
+These expand to multiple core toolsets, providing a convenient shorthand for common scenarios:
+
+| Toolset | Expands to | Use case |
+|---------|-----------|----------|
+| `debugging` | `patch`, `process`, `read_file`, `search_files`, `terminal`, `web_extract`, `web_search`, `write_file` | Debug sessions — file access, terminal, and web research without browser or delegation overhead. |
+| `safe` | `image_generate`, `mixture_of_agents`, `vision_analyze`, `web_extract`, `web_search` | Read-only research and media generation. No file writes, no terminal access, no code execution. Good for untrusted or constrained environments. |
+
+## Platform Toolsets
+
+Platform toolsets define the complete tool configuration for a deployment target. Most messaging platforms use the same set as `hermes-cli`:
+
+| Toolset | Differences from `hermes-cli` |
+|---------|-------------------------------|
+| `hermes-cli` | Full toolset — all 38 tools including `clarify`. The default for interactive CLI sessions. |
+| `hermes-acp` | Drops `clarify`, `cronjob`, `image_generate`, `mixture_of_agents`, `send_message`, `text_to_speech`, homeassistant tools. Focused on coding tasks in IDE context. |
+| `hermes-api-server` | Drops `clarify`, `send_message`, and `text_to_speech`. Adds everything else — suitable for programmatic access where user interaction isn't possible. |
+| `hermes-telegram` | Same as `hermes-cli`. |
+| `hermes-discord` | Same as `hermes-cli`. |
+| `hermes-slack` | Same as `hermes-cli`. |
+| `hermes-whatsapp` | Same as `hermes-cli`. |
+| `hermes-signal` | Same as `hermes-cli`. |
+| `hermes-matrix` | Same as `hermes-cli`. |
+| `hermes-mattermost` | Same as `hermes-cli`. |
+| `hermes-email` | Same as `hermes-cli`. |
+| `hermes-sms` | Same as `hermes-cli`. |
+| `hermes-dingtalk` | Same as `hermes-cli`. |
+| `hermes-feishu` | Same as `hermes-cli`. |
+| `hermes-wecom` | Same as `hermes-cli`. |
+| `hermes-bluebubbles` | Same as `hermes-cli`. |
+| `hermes-homeassistant` | Same as `hermes-cli`. |
+| `hermes-webhook` | Same as `hermes-cli`. |
+| `hermes-gateway` | Union of all messaging platform toolsets. Used internally when the gateway needs the broadest possible tool set. |
+
+## Dynamic Toolsets
+
+### MCP server toolsets
+
+Each configured MCP server generates a `mcp-<server>` toolset at runtime. For example, if you configure a `github` MCP server, a `mcp-github` toolset is created containing all tools that server exposes.
+
+```yaml
+# config.yaml
+mcp:
+  servers:
+    github:
+      command: npx
+      args: ["-y", "@modelcontextprotocol/server-github"]
+```
+
+This creates a `mcp-github` toolset you can reference in `--toolsets` or platform configs.
+
+### Plugin toolsets
+
+Plugins can register their own toolsets via `ctx.register_tool()` during plugin initialization. These appear alongside built-in toolsets and can be enabled/disabled the same way.
+
+### Custom toolsets
+
+Define custom toolsets in `config.yaml` to create project-specific bundles:
+
+```yaml
+toolsets:
+  - hermes-cli
+custom_toolsets:
+  data-science:
+    - file
+    - terminal
+    - code_execution
+    - web
+    - vision
+```
+
+### Wildcards
+
+- `all` or `*` — expands to every registered toolset (built-in + dynamic + plugin)
+
+## Relationship to `hermes tools`
+
+The `hermes tools` command provides a curses-based UI for toggling individual tools on or off per platform. This operates at the tool level (finer than toolsets) and persists to `config.yaml`. Disabled tools are filtered out even if their toolset is enabled.
+
+See also: [Tools Reference](./tools-reference.md) for the complete list of individual tools and their parameters.

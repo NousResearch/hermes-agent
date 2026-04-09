@@ -60,9 +60,27 @@ class FakeAgent:
         self.tools = []
 
     def run_conversation(self, message, conversation_history=None, task_id=None):
-        self.tool_progress_callback("terminal", "pwd")
+        self.tool_progress_callback("tool.started", "terminal", "pwd", {})
         time.sleep(0.35)
-        self.tool_progress_callback("browser_navigate", "https://example.com")
+        self.tool_progress_callback("tool.started", "browser_navigate", "https://example.com", {})
+        time.sleep(0.35)
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class LongPreviewAgent:
+    """Agent that emits a tool call with a very long preview string."""
+    LONG_CMD = "cd /home/teknium/.hermes/hermes-agent/.worktrees/hermes-d8860339 && source .venv/bin/activate && python -m pytest tests/gateway/test_run_progress_topics.py -n0 -q"
+
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        self.tool_progress_callback("tool.started", "terminal", self.LONG_CMD, {})
         time.sleep(0.35)
         return {
             "final_response": "done",
@@ -217,3 +235,102 @@ async def test_run_agent_progress_uses_event_message_id_for_slack_dm(monkeypatch
     assert adapter.sent
     assert adapter.sent[0]["metadata"] == {"thread_id": "1234567890.000001"}
     assert all(call["metadata"] == {"thread_id": "1234567890.000001"} for call in adapter.typing)
+
+
+# ---------------------------------------------------------------------------
+# Preview truncation tests (all/new mode respects tool_preview_length)
+# ---------------------------------------------------------------------------
+
+
+def _run_long_preview_helper(monkeypatch, tmp_path, preview_length=0):
+    """Shared setup for long-preview truncation tests.
+
+    Returns (adapter, result) after running the agent with LongPreviewAgent.
+    ``preview_length`` controls display.tool_preview_length in the config file
+    that _run_agent reads — so the gateway picks it up the same way production does.
+    """
+    import asyncio
+    import yaml
+
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
+
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = LongPreviewAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    # Write config.yaml so _run_agent picks up tool_preview_length
+    config = {"display": {"tool_preview_length": preview_length}}
+    (tmp_path / "config.yaml").write_text(yaml.dump(config), encoding="utf-8")
+
+    adapter = ProgressCaptureAdapter()
+    runner = _make_runner(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="12345",
+        chat_type="dm",
+        thread_id=None,
+    )
+
+    result = asyncio.get_event_loop().run_until_complete(
+        runner._run_agent(
+            message="hello",
+            context_prompt="",
+            history=[],
+            source=source,
+            session_id="sess-trunc",
+            session_key="agent:main:telegram:dm:12345",
+        )
+    )
+    return adapter, result
+
+
+def test_all_mode_default_truncation_40_chars(monkeypatch, tmp_path):
+    """When tool_preview_length is 0 (default), all/new mode truncates to 40 chars."""
+    adapter, result = _run_long_preview_helper(monkeypatch, tmp_path, preview_length=0)
+    assert result["final_response"] == "done"
+    assert adapter.sent
+    content = adapter.sent[0]["content"]
+    # The long command should be truncated — total preview <= 40 chars
+    assert "..." in content
+    # Extract the preview part between quotes
+    import re
+    match = re.search(r'"(.+)"', content)
+    assert match, f"No quoted preview found in: {content}"
+    preview_text = match.group(1)
+    assert len(preview_text) <= 40, f"Preview too long ({len(preview_text)}): {preview_text}"
+
+
+def test_all_mode_respects_custom_preview_length(monkeypatch, tmp_path):
+    """When tool_preview_length is explicitly set (e.g. 120), all/new mode uses that."""
+    adapter, result = _run_long_preview_helper(monkeypatch, tmp_path, preview_length=120)
+    assert result["final_response"] == "done"
+    assert adapter.sent
+    content = adapter.sent[0]["content"]
+    # With 120-char cap, the command (165 chars) should still be truncated but longer
+    import re
+    match = re.search(r'"(.+)"', content)
+    assert match, f"No quoted preview found in: {content}"
+    preview_text = match.group(1)
+    # Should be longer than the 40-char default
+    assert len(preview_text) > 40, f"Preview suspiciously short ({len(preview_text)}): {preview_text}"
+    # But still capped at 120
+    assert len(preview_text) <= 120, f"Preview too long ({len(preview_text)}): {preview_text}"
+
+
+def test_all_mode_no_truncation_when_preview_fits(monkeypatch, tmp_path):
+    """Short previews (under the cap) are not truncated."""
+    # Set a generous cap — the LongPreviewAgent's command is ~165 chars
+    adapter, result = _run_long_preview_helper(monkeypatch, tmp_path, preview_length=200)
+    assert result["final_response"] == "done"
+    assert adapter.sent
+    content = adapter.sent[0]["content"]
+    # With a 200-char cap, the 165-char command should NOT be truncated
+    assert "..." not in content, f"Preview was truncated when it shouldn't be: {content}"

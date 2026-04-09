@@ -36,7 +36,10 @@ import sys
 import types
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, List, Optional, Set, Union
+
+from hermes_constants import get_hermes_home
+from utils import env_var_enabled
 
 try:
     import yaml
@@ -54,8 +57,12 @@ VALID_HOOKS: Set[str] = {
     "post_tool_call",
     "pre_llm_call",
     "post_llm_call",
+    "pre_api_request",
+    "post_api_request",
     "on_session_start",
     "on_session_end",
+    "on_session_finalize",
+    "on_session_reset",
 }
 
 ENTRY_POINTS_GROUP = "hermes_agent.plugins"
@@ -65,7 +72,7 @@ _NS_PARENT = "hermes_plugins"
 
 def _env_enabled(name: str) -> bool:
     """Return True when an env var is set to a truthy opt-in value."""
-    return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
+    return env_var_enabled(name)
 
 
 def _get_disabled_plugins() -> set:
@@ -91,7 +98,7 @@ class PluginManifest:
     version: str = ""
     description: str = ""
     author: str = ""
-    requires_env: List[str] = field(default_factory=list)
+    requires_env: List[Union[str, Dict[str, Any]]] = field(default_factory=list)
     provides_tools: List[str] = field(default_factory=list)
     provides_hooks: List[str] = field(default_factory=list)
     source: str = ""        # "user", "project", or "entrypoint"
@@ -180,6 +187,32 @@ class PluginContext:
             cli._pending_input.put(msg)
         return True
 
+    # -- CLI command registration --------------------------------------------
+
+    def register_cli_command(
+        self,
+        name: str,
+        help: str,
+        setup_fn: Callable,
+        handler_fn: Callable | None = None,
+        description: str = "",
+    ) -> None:
+        """Register a CLI subcommand (e.g. ``hermes honcho ...``).
+
+        The *setup_fn* receives an argparse subparser and should add any
+        arguments/sub-subparsers.  If *handler_fn* is provided it is set
+        as the default dispatch function via ``set_defaults(func=...)``.
+        """
+        self._manager._cli_commands[name] = {
+            "name": name,
+            "help": help,
+            "description": description,
+            "setup_fn": setup_fn,
+            "handler_fn": handler_fn,
+            "plugin": self.manifest.name,
+        }
+        logger.debug("Plugin %s registered CLI command: %s", self.manifest.name, name)
+
     # -- hook registration --------------------------------------------------
 
     def register_hook(self, hook_name: str, callback: Callable) -> None:
@@ -211,6 +244,7 @@ class PluginManager:
         self._plugins: Dict[str, LoadedPlugin] = {}
         self._hooks: Dict[str, List[Callable]] = {}
         self._plugin_tool_names: Set[str] = set()
+        self._cli_commands: Dict[str, dict] = {}
         self._discovered: bool = False
         self._cli_ref = None  # Set by CLI after plugin discovery
 
@@ -227,8 +261,7 @@ class PluginManager:
         manifests: List[PluginManifest] = []
 
         # 1. User plugins (~/.hermes/plugins/)
-        hermes_home = os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes"))
-        user_dir = Path(hermes_home) / "plugins"
+        user_dir = get_hermes_home() / "plugins"
         manifests.extend(self._scan_directory(user_dir, source="user"))
 
         # 2. Project plugins (./.hermes/plugins/)
@@ -439,8 +472,18 @@ class PluginManager:
         plugin cannot break the core agent loop.
 
         Returns a list of non-``None`` return values from callbacks.
-        This allows hooks like ``pre_llm_call`` to contribute context
-        that the agent core can collect and inject.
+
+        For ``pre_llm_call``, callbacks may return a dict describing
+        context to inject into the current turn's user message::
+
+            {"context": "recalled text..."}
+            "recalled text..."          # plain string, equivalent
+
+        Context is ALWAYS injected into the user message, never the
+        system prompt.  This preserves the prompt cache prefix — the
+        system prompt stays identical across turns so cached tokens
+        are reused.  All injected context is ephemeral — never
+        persisted to session DB.
         """
         callbacks = self._hooks.get(hook_name, [])
         results: List[Any] = []
@@ -512,6 +555,15 @@ def invoke_hook(hook_name: str, **kwargs: Any) -> List[Any]:
 def get_plugin_tool_names() -> Set[str]:
     """Return the set of tool names registered by plugins."""
     return get_plugin_manager()._plugin_tool_names
+
+
+def get_plugin_cli_commands() -> Dict[str, dict]:
+    """Return CLI commands registered by general plugins.
+
+    Returns a dict of ``{name: {help, setup_fn, handler_fn, ...}}``
+    suitable for wiring into argparse subparsers.
+    """
+    return dict(get_plugin_manager()._cli_commands)
 
 
 def get_plugin_toolsets() -> List[tuple]:

@@ -45,3 +45,15 @@ test('matchesAllowedUser accepts mapped lid sender when allowlist only contains 
     rmSync(sessionDir, { recursive: true, force: true });
   }
 });
+
+test('matchesAllowedUser treats * as allow-all wildcard', () => {
+  const sessionDir = mkdtempSync(path.join(os.tmpdir(), 'hermes-wa-allowlist-'));
+
+  try {
+    const allowedUsers = parseAllowedUsers('*');
+    assert.equal(matchesAllowedUser('19175395595@s.whatsapp.net', allowedUsers, sessionDir), true);
+    assert.equal(matchesAllowedUser('267383306489914@lid', allowedUsers, sessionDir), true);
+  } finally {
+    rmSync(sessionDir, { recursive: true, force: true });
+  }
+});

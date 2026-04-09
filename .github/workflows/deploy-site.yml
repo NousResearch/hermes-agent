@@ -6,6 +6,8 @@ on:
     paths:
       - 'website/**'
       - 'landingpage/**'
+      - 'skills/**'
+      - 'optional-skills/**'
       - '.github/workflows/deploy-site.yml'
   workflow_dispatch:
 
@@ -19,6 +21,8 @@ concurrency:
 
 jobs:
   build-and-deploy:
+    # Only run on the upstream repository, not on forks
+    if: github.repository == 'NousResearch/hermes-agent'
     runs-on: ubuntu-latest
     environment:
       name: github-pages
@@ -31,6 +35,16 @@ jobs:
           node-version: 20
           cache: npm
           cache-dependency-path: website/package-lock.json
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install PyYAML for skill extraction
+        run: pip install pyyaml
+
+      - name: Extract skill metadata for dashboard
+        run: python3 website/scripts/extract-skills.py
 
       - name: Install dependencies
         run: npm ci

@@ -16,6 +16,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from hermes_constants import get_hermes_home
+
 logger = logging.getLogger(__name__)
 
 # Minimum manifest version this installer understands.
@@ -26,8 +28,7 @@ _SUPPORTED_MANIFEST_VERSION = 1
 
 def _plugins_dir() -> Path:
     """Return the user plugins directory, creating it if needed."""
-    hermes_home = os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes"))
-    plugins = Path(hermes_home) / "plugins"
+    plugins = get_hermes_home() / "plugins"
     plugins.mkdir(parents=True, exist_ok=True)
     return plugins
 
@@ -41,6 +42,11 @@ def _sanitize_plugin_name(name: str, plugins_dir: Path) -> Path:
     if not name:
         raise ValueError("Plugin name must not be empty.")
 
+    if name in (".", ".."):
+        raise ValueError(
+            f"Invalid plugin name '{name}': must not reference the plugins directory itself."
+        )
+
     # Reject obvious traversal characters
     for bad in ("/", "\\", ".."):
         if bad in name:
@@ -49,10 +55,14 @@ def _sanitize_plugin_name(name: str, plugins_dir: Path) -> Path:
     target = (plugins_dir / name).resolve()
     plugins_resolved = plugins_dir.resolve()
 
-    if (
-        not str(target).startswith(str(plugins_resolved) + os.sep)
-        and target != plugins_resolved
-    ):
+    if target == plugins_resolved:
+        raise ValueError(
+            f"Invalid plugin name '{name}': resolves to the plugins directory itself."
+        )
+
+    try:
+        target.relative_to(plugins_resolved)
+    except ValueError:
         raise ValueError(
             f"Invalid plugin name '{name}': resolves outside the plugins directory."
         )
@@ -138,6 +148,82 @@ def _copy_example_files(plugin_dir: Path, console) -> None:
                 )
 
 
+def _prompt_plugin_env_vars(manifest: dict, console) -> None:
+    """Prompt for required environment variables declared in plugin.yaml.
+
+    ``requires_env`` accepts two formats:
+
+    Simple list (backwards-compatible)::
+
+        requires_env:
+          - MY_API_KEY
+
+    Rich list with metadata::
+
+        requires_env:
+          - name: MY_API_KEY
+            description: "API key for Acme service"
+            url: "https://acme.com/keys"
+            secret: true
+
+    Already-set variables are skipped.  Values are saved to the user's ``.env``.
+    """
+    requires_env = manifest.get("requires_env") or []
+    if not requires_env:
+        return
+
+    from hermes_cli.config import get_env_value, save_env_value  # noqa: F811
+    from hermes_constants import display_hermes_home
+
+    # Normalise to list-of-dicts
+    env_specs: list[dict] = []
+    for entry in requires_env:
+        if isinstance(entry, str):
+            env_specs.append({"name": entry})
+        elif isinstance(entry, dict) and entry.get("name"):
+            env_specs.append(entry)
+
+    # Filter to only vars that aren't already set
+    missing = [s for s in env_specs if not get_env_value(s["name"])]
+    if not missing:
+        return
+
+    plugin_name = manifest.get("name", "this plugin")
+    console.print(f"\n[bold]{plugin_name}[/bold] requires the following environment variables:\n")
+
+    for spec in missing:
+        name = spec["name"]
+        desc = spec.get("description", "")
+        url = spec.get("url", "")
+        secret = spec.get("secret", False)
+
+        label = f"  {name}"
+        if desc:
+            label += f" — {desc}"
+        console.print(label)
+        if url:
+            console.print(f"  [dim]Get yours at: {url}[/dim]")
+
+        try:
+            if secret:
+                import getpass
+                value = getpass.getpass(f"  {name}: ").strip()
+            else:
+                value = input(f"  {name}: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            console.print(f"\n[dim]  Skipped (you can set these later in {display_hermes_home()}/.env)[/dim]")
+            return
+
+        if value:
+            save_env_value(name, value)
+            os.environ[name] = value
+            console.print(f"  [green]✓[/green] Saved to {display_hermes_home()}/.env")
+        else:
+            console.print(f"  [dim]  Skipped (set {name} in {display_hermes_home()}/.env later)[/dim]")
+
+    console.print()
+
+
 def _display_after_install(plugin_dir: Path, identifier: str) -> None:
     """Show after-install.md if it exists, otherwise a default message."""
     from rich.console import Console
@@ -209,7 +295,7 @@ def cmd_install(identifier: str, force: bool = False) -> None:
         sys.exit(1)
 
     # Warn about insecure / local URL schemes
-    if git_url.startswith("http://") or git_url.startswith("file://"):
+    if git_url.startswith(("http://", "file://")):
         console.print(
             "[yellow]Warning:[/yellow] Using insecure/local URL scheme. "
             "Consider using https:// or git@ for production installs."
@@ -265,10 +351,11 @@ def cmd_install(identifier: str, force: bool = False) -> None:
                 )
                 sys.exit(1)
             if mv_int > _SUPPORTED_MANIFEST_VERSION:
+                from hermes_cli.config import recommended_update_command
                 console.print(
                     f"[red]Error:[/red] Plugin '{plugin_name}' requires manifest_version "
                     f"{mv}, but this installer only supports up to {_SUPPORTED_MANIFEST_VERSION}.\n"
-                    f"Run [bold]hermes update[/bold] to get a newer installer."
+                    f"Run [bold]{recommended_update_command()}[/bold] to get a newer installer."
                 )
                 sys.exit(1)
 
@@ -295,6 +382,12 @@ def cmd_install(identifier: str, force: bool = False) -> None:
 
     # Copy .example files to their real names (e.g. config.yaml.example → config.yaml)
     _copy_example_files(target, console)
+
+    # Re-read manifest from installed location (for env var prompting)
+    installed_manifest = _read_manifest(target)
+
+    # Prompt for required environment variables before showing after-install docs
+    _prompt_plugin_env_vars(installed_manifest, console)
 
     _display_after_install(target, identifier)
 

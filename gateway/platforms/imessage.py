@@ -42,6 +42,9 @@ HEALTH_CHECK_STALE_THRESHOLD = 120.0
 CACHE_REFRESH_INTERVAL = 300.0  # 5 minutes
 DEDUP_TTL = 300.0  # 5 minutes
 DEDUP_MAX_SIZE = 2000
+POLL_INTERVAL_DEFAULT = 3.0  # seconds between DB polls
+POLL_COLLECT_TIMEOUT = 2.0  # seconds to wait for imsg watch --since-rowid output
+AUTO_FALLBACK_THRESHOLD = 30.0  # seconds: switch from fsevents to poll if no output
 
 # Phone number pattern for redaction
 _PHONE_RE = re.compile(r"\+[1-9]\d{6,14}")
@@ -103,6 +106,13 @@ class IMessageAdapter(BasePlatformAdapter):
         # Config
         self._watch_chat_ids: List[str] = config.extra.get("watch_chat_ids", [])
 
+        # Watch mode: "fsevents" | "poll" | "auto"
+        # auto = try fsevents, fall back to poll if no output detected
+        self._watch_mode: str = config.extra.get("watch_mode", "auto")
+        self._poll_interval: float = config.extra.get(
+            "poll_interval", POLL_INTERVAL_DEFAULT
+        )
+
         # Background tasks
         self._watch_task: Optional[asyncio.Task] = None
         self._health_monitor_task: Optional[asyncio.Task] = None
@@ -123,6 +133,9 @@ class IMessageAdapter(BasePlatformAdapter):
 
         # Health tracking
         self._last_message_time: float = time.monotonic()
+
+        # Poll mode state: highest message rowid seen
+        self._last_rowid: int = 0
 
     async def connect(self) -> bool:
         """Verify imsg available, load chat cache, start background tasks."""
@@ -167,14 +180,27 @@ class IMessageAdapter(BasePlatformAdapter):
 
         self._running = True
 
-        # Start background tasks
-        self._watch_task = asyncio.ensure_future(self._watch_listener())
+        # Seed last_rowid so poll mode only sees new messages
+        await self._seed_last_rowid()
+
+        # Choose listener based on watch_mode
+        if self._watch_mode == "poll":
+            self._watch_task = asyncio.ensure_future(self._poll_listener())
+            mode_label = "poll"
+        elif self._watch_mode == "fsevents":
+            self._watch_task = asyncio.ensure_future(self._watch_listener())
+            mode_label = "fsevents"
+        else:  # auto
+            self._watch_task = asyncio.ensure_future(self._auto_watch_listener())
+            mode_label = "auto"
+
         self._health_monitor_task = asyncio.ensure_future(self._health_monitor())
         self._cache_refresh_task = asyncio.ensure_future(self._cache_refresh_loop())
 
         logger.info(
-            "iMessage: connected — watching %s chats, cache has %d entries",
+            "iMessage: connected — watching %s chats (%s mode), cache has %d entries",
             "all" if not self._watch_chat_ids else len(self._watch_chat_ids),
+            mode_label,
             len(self._chat_cache),
         )
         return True
@@ -280,6 +306,190 @@ class IMessageAdapter(BasePlatformAdapter):
             logger.info("iMessage: reconnecting in %.1fs", wait)
             await asyncio.sleep(wait)
             retry_delay = min(retry_delay * 2, WATCH_RETRY_DELAY_MAX)
+
+    # -----------------------------------------------------------------------
+    # Inbound: poll listener (fallback for broken FSEvents)
+    # -----------------------------------------------------------------------
+
+    async def _seed_last_rowid(self) -> None:
+        """Get the current highest message rowid so poll mode starts from now.
+
+        Uses the most recent chat's latest message as the high-water mark.
+        imsg history requires --chat-id, so we first find the most recent chat.
+        """
+        try:
+            # Find most recent chat
+            if not self._chat_cache:
+                return
+            # Pick the first chat (we don't know which is newest without sorting,
+            # but any chat gives us a reasonable high-water mark)
+            chat_id = next(iter(self._chat_cache))
+
+            proc = await asyncio.create_subprocess_exec(
+                "imsg", "history", "--json", "--limit", "1",
+                "--chat-id", str(chat_id),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
+            if proc.returncode == 0:
+                line = stdout.decode("utf-8", errors="replace").strip().split("\n")[0]
+                if line:
+                    data = json.loads(line)
+                    self._last_rowid = data.get("id", 0)
+                    logger.debug("iMessage: seeded last_rowid=%d", self._last_rowid)
+        except Exception as e:
+            logger.debug("iMessage: could not seed last_rowid: %s", e)
+
+    async def _poll_once(self) -> int:
+        """Run a short-lived `imsg watch --since-rowid` to fetch new messages.
+
+        Returns the number of messages processed.
+        """
+        count = 0
+        try:
+            cmd = ["imsg", "watch", "--json", "--attachments",
+                   "--since-rowid", str(self._last_rowid)]
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+
+            # Read the catchup dump (messages since last_rowid), then kill
+            try:
+                lines: List[str] = []
+                while True:
+                    try:
+                        line = await asyncio.wait_for(
+                            proc.stdout.readline(), timeout=POLL_COLLECT_TIMEOUT,
+                        )
+                    except asyncio.TimeoutError:
+                        break  # No more catchup output — done
+                    if not line:
+                        break  # EOF
+                    line_str = line.decode("utf-8", errors="replace").strip()
+                    if line_str:
+                        lines.append(line_str)
+            finally:
+                # Always kill the subprocess — we only want the catchup dump
+                try:
+                    proc.kill()
+                    await proc.wait()
+                except (ProcessLookupError, OSError):
+                    pass
+
+            # Process collected messages
+            for line_str in lines:
+                try:
+                    data = json.loads(line_str)
+                    rowid = data.get("id", 0)
+                    if rowid > self._last_rowid:
+                        self._last_rowid = rowid
+                    self._last_message_time = time.monotonic()
+                    await self._handle_message_data(data)
+                    count += 1
+                except json.JSONDecodeError:
+                    pass
+                except Exception as e:
+                    logger.warning("iMessage: poll error handling message: %s", e)
+
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning("iMessage: poll error: %s", e)
+
+        return count
+
+    async def _poll_listener(self) -> None:
+        """Poll-based inbound loop: periodic short-lived imsg watch calls."""
+        logger.info(
+            "iMessage: poll mode — checking every %.1fs (since rowid %d)",
+            self._poll_interval, self._last_rowid,
+        )
+        while self._running:
+            try:
+                await asyncio.sleep(self._poll_interval)
+                if not self._running:
+                    return
+                await self._poll_once()
+            except asyncio.CancelledError:
+                return
+            except Exception as e:
+                logger.warning("iMessage: poll listener error: %s", e)
+
+    async def _auto_watch_listener(self) -> None:
+        """Auto mode: start with FSEvents, fall back to poll if no output."""
+        logger.info("iMessage: auto mode — trying FSEvents first")
+
+        # Start FSEvents watch
+        cmd = ["imsg", "watch", "--json", "--attachments"]
+        self._watch_process = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        logger.info("iMessage: started imsg watch (pid=%s)", self._watch_process.pid)
+
+        # Wait for first output or timeout
+        got_output = False
+        deadline = time.monotonic() + AUTO_FALLBACK_THRESHOLD
+
+        while self._running and time.monotonic() < deadline:
+            try:
+                line = await asyncio.wait_for(
+                    self._watch_process.stdout.readline(),
+                    timeout=min(5.0, deadline - time.monotonic()),
+                )
+            except asyncio.TimeoutError:
+                continue
+            except asyncio.CancelledError:
+                return
+
+            if not line:
+                break  # EOF — process exited
+
+            line_str = line.decode("utf-8", errors="replace").strip()
+            if not line_str:
+                continue
+
+            try:
+                data = json.loads(line_str)
+                self._last_message_time = time.monotonic()
+                await self._handle_message_data(data)
+                got_output = True
+                break  # FSEvents works — switch to full watch mode
+            except json.JSONDecodeError:
+                pass
+
+        if got_output:
+            # FSEvents works — continue with the normal watch listener loop
+            logger.info("iMessage: FSEvents working — staying in watch mode")
+            # Kill this process and hand off to the full watch listener
+            try:
+                self._watch_process.kill()
+                await self._watch_process.wait()
+            except (ProcessLookupError, OSError):
+                pass
+            await self._watch_listener()
+        else:
+            # No output — fall back to poll mode
+            logger.warning(
+                "iMessage: no FSEvents output after %.0fs — switching to poll mode "
+                "(every %.1fs). Set IMESSAGE_WATCH_MODE=poll to skip this probe.",
+                AUTO_FALLBACK_THRESHOLD, self._poll_interval,
+            )
+            try:
+                self._watch_process.kill()
+                await self._watch_process.wait()
+            except (ProcessLookupError, OSError):
+                pass
+            self._watch_process = None
+            await self._poll_listener()
+
+    # -----------------------------------------------------------------------
+    # Inbound: message handling
+    # -----------------------------------------------------------------------
 
     async def _handle_message_data(self, data: dict) -> None:
         """Process a single JSON message from imsg watch."""

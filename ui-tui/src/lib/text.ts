@@ -35,9 +35,23 @@ export const compactPreview = (s: string, max: number) => {
   return !one ? '' : one.length > max ? one.slice(0, max - 1) + '…' : one
 }
 
+/** Tool completed / failed row in the inline trail (not CoT prose). */
+export const isToolTrailResultLine = (line: string) => line.endsWith(' ✓') || line.endsWith(' ✗')
+
 /** Whether a persisted/activity tool line belongs to the same tool label as a newer line. */
 export const sameToolTrailGroup = (label: string, entry: string) =>
   entry === `${label} ✓` || entry === `${label} ✗` || entry.startsWith(`${label}:`)
+
+/** Index of the last non-result trail line, or -1. */
+export const lastCotTrailIndex = (trail: readonly string[]) => {
+  for (let i = trail.length - 1; i >= 0; i--) {
+    if (!isToolTrailResultLine(trail[i]!)) {
+      return i
+    }
+  }
+
+  return -1
+}
 
 export const estimateRows = (text: string, w: number, compact = false) => {
   let inCode = false

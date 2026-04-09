@@ -2,6 +2,7 @@ import sys
 from unittest.mock import patch
 
 from hermes_cli.models import normalize_provider, provider_model_ids
+from hermes_cli.providers import get_label
 from hermes_cli.runtime_provider import resolve_runtime_provider
 
 
@@ -138,3 +139,23 @@ def test_main_accepts_chatgpt_web_for_login_and_logout(monkeypatch):
     hermes_main.main()
 
     assert seen == [("login", "chatgpt-web"), ("logout", "chatgpt-web")]
+
+
+def test_main_accepts_chatgpt_web_for_chat_provider(monkeypatch):
+    from hermes_cli import main as hermes_main
+
+    seen = []
+    monkeypatch.setattr(hermes_main, "cmd_chat", lambda args: seen.append(args.provider))
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["hermes", "chat", "--provider", "chatgpt-web", "-q", "hello"],
+    )
+    hermes_main.main()
+
+    assert seen == ["chatgpt-web"]
+
+
+def test_provider_label_chatgpt_web_is_human_readable():
+    assert get_label("chatgpt-web") == "ChatGPT Web"

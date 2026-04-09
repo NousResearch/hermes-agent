@@ -1093,13 +1093,53 @@ _DEFAULT_MAX_HEIGHT = 600
 def _detect_image_paths(text: str) -> list[str]:
     """Extract image file paths from tool result text.
 
+    Handles both JSON results (e.g. browser_vision's {"screenshot_path": "..."})
+    and plain text (e.g. "Screenshot saved to '/path.png'").
+
     Returns a list of absolute paths to image files found in the text.
     """
     paths = []
+
+    # Try JSON parsing first (browser_vision, browser_screenshot etc.)
+    try:
+        data = json.loads(text) if isinstance(text, str) else None
+        if isinstance(data, dict):
+            for key in ("screenshot_path", "image_path", "screenshot", "path", "file_path"):
+                val = data.get(key)
+                if val and isinstance(val, str):
+                    if os.path.isfile(val):
+                        paths.append(val)
+            # Also check nested data dicts
+            inner = data.get("data")
+            if isinstance(inner, dict):
+                for key in ("path", "image_path", "screenshot_path"):
+                    val = inner.get(key)
+                    if val and isinstance(val, str):
+                        if os.path.isfile(val):
+                            paths.append(val)
+        elif isinstance(data, list):
+            for item in data:
+                if isinstance(item, dict):
+                    for key in ("path", "image_path", "screenshot_path"):
+                        val = item.get(key)
+                        if val and isinstance(val, str):
+                            if os.path.isfile(val):
+                                paths.append(val)
+    except (json.JSONDecodeError, TypeError):
+        pass
+
+    # Regex fallback for plain text results
     for match in _IMAGE_PATH_RE.finditer(text):
         path = match.group("path")
-        if os.path.isfile(path):
+        if os.path.isfile(path) and path not in paths:
             paths.append(path)
+
+    # Detect MEDIA: prefixed paths
+    for match in re.finditer(r'MEDIA:(?P<path>[/\w\-_/.]+\.(?:png|jpg|jpeg|gif|webp|bmp|tiff|tif|svg))', text):
+        path = match.group("path")
+        if os.path.isfile(path) and path not in paths:
+            paths.append(path)
+
     return paths
 
 
@@ -1224,3 +1264,40 @@ def render_images_in_result(result: str | None, print_fn=None,
                 pass
 
     return "\n".join(rendered)
+
+
+def _write_image_to_tty(image_output: str) -> None:
+    """Write image escape sequences directly to the TTY.
+    
+    Bypasses Python's sys.stdout (which is wrapped by prompt_toolkit's 
+    StdoutProxy in the CLI) and writes raw bytes to the controlling terminal
+    device. This ensures terminal image protocol escape sequences 
+    (iTerm2, Kitty) reach the terminal emulator intact.
+    
+    On macOS/Linux, uses os.ctermid() to get the controlling TTY path.
+    """
+    try:
+        tty_path = os.ctermid()
+        fd = os.open(tty_path, os.O_WRONLY | os.O_NOCTTY)
+        try:
+            # Write the escape sequence directly
+            if isinstance(image_output, str):
+                image_output = image_output.encode('utf-8')
+            os.write(fd, image_output)
+            # Ensure newline after image so cursor doesn't overlap
+            os.write(fd, b'\n')
+        finally:
+            os.close(fd)
+    except OSError:
+        # Fallback: try writing to /dev/tty directly
+        try:
+            fd = os.open('/dev/tty', os.O_WRONLY)
+            try:
+                if isinstance(image_output, str):
+                    image_output = image_output.encode('utf-8')
+                os.write(fd, image_output)
+                os.write(fd, b'\n')
+            finally:
+                os.close(fd)
+        except Exception:
+            pass

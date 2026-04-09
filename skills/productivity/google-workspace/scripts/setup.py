@@ -129,14 +129,11 @@ def check_auth():
     from google.auth.transport.requests import Request
 
     try:
-        # Use scopes from the token itself, not the hardcoded list —
-        # user may have authorized only a subset (partial scopes)
-        payload = _load_token_payload(TOKEN_PATH)
-        granted_scopes = payload.get("scopes") or payload.get("scope")
-        if isinstance(granted_scopes, str):
-            granted_scopes = granted_scopes.split()
-        token_scopes = granted_scopes if granted_scopes else SCOPES
-        creds = Credentials.from_authorized_user_file(str(TOKEN_PATH), token_scopes)
+        # Don't pass scopes — user may have authorized only a subset.
+        # Passing scopes forces google-auth to validate them on refresh,
+        # which fails with invalid_scope if the token has fewer scopes
+        # than requested.
+        creds = Credentials.from_authorized_user_file(str(TOKEN_PATH))
     except Exception as e:
         print(f"TOKEN_CORRUPT: {e}")
         return False
@@ -313,11 +310,22 @@ def exchange_auth_code(code: str):
 
     creds = flow.credentials
     token_payload = json.loads(creds.to_json())
+
+    # Store only the scopes actually granted by the user, not what was requested.
+    # creds.to_json() writes the requested scopes, which causes refresh to fail
+    # with invalid_scope if the user only authorized a subset.
+    actually_granted = list(creds.granted_scopes or []) if hasattr(creds, "granted_scopes") and creds.granted_scopes else []
+    if actually_granted:
+        token_payload["scopes"] = actually_granted
+    elif granted_scopes != SCOPES:
+        # granted_scopes was extracted from the callback URL
+        token_payload["scopes"] = granted_scopes
+
     missing_scopes = _missing_scopes_from_payload(token_payload)
     if missing_scopes:
         print(f"WARNING: Token missing some Google Workspace scopes: {', '.join(missing_scopes)}")
-        print("Some services may not be available. Only Calendar and Drive were authorized.")
-    
+        print("Some services may not be available.")
+
     TOKEN_PATH.write_text(json.dumps(token_payload, indent=2))
     PENDING_AUTH_PATH.unlink(missing_ok=True)
     print(f"OK: Authenticated. Token saved to {TOKEN_PATH}")

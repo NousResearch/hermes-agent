@@ -10,10 +10,13 @@ from .actions import (
 )
 from .agathos import Agathos
 from .daemon_mgmt import (
+    _is_wsl,
     agathos_launchd_install,
     agathos_launchd_status,
     agathos_launchd_uninstall,
+    agathos_service_status,
     generate_agathos_launchd_plist,
+    generate_systemd_service,
     get_agathos_launchd_label,
     get_agathos_launchd_plist_path,
     get_agathos_running_pid,
@@ -105,9 +108,12 @@ __all__ = [
     "get_agathos_launchd_label",
     "get_agathos_launchd_plist_path",
     "generate_agathos_launchd_plist",
+    "generate_systemd_service",
     "agathos_launchd_install",
     "agathos_launchd_uninstall",
     "agathos_launchd_status",
+    "agathos_service_status",
+    "_is_wsl",
     # Setup
     "run_setup",
 ]

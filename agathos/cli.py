@@ -17,10 +17,14 @@ Usage:
     agathos restart                  # Restart Agathos daemon
     agathos logs                     # View Agathos logs
 
-    agathos service install          # Install launchd service (macOS)
-    agathos service uninstall        # Uninstall launchd service
+    agathos service install          # Install system service (macOS only)
+    agathos service uninstall        # Uninstall system service
     agathos service status           # Check service status
     agathos service list             # List running services
+
+Platform Support:
+- Service management: macOS (launchd) - Linux/Windows planned
+- PID file operations: All platforms
 """
 
 import argparse
@@ -36,6 +40,11 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 # Constants
 _AGATHOS_HOME = Path(os.path.expanduser("~/hermes"))
+
+# Platform detection
+_IS_MACOS = sys.platform == 'darwin'
+_IS_LINUX = sys.platform.startswith('linux')
+_IS_WINDOWS = os.name == 'nt' or sys.platform == 'win32'
 
 
 def _require_tty(command_name: str) -> None:
@@ -275,11 +284,18 @@ def cmd_logs(args):
 
 
 def cmd_service_install(args):
-    """Install ARGUS as launchd service."""
+    """Install ARGUS as system service."""
     try:
         from argus import agathos_launchd_install
-        
-        print("\033[96m  Installing ARGUS launchd service...\033[0m")
+
+        # Check platform support
+        if not _IS_MACOS:
+            print(f"\033[93m  Warning: Service installation is only supported on macOS (darwin).\033[0m")
+            print(f"\033[93m  Current platform: {sys.platform}\033[0m")
+            print("\033[96m  You can still run Agathos manually using 'agathos start'\033[0m")
+            sys.exit(1)
+
+        print("\033[96m  Installing ARGUS system service...\033[0m")
         if agathos_launchd_install():
             print("\033[92m  Service installed successfully.\033[0m")
             print("\033[96m  Start with: launchctl start com.hermes.agathos\033[0m")
@@ -292,11 +308,11 @@ def cmd_service_install(args):
 
 
 def cmd_service_uninstall(args):
-    """Uninstall ARGUS launchd service."""
+    """Uninstall ARGUS system service."""
     try:
         from argus import agathos_launchd_uninstall
-        
-        print("\033[96m  Uninstalling ARGUS launchd service...\033[0m")
+
+        print("\033[96m  Uninstalling ARGUS system service...\033[0m")
         if agathos_launchd_uninstall():
             print("\033[92m  Service uninstalled.\033[0m")
         else:
@@ -311,23 +327,25 @@ def cmd_service_status(args):
     """Check ARGUS service status."""
     try:
         from argus import agathos_launchd_status
-        
+
         status = agathos_launchd_status()
-        
-        print("\033[96m  Launchd Service Status:\033[0m")
+
+        # Use platform-appropriate service name
+        service_type = "LaunchAgent" if _IS_MACOS else "System Service"
+        print(f"\033[96m  {service_type} Status:\033[0m")
         print()
         print(f"    Label:       {status['label']}")
-        print(f"    Plist:       {status['plist_path']}")
+        print(f"    Config:      {status['plist_path']}")
         installed_status = "\033[92mYes\033[0m" if status['plist_exists'] else "\033[91mNo\033[0m"
         pid_status = "\033[92mPresent\033[0m" if status['pid_file_exists'] else "\033[91mAbsent\033[0m"
         print(f"    Installed:   {installed_status}")
         print(f"    PID file:    {pid_status}")
-        
+
         if status['running_pid']:
             print(f"    Running PID: \033[92m{status['running_pid']}\033[0m")
         else:
             print(f"    Status:      \033[91mNot running\033[0m")
-            
+
     except Exception as e:
         print(f"\033[91m  Error: {e}\033[0m", file=sys.stderr)
         sys.exit(1)
@@ -338,64 +356,104 @@ def cmd_service_list(args):
     try:
         from argus import agathos_launchd_status, is_agathos_running, get_agathos_running_pid
         import subprocess
-        
+
         _print_banner()
-        
+
         print("\033[96m  ARGUS Services:\033[0m")
         print()
-        
-        # Get launchd status
+
+        # Get service status
         status = agathos_launchd_status()
-        
-        # Service entry
+
+        # Service entry with platform-appropriate type
+        service_type = "LaunchAgent (user service)" if _IS_MACOS else "System Service"
         print(f"  \033[95mService:\033[0m        com.hermes.agathos")
-        print(f"  \033[95mType:\033[0m           LaunchAgent (user service)")
-        
+        print(f"  \033[95mType:\033[0m           {service_type}")
+        print(f"  \033[95mPlatform:\033[0m       {sys.platform}")
+
         # Status with color
         running_pid = get_agathos_running_pid()
         if running_pid:
             print(f"  \033[95mStatus:\033[0m         \033[92mrunning (PID {running_pid})\033[0m")
         else:
             print(f"  \033[95mStatus:\033[0m         \033[91mnot running\033[0m")
-        
+
         # Installation state
         installed_str = "\033[92myes\033[0m" if status['plist_exists'] else "\033[91mno\033[0m"
         print(f"  \033[95mInstalled:\033[0m      {installed_str}")
-        
+
         # Paths
-        print(f"  \033[95mPlist path:\033[0m     {status['plist_path']}")
+        print(f"  \033[95mConfig path:\033[0m    {status['plist_path']}")
         pid_file_str = "\033[92mpresent\033[0m" if status['pid_file_exists'] else "\033[91mabsent\033[0m"
         print(f"  \033[95mPID file:\033[0m       {pid_file_str}")
-        
-        # Launchctl info
-        print()
-        print("\033[96m  Launchctl Info:\033[0m")
-        try:
-            result = subprocess.run(
-                ["launchctl", "print", f"gui/{os.getuid()}/{status['label']}"],
-                capture_output=True,
-                text=True,
-                timeout=5
-            )
-            if result.returncode == 0:
-                # Parse key info from output
-                for line in result.stdout.split('\n'):
-                    if 'state =' in line.lower() or 'pid =' in line or 'last exit' in line.lower():
-                        print(f"    {line.strip()}")
-            else:
-                print("    Service not loaded in launchctl")
-        except Exception:
-            print("    Unable to query launchctl")
-        
+
+        # Platform-specific service manager info
+        if _IS_MACOS:
+            print()
+            print("\033[96m  Launchctl Info:\033[0m")
+            try:
+                result = subprocess.run(
+                    ["launchctl", "print", f"gui/{os.getuid()}/{status['label']}"],
+                    capture_output=True,
+                    text=True,
+                    timeout=5
+                )
+                if result.returncode == 0:
+                    # Parse key info from output
+                    for line in result.stdout.split('\n'):
+                        if 'state =' in line.lower() or 'pid =' in line or 'last exit' in line.lower():
+                            print(f"    {line.strip()}")
+                else:
+                    print("    Service not loaded in launchctl")
+            except Exception:
+                print("    Unable to query launchctl")
+        elif _IS_LINUX:
+            print()
+            print("\033[96m  Systemd Info:\033[0m")
+            try:
+                result = subprocess.run(
+                    ["systemctl", "--user", "is-active", status['label']],
+                    capture_output=True,
+                    text=True,
+                    timeout=5
+                )
+                if result.returncode == 0:
+                    print(f"    Service active: {result.stdout.strip()}")
+                else:
+                    print(f"    Service status: {result.stdout.strip() or 'inactive'}")
+            except FileNotFoundError:
+                print("    systemctl not found - systemd may not be available")
+            except Exception as e:
+                print(f"    Unable to query systemd: {e}")
+
+            # Show WSL info if applicable
+            if status.get('is_wsl'):
+                print()
+                print("\033[96m  WSL Detected:\033[0m")
+                print(f"    WSL Distro: {os.environ.get('WSL_DISTRO_NAME', 'Unknown')}")
+                print("    Windows interoperability enabled")
+        elif _IS_WINDOWS:
+            print()
+            print("\033[96m  Windows Service Info:\033[0m")
+            print("    Windows service management is planned.")
+            print("    Currently supports manual daemon operation via 'agathos start'.")
+
         # Next steps hint
         print()
         if not status['plist_exists']:
-            print("\033[93m  Run 'argus service install' to install the service\033[0m")
+            if _IS_MACOS:
+                print("\033[93m  Run 'agathos service install' to install the service\033[0m")
+            else:
+                print(f"\033[93m  Service installation not yet supported on {sys.platform}\033[0m")
+                print("\033[96m  Run 'agathos start' to start the daemon manually\033[0m")
         elif not running_pid:
-            print("\033[93m  Run 'launchctl start com.hermes.agathos' to start the service\033[0m")
+            if _IS_MACOS:
+                print("\033[93m  Run 'launchctl start com.hermes.agathos' to start the service\033[0m")
+            else:
+                print("\033[93m  Run 'agathos start' to start the daemon\033[0m")
         else:
-            print("\033[96m  Run 'argus service status' for detailed status\033[0m")
-            
+            print("\033[96m  Run 'agathos service status' for detailed status\033[0m")
+
     except Exception as e:
         print(f"\033[91m  Error: {e}\033[0m", file=sys.stderr)
         sys.exit(1)
@@ -487,7 +545,7 @@ Examples:
     # Service subcommand
     service_parser = subparsers.add_parser(
         "service",
-        help="Manage ARGUS launchd service (macOS)"
+        help="Manage ARGUS system service (macOS only)"
     )
     service_subparsers = service_parser.add_subparsers(dest="service_command", help="Service commands")
     

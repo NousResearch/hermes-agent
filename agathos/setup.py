@@ -413,29 +413,41 @@ def setup_audit_trail(config: Dict[str, Any]):
 
 
 def setup_launchd_integration(config: Dict[str, Any]):
-    """Configure launchd service integration."""
-    print_header("Launchd Service (macOS)")
-    
-    print_info("ARGUS can run as a background service via macOS launchd.")
+    """Configure system service integration (macOS launchd)."""
+    # Check platform
+    _is_macos = sys.platform == 'darwin'
+
+    if _is_macos:
+        print_header("System Service (macOS launchd)")
+        print_info("ARGUS can run as a background service via macOS launchd.")
+    else:
+        print_header("System Service")
+        print_info(f"Platform detected: {sys.platform}")
+        print_info("Service integration is available on macOS and Linux (systemd).")
+        print_info("Windows support is planned.")
+        print()
+        print_info("You can run ARGUS manually: python -m argus.argus")
+        return
+
     print()
-    
+
     install_service = prompt_yes_no(
-        "Install ARGUS as a launchd service?",
+        "Install ARGUS as a system service?",
         False
     )
-    
+
     if install_service:
         try:
             from .daemon_mgmt import argus_launchd_install
             if argus_launchd_install():
-                print_success("ARGUS launchd service installed")
+                print_success("ARGUS service installed")
                 print_info("Use 'launchctl list com.hermes.argus' to check status")
             else:
-                print_error("Failed to install launchd service")
+                print_error("Failed to install service")
         except Exception as e:
-            print_error(f"Launchd setup failed: {e}")
+            print_error(f"Service setup failed: {e}")
     else:
-        print_info("Launchd service not installed")
+        print_info("System service not installed")
         print_info("You can run ARGUS manually: python -m argus.argus")
 
 
@@ -622,9 +634,15 @@ def main():
     print_info("Run ARGUS:")
     print("    python -m argus.argus")
     print()
+
+    # Platform-specific status check hints
+    _is_macos = sys.platform == 'darwin'
     print_info("Check status:")
-    print("    launchctl list com.hermes.argus  # if launchd installed")
+    if _is_macos:
+        print("    launchctl list com.hermes.argus  # if service installed")
+    print("    python -m argus.cli status         # manual daemon status")
     print()
+
     print_info("Edit config directly:")
     print(f"    {get_agathos_config_path()}")
     print()

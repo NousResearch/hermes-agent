@@ -2,11 +2,17 @@
 
 import os
 import subprocess
+import sys
 import logging
 from pathlib import Path
 from typing import Dict, List, Optional
 
 logger = logging.getLogger("agathos.subprocess")
+
+# === PLATFORM DETECTION ===
+_IS_WINDOWS = os.name == 'nt' or sys.platform == 'win32'
+_IS_MACOS = sys.platform == 'darwin'
+_IS_LINUX = sys.platform.startswith('linux')
 
 # === HERMES INTEGRATION ===
 try:
@@ -28,23 +34,39 @@ def _agathos_path(*parts: str) -> Path:
     return _ARGUS_HOME.joinpath(*parts)
 
 
+def _get_platform_std_paths() -> List[str]:
+    """Get platform-specific standard binary paths."""
+    if _IS_MACOS:
+        return ['/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin']
+    elif _IS_LINUX:
+        return ['/usr/local/bin', '/usr/bin', '/bin']
+    elif _IS_WINDOWS:
+        # Windows uses PATH env and registry, no standard Unix-style paths
+        return []
+    return ['/usr/local/bin', '/usr/bin', '/bin']
+
+
 def build_agathos_subprocess_env() -> Dict[str, str]:
     """Build a full environment dict for subprocess calls in sandboxed contexts."""
     env = os.environ.copy()
 
-    # Ensure PATH includes all critical tool locations
-    paths = [
-        "/opt/homebrew/bin",
-        "/usr/local/bin",
+    # Build PATH with platform-specific standard paths
+    paths: List[str] = []
+
+    # Add platform-specific standard paths
+    paths.extend(_get_platform_std_paths())
+
+    # Add Hermes-specific paths
+    paths.extend([
         str(_agathos_path("bin")),  # ~/hermes/bin
         str(Path.home() / ".local" / "bin"),  # ~/.local/bin
         str(_hermes_path("credentials")),  # ~/.hermes/credentials
-        "/usr/bin",
-        "/bin",
-    ]
-    env["PATH"] = ":".join(paths)
+    ])
 
-    # Ensure HOME is set (some launchd contexts may not have it)
+    # Use os.pathsep for cross-platform PATH joining (: on POSIX, ; on Windows)
+    env["PATH"] = os.pathsep.join(paths)
+
+    # Ensure HOME is set (some launchd/service contexts may not have it)
     env["HOME"] = os.path.expanduser("~")
 
     return env

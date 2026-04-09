@@ -12,6 +12,11 @@ import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Union
 
+# Platform constants for cross-platform compatibility
+_IS_WINDOWS = os.name == 'nt' or sys.platform == 'win32'
+_IS_MACOS = sys.platform == 'darwin'
+_IS_LINUX = sys.platform.startswith('linux')
+
 
 def is_running_in_venv() -> bool:
     """Check if current Python is in a virtual environment (venv, virtualenv, or conda)."""
@@ -46,7 +51,7 @@ def get_venv_bin_dir(venv_path: Optional[Union[str, Path]] = None) -> Path:
 
     venv = Path(venv_path)
 
-    if os.name == 'nt' or sys.platform == 'win32':
+    if _IS_WINDOWS:
         return venv / 'Scripts'
     return venv / 'bin'
 
@@ -55,18 +60,18 @@ def get_venv_python(venv_path: Optional[Union[str, Path]] = None) -> str:
     """Get Python executable path for a virtual environment."""
     bin_dir = get_venv_bin_dir(venv_path)
 
-    python3_path = bin_dir / 'python3'
-    if python3_path.exists():
-        return str(python3_path)
+    if _IS_WINDOWS:
+        python_exe = bin_dir / 'python.exe'
+        if python_exe.exists():
+            return str(python_exe)
+    else:
+        python3_path = bin_dir / 'python3'
+        if python3_path.exists():
+            return str(python3_path)
 
     python_path = bin_dir / 'python'
     if python_path.exists():
         return str(python_path)
-
-    if os.name == 'nt' or sys.platform == 'win32':
-        python_exe = bin_dir / 'python.exe'
-        if python_exe.exists():
-            return str(python_exe)
 
     return sys.executable
 
@@ -117,19 +122,60 @@ def build_venv_aware_env(
             venv_bin = str(get_venv_bin_dir(venv_path))
             current_path = env.get('PATH', '')
             if venv_bin not in current_path:
-                env['PATH'] = f"{venv_bin}:{current_path}"
+                env['PATH'] = f"{venv_bin}{os.pathsep}{current_path}"
 
     if extra_paths:
-        path_parts = extra_paths + [p for p in env.get('PATH', '').split(':') if p]
+        path_parts = extra_paths + [p for p in env.get('PATH', '').split(os.pathsep) if p]
         seen = set()
         unique_paths = []
         for p in path_parts:
             if p not in seen:
                 seen.add(p)
                 unique_paths.append(p)
-        env['PATH'] = ':'.join(unique_paths)
+        env['PATH'] = os.pathsep.join(unique_paths)
 
     return env
+
+
+def _is_wsl() -> bool:
+    """Detect if running under Windows Subsystem for Linux."""
+    if not _IS_LINUX:
+        return False
+    if os.environ.get('WSL_DISTRO_NAME') or os.environ.get('WSL_INTEROP'):
+        return True
+    try:
+        with open('/proc/version', 'r') as f:
+            version = f.read().lower()
+            return 'microsoft' in version or 'wsl' in version
+    except Exception:
+        pass
+    return False
+
+
+def _get_platform_std_paths() -> List[str]:
+    """Get platform-specific standard binary paths."""
+    if _IS_MACOS:
+        return ['/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin']
+    elif _IS_LINUX:
+        # Standard Linux paths + common package manager locations
+        paths = ['/usr/local/bin', '/usr/bin', '/bin']
+        # Add snap packages if present
+        snap_bin = os.path.expanduser('~/snap/bin')
+        if os.path.isdir(snap_bin):
+            paths.insert(0, snap_bin)
+        # Add flatpak exports if present
+        flatpak_bin = '/var/lib/flatpak/exports/bin'
+        if os.path.isdir(flatpak_bin):
+            paths.append(flatpak_bin)
+        # WSL-specific: Windows paths may be available via /mnt/c/Windows
+        if _is_wsl():
+            # Windows system32 is often in PATH via WSL interop
+            pass  # WSL handles this automatically
+        return paths
+    elif _IS_WINDOWS:
+        # Windows uses PATH env and registry, no standard Unix-style paths
+        return []
+    return ['/usr/local/bin', '/usr/bin', '/bin']
 
 
 def get_agathos_venv_paths() -> List[str]:
@@ -152,7 +198,8 @@ def get_agathos_venv_paths() -> List[str]:
     if Path(hermes_user_bin).exists() and hermes_user_bin not in paths:
         paths.append(hermes_user_bin)
 
-    for std_path in ['/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin']:
+    # Use platform-specific standard paths
+    for std_path in _get_platform_std_paths():
         if std_path not in paths:
             paths.append(std_path)
 
@@ -166,7 +213,7 @@ def build_agathos_subprocess_env(
     env = os.environ.copy() if inherit_env is None else dict(inherit_env)
 
     argus_paths = get_agathos_venv_paths()
-    current_parts = [p for p in env.get('PATH', '').split(':') if p]
+    current_parts = [p for p in env.get('PATH', '').split(os.pathsep) if p]
 
     seen = set(argus_paths)
     merged = list(argus_paths)
@@ -175,7 +222,7 @@ def build_agathos_subprocess_env(
             seen.add(p)
             merged.append(p)
 
-    env['PATH'] = ':'.join(merged)
+    env['PATH'] = os.pathsep.join(merged)
 
     if 'HOME' not in env:
         env['HOME'] = str(Path.home())
@@ -199,7 +246,7 @@ def resolve_venv_python(python_cmd: Optional[str] = None) -> str:
         return python_cmd
 
     env = build_agathos_subprocess_env()
-    for part in env.get('PATH', '').split(':'):
+    for part in env.get('PATH', '').split(os.pathsep):
         candidate = Path(part) / python_cmd
         if candidate.exists() and os.access(candidate, os.X_OK):
             return str(candidate)

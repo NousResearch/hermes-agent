@@ -74,28 +74,35 @@ rl = [
 ]
 yc-bench = ["yc-bench @ git+https://github.com/collinear-ai/yc-bench.git ; python_version >= '3.12'"]
 all = [
-  "hermes-agent[modal]",
-  "hermes-agent[daytona]",
-  "hermes-agent[messaging]",
+  "modal>=1.0.0,<2",
+  "daytona>=0.148.0,<1",
+  "python-telegram-bot[webhooks]>=22.6,<23",
+  "discord.py[voice]>=2.7.1,<3",
+  "aiohttp>=3.13.3,<4",
+  "slack-bolt>=1.18.0,<2",
+  "slack-sdk>=3.27.0,<4",
   # matrix excluded: python-olm (required by matrix-nio[e2e]) is upstream-broken
   # on modern macOS (archived libolm, C++ errors with Clang 21+). Including it
   # here causes the entire [all] install to fail, dropping all other extras.
   # Users who need Matrix can install manually: pip install 'hermes-agent[matrix]'
-  "hermes-agent[cron]",
-  "hermes-agent[cli]",
-  "hermes-agent[dev]",
-  "hermes-agent[tts-premium]",
-  "hermes-agent[slack]",
-  "hermes-agent[pty]",
-  "hermes-agent[honcho]",
-  "hermes-agent[mcp]",
-  "hermes-agent[homeassistant]",
-  "hermes-agent[sms]",
-  "hermes-agent[acp]",
-  "hermes-agent[voice]",
-  "hermes-agent[dingtalk]",
-  "hermes-agent[feishu]",
-  "hermes-agent[mistral]",
+  "croniter>=6.0.0,<7",
+  "simple-term-menu>=1.0,<2",
+  "debugpy>=1.8.0,<2",
+  "pytest>=9.0.2,<10",
+  "pytest-asyncio>=1.3.0,<2",
+  "pytest-xdist>=3.0,<4",
+  "mcp>=1.2.0,<2",
+  "elevenlabs>=1.0,<2",
+  "ptyprocess>=0.7.0,<1; sys_platform != 'win32'",
+  "pywinpty>=2.0.0,<3; sys_platform == 'win32'",
+  "honcho-ai>=2.0.1,<3",
+  "agent-client-protocol>=0.9.0,<1.0",
+  "faster-whisper>=1.0.0,<2",
+  "sounddevice>=0.4.6,<1",
+  "numpy>=1.24.0,<3",
+  "dingtalk-stream>=0.1.0,<1",
+  "lark-oapi>=1.5.3,<2",
+  "mistralai>=2.3.0,<3",
 ]
 
 [project.scripts]

@@ -403,6 +403,93 @@ def test_cmd_update_succeeds_with_extras(monkeypatch, tmp_path):
     assert ".[all]" in install_cmds[0]
 
 
+def test_load_installable_optional_extras_uses_flattened_all_pyproject(monkeypatch, tmp_path):
+    """Flattened [all] should still map back to the intended per-extra retries."""
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text(
+        """
+[project]
+name = "hermes-agent"
+
+[project.optional-dependencies]
+modal = ["modal>=1"]
+messaging = ["aiohttp>=3", "slack-sdk>=3"]
+matrix = ["matrix-nio>=0.24"]
+rl = ["atroposlib @ git+https://example.com/atropos.git"]
+yc-bench = ["yc-bench @ git+https://example.com/yc-bench.git"]
+all = ["modal>=1", "aiohttp>=3", "slack-sdk>=3"]
+""".strip()
+    )
+    monkeypatch.setattr(hermes_main, "PROJECT_ROOT", tmp_path)
+
+    assert hermes_main._load_installable_optional_extras() == ["modal", "messaging"]
+
+
+def test_load_installable_optional_extras_supports_legacy_self_references(monkeypatch, tmp_path):
+    """Older self-referential [all] metadata should still be understood."""
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text(
+        """
+[project]
+name = "hermes-agent"
+
+[project.optional-dependencies]
+mcp = ["mcp>=1.2"]
+matrix = ["matrix-nio>=0.24"]
+all = ["hermes-agent[matrix]", "hermes-agent[mcp]", "hermes-agent[mcp]"]
+""".strip()
+    )
+    monkeypatch.setattr(hermes_main, "PROJECT_ROOT", tmp_path)
+
+    assert hermes_main._load_installable_optional_extras() == ["mcp"]
+
+
+def test_load_installable_optional_extras_skips_flattened_extras_not_covered_by_all(monkeypatch, tmp_path):
+    """Flattened [all] should not accidentally pull in unrelated future extras."""
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text(
+        """
+[project]
+name = "hermes-agent"
+
+[project.optional-dependencies]
+messaging = ["aiohttp>=3", "slack-sdk>=3"]
+homeassistant = ["aiohttp>=3.9"]
+future = ["unrelated-lib>=1"]
+all = ["aiohttp>=3.13.3", "slack-sdk>=3.27.0"]
+""".strip()
+    )
+    monkeypatch.setattr(hermes_main, "PROJECT_ROOT", tmp_path)
+
+    assert hermes_main._load_installable_optional_extras() == ["messaging", "homeassistant"]
+
+
+def test_repo_pyproject_flattened_all_still_maps_to_expected_retry_extras():
+    """The real pyproject should keep update fallback aligned with the old [all] intent."""
+    expected = [
+        "modal",
+        "daytona",
+        "dev",
+        "messaging",
+        "cron",
+        "slack",
+        "cli",
+        "tts-premium",
+        "voice",
+        "pty",
+        "honcho",
+        "mcp",
+        "homeassistant",
+        "sms",
+        "acp",
+        "mistral",
+        "dingtalk",
+        "feishu",
+    ]
+
+    assert hermes_main._load_installable_optional_extras() == expected
+
+
 # ---------------------------------------------------------------------------
 # ff-only fallback to reset --hard on diverged history
 # ---------------------------------------------------------------------------

@@ -3324,12 +3324,14 @@ def _invalidate_update_cache():
 
 
 def _load_installable_optional_extras() -> list[str]:
-    """Return the optional extras referenced by the ``all`` group.
+    """Return the optional extras covered by the ``all`` install flow.
 
-    Only extras that ``[all]`` actually pulls in are retried individually.
-    Extras outside ``[all]`` (e.g. ``rl``, ``yc-bench``) are intentionally
-    excluded — they have heavy or platform-specific deps that most users
-    never installed.
+    ``[all]`` is intentionally flattened in ``pyproject.toml`` to avoid pip
+    recursing through self-referential ``hermes-agent[extra]`` requirements.
+    The fallback installer still needs the names of the extras to retry
+    individually, so we derive them from the optional-dependency table while
+    preserving explicit exclusions such as ``matrix``, ``rl``, and
+    ``yc-bench``.
     """
     try:
         import tomllib
@@ -3342,15 +3344,66 @@ def _load_installable_optional_extras() -> list[str]:
     if not isinstance(optional_deps, dict):
         return []
 
-    # Parse the [all] group to find which extras it references.
-    # Entries look like "hermes-agent[matrix]" or "package-name[extra]".
     all_refs = optional_deps.get("all", [])
+    if not isinstance(all_refs, list):
+        return []
+
+    excluded = {"all", "matrix", "rl", "yc-bench"}
+
+    project_name = project.get("name", "")
+    canonical_project_name = str(project_name).strip().lower().replace("_", "-")
+
+    # Backward compatibility: older packaging represented [all] as
+    # self-references like "hermes-agent[mcp]". Honor only that form, not
+    # third-party package extras such as "discord.py[voice]".
     referenced: list[str] = []
+    seen: set[str] = set()
     for ref in all_refs:
-        if "[" in ref and "]" in ref:
-            name = ref.split("[", 1)[1].split("]", 1)[0]
-            if name in optional_deps:
+        if not isinstance(ref, str):
+            continue
+
+        prefix, separator, suffix = ref.partition("[")
+        if separator and "]" in suffix and prefix.strip().lower().replace("_", "-") == canonical_project_name:
+            name = suffix.split("]", 1)[0]
+            if name in optional_deps and name not in excluded and name not in seen:
                 referenced.append(name)
+                seen.add(name)
+
+    if referenced:
+        return referenced
+
+    def _requirement_name(requirement: str) -> str:
+        requirement = requirement.strip()
+        if not requirement:
+            return ""
+
+        head = requirement.split(";", 1)[0].strip()
+        if "@" in head:
+            head = head.split("@", 1)[0].strip()
+
+        for separator in ("<", ">", "=", "!", "~", " "):
+            if separator in head:
+                head = head.split(separator, 1)[0].strip()
+
+        return head.split("[", 1)[0].strip().lower().replace("_", "-")
+
+    all_requirement_names = {
+        _requirement_name(ref)
+        for ref in all_refs
+        if isinstance(ref, str) and _requirement_name(ref)
+    }
+
+    for name, deps in optional_deps.items():
+        if name in excluded or not isinstance(deps, list) or not deps:
+            continue
+
+        dep_names = {
+            _requirement_name(dep)
+            for dep in deps
+            if isinstance(dep, str) and _requirement_name(dep)
+        }
+        if dep_names and dep_names.issubset(all_requirement_names):
+            referenced.append(name)
 
     return referenced
 

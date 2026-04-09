@@ -120,6 +120,49 @@ def _parse_reasoning_config(effort: str) -> dict | None:
     return result
 
 
+def _estimate_reflowed_height_for_narrower_width(screen, new_columns: int) -> int:
+    """Estimate how many terminal rows a rendered screen will occupy after shrink.
+
+    prompt_toolkit stores the last rendered screen as already-wrapped physical
+    rows. When the terminal narrows, each of those rows can wrap into multiple
+    new rows, which means ``renderer._cursor_pos.y`` underestimates how far the
+    cursor needs to move up before ``erase_down()``.
+
+    We can estimate shrink reflow accurately from the physical row widths stored
+    in ``screen.data_buffer``. (The inverse problem for widening is not solvable
+    from this snapshot alone, because separate wrapped rows do not retain their
+    original logical-line grouping.)
+    """
+    if screen is None or new_columns <= 0:
+        return 0
+
+    height = int(getattr(screen, "height", 0) or 0)
+    if height <= 0:
+        return 0
+
+    data_buffer = getattr(screen, "data_buffer", None)
+    total_rows = 0
+    for y in range(height):
+        row = data_buffer.get(y) if data_buffer is not None else None
+        if row:
+            row_width = max(row.keys()) + 1
+            total_rows += max(1, (row_width + new_columns - 1) // new_columns)
+        else:
+            total_rows += 1
+    return total_rows
+
+
+def _extra_rows_after_terminal_shrink(screen, new_columns: int) -> int:
+    """Return additional rows introduced when a rendered screen reflows narrower."""
+    if screen is None or new_columns <= 0:
+        return 0
+    last_height = int(getattr(screen, "height", 0) or 0)
+    if last_height <= 0:
+        return 0
+    reflowed_height = _estimate_reflowed_height_for_narrower_width(screen, new_columns)
+    return max(0, reflowed_height - last_height)
+
+
 def _get_chrome_debug_candidates(system: str) -> list[str]:
     """Return likely browser executables for local CDP auto-launch."""
     candidates: list[str] = []
@@ -8230,15 +8273,17 @@ class HermesCLI:
         )
         self._app = app  # Store reference for clarify_callback
 
-        # ── Fix ghost status-bar lines on terminal resize ──────────────
-        # When the terminal shrinks (e.g. un-maximize), the emulator reflows
-        # the previously-rendered full-width rows (status bar, input rules)
-        # into multiple narrower rows.  prompt_toolkit's _on_resize handler
-        # only cursor_up()s by the stored layout height, missing the extra
-        # rows created by reflow — leaving ghost duplicates visible.
+        # ── Fix ghost rows on terminal shrink ──────────────────────────
+        # When the terminal narrows, the emulator reflows previously-rendered
+        # rows (status bar, rules, prompt/input) into more physical lines.
+        # prompt_toolkit's default resize handler erases based on the old
+        # cursor row, so it can leave reflowed remnants behind. Those remnants
+        # look like duplicated prompt/input boxes after repeated resizes.
         #
-        # Fix: before the standard erase, inflate _cursor_pos.y so the
-        # cursor moves up far enough to cover the reflowed ghost content.
+        # We fix only the shrink case here. The last-screen snapshot stores
+        # already-wrapped physical rows, so we can estimate how many *extra*
+        # rows narrowing will create, but we cannot reliably reconstruct the
+        # inverse collapse when widening.
         _original_on_resize = app._on_resize
 
         def _resize_clear_ghosts():
@@ -8249,19 +8294,15 @@ class HermesCLI:
                 new_size = renderer.output.get_size()
                 if (
                     old_size
+                    and renderer._last_screen is not None
+                    and renderer._cursor_pos is not None
                     and new_size.columns < old_size.columns
                     and new_size.columns > 0
                 ):
-                    reflow_factor = (
-                        (old_size.columns + new_size.columns - 1)
-                        // new_size.columns
+                    extra = _extra_rows_after_terminal_shrink(
+                        renderer._last_screen,
+                        new_size.columns,
                     )
-                    last_h = (
-                        renderer._last_screen.height
-                        if renderer._last_screen
-                        else 0
-                    )
-                    extra = last_h * (reflow_factor - 1)
                     if extra > 0:
                         renderer._cursor_pos = _Pt(
                             x=renderer._cursor_pos.x,

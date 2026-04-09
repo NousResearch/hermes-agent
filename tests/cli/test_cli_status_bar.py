@@ -206,6 +206,37 @@ class TestCLIStatusBar:
         assert "⚕" in text
         assert "claude-sonnet-4-20250514" in text
 
+    def test_minimal_tui_chrome_threshold(self):
+        cli_obj = _make_cli()
+
+        assert cli_obj._use_minimal_tui_chrome(width=63) is True
+        assert cli_obj._use_minimal_tui_chrome(width=64) is False
+
+    def test_bottom_input_rule_hides_on_narrow_terminals(self):
+        cli_obj = _make_cli()
+
+        assert cli_obj._tui_input_rule_height("top", width=50) == 1
+        assert cli_obj._tui_input_rule_height("bottom", width=50) == 0
+        assert cli_obj._tui_input_rule_height("bottom", width=90) == 1
+
+    def test_agent_spacer_reclaimed_on_narrow_terminals(self):
+        cli_obj = _make_cli()
+        cli_obj._agent_running = True
+
+        assert cli_obj._agent_spacer_height(width=50) == 0
+        assert cli_obj._agent_spacer_height(width=90) == 1
+        cli_obj._agent_running = False
+        assert cli_obj._agent_spacer_height(width=90) == 0
+
+    def test_spinner_line_hidden_on_narrow_terminals(self):
+        cli_obj = _make_cli()
+        cli_obj._spinner_text = "thinking"
+
+        assert cli_obj._spinner_widget_height(width=50) == 0
+        assert cli_obj._spinner_widget_height(width=90) == 1
+        cli_obj._spinner_text = ""
+        assert cli_obj._spinner_widget_height(width=90) == 0
+
 
 class TestCLIUsageReport:
     def test_show_usage_includes_estimated_cost(self, capsys):

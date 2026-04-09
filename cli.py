@@ -1845,15 +1845,51 @@ class HermesCLI:
             width += ch_width
         return "".join(out).rstrip() + ellipsis
 
+    @staticmethod
+    def _get_tui_terminal_width(default: tuple[int, int] = (80, 24)) -> int:
+        """Return the live prompt_toolkit width, falling back to ``shutil``.
+
+        The TUI layout can be narrower than ``shutil.get_terminal_size()`` reports,
+        especially on Termux/mobile shells, so prefer prompt_toolkit's width whenever
+        an app is active.
+        """
+        try:
+            from prompt_toolkit.application import get_app
+            return get_app().output.get_size().columns
+        except Exception:
+            return shutil.get_terminal_size(default).columns
+
+    def _use_minimal_tui_chrome(self, width: Optional[int] = None) -> bool:
+        """Hide low-value chrome on narrow/mobile terminals to preserve rows."""
+        if width is None:
+            width = self._get_tui_terminal_width()
+        return width < 64
+
+    def _tui_input_rule_height(self, position: str, width: Optional[int] = None) -> int:
+        """Return the visible height for the top/bottom input separator rules."""
+        if position not in {"top", "bottom"}:
+            raise ValueError(f"Unknown input rule position: {position}")
+        if position == "top":
+            return 1
+        return 0 if self._use_minimal_tui_chrome(width=width) else 1
+
+    def _agent_spacer_height(self, width: Optional[int] = None) -> int:
+        """Return the spacer height shown above the status bar while the agent runs."""
+        if not getattr(self, "_agent_running", False):
+            return 0
+        return 0 if self._use_minimal_tui_chrome(width=width) else 1
+
+    def _spinner_widget_height(self, width: Optional[int] = None) -> int:
+        """Return the visible height for the spinner/status text line above the status bar."""
+        if not getattr(self, "_spinner_text", ""):
+            return 0
+        return 0 if self._use_minimal_tui_chrome(width=width) else 1
+
     def _build_status_bar_text(self, width: Optional[int] = None) -> str:
         try:
             snapshot = self._get_status_bar_snapshot()
             if width is None:
-                try:
-                    from prompt_toolkit.application import get_app
-                    width = get_app().output.get_size().columns
-                except Exception:
-                    width = shutil.get_terminal_size((80, 24)).columns
+                width = self._get_tui_terminal_width()
             percent = snapshot["context_percent"]
             percent_label = f"{percent}%" if percent is not None else "--"
             duration_label = snapshot["duration"]
@@ -1889,11 +1925,7 @@ class HermesCLI:
             # values (especially on SSH) that differ from what prompt_toolkit
             # actually renders, causing the fragments to overflow to a second
             # line and produce duplicated status bar rows over long sessions.
-            try:
-                from prompt_toolkit.application import get_app
-                width = get_app().output.get_size().columns
-            except Exception:
-                width = shutil.get_terminal_size((80, 24)).columns
+            width = self._get_tui_terminal_width()
             duration_label = snapshot["duration"]
 
             if width < 52:
@@ -8028,9 +8060,9 @@ class HermesCLI:
         def get_hint_height():
             if cli_ref._sudo_state or cli_ref._secret_state or cli_ref._approval_state or cli_ref._clarify_state or cli_ref._command_running:
                 return 1
-            # Keep a 1-line spacer while agent runs so output doesn't push
-            # right up against the top rule of the input area
-            return 1 if cli_ref._agent_running else 0
+            # Keep a spacer while the agent runs on roomy terminals, but reclaim
+            # the row on narrow/mobile screens where every line matters.
+            return cli_ref._agent_spacer_height()
 
         def get_spinner_text():
             txt = cli_ref._spinner_text
@@ -8039,7 +8071,7 @@ class HermesCLI:
             return [('class:hint', f'  {txt}')]
 
         def get_spinner_height():
-            return 1 if cli_ref._spinner_text else 0
+            return cli_ref._spinner_widget_height()
 
         spinner_widget = Window(
             content=FormattedTextControl(get_spinner_text),
@@ -8230,18 +8262,17 @@ class HermesCLI:
             filter=Condition(lambda: cli_ref._approval_state is not None),
         )
 
-        # Horizontal rules above and below the input (bronze, 1 line each).
-        # The bottom rule moves down as the TextArea grows with newlines.
-        # Using char='─' instead of hardcoded repetition so the rule
-        # always spans the full terminal width on any screen size.
+        # Horizontal rules above and below the input.
+        # On narrow/mobile terminals we keep the top separator for structure but
+        # hide the bottom one to recover a full row for conversation content.
         input_rule_top = Window(
             char='─',
-            height=1,
+            height=lambda: cli_ref._tui_input_rule_height("top"),
             style='class:input-rule',
         )
         input_rule_bot = Window(
             char='─',
-            height=1,
+            height=lambda: cli_ref._tui_input_rule_height("bottom"),
             style='class:input-rule',
         )
 

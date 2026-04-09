@@ -327,6 +327,74 @@ def cmd_service_status(args):
         sys.exit(1)
 
 
+def cmd_service_list(args):
+    """List ARGUS service details."""
+    try:
+        from argus import argus_launchd_status, is_argus_running, get_argus_running_pid
+        import subprocess
+        
+        _print_banner()
+        
+        print("\033[96m  ARGUS Services:\033[0m")
+        print()
+        
+        # Get launchd status
+        status = argus_launchd_status()
+        
+        # Service entry
+        print(f"  \033[95mService:\033[0m        com.hermes.argus")
+        print(f"  \033[95mType:\033[0m           LaunchAgent (user service)")
+        
+        # Status with color
+        running_pid = get_argus_running_pid()
+        if running_pid:
+            print(f"  \033[95mStatus:\033[0m         \033[92mrunning (PID {running_pid})\033[0m")
+        else:
+            print(f"  \033[95mStatus:\033[0m         \033[91mnot running\033[0m")
+        
+        # Installation state
+        installed_str = "\033[92myes\033[0m" if status['plist_exists'] else "\033[91mno\033[0m"
+        print(f"  \033[95mInstalled:\033[0m      {installed_str}")
+        
+        # Paths
+        print(f"  \033[95mPlist path:\033[0m     {status['plist_path']}")
+        pid_file_str = "\033[92mpresent\033[0m" if status['pid_file_exists'] else "\033[91mabsent\033[0m"
+        print(f"  \033[95mPID file:\033[0m       {pid_file_str}")
+        
+        # Launchctl info
+        print()
+        print("\033[96m  Launchctl Info:\033[0m")
+        try:
+            result = subprocess.run(
+                ["launchctl", "print", f"gui/{os.getuid()}/{status['label']}"],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            if result.returncode == 0:
+                # Parse key info from output
+                for line in result.stdout.split('\n'):
+                    if 'state =' in line.lower() or 'pid =' in line or 'last exit' in line.lower():
+                        print(f"    {line.strip()}")
+            else:
+                print("    Service not loaded in launchctl")
+        except Exception:
+            print("    Unable to query launchctl")
+        
+        # Next steps hint
+        print()
+        if not status['plist_exists']:
+            print("\033[93m  Run 'argus service install' to install the service\033[0m")
+        elif not running_pid:
+            print("\033[93m  Run 'launchctl start com.hermes.argus' to start the service\033[0m")
+        else:
+            print("\033[96m  Run 'argus service status' for detailed status\033[0m")
+            
+    except Exception as e:
+        print(f"\033[91m  Error: {e}\033[0m", file=sys.stderr)
+        sys.exit(1)
+
+
 def main():
     """Main entry point."""
     parser = argparse.ArgumentParser(
@@ -347,6 +415,7 @@ Examples:
     argus logs                     # View ARGUS logs
     argus logs --follow            # Follow ARGUS logs
     
+    argus service list             # List service details
     argus service install          # Install launchd service (macOS)
     argus service uninstall        # Uninstall launchd service
     argus service status           # Check service status
@@ -415,6 +484,10 @@ Examples:
         help="Manage ARGUS launchd service (macOS)"
     )
     service_subparsers = service_parser.add_subparsers(dest="service_command", help="Service commands")
+    
+    # Service list
+    service_list_parser = service_subparsers.add_parser("list", help="List service details")
+    service_list_parser.set_defaults(func=cmd_service_list)
     
     # Service install
     service_install_parser = service_subparsers.add_parser("install", help="Install launchd service")

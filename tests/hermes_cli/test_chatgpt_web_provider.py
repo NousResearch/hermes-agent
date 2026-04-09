@@ -359,6 +359,39 @@ def test_resolve_chatgpt_web_runtime_credentials_refreshes_pool_session_token(tm
     assert creds["session_token"] == "session-cookie-token"
 
 
+def test_format_initial_message_includes_tool_calls_and_tool_responses():
+    from hermes_cli.chatgpt_web import _format_initial_message
+
+    prompt = _format_initial_message(
+        instructions="Use tools when needed.",
+        has_remote_thread=False,
+        messages=[
+            {"role": "user", "content": "Find the file."},
+            {
+                "role": "assistant",
+                "content": "I will inspect the repo.",
+                "tool_calls": [
+                    {
+                        "function": {
+                            "name": "search_files",
+                            "arguments": '{"pattern": "chatgpt_web.py"}',
+                        }
+                    }
+                ],
+            },
+            {"role": "tool", "content": '{"matches":["hermes_cli/chatgpt_web.py"]}'},
+            {"role": "user", "content": "Continue."},
+        ],
+    )
+
+    assert "Developer instructions (higher priority than the conversation below):" in prompt
+    assert "<tool_call>" in prompt
+    assert "search_files" in prompt
+    assert "<tool_response>" in prompt
+    assert "hermes_cli/chatgpt_web.py" in prompt
+
+
+
 def test_stream_chatgpt_web_completion_parses_patch_events(monkeypatch):
     from hermes_cli.chatgpt_web import stream_chatgpt_web_completion
 

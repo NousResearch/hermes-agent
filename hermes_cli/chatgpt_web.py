@@ -301,19 +301,52 @@ def _format_initial_message(
     for item in messages:
         if not isinstance(item, dict):
             continue
-        role = str(item.get("role") or "").strip()
-        content = str(item.get("content") or "")
+        role = str(item.get("role") or "").strip().lower()
+        raw_content = item.get("content")
+        content = str(raw_content or "")
+        rendered = ""
+
         if role == "user":
             latest_user = content
-        if role in {"user", "assistant"} and content.strip():
-            transcript_lines.append(f"{role.title()}: {content.strip()}")
+            rendered = content.strip()
+        elif role == "assistant":
+            rendered_parts: list[str] = []
+            if content.strip():
+                rendered_parts.append(content.strip())
+            tool_calls = item.get("tool_calls")
+            if isinstance(tool_calls, list):
+                for tool_call in tool_calls:
+                    if not isinstance(tool_call, dict):
+                        continue
+                    function = tool_call.get("function") if isinstance(tool_call.get("function"), dict) else {}
+                    name = str(function.get("name") or "").strip()
+                    if not name:
+                        continue
+                    arguments = function.get("arguments", {})
+                    if isinstance(arguments, str):
+                        try:
+                            arguments = json.loads(arguments)
+                        except Exception:
+                            pass
+                    rendered_parts.append(
+                        "<tool_call>\n"
+                        + json.dumps({"name": name, "arguments": arguments}, ensure_ascii=False)
+                        + "\n</tool_call>"
+                    )
+            rendered = "\n".join(part for part in rendered_parts if part).strip()
+        elif role == "tool":
+            if content.strip():
+                rendered = f"<tool_response>\n{content.strip()}\n</tool_response>"
+
+        if rendered:
+            transcript_lines.append(f"{role.title()}:\n{rendered}")
 
     if has_remote_thread:
         return latest_user.strip()
 
     prompt_parts: list[str] = []
     if instructions.strip():
-        prompt_parts.append(f"System instructions:\n{instructions.strip()}")
+        prompt_parts.append(f"Developer instructions (higher priority than the conversation below):\n{instructions.strip()}")
     if transcript_lines:
         prompt_parts.append("Conversation so far:\n" + "\n".join(transcript_lines))
     return "\n\n".join(part for part in prompt_parts if part).strip()

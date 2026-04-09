@@ -21,6 +21,7 @@ def get_token_path() -> Path:
 
 def refresh_token(token_data: dict) -> dict:
     """Refresh the access token using the refresh token."""
+    import urllib.error
     import urllib.parse
     import urllib.request
 
@@ -32,8 +33,14 @@ def refresh_token(token_data: dict) -> dict:
     }).encode()
 
     req = urllib.request.Request(token_data["token_uri"], data=params)
-    with urllib.request.urlopen(req) as resp:
-        result = json.loads(resp.read())
+    try:
+        with urllib.request.urlopen(req) as resp:
+            result = json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace")
+        print(f"ERROR: Token refresh failed (HTTP {e.code}): {body}", file=sys.stderr)
+        print("Re-run setup.py to re-authenticate.", file=sys.stderr)
+        sys.exit(1)
 
     token_data["token"] = result["access_token"]
     token_data["expiry"] = datetime.fromtimestamp(

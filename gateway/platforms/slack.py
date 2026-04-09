@@ -992,7 +992,7 @@ class SlackAdapter(BasePlatformAdapter):
         channel_type = event.get("channel_type", "")
         if not channel_type and channel_id.startswith("D"):
             channel_type = "im"
-        is_dm = channel_type == "im"
+        is_dm = channel_type in ("im", "mpim")  # Both 1:1 and group DMs
 
         # Build thread_ts for session keying.
         # In channels: fall back to ts so each top-level @mention starts a
@@ -1179,14 +1179,19 @@ class SlackAdapter(BasePlatformAdapter):
             reply_to_message_id=thread_ts if thread_ts != ts else None,
         )
 
-        # Add 👀 reaction to acknowledge receipt
-        await self._add_reaction(channel_id, ts, "eyes")
+        # Only react when bot is directly addressed (DM or @mention).
+        # In listen-all channels (require_mention=false), reacting to every
+        # casual message would be noisy.
+        _should_react = is_dm or is_mentioned
+
+        if _should_react:
+            await self._add_reaction(channel_id, ts, "eyes")
 
         await self.handle_message(msg_event)
 
-        # Replace 👀 with ✅ when done
-        await self._remove_reaction(channel_id, ts, "eyes")
-        await self._add_reaction(channel_id, ts, "white_check_mark")
+        if _should_react:
+            await self._remove_reaction(channel_id, ts, "eyes")
+            await self._add_reaction(channel_id, ts, "white_check_mark")
 
     # ----- Approval button support (Block Kit) -----
 

@@ -55,14 +55,16 @@ class HookRegistry:
         """Register built-in hooks that are always active."""
         try:
             from gateway.builtin_hooks.boot_md import handle as boot_md_handle
+            import os
 
-            self._handlers.setdefault("gateway:startup", []).append(boot_md_handle)
-            self._loaded_hooks.append({
-                "name": "boot-md",
-                "description": "Run ~/.hermes/BOOT.md on gateway startup",
-                "events": ["gateway:startup"],
-                "path": "(builtin)",
-            })
+            if str(os.getenv("HERMES_DISABLE_BOOT_MD", "")).strip().lower() not in {"1", "true", "yes", "on"}:
+                self._handlers.setdefault("gateway:startup", []).append(boot_md_handle)
+                self._loaded_hooks.append({
+                    "name": "boot-md",
+                    "description": "Run ~/.hermes/BOOT.md on gateway startup",
+                    "events": ["gateway:startup"],
+                    "path": "(builtin)",
+                })
         except Exception as e:
             print(f"[hooks] Could not load built-in boot-md hook: {e}", flush=True)
 

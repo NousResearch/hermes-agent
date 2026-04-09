@@ -50,7 +50,11 @@ def _run_boot_agent(content: str) -> None:
         from run_agent import AIAgent
 
         prompt = _build_boot_prompt(content)
+        from gateway.run import _resolve_runtime_agent_kwargs, _resolve_gateway_model
+
         agent = AIAgent(
+            model=_resolve_gateway_model(),
+            **_resolve_runtime_agent_kwargs(),
             quiet_mode=True,
             skip_context_files=True,
             skip_memory=True,
@@ -67,7 +71,7 @@ def _run_boot_agent(content: str) -> None:
 
 
 async def handle(event_type: str, context: dict) -> None:
-    """Gateway startup handler — run BOOT.md if it exists."""
+    """Gateway startup handler — run BOOT.md if it exists and model is configured."""
     if not BOOT_FILE.exists():
         return
 
@@ -75,7 +79,18 @@ async def handle(event_type: str, context: dict) -> None:
     if not content:
         return
 
-    logger.info("Running BOOT.md (%d chars)", len(content))
+    try:
+        from gateway.run import _resolve_gateway_model
+        boot_model = (_resolve_gateway_model() or "").strip()
+    except Exception as e:
+        logger.warning("Skipping BOOT.md: could not resolve model: %s", e)
+        return
+
+    if not boot_model:
+        logger.warning("Skipping BOOT.md: gateway model is empty")
+        return
+
+    logger.info("Running BOOT.md (%d chars) with model %s", len(content), boot_model)
 
     # Run in a background thread so we don't block gateway startup.
     thread = threading.Thread(

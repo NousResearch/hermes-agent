@@ -4564,21 +4564,54 @@ class AIAgent:
             # Build mock response matching non-streaming shape
             full_content = "".join(content_parts) or None
             mock_tool_calls = None
+            _has_truncated_tool_args = False
             if tool_calls_acc:
                 mock_tool_calls = []
                 for idx in sorted(tool_calls_acc):
                     tc = tool_calls_acc[idx]
+                    tc_args = tc["function"]["arguments"]
+                    tc_name = tc["function"]["name"]
+                    # Detect truncated tool call arguments: if the stream was
+                    # cut mid-generation the accumulated JSON will be invalid.
+                    # Flag this so we can override finish_reason to "length"
+                    # and let the main loop handle it as a truncated response
+                    # instead of silently executing with broken arguments.
+                    if tc_args and tc_args.strip():
+                        try:
+                            json.loads(tc_args)
+                        except json.JSONDecodeError:
+                            _has_truncated_tool_args = True
+                            logger.warning(
+                                "Truncated tool call arguments detected in "
+                                "streaming response for tool '%s': %s…",
+                                tc_name, tc_args[:120],
+                            )
                     mock_tool_calls.append(SimpleNamespace(
                         id=tc["id"],
                         type=tc["type"],
                         extra_content=tc.get("extra_content"),
                         function=SimpleNamespace(
-                            name=tc["function"]["name"],
-                            arguments=tc["function"]["arguments"],
+                            name=tc_name,
+                            arguments=tc_args,
                         ),
                     ))
 
             full_reasoning = "".join(reasoning_parts) or None
+
+            # If the stream ended without a finish_reason (provider dropped
+            # connection gracefully) or with finish_reason="stop" but the tool
+            # call arguments are invalid JSON, override to "length" so the
+            # main agent loop treats this as a truncated response and retries
+            # instead of executing a tool with broken/empty arguments.
+            effective_finish_reason = finish_reason or "stop"
+            if _has_truncated_tool_args and effective_finish_reason != "length":
+                logger.warning(
+                    "Overriding finish_reason from '%s' to 'length' due to "
+                    "truncated tool call arguments (stream likely cut short)",
+                    effective_finish_reason,
+                )
+                effective_finish_reason = "length"
+
             mock_message = SimpleNamespace(
                 role=role,
                 content=full_content,
@@ -4588,7 +4621,7 @@ class AIAgent:
             mock_choice = SimpleNamespace(
                 index=0,
                 message=mock_message,
-                finish_reason=finish_reason or "stop",
+                finish_reason=effective_finish_reason,
             )
             return SimpleNamespace(
                 id="stream-" + str(uuid.uuid4()),

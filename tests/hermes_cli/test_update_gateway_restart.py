@@ -368,6 +368,9 @@ class TestCmdUpdateLaunchdRestart:
         monkeypatch.setattr(
             gateway_cli, "is_macos", lambda: False,
         )
+        monkeypatch.setattr(
+            gateway_cli, "is_linux", lambda: True,
+        )
 
         mock_run.side_effect = _make_run_side_effect(
             commit_count="3",

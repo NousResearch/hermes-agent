@@ -38,6 +38,8 @@ def _isolate_hermes_home(tmp_path, monkeypatch):
     monkeypatch.delenv("HERMES_SESSION_CHAT_ID", raising=False)
     monkeypatch.delenv("HERMES_SESSION_CHAT_NAME", raising=False)
     monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
+    # Avoid making real calls during tests if this key is set in the env files
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
 
 
 @pytest.fixture()

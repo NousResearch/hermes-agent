@@ -109,6 +109,7 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
     "opencode-go": HermesOverlay(
         transport="openai_chat",
         is_aggregator=True,
+        extra_env_vars=("OPENCODE_GO_API_KEY",),
         base_url_env_var="OPENCODE_GO_BASE_URL",
     ),
     "kilo": HermesOverlay(

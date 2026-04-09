@@ -561,6 +561,86 @@ class TestSwitchModelDirectAliasOverride:
 # CLI state update: requested_provider persistence
 # ---------------------------------------------------------------------------
 
+class TestAuthenticatedProviderListing:
+    """Provider listing should prefer live provider catalogs when available."""
+
+    def test_opencode_go_appears_when_only_opencode_go_api_key_is_set(self, monkeypatch):
+        """Provider picker should honor Hermes overlay env vars, not just models.dev env vars."""
+        import hermes_cli.model_switch as ms
+
+        monkeypatch.setenv("OPENCODE_GO_API_KEY", "test-opencode-go-key")
+        monkeypatch.delenv("OPENCODE_API_KEY", raising=False)
+        monkeypatch.setattr(
+            "agent.models_dev.fetch_models_dev",
+            lambda: {
+                "opencode-go": {
+                    "env": ["OPENCODE_API_KEY"],
+                    "name": "OpenCode Go",
+                }
+            },
+        )
+
+        providers = ms.list_authenticated_providers(current_provider="opencode-go", max_models=8)
+        opencode_go = next(p for p in providers if p["slug"] == "opencode-go")
+
+        from hermes_cli.models import _PROVIDER_MODELS
+        expected_models = list(_PROVIDER_MODELS["opencode-go"])
+
+        assert opencode_go["name"] == "OpenCode Go"
+        assert opencode_go["models"] == expected_models[:8]
+        assert opencode_go["total_models"] == len(expected_models)
+
+    def test_openai_codex_uses_live_catalog_over_static_curated_list(self, monkeypatch):
+        """Telegram/gateway /model should surface live Codex models, not stale curated ones."""
+        import hermes_cli.model_switch as ms
+
+        monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+        monkeypatch.setattr(
+            "hermes_cli.models.provider_model_ids",
+            lambda provider: ["gpt-5.4-mini", "gpt-5.4", "gpt-5.3-codex"] if provider == "openai-codex" else [],
+        )
+        monkeypatch.setattr(
+            "hermes_cli.model_switch.get_label",
+            lambda provider: "OpenAI Codex" if provider == "openai-codex" else provider,
+        )
+        monkeypatch.setattr(
+            "hermes_cli.auth._load_auth_store",
+            lambda: {"providers": {}, "credential_pool": {"openai-codex": {"default": {}}}},
+        )
+
+        providers = ms.list_authenticated_providers(current_provider="openai-codex", max_models=5)
+        codex = next(p for p in providers if p["slug"] == "openai-codex")
+
+        assert codex["models"] == ["gpt-5.4-mini", "gpt-5.4", "gpt-5.3-codex"]
+        assert codex["total_models"] == 3
+
+    def test_falls_back_to_curated_list_when_live_catalog_empty(self, monkeypatch):
+        """If live discovery fails, provider listing should keep the old curated fallback."""
+        import hermes_cli.model_switch as ms
+
+        monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+        monkeypatch.setattr("hermes_cli.models.provider_model_ids", lambda provider: [])
+        monkeypatch.setattr(
+            "hermes_cli.model_switch.get_label",
+            lambda provider: "OpenAI Codex" if provider == "openai-codex" else provider,
+        )
+        monkeypatch.setattr(
+            "hermes_cli.auth._load_auth_store",
+            lambda: {"providers": {}, "credential_pool": {"openai-codex": {"default": {}}}},
+        )
+
+        providers = ms.list_authenticated_providers(current_provider="openai-codex", max_models=5)
+        codex = next(p for p in providers if p["slug"] == "openai-codex")
+
+        assert codex["models"] == [
+            "gpt-5.3-codex",
+            "gpt-5.2-codex",
+            "gpt-5.1-codex-mini",
+            "gpt-5.1-codex-max",
+        ]
+        assert codex["total_models"] == 4
+
+
 class TestCLIStateUpdate:
     """CLI /model handler should update requested_provider and explicit fields."""
 

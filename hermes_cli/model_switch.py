@@ -730,7 +730,7 @@ def list_authenticated_providers(
         fetch_models_dev,
         get_provider_info as _mdev_pinfo,
     )
-    from hermes_cli.models import OPENROUTER_MODELS, _PROVIDER_MODELS
+    from hermes_cli.models import OPENROUTER_MODELS, _PROVIDER_MODELS, provider_model_ids
 
     results: List[dict] = []
     seen_slugs: set = set()
@@ -800,8 +800,9 @@ def list_authenticated_providers(
         if not has_creds:
             continue
 
-        # Use curated list
-        model_ids = curated.get(pid, [])
+        # Prefer live/provider-specific discovery when available (Codex, Nous,
+        # Copilot), then fall back to the curated static list.
+        model_ids = provider_model_ids(pid) or curated.get(pid, [])
         total = len(model_ids)
         top = model_ids[:max_models]
 

@@ -244,6 +244,10 @@ def test_run_doctor_termux_treats_docker_and_browser_warnings_as_expected(monkey
     assert "Docker backend is not available inside Termux" in out
     assert "Node.js not found (browser tools are optional in the tested Termux path)" in out
     assert "Install Node.js on Termux with: pkg install nodejs" in out
+    assert "Termux browser setup:" in out
+    assert "1) pkg install nodejs" in out
+    assert "2) npm install -g agent-browser" in out
+    assert "3) agent-browser install" in out
     assert "docker not found (optional)" not in out
 
 

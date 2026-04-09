@@ -71,6 +71,17 @@ def _system_package_install_cmd(pkg: str) -> str:
     return f"sudo apt install {pkg}"
 
 
+def _termux_browser_setup_steps(node_installed: bool) -> list[str]:
+    steps: list[str] = []
+    step = 1
+    if not node_installed:
+        steps.append(f"{step}) pkg install nodejs")
+        step += 1
+    steps.append(f"{step}) npm install -g agent-browser")
+    steps.append(f"{step + 1}) agent-browser install")
+    return steps
+
+
 def _has_provider_env_config(content: str) -> bool:
     """Return True when ~/.hermes/.env contains provider auth/base URL settings."""
     return any(key in content for key in _PROVIDER_ENV_HINTS)
@@ -597,12 +608,18 @@ def run_doctor(args):
             if _is_termux():
                 check_info("agent-browser is not installed (expected in the tested Termux path)")
                 check_info("Install it manually later with: npm install -g agent-browser && agent-browser install")
+                check_info("Termux browser setup:")
+                for step in _termux_browser_setup_steps(node_installed=True):
+                    check_info(step)
             else:
                 check_warn("agent-browser not installed", "(run: npm install)")
     else:
         if _is_termux():
             check_info("Node.js not found (browser tools are optional in the tested Termux path)")
             check_info("Install Node.js on Termux with: pkg install nodejs")
+            check_info("Termux browser setup:")
+            for step in _termux_browser_setup_steps(node_installed=False):
+                check_info(step)
         else:
             check_warn("Node.js not found", "(optional, needed for browser tools)")
     

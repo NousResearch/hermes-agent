@@ -296,6 +296,17 @@ def _browser_install_hint() -> str:
     return "npm install -g agent-browser && agent-browser install --with-deps"
 
 
+def _requires_real_termux_browser_install(browser_cmd: str) -> bool:
+    return _is_termux_environment() and _is_local_mode() and browser_cmd.strip() == "npx agent-browser"
+
+
+def _termux_browser_install_error() -> str:
+    return (
+        "Local browser automation on Termux cannot rely on the bare npx fallback. "
+        f"Install agent-browser explicitly first: {_browser_install_hint()}"
+    )
+
+
 def _is_local_mode() -> bool:
     """Return True when the browser tool will use a local browser backend."""
     if _get_cdp_override():
@@ -864,6 +875,11 @@ def _run_browser_command(
     except FileNotFoundError as e:
         logger.warning("agent-browser CLI not found: %s", e)
         return {"success": False, "error": str(e)}
+
+    if _requires_real_termux_browser_install(browser_cmd):
+        error = _termux_browser_install_error()
+        logger.warning("browser command blocked on Termux: %s", error)
+        return {"success": False, "error": error}
     
     from tools.interrupt import is_interrupted
     if is_interrupted():
@@ -2060,7 +2076,7 @@ def check_browser_requirements() -> bool:
     # local browser dependency. Require a real install (global or local) so the
     # browser tool is not advertised as available when it will likely fail on
     # first use.
-    if _is_termux_environment() and _is_local_mode() and browser_cmd.strip() == "npx agent-browser":
+    if _requires_real_termux_browser_install(browser_cmd):
         return False
 
     # In cloud mode, also require provider credentials
@@ -2092,10 +2108,13 @@ if __name__ == "__main__":
     else:
         print("❌ Missing requirements:")
         try:
-            _find_agent_browser()
+            browser_cmd = _find_agent_browser()
+            if _requires_real_termux_browser_install(browser_cmd):
+                print("   - bare npx fallback found (insufficient on Termux local mode)")
+                print(f"     Install: {_browser_install_hint()}")
         except FileNotFoundError:
             print("   - agent-browser CLI not found")
-            print("     Install: npm install -g agent-browser && agent-browser install --with-deps")
+            print(f"     Install: {_browser_install_hint()}")
         if _cp is not None and not _cp.is_configured():
             print(f"   - {_cp.provider_name()} credentials not configured")
             print("   Tip: set browser.cloud_provider to 'local' to use free local mode instead")

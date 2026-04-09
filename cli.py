@@ -5974,10 +5974,16 @@ class HermesCLI:
         """Start capturing audio from the microphone."""
         if getattr(self, '_should_exit', False):
             return
-        from tools.voice_mode import AudioRecorder, check_voice_requirements
+        from tools.voice_mode import create_audio_recorder, check_voice_requirements
 
         reqs = check_voice_requirements()
         if not reqs["audio_available"]:
+            if _is_termux_environment():
+                raise RuntimeError(
+                    "Voice mode requires either Termux:API microphone access or Python audio libraries.\n"
+                    "Option 1: pkg install termux-api and install the Termux:API Android app\n"
+                    "Option 2: pkg install python-numpy portaudio && python -m pip install sounddevice"
+                )
             raise RuntimeError(
                 "Voice mode requires sounddevice and numpy.\n"
                 "Install with: pip install sounddevice numpy\n"
@@ -6006,7 +6012,7 @@ class HermesCLI:
             pass
 
         if self._voice_recorder is None:
-            self._voice_recorder = AudioRecorder()
+            self._voice_recorder = create_audio_recorder()
 
         # Apply config-driven silence params
         self._voice_recorder._silence_threshold = voice_cfg.get("silence_threshold", 200)
@@ -6035,7 +6041,13 @@ class HermesCLI:
             with self._voice_lock:
                 self._voice_recording = False
             raise
-        _cprint(f"\n{_GOLD}● Recording...{_RST} {_DIM}(auto-stops on silence | Ctrl+B to stop & exit continuous){_RST}")
+        if getattr(self._voice_recorder, "supports_silence_autostop", True):
+            _recording_hint = "auto-stops on silence | Ctrl+B to stop & exit continuous"
+        elif _is_termux_environment():
+            _recording_hint = "Termux:API capture | Ctrl+B to stop"
+        else:
+            _recording_hint = "Ctrl+B to stop"
+        _cprint(f"\n{_GOLD}● Recording...{_RST} {_DIM}({_recording_hint}){_RST}")
 
         # Periodically refresh prompt to update audio level indicator
         def _refresh_level():
@@ -6244,7 +6256,9 @@ class HermesCLI:
                 _cprint(f"  {_DIM}{line}{_RST}")
             if reqs["missing_packages"]:
                 if _is_termux_environment():
-                    _cprint(f"\n  {_BOLD}Install: pkg install python-numpy portaudio && python -m pip install sounddevice{_RST}")
+                    _cprint(f"\n  {_BOLD}Option 1: pkg install termux-api{_RST}")
+                    _cprint(f"  {_DIM}Then install/update the Termux:API Android app for microphone capture{_RST}")
+                    _cprint(f"  {_BOLD}Option 2: pkg install python-numpy portaudio && python -m pip install sounddevice{_RST}")
                 else:
                     _cprint(f"\n  {_BOLD}Install: pip install {' '.join(reqs['missing_packages'])}{_RST}")
                     _cprint(f"  {_DIM}Or: pip install hermes-agent[voice]{_RST}")
@@ -7201,27 +7215,39 @@ class HermesCLI:
     def _get_tui_prompt_fragments(self):
         """Return the prompt_toolkit fragments for the current interactive state."""
         symbol, state_suffix = self._get_tui_prompt_symbols()
+        compact = self._use_minimal_tui_chrome(width=self._get_tui_terminal_width())
+
+        def _state_fragment(style: str, icon: str, extra: str = ""):
+            if compact:
+                text = icon
+                if extra:
+                    text = f"{text} {extra.strip()}".rstrip()
+                return [(style, text + " ")]
+            if extra:
+                return [(style, f"{icon} {extra} {state_suffix}")]
+            return [(style, f"{icon} {state_suffix}")]
+
         if self._voice_recording:
             bar = self._audio_level_bar()
-            return [("class:voice-recording", f"● {bar} {state_suffix}")]
+            return _state_fragment("class:voice-recording", "●", bar)
         if self._voice_processing:
-            return [("class:voice-processing", f"◉ {state_suffix}")]
+            return _state_fragment("class:voice-processing", "◉")
         if self._sudo_state:
-            return [("class:sudo-prompt", f"🔐 {state_suffix}")]
+            return _state_fragment("class:sudo-prompt", "🔐")
         if self._secret_state:
-            return [("class:sudo-prompt", f"🔑 {state_suffix}")]
+            return _state_fragment("class:sudo-prompt", "🔑")
         if self._approval_state:
-            return [("class:prompt-working", f"⚠ {state_suffix}")]
+            return _state_fragment("class:prompt-working", "⚠")
         if self._clarify_freetext:
-            return [("class:clarify-selected", f"✎ {state_suffix}")]
+            return _state_fragment("class:clarify-selected", "✎")
         if self._clarify_state:
-            return [("class:prompt-working", f"? {state_suffix}")]
+            return _state_fragment("class:prompt-working", "?")
         if self._command_running:
-            return [("class:prompt-working", f"{self._command_spinner_frame()} {state_suffix}")]
+            return _state_fragment("class:prompt-working", self._command_spinner_frame())
         if self._agent_running:
-            return [("class:prompt-working", f"⚕ {state_suffix}")]
+            return _state_fragment("class:prompt-working", "⚕")
         if self._voice_mode:
-            return [("class:voice-prompt", f"🎤 {state_suffix}")]
+            return _state_fragment("class:voice-prompt", "🎤")
         return [("class:prompt", symbol)]
 
     def _get_tui_prompt_text(self) -> str:

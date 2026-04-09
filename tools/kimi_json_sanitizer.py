@@ -1,19 +1,22 @@
-"""
-Kimi-K2 JSON Sanitizer
+"""Repair malformed tool-call JSON.
 
-Handles malformed JSON from moonshotai/kimi-k2-instruct and similar models
-that produce truncated/invalid JSON in tool call arguments.
-
-Issue: https://github.com/NousResearch/hermes-agent/issues/XXX
+The immediate trigger here was Kimi returning truncated tool arguments during
+chat-completions streaming, but the repair path is generic and only runs after
+normal ``json.loads()`` has already failed.
 """
+
+from __future__ import annotations
 
 import json
-import re
 import logging
+import re
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
-# Models known to produce malformed JSON
+# Historical context: this helper started as a Kimi-specific fix. Keep the
+# model detector for callers and logging, even though the repair itself is now
+# safe to try for any malformed tool JSON.
 KIMI_MODELS = {
     "moonshotai/kimi-k2-instruct",
     "moonshotai/kimi-k1.5-instruct",
@@ -23,90 +26,155 @@ KIMI_MODELS = {
 
 
 def is_kimi_model(model: str) -> bool:
-    """Check if the model is a Kimi variant that needs JSON repair."""
+    """Check if the model is a Kimi variant."""
     if not model:
         return False
     model_lower = model.lower()
     return any(k.lower() in model_lower for k in KIMI_MODELS)
 
 
-def sanitize_kimi_json(raw_args: str) -> tuple[dict | None, str | None]:
+def sanitize_kimi_json(raw_args: Any, *, tool_name: str = "") -> tuple[Any | None, str | None]:
+    """Backward-compatible wrapper around the generic repair helper."""
+    return repair_tool_call_arguments(raw_args, tool_name=tool_name)
+
+
+def repair_tool_call_arguments(raw_args: Any, *, tool_name: str = "") -> tuple[Any | None, str | None]:
+    """Attempt to repair malformed tool-call arguments.
+
+    Returns ``(parsed_args, None)`` on success or ``(None, error)`` when the
+    payload is too damaged to recover.
     """
-    Attempt to repair malformed JSON from Kimi models.
-    
-    Args:
-        raw_args: The raw JSON string from the model
-        
-    Returns:
-        (repaired_dict, None) on success
-        (None, error_message) on failure
-    """
-    if not raw_args:
+    if isinstance(raw_args, (dict, list)):
+        return raw_args, None
+    if raw_args is None:
         return {}, None
-        
-    original = raw_args
-    
-    # Pattern 1: Unterminated string at start (char 1 error)
-    # Often the opening quote is there but closing quote is missing
-    if raw_args.startswith('{"') and raw_args.count('"') % 2 != 0:
-        # Try adding closing quote
-        raw_args = raw_args + '"'
-    
-    # Pattern 2: Missing closing braces
-    open_braces = raw_args.count('{') - raw_args.count('}')
-    open_brackets = raw_args.count('[') - raw_args.count(']')
-    
-    if open_braces > 0:
-        raw_args = raw_args + '}' * open_braces
-    if open_brackets > 0:
-        raw_args = raw_args + ']' * open_brackets
-    
-    # Pattern 3: Truncated mid-value (e.g., "command": "ls -la", "time)
-    # Try to complete truncated keys
-    truncated_key_pattern = r',\s*"[^"]*":\s*[^,}]*$'
-    if re.search(truncated_key_pattern, raw_args):
-        # Remove the truncated key-value pair
-        raw_args = re.sub(truncated_key_pattern, '', raw_args)
-        # Re-add closing brace if needed
-        if not raw_args.endswith('}'):
-            raw_args = raw_args + '}'
-    
-    # Pattern 4: Empty tool name field (becomes "")
-    # This is handled at the tool dispatch level, not here
-    
+
+    text = raw_args if isinstance(raw_args, str) else str(raw_args)
+    text = text.strip()
+    if not text:
+        return {}, None
+
+    last_error = None
+    for candidate in _repair_candidates(text):
+        try:
+            return json.loads(candidate), None
+        except json.JSONDecodeError as exc:
+            last_error = str(exc)
+
+    extracted = _regex_extract_params(text)
+    if extracted is not None:
+        if tool_name:
+            logger.warning(
+                "Recovered malformed tool JSON via regex extraction for %s",
+                tool_name,
+            )
+        else:
+            logger.warning("Recovered malformed tool JSON via regex extraction")
+        return extracted, None
+
+    return None, last_error or "Invalid JSON tool arguments"
+
+
+def _repair_candidates(text: str) -> list[str]:
+    candidates: list[str] = []
+    seen: set[str] = set()
+
+    def add(candidate: str) -> None:
+        if candidate and candidate not in seen:
+            seen.add(candidate)
+            candidates.append(candidate)
+
+    cleaned = text.lstrip("\ufeff").strip()
+    add(cleaned)
+
     try:
-        parsed = json.loads(raw_args)
-        if parsed != original:
-            logger.info(f"Kimi JSON sanitizer repaired: {original[:50]}... -> valid JSON")
-        return parsed, None
-    except json.JSONDecodeError as e:
-        # Final fallback: try to extract key-value pairs with regex
-        return _regex_extract_params(raw_args, str(e))
+        add(json.dumps(json.loads(cleaned, strict=False), ensure_ascii=False))
+    except Exception:
+        pass
+
+    closed = _close_unterminated_string(cleaned)
+    balanced = _balance_brackets(closed)
+    add(balanced)
+    add(_balance_brackets(_drop_trailing_partial_member(closed)))
+    add(_balance_brackets(_drop_trailing_partial_member(cleaned)))
+
+    return candidates
 
 
-def _regex_extract_params(broken_json: str, error_msg: str) -> tuple[dict | None, str | None]:
-    """
-    Last resort: extract parameters using regex when JSON parsing fails.
-    """
-    result = {}
-    
-    # Match "key": "value" or "key": value patterns
-    string_pattern = r'"([^"]+)":\s*"([^"]*)"'
-    number_pattern = r'"([^"]+)":\s*(\d+(?:\.\d+)?)'
-    bool_pattern = r'"([^"]+)":\s*(true|false)'
-    
-    for match in re.finditer(string_pattern, broken_json):
+def _close_unterminated_string(text: str) -> str:
+    quote_count = 0
+    escaped = False
+    for char in text:
+        if escaped:
+            escaped = False
+            continue
+        if char == "\\":
+            escaped = True
+            continue
+        if char == '"':
+            quote_count += 1
+    if quote_count % 2:
+        return text + '"'
+    return text
+
+
+def _balance_brackets(text: str) -> str:
+    opens = []
+    in_string = False
+    escaped = False
+
+    for char in text:
+        if escaped:
+            escaped = False
+            continue
+        if char == "\\" and in_string:
+            escaped = True
+            continue
+        if char == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if char in "{[":
+            opens.append(char)
+        elif char in "}]":
+            if opens:
+                opens.pop()
+
+    suffix = []
+    for opener in reversed(opens):
+        suffix.append("}" if opener == "{" else "]")
+    return text + "".join(suffix)
+
+
+def _drop_trailing_partial_member(text: str) -> str:
+    candidate = text.rstrip()
+    patterns = [
+        r',\s*"[^"]+"\s*:\s*"[^"]*$',
+        r',\s*"[^"]+"\s*:\s*[^,}\]]*$',
+        r',\s*"[^"]+"\s*:\s*$',
+        r',\s*"[^"]+\s*$',
+        r',\s*"[^"]+"\s*$',
+        r',\s*$',
+    ]
+    for pattern in patterns:
+        updated = re.sub(pattern, "", candidate)
+        if updated != candidate:
+            return updated.rstrip()
+    return candidate
+
+
+def _regex_extract_params(broken_json: str) -> dict[str, Any] | None:
+    result: dict[str, Any] = {}
+
+    for match in re.finditer(r'"([^"]+)":\s*"([^"]*)"', broken_json):
         result[match.group(1)] = match.group(2)
-    
-    for match in re.finditer(number_pattern, broken_json):
-        val = match.group(2)
-        result[match.group(1)] = float(val) if '.' in val else int(val)
-    
-    for match in re.finditer(bool_pattern, broken_json):
-        result[match.group(1)] = match.group(2) == 'true'
-    
-    if result:
-        logger.warning(f"Kimi JSON sanitizer used regex extraction: {error_msg}")
-        return result, None
-    
-    return None, error_msg
+
+    for match in re.finditer(r'"([^"]+)":\s*(-?\d+(?:\.\d+)?)', broken_json):
+        raw_value = match.group(2)
+        result[match.group(1)] = float(raw_value) if "." in raw_value else int(raw_value)
+
+    for match in re.finditer(r'"([^"]+)":\s*(true|false)', broken_json):
+        result[match.group(1)] = match.group(2) == "true"
+
+    return result or None

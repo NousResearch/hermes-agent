@@ -426,7 +426,7 @@ def _patch_skill(
     # from exact-match failures on minor formatting mismatches.
     from tools.fuzzy_match import fuzzy_find_and_replace
 
-    new_content, match_count, match_error = fuzzy_find_and_replace(
+    new_content, match_count, _strategy, match_error = fuzzy_find_and_replace(
         content, old_string, new_string, replace_all
     )
     if match_error:

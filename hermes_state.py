@@ -1512,12 +1512,45 @@ class SessionDB:
             )
         self._execute_write(_do)
 
-    def delete_session(self, session_id: str) -> bool:
+    @staticmethod
+    def _remove_session_files(sessions_dir: Optional[Path], session_id: str) -> None:
+        """Remove on-disk transcript files for a session.
+
+        Cleans up ``{session_id}.json``, ``{session_id}.jsonl``, and any
+        ``request_dump_{session_id}_*.json`` files left by the gateway.
+        Silently skips files that don't exist and swallows OSError so a
+        filesystem hiccup never blocks a DB operation.
+        """
+        if sessions_dir is None:
+            return
+        for suffix in (".json", ".jsonl"):
+            p = sessions_dir / f"{session_id}{suffix}"
+            try:
+                p.unlink(missing_ok=True)
+            except OSError:
+                pass
+        # request_dump files use session_id as a prefix component
+        try:
+            for p in sessions_dir.glob(f"request_dump_{session_id}_*.json"):
+                try:
+                    p.unlink(missing_ok=True)
+                except OSError:
+                    pass
+        except OSError:
+            pass
+
+    def delete_session(
+        self,
+        session_id: str,
+        sessions_dir: Optional[Path] = None,
+    ) -> bool:
         """Delete a session and all its messages.
 
         Child sessions are orphaned (parent_session_id set to NULL) rather
         than cascade-deleted, so they remain accessible independently.
-        Returns True if the session was found and deleted.
+        When *sessions_dir* is provided, also removes on-disk transcript
+        files (``.json`` / ``.jsonl`` / ``request_dump_*``) for the deleted
+        session. Returns True if the session was found and deleted.
         """
         def _do(conn):
             cursor = conn.execute(
@@ -1534,16 +1567,29 @@ class SessionDB:
             conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
             conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
             return True
-        return self._execute_write(_do)
 
-    def prune_sessions(self, older_than_days: int = 90, source: str = None) -> int:
+        deleted = self._execute_write(_do)
+        if deleted:
+            self._remove_session_files(sessions_dir, session_id)
+        return deleted
+
+    def prune_sessions(
+        self,
+        older_than_days: int = 90,
+        source: str = None,
+        sessions_dir: Optional[Path] = None,
+    ) -> int:
         """Delete sessions older than N days. Returns count of deleted sessions.
 
         Only prunes ended sessions (not active ones).  Child sessions outside
         the prune window are orphaned (parent_session_id set to NULL) rather
-        than cascade-deleted.
+        than cascade-deleted.  When *sessions_dir* is provided, also removes
+        on-disk transcript files (``.json`` / ``.jsonl`` /
+        ``request_dump_*``) for every pruned session, outside the DB
+        transaction.
         """
         cutoff = time.time() - (older_than_days * 86400)
+        removed_ids: list[str] = []
 
         def _do(conn):
             if source:
@@ -1573,9 +1619,14 @@ class SessionDB:
             for sid in session_ids:
                 conn.execute("DELETE FROM messages WHERE session_id = ?", (sid,))
                 conn.execute("DELETE FROM sessions WHERE id = ?", (sid,))
+                removed_ids.append(sid)
             return len(session_ids)
 
-        return self._execute_write(_do)
+        count = self._execute_write(_do)
+        # Clean up on-disk files outside the DB transaction
+        for sid in removed_ids:
+            self._remove_session_files(sessions_dir, sid)
+        return count
 
     # ── Meta key/value (for scheduler bookkeeping) ──
 
@@ -1629,12 +1680,17 @@ class SessionDB:
         retention_days: int = 90,
         min_interval_hours: int = 24,
         vacuum: bool = True,
+        sessions_dir: Optional[Path] = None,
     ) -> Dict[str, Any]:
         """Idempotent auto-maintenance: prune old sessions + optional VACUUM.
 
         Records the last run timestamp in state_meta so subsequent calls
         within ``min_interval_hours`` no-op. Designed to be called once at
         startup from long-lived entrypoints (CLI, gateway, cron scheduler).
+
+        When *sessions_dir* is provided, on-disk transcript files
+        (``.json`` / ``.jsonl`` / ``request_dump_*``) for pruned sessions
+        are removed as part of the same sweep (issue #3015).
 
         Never raises. On any failure, logs a warning and returns a dict
         with ``"error"`` set.
@@ -1659,7 +1715,10 @@ class SessionDB:
                 except (TypeError, ValueError):
                     pass  # corrupt meta; treat as no prior run
 
-            pruned = self.prune_sessions(older_than_days=retention_days)
+            pruned = self.prune_sessions(
+                older_than_days=retention_days,
+                sessions_dir=sessions_dir,
+            )
             result["pruned"] = pruned
 
             # Only VACUUM if we actually freed rows — VACUUM on a tight DB

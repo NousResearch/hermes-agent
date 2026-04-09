@@ -71,8 +71,24 @@ def _termux_media_player_command() -> Optional[str]:
     return shutil.which("termux-media-player")
 
 
+def _termux_api_app_installed() -> bool:
+    if not _is_termux_environment():
+        return False
+    try:
+        result = subprocess.run(
+            ["pm", "list", "packages", "com.termux.api"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        return "package:com.termux.api" in (result.stdout or "")
+    except Exception:
+        return False
+
+
 def _termux_voice_capture_available() -> bool:
-    return _termux_microphone_command() is not None
+    return _termux_microphone_command() is not None and _termux_api_app_installed()
 
 
 def detect_audio_environment() -> dict:
@@ -84,7 +100,9 @@ def detect_audio_environment() -> dict:
     """
     warnings = []   # hard-fail: these block voice mode
     notices = []     # informational: logged but don't block
-    termux_capture = _termux_voice_capture_available()
+    termux_mic_cmd = _termux_microphone_command()
+    termux_app_installed = _termux_api_app_installed()
+    termux_capture = bool(termux_mic_cmd and termux_app_installed)
 
     # SSH detection
     if any(os.environ.get(v) for v in ('SSH_CLIENT', 'SSH_TTY', 'SSH_CONNECTION')):
@@ -133,11 +151,19 @@ def detect_audio_environment() -> dict:
     except ImportError:
         if termux_capture:
             notices.append("Termux:API microphone recording available (sounddevice not required)")
+        elif termux_mic_cmd and not termux_app_installed:
+            warnings.append(
+                "Termux:API Android app is not installed. Install/update the Termux:API app to use termux-microphone-record."
+            )
         else:
             warnings.append(f"Audio libraries not installed ({_voice_capture_install_hint()})")
     except OSError:
         if termux_capture:
             notices.append("Termux:API microphone recording available (PortAudio not required)")
+        elif termux_mic_cmd and not termux_app_installed:
+            warnings.append(
+                "Termux:API Android app is not installed. Install/update the Termux:API app to use termux-microphone-record."
+            )
         elif _is_termux_environment():
             warnings.append(
                 "PortAudio system library not found -- install it first:\n"
@@ -256,6 +282,11 @@ class TermuxAudioRecorder:
                 "Termux voice capture requires the termux-api package and app.\n"
                 "Install with: pkg install termux-api\n"
                 "Then install/update the Termux:API Android app."
+            )
+        if not _termux_api_app_installed():
+            raise RuntimeError(
+                "Termux voice capture requires the Termux:API Android app.\n"
+                "Install/update the Termux:API app, then retry /voice on."
             )
 
         with self._lock:

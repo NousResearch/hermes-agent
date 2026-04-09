@@ -1231,6 +1231,44 @@ class TestTryPaymentFallback:
         assert label == "openai-codex"
 
 
+class TestCallLlmDefaultTokenBudget:
+    def test_call_llm_defaults_to_safe_aux_budget(self, monkeypatch):
+        client = MagicMock()
+        response = MagicMock()
+        client.chat.completions.create.return_value = response
+
+        with patch("agent.auxiliary_client._get_cached_client",
+                   return_value=(client, "google/gemini-3-flash-preview")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                   return_value=("openrouter", "google/gemini-3-flash-preview", None, None)):
+            result = call_llm(
+                task="compression",
+                messages=[{"role": "user", "content": "hello"}],
+            )
+
+        assert result is response
+        kwargs = client.chat.completions.create.call_args.kwargs
+        assert kwargs["max_tokens"] == 4096
+
+    def test_call_llm_vision_gets_larger_default_budget(self, monkeypatch):
+        client = MagicMock()
+        response = MagicMock()
+        client.chat.completions.create.return_value = response
+
+        with patch("agent.auxiliary_client.resolve_vision_provider_client",
+                   return_value=("openrouter", client, "google/gemini-3-flash-preview")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                   return_value=("openrouter", "google/gemini-3-flash-preview", None, None)):
+            result = call_llm(
+                task="vision",
+                messages=[{"role": "user", "content": "hello"}],
+            )
+
+        assert result is response
+        kwargs = client.chat.completions.create.call_args.kwargs
+        assert kwargs["max_tokens"] == 8192
+
+
 class TestCallLlmPaymentFallback:
     """call_llm() retries with a different provider on 402 / payment errors."""
 

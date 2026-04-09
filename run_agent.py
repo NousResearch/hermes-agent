@@ -4110,6 +4110,27 @@ class AIAgent:
         self._apply_client_headers_for_base_url(self.base_url)
         self._replace_primary_openai_client(reason="credential_rotation")
 
+    @staticmethod
+    def _is_soft_402_affordability_error(error_context: Optional[Dict[str, Any]] = None) -> bool:
+        """Return True for 402s caused by oversized token budgets, not hard quota exhaustion.
+
+        OpenRouter can return 402 when a request asks for more output tokens than
+        the remaining credit can currently afford (for example: "requested up to
+        64000 tokens, but can only afford 50785"). That credential may still be
+        perfectly usable for normal requests, so marking it exhausted for 24 hours
+        disables auxiliary features unnecessarily.
+        """
+        if not isinstance(error_context, dict):
+            return False
+        message = str(error_context.get("message") or "").lower()
+        if not message:
+            return False
+        return (
+            "requested up to" in message and "can only afford" in message
+        ) or (
+            "fewer max_tokens" in message and "can only afford" in message
+        )
+
     def _recover_with_credential_pool(
         self,
         *,
@@ -4122,7 +4143,8 @@ class AIAgent:
         Returns (recovered, has_retried_429).
         On 429: first occurrence retries same credential (sets flag True).
                 second consecutive 429 rotates to next credential (resets flag).
-        On 402: immediately rotates (billing exhaustion won't resolve with retry).
+        On 402: rotate only for hard billing/quota exhaustion. Soft 402s caused
+                by oversized max_tokens requests should not poison the credential.
         On 401: attempts token refresh before rotating.
         """
         pool = self._credential_pool
@@ -4130,6 +4152,9 @@ class AIAgent:
             return False, has_retried_429
 
         if status_code == 402:
+            if self._is_soft_402_affordability_error(error_context):
+                logger.info("Credential 402 looks like a max_tokens affordability miss; leaving pool entry active")
+                return False, has_retried_429
             next_entry = pool.mark_exhausted_and_rotate(status_code=402, error_context=error_context)
             if next_entry is not None:
                 logger.info(f"Credential 402 (billing) — rotated to pool entry {getattr(next_entry, 'id', '?')}")

@@ -1886,6 +1886,24 @@ def _get_task_timeout(task: str, default: float = _DEFAULT_AUX_TIMEOUT) -> float
     return default
 
 
+def _default_aux_max_tokens(task: Optional[str] = None) -> int:
+    """Return a safe default output budget for auxiliary LLM calls.
+
+    Auxiliary helpers should not inherit the provider/model native output cap
+    (e.g. Claude Sonnet 4.6 via OpenRouter defaults to 64k), because a single
+    summarization or vision request can then trip budget-based 402 errors like
+    "requested up to 64000 tokens, but can only afford ...". Those requests are
+    almost never intended to emit tens of thousands of tokens.
+
+    Keep the default modest for latency/cost, with slightly larger budgets for
+    tasks that legitimately produce longer prose.
+    """
+    task_name = (task or "").strip().lower()
+    if task_name in {"vision", "web_extract", "mcp"}:
+        return 8192
+    return 4096
+
+
 def _build_call_kwargs(
     provider: str,
     model: str,
@@ -1896,6 +1914,7 @@ def _build_call_kwargs(
     timeout: float = 30.0,
     extra_body: Optional[dict] = None,
     base_url: Optional[str] = None,
+    task: Optional[str] = None,
 ) -> dict:
     """Build kwargs for .chat.completions.create() with model/provider adjustments."""
     kwargs: Dict[str, Any] = {
@@ -1907,17 +1926,18 @@ def _build_call_kwargs(
     if temperature is not None:
         kwargs["temperature"] = temperature
 
-    if max_tokens is not None:
+    effective_max_tokens = max_tokens if max_tokens is not None else _default_aux_max_tokens(task)
+    if effective_max_tokens is not None:
         # Codex adapter handles max_tokens internally; OpenRouter/Nous use max_tokens.
         # Direct OpenAI api.openai.com with newer models needs max_completion_tokens.
         if provider == "custom":
             custom_base = base_url or _current_custom_base_url()
             if "api.openai.com" in custom_base.lower():
-                kwargs["max_completion_tokens"] = max_tokens
+                kwargs["max_completion_tokens"] = effective_max_tokens
             else:
-                kwargs["max_tokens"] = max_tokens
+                kwargs["max_tokens"] = effective_max_tokens
         else:
-            kwargs["max_tokens"] = max_tokens
+            kwargs["max_tokens"] = effective_max_tokens
 
     if tools:
         kwargs["tools"] = tools
@@ -2042,7 +2062,7 @@ def call_llm(
         resolved_provider, final_model, messages,
         temperature=temperature, max_tokens=max_tokens,
         tools=tools, timeout=effective_timeout, extra_body=extra_body,
-        base_url=resolved_base_url)
+        base_url=resolved_base_url, task=task)
 
     # Handle max_tokens vs max_completion_tokens retry, then payment fallback.
     try:
@@ -2074,7 +2094,7 @@ def call_llm(
                     fb_label, fb_model, messages,
                     temperature=temperature, max_tokens=max_tokens,
                     tools=tools, timeout=effective_timeout,
-                    extra_body=extra_body)
+                    extra_body=extra_body, task=task)
                 return fb_client.chat.completions.create(**fb_kwargs)
         raise
 
@@ -2213,7 +2233,7 @@ async def async_call_llm(
         resolved_provider, final_model, messages,
         temperature=temperature, max_tokens=max_tokens,
         tools=tools, timeout=effective_timeout, extra_body=extra_body,
-        base_url=resolved_base_url)
+        base_url=resolved_base_url, task=task)
 
     try:
         return await client.chat.completions.create(**kwargs)

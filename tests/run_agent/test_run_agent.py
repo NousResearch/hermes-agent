@@ -2013,7 +2013,7 @@ class TestNousCredentialRefresh:
 
 
 class TestCredentialPoolRecovery:
-    def test_recover_with_pool_rotates_on_402(self, agent):
+    def test_recover_with_pool_rotates_on_hard_402(self, agent):
         current = SimpleNamespace(label="primary")
         next_entry = SimpleNamespace(label="secondary")
 
@@ -2023,7 +2023,7 @@ class TestCredentialPoolRecovery:
 
             def mark_exhausted_and_rotate(self, *, status_code, error_context=None):
                 assert status_code == 402
-                assert error_context is None
+                assert error_context == {"message": "Payment Required: insufficient credits"}
                 return next_entry
 
         agent._credential_pool = _Pool()
@@ -2032,11 +2032,32 @@ class TestCredentialPoolRecovery:
         recovered, retry_same = agent._recover_with_credential_pool(
             status_code=402,
             has_retried_429=False,
+            error_context={"message": "Payment Required: insufficient credits"},
         )
 
         assert recovered is True
         assert retry_same is False
         agent._swap_credential.assert_called_once_with(next_entry)
+
+    def test_recover_with_pool_does_not_rotate_on_soft_402_affordability(self, agent):
+        class _Pool:
+            def mark_exhausted_and_rotate(self, *, status_code, error_context=None):
+                raise AssertionError("soft affordability 402 must not exhaust the credential")
+
+        agent._credential_pool = _Pool()
+        agent._swap_credential = MagicMock()
+
+        recovered, retry_same = agent._recover_with_credential_pool(
+            status_code=402,
+            has_retried_429=False,
+            error_context={
+                "message": "This request requires more credits, or fewer max_tokens. You requested up to 64000 tokens, but can only afford 50785.",
+            },
+        )
+
+        assert recovered is False
+        assert retry_same is False
+        agent._swap_credential.assert_not_called()
 
     def test_recover_with_pool_retries_first_429_then_rotates(self, agent):
         next_entry = SimpleNamespace(label="secondary")

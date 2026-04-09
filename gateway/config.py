@@ -63,6 +63,7 @@ class Platform(Enum):
     WEBHOOK = "webhook"
     FEISHU = "feishu"
     WECOM = "wecom"
+    BLUEBUBBLES = "bluebubbles"
 
 
 @dataclass
@@ -286,6 +287,9 @@ class GatewayConfig:
                 connected.append(platform)
             # WeCom uses extra dict for bot credentials
             elif platform == Platform.WECOM and config.extra.get("bot_id"):
+                connected.append(platform)
+            # BlueBubbles uses extra dict for local server config
+            elif platform == Platform.BLUEBUBBLES and config.extra.get("server_url") and config.extra.get("password"):
                 connected.append(platform)
         return connected
     
@@ -947,6 +951,29 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 chat_id=wecom_home,
                 name=os.getenv("WECOM_HOME_CHANNEL_NAME", "Home"),
             )
+
+    # BlueBubbles (iMessage)
+    bluebubbles_server_url = os.getenv("BLUEBUBBLES_SERVER_URL")
+    bluebubbles_password = os.getenv("BLUEBUBBLES_PASSWORD")
+    if bluebubbles_server_url and bluebubbles_password:
+        if Platform.BLUEBUBBLES not in config.platforms:
+            config.platforms[Platform.BLUEBUBBLES] = PlatformConfig()
+        config.platforms[Platform.BLUEBUBBLES].enabled = True
+        config.platforms[Platform.BLUEBUBBLES].extra.update({
+            "server_url": bluebubbles_server_url.rstrip("/"),
+            "password": bluebubbles_password,
+            "webhook_host": os.getenv("BLUEBUBBLES_WEBHOOK_HOST", "127.0.0.1"),
+            "webhook_port": int(os.getenv("BLUEBUBBLES_WEBHOOK_PORT", "8645")),
+            "webhook_path": os.getenv("BLUEBUBBLES_WEBHOOK_PATH", "/bluebubbles-webhook"),
+            "send_read_receipts": os.getenv("BLUEBUBBLES_SEND_READ_RECEIPTS", "true").lower() in ("true", "1", "yes"),
+        })
+    bluebubbles_home = os.getenv("BLUEBUBBLES_HOME_CHANNEL")
+    if bluebubbles_home and Platform.BLUEBUBBLES in config.platforms:
+        config.platforms[Platform.BLUEBUBBLES].home_channel = HomeChannel(
+            platform=Platform.BLUEBUBBLES,
+            chat_id=bluebubbles_home,
+            name=os.getenv("BLUEBUBBLES_HOME_CHANNEL_NAME", "Home"),
+        )
 
     # Session settings
     idle_minutes = os.getenv("SESSION_IDLE_MINUTES")

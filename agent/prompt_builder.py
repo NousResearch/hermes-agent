@@ -216,6 +216,30 @@ COUNCIL_DIRECTIVE = (
 # local Playwright MCP for simple public lookups.  Matches the description
 # rules inside tools/browser_tool.py::browser_navigate so all three layers
 # (system prompt, tool description, tool docstring) tell the LLM the same thing.
+# Browser scroll-loop escape — injected when any browser_* tool is loaded.
+# Catches a common failure mode where the LLM calls
+# ``browser_snapshot`` + ``browser_scroll`` repeatedly on a JS-heavy page
+# (tables, financial data, grids) without finding the target data, wasting
+# tool turns and — with cloud routing — real money. Seen empirically on
+# screener.in during the 2026-04-09 routing smoke test (22 tool calls,
+# eventually fell back to ``web_extract`` anyway).
+BROWSER_FALLBACK_GUIDANCE = (
+    "# Browser loop escape\n"
+    "If you call `browser_snapshot` + `browser_scroll` 2-3 times in a row "
+    "and the returned content looks similar each time (same headings, same "
+    "first elements, no new data), STOP SCROLLING. The data you need is "
+    "probably not in the accessibility tree at all — it's in JS-rendered "
+    "tables that the snapshot doesn't capture. Switch to:\n"
+    "  1. `browser_snapshot(full=true)` for the complete tree — the compact "
+    "view truncates table content on data-heavy pages.\n"
+    "  2. If that still doesn't show the data, call `web_extract(url)` for "
+    "clean markdown of the rendered page — works well for financial sites, "
+    "article pages, and anywhere the interesting data is in tables.\n"
+    "Do NOT loop more than 5 times on scroll-based exploration. Each cloud "
+    "`browser_navigate` costs real money (~$0.06), so wasted loops compound."
+)
+
+
 BROWSER_ROUTING_GUIDANCE = (
     "# Browser tool routing (IMPORTANT — affects cost and performance)\n"
     "A paid cloud browser provider is configured. Each `browser_navigate` call "

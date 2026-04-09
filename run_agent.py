@@ -79,7 +79,7 @@ from hermes_constants import OPENROUTER_BASE_URL
 from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY, PLATFORM_HINTS,
     MEMORY_GUIDANCE, SESSION_SEARCH_GUIDANCE, SKILLS_GUIDANCE, CONTEXT_GRAPH_GUIDANCE, KB_WIKI_GUIDANCE,
-    COUNCIL_DIRECTIVE, BROWSER_ROUTING_GUIDANCE,
+    COUNCIL_DIRECTIVE, BROWSER_ROUTING_GUIDANCE, BROWSER_FALLBACK_GUIDANCE,
     build_nous_subscription_prompt,
 )
 from agent.model_metadata import (
@@ -2803,6 +2803,15 @@ class AIAgent:
             except Exception:
                 # Never fail prompt assembly on an optional guidance block.
                 pass
+        # Browser fallback guidance — injected whenever any browser_* tool is
+        # loaded, cloud or local.  Catches the scroll-loop failure mode
+        # independent of the routing decision.
+        if (
+            "browser_navigate" in self.valid_tool_names
+            or "browser_snapshot" in self.valid_tool_names
+            or "mcp_playwright_browser_navigate" in self.valid_tool_names
+        ):
+            tool_guidance.append(BROWSER_FALLBACK_GUIDANCE)
         if tool_guidance:
             prompt_parts.append(" ".join(tool_guidance))
 

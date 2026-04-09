@@ -6308,7 +6308,15 @@ class GatewayRunner:
         # Falls back to env vars for backward compatibility.
         # YAML 1.1 parses bare `off` as boolean False — normalise before
         # the `or` chain so it doesn't silently fall through to "all".
-        _raw_tp = user_config.get("display", {}).get("tool_progress")
+        #
+        # Per-platform overrides (display.tool_progress_overrides) take
+        # priority over the global setting — e.g. Signal users can set
+        # tool_progress to "off" while keeping Telegram on "all".
+        _display_cfg = user_config.get("display", {})
+        _overrides = _display_cfg.get("tool_progress_overrides", {})
+        _raw_tp = _overrides.get(platform_key)
+        if _raw_tp is None:
+            _raw_tp = _display_cfg.get("tool_progress")
         if _raw_tp is False:
             _raw_tp = "off"
         progress_mode = (

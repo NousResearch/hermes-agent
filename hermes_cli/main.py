@@ -5468,25 +5468,25 @@ For more help on a command:
     acp_parser.set_defaults(func=cmd_acp)
 
     # =========================================================================
-    # memory command
+    # memory-db command
     # =========================================================================
-    memory_parser = subparsers.add_parser(
-        "memory",
+    memory_db_parser = subparsers.add_parser(
+        "memory-db",
         help="Manage local persistent memory snapshots",
         description="Export, import, or inspect Hermes local persistent memory.",
     )
-    memory_subparsers = memory_parser.add_subparsers(dest="memory_action")
-    memory_export = memory_subparsers.add_parser("export", help="Export local memory to a portable JSON snapshot")
-    memory_export.add_argument("-o", "--output", default=None, help="Output file (default: ~/.hermes/memory-snapshot.json)")
-    memory_import = memory_subparsers.add_parser("import", help="Import a portable JSON snapshot into local memory")
-    memory_import.add_argument("-i", "--input", required=True, help="Snapshot file to import")
-    memory_subparsers.add_parser("status", help="Show local memory database/export status")
+    memory_db_subparsers = memory_db_parser.add_subparsers(dest="memory_action")
+    memory_db_export = memory_db_subparsers.add_parser("export", help="Export local memory to a portable JSON snapshot")
+    memory_db_export.add_argument("-o", "--output", default=None, help="Output file (default: ~/.hermes/memory-snapshot.json)")
+    memory_db_import = memory_db_subparsers.add_parser("import", help="Import a portable JSON snapshot into local memory")
+    memory_db_import.add_argument("-i", "--input", required=True, help="Snapshot file to import")
+    memory_db_subparsers.add_parser("status", help="Show local memory database/export status")
 
-    def cmd_memory(args):
+    def cmd_memory_db(args):
         from hermes_cli.memory_cli import memory_command
         memory_command(args)
 
-    memory_parser.set_defaults(func=cmd_memory)
+    memory_db_parser.set_defaults(func=cmd_memory_db)
 
     # =========================================================================
     # profile command

@@ -1299,12 +1299,13 @@ class SessionDB:
                     continue
                 visited.add(sid)
 
-                children = [r[0] for r in conn.execute(
+                child_rows = conn.execute(
                     "SELECT id, ended_at FROM sessions WHERE parent_session_id = ?",
                     (sid,),
-                ).fetchall()]
+                ).fetchall()
 
-                for child_id, child_ended in children:
+                for row in child_rows:
+                    child_id, child_ended = row[0], row[1]
                     if child_ended is not None:
                         # Ended child — delete it too
                         depth[child_id] = depth[sid] + 1

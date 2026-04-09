@@ -429,6 +429,72 @@ def test_stream_chatgpt_web_completion_parses_patch_events(monkeypatch):
 
 
 
+def test_stream_chatgpt_web_completion_parses_patch_events_without_outer_op(monkeypatch):
+    from hermes_cli.chatgpt_web import stream_chatgpt_web_completion
+
+    deltas = []
+
+    class _JSONResponse:
+        def __init__(self, payload, status_code=200):
+            self._payload = payload
+            self.status_code = status_code
+
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                raise httpx.HTTPStatusError("boom", request=None, response=None)
+
+        def json(self):
+            return self._payload
+
+    class _StreamResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def raise_for_status(self):
+            return None
+
+        def iter_lines(self):
+            yield 'data: "v1"'
+            yield 'data: {"conversation_id":"conv_789","type":"resume_conversation_token"}'
+            yield 'data: {"v":{"message":{"id":"msg_789","author":{"role":"assistant"},"content":{"content_type":"text","parts":[""]},"status":"in_progress","metadata":{}}}}'
+            yield 'data: {"o":"patch","v":[{"p":"/message/content/parts/0","o":"append","v":"Yes,"}]}'
+            yield 'data: {"v":[{"p":"/message/content/parts/0","o":"append","v":" tools are active"}]}'
+            yield 'data: {"v":[{"p":"/message/content/parts/0","o":"append","v":" and ready."},{"p":"/message/status","o":"replace","v":"finished_successfully"}]}'
+            yield 'data: {"type":"message_stream_complete","conversation_id":"conv_789"}'
+            yield 'data: [DONE]'
+
+    class _Client:
+        def post(self, url, headers=None, json=None):
+            if url.endswith("/conversation/prepare"):
+                return _JSONResponse({"conduit_token": "conduit-789"})
+            if url.endswith("/sentinel/chat-requirements"):
+                return _JSONResponse({"token": "***", "proofofwork": {}})
+            raise AssertionError(f"unexpected POST {url}")
+
+        def stream(self, method, url, headers=None, json=None):
+            assert method == "POST"
+            assert url.endswith("/conversation")
+            return _StreamResponse()
+
+    result = stream_chatgpt_web_completion(
+        access_token="chatgpt-web-token",
+        model="gpt-5-thinking",
+        messages=[{"role": "user", "content": "hello"}],
+        on_delta=deltas.append,
+        client=_Client(),
+        history_and_training_disabled=True,
+    )
+
+    assert result["content"] == "Yes, tools are active and ready."
+    assert result["conversation_id"] == "conv_789"
+    assert result["message_id"] == "msg_789"
+    assert deltas == ["Yes,", " tools are active", " and ready."]
+
+
+
 def test_stream_chatgpt_web_completion_tolerates_protocol_close_after_completion(monkeypatch):
     from hermes_cli.chatgpt_web import stream_chatgpt_web_completion
 

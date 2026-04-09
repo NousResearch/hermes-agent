@@ -99,6 +99,95 @@ class TestAgentConfigSignature:
         assert sig1 == sig2
 
 
+class TestNewSessionCacheEviction:
+    """Fresh sessions must not reuse a cached agent from the previous session."""
+
+    def test_evicts_for_brand_new_session_entry(self):
+        from datetime import datetime
+        from types import SimpleNamespace
+
+        runner = _make_runner()
+        session_key = "telegram:12345"
+        with runner._agent_cache_lock:
+            runner._agent_cache[session_key] = ("agent", "sig")
+
+        entry = SimpleNamespace(
+            created_at=datetime(2026, 4, 9, 18, 0, 0),
+            updated_at=datetime(2026, 4, 9, 18, 0, 0),
+            was_auto_reset=False,
+        )
+
+        runner._evict_cached_agent_for_new_session(session_key, entry)
+
+        with runner._agent_cache_lock:
+            assert session_key not in runner._agent_cache
+
+    def test_evicts_for_auto_reset_session_entry(self):
+        from datetime import datetime
+        from types import SimpleNamespace
+
+        runner = _make_runner()
+        session_key = "telegram:12345"
+        with runner._agent_cache_lock:
+            runner._agent_cache[session_key] = ("agent", "sig")
+
+        entry = SimpleNamespace(
+            created_at=datetime(2026, 4, 9, 17, 0, 0),
+            updated_at=datetime(2026, 4, 9, 17, 5, 0),
+            was_auto_reset=True,
+        )
+
+        runner._evict_cached_agent_for_new_session(session_key, entry)
+
+        with runner._agent_cache_lock:
+            assert session_key not in runner._agent_cache
+
+    def test_keeps_cached_agent_for_continuing_session(self):
+        from datetime import datetime
+        from types import SimpleNamespace
+
+        runner = _make_runner()
+        session_key = "telegram:12345"
+        with runner._agent_cache_lock:
+            runner._agent_cache[session_key] = ("agent", "sig")
+
+        entry = SimpleNamespace(
+            created_at=datetime(2026, 4, 9, 17, 0, 0),
+            updated_at=datetime(2026, 4, 9, 18, 0, 0),
+            was_auto_reset=False,
+        )
+
+        runner._evict_cached_agent_for_new_session(session_key, entry)
+
+        with runner._agent_cache_lock:
+            assert session_key in runner._agent_cache
+
+    def test_new_session_same_session_key_drops_stale_cached_identity(self):
+        from datetime import datetime
+        from types import SimpleNamespace
+
+        runner = _make_runner()
+        session_key = "feishu:oc_123"
+        stale_agent = SimpleNamespace(
+            session_id="old-session",
+            _cached_system_prompt="You are Hermes Agent, an intelligent AI assistant created by Nous Research.",
+        )
+        with runner._agent_cache_lock:
+            runner._agent_cache[session_key] = (stale_agent, "sig")
+
+        fresh_entry = SimpleNamespace(
+            created_at=datetime(2026, 4, 9, 18, 0, 0),
+            updated_at=datetime(2026, 4, 9, 18, 0, 0),
+            was_auto_reset=False,
+            session_id="new-session",
+        )
+
+        runner._evict_cached_agent_for_new_session(session_key, fresh_entry)
+
+        with runner._agent_cache_lock:
+            assert session_key not in runner._agent_cache
+
+
 class TestAgentCacheLifecycle:
     """End-to-end cache behavior with real AIAgent construction."""
 

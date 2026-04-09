@@ -2329,6 +2329,7 @@ class GatewayRunner:
         # Get or create session
         session_entry = self.session_store.get_or_create_session(source)
         session_key = session_entry.session_key
+        self._evict_cached_agent_for_new_session(session_key, session_entry)
         
         # Emit session:start for new or auto-reset sessions
         _is_new_session = (
@@ -5168,6 +5169,10 @@ class GatewayRunner:
         if session_key in self._running_agents:
             del self._running_agents[session_key]
 
+        # Switching to a different stored session must not reuse the cached
+        # agent from the previous session_key occupant.
+        self._evict_cached_agent(session_key)
+
         # Switch the session entry to point at the old session
         new_entry = self.session_store.switch_session(session_key, target_id)
         if not new_entry:
@@ -6285,10 +6290,34 @@ class GatewayRunner:
 
     def _evict_cached_agent(self, session_key: str) -> None:
         """Remove a cached agent for a session (called on /new, /model, etc)."""
+        _cache = getattr(self, "_agent_cache", None)
+        if _cache is None:
+            return
         _lock = getattr(self, "_agent_cache_lock", None)
         if _lock:
             with _lock:
-                self._agent_cache.pop(session_key, None)
+                _cache.pop(session_key, None)
+        else:
+            _cache.pop(session_key, None)
+
+    def _evict_cached_agent_for_new_session(self, session_key: str, session_entry) -> None:
+        """Drop any cached agent when a fresh session entry replaces an old one.
+
+        The gateway cache is keyed by session_key (chat/thread identity), not by
+        session_id. When a DM auto-resets due to inactivity, or when a brand-new
+        session is created for an existing session_key, reusing the cached agent
+        would keep the previous session_id and frozen system prompt alive.
+        That can make a fresh conversation inherit stale identity/context.
+        """
+        if not session_entry:
+            return
+
+        is_new_session = (
+            session_entry.created_at == session_entry.updated_at
+            or getattr(session_entry, "was_auto_reset", False)
+        )
+        if is_new_session:
+            self._evict_cached_agent(session_key)
 
     async def _run_agent(
         self,

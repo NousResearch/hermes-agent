@@ -201,6 +201,33 @@ class TestHandleResumeCommand:
         db.close()
 
     @pytest.mark.asyncio
+    async def test_resume_evicts_cached_agent(self, tmp_path):
+        """Switching sessions must evict the cached agent for that session key."""
+        from hermes_state import SessionDB
+        from gateway.run import GatewayRunner
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("old_session", "telegram")
+        db.set_session_title("old_session", "Old Work")
+        db.create_session("current_session_001", "telegram")
+
+        event = _make_event(text="/resume Old Work")
+        runner = _make_runner(
+            session_db=db,
+            current_session_id="current_session_001",
+            event=event,
+        )
+        real_key = _session_key_for_event(event)
+        runner._agent_cache = {real_key: ("cached-agent", "sig")}
+        runner._agent_cache_lock = None
+        runner._evict_cached_agent = GatewayRunner._evict_cached_agent.__get__(runner, GatewayRunner)
+
+        await runner._handle_resume_command(event)
+
+        assert real_key not in runner._agent_cache
+        db.close()
+
+    @pytest.mark.asyncio
     async def test_resume_flushes_memories(self, tmp_path):
         """Resume should flush memories from the current session before switching."""
         from hermes_state import SessionDB

@@ -1767,8 +1767,9 @@ class DiscordAdapter(BasePlatformAdapter):
             if hasattr(interaction.channel, "guild") and interaction.channel.guild:
                 chat_name = f"{interaction.channel.guild.name} / #{chat_name}"
 
-        # Get channel topic (if available)
-        chat_topic = getattr(interaction.channel, "topic", None)
+        # Get channel topic (if available).
+        # For forum threads, inherit the parent forum's topic.
+        chat_topic = self._get_effective_topic(interaction.channel, is_thread=is_thread)
 
         source = self.build_source(
             chat_id=str(interaction.channel_id),
@@ -1842,6 +1843,10 @@ class DiscordAdapter(BasePlatformAdapter):
 
         chat_name = f"{guild_name} / {thread_name}" if guild_name else thread_name
 
+        # Inherit forum topic when the thread was created inside a forum channel.
+        _chan = getattr(interaction, "channel", None)
+        chat_topic = self._get_effective_topic(_chan, is_thread=True) if _chan else None
+
         source = self.build_source(
             chat_id=thread_id,
             chat_name=chat_name,
@@ -1849,6 +1854,7 @@ class DiscordAdapter(BasePlatformAdapter):
             user_id=str(interaction.user.id),
             user_name=interaction.user.display_name,
             thread_id=thread_id,
+            chat_topic=chat_topic,
         )
 
         event = MessageEvent(
@@ -2134,6 +2140,15 @@ class DiscordAdapter(BasePlatformAdapter):
                 return True
         return False
 
+    def _get_effective_topic(self, channel: Any, is_thread: bool = False) -> Optional[str]:
+        """Return the channel topic, falling back to the parent forum's topic for forum threads."""
+        topic = getattr(channel, "topic", None)
+        if not topic and is_thread:
+            parent = getattr(channel, "parent", None)
+            if parent and self._is_forum_parent(parent):
+                topic = getattr(parent, "topic", None)
+        return topic
+
     def _format_thread_chat_name(self, thread: Any) -> str:
         """Build a readable chat name for thread-like Discord channels, including forum context when available."""
         thread_name = getattr(thread, "name", None) or str(getattr(thread, "id", "thread"))
@@ -2301,8 +2316,10 @@ class DiscordAdapter(BasePlatformAdapter):
             if hasattr(message.channel, "guild") and message.channel.guild:
                 chat_name = f"{message.channel.guild.name} / #{chat_name}"
 
-        # Get channel topic (if available - TextChannels have topics, DMs/threads don't)
-        chat_topic = getattr(message.channel, "topic", None)
+        # Get channel topic (if available - TextChannels have topics, DMs/threads don't).
+        # For threads whose parent is a forum channel, inherit the parent's topic
+        # so forum descriptions (e.g. project instructions) appear in the session context.
+        chat_topic = self._get_effective_topic(message.channel, is_thread=is_thread)
 
         # Build source
         source = self.build_source(

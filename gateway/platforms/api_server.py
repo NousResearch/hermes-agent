@@ -1398,7 +1398,34 @@ class APIServerAdapter(BasePlatformAdapter):
         if not raw_input:
             return web.json_response(_openai_error("Missing 'input' field"), status=400)
 
-        user_message = raw_input if isinstance(raw_input, str) else (raw_input[-1].get("content", "") if isinstance(raw_input, list) else "")
+        def _normalize_content(content: Any) -> str:
+            if isinstance(content, str):
+                return content
+            if not isinstance(content, list):
+                return ""
+
+            text_parts: List[str] = []
+            for part in content:
+                if isinstance(part, str):
+                    text_parts.append(part)
+                    continue
+                if not isinstance(part, dict):
+                    continue
+
+                ptype = part.get("type")
+                if ptype in {"text", "input_text", "output_text"}:
+                    text_parts.append(part.get("text", ""))
+
+            return "\n".join(part for part in text_parts if part)
+
+        raw_user_content: Any = raw_input
+        user_message = raw_input if isinstance(raw_input, str) else (
+            _normalize_content(raw_input[-1].get("content", "")) if isinstance(raw_input, list) and raw_input else ""
+        )
+        if isinstance(raw_input, list) and raw_input:
+            last_item = raw_input[-1]
+            if isinstance(last_item, dict):
+                raw_user_content = last_item.get("content", "")
         if not user_message:
             return web.json_response(_openai_error("No user message found in input"), status=400)
 
@@ -1481,8 +1508,15 @@ class APIServerAdapter(BasePlatformAdapter):
                     tool_progress_callback=event_cb,
                 )
                 def _run_sync():
+                    effective_user_message = user_message
+                    if isinstance(raw_user_content, list) and hasattr(agent, "_preprocess_anthropic_content"):
+                        try:
+                            effective_user_message = agent._preprocess_anthropic_content(raw_user_content, "user")
+                        except Exception:
+                            effective_user_message = _normalize_content(raw_user_content)
+
                     r = agent.run_conversation(
-                        user_message=user_message,
+                        user_message=effective_user_message,
                         conversation_history=conversation_history,
                     )
                     u = {

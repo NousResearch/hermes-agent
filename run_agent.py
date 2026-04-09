@@ -66,7 +66,7 @@ from model_tools import (
     handle_function_call,
     check_toolset_requirements,
 )
-from tools.terminal_tool import cleanup_vm, get_active_env
+from tools.terminal_tool import cleanup_vm, get_active_env, is_persistent_env
 from tools.tool_result_storage import maybe_persist_tool_result, enforce_turn_budget
 from tools.interrupt import set_interrupt as _set_interrupt
 from tools.browser_tool import cleanup_browser
@@ -1695,9 +1695,25 @@ class AIAgent:
         return None
 
     def _cleanup_task_resources(self, task_id: str) -> None:
-        """Clean up VM and browser resources for a given task."""
+        """Clean up VM and browser resources for a given task.
+
+        Skips ``cleanup_vm`` when the active terminal environment is marked
+        persistent (``persistent_filesystem=True``) so that long-lived sandbox
+        containers survive between turns. The idle reaper in
+        ``terminal_tool._cleanup_inactive_envs`` still tears them down once
+        ``terminal.lifetime_seconds`` is exceeded. Non-persistent backends are
+        torn down per-turn as before to prevent resource leakage (the original
+        intent of this hook for the Morph backend, see commit fbd3a2fd).
+        """
         try:
-            cleanup_vm(task_id)
+            if is_persistent_env(task_id):
+                if self.verbose_logging:
+                    logging.debug(
+                        f"Skipping per-turn cleanup_vm for persistent env {task_id}; "
+                        f"idle reaper will handle it."
+                    )
+            else:
+                cleanup_vm(task_id)
         except Exception as e:
             if self.verbose_logging:
                 logging.warning(f"Failed to cleanup VM for task {task_id}: {e}")

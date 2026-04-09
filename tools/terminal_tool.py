@@ -814,6 +814,23 @@ def get_active_env(task_id: str):
         return _active_environments.get(task_id)
 
 
+def is_persistent_env(task_id: str) -> bool:
+    """Return True if the active environment for task_id is configured for
+    cross-turn persistence (``persistent_filesystem=True``).
+
+    Used by the agent loop to skip per-turn teardown for backends whose whole
+    point is to survive between turns (docker with ``container_persistent``,
+    daytona, modal, etc.). Non-persistent backends (e.g. Morph) still get torn
+    down at end-of-turn to prevent leakage. The idle reaper
+    (``_cleanup_inactive_envs``) handles persistent envs once they exceed
+    ``terminal.lifetime_seconds``.
+    """
+    env = get_active_env(task_id)
+    if env is None:
+        return False
+    return bool(getattr(env, "_persistent", False))
+
+
 def get_active_environments_info() -> Dict[str, Any]:
     """Get information about currently active environments."""
     info = {

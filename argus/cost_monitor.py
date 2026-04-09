@@ -275,7 +275,7 @@ class CostMonitor:
         if not budget_config["enabled"]:
             return {"enabled": False}
         
-        results = {
+        results: Dict[str, Any] = {
             "enabled": True,
             "timestamp": datetime.now().isoformat(),
             "daily_budget": self.check_daily_budget(),
@@ -284,8 +284,10 @@ class CostMonitor:
         }
         
         # Determine overall alert status
+        daily = results.get("daily_budget", {})
+        daily_alert = daily.get("alert", False) if isinstance(daily, dict) else False
         has_alert = (
-            results["daily_budget"].get("alert", False)
+            daily_alert
             or len(results["provider_alerts"]) > 0
             or len(results["expensive_sessions"]) > 0
         )

@@ -69,20 +69,20 @@ class CircuitBreaker:
         self.cursor = cursor
         self.conn = conn
         self.config = config or {}
+        self._hermes_available: Optional[bool] = None
         self._ensure_table()
-        self._hermes_config_available = None
     
-    def _hermes_config_available(self) -> bool:
+    def _check_hermes_available(self) -> bool:
         """Check if we can import Hermes config functions."""
-        if self._hermes_config_available is not None:
-            return self._hermes_config_available
+        if self._hermes_available is not None:
+            return self._hermes_available
         try:
             from hermes_cli.config import load_config, save_config
-            self._hermes_config_available = True
+            self._hermes_available = True
             return True
         except ImportError:
-            logger.warning("Hermes config functions unavailable - circuit breaker limited to monitoring only")
-            self._hermes_config_available = False
+            logger.warning("Hermes config unavailable - monitoring only")
+            self._hermes_available = False
             return False
     
     def _ensure_table(self):
@@ -124,8 +124,7 @@ class CircuitBreaker:
         }
     
     def _get_provider_routing_from_hermes(self) -> Dict[str, Any]:
-        """Read current provider_routing from Hermes config."""
-        if not self._hermes_config_available():
+        if not self._check_hermes_available():
             return {}
         try:
             from hermes_cli.config import load_config
@@ -136,8 +135,7 @@ class CircuitBreaker:
             return {}
     
     def _save_provider_routing_to_hermes(self, routing: Dict[str, Any]) -> bool:
-        """Save updated provider_routing to Hermes config."""
-        if not self._hermes_config_available():
+        if not self._check_hermes_available():
             return False
         try:
             from hermes_cli.config import load_config, save_config
@@ -313,22 +311,23 @@ class CircuitBreaker:
             
             elif current_state == CircuitState.OPEN:
                 # Check if recovery timeout passed
-                opened_at = circuit.get("opened_at")
-                if opened_at:
-                    opened_time = datetime.fromisoformat(opened_at)
-                    elapsed = (datetime.now() - opened_time).total_seconds()
-                    
-                    if elapsed >= cb_config["recovery_timeout"]:
-                        # Transition to half-open
-                        self.set_circuit_state(provider, CircuitState.HALF_OPEN)
-                        self._remove_provider_from_ignore(provider, routing)
-                        if self._save_provider_routing_to_hermes(routing):
-                            logger.info("Circuit HALF_OPEN for %s (after %.0fs)", provider, elapsed)
-                            # No notification for half-open (testing phase)
+                if circuit:
+                    opened_at = circuit.get("opened_at")
+                    if opened_at:
+                        opened_time = datetime.fromisoformat(opened_at)
+                        elapsed = (datetime.now() - opened_time).total_seconds()
+                        
+                        if elapsed >= cb_config["recovery_timeout"]:
+                            # Transition to half-open
+                            self.set_circuit_state(provider, CircuitState.HALF_OPEN)
+                            self._remove_provider_from_ignore(provider, routing)
+                            if self._save_provider_routing_to_hermes(routing):
+                                logger.info("Circuit HALF_OPEN for %s (after %.0fs)", provider, elapsed)
+                                # No notification for half-open (testing phase)
             
             elif current_state == CircuitState.HALF_OPEN:
                 # Check if enough successes to close
-                half_open_successes = circuit.get("half_open_successes", 0)
+                half_open_successes = circuit.get("half_open_successes", 0) if circuit else 0
                 
                 if half_open_successes >= cb_config["half_open_requests"]:
                     # Close the circuit

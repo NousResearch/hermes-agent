@@ -16,7 +16,8 @@ logger = logging.getLogger("argus.cost_monitor")
 
 
 # Default budget settings (user overrides in config.yaml)
-_DEFAULT_DAILY_BUDGET = 10.0  # USD
+# Note: cost_monitoring is disabled by default in config - user must explicitly enable
+_DEFAULT_DAILY_BUDGET = 20.0  # USD - default if user enables cost_monitoring
 _DEFAULT_ALERT_PERCENT = 80  # Alert at 80% of budget
 _DEFAULT_EXPENSIVE_SESSION_THRESHOLD = 2.0  # USD
 

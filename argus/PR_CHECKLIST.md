@@ -65,8 +65,8 @@ Budget and cost alerts using Hermes insights (no tracking duplication).
 ```yaml
 argus:
   cost_monitoring:
-    enabled: true
-    daily_budget: 10.00              # User sets their budget
+    enabled: true                    # Disabled by default - set to true to enable
+    daily_budget: 20.00              # Default $20 (only applies if enabled)
     alert_at_percent: 80             # Alert threshold
     expensive_session_threshold: 2.00
     per_provider_limits:             # Optional, auto-populated
@@ -75,11 +75,12 @@ argus:
 ```
 
 **How it works:**
-1. Discovers providers dynamically from session history
-2. Queries Hermes insights engine for current spend
-3. Alerts on: daily budget, per-provider limits, expensive sessions
-4. Records alerts to audit trail
-5. Sends notifications if enabled
+1. Disabled by default - user must explicitly enable in config.yaml
+2. Discovers providers dynamically from session history
+3. Queries Hermes insights engine for current spend
+4. Alerts on: daily budget, per-provider limits, expensive sessions
+5. Records alerts to audit trail
+6. Sends notifications if enabled
 
 **No hardcoded providers** - works with any provider the user configures.
 

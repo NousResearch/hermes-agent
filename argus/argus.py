@@ -171,10 +171,10 @@ _DEFAULT_ARGUS_CONFIG = {
     "ml_data_enabled": False,             # Export trajectories to ~/.hermes/argus/ml_data/
     "ml_memory_enabled": False,           # Record to holographic memory
     
-    # Cost monitoring configuration (user-populated based on their providers)
+    # Cost monitoring configuration (disabled by default, user enables if desired)
     "cost_monitoring": {
-        "enabled": True,
-        "daily_budget": 10.00,              # USD - user sets based on their budget
+        "enabled": False,                   # Disabled by default - user enables in config.yaml
+        "daily_budget": 20.00,              # USD - default $20 if enabled
         "alert_at_percent": 80,             # Alert at 80% of budget
         "expensive_session_threshold": 2.00,  # Alert on single session >$2
         "per_provider_limits": {},          # Auto-populated from discover_providers()

@@ -948,6 +948,11 @@ def _run_browser_command(
             proc.wait()
             logger.warning("browser '%s' timed out after %ds (task=%s, socket_dir=%s)",
                            command, timeout, task_id, task_socket_dir)
+            for p in (stdout_path, stderr_path):
+                try:
+                    os.unlink(p)
+                except OSError:
+                    pass
             return {"success": False, "error": f"Command timed out after {timeout} seconds"}
 
         with open(stdout_path, "r") as f:
@@ -970,9 +975,13 @@ def _run_browser_command(
         
         # Log empty output as warning — common sign of broken agent-browser
         if not stdout.strip() and returncode == 0:
+            safe_cmd = " ".join(
+                "ws://[REDACTED]" if p.startswith(("ws://", "wss://")) else p
+                for p in cmd_parts[:4]
+            ) + "..."
             logger.warning("browser '%s' returned empty stdout with rc=0. "
                            "cmd=%s stderr=%s",
-                           command, " ".join(cmd_parts[:4]) + "...",
+                           command, safe_cmd,
                            (stderr or "")[:200])
 
         stdout_text = stdout.strip()

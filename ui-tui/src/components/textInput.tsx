@@ -48,11 +48,15 @@ interface Props {
 
 export function TextInput({ value, onChange, onPaste, onSubmit, placeholder = '', focus = true }: Props) {
   const [cur, setCur] = useState(value.length)
+  const curRef = useRef(cur)
   const vRef = useRef(value)
   const selfChange = useRef(false)
   const pasteBuf = useRef('')
   const pasteTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pastePos = useRef(0)
+  const undo = useRef<Array<{ cursor: number; value: string }>>([])
+  const redo = useRef<Array<{ cursor: number; value: string }>>([])
+  curRef.current = cur
   vRef.current = value
 
   useEffect(() => {
@@ -60,16 +64,34 @@ export function TextInput({ value, onChange, onPaste, onSubmit, placeholder = ''
       selfChange.current = false
     } else {
       setCur(value.length)
+      curRef.current = value.length
+      undo.current = []
+      redo.current = []
     }
   }, [value])
 
-  const commit = (v: string, c: number) => {
-    c = Math.max(0, Math.min(c, v.length))
-    setCur(c)
+  const commit = (nextValue: string, nextCursor: number, track = true) => {
+    const currentValue = vRef.current
+    const currentCursor = curRef.current
+    const c = Math.max(0, Math.min(nextCursor, nextValue.length))
 
-    if (v !== value) {
+    if (track && nextValue !== currentValue) {
+      undo.current.push({ cursor: currentCursor, value: currentValue })
+
+      if (undo.current.length > 200) {
+        undo.current.shift()
+      }
+
+      redo.current = []
+    }
+
+    setCur(c)
+    curRef.current = c
+    vRef.current = nextValue
+
+    if (nextValue !== currentValue) {
       selfChange.current = true
-      onChange(v)
+      onChange(nextValue)
     }
   }
 
@@ -83,21 +105,17 @@ export function TextInput({ value, onChange, onPaste, onSubmit, placeholder = ''
       return
     }
 
-    const v = vRef.current
-    const handled = onPaste?.({ cursor: at, text: pasted, value: v })
+    const currentValue = vRef.current
+    const handled = onPaste?.({ cursor: at, text: pasted, value: currentValue })
 
     if (handled) {
-      selfChange.current = true
-      onChange(handled.value)
-      setCur(handled.cursor)
+      commit(handled.value, handled.cursor)
 
       return
     }
 
     if (pasted.length && PRINTABLE.test(pasted)) {
-      selfChange.current = true
-      onChange(v.slice(0, at) + pasted + v.slice(at))
-      setCur(at + pasted.length)
+      commit(currentValue.slice(0, at) + pasted + currentValue.slice(at), at + pasted.length)
     }
   }
 
@@ -129,6 +147,32 @@ export function TextInput({ value, onChange, onPaste, onSubmit, placeholder = ''
       let c = cur
       let v = value
       const mod = k.ctrl || k.meta
+
+      if (k.ctrl && inp === 'z') {
+        const prev = undo.current.pop()
+
+        if (!prev) {
+          return
+        }
+
+        redo.current.push({ cursor: curRef.current, value: vRef.current })
+        commit(prev.value, prev.cursor, false)
+
+        return
+      }
+
+      if ((k.ctrl && inp === 'y') || (k.meta && k.shift && inp === 'z')) {
+        const next = redo.current.pop()
+
+        if (!next) {
+          return
+        }
+
+        undo.current.push({ cursor: curRef.current, value: vRef.current })
+        commit(next.value, next.cursor, false)
+
+        return
+      }
 
       if (k.home || (k.ctrl && inp === 'a')) {
         c = 0

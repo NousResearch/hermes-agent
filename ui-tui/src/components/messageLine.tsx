@@ -70,7 +70,7 @@ export const MessageLine = memo(function MessageLine({
       </Box>
 
       {!!msg.tools?.length && (
-        <Box flexDirection="column">
+        <Box flexDirection="column" marginBottom={1} marginTop={1}>
           {msg.tools.map((tool, i) => (
             <Text
               color={tool.endsWith(' ✗') ? t.color.error : t.color.dim}

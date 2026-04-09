@@ -28,6 +28,7 @@ export const HOTKEYS: [string, string][] = [
   ['Tab', 'apply completion'],
   ['↑/↓', 'completions / queue edit / history'],
   ['Ctrl+A/E', 'home / end of line'],
+  ['Ctrl+Z / Ctrl+Y', 'undo / redo input edits'],
   ['Ctrl+W', 'delete word'],
   ['Ctrl+U/K', 'delete to start / end'],
   ['Ctrl+←/→', 'jump word'],

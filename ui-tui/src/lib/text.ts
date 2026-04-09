@@ -35,6 +35,10 @@ export const compactPreview = (s: string, max: number) => {
   return !one ? '' : one.length > max ? one.slice(0, max - 1) + '…' : one
 }
 
+/** Whether a persisted/activity tool line belongs to the same tool label as a newer line. */
+export const sameToolTrailGroup = (label: string, entry: string) =>
+  entry === `${label} ✓` || entry === `${label} ✗` || entry.startsWith(`${label}:`)
+
 export const estimateRows = (text: string, w: number, compact = false) => {
   let inCode = false
   let rows = 0

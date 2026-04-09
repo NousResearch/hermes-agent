@@ -21,7 +21,7 @@ import { useCompletion } from './hooks/useCompletion.js'
 import { useInputHistory } from './hooks/useInputHistory.js'
 import { useQueue } from './hooks/useQueue.js'
 import { writeOsc52Clipboard } from './lib/osc52.js'
-import { compactPreview, fmtK, hasInterpolation, pick } from './lib/text.js'
+import { compactPreview, fmtK, hasInterpolation, pick, sameToolTrailGroup } from './lib/text.js'
 import { DEFAULT_THEME, fromSkin, type Theme } from './theme.js'
 import type {
   ActiveTool,
@@ -42,8 +42,8 @@ import type {
 
 const PLACEHOLDER = pick(PLACEHOLDERS)
 const PASTE_TOKEN_RE = /\[\[paste:(\d+)\]\]/g
+const STARTUP_RESUME_ID = (process.env.HERMES_TUI_RESUME ?? '').trim()
 
-const SMALL_PASTE = { chars: 400, lines: 4 }
 const LARGE_PASTE = { chars: 8000, lines: 80 }
 const EXCERPT = { chars: 1200, lines: 14 }
 
@@ -101,6 +101,31 @@ const stripTokens = (text: string, re: RegExp) =>
     .replace(re, '')
     .replace(/\s{2,}/g, ' ')
     .trim()
+
+const toTranscriptMessages = (rows: unknown): Msg[] => {
+  if (!Array.isArray(rows)) {
+    return []
+  }
+
+  return rows.flatMap(row => {
+    if (!row || typeof row !== 'object') {
+      return []
+    }
+
+    const role = (row as any).role
+    const text = (row as any).text
+
+    if (
+      (role !== 'assistant' && role !== 'system' && role !== 'tool' && role !== 'user') ||
+      typeof text !== 'string' ||
+      !text.trim()
+    ) {
+      return []
+    }
+
+    return [{ role, text }]
+  })
+}
 
 // ── StatusRule ────────────────────────────────────────────────────────
 
@@ -250,6 +275,7 @@ export function App({ gw }: { gw: GatewayClient }) {
   // ── Refs ─────────────────────────────────────────────────────────
 
   const activityIdRef = useRef(0)
+  const toolCompleteRibbonRef = useRef<{ label: string; line: string } | null>(null)
   const buf = useRef('')
   const inflightPasteIdsRef = useRef<number[]>([])
   const interruptedRef = useRef(false)
@@ -301,21 +327,19 @@ export function App({ gw }: { gw: GatewayClient }) {
     setHistoryItems(prev => [...prev, msg])
   }, [])
 
-  const appendHistory = useCallback((msg: Msg) => {
-    setHistoryItems(prev => [...prev, msg])
-  }, [])
-
   const sys = useCallback((text: string) => appendMessage({ role: 'system' as const, text }), [appendMessage])
 
-  const pushActivity = useCallback((text: string, tone: ActivityItem['tone'] = 'info') => {
+  const pushActivity = useCallback((text: string, tone: ActivityItem['tone'] = 'info', replaceLabel?: string) => {
     setActivity(prev => {
-      if (prev.at(-1)?.text === text && prev.at(-1)?.tone === tone) {
-        return prev
+      const base = replaceLabel ? prev.filter(a => !sameToolTrailGroup(replaceLabel, a.text)) : prev
+
+      if (base.at(-1)?.text === text && base.at(-1)?.tone === tone) {
+        return base
       }
 
       activityIdRef.current++
 
-      return [...prev, { id: activityIdRef.current, text, tone }].slice(-8)
+      return [...base, { id: activityIdRef.current, text, tone }].slice(-8)
     })
   }, [])
 
@@ -387,7 +411,7 @@ export function App({ gw }: { gw: GatewayClient }) {
             setUsage(prev => ({ ...prev, ...r.info.usage }))
           }
 
-          appendHistory(introMsg(r.info))
+          setHistoryItems([introMsg(r.info)])
         } else {
           setInfo(null)
         }
@@ -396,7 +420,7 @@ export function App({ gw }: { gw: GatewayClient }) {
           sys(msg)
         }
       }),
-    [appendHistory, rpc, sys]
+    [rpc, sys]
   )
 
   // ── Paste pipeline ───────────────────────────────────────────────
@@ -466,10 +490,17 @@ export function App({ gw }: { gw: GatewayClient }) {
 
   const handleTextPaste = useCallback(
     ({ cursor, text, value }: { cursor: number; text: string; value: string }) => {
+      const lineCount = text.split('\n').length
+
+      // Inline normal paste payloads exactly as typed. Only very large
+      // payloads are tokenized into attached snippets.
+      if (text.length < LARGE_PASTE.chars && lineCount < LARGE_PASTE.lines) {
+        return { cursor: cursor + text.length, value: value.slice(0, cursor) + text + value.slice(cursor) }
+      }
+
       pasteCounterRef.current++
       const id = pasteCounterRef.current
-      const lineCount = text.split('\n').length
-      const mode: PasteMode = lineCount > SMALL_PASTE.lines || text.length > SMALL_PASTE.chars ? 'attach' : 'excerpt'
+      const mode: PasteMode = 'attach'
       const token = pasteToken(id)
       const lead = cursor > 0 && !/\s/.test(value[cursor - 1] ?? '') ? ' ' : ''
       const tail = cursor < value.length && !/\s/.test(value[cursor] ?? '') ? ' ' : ''
@@ -887,8 +918,31 @@ export function App({ gw }: { gw: GatewayClient }) {
             })
             .catch(() => {})
 
-          setStatus('forging session…')
-          newSession()
+          if (STARTUP_RESUME_ID) {
+            setStatus('resuming…')
+            gw.request('session.resume', { cols: colsRef.current, session_id: STARTUP_RESUME_ID })
+              .then((r: any) => {
+                resetSession()
+                setSid(r.session_id)
+                setInfo(r.info ?? null)
+                const resumed = toTranscriptMessages(r.messages)
+
+                if (r.info?.usage) {
+                  setUsage(prev => ({ ...prev, ...r.info.usage }))
+                }
+
+                setMessages(resumed)
+                setHistoryItems(r.info ? [introMsg(r.info), ...resumed] : resumed)
+                setStatus('ready')
+              })
+              .catch(() => {
+                setStatus('forging session…')
+                newSession('resume failed, started a new session')
+              })
+          } else {
+            setStatus('forging session…')
+            newSession()
+          }
 
           break
 
@@ -965,17 +1019,25 @@ export function App({ gw }: { gw: GatewayClient }) {
           break
         case 'tool.complete': {
           const mark = p.error ? '✗' : '✓'
+          const tone = p.error ? 'error' : 'info'
 
+          toolCompleteRibbonRef.current = null
           setTools(prev => {
             const done = prev.find(t => t.id === p.tool_id)
             const label = TOOL_VERBS[done?.name ?? p.name] ?? done?.name ?? p.name
             const ctx = (p.error as string) || done?.context || ''
             const line = `${label}${ctx ? ': ' + compactPreview(ctx, 72) : ''} ${mark}`
-            pushActivity(line, p.error ? 'error' : 'info')
-            turnToolsRef.current = [...turnToolsRef.current, line].slice(-8)
+
+            toolCompleteRibbonRef.current = { label, line }
+            turnToolsRef.current = [...turnToolsRef.current.filter(s => !sameToolTrailGroup(label, s)), line].slice(-8)
 
             return prev.filter(t => t.id !== p.tool_id)
           })
+
+          if (toolCompleteRibbonRef.current) {
+            const { line, label } = toolCompleteRibbonRef.current
+            pushActivity(line, tone, label)
+          }
 
           break
         }
@@ -1733,21 +1795,19 @@ export function App({ gw }: { gw: GatewayClient }) {
               onSelect={id => {
                 setPicker(false)
                 setStatus('resuming…')
-                gw.request('session.resume', { cols, session_id: id })
+                gw.request('session.resume', { cols: colsRef.current, session_id: id })
                   .then((r: any) => {
                     resetSession()
                     setSid(r.session_id)
                     setInfo(r.info ?? null)
+                    const resumed = toTranscriptMessages(r.messages)
 
                     if (r.info?.usage) {
                       setUsage(prev => ({ ...prev, ...r.info.usage }))
                     }
 
-                    if (r.info) {
-                      appendHistory(introMsg(r.info))
-                    }
-
-                    sys(`resumed session (${r.message_count} messages)`)
+                    setMessages(resumed)
+                    setHistoryItems(r.info ? [introMsg(r.info), ...resumed] : resumed)
                     setStatus('ready')
                   })
                   .catch((e: Error) => {

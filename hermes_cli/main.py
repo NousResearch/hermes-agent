@@ -514,12 +514,12 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
             return None
 
 
-def _resolve_last_cli_session() -> Optional[str]:
-    """Look up the most recent CLI session ID from SQLite. Returns None if unavailable."""
+def _resolve_last_session(source: str = "cli") -> Optional[str]:
+    """Look up the most recent session ID for a source."""
     try:
         from hermes_state import SessionDB
         db = SessionDB()
-        sessions = db.search_sessions(source="cli", limit=1)
+        sessions = db.search_sessions(source=source, limit=1)
         db.close()
         if sessions:
             return sessions[0]["id"]
@@ -554,7 +554,58 @@ def _resolve_session_by_name_or_id(name_or_id: str) -> Optional[str]:
     return None
 
 
-def _launch_tui():
+def _print_tui_exit_summary(session_id: Optional[str]) -> None:
+    """Print a shell-visible epilogue after TUI exits."""
+    target = session_id or _resolve_last_session(source="tui")
+    if not target:
+        return
+
+    db = None
+    try:
+        from hermes_state import SessionDB
+        db = SessionDB()
+        session = db.get_session(target)
+        if not session:
+            return
+
+        title = db.get_session_title(target)
+        message_count = int(session.get("message_count") or 0)
+        input_tokens = int(session.get("input_tokens") or 0)
+        output_tokens = int(session.get("output_tokens") or 0)
+        cache_read_tokens = int(session.get("cache_read_tokens") or 0)
+        cache_write_tokens = int(session.get("cache_write_tokens") or 0)
+        reasoning_tokens = int(session.get("reasoning_tokens") or 0)
+        total_tokens = (
+            input_tokens
+            + output_tokens
+            + cache_read_tokens
+            + cache_write_tokens
+            + reasoning_tokens
+        )
+    except Exception:
+        return
+    finally:
+        if db is not None:
+            db.close()
+
+    print()
+    print("Resume this session with:")
+    print(f"  hermes --tui --resume {target}")
+    if title:
+        print(f"  hermes --tui -c \"{title}\"")
+    print()
+    print(f"Session:        {target}")
+    if title:
+        print(f"Title:          {title}")
+    print(f"Messages:       {message_count}")
+    print(
+        "Tokens:         "
+        f"{total_tokens} (in {input_tokens}, out {output_tokens}, "
+        f"cache {cache_read_tokens + cache_write_tokens}, reasoning {reasoning_tokens})"
+    )
+
+
+def _launch_tui(resume_session_id: Optional[str] = None):
     """Replace current process with the Ink TUI."""
     tui_dir = PROJECT_ROOT / "ui-tui"
 
@@ -589,19 +640,26 @@ def _launch_tui():
             sys.exit(1)
         argv = [npm, "start"]
 
+    env = os.environ.copy()
+    if resume_session_id:
+        env["HERMES_TUI_RESUME"] = resume_session_id
+
     try:
-        code = subprocess.call(argv, cwd=str(tui_dir))
+        code = subprocess.call(argv, cwd=str(tui_dir), env=env)
     except KeyboardInterrupt:
         code = 130
+
+    if code in (0, 130):
+        _print_tui_exit_summary(resume_session_id)
+
     sys.exit(code)
 
 
 def cmd_chat(args):
     """Run interactive chat CLI."""
-    if getattr(args, "tui", False) or os.environ.get("HERMES_TUI") == "1":
-        _launch_tui()
+    use_tui = getattr(args, "tui", False) or os.environ.get("HERMES_TUI") == "1"
 
-    # Resolve --continue into --resume with the latest CLI session or by name
+    # Resolve --continue into --resume with the latest session or by name
     continue_val = getattr(args, "continue_last", None)
     if continue_val and not getattr(args, "resume", None):
         if isinstance(continue_val, str):
@@ -615,11 +673,15 @@ def cmd_chat(args):
                 sys.exit(1)
         else:
             # -c with no argument — continue the most recent session
-            last_id = _resolve_last_cli_session()
+            source = "tui" if use_tui else "cli"
+            last_id = _resolve_last_session(source=source)
+            if not last_id and source == "tui":
+                last_id = _resolve_last_session(source="cli")
             if last_id:
                 args.resume = last_id
             else:
-                print("No previous CLI session found to continue.")
+                kind = "TUI" if use_tui else "CLI"
+                print(f"No previous {kind} session found to continue.")
                 sys.exit(1)
 
     # Resolve --resume by title if it's not a direct session ID
@@ -630,6 +692,9 @@ def cmd_chat(args):
             args.resume = resolved
         # If resolution fails, keep the original value — _init_agent will
         # report "Session not found" with the original input
+
+    if use_tui:
+        _launch_tui(getattr(args, "resume", None))
 
     # First-run guard: check if any provider is configured before launching
     if not _has_any_provider_configured():

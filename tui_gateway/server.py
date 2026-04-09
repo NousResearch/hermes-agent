@@ -5,6 +5,7 @@ import subprocess
 import sys
 import threading
 import uuid
+from datetime import datetime
 from pathlib import Path
 
 from hermes_constants import get_hermes_home
@@ -364,6 +365,10 @@ def _init_session(sid: str, key: str, agent, history: list, cols: int = 80):
     _emit("session.info", sid, _session_info(agent))
 
 
+def _new_session_key() -> str:
+    return f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+
+
 def _with_checkpoints(session, fn):
     return fn(session["agent"]._checkpoint_mgr, os.getenv("TERMINAL_CWD", os.getcwd()))
 
@@ -405,7 +410,7 @@ def _enrich_with_attached_images(user_text: str, image_paths: list[str]) -> str:
 @method("session.create")
 def _(rid, params: dict) -> dict:
     sid = uuid.uuid4().hex[:8]
-    key = f"tui-{sid}"
+    key = _new_session_key()
     os.environ["HERMES_SESSION_KEY"] = key
     os.environ["HERMES_INTERACTIVE"] = "1"
     try:
@@ -448,14 +453,28 @@ def _(rid, params: dict) -> dict:
     os.environ["HERMES_INTERACTIVE"] = "1"
     try:
         db.reopen_session(target)
-        history = [{"role": m["role"], "content": m["content"]}
-                   for m in db.get_messages(target)
-                   if m.get("role") in ("user", "assistant", "tool", "system")]
+        messages = [
+            {"role": m["role"], "text": m["content"] or ""}
+            for m in db.get_messages(target)
+            if m.get("role") in ("user", "assistant", "tool", "system")
+            and isinstance(m.get("content"), str)
+            and (m.get("content") or "").strip()
+        ]
+        history = [{"role": m["role"], "content": m["text"]} for m in messages]
         agent = _make_agent(sid, target, session_id=target)
         _init_session(sid, target, agent, history, cols=int(params.get("cols", 80)))
     except Exception as e:
         return _err(rid, 5000, f"resume failed: {e}")
-    return _ok(rid, {"session_id": sid, "resumed": target, "message_count": len(history), "info": _session_info(agent)})
+    return _ok(
+        rid,
+        {
+            "session_id": sid,
+            "resumed": target,
+            "message_count": len(messages),
+            "messages": messages,
+            "info": _session_info(agent),
+        },
+    )
 
 
 @method("session.title")
@@ -538,7 +557,7 @@ def _(rid, params: dict) -> dict:
     history = session.get("history", [])
     if not history:
         return _err(rid, 4008, "nothing to branch — send a message first")
-    new_key = f"tui-{uuid.uuid4().hex[:8]}"
+    new_key = _new_session_key()
     branch_name = params.get("name", "")
     try:
         if branch_name:

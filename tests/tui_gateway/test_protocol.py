@@ -151,6 +151,52 @@ def test_sess_found(server):
     assert err is None
 
 
+# ── session.resume payload ────────────────────────────────────────────
+
+
+def test_session_resume_returns_hydrated_messages(server, monkeypatch):
+    class _DB:
+        def get_session(self, _sid):
+            return {"id": "20260409_010101_abc123"}
+
+        def get_session_by_title(self, _title):
+            return None
+
+        def reopen_session(self, _sid):
+            return None
+
+        def get_messages(self, _sid):
+            return [
+                {"role": "user", "content": "hello"},
+                {"role": "assistant", "content": "yo"},
+                {"role": "tool", "content": "searched"},
+                {"role": "assistant", "content": "   "},
+                {"role": "assistant", "content": None},
+                {"role": "narrator", "content": "skip"},
+            ]
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    monkeypatch.setattr(server, "_make_agent", lambda sid, key, session_id=None: object())
+    monkeypatch.setattr(server, "_init_session", lambda sid, key, agent, history, cols=80: None)
+    monkeypatch.setattr(server, "_session_info", lambda _agent: {"model": "test/model"})
+
+    resp = server.handle_request(
+        {
+            "id": "r1",
+            "method": "session.resume",
+            "params": {"session_id": "20260409_010101_abc123", "cols": 100},
+        }
+    )
+
+    assert "error" not in resp
+    assert resp["result"]["message_count"] == 3
+    assert resp["result"]["messages"] == [
+        {"role": "user", "text": "hello"},
+        {"role": "assistant", "text": "yo"},
+        {"role": "tool", "text": "searched"},
+    ]
+
+
 # ── Config I/O ───────────────────────────────────────────────────────
 
 

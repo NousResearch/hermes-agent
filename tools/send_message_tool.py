@@ -156,6 +156,7 @@ def _handle_send(args):
         "wecom": Platform.WECOM,
         "email": Platform.EMAIL,
         "sms": Platform.SMS,
+        "imessage": Platform.IMESSAGE,
     }
     platform = platform_map.get(platform_name)
     if not platform:
@@ -396,6 +397,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             result = await _send_feishu(pconfig, chat_id, chunk, thread_id=thread_id)
         elif platform == Platform.WECOM:
             result = await _send_wecom(pconfig.extra, chat_id, chunk)
+        elif platform == Platform.IMESSAGE:
+            result = await _send_imessage(chat_id, chunk)
         else:
             result = {"error": f"Direct sending not yet implemented for {platform.value}"}
 
@@ -925,6 +928,28 @@ async def _send_feishu(pconfig, chat_id, message, media_files=None, thread_id=No
         }
     except Exception as e:
         return _error(f"Feishu send failed: {e}")
+
+
+async def _send_imessage(chat_id, message):
+    """Send via imsg CLI (macOS iMessage)."""
+    import asyncio
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "imsg", "send", "--to", chat_id, "--text", message,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+        if proc.returncode != 0:
+            err = stderr.decode("utf-8", errors="replace").strip()
+            return _error(f"imsg send failed (exit {proc.returncode}): {err}")
+        return {"success": True, "platform": "imessage", "chat_id": chat_id}
+    except asyncio.TimeoutError:
+        return _error("imsg send timed out")
+    except FileNotFoundError:
+        return {"error": "imsg CLI not found. Install: brew install steipete/tap/imsg"}
+    except Exception as e:
+        return _error(f"iMessage send failed: {e}")
 
 
 def _check_send_message():

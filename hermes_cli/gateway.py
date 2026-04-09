@@ -1588,6 +1588,29 @@ _PLATFORMS = [
              "help": "Chat ID for scheduled results and notifications."},
         ],
     },
+    {
+        "key": "imessage",
+        "label": "iMessage",
+        "emoji": "💬",
+        "token_var": "IMESSAGE_ENABLED",
+        "setup_instructions": [
+            "1. Requires macOS (iMessage is not available on Linux/Windows)",
+            "2. Install the imsg CLI: brew install steipete/tap/imsg",
+            "3. Grant Full Disk Access to your terminal app:",
+            "   System Settings → Privacy & Security → Full Disk Access → add Terminal/iTerm",
+            "4. Grant Automation permission for Messages app when prompted",
+            "5. Verify: run 'imsg chats --json' — should list your conversations",
+        ],
+        "vars": [
+            {"name": "IMESSAGE_ENABLED", "prompt": "Enable iMessage? (true/false)", "password": False,
+             "help": "Set to 'true' to enable the iMessage gateway adapter."},
+            {"name": "IMESSAGE_ALLOWED_USERS", "prompt": "Allowed senders (comma-separated phone/Apple IDs, or empty for all)", "password": False,
+             "is_allowlist": True,
+             "help": "Restrict which senders can interact with the bot. Empty = all."},
+            {"name": "IMESSAGE_HOME_CHANNEL", "prompt": "Home channel (phone number or Apple ID for cron delivery, or empty)", "password": False,
+             "help": "Default recipient for cron job results and notifications."},
+        ],
+    },
 ]
 
 
@@ -1605,6 +1628,13 @@ def _platform_status(platform: dict) -> str:
             if session_file.exists():
                 return "configured + paired"
             return "enabled, not paired"
+        return "not configured"
+    if token_var == "IMESSAGE_ENABLED":
+        if val and val.lower() in ("true", "1", "yes"):
+            import shutil
+            if shutil.which("imsg"):
+                return "enabled + imsg found"
+            return "enabled, imsg not found"
         return "not configured"
     if platform.get("key") == "signal":
         account = get_env_value("SIGNAL_ACCOUNT")

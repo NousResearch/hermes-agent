@@ -349,6 +349,14 @@ PLATFORM_HINTS = {
         "only — no markdown, no formatting. SMS messages are limited to ~1600 "
         "characters, so be brief and direct."
     ),
+    "imessage": (
+        "You are on a text messaging communication platform, iMessage. "
+        "Please do not use markdown as it does not render. "
+        "You can send media files natively: to deliver a file to the user, "
+        "include MEDIA:/absolute/path/to/file in your response. Images "
+        "(.png, .jpg, .webp) appear as photos, videos (.mp4) play inline, "
+        "and other files arrive as downloadable attachments."
+    ),
 }
 
 CONTEXT_FILE_MAX_CHARS = 20_000

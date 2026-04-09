@@ -237,7 +237,7 @@ def _build_job_prompt(job: dict) -> str:
     # Always prepend [SILENT] guidance so the cron agent can suppress
     # delivery when it has nothing new or noteworthy to report.
     silent_hint = (
-        "[SYSTEM: If you have a meaningful status report or findings, "
+        "[IMPORTANT: If you have a meaningful status report or findings, "
         "send them — that is the whole point of this job. Only respond "
         "with exactly \"[SILENT]\" (nothing else) when there is genuinely "
         "nothing new to report. [SILENT] suppresses delivery to the user. "
@@ -270,7 +270,7 @@ def _build_job_prompt(job: dict) -> str:
             parts.append("")
         parts.extend(
             [
-                f'[SYSTEM: The user has invoked the "{skill_name}" skill, indicating they want you to follow its instructions. The full skill content is loaded below.]',
+                f'[IMPORTANT: The user has invoked the "{skill_name}" skill, indicating they want you to follow its instructions. The full skill content is loaded below.]',
                 "",
                 content,
             ]
@@ -278,7 +278,7 @@ def _build_job_prompt(job: dict) -> str:
 
     if skipped:
         notice = (
-            f"[SYSTEM: The following skill(s) were listed for this job but could not be found "
+            f"[IMPORTANT: The following skill(s) were listed for this job but could not be found "
             f"and were skipped: {', '.join(skipped)}. "
             f"Start your response with a brief notice so the user is aware, e.g.: "
             f"'⚠️ Skill(s) not found and skipped: {', '.join(skipped)}']"

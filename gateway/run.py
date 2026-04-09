@@ -6122,6 +6122,13 @@ class GatewayRunner:
         session_key = watcher.get("session_key", "")
         platform_name = watcher.get("platform", "")
         chat_id = watcher.get("chat_id", "")
+        
+        # Fallback: extract chat_id from session_key if missing
+        if not chat_id and session_key:
+            _parts = session_key.split(":")
+            if len(_parts) >= 5:
+                chat_id = _parts[4]
+                
         thread_id = watcher.get("thread_id", "")
         agent_notify = watcher.get("notify_on_complete", False)
         notify_mode = self._load_background_notifications_mode()
@@ -6177,6 +6184,8 @@ class GatewayRunner:
                             _source = SessionSource(
                                 platform=_platform_enum,
                                 chat_id=chat_id,
+                                user_id=chat_id,
+                                user_name="system",
                                 thread_id=thread_id or None,
                             )
                             synth_event = MessageEvent(

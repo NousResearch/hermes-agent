@@ -23,9 +23,9 @@ from hermes_cli.auth import (
     get_auth_status,
     AuthError,
     KIMI_CODE_BASE_URL,
-    _try_gh_cli_token,
     _resolve_kimi_base_url,
 )
+from hermes_cli.github_cli_auth import try_gh_cli_token as _try_gh_cli_token
 
 
 # =============================================================================

@@ -453,12 +453,19 @@ class TestPerToolThresholds:
         except ImportError:
             pytest.skip("terminal_tool not importable in test env")
 
-    def test_read_file_never_persisted(self):
+    def test_read_file_uses_default_threshold(self):
+        """read_file uses the default threshold (no longer exempt).
+
+        The infinity exemption was removed because the context-aware
+        budget layer (agent/tool_budget.py) now caps results before
+        the persistence layer sees them.
+        """
         from tools.registry import registry
+        from tools.budget_config import DEFAULT_RESULT_SIZE_CHARS
         try:
             import tools.file_tools  # noqa: F401
             val = registry.get_max_result_size("read_file")
-            assert val == float("inf")
+            assert val == DEFAULT_RESULT_SIZE_CHARS
         except ImportError:
             pytest.skip("file_tools not importable in test env")
 

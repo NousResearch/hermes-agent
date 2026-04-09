@@ -206,7 +206,8 @@ def load_cli_config() -> Dict[str, Any]:
             "show_reasoning": False,
             "streaming": True,
             "busy_input_mode": "interrupt",
-
+            "terminal_title": True,   # Set tab/window title via OSC sequences (disable for tmux/screen or if job name is appended by your terminal profile)
+            "show_full_user_message": False,  # When true, show all lines instead of first + (+N lines)
             "skin": "default",
         },
         "clarify": {
@@ -1169,6 +1170,9 @@ class HermesCLI:
         # busy_input_mode: "interrupt" (Enter interrupts current run) or "queue" (Enter queues for next turn)
         _bim = CLI_CONFIG["display"].get("busy_input_mode", "interrupt")
         self.busy_input_mode = "queue" if str(_bim).strip().lower() == "queue" else "interrupt"
+        self._show_full_user_message: bool = bool(
+            CLI_CONFIG["display"].get("show_full_user_message", False)
+        )
 
         self.verbose = verbose if verbose is not None else (self.tool_progress_mode == "verbose")
         
@@ -1348,9 +1352,12 @@ class HermesCLI:
         self._agent_running = False
         self._pending_input = queue.Queue()
         self._interrupt_queue = queue.Queue()
-        self._followup_queue: list = []  # mirror of _pending_input for display; entries are {"id": str, "payload": ...}
+        self._followup_queue: list = []  # 📬 Alt+Enter queue — entries are {"id": str, "payload": ...}
         self._cancelled_followups: set = set()  # UUIDs recalled via Alt+Up, skipped in process_loop
         self._followup_recall_count: int = 0   # how many recalls done in this recall session
+        self._steering_queue: list = []  # 🎯 Enter-during-run queue (busy_input_mode=queue)
+        self._cancelled_steerings: set = set()  # UUIDs recalled via Alt+Down
+        self._steering_recall_count: int = 0
         self._should_exit = False
         self._last_ctrl_c_time = 0
         self._stashed_input = None  # Ctrl+S stash: (text, [images]) or None
@@ -1608,10 +1615,16 @@ class HermesCLI:
             if self._stashed_input:
                 frags.append(("class:status-bar-dim", " │ "))
                 frags.append(("class:status-bar-warn", "📌 stashed"))
-            # Follow-up queue indicator
+            # Follow-up queue (📬) and steering queue (🎯) indicators
             if self._followup_queue:
                 frags.append(("class:status-bar-dim", " │ "))
                 frags.append(("class:status-bar-warn", f"📬 {len(self._followup_queue)}"))
+            if self._steering_queue:
+                frags.append(("class:status-bar-dim", " │ "))
+                frags.append(("class:status-bar-warn", f"🎯 {len(self._steering_queue)}"))
+            if self._show_full_user_message:
+                frags.append(("class:status-bar-dim", " │ "))
+                frags.append(("class:status-bar-warn", "↕ full msg"))
 
             total_width = sum(self._status_bar_display_width(text) for _, text in frags)
             if total_width > width:
@@ -2887,7 +2900,15 @@ class HermesCLI:
             ("Drafting", [
                 ("Ctrl+G",          "Open input in external editor ($VISUAL / VS Code)"),
                 ("Ctrl+S",          "Stash input (pop with Ctrl+S, auto-restores after response)"),
+                ("Ctrl+P",          "Peek paste / preview input / full history pager (empty input)"),
                 ("Ctrl+V",          "Paste from clipboard (image-aware)"),
+                ("ESC ESC",         "Clear input buffer and attached images"),
+            ]),
+            ("Queues", [
+                ("Alt+Enter",       "📬 Queue follow-up (sent after current response)"),
+                ("Enter (queue mode)", "🎯 Queue steering (busy_input_mode: queue in config)"),
+                ("Alt+↑",          "Recall most recent 📬 follow-up into input"),
+                ("Alt+↓",          "Recall most recent 🎯 steering into input"),
             ]),
             ("Voice", [
                 (_voice_key_display, "Toggle voice recording (when voice mode is on)"),
@@ -2901,48 +2922,65 @@ class HermesCLI:
             _cprint("")
 
     def _set_terminal_title(self, session_title: str = "", thinking: bool = False) -> None:
-        """Set the terminal window/tab title via OSC escape sequence.
+        """Set the terminal tab title via OSC escape sequences.
 
         Format:
-          ⚕ Hermes — session name     (idle, named session)
-          ⚕ Hermes ⏳                  (agent running / thinking)
-          ⚕ Hermes                    (idle, unnamed session)
+          ⚕     (idle — symbol only)
+          ⚕ ⏳  (agent running / thinking)
 
-        Uses the skin's response_label symbol so the indicator matches the
-        active theme (⚕ default, ⚔ Ares, etc.).  Skipped when stdout is not
-        a TTY, when TERM=dumb, or when NO_COLOR is set (indicates a terminal
-        that may not handle OSC sequences).
+        Uses the skin's symbol (⚕ default, ⚔ Ares, etc.).
+
+        OSC 1 sets the tab/icon title explicitly; in iTerm2 this prevents
+        the process name (Python) from being appended to the tab label.
+        OSC 2 sets the window title (shown in the title bar).
+        Skipped when stdout is not a TTY, TERM=dumb, or NO_COLOR is set.
         """
         import sys, os
-        if not sys.stdout.isatty():
+
+        if os.environ.get("TERM", "") == "dumb" or os.environ.get("NO_COLOR"):
             return
-        if os.environ.get("TERM", "") == "dumb":
-            return
-        if os.environ.get("NO_COLOR"):
-            return
+        try:
+            if not CLI_CONFIG.get("display", {}).get("terminal_title", True):
+                return
+        except Exception:
+            pass
 
         try:
             from hermes_cli.skin_engine import get_active_skin
-            # Extract just the symbol from response_label (e.g. " ⚕ Hermes " → "⚕")
             response_label = get_active_skin().get_branding("response_label", " ⚕ Hermes ")
-            # Pull first non-space char as the symbol
             symbol = next((c for c in response_label.strip() if not c.isalpha() and not c.isspace()), "⚕")
-            agent_name = get_active_skin().get_branding("agent_name", "Hermes Agent")
-            # Shorten "Hermes Agent" → "Hermes" for compact title
-            short_name = agent_name.split()[0]
         except Exception:
-            symbol, short_name = "⚕", "Hermes"
+            symbol = "⚕"
 
         if thinking:
-            title = f"{symbol} {short_name} ⏳"
+            tab_title = f"{symbol} ⏳"
         elif session_title:
-            title = f"{symbol} {short_name} — {session_title}"
+            tab_title = f"{symbol} {session_title}"
         else:
-            title = f"{symbol} {short_name}"
+            tab_title = symbol
 
-        # OSC 0: set both icon name and window title
-        sys.stdout.write(f"\x1b]0;{title}\x07")
-        sys.stdout.flush()
+        # OSC 0 + ST terminator — confirmed working in iTerm2 debug test
+        seq_b = f"\x1b]0;{tab_title}\x1b\\".encode("utf-8")
+
+        for _attempt in ("ctermid", "__stdout__", "stdout_fd", "stdout_write"):
+            try:
+                if _attempt == "ctermid":
+                    _fd = os.open(os.ctermid(), os.O_WRONLY | os.O_NOCTTY)
+                    os.write(_fd, seq_b)
+                    os.close(_fd)
+                elif _attempt == "__stdout__":
+                    _s = getattr(sys, "__stdout__", None)
+                    if _s:
+                        os.write(_s.fileno(), seq_b)
+                elif _attempt == "stdout_fd":
+                    os.write(1, seq_b)
+                elif _attempt == "stdout_write":
+                    sys.stdout.write(seq_b.decode("utf-8"))
+                    sys.stdout.flush()
+                break
+            except Exception:
+                pass
+
         self._terminal_title_session = session_title
 
     def _update_terminal_title(self, thinking: bool = False) -> None:
@@ -4834,17 +4872,11 @@ class HermesCLI:
         thread.start()
 
     @staticmethod
-    def _try_launch_chrome_debug(port: int, system: str) -> bool:
-        """Try to launch Chrome/Chromium with remote debugging enabled.
-
-        Returns True if a launch command was executed (doesn't guarantee success).
-        """
+    def _chrome_candidates(system: str) -> list:
+        """Return Chrome/Chromium binary paths to try."""
         import shutil
-        import subprocess as _sp
-
         candidates = []
         if system == "Darwin":
-            # macOS: try common app bundle locations
             for app in (
                 "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
                 "/Applications/Chromium.app/Contents/MacOS/Chromium",
@@ -4854,44 +4886,106 @@ class HermesCLI:
                 if os.path.isfile(app):
                     candidates.append(app)
         else:
-            # Linux: try common binary names
             for name in ("google-chrome", "google-chrome-stable", "chromium-browser",
                          "chromium", "brave-browser", "microsoft-edge"):
                 path = shutil.which(name)
                 if path:
                     candidates.append(path)
+        return candidates
 
+    @staticmethod
+    def _try_launch_chrome_debug(port: int, system: str,
+                                 user_data_dir: Optional[str] = None) -> bool:
+        """Launch Chrome with remote debugging on *port*.
+
+        user_data_dir: dedicated Chrome user-data dir (e.g. ~/.hermes/chrome-profile).
+        Chrome's security policy blocks CDP on the real default profile,
+        so a dedicated directory is required for persistent logins.
+        """
+        import subprocess as _sp
+        candidates = HermesCLI._chrome_candidates(system)
         if not candidates:
             return False
-
-        chrome = candidates[0]
+        cmd = [candidates[0], f"--remote-debugging-port={port}"]
+        if user_data_dir:
+            cmd.append(f"--user-data-dir={os.path.expanduser(user_data_dir)}")
         try:
-            _sp.Popen(
-                [chrome, f"--remote-debugging-port={port}"],
-                stdout=_sp.DEVNULL,
-                stderr=_sp.DEVNULL,
-                start_new_session=True,  # detach from terminal
-            )
+            _sp.Popen(cmd, stdout=_sp.DEVNULL, stderr=_sp.DEVNULL,
+                      start_new_session=True)
             return True
         except Exception:
             return False
 
-    def _handle_browser_command(self, cmd: str):
-        """Handle /browser connect|disconnect|status — manage live Chrome CDP connection."""
-        import platform as _plat
+    @classmethod
+    def _ensure_chrome_debug(cls, port: int, user_data_dir: Optional[str] = None) -> bool:
+        """Ensure Chrome is listening on *port*, launching it if needed.
+        Returns True if the port is (or becomes) reachable within ~5 s.
+        """
+        import platform as _plat, socket, time as _time
 
+        def _check():
+            try:
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s.settimeout(1)
+                s.connect(("127.0.0.1", port))
+                s.close()
+                return True
+            except (OSError, socket.timeout):
+                return False
+
+        if _check():
+            return True
+        if not cls._try_launch_chrome_debug(port, _plat.system(), user_data_dir):
+            return False
+        for _ in range(10):
+            _time.sleep(0.5)
+            if _check():
+                return True
+        return False
+
+    def _handle_browser_command(self, cmd: str):
+        """Handle /browser connect|disconnect|status — manage live Chrome CDP connection.
+
+        Usage:
+          /browser connect        — auto-launch Chrome with Hermes profile (from config)
+          /browser connect setup  — first-time: create profile dir, open Chrome to log in
+          /browser connect <url>  — connect to an already-running Chrome at a custom CDP URL
+          /browser disconnect     — revert to default headless / Browserbase mode
+          /browser status         — show current connection state
+        """
         parts = cmd.strip().split(None, 1)
         sub = parts[1].lower().strip() if len(parts) > 1 else "status"
 
-        _DEFAULT_CDP = "http://localhost:9222"
+        # Read browser config
+        _browser_cfg = CLI_CONFIG.get("browser", {})
+        _profile_dir = str(_browser_cfg.get("hermes_profile_dir") or "~/.hermes/chrome-profile").strip()
+        _cdp_port = int(_browser_cfg.get("cdp_port") or 9222)
+        _DEFAULT_CDP = f"http://localhost:{_cdp_port}"
         current = os.environ.get("BROWSER_CDP_URL", "").strip()
 
         if sub.startswith("connect"):
-            # Optionally accept a custom CDP URL: /browser connect ws://host:port
-            connect_parts = cmd.strip().split(None, 2)  # ["/browser", "connect", "ws://..."]
-            cdp_url = connect_parts[2].strip() if len(connect_parts) > 2 else _DEFAULT_CDP
+            connect_parts = cmd.strip().split(None, 2)
+            arg = connect_parts[2].strip() if len(connect_parts) > 2 else ""
 
-            # Clear any existing browser sessions so the next tool call uses the new backend
+            _user_data_dir = None
+            if arg.startswith(("ws://", "http://", "https://")):
+                cdp_url = arg
+            else:
+                cdp_url = _DEFAULT_CDP
+                _user_data_dir = _profile_dir
+
+                if arg == "setup":
+                    _pdir = os.path.expanduser(_profile_dir)
+                    os.makedirs(_pdir, exist_ok=True)
+                    print()
+                    print(f"   📂 Hermes browser profile: {_pdir}")
+                    print("   Opening Chrome — log in to any sites you want Hermes to access,")
+                    print("   then close Chrome and run /browser connect to reconnect.")
+                    print()
+                    self._try_launch_chrome_debug(_cdp_port, __import__("platform").system(),
+                                                   user_data_dir=_user_data_dir)
+                    return
+
             try:
                 from tools.browser_tool import cleanup_all_browsers
                 cleanup_all_browsers()
@@ -4899,63 +4993,26 @@ class HermesCLI:
                 pass
 
             print()
+            if _user_data_dir:
+                _pdir_expanded = os.path.expanduser(_user_data_dir)
+                if not os.path.exists(_pdir_expanded):
+                    print("   ℹ Profile dir doesn't exist yet — run /browser connect setup first")
+                    print("     to log into your sites, then reconnect.")
+                    os.makedirs(_pdir_expanded, exist_ok=True)
+                print(f"   Profile: {_pdir_expanded}")
 
-            # Extract port for connectivity checks
-            _port = 9222
-            try:
-                _port = int(cdp_url.rsplit(":", 1)[-1].split("/")[0])
-            except (ValueError, IndexError):
-                pass
-
-            # Check if Chrome is already listening on the debug port
-            import socket
-            _already_open = False
-            try:
-                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                s.settimeout(1)
-                s.connect(("127.0.0.1", _port))
-                s.close()
-                _already_open = True
-            except (OSError, socket.timeout):
-                pass
+            _already_open = self._ensure_chrome_debug(_cdp_port, _user_data_dir)
 
             if _already_open:
-                print(f"   ✓ Chrome is already listening on port {_port}")
-            elif cdp_url == _DEFAULT_CDP:
-                # Try to auto-launch Chrome with remote debugging
-                print("   Chrome isn't running with remote debugging — attempting to launch...")
-                _launched = self._try_launch_chrome_debug(_port, _plat.system())
-                if _launched:
-                    # Wait for the port to come up
-                    import time as _time
-                    for _wait in range(10):
-                        try:
-                            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                            s.settimeout(1)
-                            s.connect(("127.0.0.1", _port))
-                            s.close()
-                            _already_open = True
-                            break
-                        except (OSError, socket.timeout):
-                            _time.sleep(0.5)
-                    if _already_open:
-                        print(f"   ✓ Chrome launched and listening on port {_port}")
-                    else:
-                        print(f"   ⚠ Chrome launched but port {_port} isn't responding yet")
-                        print("     You may need to close existing Chrome windows first and retry")
-                else:
-                    print("   ⚠ Could not auto-launch Chrome")
-                    # Show manual instructions as fallback
-                    sys_name = _plat.system()
-                    if sys_name == "Darwin":
-                        chrome_cmd = 'open -a "Google Chrome" --args --remote-debugging-port=9222'
-                    elif sys_name == "Windows":
-                        chrome_cmd = 'chrome.exe --remote-debugging-port=9222'
-                    else:
-                        chrome_cmd = "google-chrome --remote-debugging-port=9222"
-                    print(f"     Launch Chrome manually: {chrome_cmd}")
+                print(f"   ✓ Chrome listening on port {_cdp_port}")
+                if _user_data_dir:
+                    print("   ✓ Using Hermes profile — existing logins available")
             else:
-                print(f"   ⚠ Port {_port} is not reachable at {cdp_url}")
+                print(f"   ⚠ Chrome didn't respond on port {_cdp_port}")
+                if _user_data_dir:
+                    chrome_bin = (self._chrome_candidates(__import__("platform").system()) or ["Google Chrome"])[0]
+                    print("   Try manually:")
+                    print(f'   "{chrome_bin}" --remote-debugging-port={_cdp_port} --user-data-dir="{os.path.expanduser(_user_data_dir)}"')
 
             os.environ["BROWSER_CDP_URL"] = cdp_url
             print()
@@ -6886,7 +6943,8 @@ class HermesCLI:
             pass
 
         self.show_banner()
-        self._update_terminal_title()  # Set initial terminal title on startup
+        # Terminal title is set from inside process_loop (via call_from_executor)
+        # so it fires after prompt_toolkit takes over the terminal, not before.
 
         # One-line Honcho session indicator (TTY-only, not captured by agent).
         # Only show when the user explicitly configured Honcho for Hermes
@@ -7076,10 +7134,16 @@ class HermesCLI:
                     _is_slash_cmd = bool(_resolve_cmd_fn(_fw))
                 if self._agent_running and not _is_slash_cmd:
                     if self.busy_input_mode == "queue":
-                        # Queue for the next turn instead of interrupting
-                        self._pending_input.put(payload)
-                        preview = text if text else f"[{len(images)} image{'s' if len(images) != 1 else ''} attached]"
-                        _cprint(f"  Queued for the next turn: {preview[:80]}{'...' if len(preview) > 80 else ''}")
+                        # Tag and track in the 🎯 steering queue
+                        import uuid as _uuid_mod
+                        _stag = _uuid_mod.uuid4().hex
+                        cli_ref._pending_input.put({"_steering_tag": _stag, "payload": payload})
+                        _steer_text = text if text else f"[{len(images)} image{'s' if len(images) != 1 else ''} attached]"
+                        cli_ref._steering_queue.append({"id": _stag, "payload": payload, "text": _steer_text})
+                        _sdepth = len(cli_ref._steering_queue)
+                        _spreview = _steer_text[:60] + ("..." if len(_steer_text) > 60 else "")
+                        _cprint(f"  {_DIM}🎯 Steering queued #{_sdepth}: \"{_spreview}\"{_RST}")
+                        event.app.invalidate()
                     else:
                         self._interrupt_queue.put(payload)
                         # Debug: log to file when message enters interrupt queue
@@ -7186,6 +7250,39 @@ class HermesCLI:
             else:
                 cli_ref._followup_recall_count = 0
                 _cprint(f"  {_DIM}📬 Follow-up recalled — queue empty{_RST}")
+            event.app.invalidate()
+
+        @kb.add('escape', 'down')
+        def handle_recall_steering(event):
+            """Alt+Down: recall the most recently queued steering message into the input.
+
+            Symmetric to Alt+Up (follow-up recall) but operates on the 🎯 steering queue.
+            Items are popped LIFO and appended with \\n---\\n separators from the second
+            recall onwards.  Recalled items are UUID-cancelled so process_loop skips them.
+            """
+            if not cli_ref._steering_queue:
+                return
+
+            buf = event.app.current_buffer
+
+            item = cli_ref._steering_queue.pop()
+            recalled_text = item["text"]
+            cli_ref._cancelled_steerings.add(item["id"])
+
+            current = buf.text
+            if cli_ref._steering_recall_count > 0 and current.strip():
+                buf.text = current.rstrip() + '\n---\n' + recalled_text
+            else:
+                buf.text = (current + recalled_text) if current else recalled_text
+            buf.cursor_position = len(buf.text)
+            cli_ref._steering_recall_count += 1
+
+            remaining = len(cli_ref._steering_queue)
+            if remaining:
+                _cprint(f"  {_DIM}🎯 Recalled steering ({remaining} still queued){_RST}")
+            else:
+                cli_ref._steering_recall_count = 0
+                _cprint(f"  {_DIM}🎯 Steering recalled — queue empty{_RST}")
             event.app.invalidate()
 
         @kb.add('tab', eager=True)
@@ -7576,6 +7673,19 @@ class HermesCLI:
                     _cprint(f"  {_DIM}(no history yet){_RST}")
                 run_in_terminal(_empty)
 
+        @kb.add('c-o')
+        def handle_ctrl_o(event):
+            """Ctrl+O: toggle full user message display.
+
+            When on, multiline messages are printed in full instead of
+            showing only the first line + (+N lines).
+            Indicated by '↕ full msg' in the status bar.
+            """
+            cli_ref._show_full_user_message = not cli_ref._show_full_user_message
+            state = "ON" if cli_ref._show_full_user_message else "OFF"
+            _cprint(f"  {_DIM}↕ Full user message display: {state}{_RST}")
+            event.app.invalidate()
+
         # Voice push-to-talk key: configurable via config.yaml (voice.record_key)
         # Default: Ctrl+B (avoids conflict with Ctrl+R readline reverse-search)
         # Config uses "ctrl+b" format; prompt_toolkit expects "c-b" format.
@@ -7858,13 +7968,23 @@ class HermesCLI:
             if cli_ref._agent_running:
                 hints = []
                 if cli_ref._followup_queue:
-                    hints.append(f"📬 {len(cli_ref._followup_queue)} queued")
+                    hints.append(f"📬 {len(cli_ref._followup_queue)} (Alt+↑ to recall)")
+                if cli_ref._steering_queue:
+                    hints.append(f"🎯 {len(cli_ref._steering_queue)} (Alt+↓ to recall)")
                 if cli_ref._stashed_input:
                     hints.append("📌 stashed")
                 suffix = "  · " + " · ".join(hints) if hints else ""
-                return f"Enter to interrupt · Alt+Enter to queue follow-up{suffix}"
-            if cli_ref._followup_queue:
-                return f"📬 {len(cli_ref._followup_queue)} follow-up{'s' if len(cli_ref._followup_queue) > 1 else ''} queued — Alt+Enter to add more"
+                # Hint depends on busy_input_mode
+                if cli_ref.busy_input_mode == "queue":
+                    return f"Enter to steer (🎯) · Alt+Enter to follow-up (📬){suffix}"
+                return f"Enter to interrupt · Alt+Enter to follow-up (📬){suffix}"
+            if cli_ref._followup_queue or cli_ref._steering_queue:
+                parts = []
+                if cli_ref._followup_queue:
+                    parts.append(f"📬 {len(cli_ref._followup_queue)} (Alt+↑)")
+                if cli_ref._steering_queue:
+                    parts.append(f"🎯 {len(cli_ref._steering_queue)} (Alt+↓)")
+                return "  ·  ".join(parts)
             if cli_ref._stashed_input:
                 stashed_text = cli_ref._stashed_input[0]
                 preview = stashed_text[:40] + ("..." if len(stashed_text) > 40 else "")
@@ -8354,23 +8474,39 @@ class HermesCLI:
         
         # Background thread to process inputs and run agent
         def process_loop():
+            # Set terminal title on first iteration — runs inside the live app so
+            # get_app() works and write_raw() reaches the terminal after prompt_toolkit
+            # has taken over (iTerm2 resets the title when the TUI starts otherwise).
+            try:
+                app.call_from_executor(self._update_terminal_title)
+            except Exception:
+                pass
+
             while not self._should_exit:
                 try:
                     # Check for pending input with timeout
                     try:
                         user_input = self._pending_input.get(timeout=0.1)
-                        # Unwrap tagged followup items (queued via Alt+Enter)
-                        if isinstance(user_input, dict) and "_followup_tag" in user_input:
-                            tag = user_input["_followup_tag"]
-                            user_input = user_input["payload"]
-                            # Sync display mirror — only pop for tagged items, not regular Enter
-                            if self._followup_queue:
-                                self._followup_queue.pop(0)
-                                app.invalidate()
-                            # Skip items recalled via Alt+Up (cancelled by UUID, not text)
-                            if tag in self._cancelled_followups:
-                                self._cancelled_followups.discard(tag)
-                                continue
+                        # Unwrap tagged items (📬 followup or 🎯 steering)
+                        if isinstance(user_input, dict):
+                            if "_followup_tag" in user_input:
+                                tag = user_input["_followup_tag"]
+                                user_input = user_input["payload"]
+                                if self._followup_queue:
+                                    self._followup_queue.pop(0)
+                                    app.invalidate()
+                                if tag in self._cancelled_followups:
+                                    self._cancelled_followups.discard(tag)
+                                    continue
+                            elif "_steering_tag" in user_input:
+                                tag = user_input["_steering_tag"]
+                                user_input = user_input["payload"]
+                                if self._steering_queue:
+                                    self._steering_queue.pop(0)
+                                    app.invalidate()
+                                if tag in self._cancelled_steerings:
+                                    self._cancelled_steerings.discard(tag)
+                                    continue
                     except queue.Empty:
                         # Periodic config watcher — auto-reload MCP on mcp_servers change
                         if not self._agent_running:
@@ -8446,21 +8582,22 @@ class HermesCLI:
                             ChatConsole().print(
                                 f"[bold {_accent_hex()}]\u25cf[/] [bold]{_escape(f'[Pasted text: {total_lines} lines]')}[/]"
                             )
-                        _hint = " Ctrl+P to peek"
-                        _dashes = max(0, 40 - 1 - len(_hint))
-                        ChatConsole().print(f"[{_accent_hex()}]╰{'─' * _dashes}{_hint}[/]")
                         user_input = expanded
                     else:
                         _user_bar = f"[{_accent_hex()}]{'─' * 40}[/]"
                         if '\n' in user_input:
-                            first_line = user_input.split('\n')[0]
-                            line_count = user_input.count('\n') + 1
                             print()
                             ChatConsole().print(_user_bar)
-                            ChatConsole().print(
-                                f"[bold {_accent_hex()}]●[/] [bold]{_escape(first_line)}[/] "
-                                f"[dim](+{line_count - 1} lines)[/]"
-                            )
+                            if self._show_full_user_message:
+                                for _line in user_input.splitlines():
+                                    ChatConsole().print(f"[bold {_accent_hex()}]●[/] [bold]{_escape(_line)}[/]")
+                            else:
+                                first_line = user_input.split('\n')[0]
+                                line_count = user_input.count('\n') + 1
+                                ChatConsole().print(
+                                    f"[bold {_accent_hex()}]●[/] [bold]{_escape(first_line)}[/] "
+                                    f"[dim](+{line_count - 1} lines)[/]"
+                                )
                         else:
                             print()
                             ChatConsole().print(_user_bar)

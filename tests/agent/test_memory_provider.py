@@ -432,7 +432,8 @@ class TestBuiltinMemoryProvider:
         p = BuiltinMemoryProvider(memory_store=None, memory_enabled=True)
         assert p.system_prompt_block() == ""
 
-    def test_prefetch_returns_empty(self):
+    def test_prefetch_returns_empty_without_wiki(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
         p = BuiltinMemoryProvider()
         assert p.prefetch("anything") == ""
 

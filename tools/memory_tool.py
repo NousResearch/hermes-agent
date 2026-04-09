@@ -14,6 +14,7 @@ from pathlib import Path
 from hermes_constants import get_hermes_home
 from typing import Dict, Any, List, Optional
 
+from agent.llm_wiki import sync_memory_store_to_wiki
 import tools.persistent_memory_store as pm
 
 logger = logging.getLogger(__name__)
@@ -137,6 +138,19 @@ class MemoryStore:
             "memory": self._backend_store().render_prompt_block("memory", char_limit=self.memory_char_limit) or "",
             "user": self._backend_store().render_prompt_block("user", char_limit=self.user_char_limit) or "",
         }
+        self._sync_wiki_mirror()
+
+    def _sync_wiki_mirror(self) -> None:
+        try:
+            backend = self._backend_store()
+            sync_memory_store_to_wiki(
+                self.memory_entries,
+                self.user_entries,
+                memory_records=backend.list_entries("memory"),
+                user_records=backend.list_entries("user"),
+            )
+        except Exception as e:
+            logger.debug("Wiki mirror sync failed (non-fatal): %s", e)
 
     def _entries_for(self, target: str) -> List[str]:
         return self.user_entries if target == "user" else self.memory_entries
@@ -166,6 +180,7 @@ class MemoryStore:
             return {"success": False, "error": scan_error}
         result = self._backend_store().add_entry(target, content, kind=self._entry_kind(target, content))
         self._refresh_live_entries(target)
+        self._sync_wiki_mirror()
         if not result.get("success"):
             current = self._char_count(target)
             limit = self._char_limit(target)
@@ -186,6 +201,7 @@ class MemoryStore:
             return {"success": False, "error": scan_error}
         result = self._backend_store().replace_entry(target, old_text, new_content, kind=self._entry_kind(target, new_content))
         self._refresh_live_entries(target)
+        self._sync_wiki_mirror()
         if not result.get("success"):
             return result
         return self._success_response(target, result.get("message", "Entry replaced."))
@@ -196,6 +212,7 @@ class MemoryStore:
             return {"success": False, "error": "old_text cannot be empty."}
         result = self._backend_store().forget_entry(target, old_text)
         self._refresh_live_entries(target)
+        self._sync_wiki_mirror()
         if not result.get("success"):
             return result
         return self._success_response(target, result.get("message", "Entry removed."))

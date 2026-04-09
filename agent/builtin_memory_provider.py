@@ -15,6 +15,7 @@ import json
 import logging
 from typing import Any, Dict, List
 
+from agent.llm_wiki import render_wiki_prefetch
 from agent.memory_provider import MemoryProvider
 from tools.registry import tool_error
 
@@ -76,8 +77,8 @@ class BuiltinMemoryProvider(MemoryProvider):
         return "\n\n".join(parts)
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
-        """Built-in memory doesn't do query-based recall — it's injected via system_prompt_block."""
-        return ""
+        """Return local wiki recall for the upcoming turn when a wiki exists."""
+        return render_wiki_prefetch(query)
 
     def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
         """Built-in memory doesn't auto-sync turns — writes happen via the memory tool."""

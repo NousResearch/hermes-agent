@@ -543,7 +543,10 @@ def run_doctor(args):
         if shutil.which("docker"):
             check_ok("docker", "(optional)")
         else:
-            check_warn("docker not found", "(optional)")
+            if _is_termux():
+                check_info("Docker backend is not available inside Termux (expected on Android)")
+            else:
+                check_warn("docker not found", "(optional)")
     
     # SSH (if using ssh backend)
     if terminal_env == "ssh":
@@ -591,11 +594,17 @@ def run_doctor(args):
         if agent_browser_path.exists():
             check_ok("agent-browser (Node.js)", "(browser automation)")
         else:
-            check_warn("agent-browser not installed", "(run: npm install)")
+            if _is_termux():
+                check_info("agent-browser is not installed (expected in the tested Termux path)")
+                check_info("Install it manually later with: npm install")
+            else:
+                check_warn("agent-browser not installed", "(run: npm install)")
     else:
-        check_warn("Node.js not found", "(optional, needed for browser tools)")
         if _is_termux():
+            check_info("Node.js not found (browser tools are optional in the tested Termux path)")
             check_info("Install Node.js on Termux with: pkg install nodejs")
+        else:
+            check_warn("Node.js not found", "(optional, needed for browser tools)")
     
     # npm audit for all Node.js packages
     if shutil.which("npm"):

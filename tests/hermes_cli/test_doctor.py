@@ -223,3 +223,25 @@ class TestDoctorMemoryProviderSection:
         out = self._run_doctor_and_capture(monkeypatch, tmp_path, provider="mem0")
         assert "Memory Provider" in out
         assert "Built-in memory active" not in out
+
+
+def test_run_doctor_termux_treats_docker_and_browser_warnings_as_expected(monkeypatch, tmp_path):
+    helper = TestDoctorMemoryProviderSection()
+    monkeypatch.setenv("TERMUX_VERSION", "0.118.3")
+    monkeypatch.setenv("PREFIX", "/data/data/com.termux/files/usr")
+
+    real_which = doctor_mod.shutil.which
+
+    def fake_which(cmd):
+        if cmd in {"docker", "node", "npm"}:
+            return None
+        return real_which(cmd)
+
+    monkeypatch.setattr(doctor_mod.shutil, "which", fake_which)
+
+    out = helper._run_doctor_and_capture(monkeypatch, tmp_path, provider="")
+
+    assert "Docker backend is not available inside Termux" in out
+    assert "Node.js not found (browser tools are optional in the tested Termux path)" in out
+    assert "Install Node.js on Termux with: pkg install nodejs" in out
+    assert "docker not found (optional)" not in out

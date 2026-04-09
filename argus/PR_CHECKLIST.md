@@ -11,16 +11,41 @@ Pre-flight checklist before submitting Argus to hermes-agent.
 
 ## Optional Features
 
+All modules can be toggled via `config.yaml`. Most default to `true` (enabled).
+ML features default to `false` (disabled).
+
+### Full Configuration (`~/.hermes/config.yaml`)
+
+```yaml
+argus:
+  # Core settings
+  poll_interval: 30
+  session_timeout_minutes: 60
+  entropy_threshold: 3
+  quality_threshold: 0.92
+  max_restart_count: 3
+  
+  # Module toggles (all optional, default ON)
+  entropy_detection_enabled: true    # detect_repeat_tool_calls, stuck_loops, etc.
+  actions_enabled: true              # restart, kill, inject prompts
+  notifications_enabled: true        # Telegram, Discord, Slack, etc.
+  metrics_enabled: true              # Prometheus metrics export
+  wal_monitor_enabled: true          # Real-time WAL monitoring
+  provider_health_enabled: true      # Provider health tracking
+  prime_directives_enabled: true     # Prime directive checking
+  cleanup_enabled: true              # Orphaned session cleanup
+  drift_detection_enabled: true       # Quality drift detection
+  resource_checks_enabled: true      # Resource exhaustion monitoring
+  audit_trail_enabled: true          # Audit logging
+  
+  # ML data export (optional, default OFF)
+  ml_data_enabled: false             # Export trajectories to ~/.hermes/argus/ml_data/
+  ml_memory_enabled: false           # Record to holographic memory
+```
+
 ### ML Data Export (`ml_data.py`)
 
 Exports entropy detections as training data for model improvement.
-
-**Enable in config.yaml:**
-```yaml
-argus:
-  ml_data_enabled: true  # Export ShareGPT trajectories
-  ml_memory_enabled: true  # Record to holographic memory
-```
 
 **What it does:**
 1. Generates trajectories showing failure → detection → recovery

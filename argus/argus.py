@@ -136,17 +136,38 @@ CORRECTIVE_PROMPTS = {
 }
 
 # === CONFIGURATION ===
+# All modules are optional and can be toggled via config.yaml
+# Most default to True (enabled), ML features default to False
 _DEFAULT_ARGUS_CONFIG = {
+    # Core paths
     "db_path": str(_argus_path("data", "watcher", "argus.db")),
     "log_dir": str(_argus_path("logs", "argus")),
+    
+    # Timing
     "poll_interval": 30,
+    "session_timeout_minutes": 60,
+    
+    # Thresholds
     "entropy_threshold": 3,
     "quality_threshold": 0.92,
     "max_restart_count": 3,
-    "session_timeout_minutes": 60,
-    # ML data export (optional feature)
-    "ml_data_enabled": False,  # Export trajectories to ~/.hermes/argus/ml_data/
-    "ml_memory_enabled": True,  # Record entropy facts to holographic memory
+    
+    # Module toggles (all optional, most default ON)
+    "entropy_detection_enabled": True,      # detect_repeat_tool_calls, stuck_loops, etc.
+    "actions_enabled": True,                # restart, kill, inject prompts
+    "notifications_enabled": True,        # Telegram, Discord, Slack, etc.
+    "metrics_enabled": True,              # Prometheus metrics export
+    "wal_monitor_enabled": True,          # Real-time WAL monitoring
+    "provider_health_enabled": True,      # Provider health tracking
+    "prime_directives_enabled": True,     # Prime directive checking
+    "cleanup_enabled": True,              # Orphaned session cleanup
+    "drift_detection_enabled": True,        # Quality drift detection
+    "resource_checks_enabled": True,      # Resource exhaustion monitoring
+    "audit_trail_enabled": True,          # Audit logging
+    
+    # ML data export (optional feature, default OFF)
+    "ml_data_enabled": False,             # Export trajectories to ~/.hermes/argus/ml_data/
+    "ml_memory_enabled": False,           # Record to holographic memory
 }
 
 
@@ -1036,55 +1057,59 @@ class Argus:
         cycle = self._cycle_count
         mod = cycle % 10  # every 10 cycles
 
-        # Resource exhaustion check (every 10 cycles)
-        if mod == 0:
+        # Resource exhaustion check (every 10 cycles) - if enabled
+        if mod == 0 and CONFIG.get("resource_checks_enabled", True):
             try:
                 report = _resources.run_resource_check()
                 if report["overall_severity"] in ("warning", "critical"):
                     alert = _resources.format_alert(report)
                     if alert:
                         logger.warning("Resource alert:\n%s", alert)
-                        _audit.record_resource_alert(
-                            self.cursor,
-                            self.conn,
-                            resource_type="system",
-                            severity=report["overall_severity"],
-                            details=report,
-                        )
-                        _notifications.send_notification(
-                            self.cursor,
-                            self.conn,
-                            "system",
-                            "resource_alert",
-                            alert,
-                        )
+                        if CONFIG.get("audit_trail_enabled", True):
+                            _audit.record_resource_alert(
+                                self.cursor,
+                                self.conn,
+                                resource_type="system",
+                                severity=report["overall_severity"],
+                                details=report,
+                            )
+                        if CONFIG.get("notifications_enabled", True):
+                            _notifications.send_notification(
+                                self.cursor,
+                                self.conn,
+                                "system",
+                                "resource_alert",
+                                alert,
+                            )
             except Exception as e:
                 logger.error("Resource check failed: %s", e)
 
-        # Config drift check (every cycle)
-        try:
-            changes = self._drift_detector.check()
-            if changes:
-                self._drift_detector.record_changes(
-                    self.cursor, self.conn, changes
-                )
-                for c in changes:
-                    _audit.record_drift_event(
-                        self.cursor,
-                        self.conn,
-                        file_label=c["file"],
-                        change_type=c["change_type"],
-                        old_hash=c.get("old_hash"),
-                        new_hash=c.get("new_hash"),
+        # Config drift check (every cycle) - if enabled
+        if CONFIG.get("drift_detection_enabled", True):
+            try:
+                changes = self._drift_detector.check()
+                if changes:
+                    self._drift_detector.record_changes(
+                        self.cursor, self.conn, changes
                     )
+                    if CONFIG.get("audit_trail_enabled", True):
+                        for c in changes:
+                            _audit.record_drift_event(
+                                self.cursor,
+                                self.conn,
+                                file_label=c["file"],
+                                change_type=c["change_type"],
+                                old_hash=c.get("old_hash"),
+                                new_hash=c.get("new_hash"),
+                            )
                     logger.info(
                         "Drift: %s %s", c["file"], c["change_type"]
                     )
-        except Exception as e:
-            logger.error("Drift check failed: %s", e)
+            except Exception as e:
+                logger.error("Drift check failed: %s", e)
 
-        # Provider health check (every 10 cycles, offset by 3)
-        if mod == 3:
+        # Provider health check (every 10 cycles, offset by 3) - if enabled
+        if mod == 3 and CONFIG.get("provider_health_enabled", True):
             try:
                 report = _provider_health.run_provider_check(
                     self.cursor, self.conn
@@ -1093,33 +1118,36 @@ class Argus:
                     alert = _provider_health.format_alert(report)
                     if alert:
                         logger.warning("Provider health alert:\n%s", alert)
-                        _audit.record_provider_alert(
-                            self.cursor,
-                            self.conn,
-                            providers=list(report.get("providers", {}).keys()),
-                            severity=report["overall_severity"],
-                            details=report,
-                        )
-                        _notifications.send_notification(
-                            self.cursor,
-                            self.conn,
-                            "system",
-                            "provider_health",
-                            alert,
-                        )
+                        if CONFIG.get("audit_trail_enabled", True):
+                            _audit.record_provider_alert(
+                                self.cursor,
+                                self.conn,
+                                providers=list(report.get("providers", {}).keys()),
+                                severity=report["overall_severity"],
+                                details=report,
+                            )
+                        if CONFIG.get("notifications_enabled", True):
+                            _notifications.send_notification(
+                                self.cursor,
+                                self.conn,
+                                "system",
+                                "provider_health",
+                                alert,
+                            )
             except Exception as e:
                 logger.error("Provider health check failed: %s", e)
 
-        # Dead session cleanup (every 10 cycles, offset by 5)
-        if mod == 5:
+        # Dead session cleanup (every 10 cycles, offset by 5) - if enabled
+        if mod == 5 and CONFIG.get("cleanup_enabled", True):
             try:
                 findings = _cleanup.run_cleanup(self.cursor, self.conn)
                 total = sum(len(v) for v in findings.values())
                 if total > 0:
                     logger.info("Cleanup: %d orphaned sessions found", total)
-                    _audit.record_cleanup_event(
-                        self.cursor, self.conn, findings
-                    )
+                    if CONFIG.get("audit_trail_enabled", True):
+                        _audit.record_cleanup_event(
+                            self.cursor, self.conn, findings
+                        )
             except Exception as e:
                 logger.error("Cleanup failed: %s", e)
 
@@ -1144,11 +1172,13 @@ class Argus:
         try:
             if action == "restart":
                 self._restart_session(session_id, reason)
-                self._send_notification(session_id, "restart", f"Restarted: {reason}")
+                if CONFIG.get("notifications_enabled", True):
+                    self._send_notification(session_id, "restart", f"Restarted: {reason}")
 
             elif action == "kill":
                 self._kill_session(session_id, reason)
-                self._send_notification(session_id, "kill", f"Killed: {reason}")
+                if CONFIG.get("notifications_enabled", True):
+                    self._send_notification(session_id, "kill", f"Killed: {reason}")
 
             elif action == "inject_prompt":
                 self._inject_prompt(session_id, decision.get("prompt", ""))
@@ -1161,17 +1191,18 @@ class Argus:
                 (action_id,),
             )
 
-            # Audit trail
-            _audit.record_decision(
-                self.cursor,
-                self.conn,
-                session_id=session_id,
-                action_type=action,
-                severity="critical" if action == "kill" else "warning",
-                decision_reason=reason,
-                action_result="success",
-                metadata={"action_id": action_id, **decision},
-            )
+            # Audit trail - if enabled
+            if CONFIG.get("audit_trail_enabled", True):
+                _audit.record_decision(
+                    self.cursor,
+                    self.conn,
+                    session_id=session_id,
+                    action_type=action,
+                    severity="critical" if action == "kill" else "warning",
+                    decision_reason=reason,
+                    action_result="success",
+                    metadata={"action_id": action_id, **decision},
+                )
 
             # Export ML training data (optional feature)
             if CONFIG.get("ml_data_enabled", False):
@@ -1210,17 +1241,18 @@ class Argus:
                 (json.dumps({"error": str(e)}), action_id),
             )
 
-            # Audit trail — failure
-            _audit.record_decision(
-                self.cursor,
-                self.conn,
-                session_id=session_id,
-                action_type=action,
-                severity="critical",
-                decision_reason=reason,
-                action_result="failure",
-                metadata={"action_id": action_id, "error": str(e)},
-            )
+            # Audit trail — failure - if enabled
+            if CONFIG.get("audit_trail_enabled", True):
+                _audit.record_decision(
+                    self.cursor,
+                    self.conn,
+                    session_id=session_id,
+                    action_type=action,
+                    severity="critical",
+                    decision_reason=reason,
+                    action_result="failure",
+                    metadata={"action_id": action_id, "error": str(e)},
+                )
 
         self.conn.commit()
 
@@ -1298,15 +1330,18 @@ class Argus:
         self.running = True
 
         # Start WAL monitor for real-time tool call detection
-        self.wal_monitor.start()
+        # Start WAL monitor for real-time tool call detection - if enabled
+        if CONFIG.get("wal_monitor_enabled", True):
+            self.wal_monitor.start()
 
         write_argus_pid_file()
         logger.info("ARGUS PID file written: %s", _get_argus_pid_path())
 
         while self.running:
             try:
-                # Process WAL monitor events (tool call entropy)
-                self._process_wal_events()
+                # Process WAL monitor events (tool call entropy) - if enabled
+                if CONFIG.get("wal_monitor_enabled", True):
+                    self._process_wal_events()
 
                 # Discover sessions
                 sessions = self.discover_sessions()
@@ -1315,14 +1350,28 @@ class Argus:
                     try:
                         sid = session["session_id"]
                         self.register_session(session)
-                        self.collect_metrics(sid)
-                        entropy_detections = self.detect_entropy(sid)
-                        directive_checks = self.check_prime_directive(sid)
-                        decision = self.make_decision(
-                            sid, entropy_detections, directive_checks
-                        )
-                        if decision:
-                            self.execute_action(sid, decision)
+                        
+                        # Collect metrics - if enabled
+                        if CONFIG.get("metrics_enabled", True):
+                            self.collect_metrics(sid)
+                        
+                        # Detect entropy - if enabled
+                        entropy_detections = []
+                        if CONFIG.get("entropy_detection_enabled", True):
+                            entropy_detections = self.detect_entropy(sid)
+                        
+                        # Check prime directives - if enabled
+                        directive_checks = []
+                        if CONFIG.get("prime_directives_enabled", True):
+                            directive_checks = self.check_prime_directive(sid)
+                        
+                        # Make and execute decision - if actions enabled
+                        if CONFIG.get("actions_enabled", True):
+                            decision = self.make_decision(
+                                sid, entropy_detections, directive_checks
+                            )
+                            if decision:
+                                self.execute_action(sid, decision)
                     except Exception as e:
                         logger.error(
                             "Error processing session %s: %s",
@@ -1347,7 +1396,9 @@ class Argus:
         """Stop the watcher."""
         logger.info("Stopping Agent Watcher...")
         self.running = False
-        self.wal_monitor.stop()
+        # Stop WAL monitor - only if it was enabled and started
+        if CONFIG.get("wal_monitor_enabled", True):
+            self.wal_monitor.stop()
         remove_argus_pid_file()
         if self.conn:
             self.conn.close()

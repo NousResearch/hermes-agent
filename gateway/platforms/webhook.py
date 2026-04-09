@@ -174,8 +174,17 @@ class WebhookAdapter(BasePlatformAdapter):
         so that interim status messages emitted before the final response
         — fallback-model notifications, context-pressure warnings, etc. —
         do not consume the entry and silently downgrade the final response
-        to the ``log`` deliver type.  TTL cleanup happens on POST.
+        to the ``log`` deliver type.  TTL-based cleanup keeps the dict bounded.
+
+        If the content ends with "filtered" (case-insensitive), the message
+        is silently dropped — this allows prompts to mark responses as
+        filtered/no-op and have them not delivered.
         """
+        # Silently drop messages ending with "filtered" (case-insensitive)
+        if content and content.strip().lower().endswith("filtered"):
+            logger.debug("[webhook] Dropping message ending with 'filtered': %s", chat_id)
+            return SendResult(success=True)
+
         delivery = self._delivery_info.get(chat_id, {})
         deliver_type = delivery.get("deliver", "log")
 

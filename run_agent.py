@@ -5036,6 +5036,18 @@ class AIAgent:
         if self.tools:
             api_kwargs["tools"] = self.tools
 
+        # Strip tools when running on a fallback provider.  Fallback models
+        # (e.g. Grok on OpenRouter) often have smaller context windows and
+        # choke on the full tool payload, returning 400.  Text-only fallback
+        # is preferable to a hard failure.
+        if self._fallback_activated and "tools" in api_kwargs:
+            logging.warning(
+                "Stripping %d tool definitions for fallback provider %s/%s",
+                len(api_kwargs["tools"]), self.provider, self.model,
+            )
+            del api_kwargs["tools"]
+            api_kwargs.pop("tool_choice", None)
+
         if self.max_tokens is not None:
             api_kwargs.update(self._max_tokens_param(self.max_tokens))
         elif self._is_openrouter_url() and "claude" in (self.model or "").lower():

@@ -59,7 +59,9 @@ _STARTUP_GRACE_SECONDS = 5
 
 # E2EE key export file for persistence across restarts.
 _KEY_EXPORT_FILE = _STORE_DIR / "exported_keys.txt"
-_KEY_EXPORT_PASSPHRASE = "hermes-matrix-e2ee-keys"
+_KEY_EXPORT_PASSPHRASE = os.environ.get(
+    "MATRIX_E2EE_KEY_PASSPHRASE", "hermes-matrix-e2ee-keys"
+)
 
 # Pending undecrypted events: cap and TTL for retry buffer.
 _MAX_PENDING_EVENTS = 100
@@ -1312,7 +1314,7 @@ class MatrixAdapter(BasePlatformAdapter):
         await self.handle_message(msg_event)
 
     async def _on_invite(self, room: Any, event: Any) -> None:
-        """Auto-join rooms when invited."""
+        """Auto-join rooms when invited (only from allowed users)."""
         import nio
 
         if not isinstance(event, nio.InviteMemberEvent):
@@ -1324,6 +1326,19 @@ class MatrixAdapter(BasePlatformAdapter):
 
         if event.membership != "invite":
             return
+
+        # Check sender against allowed users before joining.
+        allow_all = os.environ.get("MATRIX_ALLOW_ALL_USERS", "").lower() in ("1", "true", "yes")
+        if not allow_all:
+            allowed_csv = os.environ.get("MATRIX_ALLOWED_USERS", "")
+            if allowed_csv:
+                allowed = {u.strip() for u in allowed_csv.split(",") if u.strip()}
+                if event.sender not in allowed:
+                    logger.warning(
+                        "Matrix: rejecting invite to %s from unauthorized user %s",
+                        room.room_id, event.sender,
+                    )
+                    return
 
         logger.info(
             "Matrix: invited to %s by %s — joining",

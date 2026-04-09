@@ -707,3 +707,66 @@ class TestSignalSendDocumentViaHelper:
 
         assert result.success is False
         assert "/nonexistent.pdf" in result.error
+
+
+# ---------------------------------------------------------------------------
+# send() returns message_id from timestamp (#4647)
+# ---------------------------------------------------------------------------
+
+class TestSignalSendReturnsMessageId:
+    """Signal send() must return a timestamp-based message_id so the stream
+    consumer can follow its edit→fallback path correctly."""
+
+    @pytest.mark.asyncio
+    async def test_send_returns_timestamp_as_message_id(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        mock_rpc, _ = _stub_rpc({"timestamp": 1712345678000})
+        adapter._rpc = mock_rpc
+        adapter._stop_typing_indicator = AsyncMock()
+
+        result = await adapter.send(chat_id="+155****4567", content="hello")
+
+        assert result.success is True
+        assert result.message_id == "1712345678000"
+
+    @pytest.mark.asyncio
+    async def test_send_returns_none_message_id_when_no_timestamp(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        mock_rpc, _ = _stub_rpc({})  # No timestamp key
+        adapter._rpc = mock_rpc
+        adapter._stop_typing_indicator = AsyncMock()
+
+        result = await adapter.send(chat_id="+155****4567", content="hello")
+
+        assert result.success is True
+        assert result.message_id is None
+
+    @pytest.mark.asyncio
+    async def test_send_returns_none_message_id_for_non_dict(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        mock_rpc, _ = _stub_rpc("ok")  # Non-dict result
+        adapter._rpc = mock_rpc
+        adapter._stop_typing_indicator = AsyncMock()
+
+        result = await adapter.send(chat_id="+155****4567", content="hello")
+
+        assert result.success is True
+        assert result.message_id is None
+
+
+# ---------------------------------------------------------------------------
+# stop_typing() delegates to _stop_typing_indicator (#4647)
+# ---------------------------------------------------------------------------
+
+class TestSignalStopTyping:
+    """Signal must expose a public stop_typing() so base adapter's
+    _keep_typing finally block can clean up platform-level typing tasks."""
+
+    @pytest.mark.asyncio
+    async def test_stop_typing_calls_private_method(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter._stop_typing_indicator = AsyncMock()
+
+        await adapter.stop_typing("+155****4567")
+
+        adapter._stop_typing_indicator.assert_awaited_once_with("+155****4567")

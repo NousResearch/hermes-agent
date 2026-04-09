@@ -3,6 +3,7 @@
 import os
 import pytest
 from pathlib import Path
+from unittest.mock import patch
 
 from agent.subdirectory_hints import SubdirectoryHintTracker
 
@@ -189,3 +190,45 @@ class TestSubdirectoryHintTracker:
             "terminal", {"command": "curl https://example.com/frontend/api"}
         )
         assert result is None
+
+
+class TestPermissionErrorHandling:
+    """Regression tests for PermissionError in filesystem checks (ref #6214)."""
+
+    def test_is_valid_subdir_permission_error(self, tmp_path):
+        """_is_valid_subdir should return False when is_dir() raises PermissionError."""
+        tracker = SubdirectoryHintTracker(working_dir=str(tmp_path))
+        restricted = tmp_path / "restricted"
+        restricted.mkdir()
+        with patch.object(Path, "is_dir", side_effect=PermissionError("Permission denied")):
+            assert tracker._is_valid_subdir(restricted) is False
+
+    def test_load_hints_permission_error_on_is_file(self, tmp_path):
+        """_load_hints_for_directory should skip files when is_file() raises PermissionError."""
+        tracker = SubdirectoryHintTracker(working_dir=str(tmp_path))
+        restricted = tmp_path / "restricted"
+        restricted.mkdir()
+        original_is_file = Path.is_file
+        def patched_is_file(self):
+            if "restricted" in str(self):
+                raise PermissionError("Permission denied")
+            return original_is_file(self)
+        with patch.object(Path, "is_file", patched_is_file):
+            result = tracker._load_hints_for_directory(restricted)
+        assert result is None
+
+    def test_check_tool_call_survives_inaccessible_path(self, project):
+        """Full check_tool_call should not crash when a path is inaccessible."""
+        tracker = SubdirectoryHintTracker(working_dir=str(project))
+        original_is_dir = Path.is_dir
+        def patched_is_dir(self):
+            if "backend" in str(self) and "src" not in str(self):
+                raise PermissionError("Permission denied")
+            return original_is_dir(self)
+        with patch.object(Path, "is_dir", patched_is_dir):
+            # Should not raise — gracefully skip the inaccessible directory
+            result = tracker.check_tool_call(
+                "read_file", {"path": str(project / "backend" / "src" / "main.py")}
+            )
+            # Result may be None (backend skipped) — the key point is no crash
+            assert result is None or isinstance(result, str)

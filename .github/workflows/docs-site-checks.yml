@@ -27,8 +27,8 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install Python dependencies
-        run: python -m pip install ascii-guard pyyaml
+      - name: Install ascii-guard
+        run: python -m pip install ascii-guard==2.3.0 pyyaml==6.0.3
 
       - name: Extract skill metadata for dashboard
         run: python3 website/scripts/extract-skills.py

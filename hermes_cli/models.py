@@ -1532,7 +1532,7 @@ def probe_api_models(
 
     return {
         "models": None,
-        "probed_url": tried[-1] if tried else normalized.rstrip("/") + "/models",
+        "probed_url": tried[0] if tried else normalized.rstrip("/") + "/models",
         "resolved_base_url": normalized,
         "suggested_base_url": alternate_base if alternate_base != normalized else None,
         "used_fallback": False,

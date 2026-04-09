@@ -353,6 +353,17 @@ class GatewayStreamConsumer:
                     self._message_id = result.message_id
                     self._already_sent = True
                     self._last_sent_text = text
+                elif result.success:
+                    # Platform accepted the message but returned no message_id
+                    # (e.g. Signal).  Can't edit without an ID — switch to
+                    # fallback mode: suppress intermediate deltas, send only
+                    # the missing tail once the final response is ready.
+                    self._already_sent = True
+                    self._edit_supported = False
+                    self._fallback_prefix = self._clean_for_display(text)
+                    self._fallback_final_send = True
+                    # Sentinel prevents re-entering this branch on every delta
+                    self._message_id = "__no_edit__"
                 else:
                     # Initial send failed — disable streaming for this session
                     self._edit_supported = False

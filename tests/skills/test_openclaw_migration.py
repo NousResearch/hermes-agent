@@ -658,6 +658,47 @@ def test_workspace_agents_records_skip_when_missing(tmp_path: Path):
     assert wa_items[0]["status"] == "skipped"
 
 
+def test_cron_store_is_archived_without_config_cron_section(tmp_path: Path):
+    """Bug fix: archive cron store even when openclaw.json has no top-level cron config."""
+    mod = load_module()
+    source = tmp_path / ".openclaw"
+    target = tmp_path / ".hermes"
+    output_dir = target / "migration-report"
+    source.mkdir()
+    target.mkdir()
+
+    (source / "openclaw.json").write_text(json.dumps({"channels": {}}), encoding="utf-8")
+    (source / "cron").mkdir(parents=True)
+    (source / "cron" / "jobs.json").write_text(
+        json.dumps({"version": 1, "jobs": [{"id": "job-1", "name": "demo"}]}),
+        encoding="utf-8",
+    )
+
+    migrator = mod.Migrator(
+        source_root=source,
+        target_root=target,
+        execute=True,
+        workspace_target=None,
+        overwrite=False,
+        migrate_secrets=False,
+        output_dir=output_dir,
+        selected_options={"cron-jobs"},
+    )
+    report = migrator.migrate()
+
+    cron_items = [item for item in report["items"] if item["kind"] == "cron-jobs"]
+    archived_store = next(
+        (item for item in cron_items if item["destination"] and item["destination"].endswith("archive/cron-store")),
+        None,
+    )
+    assert archived_store is not None
+    assert Path(archived_store["destination"]).joinpath("jobs.json").exists()
+
+    notes_text = (output_dir / "MIGRATION_NOTES.md").read_text(encoding="utf-8")
+    assert "Run `hermes cron` to recreate scheduled tasks" in notes_text
+    assert "archive/cron-config.json" not in notes_text
+
+
 def test_skill_installs_cleanly_under_skills_guard():
     skills_guard = load_skills_guard()
     result = skills_guard.scan_skill(

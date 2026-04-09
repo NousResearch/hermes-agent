@@ -326,8 +326,123 @@ def _prompt_for_sudo_password(timeout_seconds: int = 45) -> str:
         if "HERMES_SPINNER_PAUSE" in os.environ:
             del os.environ["HERMES_SPINNER_PAUSE"]
 
+def _safe_command_preview(command: Any, limit: int = 200) -> str:
+    """Return a log-safe preview for possibly-invalid command values."""
+    if command is None:
+        return "<None>"
+    if isinstance(command, str):
+        return command[:limit]
+    try:
+        return repr(command)[:limit]
+    except Exception:
+        return f"<{type(command).__name__}>"
 
-def _transform_sudo_command(command: str) -> tuple[str, str | None]:
+def _looks_like_env_assignment(token: str) -> bool:
+    """Return True when *token* is a leading shell environment assignment."""
+    if "=" not in token or token.startswith("="):
+        return False
+    name, _value = token.split("=", 1)
+    return bool(re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", name))
+
+
+def _read_shell_token(command: str, start: int) -> tuple[str, int]:
+    """Read one shell token, preserving quotes/escapes, starting at *start*."""
+    i = start
+    n = len(command)
+
+    while i < n:
+        ch = command[i]
+        if ch.isspace() or ch in ";|&()":
+            break
+        if ch == "'":
+            i += 1
+            while i < n and command[i] != "'":
+                i += 1
+            if i < n:
+                i += 1
+            continue
+        if ch == '"':
+            i += 1
+            while i < n:
+                inner = command[i]
+                if inner == "\\" and i + 1 < n:
+                    i += 2
+                    continue
+                if inner == '"':
+                    i += 1
+                    break
+                i += 1
+            continue
+        if ch == "\\" and i + 1 < n:
+            i += 2
+            continue
+        i += 1
+
+    return command[start:i], i
+
+
+def _rewrite_real_sudo_invocations(command: str) -> tuple[str, bool]:
+    """Rewrite only real unquoted sudo command words, not plain text mentions."""
+    out: list[str] = []
+    i = 0
+    n = len(command)
+    command_start = True
+    found = False
+
+    while i < n:
+        ch = command[i]
+
+        if ch.isspace():
+            out.append(ch)
+            if ch == "\n":
+                command_start = True
+            i += 1
+            continue
+
+        if ch == "#" and command_start:
+            comment_end = command.find("\n", i)
+            if comment_end == -1:
+                out.append(command[i:])
+                break
+            out.append(command[i:comment_end])
+            i = comment_end
+            continue
+
+        if command.startswith("&&", i) or command.startswith("||", i) or command.startswith(";;", i):
+            out.append(command[i:i + 2])
+            i += 2
+            command_start = True
+            continue
+
+        if ch in ";|&(":
+            out.append(ch)
+            i += 1
+            command_start = True
+            continue
+
+        if ch == ")":
+            out.append(ch)
+            i += 1
+            command_start = False
+            continue
+
+        token, next_i = _read_shell_token(command, i)
+        if command_start and token == "sudo":
+            out.append("sudo -S -p ''")
+            found = True
+        else:
+            out.append(token)
+
+        if command_start and _looks_like_env_assignment(token):
+            command_start = True
+        else:
+            command_start = False
+        i = next_i
+
+    return "".join(out), found
+
+
+def _transform_sudo_command(command: str | None) -> tuple[str | None, str | None]:
     """
     Transform sudo commands to use -S flag if SUDO_PASSWORD is available.
 
@@ -362,37 +477,26 @@ def _transform_sudo_command(command: str) -> tuple[str, str | None]:
       Command runs as-is (fails gracefully with "sudo: a password is required").
     """
     global _cached_sudo_password
-    import re
 
-    # Check if command even contains sudo
-    if not re.search(r'\bsudo\b', command):
-        return command, None  # No sudo in command, nothing to do
+    if command is None:
+        return None, None
+    transformed, has_real_sudo = _rewrite_real_sudo_invocations(command)
+    if not has_real_sudo:
+        return command, None
 
-    # Try to get password from: env var -> session cache -> interactive prompt
-    sudo_password = os.getenv("SUDO_PASSWORD", "") or _cached_sudo_password
+    has_configured_password = "SUDO_PASSWORD" in os.environ
+    sudo_password = os.environ.get("SUDO_PASSWORD", "") if has_configured_password else _cached_sudo_password
 
-    if not sudo_password:
-        # No password configured - check if we're in interactive mode
-        if os.getenv("HERMES_INTERACTIVE"):
-            # Prompt user for password
-            sudo_password = _prompt_for_sudo_password(timeout_seconds=45)
-            if sudo_password:
-                _cached_sudo_password = sudo_password  # Cache for session
+    if not has_configured_password and not sudo_password and os.getenv("HERMES_INTERACTIVE"):
+        sudo_password = _prompt_for_sudo_password(timeout_seconds=45)
+        if sudo_password:
+            _cached_sudo_password = sudo_password
 
-    if not sudo_password:
-        return command, None  # No password, let it fail gracefully
+    if has_configured_password or sudo_password:
+        # Trailing newline is required: sudo -S reads one line for the password.
+        return transformed, sudo_password + "\n"
 
-    def replace_sudo(match):
-        # Replace bare 'sudo' with 'sudo -S -p ""'.
-        # The password is returned as sudo_stdin and must be written to the
-        # process's stdin pipe by the caller — it never appears in any
-        # command-line argument or shell string.
-        return "sudo -S -p ''"
-
-    # Match 'sudo' at word boundaries (not 'visudo' or 'sudoers')
-    transformed = re.sub(r'\bsudo\b', replace_sudo, command)
-    # Trailing newline is required: sudo -S reads one line for the password.
-    return transformed, sudo_password + "\n"
+    return command, None
 
 
 # Environment classes now live in tools/environments/
@@ -611,9 +715,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
     docker_env = cc.get("docker_env", {})
 
     if env_type == "local":
-        lc = local_config or {}
-        return _LocalEnvironment(cwd=cwd, timeout=timeout,
-                                 persistent=lc.get("persistent", False))
+        return _LocalEnvironment(cwd=cwd, timeout=timeout)
     
     elif env_type == "docker":
         return _DockerEnvironment(
@@ -705,7 +807,6 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
             key_path=ssh_config.get("key", ""),
             cwd=cwd,
             timeout=timeout,
-            persistent=ssh_config.get("persistent", False),
         )
 
     else:
@@ -815,6 +916,23 @@ def get_active_env(task_id: str):
     """Return the active BaseEnvironment for *task_id*, or None."""
     with _env_lock:
         return _active_environments.get(task_id)
+
+
+def is_persistent_env(task_id: str) -> bool:
+    """Return True if the active environment for task_id is configured for
+    cross-turn persistence (``persistent_filesystem=True``).
+
+    Used by the agent loop to skip per-turn teardown for backends whose whole
+    point is to survive between turns (docker with ``container_persistent``,
+    daytona, modal, etc.). Non-persistent backends (e.g. Morph) still get torn
+    down at end-of-turn to prevent leakage. The idle reaper
+    (``_cleanup_inactive_envs``) handles persistent envs once they exceed
+    ``terminal.lifetime_seconds``.
+    """
+    env = get_active_env(task_id)
+    if env is None:
+        return False
+    return bool(getattr(env, "_persistent", False))
 
 
 def get_active_environments_info() -> Dict[str, Any]:
@@ -1036,6 +1154,18 @@ def terminal_tool(
         # Note: force parameter is internal only, not exposed to model API
     """
     try:
+        if not isinstance(command, str):
+            logger.warning(
+                "Rejected invalid terminal command value: %s",
+                type(command).__name__,
+            )
+            return json.dumps({
+                "output": "",
+                "exit_code": -1,
+                "error": f"Invalid command: expected string, got {type(command).__name__}",
+                "status": "error",
+            }, ensure_ascii=False)
+
         # Get configuration
         config = _get_env_config()
         env_type = config["env_type"]
@@ -1193,7 +1323,7 @@ def terminal_tool(
             workdir_error = _validate_workdir(workdir)
             if workdir_error:
                 logger.warning("Blocked dangerous workdir: %s (command: %s)",
-                               workdir[:200], command[:200])
+                               workdir[:200], _safe_command_preview(command))
                 return json.dumps({
                     "output": "",
                     "exit_code": -1,
@@ -1333,12 +1463,12 @@ def terminal_tool(
                         retry_count += 1
                         wait_time = 2 ** retry_count
                         logger.warning("Execution error, retrying in %ds (attempt %d/%d) - Command: %s - Error: %s: %s - Task: %s, Backend: %s",
-                                       wait_time, retry_count, max_retries, command[:200], type(e).__name__, e, effective_task_id, env_type)
+                                       wait_time, retry_count, max_retries, _safe_command_preview(command), type(e).__name__, e, effective_task_id, env_type)
                         time.sleep(wait_time)
                         continue
                     
                     logger.error("Execution failed after %d retries - Command: %s - Error: %s: %s - Task: %s, Backend: %s",
-                                 max_retries, command[:200], type(e).__name__, e, effective_task_id, env_type)
+                                 max_retries, _safe_command_preview(command), type(e).__name__, e, effective_task_id, env_type)
                     return json.dumps({
                         "output": "",
                         "exit_code": -1,

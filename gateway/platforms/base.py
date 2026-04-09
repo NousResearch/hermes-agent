@@ -298,6 +298,7 @@ SUPPORTED_DOCUMENT_TYPES = {
     ".pdf": "application/pdf",
     ".md": "text/markdown",
     ".txt": "text/plain",
+    ".log": "text/plain",
     ".zip": "application/zip",
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -407,6 +408,10 @@ class MessageEvent:
     # Auto-loaded skill for topic/channel bindings (e.g., Telegram DM Topics)
     auto_skill: Optional[str] = None
     
+    # Internal flag — set for synthetic events (e.g. background process
+    # completion notifications) that must bypass user authorization checks.
+    internal: bool = False
+
     # Timestamps
     timestamp: datetime = field(default_factory=datetime.now)
     

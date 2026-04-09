@@ -1803,29 +1803,33 @@ class Migrator:
     def migrate_cron_jobs(self, config: Optional[Dict[str, Any]] = None) -> None:
         config = config or self.load_openclaw_config()
         cron = config.get("cron") or {}
-        if not cron:
-            self.record("cron-jobs", None, None, "skipped", "No cron configuration found")
-            return
-
-        # Archive the full cron config
-        if self.archive_dir and self.execute:
-            self.archive_dir.mkdir(parents=True, exist_ok=True)
-            dest = self.archive_dir / "cron-config.json"
-            dest.write_text(json.dumps(cron, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-            self.record("cron-jobs", "openclaw.json cron.*", str(dest), "archived",
-                        "Cron config archived. Use 'hermes cron' to recreate jobs manually.")
-        else:
-            self.record("cron-jobs", "openclaw.json cron.*", "archive/cron-config.json",
-                        "archived", "Would archive cron config")
-
-        # Also check for cron store files
         cron_store = self.source_root / "cron"
+        found_any = False
+
+        # Archive the full cron config when present
+        if cron:
+            found_any = True
+            if self.archive_dir and self.execute:
+                self.archive_dir.mkdir(parents=True, exist_ok=True)
+                dest = self.archive_dir / "cron-config.json"
+                dest.write_text(json.dumps(cron, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+                self.record("cron-jobs", "openclaw.json cron.*", str(dest), "archived",
+                            "Cron config archived. Use 'hermes cron' to recreate jobs manually.")
+            else:
+                self.record("cron-jobs", "openclaw.json cron.*", "archive/cron-config.json",
+                            "archived", "Would archive cron config")
+
+        # Also check for cron store files even when config.cron is missing
         if cron_store.is_dir() and self.archive_dir:
+            found_any = True
             dest_cron = self.archive_dir / "cron-store"
             if self.execute:
                 shutil.copytree(cron_store, dest_cron, dirs_exist_ok=True)
             self.record("cron-jobs", str(cron_store), str(dest_cron), "archived",
                         "Cron job store archived")
+
+        if not found_any:
+            self.record("cron-jobs", None, None, "skipped", "No cron configuration found")
 
     # ── Hooks ─────────────────────────────────────────────────
     def migrate_hooks_config(self, config: Optional[Dict[str, Any]] = None) -> None:
@@ -2454,6 +2458,15 @@ class Migrator:
                 notes.append(f"- **{item.kind}**: {item.reason}")
             notes.append("")
 
+        has_cron_config_archive = any(
+            i.kind == "cron-jobs" and i.status == "archived" and i.destination and i.destination.endswith("cron-config.json")
+            for i in self.items
+        )
+        has_cron_store_archive = any(
+            i.kind == "cron-jobs" and i.status == "archived" and i.destination and i.destination.endswith("cron-store")
+            for i in self.items
+        )
+
         notes.extend([
             "## IMPORTANT: Archive the OpenClaw Directory",
             "",
@@ -2475,7 +2488,14 @@ class Migrator:
             "- Run `hermes claw cleanup` to archive the OpenClaw directory (prevents state confusion)",
             "- Run `hermes setup` to configure any remaining settings",
             "- Run `hermes mcp list` to verify MCP servers were imported correctly",
-            "- Run `hermes cron` to recreate scheduled tasks (see archive/cron-config.json)",
+        ])
+
+        if has_cron_config_archive:
+            notes.append("- Run `hermes cron` to recreate scheduled tasks (see archive/cron-config.json)")
+        elif has_cron_store_archive:
+            notes.append("- Run `hermes cron` to recreate scheduled tasks (see archived cron-store)")
+
+        notes.extend([
             "- Run `hermes gateway install` if you need the gateway service",
             "- Review `~/.hermes/config.yaml` for any adjustments",
             "",

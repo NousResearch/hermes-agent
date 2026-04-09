@@ -85,11 +85,47 @@ def _install_modal_test_modules(
         def _prepare_command(self, command: str):
             return command, None
 
-    sys.modules["tools.environments.base"] = types.SimpleNamespace(BaseEnvironment=_DummyBaseEnvironment)
+        def init_session(self):
+            pass
+
+    # Stub _ThreadedProcessHandle: modal.py imports it but only uses it at
+    # runtime inside _run_bash; the snapshot-isolation tests never call _run_bash,
+    # so a class placeholder is sufficient.
+    class _DummyThreadedProcessHandle:
+        def __init__(self, exec_fn, cancel_fn=None):
+            pass
+
+    def _load_json_store(path):
+        if path.exists():
+            try:
+                return json.loads(path.read_text())
+            except Exception:
+                pass
+        return {}
+
+    def _save_json_store(path, data):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(data, indent=2))
+
+    def _file_mtime_key(host_path):
+        try:
+            st = Path(host_path).stat()
+            return (st.st_mtime, st.st_size)
+        except OSError:
+            return None
+
+    sys.modules["tools.environments.base"] = types.SimpleNamespace(
+        BaseEnvironment=_DummyBaseEnvironment,
+        _ThreadedProcessHandle=_DummyThreadedProcessHandle,
+        _load_json_store=_load_json_store,
+        _save_json_store=_save_json_store,
+        _file_mtime_key=_file_mtime_key,
+    )
     sys.modules["tools.interrupt"] = types.SimpleNamespace(is_interrupted=lambda: False)
     sys.modules["tools.credential_files"] = types.SimpleNamespace(
         get_credential_file_mounts=lambda: [],
         iter_skills_files=lambda: [],
+        iter_cache_files=lambda: [],
     )
 
     from_id_calls: list[str] = []

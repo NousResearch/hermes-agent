@@ -274,3 +274,125 @@ class TestLineWebhookSignature:
             assert resp.status == 200
             text = await resp.text()
             assert text == "ok"
+
+class TestLineAuthorization:
+    """Test that _process_line_event respects dm_policy and group_policy."""
+
+    def _make_text_event(self, source_type="user", user_id="U123", group_id=None, text="hello"):
+        """Build a minimal mock LineMessageEvent."""
+        from unittest.mock import MagicMock
+        event = MagicMock()
+        event.source.type = source_type
+        event.source.user_id = user_id
+        if group_id:
+            event.source.group_id = group_id
+        else:
+            # When no group, getattr(event.source, "group_id", None) should return None
+            del event.source.group_id
+        event.message.id = "msg-001"
+        event.message.type = "text"
+        event.message.text = text
+        return event
+
+    @pytest.mark.asyncio
+    async def test_dm_allowlist_drops_unknown_user(self):
+        from unittest.mock import AsyncMock
+        adapter = _make_adapter(dm_policy="allowlist", allow_from=["U999"])
+        adapter.handle_message = AsyncMock()
+        event = self._make_text_event(source_type="user", user_id="U123")
+        await adapter._process_line_event(event)
+        adapter.handle_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_dm_allowlist_accepts_allowed_user(self):
+        from unittest.mock import AsyncMock
+        adapter = _make_adapter(dm_policy="allowlist", allow_from=["U123"])
+        adapter.handle_message = AsyncMock()
+        event = self._make_text_event(source_type="user", user_id="U123", text="hello")
+        await adapter._process_line_event(event)
+        adapter.handle_message.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_dm_open_accepts_all(self):
+        from unittest.mock import AsyncMock
+        adapter = _make_adapter(dm_policy="open")
+        adapter.handle_message = AsyncMock()
+        event = self._make_text_event(source_type="user", user_id="U999", text="hello")
+        await adapter._process_line_event(event)
+        adapter.handle_message.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_group_allowlist_drops_unknown_group(self):
+        from unittest.mock import AsyncMock
+        adapter = _make_adapter(
+            group_policy="allowlist",
+            group_personas={"C-known": "mochi-line"},
+        )
+        adapter.handle_message = AsyncMock()
+        event = self._make_text_event(source_type="group", group_id="C-unknown")
+        await adapter._process_line_event(event)
+        adapter.handle_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_group_open_accepts_all(self):
+        from unittest.mock import AsyncMock
+        adapter = _make_adapter(group_policy="open", default_persona="cattia-line")
+        adapter.handle_message = AsyncMock()
+        event = self._make_text_event(source_type="group", group_id="C-any", text="hello")
+        await adapter._process_line_event(event)
+        adapter.handle_message.assert_called_once()
+
+
+class TestLinePersonaRouting:
+    def _make_event(self, source_type="group", group_id="C123", user_id="U1", text="hi"):
+        from unittest.mock import MagicMock
+        event = MagicMock()
+        event.source.type = source_type
+        event.source.user_id = user_id
+        if group_id:
+            event.source.group_id = group_id
+        else:
+            del event.source.group_id
+        event.message.id = "m1"
+        event.message.type = "text"
+        event.message.text = text
+        return event
+
+    @pytest.mark.asyncio
+    async def test_group_in_personas_gets_persona_skill(self):
+        adapter = _make_adapter(
+            group_personas={"C123": "mochi-line"},
+            default_persona="cattia-line",
+        )
+        captured = []
+        async def _capture(ev):
+            captured.append(ev)
+        adapter.handle_message = _capture
+        await adapter._process_line_event(self._make_event(group_id="C123"))
+        assert captured[0].auto_skill == "mochi-line"
+
+    @pytest.mark.asyncio
+    async def test_group_not_in_personas_gets_default(self):
+        adapter = _make_adapter(
+            group_personas={"C999": "mochi-line"},
+            default_persona="cattia-line",
+        )
+        captured = []
+        async def _capture(ev):
+            captured.append(ev)
+        adapter.handle_message = _capture
+        await adapter._process_line_event(self._make_event(group_id="C-other"))
+        assert captured[0].auto_skill == "cattia-line"
+
+    @pytest.mark.asyncio
+    async def test_dm_always_gets_default_persona(self):
+        adapter = _make_adapter(
+            default_persona="cattia-line",
+            dm_policy="open",
+        )
+        captured = []
+        async def _capture(ev):
+            captured.append(ev)
+        adapter.handle_message = _capture
+        await adapter._process_line_event(self._make_event(source_type="user", group_id=None))
+        assert captured[0].auto_skill == "cattia-line"

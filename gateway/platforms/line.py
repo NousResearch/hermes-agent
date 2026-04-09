@@ -22,6 +22,8 @@ from gateway.platforms.base import (
     MessageEvent,
     MessageType,
     SendResult,
+    cache_image_from_bytes,
+    cache_audio_from_bytes,
 )
 
 logger = logging.getLogger(__name__)
@@ -261,3 +263,92 @@ class LineAdapter(BasePlatformAdapter):
             asyncio.create_task(self._process_line_event(event))
 
         return web.Response(text="ok")
+
+    async def _process_line_event(self, event) -> None:
+        """Process a single validated LINE MessageEvent."""
+        source_type = event.source.type  # "user" | "group" | "room"
+        user_id = event.source.user_id
+        group_id = getattr(event.source, "group_id", None)
+        message_id = event.message.id
+
+        # Authorization - evaluated by source type (mutually exclusive)
+        if source_type == "user":
+            if self.dm_policy == "allowlist" and user_id not in self.allow_from:
+                return  # drop silently
+        elif source_type == "group":
+            if self.group_policy == "allowlist" and group_id not in self.group_personas:
+                return  # drop silently
+
+        # Persona routing
+        if group_id:
+            auto_skill = self.group_personas.get(group_id, self.default_persona)
+        else:
+            auto_skill = self.default_persona  # DM - no group_id
+
+        # Parse message content
+        text, msg_type, media_urls, media_types = await self._parse_message(event.message)
+        if not text and not media_urls:
+            return
+
+        source = self.build_source(
+            chat_id=group_id or user_id,
+            chat_type="group" if group_id else "dm",
+            user_id=user_id,
+        )
+        hermes_event = MessageEvent(
+            text=text or "",
+            message_type=msg_type,
+            source=source,
+            raw_message=event,
+            message_id=message_id,
+            auto_skill=auto_skill or None,
+            media_urls=media_urls,
+            media_types=media_types,
+        )
+        await self.handle_message(hermes_event)
+
+    async def _parse_message(
+        self, message
+    ) -> Tuple[str, MessageType, List[str], List[str]]:
+        """Parse a LINE message into Hermes format."""
+        msg_type_str = getattr(message, "type", "")
+
+        if msg_type_str == "text":
+            return message.text, MessageType.TEXT, [], []
+
+        if msg_type_str == "sticker":
+            text = f"[sticker: {message.package_id}/{message.sticker_id}]"
+            return text, MessageType.TEXT, [], []
+
+        if msg_type_str == "image":
+            data = await self._download_media(message.id)
+            if data:
+                path = cache_image_from_bytes(data, ext=".jpg")
+                return "", MessageType.PHOTO, [path], ["image/jpeg"]
+            return "(image)", MessageType.TEXT, [], []
+
+        if msg_type_str == "audio":
+            data = await self._download_media(message.id)
+            if data:
+                path = cache_audio_from_bytes(data, ext=".m4a")
+                return "", MessageType.VOICE, [path], ["audio/m4a"]
+            return "(audio)", MessageType.TEXT, [], []
+
+        # Unsupported type - skip
+        return "", MessageType.TEXT, [], []
+
+    async def _download_media(self, message_id: str) -> Optional[bytes]:
+        """Download media content from LINE content API."""
+        if not self._http_client:
+            return None
+        url = LINE_CONTENT_API_URL.format(message_id=message_id)
+        try:
+            resp = await self._http_client.get(url)
+            if resp.status_code == 200:
+                return resp.content
+            logger.error("[line] media download failed %s: %s", resp.status_code, url)
+            return None
+        except Exception as exc:
+            logger.error("[line] media download error: %s", exc)
+            return None
+

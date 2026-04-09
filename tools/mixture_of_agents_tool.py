@@ -62,7 +62,7 @@ logger = logging.getLogger(__name__)
 # Keep this list aligned with current top-tier OpenRouter frontier options.
 REFERENCE_MODELS = [
     "anthropic/claude-opus-4.6",
-    "google/gemini-3-pro-preview",
+    "google/gemini-2.5-pro",
     "openai/gpt-5.4-pro",
     "deepseek/deepseek-v3.2",
 ]
@@ -129,6 +129,7 @@ async def _run_reference_model_safe(
             api_params = {
                 "model": model,
                 "messages": [{"role": "user", "content": user_prompt}],
+                "max_tokens": max_tokens,
                 "extra_body": {
                     "reasoning": {
                         "enabled": True,
@@ -203,6 +204,7 @@ async def _run_aggregator_model(
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt}
         ],
+        "max_tokens": max_tokens,
         "extra_body": {
             "reasoning": {
                 "enabled": True,

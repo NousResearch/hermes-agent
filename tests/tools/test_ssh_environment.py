@@ -43,7 +43,7 @@ class TestBuildSSHCommand:
                             lambda *a, **k: MagicMock(stdout=iter([]),
                                                       stderr=iter([]),
                                                       stdin=MagicMock()))
-        monkeypatch.setattr("tools.environments.ssh.time.sleep", lambda _: None)
+        monkeypatch.setattr("tools.environments.base.time.sleep", lambda _: None)
 
     def test_base_flags(self):
         env = SSHEnvironment(host="h", user="u")

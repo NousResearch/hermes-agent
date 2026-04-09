@@ -231,7 +231,7 @@ class HolographicMemoryBridge:
     
     def __init__(self, db_path: Optional[Path] = None):
         self.db_path = db_path
-        self._available = None
+        self._available: Optional[bool] = None
         
     def is_available(self) -> bool:
         """Check if holographic memory is accessible."""
@@ -355,7 +355,7 @@ def export_entropy_event(
     Returns:
         Dict with export results {trajectory_path, memory_recorded}
     """
-    results = {
+    results: Dict[str, Any] = {
         "trajectory_path": None,
         "memory_recorded": False,
     }

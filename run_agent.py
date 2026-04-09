@@ -845,7 +845,16 @@ class AIAgent:
                             "X-OpenRouter-Categories": "productivity,cli-agent",
                         },
                     }
-            
+            _effective_base = str(client_kwargs.get("base_url", "")).lower()
+            if self._is_rightcode_responses(_effective_base):
+                headers = dict(client_kwargs.get("default_headers") or {})
+                headers.update(
+                    self._rightcode_cache_headers(
+                        api_key=str(client_kwargs.get("api_key", "") or "")
+                    )
+                )
+                client_kwargs["default_headers"] = headers
+
             self._client_kwargs = client_kwargs  # stored for rebuilding after interrupt
 
             # Enable fine-grained tool streaming for Claude on OpenRouter.
@@ -854,7 +863,6 @@ class AIAgent:
             # times out during the silence.  The beta header makes Anthropic
             # stream tool call arguments token-by-token, keeping the
             # connection alive.
-            _effective_base = str(client_kwargs.get("base_url", "")).lower()
             if "openrouter" in _effective_base and "claude" in (self.model or "").lower():
                 headers = client_kwargs.get("default_headers") or {}
                 existing_beta = headers.get("x-anthropic-beta", "")
@@ -961,6 +969,10 @@ class AIAgent:
             timestamp_str = self.session_start.strftime("%Y%m%d_%H%M%S")
             short_uuid = uuid.uuid4().hex[:6]
             self.session_id = f"{timestamp_str}_{short_uuid}"
+
+        # Parent session id is used by sticky-routing headers on some custom
+        # Responses endpoints, so make it available before client header setup.
+        self._parent_session_id = parent_session_id
         
         # Session logs go into ~/.hermes/sessions/ alongside gateway sessions
         hermes_home = get_hermes_home()
@@ -983,7 +995,6 @@ class AIAgent:
         
         # SQLite session store (optional -- provided by CLI or gateway)
         self._session_db = session_db
-        self._parent_session_id = parent_session_id
         self._last_flushed_db_idx = 0  # tracks DB-write cursor to prevent duplicate writes
         if self._session_db:
             try:
@@ -3570,6 +3581,53 @@ class AIAgent:
             self._client_lock = lock
         return lock
 
+    def _is_rightcode_responses(self, base_url: str = "") -> bool:
+        normalized = (base_url or getattr(self, "_base_url_lower", "") or "").lower()
+        return self.api_mode == "codex_responses" and "right.codes" in normalized
+
+    @staticmethod
+    def _sanitize_cache_identity(value: str) -> str:
+        cleaned = re.sub(r"[^A-Za-z0-9._-]+", "-", str(value or "").strip())
+        cleaned = cleaned.strip("._-")
+        return cleaned[:64]
+
+    def _responses_prompt_cache_key(self, api_key: str = "") -> Optional[str]:
+        """Stable cache key for Responses APIs when the provider benefits from it."""
+        explicit = (
+            os.getenv("HERMES_CACHE_IDENTITY")
+            or os.getenv("HERMES_PROMPT_CACHE_IDENTITY")
+            or ""
+        ).strip()
+        if explicit:
+            sanitized = self._sanitize_cache_identity(explicit)
+            if sanitized:
+                return sanitized
+
+        if self._is_rightcode_responses():
+            effective_api_key = (api_key or getattr(self, "api_key", "") or "").strip()
+            if effective_api_key:
+                digest = hashlib.sha256(effective_api_key.encode("utf-8")).hexdigest()[:16]
+                return f"hermes-{digest}"
+
+            fallback_user = os.getenv("USER") or Path.home().name or "user"
+            sanitized = self._sanitize_cache_identity(fallback_user)
+            return f"hermes-{sanitized or 'stable'}"
+
+        return self.session_id or None
+
+    def _rightcode_cache_headers(self, api_key: str = "") -> Dict[str, str]:
+        stable_id = self._responses_prompt_cache_key(api_key=api_key)
+        if not stable_id:
+            return {}
+        # RightCode's Responses cache only becomes reliably reusable across
+        # turns when requests carry a stable routing identity.
+        return {
+            "conversation_id": stable_id,
+            "session_id": stable_id,
+            "x-session-id": stable_id,
+            "x-session-affinity": stable_id,
+        }
+
     @staticmethod
     def _is_openai_client_closed(client: Any) -> bool:
         """Check if an OpenAI client is closed.
@@ -5335,7 +5393,9 @@ class AIAgent:
             }
 
             if not is_github_responses:
-                kwargs["prompt_cache_key"] = self.session_id
+                cache_key = self._responses_prompt_cache_key()
+                if cache_key:
+                    kwargs["prompt_cache_key"] = cache_key
 
             if reasoning_enabled:
                 if is_github_responses:

@@ -857,7 +857,7 @@ def _read_main_provider() -> str:
     return ""
 
 
-def _resolve_custom_runtime() -> Tuple[Optional[str], Optional[str]]:
+def _resolve_custom_runtime() -> Tuple[Optional[str], Optional[str], Optional[str]]:
     """Resolve the active custom/main endpoint the same way the main CLI does.
 
     This covers both env-driven OPENAI_BASE_URL setups and config-saved custom
@@ -870,18 +870,29 @@ def _resolve_custom_runtime() -> Tuple[Optional[str], Optional[str]]:
         runtime = resolve_runtime_provider(requested="custom")
     except Exception as exc:
         logger.debug("Auxiliary client: custom runtime resolution failed: %s", exc)
-        return None, None
+        runtime = None
+
+    if not isinstance(runtime, dict):
+        openai_base = os.getenv("OPENAI_BASE_URL", "").strip().rstrip("/")
+        openai_key = os.getenv("OPENAI_API_KEY", "").strip()
+        if not openai_base:
+            return None, None, None
+        runtime = {
+            "base_url": openai_base,
+            "api_key": openai_key,
+        }
 
     custom_base = runtime.get("base_url")
     custom_key = runtime.get("api_key")
+    custom_mode = runtime.get("api_mode")
     if not isinstance(custom_base, str) or not custom_base.strip():
-        return None, None
+        return None, None, None
 
     custom_base = custom_base.strip().rstrip("/")
     if "openrouter.ai" in custom_base.lower():
         # requested='custom' falls back to OpenRouter when no custom endpoint is
         # configured. Treat that as "no custom endpoint" for auxiliary routing.
-        return None, None
+        return None, None, None
 
     # Local servers (Ollama, llama.cpp, vLLM, LM Studio) don't require auth.
     # Use a placeholder key — the OpenAI SDK requires a non-empty string but
@@ -890,20 +901,33 @@ def _resolve_custom_runtime() -> Tuple[Optional[str], Optional[str]]:
     if not isinstance(custom_key, str) or not custom_key.strip():
         custom_key = "no-key-required"
 
-    return custom_base, custom_key.strip()
+    if not isinstance(custom_mode, str) or not custom_mode.strip():
+        custom_mode = None
+
+    return custom_base, custom_key.strip(), custom_mode
 
 
 def _current_custom_base_url() -> str:
-    custom_base, _ = _resolve_custom_runtime()
+    custom_base, _, _ = _resolve_custom_runtime()
     return custom_base or ""
 
 
 def _try_custom_endpoint() -> Tuple[Optional[OpenAI], Optional[str]]:
-    custom_base, custom_key = _resolve_custom_runtime()
+    runtime = _resolve_custom_runtime()
+    if len(runtime) == 2:
+        custom_base, custom_key = runtime
+        custom_mode = None
+    else:
+        custom_base, custom_key, custom_mode = runtime
     if not custom_base or not custom_key:
         return None, None
+    if custom_base.lower().startswith(_CODEX_AUX_BASE_URL.lower()):
+        return None, None
     model = _read_main_model() or "gpt-4o-mini"
-    logger.debug("Auxiliary client: custom endpoint (%s)", model)
+    logger.debug("Auxiliary client: custom endpoint (%s, api_mode=%s)", model, custom_mode or "chat_completions")
+    if custom_mode == "codex_responses":
+        real_client = OpenAI(api_key=custom_key, base_url=custom_base)
+        return CodexAuxiliaryClient(real_client, model), model
     return OpenAI(api_key=custom_key, base_url=custom_base), model
 
 

@@ -287,26 +287,27 @@ class PairingStore:
         can see them age out without crashing on a missing ``hash`` field.
         """
         results = []
-        platforms = [platform] if platform else self._all_platforms("pending")
-        for p in platforms:
-            self._cleanup_expired(p)
-            pending = self._load_json(self._pending_path(p))
-            for entry_id, info in pending.items():
-                if not isinstance(info, dict):
-                    continue
-                created_at = info.get("created_at")
-                if not isinstance(created_at, (int, float)):
-                    continue
-                age_min = int((time.time() - created_at) / 60)
-                hash_val = info.get("hash")
-                code_display = hash_val[:8] if isinstance(hash_val, str) else "legacy"
-                results.append({
-                    "platform": p,
-                    "code": code_display,
-                    "user_id": info.get("user_id", ""),
-                    "user_name": info.get("user_name", ""),
-                    "age_minutes": age_min,
-                })
+        with self._lock:
+            platforms = [platform] if platform else self._all_platforms("pending")
+            for p in platforms:
+                self._cleanup_expired(p)
+                pending = self._load_json(self._pending_path(p))
+                for entry_id, info in pending.items():
+                    if not isinstance(info, dict):
+                        continue
+                    created_at = info.get("created_at")
+                    if not isinstance(created_at, (int, float)):
+                        continue
+                    age_min = int((time.time() - created_at) / 60)
+                    hash_val = info.get("hash")
+                    code_display = hash_val[:8] if isinstance(hash_val, str) else "legacy"
+                    results.append({
+                        "platform": p,
+                        "code": code_display,
+                        "user_id": info.get("user_id", ""),
+                        "user_name": info.get("user_name", ""),
+                        "age_minutes": age_min,
+                    })
         return results
 
     def clear_pending(self, platform: str = None) -> int:

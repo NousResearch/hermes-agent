@@ -10,7 +10,9 @@
     "lint": "eslint src/",
     "lint:fix": "eslint src/ --fix",
     "fmt": "prettier --write 'src/**/*.{ts,tsx}'",
-    "fix": "npm run lint:fix && npm run fmt"
+    "fix": "npm run lint:fix && npm run fmt",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "ink": "^6.8.0",
@@ -32,6 +34,7 @@
     "globals": "^16",
     "prettier": "^3",
     "tsx": "^4.19.0",
-    "typescript": "^5.7.0"
+    "typescript": "^5.7.0",
+    "vitest": "^4.1.3"
   }
 }

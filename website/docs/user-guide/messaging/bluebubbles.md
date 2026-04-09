@@ -42,20 +42,31 @@ BLUEBUBBLES_PASSWORD=your-server-password
 
 Choose one approach:
 
-**DM Pairing (recommended):**
+**Invite code (recommended):**
 ```bash
 hermes pairing generate bluebubbles
 ```
-Share the pairing code — the user sends it via iMessage to get approved.
+This generates a single-use invite code. Share it with the person you want to authorize — when they send it via iMessage as their first message, they're automatically approved. Codes expire after 24 hours.
 
-**Pre-authorize specific users:**
+**Reactive pairing:**
+If someone messages your iMessage without being authorized, Hermes will automatically send them a pairing code. You then approve it:
+```bash
+hermes pairing approve bluebubbles <CODE>
+```
+
+**Pre-authorize specific users** (in `~/.hermes/.env`):
 ```bash
 BLUEBUBBLES_ALLOWED_USERS=user@icloud.com,+15551234567
 ```
 
-**Open access:**
+**Open access** (in `~/.hermes/.env`):
 ```bash
 BLUEBUBBLES_ALLOW_ALL_USERS=true
+```
+
+You can check the status of all pairing data with:
+```bash
+hermes pairing list
 ```
 
 ### 5. Start the Gateway

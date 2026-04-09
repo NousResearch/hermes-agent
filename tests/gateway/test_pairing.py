@@ -13,8 +13,10 @@ from gateway.pairing import (
     CODE_TTL_SECONDS,
     RATE_LIMIT_SECONDS,
     MAX_PENDING_PER_PLATFORM,
+    MAX_INVITE_CODES_PER_PLATFORM,
     MAX_FAILED_ATTEMPTS,
     LOCKOUT_SECONDS,
+    INVITE_TTL_SECONDS,
     _secure_write,
 )
 
@@ -353,4 +355,180 @@ class TestListAndClear:
             store.generate_code("telegram", "user1")
             store.generate_code("discord", "user2")
             count = store.clear_pending()
+        assert count == 2
+
+
+# ---------------------------------------------------------------------------
+# Invite codes (proactive flow)
+# ---------------------------------------------------------------------------
+
+
+class TestInviteCodeGeneration:
+    def test_invite_code_format(self, tmp_path):
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+            store = PairingStore()
+            code = store.generate_invite_code("bluebubbles")
+        assert isinstance(code, str) and len(code) == CODE_LENGTH
+        assert all(c in ALPHABET for c in code)
+
+    def test_invite_code_uniqueness(self, tmp_path):
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+            store = PairingStore()
+            codes = set()
+            for _ in range(3):
+                code = store.generate_invite_code("bluebubbles")
+                assert isinstance(code, str)
+                codes.add(code)
+        assert len(codes) == 3
+
+    def test_invite_code_stored_in_invites_file(self, tmp_path):
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+            store = PairingStore()
+            code = store.generate_invite_code("bluebubbles")
+            invites = store.list_invites("bluebubbles")
+        assert len(invites) == 1
+        assert invites[0]["code"] == code
+        assert invites[0]["platform"] == "bluebubbles"
+
+    def test_max_invite_codes_per_platform(self, tmp_path):
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+            store = PairingStore()
+            codes = []
+            for _ in range(MAX_INVITE_CODES_PER_PLATFORM + 1):
+                codes.append(store.generate_invite_code("bluebubbles"))
+        assert all(isinstance(c, str) for c in codes[:MAX_INVITE_CODES_PER_PLATFORM])
+        assert codes[MAX_INVITE_CODES_PER_PLATFORM] is None
+
+    def test_different_platforms_independent(self, tmp_path):
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+            store = PairingStore()
+            for _ in range(MAX_INVITE_CODES_PER_PLATFORM):
+                store.generate_invite_code("bluebubbles")
+            code = store.generate_invite_code("telegram")
+        assert isinstance(code, str) and len(code) == CODE_LENGTH
+
+
+class TestInviteCodeClaiming:
+    def test_claim_valid_code(self, tmp_path):
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+            store = PairingStore()
+            code = store.generate_invite_code("bluebubbles")
+            result = store.claim_invite_code("bluebubbles", code, "user@icloud.com", "Bob")
+        assert result is True
+
+    def test_claim_approves_user(self, tmp_path):
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+            store = PairingStore()
+            code = store.generate_invite_code("bluebubbles")
+            store.claim_invite_code("bluebubbles", code, "user@icloud.com", "Bob")
+            assert store.is_approved("bluebubbles", "user@icloud.com") is True
+
+    def test_claim_consumes_code(self, tmp_path):
+        """Invite codes are single-use — claiming removes them."""
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+            store = PairingStore()
+            code = store.generate_invite_code("bluebubbles")
+            store.claim_invite_code("bluebubbles", code, "user@icloud.com")
+            invites = store.list_invites("bluebubbles")
+        assert len(invites) == 0
+
+    def test_claim_single_use(self, tmp_path):
+        """Second claim of same code fails."""
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+            store = PairingStore()
+            code = store.generate_invite_code("bluebubbles")
+            assert store.claim_invite_code("bluebubbles", code, "user1@icloud.com") is True
+            assert store.claim_invite_code("bluebubbles", code, "user2@icloud.com") is False
+
+    def test_claim_case_insensitive(self, tmp_path):
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+            store = PairingStore()
+            code = store.generate_invite_code("bluebubbles")
+            result = store.claim_invite_code("bluebubbles", code.lower(), "user@icloud.com")
+        assert result is True
+
+    def test_claim_strips_whitespace(self, tmp_path):
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+            store = PairingStore()
+            code = store.generate_invite_code("bluebubbles")
+            result = store.claim_invite_code("bluebubbles", f"  {code}  ", "user@icloud.com")
+        assert result is True
+
+    def test_claim_invalid_code(self, tmp_path):
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+            store = PairingStore()
+            result = store.claim_invite_code("bluebubbles", "INVALIDXX", "user@icloud.com")
+        assert result is False
+
+    def test_claim_wrong_platform(self, tmp_path):
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+            store = PairingStore()
+            code = store.generate_invite_code("bluebubbles")
+            result = store.claim_invite_code("telegram", code, "user123")
+        assert result is False
+
+
+class TestInviteCodeExpiry:
+    def test_expired_invite_cleaned_up(self, tmp_path):
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+            store = PairingStore()
+            code = store.generate_invite_code("bluebubbles")
+
+            # Manually expire the invite
+            invites = store._load_json(store._invites_path("bluebubbles"))
+            invites[code]["created_at"] = time.time() - INVITE_TTL_SECONDS - 1
+            store._save_json(store._invites_path("bluebubbles"), invites)
+
+            remaining = store.list_invites("bluebubbles")
+        assert len(remaining) == 0
+
+    def test_expired_invite_cannot_be_claimed(self, tmp_path):
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+            store = PairingStore()
+            code = store.generate_invite_code("bluebubbles")
+
+            invites = store._load_json(store._invites_path("bluebubbles"))
+            invites[code]["created_at"] = time.time() - INVITE_TTL_SECONDS - 1
+            store._save_json(store._invites_path("bluebubbles"), invites)
+
+            result = store.claim_invite_code("bluebubbles", code, "user@icloud.com")
+        assert result is False
+
+
+class TestInviteCodeListAndClear:
+    def test_list_invites_shows_ttl(self, tmp_path):
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+            store = PairingStore()
+            store.generate_invite_code("bluebubbles")
+            invites = store.list_invites("bluebubbles")
+        assert len(invites) == 1
+        assert "ttl_minutes" in invites[0]
+        assert invites[0]["ttl_minutes"] > 0
+
+    def test_list_invites_all_platforms(self, tmp_path):
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+            store = PairingStore()
+            store.generate_invite_code("bluebubbles")
+            store.generate_invite_code("telegram")
+            invites = store.list_invites()
+        assert len(invites) == 2
+        platforms = {inv["platform"] for inv in invites}
+        assert platforms == {"bluebubbles", "telegram"}
+
+    def test_clear_invites(self, tmp_path):
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+            store = PairingStore()
+            store.generate_invite_code("bluebubbles")
+            store.generate_invite_code("bluebubbles")
+            count = store.clear_invites("bluebubbles")
+            remaining = store.list_invites("bluebubbles")
+        assert count == 2
+        assert len(remaining) == 0
+
+    def test_clear_invites_all_platforms(self, tmp_path):
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+            store = PairingStore()
+            store.generate_invite_code("bluebubbles")
+            store.generate_invite_code("telegram")
+            count = store.clear_invites()
         assert count == 2

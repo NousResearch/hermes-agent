@@ -1801,6 +1801,26 @@ class GatewayRunner:
             # In DMs: offer pairing code. In groups: silently ignore.
             if source.chat_type == "dm" and self._get_unauthorized_dm_behavior(source.platform) == "pair":
                 platform_name = source.platform.value if source.platform else "unknown"
+
+                # Check if the message itself is a valid invite code.
+                # Invite codes are generated proactively by the owner via
+                # ``hermes pairing generate <platform>`` and shared out-of-band.
+                msg_text = (event.text or "").strip().upper()
+                if msg_text and self.pairing_store.claim_invite_code(
+                    platform_name, msg_text, source.user_id, source.user_name or ""
+                ):
+                    logger.info(
+                        "Invite code claimed by %s (%s) on %s",
+                        source.user_id, source.user_name, platform_name,
+                    )
+                    adapter = self.adapters.get(source.platform)
+                    if adapter:
+                        await adapter.send(
+                            source.chat_id,
+                            "Welcome! You've been approved~ Send me a message to get started."
+                        )
+                    return None
+
                 # Rate-limit ALL pairing responses (code or rejection) to
                 # prevent spamming the user with repeated messages when
                 # multiple DMs arrive in quick succession.

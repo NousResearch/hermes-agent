@@ -4770,7 +4770,16 @@ For more help on a command:
     )
     pairing_sub = pairing_parser.add_subparsers(dest="pairing_action")
 
-    pairing_sub.add_parser("list", help="Show pending + approved users")
+    pairing_sub.add_parser("list", help="Show pending + approved users + invite codes")
+
+    pairing_generate_parser = pairing_sub.add_parser(
+        "generate", aliases=["gen"],
+        help="Generate a single-use invite code to share with someone",
+    )
+    pairing_generate_parser.add_argument(
+        "platform",
+        help="Platform name (e.g. bluebubbles, telegram, discord)",
+    )
 
     pairing_approve_parser = pairing_sub.add_parser("approve", help="Approve a pairing code")
     pairing_approve_parser.add_argument("platform", help="Platform name (telegram, discord, slack, whatsapp)")

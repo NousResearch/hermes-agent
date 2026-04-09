@@ -102,6 +102,7 @@ def make_runner(session_entry: SessionEntry) -> "GatewayRunner":
     # Pairing store (used by authorization rejection path)
     runner.pairing_store = MagicMock()
     runner.pairing_store._is_rate_limited = MagicMock(return_value=False)
+    runner.pairing_store.claim_invite_code = MagicMock(return_value=False)
     runner.pairing_store.generate_code = MagicMock(return_value="ABC123")
 
     return runner

@@ -5,11 +5,22 @@ Code-based approval flow for authorizing new users on messaging platforms.
 Instead of static allowlists with user IDs, unknown users receive a one-time
 pairing code that the bot owner approves via the CLI.
 
+Two pairing flows are supported:
+
+  Reactive (default):
+    Unknown user messages the bot → bot generates a code tied to that user →
+    owner runs ``hermes pairing approve <platform> <code>`` to approve.
+
+  Proactive (invite codes):
+    Owner runs ``hermes pairing generate <platform>`` → receives a single-use
+    invite code → shares it out-of-band → recipient sends the code as their
+    first message → auto-approved.
+
 Security features (based on OWASP + NIST SP 800-63-4 guidance):
   - 8-char codes from 32-char unambiguous alphabet (no 0/O/1/I)
   - Cryptographic randomness via secrets.choice()
-  - 1-hour code expiry
-  - Max 3 pending codes per platform
+  - 1-hour code expiry (reactive), 24-hour expiry (invite codes)
+  - Max 3 pending codes per platform (reactive), 5 invite codes
   - Rate limiting: 1 request per user per 10 minutes
   - Lockout after 5 failed approval attempts (1 hour)
   - File permissions: chmod 0600 on all data files
@@ -41,7 +52,12 @@ LOCKOUT_SECONDS = 3600              # Lockout duration after too many failures
 
 # Limits
 MAX_PENDING_PER_PLATFORM = 3        # Max pending codes per platform
+MAX_INVITE_CODES_PER_PLATFORM = 5   # Max invite codes per platform
 MAX_FAILED_ATTEMPTS = 5             # Failed approvals before lockout
+
+# Invite code TTL — longer than reactive codes since the owner needs time
+# to share the code out-of-band.
+INVITE_TTL_SECONDS = 86400          # 24 hours
 
 PAIRING_DIR = get_hermes_dir("platforms/pairing", "pairing")
 
@@ -77,7 +93,8 @@ class PairingStore:
     Manages pairing codes and approved user lists.
 
     Data files per platform:
-      - {platform}-pending.json   : pending pairing requests
+      - {platform}-pending.json   : pending pairing requests (reactive flow)
+      - {platform}-invites.json   : invite codes (proactive flow)
       - {platform}-approved.json  : approved (paired) users
       - _rate_limits.json         : rate limit tracking
     """
@@ -90,6 +107,9 @@ class PairingStore:
 
     def _pending_path(self, platform: str) -> Path:
         return PAIRING_DIR / f"{platform}-pending.json"
+
+    def _invites_path(self, platform: str) -> Path:
+        return PAIRING_DIR / f"{platform}-invites.json"
 
     def _approved_path(self, platform: str) -> Path:
         return PAIRING_DIR / f"{platform}-approved.json"
@@ -244,6 +264,97 @@ class PairingStore:
                 count += len(pending)
                 self._save_json(self._pending_path(p), {})
         return count
+
+    # ----- Invite codes (proactive flow) -----
+
+    def generate_invite_code(self, platform: str) -> Optional[str]:
+        """
+        Generate a single-use invite code for a platform.
+
+        The bot owner shares this code out-of-band.  When an unauthorized user
+        sends the code as their first message, they are auto-approved.
+
+        Returns the code string, or None if the invite limit is reached.
+        """
+        with self._lock:
+            self._cleanup_expired_invites(platform)
+
+            invites = self._load_json(self._invites_path(platform))
+            if len(invites) >= MAX_INVITE_CODES_PER_PLATFORM:
+                return None
+
+            code = "".join(secrets.choice(ALPHABET) for _ in range(CODE_LENGTH))
+            invites[code] = {"created_at": time.time()}
+            self._save_json(self._invites_path(platform), invites)
+            return code
+
+    def claim_invite_code(
+        self, platform: str, code: str, user_id: str, user_name: str = ""
+    ) -> bool:
+        """
+        Try to claim an invite code.  If valid, the user is approved and the
+        code is consumed (single-use).
+
+        Returns True if the code was valid and the user was approved.
+        """
+        with self._lock:
+            self._cleanup_expired_invites(platform)
+            code = code.upper().strip()
+
+            invites = self._load_json(self._invites_path(platform))
+            if code not in invites:
+                return False
+
+            # Consume the code
+            del invites[code]
+            self._save_json(self._invites_path(platform), invites)
+
+            # Approve the user
+            self._approve_user(platform, user_id, user_name)
+            return True
+
+    def list_invites(self, platform: str = None) -> list:
+        """List outstanding invite codes, optionally filtered by platform."""
+        results = []
+        platforms = [platform] if platform else self._all_platforms("invites")
+        for p in platforms:
+            self._cleanup_expired_invites(p)
+            invites = self._load_json(self._invites_path(p))
+            for code, info in invites.items():
+                age_min = int((time.time() - info["created_at"]) / 60)
+                ttl_min = max(0, int((INVITE_TTL_SECONDS - (time.time() - info["created_at"])) / 60))
+                results.append({
+                    "platform": p,
+                    "code": code,
+                    "age_minutes": age_min,
+                    "ttl_minutes": ttl_min,
+                })
+        return results
+
+    def clear_invites(self, platform: str = None) -> int:
+        """Clear all invite codes. Returns count removed."""
+        with self._lock:
+            count = 0
+            platforms = [platform] if platform else self._all_platforms("invites")
+            for p in platforms:
+                invites = self._load_json(self._invites_path(p))
+                count += len(invites)
+                self._save_json(self._invites_path(p), {})
+        return count
+
+    def _cleanup_expired_invites(self, platform: str) -> None:
+        """Remove expired invite codes."""
+        path = self._invites_path(platform)
+        invites = self._load_json(path)
+        now = time.time()
+        expired = [
+            code for code, info in invites.items()
+            if (now - info["created_at"]) > INVITE_TTL_SECONDS
+        ]
+        if expired:
+            for code in expired:
+                del invites[code]
+            self._save_json(path, invites)
 
     # ----- Rate limiting and lockout -----
 

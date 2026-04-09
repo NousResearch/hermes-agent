@@ -425,8 +425,8 @@ class TestSlashCommandCompleter:
 class TestSubcommands:
     def test_explicit_subcommands_extracted(self):
         """Commands with explicit subcommands on CommandDef are extracted."""
-        assert "/prompt" in SUBCOMMANDS
-        assert "clear" in SUBCOMMANDS["/prompt"]
+        assert "/skills" in SUBCOMMANDS
+        assert "install" in SUBCOMMANDS["/skills"]
 
     def test_reasoning_has_subcommands(self):
         assert "/reasoning" in SUBCOMMANDS

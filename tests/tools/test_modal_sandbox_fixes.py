@@ -9,6 +9,7 @@ Covers the bugs discovered while setting up TBLite evaluation:
 6. /home/ added to host prefix check
 """
 
+import json
 import os
 import sys
 from pathlib import Path
@@ -153,6 +154,30 @@ class TestCwdHandling:
         assert captured["cwd"] == "/workspace"
         assert captured["host_cwd"] == "/home/user/project"
         assert captured["auto_mount_cwd"] is True
+
+    def test_terminal_tool_passes_docker_host_access_to_approval_guard(self, monkeypatch):
+        """Dangerous Docker commands should not bypass approval when host binds are exposed."""
+        class _FakeEnv:
+            def execute(self, *args, **kwargs):
+                raise AssertionError("terminal_tool should stop before executing the command")
+
+        monkeypatch.setattr(_tt_mod, "_start_cleanup_thread", lambda: None)
+        monkeypatch.setattr(_tt_mod, "_create_environment", lambda **kwargs: _FakeEnv())
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        monkeypatch.setenv("TERMINAL_DOCKER_VOLUMES", '["/tmp:/hosttmp"]')
+        monkeypatch.setenv("HERMES_GATEWAY_SESSION", "1")
+        monkeypatch.setattr(
+            "tools.tirith_security.check_command_security",
+            lambda _command: {"action": "allow", "findings": [], "summary": ""},
+        )
+        _tt_mod._active_environments.pop("docker-host-access", None)
+        _tt_mod._last_activity.pop("docker-host-access", None)
+
+        result = json.loads(_tt_mod.terminal_tool("rm -rf /workspace", task_id="docker-host-access"))
+
+        assert result["status"] == "approval_required"
+        assert result["command"] == "rm -rf /workspace"
+        assert "delete" in result["description"].lower()
 
     def test_ssh_preserves_home_paths(self, monkeypatch):
         """SSH backend should NOT replace /home/ paths (they're valid remotely)."""

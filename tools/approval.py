@@ -536,8 +536,16 @@ Respond with exactly one word: APPROVE, DENY, or ESCALATE"""
         return "escalate"
 
 
+def _should_skip_container_guards(env_type: str, has_host_access: bool = False) -> bool:
+    """Return True when the backend is isolated enough to skip dangerous-command prompts."""
+    if env_type == "docker":
+        return not has_host_access
+    return env_type in ("singularity", "modal", "daytona")
+
+
 def check_dangerous_command(command: str, env_type: str,
-                            approval_callback=None) -> dict:
+                            approval_callback=None,
+                            has_host_access: bool = False) -> dict:
     """Check if a command is dangerous and handle approval.
 
     This is the main entry point called by terminal_tool before executing
@@ -551,7 +559,7 @@ def check_dangerous_command(command: str, env_type: str,
     Returns:
         {"approved": True/False, "message": str or None, ...}
     """
-    if env_type in ("docker", "singularity", "modal", "daytona"):
+    if _should_skip_container_guards(env_type, has_host_access=has_host_access):
         return {"approved": True, "message": None}
 
     # --yolo: bypass all approval prompts
@@ -643,7 +651,8 @@ def _format_tirith_description(tirith_result: dict) -> str:
 
 
 def check_all_command_guards(command: str, env_type: str,
-                             approval_callback=None) -> dict:
+                             approval_callback=None,
+                             has_host_access: bool = False) -> dict:
     """Run all pre-exec security checks and return a single approval decision.
 
     Gathers findings from tirith and dangerous-command detection, then
@@ -651,8 +660,9 @@ def check_all_command_guards(command: str, env_type: str,
     a gateway force=True replay from bypassing one check when only the
     other was shown to the user.
     """
-    # Skip containers for both checks
-    if env_type in ("docker", "singularity", "modal", "daytona"):
+    # Skip isolated container backends. Docker stops skipping once host paths
+    # are bind-mounted into the sandbox.
+    if _should_skip_container_guards(env_type, has_host_access=has_host_access):
         return {"approved": True, "message": None}
 
     # --yolo or approvals.mode=off: bypass all approval prompts

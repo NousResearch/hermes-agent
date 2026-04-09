@@ -100,6 +100,7 @@ class SlackAdapter(BasePlatformAdapter):
         # events, and they carry the user/thread identity needed for stable
         # session + memory scoping.
         self._assistant_threads: Dict[Tuple[str, str], Dict[str, str]] = {}
+        self._ASSISTANT_THREADS_MAX = 5000
 
     async def connect(self) -> bool:
         """Connect to Slack via Socket Mode."""
@@ -825,6 +826,12 @@ class SlackAdapter(BasePlatformAdapter):
         merged = dict(existing)
         merged.update({k: v for k, v in metadata.items() if v})
         self._assistant_threads[key] = merged
+
+        # Evict oldest entries when the cache exceeds the limit
+        if len(self._assistant_threads) > self._ASSISTANT_THREADS_MAX:
+            excess = len(self._assistant_threads) - self._ASSISTANT_THREADS_MAX // 2
+            for old_key in list(self._assistant_threads)[:excess]:
+                del self._assistant_threads[old_key]
 
         team_id = merged.get("team_id", "")
         if team_id and channel_id:

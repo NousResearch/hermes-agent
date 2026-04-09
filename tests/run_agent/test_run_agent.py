@@ -1090,6 +1090,46 @@ class TestExecuteToolCalls:
         assert len(messages) == 1
         assert messages[0]["role"] == "tool"
 
+    def test_vprint_suppressed_in_parseable_quiet_mode(self, agent):
+        agent.suppress_status_output = True
+
+        with patch.object(agent, "_safe_print") as mock_print:
+            agent._vprint("status line", force=True)
+            agent._vprint("normal line")
+
+        mock_print.assert_not_called()
+
+    def test_run_conversation_suppresses_retry_noise_in_parseable_quiet_mode(self, agent):
+        class _RateLimitError(Exception):
+            status_code = 429
+
+            def __str__(self):
+                return "Error code: 429 - Rate limit exceeded."
+
+        responses = [_RateLimitError(), _mock_response(content="Recovered")]
+
+        def _fake_api_call(api_kwargs):
+            result = responses.pop(0)
+            if isinstance(result, Exception):
+                raise result
+            return result
+
+        agent.suppress_status_output = True
+        agent._interruptible_api_call = _fake_api_call
+        agent._persist_session = lambda *args, **kwargs: None
+        agent._save_trajectory = lambda *args, **kwargs: None
+        agent._save_session_log = lambda *args, **kwargs: None
+
+        with patch("run_agent.time.sleep", return_value=None), \
+             patch.object(agent, "_vprint") as mock_vprint:
+            result = agent.run_conversation("hello")
+
+        assert result["completed"] is True
+        assert result["final_response"] == "Recovered"
+        rendered = [" ".join(str(arg) for arg in call.args) for call in mock_vprint.call_args_list]
+        assert not any("API call failed" in line for line in rendered)
+        assert not any("Rate limit reached" in line for line in rendered)
+
 
 class TestConcurrentToolExecution:
     """Tests for _execute_tool_calls_concurrent and dispatch logic."""

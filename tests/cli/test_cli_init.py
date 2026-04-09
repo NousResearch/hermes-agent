@@ -345,3 +345,39 @@ class TestProviderResolution:
         cli = _make_cli()
         assert isinstance(cli.model, str)
         assert isinstance(cli.model, str) and '/' in cli.model
+
+
+class TestCtrlDEofBehavior:
+    def test_ctrl_d_does_not_exit_when_buffer_has_text(self):
+        cli = _make_cli()
+        app = MagicMock()
+        app.current_buffer.text = "keep this draft"
+
+        exited = cli._exit_if_input_empty(app)
+
+        assert exited is False
+        assert cli._should_exit is False
+        app.exit.assert_not_called()
+
+    def test_ctrl_d_does_not_exit_when_images_are_attached(self):
+        cli = _make_cli()
+        app = MagicMock()
+        app.current_buffer.text = ""
+        cli._attached_images = ["clipboard-image.png"]
+
+        exited = cli._exit_if_input_empty(app)
+
+        assert exited is False
+        assert cli._should_exit is False
+        app.exit.assert_not_called()
+
+    def test_ctrl_d_exits_when_buffer_is_empty(self):
+        cli = _make_cli()
+        app = MagicMock()
+        app.current_buffer.text = ""
+
+        exited = cli._exit_if_input_empty(app)
+
+        assert exited is True
+        assert cli._should_exit is True
+        app.exit.assert_called_once_with()

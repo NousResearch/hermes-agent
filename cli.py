@@ -7061,6 +7061,20 @@ class HermesCLI:
             completions_menu,
         ]
 
+    def _input_buffer_has_content(self, app) -> bool:
+        """Return whether the TUI input has pending text or attachments."""
+        current_buffer = getattr(app, "current_buffer", None)
+        text = getattr(current_buffer, "text", "")
+        return bool(text or self._attached_images)
+
+    def _exit_if_input_empty(self, app) -> bool:
+        """Exit only when the input buffer is truly empty."""
+        if self._input_buffer_has_content(app):
+            return False
+        self._should_exit = True
+        app.exit()
+        return True
+
     def run(self):
         """Run the interactive CLI loop with persistent input at bottom."""
         # Push the entire TUI to the bottom of the terminal so the banner,
@@ -7448,19 +7462,17 @@ class HermesCLI:
             else:
                 # If there's text or images, clear them (like bash).
                 # If everything is already empty, exit.
-                if event.app.current_buffer.text or self._attached_images:
+                if self._input_buffer_has_content(event.app):
                     event.app.current_buffer.reset()
                     self._attached_images.clear()
                     event.app.invalidate()
                 else:
-                    self._should_exit = True
-                    event.app.exit()
+                    self._exit_if_input_empty(event.app)
         
         @kb.add('c-d')
         def handle_ctrl_d(event):
-            """Handle Ctrl+D - exit."""
-            self._should_exit = True
-            event.app.exit()
+            """Handle Ctrl+D - exit only when the input is empty."""
+            self._exit_if_input_empty(event.app)
 
         @kb.add('c-z')
         def handle_ctrl_z(event):

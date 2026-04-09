@@ -2628,7 +2628,7 @@ def _offer_openclaw_migration(hermes_home: Path) -> bool:
             target_root=hermes_home.resolve(),
             execute=True,
             workspace_target=None,
-            overwrite=True,
+            overwrite=False,
             migrate_secrets=True,
             output_dir=None,
             selected_options=selected,

@@ -444,11 +444,17 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
             send_parse_mode = ParseMode.MARKDOWN_V2
 
         bot = Bot(token=token)
-        int_chat_id = int(chat_id)
+        try:
+            int_chat_id = int(chat_id)
+        except (ValueError, TypeError):
+            return _error(f"Invalid Telegram chat_id (expected numeric): {chat_id!r}")
         media_files = media_files or []
         thread_kwargs = {}
         if thread_id is not None:
-            thread_kwargs["message_thread_id"] = int(thread_id)
+            try:
+                thread_kwargs["message_thread_id"] = int(thread_id)
+            except (ValueError, TypeError):
+                return _error(f"Invalid Telegram thread_id (expected numeric): {thread_id!r}")
 
         last_msg = None
         warnings = []

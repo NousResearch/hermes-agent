@@ -5914,7 +5914,8 @@ class AIAgent:
                     break
 
             if not memory_tool_def:
-                messages.pop()  # remove flush msg
+                # No memory tool available — skip the flush API call.
+                # Do NOT pop the sentinel here; the finally block handles cleanup.
                 return
 
             # Use auxiliary client for the flush call when available --

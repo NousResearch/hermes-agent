@@ -4140,7 +4140,13 @@ class GatewayRunner:
                 from_profile="hermes",
                 to_profile=target,
                 message_type=MessageType.TASK_REQUEST,
-                payload={"task": message_text, "user_talk": True},
+                payload={
+                    "task": message_text,
+                    "user_talk": True,
+                    "deliver_to": "origin",
+                    "origin_platform": source.platform.value if source.platform else "",
+                    "origin_chat_id": source.chat_id,
+                },
             )
             bus.close()
 

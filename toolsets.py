@@ -296,6 +296,9 @@ TOOLSETS = {
             "read_file", "write_file", "patch", "search_files",
             # Vision + image generation
             "vision_analyze", "image_generate",
+            # Knowledge base + macOS workflows (companion slash commands /wiki, /mac)
+            "kb",
+            "mac_help", "mac_workflow",
             # MoA
             "mixture_of_agents",
             # Skills

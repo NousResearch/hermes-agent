@@ -15,6 +15,7 @@ Tests cover:
 import json
 import time
 import uuid
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -223,6 +224,8 @@ def _create_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_get("/v1/models", adapter._handle_models)
     app.router.add_post("/v1/chat/completions", adapter._handle_chat_completions)
     app.router.add_post("/v1/responses", adapter._handle_responses)
+    app.router.add_post("/v1/runs", adapter._handle_runs)
+    app.router.add_get("/v1/runs/{run_id}/events", adapter._handle_run_events)
     app.router.add_get("/v1/responses/{response_id}", adapter._handle_get_response)
     app.router.add_delete("/v1/responses/{response_id}", adapter._handle_delete_response)
     return app
@@ -874,6 +877,81 @@ class TestResponsesEndpoint:
                 json={"model": "hermes-agent", "input": 42},
             )
             assert resp.status == 400
+
+
+# ---------------------------------------------------------------------------
+# /v1/runs endpoint
+# ---------------------------------------------------------------------------
+
+
+class TestRunsEndpoint:
+    @pytest.mark.asyncio
+    async def test_runs_preprocesses_multimodal_final_turn_before_run_conversation(self, adapter):
+        app = _create_app(adapter)
+        fake_agent = MagicMock()
+        fake_agent._preprocess_anthropic_content.return_value = "described image\n\nplease analyze this"
+        fake_agent.run_conversation.return_value = {"final_response": "done"}
+        fake_agent.session_prompt_tokens = 0
+        fake_agent.session_completion_tokens = 0
+        fake_agent.session_total_tokens = 0
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent", return_value=fake_agent):
+                resp = await cli.post(
+                    "/v1/runs",
+                    json={
+                        "input": [
+                            {
+                                "role": "user",
+                                "content": [
+                                    {"type": "text", "text": "please analyze this"},
+                                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+                                ],
+                            }
+                        ]
+                    },
+                )
+
+                assert resp.status == 202
+                await asyncio.sleep(0.1)
+
+        fake_agent._preprocess_anthropic_content.assert_called_once()
+        fake_agent.run_conversation.assert_called_once()
+        assert fake_agent.run_conversation.call_args.kwargs["user_message"] == "described image\n\nplease analyze this"
+
+    @pytest.mark.asyncio
+    async def test_runs_falls_back_to_text_blocks_when_multimodal_preprocessing_fails(self, adapter):
+        app = _create_app(adapter)
+        fake_agent = MagicMock()
+        fake_agent._preprocess_anthropic_content.side_effect = RuntimeError("boom")
+        fake_agent.run_conversation.return_value = {"final_response": "done"}
+        fake_agent.session_prompt_tokens = 0
+        fake_agent.session_completion_tokens = 0
+        fake_agent.session_total_tokens = 0
+
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent", return_value=fake_agent):
+                resp = await cli.post(
+                    "/v1/runs",
+                    json={
+                        "input": [
+                            {
+                                "role": "user",
+                                "content": [
+                                    {"type": "text", "text": "first line"},
+                                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+                                    {"type": "input_text", "text": "second line"},
+                                ],
+                            }
+                        ]
+                    },
+                )
+
+                assert resp.status == 202
+                await asyncio.sleep(0.1)
+
+        fake_agent.run_conversation.assert_called_once()
+        assert fake_agent.run_conversation.call_args.kwargs["user_message"] == "first line\nsecond line"
 
 
 # ---------------------------------------------------------------------------

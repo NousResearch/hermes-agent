@@ -294,5 +294,4 @@ tui_gateway/
 
 ## Notes
 
-- `src/main.tsx` currently duplicates `entry.tsx`.
-- `src/altScreen.tsx`, `components/commandPalette.tsx`, and `lib/slash.ts` exist, but are not part of the active runtime path from `entry.tsx` to `app.tsx`.
+- No dead code: `main.tsx`, `altScreen.tsx`, `commandPalette.tsx`, and `lib/slash.ts` have been removed.

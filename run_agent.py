@@ -1149,6 +1149,9 @@ class AIAgent:
             except (TypeError, ValueError):
                 _config_context_length = None
 
+        # Store for reuse in switch_model (so config override persists across model switches)
+        self._config_context_length = _config_context_length
+
         # Check custom_providers per-model context_length
         if _config_context_length is None:
             _custom_providers = _agent_cfg.get("custom_providers")
@@ -1386,6 +1389,7 @@ class AIAgent:
                 base_url=self.base_url,
                 api_key=self.api_key,
                 provider=self.provider,
+                config_context_length=getattr(self, "_config_context_length", None),
             )
             self.context_compressor.model = self.model
             self.context_compressor.base_url = self.base_url

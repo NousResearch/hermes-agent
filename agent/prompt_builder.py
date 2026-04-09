@@ -356,6 +356,12 @@ PLATFORM_HINTS = {
         "MEDIA:/absolute/path/to/file in your response. Images (.jpg, .png, "
         ".heic) appear as photos and other files arrive as attachments."
     ),
+    "wechat": (
+        "You are chatting via WeChat (personal). WeChat does not render markdown "
+        "formatting — use plain text only. Keep responses concise and conversational "
+        "as they appear as chat messages. WeChat has a message size limit so avoid "
+        "very long responses."
+    ),
 }
 
 CONTEXT_FILE_MAX_CHARS = 20_000

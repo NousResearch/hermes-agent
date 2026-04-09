@@ -1589,6 +1589,27 @@ _PLATFORMS = [
         ],
     },
     {
+        "key": "wechat",
+        "label": "WeChat (iLink)",
+        "emoji": "💬",
+        "token_var": "WECHAT_ILINK_TOKEN",
+        "setup_instructions": [
+            "1. WeChat integration uses the iLink API for personal WeChat accounts",
+            "2. Run 'hermes wechat bind' to generate a QR code",
+            "3. Scan the QR code with your WeChat app to link your account",
+            "4. The session token is stored locally in .wechat_session",
+            "5. To authorize users, use DM pairing: hermes pairing generate wechat",
+        ],
+        "vars": [
+            {"name": "WECHAT_ILINK_URL", "prompt": "iLink API URL (default: https://ilinkai.weixin.qq.com)", "password": False,
+             "help": "The iLink API endpoint. Usually leave as default."},
+            {"name": "WECHAT_ILINK_TOKEN", "prompt": "iLink bot token (or leave empty to use QR code binding)", "password": True,
+             "help": "Optional — provide a bot token or use QR code binding instead."},
+            {"name": "WECHAT_HOME_CHANNEL", "prompt": "Home chat ID for cron/notifications (optional)", "password": False,
+             "help": "WeChat user ID to deliver cron results and notifications to."},
+        ],
+    },
+    {
         "key": "bluebubbles",
         "label": "BlueBubbles (iMessage)",
         "emoji": "💬",

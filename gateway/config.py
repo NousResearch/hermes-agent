@@ -64,6 +64,7 @@ class Platform(Enum):
     FEISHU = "feishu"
     WECOM = "wecom"
     BLUEBUBBLES = "bluebubbles"
+    WECHAT = "wechat"
 
 
 @dataclass
@@ -290,6 +291,9 @@ class GatewayConfig:
                 connected.append(platform)
             # BlueBubbles uses extra dict for local server config
             elif platform == Platform.BLUEBUBBLES and config.extra.get("server_url") and config.extra.get("password"):
+                connected.append(platform)
+            # WeChat uses iLink URL + token/session auth in adapter
+            elif platform == Platform.WECHAT and config.extra.get("ilink_url"):
                 connected.append(platform)
         return connected
     
@@ -534,6 +538,11 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["require_mention"] = platform_cfg["require_mention"]
                 if "mention_patterns" in platform_cfg:
                     bridged["mention_patterns"] = platform_cfg["mention_patterns"]
+                if plat == Platform.WECHAT:
+                    for wk in ("ilink_url", "ilink_token", "free_response_chats",
+                               "free_response", "poll_timeout_seconds", "profile"):
+                        if wk in platform_cfg:
+                            bridged[wk] = platform_cfg[wk]
                 if not bridged:
                     continue
                 plat_data = platforms_data.setdefault(plat.value, {})
@@ -601,6 +610,25 @@ def load_gateway_config() -> GatewayConfig:
                         frc = ",".join(str(v) for v in frc)
                     os.environ["WHATSAPP_FREE_RESPONSE_CHATS"] = str(frc)
 
+            # WeChat settings → env vars (env vars take precedence)
+            wechat_cfg = yaml_cfg.get("wechat", {})
+            if isinstance(wechat_cfg, dict):
+                if "ilink_url" in wechat_cfg and not os.getenv("WECHAT_ILINK_URL"):
+                    os.environ["WECHAT_ILINK_URL"] = str(wechat_cfg["ilink_url"])
+                if "ilink_token" in wechat_cfg and not os.getenv("WECHAT_ILINK_TOKEN"):
+                    os.environ["WECHAT_ILINK_TOKEN"] = str(wechat_cfg["ilink_token"])
+                if "require_mention" in wechat_cfg and not os.getenv("WECHAT_REQUIRE_MENTION"):
+                    os.environ["WECHAT_REQUIRE_MENTION"] = str(wechat_cfg["require_mention"]).lower()
+                if "mention_patterns" in wechat_cfg and not os.getenv("WECHAT_MENTION_PATTERNS"):
+                    os.environ["WECHAT_MENTION_PATTERNS"] = json.dumps(wechat_cfg["mention_patterns"])
+                frc = wechat_cfg.get("free_response_chats")
+                if frc is None:
+                    frc = wechat_cfg.get("free_response")
+                if frc is not None and not os.getenv("WECHAT_FREE_RESPONSE_CHATS"):
+                    if isinstance(frc, list):
+                        frc = ",".join(str(v) for v in frc)
+                    os.environ["WECHAT_FREE_RESPONSE_CHATS"] = str(frc)
+
             # Matrix settings → env vars (env vars take precedence)
             matrix_cfg = yaml_cfg.get("matrix", {})
             if isinstance(matrix_cfg, dict):
@@ -651,6 +679,7 @@ def load_gateway_config() -> GatewayConfig:
         Platform.SLACK: "SLACK_BOT_TOKEN",
         Platform.MATTERMOST: "MATTERMOST_TOKEN",
         Platform.MATRIX: "MATRIX_ACCESS_TOKEN",
+        Platform.WECHAT: "WECHAT_ILINK_TOKEN",
     }
     for platform, pconfig in config.platforms.items():
         if not pconfig.enabled:
@@ -973,6 +1002,25 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             platform=Platform.BLUEBUBBLES,
             chat_id=bluebubbles_home,
             name=os.getenv("BLUEBUBBLES_HOME_CHANNEL_NAME", "Home"),
+        )
+
+    # WeChat (iLink URL plus token or persisted session auth)
+    wechat_url = os.getenv("WECHAT_ILINK_URL", "").strip()
+    wechat_token = os.getenv("WECHAT_ILINK_TOKEN", "").strip()
+    if wechat_url or wechat_token:
+        if Platform.WECHAT not in config.platforms:
+            config.platforms[Platform.WECHAT] = PlatformConfig()
+        config.platforms[Platform.WECHAT].enabled = True
+        if wechat_url:
+            config.platforms[Platform.WECHAT].extra["ilink_url"] = wechat_url
+        if wechat_token:
+            config.platforms[Platform.WECHAT].token = wechat_token
+    wechat_home = os.getenv("WECHAT_HOME_CHANNEL")
+    if wechat_home and Platform.WECHAT in config.platforms:
+        config.platforms[Platform.WECHAT].home_channel = HomeChannel(
+            platform=Platform.WECHAT,
+            chat_id=wechat_home,
+            name=os.getenv("WECHAT_HOME_CHANNEL_NAME", "Home"),
         )
 
     # Session settings

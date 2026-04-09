@@ -149,6 +149,7 @@ def _handle_send(args):
         "whatsapp": Platform.WHATSAPP,
         "signal": Platform.SIGNAL,
         "bluebubbles": Platform.BLUEBUBBLES,
+        "wechat": Platform.WECHAT,
         "matrix": Platform.MATRIX,
         "mattermost": Platform.MATTERMOST,
         "homeassistant": Platform.HOMEASSISTANT,
@@ -399,6 +400,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             result = await _send_wecom(pconfig.extra, chat_id, chunk)
         elif platform == Platform.BLUEBUBBLES:
             result = await _send_bluebubbles(pconfig.extra, chat_id, chunk)
+        elif platform == Platform.WECHAT:
+            result = await _send_wechat(pconfig, chat_id, chunk)
         else:
             result = {"error": f"Direct sending not yet implemented for {platform.value}"}
 
@@ -898,6 +901,31 @@ async def _send_bluebubbles(extra, chat_id, message):
             await adapter.disconnect()
     except Exception as e:
         return _error(f"BlueBubbles send failed: {e}")
+
+
+async def _send_wechat(pconfig, chat_id, message):
+    """Send via WeChat using the iLink adapter."""
+    try:
+        from gateway.platforms.wechat import WeChatAdapter, check_wechat_requirements
+        if not check_wechat_requirements():
+            return {"error": "WeChat requirements not met (need aiohttp)."}
+    except ImportError:
+        return {"error": "WeChat adapter not available."}
+
+    try:
+        adapter = WeChatAdapter(pconfig)
+        connected = await adapter.connect()
+        if not connected:
+            return _error("WeChat: failed to connect to iLink API")
+        try:
+            result = await adapter.send(chat_id, message)
+            if not result.success:
+                return _error(f"WeChat send failed: {result.error}")
+            return {"success": True, "platform": "wechat", "chat_id": chat_id, "message_id": result.message_id}
+        finally:
+            await adapter.disconnect()
+    except Exception as e:
+        return _error(f"WeChat send failed: {e}")
 
 
 async def _send_feishu(pconfig, chat_id, message, media_files=None, thread_id=None):

@@ -1442,7 +1442,15 @@ class HermesCLI:
             self.max_turns = int(os.getenv("HERMES_MAX_ITERATIONS"))
         else:
             self.max_turns = 90
-        
+
+        # Max output tokens: config.yaml model.max_tokens (None = use model default)
+        self.max_tokens: Optional[int] = None
+        if isinstance(_model_config, dict) and _model_config.get("max_tokens"):
+            try:
+                self.max_tokens = int(_model_config["max_tokens"])
+            except (TypeError, ValueError):
+                pass
+
         # Parse and validate toolsets
         self.enabled_toolsets = toolsets
         if toolsets and "all" not in toolsets and "*" not in toolsets:
@@ -2442,6 +2450,7 @@ class HermesCLI:
                 acp_args=runtime.get("args"),
                 credential_pool=runtime.get("credential_pool"),
                 max_iterations=self.max_turns,
+                max_tokens=self.max_tokens,
                 enabled_toolsets=self.enabled_toolsets,
                 verbose_logging=self.verbose,
                 quiet_mode=not self.verbose,
@@ -4822,6 +4831,7 @@ class HermesCLI:
                     acp_command=turn_route["runtime"].get("command"),
                     acp_args=turn_route["runtime"].get("args"),
                     max_iterations=self.max_turns,
+                    max_tokens=self.max_tokens,
                     enabled_toolsets=self.enabled_toolsets,
                     quiet_mode=True,
                     verbose_logging=False,
@@ -4958,6 +4968,7 @@ class HermesCLI:
                     acp_command=turn_route["runtime"].get("command"),
                     acp_args=turn_route["runtime"].get("args"),
                     max_iterations=8,
+                    max_tokens=self.max_tokens,
                     enabled_toolsets=[],
                     quiet_mode=True,
                     verbose_logging=False,

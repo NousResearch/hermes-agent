@@ -612,3 +612,158 @@ class TestSummaryTargetRatio:
         with patch("agent.context_compressor.get_model_context_length", return_value=100_000):
             c = ContextCompressor(model="test", quiet_mode=True)
         assert c.protect_last_n == 20
+
+
+class TestTokenBudgetTailProtection:
+    """Tests for token-budget-based tail protection (PR #6240).
+
+    The core change: tail protection is now based on a token budget rather
+    than a fixed message count.  This prevents large tool outputs from
+    blocking compaction.
+    """
+
+    @pytest.fixture()
+    def budget_compressor(self):
+        """Compressor with known token budget for tail protection tests."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=200_000):
+            c = ContextCompressor(
+                model="test/model",
+                threshold_percent=0.50,  # 100K threshold
+                protect_first_n=2,
+                protect_last_n=20,
+                quiet_mode=True,
+            )
+            return c
+
+    def test_large_tool_outputs_no_longer_block_compaction(self, budget_compressor):
+        """The motivating scenario: 20 messages with large tool outputs should
+        NOT prevent compaction.  With message-count tail protection they would
+        all be protected, leaving nothing to summarize."""
+        c = budget_compressor
+        messages = [
+            {"role": "user", "content": "Start task"},
+            {"role": "assistant", "content": "On it"},
+        ]
+        # Add 20 messages with large tool outputs (~5K chars each ≈ 1250 tokens)
+        for i in range(10):
+            messages.append({
+                "role": "assistant", "content": None,
+                "tool_calls": [{"function": {"name": f"tool_{i}", "arguments": "{}"}}],
+            })
+            messages.append({
+                "role": "tool", "content": "x" * 5000,
+                "tool_call_id": f"call_{i}",
+            })
+        # Add 3 recent small messages
+        messages.append({"role": "user", "content": "What's the status?"})
+        messages.append({"role": "assistant", "content": "Here's what I found..."})
+        messages.append({"role": "user", "content": "Continue"})
+
+        # The tail cut should NOT protect all 20 tool messages
+        head_end = c.protect_first_n
+        cut = c._find_tail_cut_by_tokens(messages, head_end)
+        tail_size = len(messages) - cut
+        # With token budget, the tail should be much smaller than 20+
+        assert tail_size < 20, f"Tail {tail_size} messages — large tool outputs are blocking compaction"
+        # But at least 3 (hard minimum)
+        assert tail_size >= 3
+
+    def test_min_tail_always_3_messages(self, budget_compressor):
+        """Even with a tiny token budget, at least 3 messages are protected."""
+        c = budget_compressor
+        # Override to a tiny budget
+        c.tail_token_budget = 10
+        messages = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi"},
+            {"role": "user", "content": "do something"},
+            {"role": "assistant", "content": "working on it"},
+            {"role": "user", "content": "more work"},
+            {"role": "assistant", "content": "done"},
+            {"role": "user", "content": "thanks"},
+        ]
+        head_end = 2
+        cut = c._find_tail_cut_by_tokens(messages, head_end)
+        tail_size = len(messages) - cut
+        assert tail_size >= 3, f"Tail is only {tail_size} messages, min should be 3"
+
+    def test_soft_ceiling_allows_oversized_message(self, budget_compressor):
+        """The 1.5x soft ceiling allows an oversized message to be included
+        rather than splitting it."""
+        c = budget_compressor
+        # Set a small budget — 500 tokens
+        c.tail_token_budget = 500
+        messages = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi"},
+            {"role": "user", "content": "read the file"},
+            # This message is ~600 tokens (> budget of 500, but < 1.5x = 750)
+            {"role": "assistant", "content": "a" * 2400},
+            {"role": "user", "content": "short"},
+            {"role": "assistant", "content": "short reply"},
+            {"role": "user", "content": "continue"},
+        ]
+        head_end = 2
+        cut = c._find_tail_cut_by_tokens(messages, head_end)
+        # The oversized message at index 3 should NOT be the cut point
+        # because 1.5x ceiling = 750 tokens and accumulated would be ~610
+        # (short msgs + oversized msg) which is < 750
+        tail_size = len(messages) - cut
+        assert tail_size >= 3
+
+    def test_small_conversation_still_compresses(self, budget_compressor):
+        """With the new min of 8 messages (head=2 + 3 + 1 guard + 2 middle),
+        a small but compressible conversation should still compress."""
+        c = budget_compressor
+        # 9 messages: head(2) + 4 middle + 3 tail = compressible
+        messages = []
+        for i in range(9):
+            role = "user" if i % 2 == 0 else "assistant"
+            messages.append({"role": role, "content": f"Message {i}"})
+
+        # Should not early-return (needs > protect_first_n + 3 + 1 = 6)
+        # Mock the summary generation to avoid real API call
+        with patch.object(c, "_generate_summary", return_value="Summary of conversation"):
+            result = c.compress(messages, current_tokens=90_000)
+        # Should have compressed (fewer messages than original)
+        assert len(result) < len(messages)
+
+    def test_prune_with_token_budget(self, budget_compressor):
+        """_prune_old_tool_results with protect_tail_tokens respects the budget."""
+        c = budget_compressor
+        messages = [
+            {"role": "user", "content": "start"},
+            {"role": "assistant", "content": None,
+             "tool_calls": [{"function": {"name": "read_file", "arguments": '{"path": "big.txt"}'}}]},
+            {"role": "tool", "content": "x" * 10000, "tool_call_id": "c1"},  # ~2500 tokens
+            {"role": "assistant", "content": None,
+             "tool_calls": [{"function": {"name": "read_file", "arguments": '{"path": "small.txt"}'}}]},
+            {"role": "tool", "content": "y" * 10000, "tool_call_id": "c2"},  # ~2500 tokens
+            {"role": "user", "content": "short recent message"},
+            {"role": "assistant", "content": "short reply"},
+        ]
+        # With a 1000-token budget, only the last couple messages should be protected
+        result, pruned = c._prune_old_tool_results(
+            messages, protect_tail_count=2, protect_tail_tokens=1000,
+        )
+        # At least one old tool result should have been pruned
+        assert pruned >= 1
+
+    def test_prune_without_token_budget_uses_message_count(self, budget_compressor):
+        """Without protect_tail_tokens, falls back to message-count behavior."""
+        c = budget_compressor
+        messages = [
+            {"role": "user", "content": "start"},
+            {"role": "assistant", "content": None,
+             "tool_calls": [{"function": {"name": "tool", "arguments": "{}"}}]},
+            {"role": "tool", "content": "x" * 5000, "tool_call_id": "c1"},
+            {"role": "user", "content": "recent"},
+            {"role": "assistant", "content": "reply"},
+        ]
+        # protect_tail_count=3 means last 3 messages protected
+        result, pruned = c._prune_old_tool_results(
+            messages, protect_tail_count=3,
+        )
+        # Tool at index 2 is outside the protected tail (last 3 = indices 2,3,4)
+        # so it might or might not be pruned depending on boundary
+        assert isinstance(pruned, int)

@@ -77,6 +77,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 # Resolve Hermes home directory (respects HERMES_HOME override)
 from hermes_constants import get_hermes_home
 from utils import atomic_yaml_write
+from tools.vision_tools import build_multimodal_content_from_images
 _hermes_home = get_hermes_home()
 
 # Load environment variables from ~/.hermes/.env first.
@@ -523,6 +524,8 @@ class GatewayRunner:
         # Per-session model overrides from /model command.
         # Key: session_key, Value: dict with model/provider/api_key/base_url/api_mode
         self._session_model_overrides: Dict[str, Dict[str, str]] = {}
+        self._session_fast_mode: Dict[str, bool] = {}
+        self._session_context_limits: Dict[str, int] = {}
         # Track pending exec approvals per session
         # Key: session_key, Value: {"command": str, "pattern_key": str, ...}
         self._pending_approvals: Dict[str, Dict[str, Any]] = {}
@@ -2078,6 +2081,12 @@ class GatewayRunner:
         if canonical == "reasoning":
             return await self._handle_reasoning_command(event)
 
+        if canonical == "fast":
+            return await self._handle_fast_command(event)
+
+        if canonical == "contextlimit":
+            return await self._handle_contextlimit_command(event)
+
         if canonical == "verbose":
             return await self._handle_verbose_command(event)
 
@@ -2768,9 +2777,13 @@ class GatewayRunner:
                 if is_image:
                     image_paths.append(path)
             if image_paths:
-                message_text = await self._enrich_message_with_vision(
-                    message_text, image_paths
-                )
+                session_key = self._session_key_for_source(source)
+                if self._native_image_support_enabled_for_session(session_key):
+                    message_text = build_multimodal_content_from_images(message_text, image_paths)
+                else:
+                    message_text = await self._enrich_message_with_vision(
+                        message_text, image_paths
+                    )
         
         # -----------------------------------------------------------------
         # Auto-transcribe voice/audio messages sent by the user
@@ -4835,6 +4848,50 @@ class GatewayRunner:
             except Exception:
                 pass
 
+    def _native_image_support_enabled_for_session(self, session_key: str) -> bool:
+        override = getattr(self, "_session_model_overrides", {}).get(session_key, {})
+        provider = str(override.get("provider") or _read_model_provider() or "").strip().lower()
+        base_url = str(override.get("base_url") or _read_model_base_url() or "").strip().lower()
+        return provider in {"openai-codex", "anthropic", "copilot"} or "chatgpt.com/backend-api/codex" in base_url
+
+    async def _handle_fast_command(self, event: MessageEvent) -> str:
+        session_key = self._session_key_for_source(event.source)
+        args = event.get_command_args().strip().lower()
+        current = bool(self._session_fast_mode.get(session_key, False))
+        if not args or args == "toggle":
+            current = not current
+        elif args in {"on", "enable", "enabled"}:
+            current = True
+        elif args in {"off", "disable", "disabled"}:
+            current = False
+        elif args == "status":
+            return f"⚡ Fast mode: {'ON' if current else 'OFF'}"
+        else:
+            return "Usage: `/fast [on|off|status]`"
+        self._session_fast_mode[session_key] = current
+        return f"⚡ Fast mode {'ON' if current else 'OFF'} for this session."
+
+    async def _handle_contextlimit_command(self, event: MessageEvent) -> str:
+        session_key = self._session_key_for_source(event.source)
+        parts = event.get_command_args().strip().lower().split()
+        current = int(self._session_context_limits.get(session_key, 272_000))
+        if not parts or parts == ["toggle"]:
+            target = 1_000_000 if current <= 272_000 else 272_000
+        elif parts == ["status"]:
+            expensive = "yes" if current > 272_000 else "no"
+            return f"🧠 Context limit: `{current:,}` tokens\nExpensive tier (>272k): `{expensive}`"
+        else:
+            raw = parts[1] if parts[0] == "limit" and len(parts) > 1 else parts[0]
+            try:
+                target = int(raw.replace(",", "").replace("_", ""))
+            except ValueError:
+                return "Usage: `/contextlimit [toggle|status|limit <tokens>|<tokens>]`"
+        if target <= 0:
+            return "Context limit must be a positive integer."
+        self._session_context_limits[session_key] = target
+        tier_note = "2x cost tier" if target > 272_000 else "normal cost tier"
+        return f"🧠 Context limit set to `{target:,}` tokens ({tier_note}) for this session."
+
     async def _handle_reasoning_command(self, event: MessageEvent) -> str:
         """Handle /reasoning command — manage reasoning effort and display toggle.
 
@@ -6736,6 +6793,8 @@ class GatewayRunner:
                     user_id=source.user_id,
                     session_db=self._session_db,
                     fallback_model=self._fallback_model,
+                    service_tier="fast" if self._session_fast_mode.get(session_key) else None,
+                    context_length_override=self._session_context_limits.get(session_key),
                 )
                 if _cache_lock and _cache is not None:
                     with _cache_lock:

@@ -64,6 +64,7 @@ from agent.usage_pricing import (
     format_token_count_compact,
 )
 from hermes_cli.banner import _format_context_length, format_banner_version_label
+from tools.vision_tools import build_multimodal_content_from_images
 
 _COMMAND_SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
 
@@ -1478,6 +1479,14 @@ class HermesCLI:
         self.reasoning_config = _parse_reasoning_config(
             CLI_CONFIG["agent"].get("reasoning_effort", "")
         )
+        self.fast_mode = bool(CLI_CONFIG["agent"].get("fast_mode", False))
+        self.context_limit_override = None
+        try:
+            raw_context_limit = CLI_CONFIG.get("model", {}).get("context_length")
+            if raw_context_limit is not None:
+                self.context_limit_override = int(raw_context_limit)
+        except (AttributeError, TypeError, ValueError):
+            self.context_limit_override = None
         
         # OpenRouter provider routing preferences
         pr = CLI_CONFIG.get("provider_routing", {}) or {}
@@ -1573,6 +1582,7 @@ class HermesCLI:
 
         # Status bar visibility (toggled via /statusbar)
         self._status_bar_visible = True
+        self._expensive_context_notice_dismissed = False
 
         # Background task tracking: {task_id: threading.Thread}
         self._background_tasks: Dict[str, threading.Thread] = {}
@@ -1602,6 +1612,23 @@ class HermesCLI:
         filled = round((safe_percent / 100) * width)
         return f"[{('█' * filled) + ('░' * max(0, width - filled))}]"
 
+    @staticmethod
+    def _context_limit_is_expensive(limit: Optional[int]) -> bool:
+        return bool(limit and int(limit) > 272_000)
+
+    def _expensive_context_notice_visible(self) -> bool:
+        snapshot = self._get_status_bar_snapshot()
+        return self._context_limit_is_expensive(snapshot.get("context_length")) and not self._expensive_context_notice_dismissed
+
+    def _native_image_support_enabled(self) -> bool:
+        agent = getattr(self, "agent", None)
+        if not agent:
+            return False
+        return getattr(agent, "api_mode", "") in {"codex_responses", "anthropic_messages"}
+
+    def _build_native_multimodal_message(self, text: str, images: list[Path]) -> list[dict[str, Any]]:
+        return build_multimodal_content_from_images(text or "", images)
+
     def _get_status_bar_snapshot(self) -> Dict[str, Any]:
         model_name = self.model or "unknown"
         model_short = model_name.split("/")[-1] if "/" in model_name else model_name
@@ -1615,6 +1642,7 @@ class HermesCLI:
             "model_name": model_name,
             "model_short": model_short,
             "duration": format_duration_compact(elapsed_seconds),
+            "fast_mode": bool(getattr(self, "fast_mode", False)),
             "context_tokens": 0,
             "context_length": None,
             "context_percent": None,
@@ -1714,7 +1742,10 @@ class HermesCLI:
                 text = f"⚕ {snapshot['model_short']} · {duration_label}"
                 return self._trim_status_bar_text(text, width)
             if width < 76:
-                parts = [f"⚕ {snapshot['model_short']}", percent_label]
+                parts = [f"⚕ {snapshot['model_short']}"]
+                if snapshot.get("fast_mode"):
+                    parts.append("fast")
+                parts.append(percent_label)
                 parts.append(duration_label)
                 return self._trim_status_bar_text(" · ".join(parts), width)
 
@@ -1725,7 +1756,10 @@ class HermesCLI:
             else:
                 context_label = "ctx --"
 
-            parts = [f"⚕ {snapshot['model_short']}", context_label, percent_label]
+            parts = [f"⚕ {snapshot['model_short']}"]
+            if snapshot.get("fast_mode"):
+                parts.append("fast")
+            parts.extend([context_label, percent_label])
             parts.append(duration_label)
             return self._trim_status_bar_text(" │ ".join(parts), width)
         except Exception:
@@ -1763,12 +1797,16 @@ class HermesCLI:
                     frags = [
                         ("class:status-bar", " ⚕ "),
                         ("class:status-bar-strong", snapshot["model_short"]),
+                    ]
+                    if snapshot.get("fast_mode"):
+                        frags.extend([("class:status-bar-dim", " · "), ("class:status-bar-good", "fast")])
+                    frags.extend([
                         ("class:status-bar-dim", " · "),
                         (self._status_bar_context_style(percent), percent_label),
                         ("class:status-bar-dim", " · "),
                         ("class:status-bar-dim", duration_label),
                         ("class:status-bar", " "),
-                    ]
+                    ])
                 else:
                     if snapshot["context_length"]:
                         ctx_total = _format_context_length(snapshot["context_length"])
@@ -1781,6 +1819,10 @@ class HermesCLI:
                     frags = [
                         ("class:status-bar", " ⚕ "),
                         ("class:status-bar-strong", snapshot["model_short"]),
+                    ]
+                    if snapshot.get("fast_mode"):
+                        frags.extend([("class:status-bar-dim", " │ "), ("class:status-bar-good", "fast")])
+                    frags.extend([
                         ("class:status-bar-dim", " │ "),
                         ("class:status-bar-dim", context_label),
                         ("class:status-bar-dim", " │ "),
@@ -1790,7 +1832,7 @@ class HermesCLI:
                         ("class:status-bar-dim", " │ "),
                         ("class:status-bar-dim", duration_label),
                         ("class:status-bar", " "),
-                    ]
+                    ])
 
             total_width = sum(self._status_bar_display_width(text) for _, text in frags)
             if total_width > width:
@@ -2470,6 +2512,8 @@ class HermesCLI:
                 tool_complete_callback=self._on_tool_complete if self._inline_diffs_enabled else None,
                 stream_delta_callback=self._stream_delta if self.streaming_enabled else None,
                 tool_gen_callback=self._on_tool_gen_start if self.streaming_enabled else None,
+                service_tier="fast" if self.fast_mode else None,
+                context_length_override=self.context_limit_override,
             )
             # Store reference for atexit memory provider shutdown
             global _active_agent_ref
@@ -4592,6 +4636,10 @@ class HermesCLI:
             self._toggle_yolo()
         elif canonical == "reasoning":
             self._handle_reasoning_command(cmd_original)
+        elif canonical == "fast":
+            self._handle_fast_command(cmd_original)
+        elif canonical == "contextlimit":
+            self._handle_contextlimit_command(cmd_original)
         elif canonical == "compress":
             self._manual_compress()
         elif canonical == "usage":
@@ -5364,6 +5412,61 @@ class HermesCLI:
             _cprint(f"  {_GOLD}✓ Reasoning effort set to '{arg}' (saved to config){_RST}")
         else:
             _cprint(f"  {_GOLD}✓ Reasoning effort set to '{arg}' (session only){_RST}")
+
+    def _handle_fast_command(self, cmd: str):
+        """Handle /fast — toggle Codex fast mode for this session."""
+        parts = cmd.strip().split(maxsplit=1)
+        arg = parts[1].strip().lower() if len(parts) > 1 else "toggle"
+        if arg == "status":
+            state = "ON" if self.fast_mode else "OFF"
+            _cprint(f"  {_GOLD}Fast mode: {state}{_RST}")
+            return
+        if arg in {"toggle", ""}:
+            self.fast_mode = not self.fast_mode
+        elif arg in {"on", "enable", "enabled"}:
+            self.fast_mode = True
+        elif arg in {"off", "disable", "disabled"}:
+            self.fast_mode = False
+        else:
+            _cprint(f"  {_DIM}Usage: /fast [on|off|status]{_RST}")
+            return
+        self.agent = None
+        state = "ON" if self.fast_mode else "OFF"
+        suffix = "service_tier=fast" if self.fast_mode else "default service tier"
+        _cprint(f"  {_GOLD}✓ Fast mode: {state} ({suffix}){_RST}")
+
+    def _handle_contextlimit_command(self, cmd: str):
+        """Handle /contextlimit and /context aliases."""
+        parts = cmd.strip().split()
+        args = [p.lower() for p in parts[1:]]
+        target = None
+        if not args or args == ["toggle"]:
+            current = self.context_limit_override or 272_000
+            target = 1_000_000 if current <= 272_000 else 272_000
+        elif args == ["status"]:
+            current = self.context_limit_override or 272_000
+            expensive = "yes" if self._context_limit_is_expensive(current) else "no"
+            _cprint(f"  {_GOLD}Context limit: {current:,} tokens{_RST}")
+            _cprint(f"  {_DIM}Expensive tier (>272k): {expensive}{_RST}")
+            return
+        else:
+            if args[0] == "limit" and len(args) >= 2:
+                raw_value = args[1]
+            else:
+                raw_value = args[0]
+            try:
+                target = int(raw_value.replace(",", "").replace("_", ""))
+            except ValueError:
+                _cprint(f"  {_DIM}Usage: /contextlimit [toggle|status|limit <tokens>|<tokens>]{_RST}")
+                return
+        if target is None or target <= 0:
+            _cprint(f"  {_DIM}Context limit must be a positive integer.{_RST}")
+            return
+        self.context_limit_override = target
+        self._expensive_context_notice_dismissed = False
+        self.agent = None
+        tier_note = "2x cost tier" if self._context_limit_is_expensive(target) else "normal cost tier"
+        _cprint(f"  {_GOLD}✓ Context limit set to {target:,} tokens ({tier_note}){_RST}")
 
     def _on_reasoning(self, reasoning_text: str):
         """Callback for intermediate reasoning display during tool-call loops."""
@@ -6502,13 +6605,15 @@ class HermesCLI:
         ):
             return None
         
-        # Pre-process images through the vision tool (Gemini Flash) so the
-        # main model receives text descriptions instead of raw base64 image
-        # content — works with any model, not just vision-capable ones.
         if images:
-            message = self._preprocess_images_with_vision(
-                message if isinstance(message, str) else "", images
-            )
+            if self._native_image_support_enabled():
+                message = self._build_native_multimodal_message(
+                    message if isinstance(message, str) else "", images
+                )
+            else:
+                message = self._preprocess_images_with_vision(
+                    message if isinstance(message, str) else "", images
+                )
 
         # Expand @ context references (e.g. @file:main.py, @diff, @folder:src/)
         if isinstance(message, str) and "@" in message:
@@ -7043,7 +7148,8 @@ class HermesCLI:
         overlay menu) into the layout without overriding ``run()``.  Widgets
         are inserted between the spacer and the status bar.
         """
-        return []
+        widget = getattr(self, "_expensive_context_notice_widget", None)
+        return [widget] if widget is not None else []
 
     def _register_extra_tui_keybindings(self, kb, *, input_area) -> None:
         """Register extra keybindings on the TUI ``KeyBindings`` object.
@@ -8085,6 +8191,23 @@ class HermesCLI:
         # Image attachment indicator — shows badges like [📎 Image #1] above input
         cli_ref = self
 
+        def _get_expensive_context_notice():
+            if not cli_ref._expensive_context_notice_visible():
+                return []
+            snapshot = cli_ref._get_status_bar_snapshot()
+            limit = snapshot.get("context_length") or cli_ref.context_limit_override or 0
+            message = f" ⚠ Context limit {limit:,} exceeds 272,000 tokens. Codex pricing doubles here. Press Alt+D to dismiss. "
+            return [("class:expensive-context", message)]
+
+        expensive_context_notice = ConditionalContainer(
+            Window(
+                content=FormattedTextControl(_get_expensive_context_notice),
+                height=1,
+                wrap_lines=False,
+            ),
+            filter=Condition(lambda: cli_ref._expensive_context_notice_visible()),
+        )
+
         def _get_image_bar():
             if not cli_ref._attached_images:
                 return []
@@ -8118,6 +8241,8 @@ class HermesCLI:
             filter=Condition(lambda: cli_ref._voice_mode),
         )
 
+        self._expensive_context_notice_widget = expensive_context_notice
+
         status_bar = ConditionalContainer(
             Window(
                 content=FormattedTextControl(lambda: cli_ref._get_status_bar_fragments()),
@@ -8134,6 +8259,11 @@ class HermesCLI:
             ),
             filter=Condition(lambda: cli_ref._status_bar_visible),
         )
+
+        @kb.add('escape', 'd')
+        def handle_alt_d(event):
+            cli_ref._expensive_context_notice_dismissed = True
+            event.app.invalidate()
 
         # Allow wrapper CLIs to register extra keybindings.
         self._register_extra_tui_keybindings(kb, input_area=input_area)
@@ -8177,6 +8307,7 @@ class HermesCLI:
             'status-bar-warn': 'bg:#1a1a2e #FFD700 bold',
             'status-bar-bad': 'bg:#1a1a2e #FF8C00 bold',
             'status-bar-critical': 'bg:#1a1a2e #FF6B6B bold',
+            'expensive-context': 'bg:#402020 #FFD700 bold',
             # Bronze horizontal rules around the input area
             'input-rule': '#CD7F32',
             # Clipboard image attachment badges

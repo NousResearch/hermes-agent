@@ -261,6 +261,35 @@ def _image_to_base64_data_url(image_path: Path, mime_type: Optional[str] = None)
     return data_url
 
 
+def build_multimodal_content_from_images(user_text: str, image_paths: list[Path | str]) -> list[dict[str, Any]]:
+    """Build OpenAI-style multimodal content blocks from local image paths.
+
+    The returned blocks are suitable for Hermes conversation history.
+    run_agent.py will convert them to provider-native payloads (Codex Responses,
+    Anthropic Messages, etc.) when the active model supports images natively.
+    """
+    content: list[dict[str, Any]] = []
+    text = str(user_text or "").strip()
+    if text:
+        content.append({"type": "text", "text": text})
+
+    for raw_path in image_paths or []:
+        img_path = Path(raw_path).expanduser()
+        if not img_path.is_file():
+            continue
+        mime_type = _detect_image_mime_type(img_path)
+        if not mime_type:
+            continue
+        content.append({
+            "type": "image_url",
+            "image_url": {"url": _image_to_base64_data_url(img_path, mime_type=mime_type)},
+        })
+
+    if not content:
+        content.append({"type": "text", "text": text or "What do you see in this image?"})
+    return content
+
+
 async def vision_analyze_tool(
     image_url: str,
     user_prompt: str,

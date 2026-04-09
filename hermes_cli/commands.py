@@ -105,6 +105,11 @@ COMMAND_REGISTRY: list[CommandDef] = [
                cli_only=True, args_hint="[name]"),
     CommandDef("voice", "Toggle voice mode", "Configuration",
                args_hint="[on|off|tts|status]", subcommands=("on", "off", "tts", "status")),
+    CommandDef("fast", "Toggle Codex fast mode for this session", "Configuration",
+               args_hint="[on|off|status]", subcommands=("on", "off", "status")),
+    CommandDef("contextlimit", "Manage the session context window override", "Configuration",
+               aliases=("context",), args_hint="[toggle|status|limit <tokens>|<tokens>]",
+               subcommands=("toggle", "status", "limit")),
 
     # Tools & Skills
     CommandDef("tools", "Manage tools: /tools [list|disable|enable] [name...]", "Tools & Skills",

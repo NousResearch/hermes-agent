@@ -513,6 +513,8 @@ class AIAgent:
         checkpoint_max_snapshots: int = 50,
         pass_session_id: bool = False,
         persist_session: bool = True,
+        service_tier: str | None = None,
+        context_length_override: int | None = None,
     ):
         """
         Initialize the AI Agent.
@@ -576,6 +578,11 @@ class AIAgent:
         self.skip_context_files = skip_context_files
         self.pass_session_id = pass_session_id
         self.persist_session = persist_session
+        self.service_tier = (str(service_tier).strip().lower() or None) if service_tier is not None else None
+        try:
+            self.context_length_override = int(context_length_override) if context_length_override is not None else None
+        except (TypeError, ValueError):
+            self.context_length_override = None
         self._credential_pool = credential_pool
         self.log_prefix_chars = log_prefix_chars
         self.log_prefix = f"{log_prefix} " if log_prefix else ""
@@ -1143,6 +1150,8 @@ class AIAgent:
                 _config_context_length = int(_config_context_length)
             except (TypeError, ValueError):
                 _config_context_length = None
+        if self.context_length_override is not None:
+            _config_context_length = self.context_length_override
 
         # Check custom_providers per-model context_length
         if _config_context_length is None:
@@ -1381,6 +1390,7 @@ class AIAgent:
                 self.model,
                 base_url=self.base_url,
                 api_key=self.api_key,
+                config_context_length=self.context_length_override,
                 provider=self.provider,
             )
             self.context_compressor.model = self.model
@@ -3065,6 +3075,41 @@ class AIAgent:
         digest = hashlib.sha1(seed.encode("utf-8")).hexdigest()[:24]
         return f"fc_{digest}"
 
+    @staticmethod
+    def _responses_content_from_chat_content(content: Any) -> Any:
+        """Convert Hermes chat content blocks to Responses API content blocks."""
+        if isinstance(content, str):
+            return content
+        if not isinstance(content, list):
+            return "" if content is None else str(content)
+
+        converted: List[Dict[str, Any]] = []
+        for part in content:
+            if isinstance(part, str):
+                if part:
+                    converted.append({"type": "input_text", "text": part})
+                continue
+            if not isinstance(part, dict):
+                continue
+            ptype = part.get("type")
+            if ptype in {"text", "input_text"}:
+                converted.append({"type": "input_text", "text": part.get("text", "")})
+                continue
+            if ptype in {"image_url", "input_image"}:
+                image_value = part.get("image_url", {})
+                url = image_value.get("url", "") if isinstance(image_value, dict) else str(image_value or "")
+                if not url:
+                    continue
+                entry: Dict[str, Any] = {"type": "input_image", "image_url": url}
+                if isinstance(image_value, dict) and image_value.get("detail"):
+                    entry["detail"] = image_value["detail"]
+                converted.append(entry)
+                continue
+            text_value = part.get("text") if isinstance(part, dict) else None
+            if text_value:
+                converted.append({"type": "input_text", "text": str(text_value)})
+        return converted or ""
+
     def _chat_messages_to_responses_input(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Convert internal chat-style messages to Responses input items."""
         items: List[Dict[str, Any]] = []
@@ -3078,7 +3123,8 @@ class AIAgent:
 
             if role in {"user", "assistant"}:
                 content = msg.get("content", "")
-                content_text = str(content) if content is not None else ""
+                responses_content = self._responses_content_from_chat_content(content)
+                content_text = responses_content if isinstance(responses_content, str) else ""
 
                 if role == "assistant":
                     # Replay encrypted reasoning items from previous turns
@@ -3144,7 +3190,7 @@ class AIAgent:
                             })
                     continue
 
-                items.append({"role": role, "content": content_text})
+                items.append({"role": role, "content": responses_content})
                 continue
 
             if role == "tool":
@@ -5453,6 +5499,8 @@ class AIAgent:
 
             if self.max_tokens is not None:
                 kwargs["max_output_tokens"] = self.max_tokens
+            if self.provider == "openai-codex" and self.service_tier:
+                kwargs["service_tier"] = self.service_tier
 
             return kwargs
 

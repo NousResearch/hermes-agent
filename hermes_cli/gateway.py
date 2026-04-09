@@ -14,6 +14,7 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
+from gateway.status import terminate_pid
 from hermes_cli.config import get_env_value, get_hermes_home, save_env_value, is_managed, managed_error
 # display_hermes_home is imported lazily at call sites to avoid ImportError
 # when hermes_constants is cached from a pre-update version during `hermes update`.
@@ -162,7 +163,7 @@ def kill_gateway_processes(force: bool = False, exclude_pids: set | None = None)
     """Kill any running gateway processes. Returns count killed.
 
     Args:
-        force: Use SIGKILL instead of SIGTERM.
+        force: Use the platform's force-kill mechanism instead of graceful terminate.
         exclude_pids: PIDs to skip (e.g. service-managed PIDs that were just
             restarted and should not be killed).
     """
@@ -171,10 +172,7 @@ def kill_gateway_processes(force: bool = False, exclude_pids: set | None = None)
     
     for pid in pids:
         try:
-            if force and not is_windows():
-                os.kill(pid, signal.SIGKILL)
-            else:
-                os.kill(pid, signal.SIGTERM)
+            terminate_pid(pid, force=force)
             killed += 1
         except ProcessLookupError:
             # Process already gone
@@ -182,6 +180,8 @@ def kill_gateway_processes(force: bool = False, exclude_pids: set | None = None)
         except PermissionError:
             print(f"⚠ Permission denied to kill PID {pid}")
     
+        except OSError as exc:
+            print(f"Failed to kill PID {pid}: {exc}")
     return killed
 
 
@@ -1220,7 +1220,7 @@ def _wait_for_gateway_exit(timeout: float = 10.0, force_after: float = 5.0):
 
     Args:
         timeout: Total seconds to wait before giving up.
-        force_after: Seconds of graceful waiting before sending SIGKILL.
+        force_after: Seconds of graceful waiting before escalating to force-kill.
     """
     import time
     from gateway.status import get_running_pid
@@ -1237,15 +1237,15 @@ def _wait_for_gateway_exit(timeout: float = 10.0, force_after: float = 5.0):
         if not force_sent and time.monotonic() >= force_deadline:
             # Grace period expired — force-kill the specific PID.
             try:
-                os.kill(pid, signal.SIGKILL)
+                terminate_pid(pid, force=True)
                 print(f"⚠ Gateway PID {pid} did not exit gracefully; sent SIGKILL")
-            except (ProcessLookupError, PermissionError):
+            except (ProcessLookupError, PermissionError, OSError):
                 return  # Already gone or we can't touch it.
             force_sent = True
 
         time.sleep(0.3)
 
-    # Timed out even after SIGKILL.
+    # Timed out even after force-kill.
     remaining_pid = get_running_pid()
     if remaining_pid is not None:
         print(f"⚠ Gateway PID {remaining_pid} still running after {timeout}s — restart may fail")

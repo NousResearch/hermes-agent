@@ -64,6 +64,102 @@ def _apply_skill_fields(job: Dict[str, Any]) -> Dict[str, Any]:
     return normalized
 
 
+def _normalize_qq_chat_type(chat_type: Optional[Any]) -> Optional[str]:
+    """Normalize QQ chat types to the canonical values Hermes persists."""
+    normalized = str(chat_type or "").strip().lower()
+    if normalized == "group":
+        return "group"
+    if normalized in {"dm", "private"}:
+        return "dm"
+    return None
+
+
+def _infer_qq_origin_chat_type(chat_id: str) -> Optional[str]:
+    """Best-effort migration helper for legacy QQ cron jobs without chat_type."""
+    sessions_path = get_hermes_home() / "sessions" / "sessions.json"
+    if not sessions_path.exists():
+        return None
+
+    try:
+        data = json.loads(sessions_path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+    if not isinstance(data, dict):
+        return None
+
+    matches = set()
+    for session in data.values():
+        if not isinstance(session, dict):
+            continue
+
+        origin = session.get("origin") or {}
+        if str(origin.get("platform") or "").lower() != "qq_napcat":
+            continue
+        if str(origin.get("chat_id") or "") != str(chat_id):
+            continue
+
+        session_chat_type = _normalize_qq_chat_type(
+            session.get("chat_type") or origin.get("chat_type")
+        )
+        if session_chat_type:
+            matches.add(session_chat_type)
+
+    if len(matches) == 1:
+        return next(iter(matches))
+    return None
+
+
+def _normalize_loaded_job(job: Dict[str, Any]) -> tuple[Dict[str, Any], bool]:
+    """Repair legacy persisted job fields that now need stricter QQ metadata."""
+    normalized = copy.deepcopy(job)
+    changed = False
+
+    origin = normalized.get("origin")
+    if not isinstance(origin, dict):
+        return normalized, changed
+    if str(origin.get("platform") or "").lower() != "qq_napcat":
+        return normalized, changed
+
+    original_chat_id = str(origin.get("chat_id") or "").strip()
+    chat_id = original_chat_id
+    chat_type = _normalize_qq_chat_type(origin.get("chat_type"))
+
+    if chat_id.startswith("group:"):
+        chat_id = chat_id.split(":", 1)[1]
+        chat_type = chat_type or "group"
+    elif chat_id.startswith("dm:"):
+        chat_id = chat_id.split(":", 1)[1]
+        chat_type = chat_type or "dm"
+
+    if chat_id != original_chat_id:
+        origin["chat_id"] = chat_id
+        changed = True
+
+    if not chat_type and chat_id:
+        chat_type = _infer_qq_origin_chat_type(chat_id)
+
+    if chat_type and origin.get("chat_type") != chat_type:
+        origin["chat_type"] = chat_type
+        changed = True
+
+    normalized["origin"] = origin
+    return normalized, changed
+
+
+def _normalize_loaded_jobs(jobs: List[Dict[str, Any]]) -> tuple[List[Dict[str, Any]], bool]:
+    """Normalize all jobs loaded from disk and report whether anything changed."""
+    normalized_jobs: List[Dict[str, Any]] = []
+    changed = False
+
+    for job in jobs:
+        normalized_job, job_changed = _normalize_loaded_job(job)
+        normalized_jobs.append(normalized_job)
+        changed = changed or job_changed
+
+    return normalized_jobs, changed
+
+
 def _secure_dir(path: Path):
     """Set directory to owner-only access (0700). No-op on Windows."""
     try:
@@ -322,26 +418,38 @@ def load_jobs() -> List[Dict[str, Any]]:
     ensure_dirs()
     if not JOBS_FILE.exists():
         return []
-    
+
+    repaired_control_chars = False
     try:
         with open(JOBS_FILE, 'r', encoding='utf-8') as f:
             data = json.load(f)
-            return data.get("jobs", [])
+            jobs = data.get("jobs", [])
     except json.JSONDecodeError:
         # Retry with strict=False to handle bare control chars in string values
         try:
             with open(JOBS_FILE, 'r', encoding='utf-8') as f:
                 data = json.loads(f.read(), strict=False)
                 jobs = data.get("jobs", [])
-                if jobs:
-                    # Auto-repair: rewrite with proper escaping
-                    save_jobs(jobs)
-                    logger.warning("Auto-repaired jobs.json (had invalid control characters)")
-                return jobs
+                repaired_control_chars = bool(jobs)
         except Exception:
             return []
     except IOError:
         return []
+
+    normalized_jobs, repaired_jobs = _normalize_loaded_jobs(jobs)
+
+    if repaired_control_chars or repaired_jobs:
+        save_jobs(normalized_jobs)
+        if repaired_control_chars and repaired_jobs:
+            logger.warning(
+                "Auto-repaired jobs.json (had invalid control characters and normalized legacy QQ origins)"
+            )
+        elif repaired_control_chars:
+            logger.warning("Auto-repaired jobs.json (had invalid control characters)")
+        else:
+            logger.info("Auto-repaired jobs.json (normalized legacy QQ origins)")
+
+    return normalized_jobs
 
 
 def save_jobs(jobs: List[Dict[str, Any]]):

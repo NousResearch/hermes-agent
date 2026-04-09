@@ -1392,6 +1392,139 @@ class AIAgent:
             old_model, old_provider, new_model, new_provider,
         )
 
+    def _handle_session_model_tool(self, function_args: dict) -> str:
+        """Inspect or switch the active model for this session only."""
+        from hermes_cli.model_switch import switch_model as _switch_model
+        from tools.session_model_tool import get_allowed_self_models, is_self_model_allowed
+
+        allowed_models, user_providers = get_allowed_self_models()
+        allowed_displays = [entry["display"] for entry in allowed_models]
+        base_payload = {
+            "session_only": True,
+            "current_model": self.model,
+            "current_provider": self.provider,
+            "allowed_models": allowed_displays,
+        }
+
+        if not allowed_models:
+            return json.dumps(
+                {
+                    **base_payload,
+                    "success": False,
+                    "error": (
+                        "session_model is disabled because agent.allowed_self_models "
+                        "is empty."
+                    ),
+                },
+                ensure_ascii=False,
+            )
+
+        requested_model = str(function_args.get("model") or "").strip()
+        requested_provider = str(function_args.get("provider") or "").strip()
+        if not requested_model:
+            return json.dumps(
+                {
+                    **base_payload,
+                    "success": True,
+                    "model": self.model,
+                    "provider": self.provider,
+                    "changed": False,
+                },
+                ensure_ascii=False,
+            )
+
+        if not is_self_model_allowed(allowed_models, requested_model, requested_provider):
+            requested_display = (
+                f"{requested_provider}:{requested_model}" if requested_provider else requested_model
+            )
+            return json.dumps(
+                {
+                    **base_payload,
+                    "success": False,
+                    "error": (
+                        f"Requested model is not in the self-switch allowlist: {requested_display}."
+                    ),
+                },
+                ensure_ascii=False,
+            )
+
+        try:
+            result = _switch_model(
+                raw_input=requested_model,
+                current_provider=self.provider or "openrouter",
+                current_model=self.model or "",
+                current_base_url=self.base_url or "",
+                current_api_key=getattr(self, "api_key", "") or "",
+                is_global=False,
+                explicit_provider=requested_provider,
+                user_providers=user_providers,
+            )
+        except Exception as exc:
+            return json.dumps(
+                {
+                    **base_payload,
+                    "success": False,
+                    "error": f"session_model resolution failed: {exc}",
+                },
+                ensure_ascii=False,
+            )
+
+        if not result.success:
+            return json.dumps(
+                {
+                    **base_payload,
+                    "success": False,
+                    "error": result.error_message or "session_model switch failed.",
+                },
+                ensure_ascii=False,
+            )
+
+        if not is_self_model_allowed(allowed_models, result.new_model, result.target_provider):
+            requested_display = f"{result.target_provider}:{result.new_model}"
+            return json.dumps(
+                {
+                    **base_payload,
+                    "success": False,
+                    "error": (
+                        f"Requested model is not in the self-switch allowlist: {requested_display}."
+                    ),
+                },
+                ensure_ascii=False,
+            )
+
+        previous_model = self.model
+        previous_provider = self.provider
+        current_base_url = self.base_url or ""
+        target_base_url = result.base_url or current_base_url
+        changed = not (
+            previous_model == result.new_model
+            and previous_provider == result.target_provider
+            and current_base_url == target_base_url
+        )
+        if changed:
+            self.switch_model(
+                new_model=result.new_model,
+                new_provider=result.target_provider,
+                api_key=result.api_key,
+                base_url=result.base_url,
+                api_mode=result.api_mode,
+            )
+
+        payload = {
+            **base_payload,
+            "success": True,
+            "changed": changed,
+            "model": result.new_model,
+            "provider": result.target_provider,
+            "previous_model": previous_model,
+            "previous_provider": previous_provider,
+        }
+        if result.model_info and result.model_info.context_window:
+            payload["context_length"] = result.model_info.context_window
+        if result.provider_label:
+            payload["provider_label"] = result.provider_label
+        return json.dumps(payload, ensure_ascii=False)
+
     def _safe_print(self, *args, **kwargs):
         """Print that silently handles broken pipes / closed stdout.
 
@@ -5997,6 +6130,8 @@ class AIAgent:
                 except Exception:
                     pass
             return result
+        elif function_name == "session_model":
+            return self._handle_session_model_tool(function_args)
         elif self._memory_manager and self._memory_manager.has_tool(function_name):
             return self._memory_manager.handle_tool_call(function_name, function_args)
         elif function_name == "clarify":
@@ -6373,6 +6508,11 @@ class AIAgent:
                 tool_duration = time.time() - tool_start_time
                 if self.quiet_mode:
                     self._vprint(f"  {_get_cute_tool_message_impl('memory', function_args, tool_duration, result=function_result)}")
+            elif function_name == "session_model":
+                function_result = self._handle_session_model_tool(function_args)
+                tool_duration = time.time() - tool_start_time
+                if self.quiet_mode:
+                    self._vprint(f"  {_get_cute_tool_message_impl('session_model', function_args, tool_duration, result=function_result)}")
             elif function_name == "clarify":
                 from tools.clarify_tool import clarify_tool as _clarify_tool
                 function_result = _clarify_tool(

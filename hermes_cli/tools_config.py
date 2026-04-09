@@ -126,6 +126,7 @@ PLATFORMS = {
     "slack":    {"label": "💼 Slack",      "default_toolset": "hermes-slack"},
     "whatsapp": {"label": "📱 WhatsApp",   "default_toolset": "hermes-whatsapp"},
     "signal":   {"label": "📡 Signal",     "default_toolset": "hermes-signal"},
+    "qq_napcat": {"label": "🐧 QQ (NapCat)", "default_toolset": "hermes-qq-napcat"},
     "homeassistant": {"label": "🏠 Home Assistant", "default_toolset": "hermes-homeassistant"},
     "email":    {"label": "📧 Email",      "default_toolset": "hermes-email"},
     "matrix":   {"label": "💬 Matrix",     "default_toolset": "hermes-matrix"},
@@ -447,7 +448,24 @@ def _get_enabled_platforms() -> List[str]:
         enabled.append("slack")
     if get_env_value("WHATSAPP_ENABLED"):
         enabled.append("whatsapp")
+    if get_env_value("QQ_NAPCAT_WS_URL"):
+        enabled.append("qq_napcat")
     return enabled
+
+
+def _get_first_install_platforms(config: dict) -> List[str]:
+    """Return the platform list to walk during first-install setup.
+
+    Fresh setup should start with the CLI checklist only, matching the setup
+    wizard copy. If the caller already pre-seeded explicit platform_toolsets
+    entries, honor those platforms in the stable order defined by PLATFORMS.
+    """
+    configured = config.get("platform_toolsets")
+    if isinstance(configured, dict):
+        explicit = {str(platform).strip() for platform in configured if str(platform).strip() in PLATFORMS}
+        if explicit:
+            return [platform for platform in PLATFORMS if platform in explicit]
+    return ["cli"]
 
 
 def _platform_toolset_summary(config: dict, platforms: Optional[List[str]] = None) -> Dict[str, Set[str]]:
@@ -1301,8 +1319,9 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
 
     Args:
         first_install: When True (set by the setup wizard on fresh installs),
-            skip the platform menu, go straight to the CLI checklist, and
-            prompt for API keys on all enabled tools that need them.
+            skip the platform menu, go straight to the CLI checklist (or any
+            explicitly pre-seeded platform_toolsets), and prompt for API keys
+            on enabled tools that need them.
         config: Optional config dict to use.  When called from the setup
             wizard, the wizard passes its own dict so that platform_toolsets
             are written into it and survive the wizard's final save_config().
@@ -1340,7 +1359,7 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
 
     # ── First-time install: linear flow, no platform menu ──
     if first_install:
-        for pkey in enabled_platforms:
+        for pkey in _get_first_install_platforms(config):
             pinfo = PLATFORMS[pkey]
             current_enabled = _get_platform_tools(config, pkey, include_default_mcp_servers=False)
 

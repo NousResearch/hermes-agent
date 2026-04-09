@@ -1306,6 +1306,65 @@ class TestConcurrentToolExecution:
             mock_todo.assert_called_once()
         assert "ok" in result
 
+    def test_invoke_tool_handles_session_model_switch(self, agent):
+        """_invoke_tool should handle session_model directly."""
+        from hermes_cli.model_switch import ModelSwitchResult
+
+        with (
+            patch(
+                "hermes_cli.config.load_config",
+                return_value={"agent": {"allowed_self_models": ["openai-codex:gpt-5.4"]}},
+            ),
+            patch(
+                "hermes_cli.model_switch.switch_model",
+                return_value=ModelSwitchResult(
+                    success=True,
+                    new_model="gpt-5.4",
+                    target_provider="openai-codex",
+                    api_key="test-key-1234567890",
+                    base_url="https://api.openai.com/v1",
+                    api_mode="codex_responses",
+                    provider_label="OpenAI Codex",
+                ),
+            ) as mock_switch_pipeline,
+            patch.object(agent, "switch_model") as mock_agent_switch,
+        ):
+            result = json.loads(
+                agent._invoke_tool(
+                    "session_model",
+                    {"model": "gpt-5.4", "provider": "openai-codex"},
+                    "task-1",
+                )
+            )
+
+        mock_switch_pipeline.assert_called_once()
+        mock_agent_switch.assert_called_once_with(
+            new_model="gpt-5.4",
+            new_provider="openai-codex",
+            api_key="test-key-1234567890",
+            base_url="https://api.openai.com/v1",
+            api_mode="codex_responses",
+        )
+        assert result["success"] is True
+        assert result["session_only"] is True
+        assert result["model"] == "gpt-5.4"
+
+    def test_invoke_tool_rejects_session_model_outside_allowlist(self, agent):
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={"agent": {"allowed_self_models": ["openai-codex:gpt-5.4"]}},
+        ):
+            result = json.loads(
+                agent._invoke_tool(
+                    "session_model",
+                    {"model": "claude-sonnet-4-6", "provider": "anthropic"},
+                    "task-1",
+                )
+            )
+
+        assert result["success"] is False
+        assert "allowlist" in result["error"].lower()
+
 
 class TestPathsOverlap:
     """Unit tests for the _paths_overlap helper."""

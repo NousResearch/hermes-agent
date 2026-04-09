@@ -166,12 +166,14 @@ class TestCheckpointNotify:
     def test_checkpoint_includes_notify(self, registry, tmp_path):
         with patch("tools.process_registry.CHECKPOINT_PATH", tmp_path / "procs.json"):
             s = _make_session(notify_on_complete=True)
+            s.watcher_chat_type = "group"
             registry._running[s.id] = s
             registry._write_checkpoint()
 
             data = json.loads((tmp_path / "procs.json").read_text())
             assert len(data) == 1
             assert data[0]["notify_on_complete"] is True
+            assert data[0]["watcher_chat_type"] == "group"
 
     def test_checkpoint_without_notify(self, registry, tmp_path):
         with patch("tools.process_registry.CHECKPOINT_PATH", tmp_path / "procs.json"):
@@ -208,6 +210,7 @@ class TestCheckpointNotify:
             "watcher_platform": "telegram",
             "watcher_chat_id": "123",
             "watcher_thread_id": "42",
+            "watcher_chat_type": "group",
             "watcher_interval": 5,
             "notify_on_complete": True,
         }]))
@@ -216,6 +219,7 @@ class TestCheckpointNotify:
             assert recovered == 1
             assert len(registry.pending_watchers) == 1
             assert registry.pending_watchers[0]["notify_on_complete"] is True
+            assert registry.pending_watchers[0]["chat_type"] == "group"
 
     def test_recover_defaults_false(self, registry, tmp_path):
         """Old checkpoint entries without the field default to False."""

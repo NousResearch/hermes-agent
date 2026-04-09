@@ -9,7 +9,13 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from gateway.config import Platform
-from tools.send_message_tool import _send_telegram, _send_to_platform, send_message_tool
+from tools.send_message_tool import (
+    _qq_napcat_call,
+    _qq_napcat_file_uri,
+    _send_telegram,
+    _send_to_platform,
+    send_message_tool,
+)
 
 
 def _run_async_immediately(coro):
@@ -22,6 +28,15 @@ def _make_config():
         platforms={Platform.TELEGRAM: telegram_cfg},
         get_home_channel=lambda _platform: None,
     ), telegram_cfg
+
+
+def _make_qq_napcat_config():
+    platform = getattr(Platform, "QQ_NAPCAT")
+    qq_cfg = SimpleNamespace(enabled=True, token=None, api_key=None, extra={})
+    return SimpleNamespace(
+        platforms={platform: qq_cfg},
+        get_home_channel=lambda _platform: None,
+    ), qq_cfg
 
 
 def _install_telegram_mock(monkeypatch, bot):
@@ -173,6 +188,109 @@ class TestSendMessageTool:
             media_files=[],
         )
         mirror_mock.assert_called_once_with("telegram", "-1001", "hello", source_label="cli", thread_id="17585")
+
+    def test_sends_to_explicit_qq_napcat_group_target(self):
+        config, qq_cfg = _make_qq_napcat_config()
+        platform = getattr(Platform, "QQ_NAPCAT")
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("gateway.mirror.mirror_to_session", return_value=True) as mirror_mock:
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "qq_napcat:group:987654321",
+                        "message": "hello",
+                    }
+                )
+            )
+
+        assert result["success"] is True
+        send_mock.assert_awaited_once_with(
+            platform,
+            qq_cfg,
+            "group:987654321",
+            "hello",
+            thread_id=None,
+            media_files=[],
+        )
+        mirror_mock.assert_called_once_with(
+            "qq_napcat",
+            "987654321",
+            "hello",
+            source_label="cli",
+            thread_id=None,
+            chat_type="group",
+        )
+
+    def test_rejects_resolved_legacy_qq_napcat_numeric_target(self):
+        config, _qq_cfg = _make_qq_napcat_config()
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("gateway.channel_directory.resolve_channel_name", return_value="123456"), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock:
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "qq_napcat:测试群",
+                        "message": "hello",
+                    }
+                )
+            )
+
+        assert "qq_napcat" in result["error"]
+        assert "group:123456" in result["error"]
+        assert "dm:123456" in result["error"]
+        send_mock.assert_not_awaited()
+
+    def test_rejects_bare_numeric_qq_napcat_target(self):
+        config, _qq_cfg = _make_qq_napcat_config()
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("gateway.channel_directory.resolve_channel_name", return_value=None), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock:
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "qq_napcat:123456",
+                        "message": "hello",
+                    }
+                )
+            )
+
+        assert "qq_napcat" in result["error"]
+        assert "group:123456" in result["error"]
+        assert "dm:123456" in result["error"]
+        send_mock.assert_not_awaited()
+
+    def test_rejects_unprefixed_qq_napcat_home_channel(self):
+        config, _qq_cfg = _make_qq_napcat_config()
+        config.get_home_channel = lambda _platform: SimpleNamespace(chat_id="123456")
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock:
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "qq_napcat",
+                        "message": "hello",
+                    }
+                )
+            )
+
+        assert "home channel" in result["error"]
+        assert "group:123456" in result["error"]
+        assert "dm:123456" in result["error"]
+        send_mock.assert_not_awaited()
 
     def test_resolved_telegram_topic_name_preserves_thread_id(self):
         config, telegram_cfg = _make_config()
@@ -410,6 +528,142 @@ class TestSendTelegramMediaDelivery:
         assert "error" in result
         assert "No deliverable text or media remained" in result["error"]
         bot.send_message.assert_not_awaited()
+
+
+class TestQqNapCatCall:
+    def test_file_uri_encodes_spaces_and_unicode(self, tmp_path):
+        media_path = tmp_path / "截图 1.png"
+        media_path.write_bytes(b"png")
+
+        uri = _qq_napcat_file_uri(str(media_path))
+
+        assert uri.startswith("file://")
+        assert "%20" in uri
+        assert "截图 1.png" not in uri
+
+    def test_access_token_is_url_encoded(self):
+        import aiohttp
+
+        ws = MagicMock()
+        ws.send_json = AsyncMock()
+
+        response = MagicMock()
+        response.type = aiohttp.WSMsgType.TEXT
+        response.json.return_value = {
+            "echo": "send_message_tool_123",
+            "status": "ok",
+            "retcode": 0,
+            "data": {"message_id": 1},
+        }
+        ws.__aiter__.return_value = iter([response])
+
+        class FakeWebSocketContext:
+            async def __aenter__(self_inner):
+                return ws
+
+            async def __aexit__(self_inner, exc_type, exc, tb):
+                return False
+
+        class FakeSession:
+            def __init__(self):
+                self.url = None
+
+            def ws_connect(self, url):
+                self.url = url
+                return FakeWebSocketContext()
+
+        class FakeSessionContext:
+            def __init__(self):
+                self.session = FakeSession()
+
+            async def __aenter__(self):
+                return self.session
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+        session_ctx = FakeSessionContext()
+
+        with patch("aiohttp.ClientSession", return_value=session_ctx), \
+             patch("time.time", return_value=0.123):
+            data, error = asyncio.run(
+                _qq_napcat_call(
+                    {
+                        "ws_url": "ws://127.0.0.1:3001",
+                        "access_token": "abc+def&ghi=",
+                    },
+                    "send_private_msg",
+                    {"user_id": 1, "message": [{"type": "text", "data": {"text": "hi"}}]},
+                )
+            )
+
+        assert error is None
+        assert data == {"message_id": 1}
+        assert ws.send_json.await_count == 1
+        assert "access_token=abc%2Bdef%26ghi%3D" in session_ctx.session.url
+
+    def test_access_token_preserves_ws_path_and_query(self):
+        import aiohttp
+
+        ws = MagicMock()
+        ws.send_json = AsyncMock()
+
+        response = MagicMock()
+        response.type = aiohttp.WSMsgType.TEXT
+        response.json.return_value = {
+            "echo": "send_message_tool_123",
+            "status": "ok",
+            "retcode": 0,
+            "data": {"message_id": 1},
+        }
+        ws.__aiter__.return_value = iter([response])
+
+        class FakeWebSocketContext:
+            async def __aenter__(self_inner):
+                return ws
+
+            async def __aexit__(self_inner, exc_type, exc, tb):
+                return False
+
+        class FakeSession:
+            def __init__(self):
+                self.url = None
+
+            def ws_connect(self, url):
+                self.url = url
+                return FakeWebSocketContext()
+
+        class FakeSessionContext:
+            def __init__(self):
+                self.session = FakeSession()
+
+            async def __aenter__(self):
+                return self.session
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+        session_ctx = FakeSessionContext()
+
+        with patch("aiohttp.ClientSession", return_value=session_ctx), \
+             patch("time.time", return_value=0.123):
+            data, error = asyncio.run(
+                _qq_napcat_call(
+                    {
+                        "ws_url": "ws://127.0.0.1:3001/ws?client=hermes",
+                        "access_token": "abc+def&ghi=",
+                    },
+                    "send_private_msg",
+                    {"user_id": 1, "message": [{"type": "text", "data": {"text": "hi"}}]},
+                )
+            )
+
+        assert error is None
+        assert data == {"message_id": 1}
+        assert ws.send_json.await_count == 1
+        assert session_ctx.session.url == (
+            "ws://127.0.0.1:3001/ws?client=hermes&access_token=abc%2Bdef%26ghi%3D"
+        )
 
 
 # ---------------------------------------------------------------------------

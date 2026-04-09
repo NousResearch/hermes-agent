@@ -178,6 +178,7 @@ class TestScheduleCronjob:
     def test_thread_id_captured_in_origin(self, monkeypatch):
         monkeypatch.setenv("HERMES_SESSION_PLATFORM", "telegram")
         monkeypatch.setenv("HERMES_SESSION_CHAT_ID", "123456")
+        monkeypatch.setenv("HERMES_SESSION_CHAT_TYPE", "group")
         monkeypatch.setenv("HERMES_SESSION_THREAD_ID", "42")
         import cron.jobs as _jobs
         created = json.loads(schedule_cronjob(
@@ -188,6 +189,7 @@ class TestScheduleCronjob:
         assert created["success"] is True
         job_id = created["job_id"]
         job = _jobs.get_job(job_id)
+        assert job["origin"]["chat_type"] == "group"
         assert job["origin"]["thread_id"] == "42"
 
     def test_thread_id_absent_when_not_set(self, monkeypatch):

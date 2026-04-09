@@ -62,5 +62,4 @@ class TestCamofoxConfigDefaults:
     def test_config_version_unchanged(self):
         from hermes_cli.config import DEFAULT_CONFIG
 
-        # managed_persistence is auto-merged by _deep_merge, no version bump needed
-        assert DEFAULT_CONFIG["_config_version"] == 12
+        assert DEFAULT_CONFIG["_config_version"] == 13

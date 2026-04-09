@@ -234,6 +234,100 @@ class TestJobCRUD:
         assert job["deliver"] == "local"
 
 
+class TestLoadJobRepair:
+    def test_load_jobs_canonicalizes_prefixed_qq_origin_chat_id(self, tmp_cron_dir):
+        save_jobs(
+            [
+                {
+                    "id": "qq-prefix",
+                    "name": "QQ Prefix",
+                    "prompt": "Test",
+                    "schedule": {"kind": "interval", "minutes": 60, "display": "every 60m"},
+                    "schedule_display": "every 60m",
+                    "repeat": {"times": None, "completed": 0},
+                    "enabled": True,
+                    "state": "scheduled",
+                    "paused_at": None,
+                    "paused_reason": None,
+                    "created_at": "2026-01-01T00:00:00+00:00",
+                    "next_run_at": "2026-01-01T01:00:00+00:00",
+                    "last_run_at": None,
+                    "last_status": None,
+                    "last_error": None,
+                    "deliver": "origin",
+                    "origin": {
+                        "platform": "qq_napcat",
+                        "chat_id": "group:987654",
+                        "chat_name": "Dev Group",
+                    },
+                }
+            ]
+        )
+
+        jobs = load_jobs()
+
+        assert jobs[0]["origin"]["chat_id"] == "987654"
+        assert jobs[0]["origin"]["chat_type"] == "group"
+        stored = json.loads((tmp_cron_dir / "cron" / "jobs.json").read_text(encoding="utf-8"))
+        assert stored["jobs"][0]["origin"]["chat_id"] == "987654"
+        assert stored["jobs"][0]["origin"]["chat_type"] == "group"
+
+    def test_load_jobs_infers_missing_qq_origin_chat_type_from_sessions(self, tmp_cron_dir, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_cron_dir))
+        sessions_dir = tmp_cron_dir / "sessions"
+        sessions_dir.mkdir(parents=True, exist_ok=True)
+        (sessions_dir / "sessions.json").write_text(
+            json.dumps(
+                {
+                    "qq-group": {
+                        "origin": {
+                            "platform": "qq_napcat",
+                            "chat_id": "123456",
+                            "chat_name": "Study Group",
+                        },
+                        "chat_type": "group",
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        save_jobs(
+            [
+                {
+                    "id": "qq-infer",
+                    "name": "QQ Infer",
+                    "prompt": "Test",
+                    "schedule": {"kind": "interval", "minutes": 60, "display": "every 60m"},
+                    "schedule_display": "every 60m",
+                    "repeat": {"times": None, "completed": 0},
+                    "enabled": True,
+                    "state": "scheduled",
+                    "paused_at": None,
+                    "paused_reason": None,
+                    "created_at": "2026-01-01T00:00:00+00:00",
+                    "next_run_at": "2026-01-01T01:00:00+00:00",
+                    "last_run_at": None,
+                    "last_status": None,
+                    "last_error": None,
+                    "deliver": "origin",
+                    "origin": {
+                        "platform": "qq_napcat",
+                        "chat_id": "123456",
+                        "chat_name": "Study Group",
+                    },
+                }
+            ]
+        )
+
+        jobs = load_jobs()
+
+        assert jobs[0]["origin"]["chat_id"] == "123456"
+        assert jobs[0]["origin"]["chat_type"] == "group"
+        stored = json.loads((tmp_cron_dir / "cron" / "jobs.json").read_text(encoding="utf-8"))
+        assert stored["jobs"][0]["origin"]["chat_type"] == "group"
+
+
 class TestUpdateJob:
     def test_update_name(self, tmp_cron_dir):
         job = create_job(prompt="Check server status", schedule="every 1h", name="Old Name")

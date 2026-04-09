@@ -223,6 +223,48 @@ class TestLoadGatewayConfig:
         assert config.unauthorized_dm_behavior == "ignore"
         assert config.platforms[Platform.WHATSAPP].extra["unauthorized_dm_behavior"] == "pair"
 
+    def test_bridges_qq_napcat_from_config_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "qq_napcat:\n"
+            "  ws_url: ws://127.0.0.1:3001\n"
+            "  access_token: napcat-token\n"
+            "  admin_users:\n"
+            "    - '179033731'\n"
+            "  allow_all_users: true\n"
+            "  require_mention: true\n"
+            "  mention_patterns:\n"
+            "    - '^\\s*马噶\\b'\n"
+            "  allowed_groups:\n"
+            "    - '987654'\n"
+            "  home_channel: group:987654\n"
+            "  home_channel_name: QQ Home\n"
+            "  reconnect_interval: 9\n"
+            "  system_prompt: Return [[NO_REPLY]] when the group message does not need a reply.\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        platform = getattr(Platform, "QQ_NAPCAT")
+        assert platform in config.platforms
+        assert config.platforms[platform].enabled is True
+        assert config.platforms[platform].home_channel.chat_id == "group:987654"
+        assert config.platforms[platform].home_channel.name == "QQ Home"
+        assert config.platforms[platform].extra["ws_url"] == "ws://127.0.0.1:3001"
+        assert config.platforms[platform].extra["access_token"] == "napcat-token"
+        assert config.platforms[platform].extra["admin_users"] == ["179033731"]
+        assert config.platforms[platform].extra["allow_all_users"] is True
+        assert config.platforms[platform].extra["require_mention"] is True
+        assert config.platforms[platform].extra["mention_patterns"] == [r"^\s*马噶\b"]
+        assert config.platforms[platform].extra["allowed_groups"] == ["987654"]
+        assert config.platforms[platform].extra["reconnect_interval"] == 9
+        assert "[[NO_REPLY]]" in config.platforms[platform].extra["system_prompt"]
+
 
 class TestHomeChannelEnvOverrides:
     """Home channel env vars should apply even when the platform was already
@@ -294,3 +336,41 @@ class TestHomeChannelEnvOverrides:
             home = config.platforms[platform].home_channel
             assert home is not None, f"{platform.value}: home_channel should not be None"
             assert (home.chat_id, home.name) == expected, platform.value
+
+
+class TestQqNapCatEnvOverrides:
+    def test_apply_env_overrides_sets_qq_napcat_fields(self):
+        config = GatewayConfig()
+
+        with patch.dict(
+            os.environ,
+            {
+                "QQ_NAPCAT_WS_URL": "ws://127.0.0.1:3001",
+                "QQ_NAPCAT_ACCESS_TOKEN": "napcat-token",
+                "QQ_NAPCAT_ADMIN_USERS": "179033731",
+                "QQ_NAPCAT_REQUIRE_MENTION": "true",
+                "QQ_NAPCAT_MENTION_PATTERNS": "[\"^\\\\s*马噶\\\\b\"]",
+                "QQ_NAPCAT_ALLOWED_GROUPS": "12345, 67890",
+                "QQ_NAPCAT_ALLOW_ALL_GROUPS": "true",
+                "QQ_NAPCAT_HOME_CHANNEL": "group:12345",
+                "QQ_NAPCAT_HOME_CHANNEL_NAME": "QQ Home",
+                "QQ_NAPCAT_SYSTEM_PROMPT": "Use [[NO_REPLY]] for low-signal group chatter.",
+                "QQ_NAPCAT_RECONNECT_INTERVAL": "12",
+            },
+            clear=False,
+        ):
+            _apply_env_overrides(config)
+
+        platform = getattr(Platform, "QQ_NAPCAT")
+        assert config.platforms[platform].enabled is True
+        assert config.platforms[platform].home_channel.chat_id == "group:12345"
+        assert config.platforms[platform].home_channel.name == "QQ Home"
+        assert config.platforms[platform].extra["ws_url"] == "ws://127.0.0.1:3001"
+        assert config.platforms[platform].extra["access_token"] == "napcat-token"
+        assert config.platforms[platform].extra["admin_users"] == ["179033731"]
+        assert config.platforms[platform].extra["require_mention"] is True
+        assert config.platforms[platform].extra["mention_patterns"] == [r"^\s*马噶\b"]
+        assert config.platforms[platform].extra["allowed_groups"] == ["12345", "67890"]
+        assert config.platforms[platform].extra["allow_all_groups"] is True
+        assert config.platforms[platform].extra["reconnect_interval"] == 12
+        assert "[[NO_REPLY]]" in config.platforms[platform].extra["system_prompt"]

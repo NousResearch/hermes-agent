@@ -22,20 +22,26 @@ from gateway.platforms.base import MessageEvent
 from gateway.session import SessionEntry, SessionSource, build_session_key
 
 
-def _make_source() -> SessionSource:
+def _make_source(
+    *,
+    platform: Platform = Platform.TELEGRAM,
+    user_id: str = "u1",
+    chat_id: str = "c1",
+    user_name: str = "tester",
+) -> SessionSource:
     return SessionSource(
-        platform=Platform.TELEGRAM,
-        user_id="u1",
-        chat_id="c1",
-        user_name="tester",
+        platform=platform,
+        user_id=user_id,
+        chat_id=chat_id,
+        user_name=user_name,
         chat_type="dm",
     )
 
 
-def _make_event(text: str) -> MessageEvent:
+def _make_event(text: str, *, source: SessionSource | None = None) -> MessageEvent:
     return MessageEvent(
         text=text,
-        source=_make_source(),
+        source=source or _make_source(),
         message_id="m1",
     )
 
@@ -267,6 +273,26 @@ class TestApproveCommand:
         assert e2.result == "session"
 
     @pytest.mark.asyncio
+    async def test_non_persistent_action_downgrades_approve_always_to_once(self):
+        from tools.approval import _ApprovalEntry, _gateway_queues
+
+        runner = _make_runner()
+        source = _make_source()
+        session_key = runner._session_key_for_source(source)
+
+        entry = _ApprovalEntry(
+            {
+                "command": "qq_group_moderation kick group:987654321 user:123456",
+                "allow_persistence": False,
+            }
+        )
+        _gateway_queues[session_key] = [entry]
+
+        result = await runner._handle_approve_command(_make_event("/approve always"))
+        assert "action only" in result.lower()
+        assert entry.result == "once"
+
+    @pytest.mark.asyncio
     async def test_approve_no_pending(self):
         """/approve with no pending approval returns helpful message."""
         runner = _make_runner()
@@ -284,6 +310,67 @@ class TestApproveCommand:
         result = await runner._handle_approve_command(_make_event("/approve"))
         assert "expired" in result.lower() or "no longer waiting" in result.lower()
         assert session_key not in runner._pending_approvals
+
+    @pytest.mark.asyncio
+    async def test_non_admin_cannot_approve_blocking_approval(self):
+        from tools.approval import _ApprovalEntry, _gateway_queues
+
+        runner = _make_runner()
+        platform = Platform.QQ_NAPCAT
+        runner.config = GatewayConfig(
+            platforms={
+                platform: PlatformConfig(
+                    enabled=True,
+                    extra={"admin_users": ["179033731"]},
+                )
+            }
+        )
+        source = _make_source(platform=platform, user_id="888888", chat_id="888888")
+        session_key = runner._session_key_for_source(source)
+
+        entry = _ApprovalEntry({"command": "rm -rf /tmp/demo"})
+        _gateway_queues[session_key] = [entry]
+
+        result = await runner._handle_approve_command(
+            _make_event("/approve", source=source)
+        )
+
+        assert "董事长" in result
+        assert "179033731" in result
+        assert entry.event.is_set() is False
+        assert entry.result is None
+
+    @pytest.mark.asyncio
+    async def test_admin_can_approve_blocking_approval(self):
+        from tools.approval import _ApprovalEntry, _gateway_queues
+
+        runner = _make_runner()
+        platform = Platform.QQ_NAPCAT
+        runner.config = GatewayConfig(
+            platforms={
+                platform: PlatformConfig(
+                    enabled=True,
+                    extra={"admin_users": ["179033731"]},
+                )
+            }
+        )
+        source = _make_source(
+            platform=platform,
+            user_id="179033731",
+            chat_id="179033731",
+        )
+        session_key = runner._session_key_for_source(source)
+
+        entry = _ApprovalEntry({"command": "rm -rf /tmp/demo"})
+        _gateway_queues[session_key] = [entry]
+
+        result = await runner._handle_approve_command(
+            _make_event("/approve", source=source)
+        )
+
+        assert "approved" in result.lower()
+        assert entry.event.is_set()
+        assert entry.result == "once"
 
 
 # ------------------------------------------------------------------
@@ -337,6 +424,61 @@ class TestDenyCommand:
         result = await runner._handle_deny_command(_make_event("/deny"))
         assert "No pending command" in result
 
+    @pytest.mark.asyncio
+    async def test_non_admin_cannot_deny_blocking_approval(self):
+        from tools.approval import _ApprovalEntry, _gateway_queues
+
+        runner = _make_runner()
+        platform = Platform.QQ_NAPCAT
+        runner.config = GatewayConfig(
+            platforms={
+                platform: PlatformConfig(
+                    enabled=True,
+                    extra={"admin_users": ["179033731"]},
+                )
+            }
+        )
+        source = _make_source(platform=platform, user_id="888888", chat_id="888888")
+        session_key = runner._session_key_for_source(source)
+
+        entry = _ApprovalEntry({"command": "rm -rf /tmp/demo"})
+        _gateway_queues[session_key] = [entry]
+
+        result = await runner._handle_deny_command(
+            _make_event("/deny", source=source)
+        )
+
+        assert "董事长" in result
+        assert "179033731" in result
+        assert entry.event.is_set() is False
+        assert entry.result is None
+
+
+class TestAdminOnlyDangerousControls:
+
+    @pytest.mark.asyncio
+    async def test_non_admin_cannot_toggle_yolo(self, monkeypatch):
+        runner = _make_runner()
+        platform = Platform.QQ_NAPCAT
+        runner.config = GatewayConfig(
+            platforms={
+                platform: PlatformConfig(
+                    enabled=True,
+                    extra={"admin_users": ["179033731"]},
+                )
+            }
+        )
+        source = _make_source(platform=platform, user_id="888888", chat_id="888888")
+        monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
+
+        result = await runner._handle_yolo_command(
+            _make_event("/yolo", source=source)
+        )
+
+        assert "董事长" in result
+        assert "179033731" in result
+        assert os.getenv("HERMES_YOLO_MODE") is None
+
 
 # ------------------------------------------------------------------
 # Bare "yes" must NOT trigger approval
@@ -374,6 +516,14 @@ class TestBlockingApprovalE2E:
 
     def setup_method(self):
         _clear_approval_state()
+        self._tirith_patcher = patch(
+            "tools.tirith_security.check_command_security",
+            return_value={"action": "allow", "findings": [], "summary": ""},
+        )
+        self._tirith_patcher.start()
+
+    def teardown_method(self):
+        self._tirith_patcher.stop()
 
     def test_blocking_approval_approve_once(self):
         """check_all_command_guards blocks until resolve_gateway_approval is called."""
@@ -624,6 +774,14 @@ class TestFallbackNoCallback:
 
     def setup_method(self):
         _clear_approval_state()
+        self._tirith_patcher = patch(
+            "tools.tirith_security.check_command_security",
+            return_value={"action": "allow", "findings": [], "summary": ""},
+        )
+        self._tirith_patcher.start()
+
+    def teardown_method(self):
+        self._tirith_patcher.stop()
 
     def test_no_callback_returns_approval_required(self):
         """Without a registered callback, the old approval_required path is used."""

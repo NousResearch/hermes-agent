@@ -223,6 +223,7 @@ from gateway.config import (
     Platform,
     GatewayConfig,
     load_gateway_config,
+    _coerce_list,
 )
 from gateway.session import (
     SessionStore,
@@ -1068,6 +1069,7 @@ class GatewayRunner:
             for v in ("TELEGRAM_ALLOWED_USERS", "DISCORD_ALLOWED_USERS",
                        "WHATSAPP_ALLOWED_USERS", "SLACK_ALLOWED_USERS",
                        "SIGNAL_ALLOWED_USERS", "SIGNAL_GROUP_ALLOWED_USERS",
+                       "QQ_NAPCAT_ALLOWED_USERS",
                        "EMAIL_ALLOWED_USERS",
                        "SMS_ALLOWED_USERS", "MATTERMOST_ALLOWED_USERS",
                        "MATRIX_ALLOWED_USERS", "DINGTALK_ALLOWED_USERS",
@@ -1080,6 +1082,7 @@ class GatewayRunner:
             for v in ("TELEGRAM_ALLOW_ALL_USERS", "DISCORD_ALLOW_ALL_USERS",
                        "WHATSAPP_ALLOW_ALL_USERS", "SLACK_ALLOW_ALL_USERS",
                        "SIGNAL_ALLOW_ALL_USERS", "EMAIL_ALLOW_ALL_USERS",
+                       "QQ_NAPCAT_ALLOW_ALL_USERS",
                        "SMS_ALLOW_ALL_USERS", "MATTERMOST_ALLOW_ALL_USERS",
                        "MATRIX_ALLOW_ALL_USERS", "DINGTALK_ALLOW_ALL_USERS",
                        "FEISHU_ALLOW_ALL_USERS",
@@ -1582,6 +1585,13 @@ class GatewayRunner:
                 return None
             return SignalAdapter(config)
 
+        elif platform == Platform.QQ_NAPCAT:
+            from gateway.platforms.qq_napcat import QqNapCatAdapter, check_qq_napcat_requirements
+            if not check_qq_napcat_requirements():
+                logger.warning("QQ NapCat: QQ_NAPCAT_WS_URL not configured or aiohttp missing")
+                return None
+            return QqNapCatAdapter(config)
+
         elif platform == Platform.HOMEASSISTANT:
             from gateway.platforms.homeassistant import HomeAssistantAdapter, check_ha_requirements
             if not check_ha_requirements():
@@ -1679,12 +1689,16 @@ class GatewayRunner:
         if not user_id:
             return False
 
+        if self._is_admin_user(source):
+            return True
+
         platform_env_map = {
             Platform.TELEGRAM: "TELEGRAM_ALLOWED_USERS",
             Platform.DISCORD: "DISCORD_ALLOWED_USERS",
             Platform.WHATSAPP: "WHATSAPP_ALLOWED_USERS",
             Platform.SLACK: "SLACK_ALLOWED_USERS",
             Platform.SIGNAL: "SIGNAL_ALLOWED_USERS",
+            Platform.QQ_NAPCAT: "QQ_NAPCAT_ALLOWED_USERS",
             Platform.EMAIL: "EMAIL_ALLOWED_USERS",
             Platform.SMS: "SMS_ALLOWED_USERS",
             Platform.MATTERMOST: "MATTERMOST_ALLOWED_USERS",
@@ -1699,6 +1713,7 @@ class GatewayRunner:
             Platform.WHATSAPP: "WHATSAPP_ALLOW_ALL_USERS",
             Platform.SLACK: "SLACK_ALLOW_ALL_USERS",
             Platform.SIGNAL: "SIGNAL_ALLOW_ALL_USERS",
+            Platform.QQ_NAPCAT: "QQ_NAPCAT_ALLOW_ALL_USERS",
             Platform.EMAIL: "EMAIL_ALLOW_ALL_USERS",
             Platform.SMS: "SMS_ALLOW_ALL_USERS",
             Platform.MATTERMOST: "MATTERMOST_ALLOW_ALL_USERS",
@@ -1756,6 +1771,73 @@ class GatewayRunner:
                 check_ids.add(normalized_user_id)
 
         return bool(check_ids & allowed_ids)
+
+    def _configured_admin_user_ids(self, platform: Optional[Platform]) -> list[str]:
+        """Return configured administrator user IDs for a platform."""
+        admin_ids: list[str] = []
+        seen: set[str] = set()
+
+        def _add(values) -> None:
+            for value in values:
+                normalized = str(value or "").strip()
+                if not normalized or normalized in seen:
+                    continue
+                seen.add(normalized)
+                admin_ids.append(normalized)
+
+        _add(_coerce_list(os.getenv("GATEWAY_ADMIN_USERS")))
+
+        if platform:
+            _add(_coerce_list(os.getenv(f"{platform.value.upper()}_ADMIN_USERS")))
+            platform_cfg = self.config.platforms.get(platform) if getattr(self, "config", None) else None
+            extra = getattr(platform_cfg, "extra", None) if platform_cfg else None
+            if isinstance(extra, dict):
+                _add(_coerce_list(extra.get("admin_users")))
+
+        return admin_ids
+
+    def _source_identity_candidates(self, source: SessionSource) -> set[str]:
+        """Return normalized sender identifiers for auth/admin matching."""
+        candidates: set[str] = set()
+        for raw in (source.user_id, source.user_id_alt):
+            value = str(raw or "").strip()
+            if not value:
+                continue
+            candidates.add(value)
+            if "@" in value:
+                candidates.add(value.split("@", 1)[0])
+
+        if source.platform == Platform.WHATSAPP:
+            expanded: set[str] = set()
+            for candidate in list(candidates):
+                expanded.update(_expand_whatsapp_auth_aliases(candidate))
+                normalized = _normalize_whatsapp_identifier(candidate)
+                if normalized:
+                    expanded.add(normalized)
+            candidates.update(expanded)
+
+        return candidates
+
+    def _is_admin_user(self, source: SessionSource) -> bool:
+        """Return True when the source user is explicitly configured as an admin."""
+        admin_ids = set(self._configured_admin_user_ids(source.platform))
+        if not admin_ids:
+            return False
+        return bool(self._source_identity_candidates(source) & admin_ids)
+
+    def _admin_only_message(self, source: SessionSource, action: str) -> Optional[str]:
+        """Return an admin-only rejection message when the user is not an admin."""
+        admin_ids = self._configured_admin_user_ids(source.platform)
+        if not admin_ids or self._is_admin_user(source):
+            return None
+
+        if source.platform == Platform.QQ_NAPCAT:
+            ids_text = "、".join(admin_ids)
+            return f"这事得董事长拍板。当前只有 QQ {ids_text} 能授权这类操作。"
+
+        noun = "user ID" if len(admin_ids) == 1 else "user IDs"
+        ids_text = ", ".join(admin_ids)
+        return f"Only administrator {noun} {ids_text} can {action}."
 
     def _get_unauthorized_dm_behavior(self, platform: Optional[Platform]) -> str:
         """Return how unauthorized DMs should be handled for a platform."""
@@ -2328,7 +2410,15 @@ class GatewayRunner:
             })
         
         # Build session context
-        context = build_session_context(source, self.config, session_entry)
+        admin_user_ids = self._configured_admin_user_ids(source.platform)
+        is_admin_user = self._is_admin_user(source) if admin_user_ids else None
+        context = build_session_context(
+            source,
+            self.config,
+            session_entry,
+            admin_user_ids=admin_user_ids,
+            is_admin_user=is_admin_user,
+        )
         
         # Set environment variables for tools
         self._set_session_env(context)
@@ -2909,6 +2999,8 @@ class GatewayRunner:
                 session_id=session_entry.session_id,
                 session_key=session_key,
                 event_message_id=event.message_id,
+                admin_user_ids=context.admin_user_ids,
+                is_admin_user=context.is_admin_user,
             )
 
             # Stop persistent typing indicator now that the agent is done
@@ -2920,6 +3012,13 @@ class GatewayRunner:
                 pass
 
             response = agent_result.get("final_response") or ""
+            suppress_reply = bool(agent_result.get("suppress_reply"))
+            if response.strip() == "(empty)":
+                suppress_reply = True
+                response = ""
+            if response.strip() == "[[NO_REPLY]]":
+                suppress_reply = True
+                response = ""
             agent_messages = agent_result.get("messages", [])
             _response_time = time.time() - _msg_start_time
             _api_calls = agent_result.get("api_calls", 0)
@@ -3084,7 +3183,8 @@ class GatewayRunner:
 
             # Auto voice reply: send TTS audio before the text response
             _already_sent = bool(agent_result.get("already_sent"))
-            if self._should_send_voice_reply(event, response, agent_messages, already_sent=_already_sent):
+            if (not suppress_reply
+                    and self._should_send_voice_reply(event, response, agent_messages, already_sent=_already_sent)):
                 await self._send_voice_reply(event, response)
 
             # If streaming already delivered the response, extract and
@@ -3100,6 +3200,9 @@ class GatewayRunner:
                         await self._deliver_media_from_response(
                             response, event, _media_adapter,
                         )
+                return None
+
+            if suppress_reply:
                 return None
 
             return response
@@ -4904,6 +5007,13 @@ class GatewayRunner:
 
     async def _handle_yolo_command(self, event: MessageEvent) -> str:
         """Handle /yolo — toggle dangerous command approval bypass."""
+        admin_only_message = self._admin_only_message(
+            event.source,
+            "toggle YOLO mode",
+        )
+        if admin_only_message:
+            return admin_only_message
+
         current = bool(os.environ.get("HERMES_YOLO_MODE"))
         if current:
             os.environ.pop("HERMES_YOLO_MODE", None)
@@ -5435,10 +5545,16 @@ class GatewayRunner:
             /approve all always   — approve all + remember permanently
         """
         source = event.source
+        admin_only_message = self._admin_only_message(
+            source,
+            "approve dangerous commands",
+        )
+        if admin_only_message:
+            return admin_only_message
         session_key = self._session_key_for_source(source)
 
         from tools.approval import (
-            resolve_gateway_approval, has_blocking_approval,
+            has_blocking_approval, peek_blocking_approval, resolve_gateway_approval,
         )
 
         if not has_blocking_approval(session_key):
@@ -5446,6 +5562,9 @@ class GatewayRunner:
                 self._pending_approvals.pop(session_key)
                 return "⚠️ Approval expired (agent is no longer waiting). Ask the agent to try again."
             return "No pending command to approve."
+
+        current_approval = peek_blocking_approval(session_key) or {}
+        allow_persistence = bool(current_approval.get("allow_persistence", True))
 
         # Parse args: support "all", "all session", "all always", "session", "always"
         args = event.get_command_args().strip().lower().split()
@@ -5461,6 +5580,10 @@ class GatewayRunner:
         else:
             choice = "once"
             scope_msg = ""
+
+        if not resolve_all and not allow_persistence and choice in {"session", "always"}:
+            choice = "once"
+            scope_msg = " (approved for this action only)"
 
         count = resolve_gateway_approval(session_key, choice, resolve_all=resolve_all)
         if not count:
@@ -5484,6 +5607,12 @@ class GatewayRunner:
         ``/deny`` denies the oldest; ``/deny all`` denies everything.
         """
         source = event.source
+        admin_only_message = self._admin_only_message(
+            source,
+            "deny dangerous commands",
+        )
+        if admin_only_message:
+            return admin_only_message
         session_key = self._session_key_for_source(source)
 
         from tools.approval import (
@@ -5912,12 +6041,32 @@ class GatewayRunner:
         os.environ["HERMES_SESSION_CHAT_ID"] = context.source.chat_id
         if context.source.chat_name:
             os.environ["HERMES_SESSION_CHAT_NAME"] = context.source.chat_name
+        if context.source.chat_type:
+            os.environ["HERMES_SESSION_CHAT_TYPE"] = context.source.chat_type
         if context.source.thread_id:
             os.environ["HERMES_SESSION_THREAD_ID"] = str(context.source.thread_id)
+        if context.source.user_id:
+            os.environ["HERMES_SESSION_USER_ID"] = str(context.source.user_id)
+        if context.source.user_name:
+            os.environ["HERMES_SESSION_USER_NAME"] = str(context.source.user_name)
+        if context.admin_user_ids:
+            os.environ["HERMES_SESSION_ADMIN_USER_IDS"] = ",".join(context.admin_user_ids)
+        if context.is_admin_user is not None:
+            os.environ["HERMES_SESSION_IS_ADMIN"] = str(context.is_admin_user).lower()
     
     def _clear_session_env(self) -> None:
         """Clear session environment variables."""
-        for var in ["HERMES_SESSION_PLATFORM", "HERMES_SESSION_CHAT_ID", "HERMES_SESSION_CHAT_NAME", "HERMES_SESSION_THREAD_ID"]:
+        for var in [
+            "HERMES_SESSION_PLATFORM",
+            "HERMES_SESSION_CHAT_ID",
+            "HERMES_SESSION_CHAT_NAME",
+            "HERMES_SESSION_CHAT_TYPE",
+            "HERMES_SESSION_THREAD_ID",
+            "HERMES_SESSION_USER_ID",
+            "HERMES_SESSION_USER_NAME",
+            "HERMES_SESSION_ADMIN_USER_IDS",
+            "HERMES_SESSION_IS_ADMIN",
+        ]:
             if var in os.environ:
                 del os.environ[var]
     
@@ -6098,6 +6247,7 @@ class GatewayRunner:
         platform_name = watcher.get("platform", "")
         chat_id = watcher.get("chat_id", "")
         thread_id = watcher.get("thread_id", "")
+        chat_type = str(watcher.get("chat_type", "") or "").lower()
         agent_notify = watcher.get("notify_on_complete", False)
         notify_mode = self._load_background_notifications_mode()
 
@@ -6148,10 +6298,20 @@ class GatewayRunner:
                             from gateway.platforms.base import MessageEvent, MessageType
                             from gateway.session import SessionSource
                             from gateway.config import Platform
+                            if (
+                                platform_name == "qq_napcat"
+                                and chat_id
+                                and chat_type in {"group", "dm", "private"}
+                                and hasattr(adapter, "_chat_types")
+                            ):
+                                adapter._chat_types[str(chat_id)] = (
+                                    "group" if chat_type == "group" else "private"
+                                )
                             _platform_enum = Platform(platform_name)
                             _source = SessionSource(
                                 platform=_platform_enum,
                                 chat_id=chat_id,
+                                chat_type=chat_type or "dm",
                                 thread_id=thread_id or None,
                             )
                             synth_event = MessageEvent(
@@ -6187,6 +6347,15 @@ class GatewayRunner:
                             break
                     if adapter and chat_id:
                         try:
+                            if (
+                                platform_name == "qq_napcat"
+                                and chat_id
+                                and chat_type in {"group", "dm", "private"}
+                                and hasattr(adapter, "_chat_types")
+                            ):
+                                adapter._chat_types[str(chat_id)] = (
+                                    "group" if chat_type == "group" else "private"
+                                )
                             send_meta = {"thread_id": thread_id} if thread_id else None
                             await adapter.send(chat_id, message_text, metadata=send_meta)
                         except Exception as e:
@@ -6208,6 +6377,15 @@ class GatewayRunner:
                         break
                 if adapter and chat_id:
                     try:
+                        if (
+                            platform_name == "qq_napcat"
+                            and chat_id
+                            and chat_type in {"group", "dm", "private"}
+                            and hasattr(adapter, "_chat_types")
+                        ):
+                            adapter._chat_types[str(chat_id)] = (
+                                "group" if chat_type == "group" else "private"
+                            )
                         send_meta = {"thread_id": thread_id} if thread_id else None
                         await adapter.send(chat_id, message_text, metadata=send_meta)
                     except Exception as e:
@@ -6274,6 +6452,8 @@ class GatewayRunner:
         session_key: str = None,
         _interrupt_depth: int = 0,
         event_message_id: Optional[str] = None,
+        admin_user_ids: Optional[List[str]] = None,
+        is_admin_user: Optional[bool] = None,
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
@@ -6592,6 +6772,15 @@ class GatewayRunner:
             combined_ephemeral = context_prompt or ""
             if self._ephemeral_system_prompt:
                 combined_ephemeral = (combined_ephemeral + "\n\n" + self._ephemeral_system_prompt).strip()
+            platform_system_prompt = ""
+            try:
+                platform_config = self.config.platforms.get(source.platform)
+                if platform_config and isinstance(getattr(platform_config, "extra", None), dict):
+                    platform_system_prompt = str(platform_config.extra.get("system_prompt") or "").strip()
+            except Exception:
+                platform_system_prompt = ""
+            if platform_system_prompt:
+                combined_ephemeral = (combined_ephemeral + "\n\n" + platform_system_prompt).strip()
 
             # Re-read .env and config for fresh credentials (gateway is long-lived,
             # keys may change without restart).
@@ -6799,7 +6988,9 @@ class GatewayRunner:
             # to the user immediately.
             from tools.approval import (
                 register_gateway_notify,
+                reset_current_admin_policy,
                 reset_current_session_key,
+                set_current_admin_policy,
                 set_current_session_key,
                 unregister_gateway_notify,
             )
@@ -6823,6 +7014,9 @@ class GatewayRunner:
 
                 cmd = approval_data.get("command", "")
                 desc = approval_data.get("description", "dangerous command")
+                title = approval_data.get("prompt_title", "Dangerous command requires approval")
+                approver_name = approval_data.get("approver_name", "管理员")
+                allow_persistence = bool(approval_data.get("allow_persistence", True))
 
                 # Prefer button-based approval when the adapter supports it.
                 # Check the *class* for the method, not the instance — avoids
@@ -6847,13 +7041,28 @@ class GatewayRunner:
 
                 # Fallback: plain text approval prompt
                 cmd_preview = cmd[:200] + "..." if len(cmd) > 200 else cmd
+                if allow_persistence:
+                    instructions = (
+                        "Reply `/approve` to execute, `/approve session` to approve this pattern "
+                        "for the session, `/approve always` to approve permanently, or `/deny` to cancel."
+                    )
+                else:
+                    instructions = (
+                        f"这事我得先取得{approver_name}的授权。"
+                        f"请{approver_name}回复 `/approve` 执行，或 `/deny` 取消。"
+                    )
                 msg = (
-                    f"⚠️ **Dangerous command requires approval:**\n"
+                    f"⚠️ **{title}:**\n"
                     f"```\n{cmd_preview}\n```\n"
                     f"Reason: {desc}\n\n"
-                    f"Reply `/approve` to execute, `/approve session` to approve this pattern "
-                    f"for the session, `/approve always` to approve permanently, or `/deny` to cancel."
+                    f"{instructions}"
                 )
+                admin_note = self._admin_only_message(
+                    source,
+                    "approve dangerous commands",
+                )
+                if admin_note:
+                    msg = f"{msg}\n\n{admin_note}"
                 try:
                     asyncio.run_coroutine_threadsafe(
                         _status_adapter.send(
@@ -6874,11 +7083,16 @@ class GatewayRunner:
 
             _approval_session_key = session_key or ""
             _approval_session_token = set_current_session_key(_approval_session_key)
+            _approval_admin_tokens = set_current_admin_policy(
+                list(admin_user_ids or []),
+                is_admin_user,
+            )
             register_gateway_notify(_approval_session_key, _approval_notify_sync)
             try:
                 result = agent.run_conversation(message, conversation_history=agent_history, task_id=session_id)
             finally:
                 unregister_gateway_notify(_approval_session_key)
+                reset_current_admin_policy(_approval_admin_tokens)
                 reset_current_session_key(_approval_session_token)
             result_holder[0] = result
 
@@ -6888,6 +7102,8 @@ class GatewayRunner:
             
             # Return final response, or a message if something went wrong
             final_response = result.get("final_response")
+            suppress_reply = False
+            _empty_placeholder = False
 
             # Extract actual token counts from the agent instance used for this run
             _last_prompt_toks = 0
@@ -6900,10 +7116,15 @@ class GatewayRunner:
                 _output_toks = getattr(_agent, "session_completion_tokens", 0)
             _resolved_model = getattr(_agent, "model", None) if _agent else None
 
-            if not final_response:
+            if isinstance(final_response, str) and final_response.strip() == "(empty)":
+                _empty_placeholder = True
+                final_response = ""
+
+            if not final_response and not _empty_placeholder:
                 error_msg = f"⚠️ {result['error']}" if result.get("error") else "(No response generated)"
                 return {
                     "final_response": error_msg,
+                    "suppress_reply": False,
                     "messages": result.get("messages", []),
                     "api_calls": result.get("api_calls", 0),
                     "tools": tools_holder[0] or [],
@@ -6948,6 +7169,12 @@ class GatewayRunner:
                     if has_voice_directive:
                         unique_tags.insert(0, "[[audio_as_voice]]")
                     final_response = final_response + "\n" + "\n".join(unique_tags)
+
+            if isinstance(final_response, str) and final_response.strip() == "[[NO_REPLY]]":
+                suppress_reply = True
+                final_response = ""
+            elif _empty_placeholder and isinstance(final_response, str) and not final_response.strip():
+                suppress_reply = True
             
             # Sync session_id: the agent may have created a new session during
             # mid-run context compression (_compress_context splits sessions).
@@ -6992,6 +7219,7 @@ class GatewayRunner:
 
             return {
                 "final_response": final_response,
+                "suppress_reply": suppress_reply,
                 "last_reasoning": result.get("last_reasoning"),
                 "messages": result_holder[0].get("messages", []) if result_holder[0] else [],
                 "api_calls": result_holder[0].get("api_calls", 0) if result_holder[0] else 0,
@@ -7291,7 +7519,11 @@ class GatewayRunner:
                     _sc = stream_consumer_holder[0]
                     _already_streamed = _sc and getattr(_sc, "already_sent", False)
                     first_response = result.get("final_response", "")
-                    if first_response and not _already_streamed:
+                    suppress_first_response = bool(result.get("suppress_reply"))
+                    if first_response and first_response.strip() == "[[NO_REPLY]]":
+                        suppress_first_response = True
+                        first_response = ""
+                    if first_response and not _already_streamed and not suppress_first_response:
                         try:
                             await adapter.send(source.chat_id, first_response,
                                                metadata=getattr(event, "metadata", None))

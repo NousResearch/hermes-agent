@@ -15,6 +15,7 @@ from tools.approval import (
     load_permanent,
     pop_pending,
     prompt_dangerous_approval,
+    request_dangerous_action_approval,
     submit_pending,
 )
 
@@ -221,6 +222,127 @@ class TestSessionKeyContext:
 
         assert pop_pending("alice") is not None
         assert pop_pending("bob") is None
+
+
+class TestDangerousActionApproval:
+    def test_non_admin_cannot_reuse_session_approved_dangerous_terminal_pattern(self):
+        session_key = "dangerous-terminal-session-approved"
+        clear_session(session_key)
+        approval_module._permanent_approved.clear()
+
+        is_dangerous, pattern_key, _ = detect_dangerous_command("rm -rf /tmp/hermes-test")
+        assert is_dangerous is True
+        assert pattern_key is not None
+        approve_session(session_key, pattern_key)
+
+        session_token = approval_module.set_current_session_key(session_key)
+        admin_token = approval_module.set_current_admin_policy(["179033731"], False)
+        try:
+            with (
+                mock_patch.dict("os.environ", {"HERMES_GATEWAY_SESSION": "1"}, clear=False),
+                mock_patch(
+                    "tools.tirith_security.check_command_security",
+                    return_value={"action": "allow", "findings": [], "summary": ""},
+                ),
+            ):
+                result = approval_module.check_all_command_guards("rm -rf /tmp/hermes-test", "local")
+        finally:
+            approval_module.reset_current_admin_policy(admin_token)
+            approval_module.reset_current_session_key(session_token)
+            clear_session(session_key)
+            approval_module._permanent_approved.clear()
+
+        assert result["approved"] is False
+        assert "179033731" in result["message"]
+        assert "administrator" in result["message"].lower()
+
+    def test_non_admin_cannot_reuse_permanently_approved_dangerous_terminal_pattern(self):
+        session_key = "dangerous-terminal-permanent-approved"
+        clear_session(session_key)
+        approval_module._permanent_approved.clear()
+
+        is_dangerous, pattern_key, _ = detect_dangerous_command("rm -rf /tmp/hermes-test")
+        assert is_dangerous is True
+        assert pattern_key is not None
+        load_permanent({pattern_key})
+
+        session_token = approval_module.set_current_session_key(session_key)
+        admin_token = approval_module.set_current_admin_policy(["179033731"], False)
+        try:
+            with (
+                mock_patch.dict("os.environ", {"HERMES_GATEWAY_SESSION": "1"}, clear=False),
+                mock_patch(
+                    "tools.tirith_security.check_command_security",
+                    return_value={"action": "allow", "findings": [], "summary": ""},
+                ),
+            ):
+                result = approval_module.check_all_command_guards("rm -rf /tmp/hermes-test", "local")
+        finally:
+            approval_module.reset_current_admin_policy(admin_token)
+            approval_module.reset_current_session_key(session_token)
+            clear_session(session_key)
+            approval_module._permanent_approved.clear()
+
+        assert result["approved"] is False
+        assert "179033731" in result["message"]
+        assert "administrator" in result["message"].lower()
+
+    def test_non_admin_gateway_user_is_blocked_from_approving_action(self):
+        token = approval_module.set_current_admin_policy(["179033731"], False)
+        session_token = approval_module.set_current_session_key("qq-session")
+        try:
+            with mock_patch.dict("os.environ", {"HERMES_GATEWAY_SESSION": "1"}, clear=False):
+                result = request_dangerous_action_approval(
+                    action_preview="qq_group_moderation kick group:987654321 user:123456",
+                    description="Kick a QQ group member",
+                )
+        finally:
+            approval_module.reset_current_admin_policy(token)
+            approval_module.reset_current_session_key(session_token)
+
+        assert result["approved"] is False
+        assert "授权" in result["message"]
+        assert "179033731" in result["message"]
+
+    def test_cli_callback_can_approve_one_time_action(self):
+        with mock_patch.dict("os.environ", {"HERMES_INTERACTIVE": "1"}, clear=True):
+            callback = lambda command, description, **kwargs: "always"
+            result = request_dangerous_action_approval(
+                action_preview="qq_group_moderation mute group:987654321 user:123456 duration:600",
+                description="Mute a QQ group member for 10 minutes",
+                approval_callback=callback,
+            )
+
+        assert result["approved"] is True
+
+    def test_gateway_scoped_approval_does_not_persist_dangerous_action(self):
+        session_key = "qq-dangerous-action"
+        description = "Kick a QQ group member"
+        pattern_key = f"dangerous_action:{description}"
+        approval_module.clear_session(session_key)
+        approval_module.unregister_gateway_notify(session_key)
+
+        session_token = approval_module.set_current_session_key(session_key)
+        try:
+            with mock_patch.dict("os.environ", {"HERMES_GATEWAY_SESSION": "1"}, clear=True):
+                approval_module.register_gateway_notify(
+                    session_key,
+                    lambda _approval_data: approval_module.resolve_gateway_approval(
+                        session_key,
+                        "always",
+                    ),
+                )
+                result = request_dangerous_action_approval(
+                    action_preview="qq_group_moderation kick group:987654321 user:123456",
+                    description=description,
+                )
+        finally:
+            approval_module.unregister_gateway_notify(session_key)
+            approval_module.reset_current_session_key(session_token)
+            approval_module.clear_session(session_key)
+
+        assert result["approved"] is True
+        assert approval_module.is_approved(session_key, pattern_key) is False
 
 
 class TestRmFalsePositiveFix:
@@ -714,5 +836,3 @@ class TestNormalizationBypass:
         cmd = "\uff4c\uff53 -\uff4c\uff41 /tmp"
         dangerous, key, desc = detect_dangerous_command(cmd)
         assert dangerous is False
-
-

@@ -63,7 +63,7 @@ def _scan_cron_prompt(prompt: str) -> str:
     return ""
 
 
-def _origin_from_env() -> Optional[Dict[str, str]]:
+def _origin_from_env() -> Optional[Dict[str, Optional[str]]]:
     origin_platform = os.getenv("HERMES_SESSION_PLATFORM")
     origin_chat_id = os.getenv("HERMES_SESSION_CHAT_ID")
     if origin_platform and origin_chat_id:
@@ -71,6 +71,7 @@ def _origin_from_env() -> Optional[Dict[str, str]]:
             "platform": origin_platform,
             "chat_id": origin_chat_id,
             "chat_name": os.getenv("HERMES_SESSION_CHAT_NAME"),
+            "chat_type": os.getenv("HERMES_SESSION_CHAT_TYPE"),
             "thread_id": os.getenv("HERMES_SESSION_THREAD_ID"),
         }
     return None
@@ -455,7 +456,7 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
             },
             "deliver": {
                 "type": "string",
-                "description": "Delivery target: origin, local, telegram, discord, slack, whatsapp, signal, matrix, mattermost, homeassistant, dingtalk, feishu, wecom, email, sms, or platform:chat_id or platform:chat_id:thread_id for Telegram topics. Examples: 'origin', 'local', 'telegram', 'telegram:-1001234567890:17585', 'discord:#engineering'"
+                "description": "Delivery target: origin, local, telegram, discord, slack, whatsapp, signal, qq_napcat, matrix, mattermost, homeassistant, dingtalk, feishu, wecom, email, sms, or platform:chat_id / telegram:chat_id:thread_id / qq_napcat:group:chat_id. Examples: 'origin', 'local', 'telegram', 'telegram:-1001234567890:17585', 'qq_napcat:group:987654321', 'discord:#engineering'"
             },
             "skills": {
                 "type": "array",

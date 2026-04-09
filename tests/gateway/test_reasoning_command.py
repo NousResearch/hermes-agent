@@ -4,6 +4,7 @@ import asyncio
 import inspect
 import sys
 import types
+import tools.approval as approval_mod
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -275,3 +276,70 @@ class TestReasoningCommand:
         assert result["final_response"] == "ok"
         assert _CapturingAgent.last_init is not None
         assert "homeassistant" in set(_CapturingAgent.last_init["enabled_toolsets"])
+
+    def test_run_agent_passes_admin_policy_to_gateway_approval(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text("", encoding="utf-8")
+
+        monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
+        monkeypatch.setattr(gateway_run, "_env_path", hermes_home / ".env")
+        monkeypatch.setattr(gateway_run, "load_dotenv", lambda *args, **kwargs: None)
+        monkeypatch.setattr(
+            gateway_run,
+            "_resolve_runtime_agent_kwargs",
+            lambda: {
+                "provider": "openrouter",
+                "api_mode": "chat_completions",
+                "base_url": "https://openrouter.ai/api/v1",
+                "api_key": "test-key",
+            },
+        )
+        fake_run_agent = types.ModuleType("run_agent")
+        fake_run_agent.AIAgent = _CapturingAgent
+        monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+        captured = {}
+        monkeypatch.setattr(approval_mod, "set_current_session_key", lambda session_key: "session-token")
+        monkeypatch.setattr(approval_mod, "reset_current_session_key", lambda token: None)
+        monkeypatch.setattr(approval_mod, "register_gateway_notify", lambda session_key, cb: None)
+        monkeypatch.setattr(approval_mod, "unregister_gateway_notify", lambda session_key: None)
+
+        def _capture_admin_policy(admin_user_ids, is_admin_user):
+            captured["admin_user_ids"] = list(admin_user_ids)
+            captured["is_admin_user"] = is_admin_user
+            return "admin-token"
+
+        monkeypatch.setattr(approval_mod, "set_current_admin_policy", _capture_admin_policy)
+        monkeypatch.setattr(approval_mod, "reset_current_admin_policy", lambda token: None)
+
+        _CapturingAgent.last_init = None
+        runner = _make_runner()
+
+        source = SessionSource(
+            platform=Platform.QQ_NAPCAT,
+            chat_id="179033731",
+            chat_name="QQ DM",
+            chat_type="dm",
+            user_id="888888",
+            user_name="visitor",
+        )
+
+        result = asyncio.run(
+            runner._run_agent(
+                message="ping",
+                context_prompt="",
+                history=[],
+                source=source,
+                session_id="session-qq-dm",
+                session_key="agent:main:qq_napcat:dm:179033731",
+                admin_user_ids=["179033731"],
+                is_admin_user=False,
+            )
+        )
+
+        assert result["final_response"] == "ok"
+        assert captured == {
+            "admin_user_ids": ["179033731"],
+            "is_admin_user": False,
+        }

@@ -22,6 +22,20 @@ def test_get_platform_tools_uses_default_when_platform_not_configured():
     assert enabled
 
 
+def test_qq_napcat_platform_has_default_toolset():
+    from hermes_cli.tools_config import PLATFORMS
+
+    assert PLATFORMS["qq_napcat"]["default_toolset"] == "hermes-qq-napcat"
+
+
+def test_qq_napcat_group_file_tool_is_scoped_to_qq_toolsets():
+    from toolsets import resolve_toolset
+
+    assert "qq_group_file" in resolve_toolset("hermes-qq-napcat")
+    assert "qq_group_file" in resolve_toolset("hermes-gateway")
+    assert "qq_group_file" not in resolve_toolset("hermes-telegram")
+
+
 def test_get_platform_tools_preserves_explicit_empty_selection():
     config = {"platform_toolsets": {"cli": []}}
 

@@ -21,6 +21,7 @@ def _clear_auth_env(monkeypatch) -> None:
         "MATTERMOST_ALLOWED_USERS",
         "MATRIX_ALLOWED_USERS",
         "DINGTALK_ALLOWED_USERS", "FEISHU_ALLOWED_USERS", "WECOM_ALLOWED_USERS",
+        "QQ_NAPCAT_ALLOWED_USERS",
         "GATEWAY_ALLOWED_USERS",
         "TELEGRAM_ALLOW_ALL_USERS",
         "DISCORD_ALLOW_ALL_USERS",
@@ -32,6 +33,7 @@ def _clear_auth_env(monkeypatch) -> None:
         "MATTERMOST_ALLOW_ALL_USERS",
         "MATRIX_ALLOW_ALL_USERS",
         "DINGTALK_ALLOW_ALL_USERS", "FEISHU_ALLOW_ALL_USERS", "WECOM_ALLOW_ALL_USERS",
+        "QQ_NAPCAT_ALLOW_ALL_USERS",
         "GATEWAY_ALLOW_ALL_USERS",
     ):
         monkeypatch.delenv(key, raising=False)
@@ -127,6 +129,27 @@ def test_star_wildcard_works_for_any_platform(monkeypatch):
         user_name="stranger",
         chat_type="dm",
     )
+    assert runner._is_user_authorized(source) is True
+
+
+def test_qq_napcat_allow_all_env_authorizes_any_dm_user(monkeypatch):
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("QQ_NAPCAT_ALLOW_ALL_USERS", "true")
+    platform = getattr(Platform, "QQ_NAPCAT")
+
+    runner, _adapter = _make_runner(
+        platform,
+        GatewayConfig(platforms={platform: PlatformConfig(enabled=True)}),
+    )
+
+    source = SessionSource(
+        platform=platform,
+        user_id="123456",
+        chat_id="123456",
+        user_name="tester",
+        chat_type="dm",
+    )
+
     assert runner._is_user_authorized(source) is True
 
 

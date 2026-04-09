@@ -49,6 +49,16 @@ class TestGuidanceConstants:
         assert "recent turns of the current session" not in SESSION_SEARCH_GUIDANCE
 
 
+class TestPlatformHints:
+    def test_qq_napcat_hint_includes_media_and_silent_reply_contract(self):
+        hint = PLATFORM_HINTS["qq_napcat"]
+
+        assert "QQ" in hint
+        assert "NapCat" in hint
+        assert "MEDIA:/absolute/path/to/file" in hint
+        assert "[[NO_REPLY]]" in hint
+
+
 # =========================================================================
 # Context injection scanning
 # =========================================================================

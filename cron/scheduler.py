@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 # Valid delivery platforms — used to validate user-supplied platform names
 # in cron delivery targets, preventing env var enumeration via crafted names.
 _KNOWN_DELIVERY_PLATFORMS = frozenset({
-    "telegram", "discord", "slack", "whatsapp", "signal",
+    "telegram", "discord", "slack", "whatsapp", "signal", "qq_napcat",
     "matrix", "mattermost", "homeassistant", "dingtalk", "feishu",
     "wecom", "sms", "email", "webhook",
 })
@@ -57,9 +57,14 @@ SILENT_MARKER = "[SILENT]"
 # Resolve Hermes home directory (respects HERMES_HOME override)
 _hermes_home = get_hermes_home()
 
-# File-based lock prevents concurrent ticks from gateway + daemon + systemd timer
-_LOCK_DIR = _hermes_home / "cron"
-_LOCK_FILE = _LOCK_DIR / ".tick.lock"
+
+def _get_tick_lock_file() -> Path:
+    """Return the tick lock file for the current Hermes home directory.
+
+    ``HERMES_HOME`` can differ per process or per test, so lock paths must be
+    resolved at call time rather than frozen at module import time.
+    """
+    return get_hermes_home() / "cron" / ".tick.lock"
 
 
 def _resolve_origin(job: dict) -> Optional[dict]:
@@ -74,6 +79,43 @@ def _resolve_origin(job: dict) -> Optional[dict]:
     return None
 
 
+def _normalize_origin_chat_id(origin: dict) -> str:
+    """Convert persisted origin metadata into a concrete delivery target."""
+    platform = str(origin.get("platform") or "").lower()
+    chat_id = str(origin.get("chat_id"))
+    if platform != "qq_napcat":
+        return chat_id
+    if chat_id.startswith(("group:", "dm:")):
+        return chat_id
+
+    chat_type = str(origin.get("chat_type") or "").lower()
+    if chat_type == "group":
+        return f"group:{chat_id}"
+    if chat_type in {"dm", "private"}:
+        return f"dm:{chat_id}"
+    return chat_id
+
+
+def _qq_napcat_delivery_error(chat_id: str, *, source: str) -> str:
+    """Describe a QQ delivery target that is missing its chat type prefix."""
+    sample = str(chat_id or "").strip()
+    sample_id = sample.lstrip("-") if sample.lstrip("-").isdigit() else "<id>"
+    if source == "home channel":
+        return (
+            "qq_napcat home channel must include a chat type prefix. "
+            f"Use 'group:{sample_id}' or 'dm:{sample_id}'."
+        )
+    return (
+        "qq_napcat deliver target must include a chat type prefix. "
+        f"Use 'qq_napcat:group:{sample_id}' or 'qq_napcat:dm:{sample_id}'."
+    )
+
+
+def _is_valid_qq_napcat_delivery_chat_id(chat_id: str) -> bool:
+    """QQ auto-delivery targets must be explicit because there is no live session state here."""
+    return str(chat_id or "").startswith(("group:", "dm:"))
+
+
 def _resolve_delivery_target(job: dict) -> Optional[dict]:
     """Resolve the concrete auto-delivery target for a cron job, if any."""
     deliver = job.get("deliver", "local")
@@ -84,16 +126,21 @@ def _resolve_delivery_target(job: dict) -> Optional[dict]:
 
     if deliver == "origin":
         if origin:
-            return {
+            target = {
                 "platform": origin["platform"],
-                "chat_id": str(origin["chat_id"]),
+                "chat_id": _normalize_origin_chat_id(origin),
                 "thread_id": origin.get("thread_id"),
             }
+            if target["platform"].lower() == "qq_napcat" and not _is_valid_qq_napcat_delivery_chat_id(target["chat_id"]):
+                return None
+            return target
         # Origin missing (e.g. job created via API/script) — try each
         # platform's home channel as a fallback instead of silently dropping.
-        for platform_name in ("matrix", "telegram", "discord", "slack"):
+        for platform_name in ("matrix", "telegram", "discord", "slack", "qq_napcat"):
             chat_id = os.getenv(f"{platform_name.upper()}_HOME_CHANNEL", "")
             if chat_id:
+                if platform_name == "qq_napcat" and not _is_valid_qq_napcat_delivery_chat_id(chat_id):
+                    return None
                 logger.info(
                     "Job '%s' has deliver=origin but no origin; falling back to %s home channel",
                     job.get("name", job.get("id", "?")),
@@ -131,6 +178,9 @@ def _resolve_delivery_target(job: dict) -> Optional[dict]:
         except Exception:
             pass
 
+        if platform_key == "qq_napcat" and not _is_valid_qq_napcat_delivery_chat_id(chat_id):
+            return None
+
         return {
             "platform": platform_name,
             "chat_id": chat_id,
@@ -139,16 +189,21 @@ def _resolve_delivery_target(job: dict) -> Optional[dict]:
 
     platform_name = deliver
     if origin and origin.get("platform") == platform_name:
-        return {
+        target = {
             "platform": platform_name,
-            "chat_id": str(origin["chat_id"]),
+            "chat_id": _normalize_origin_chat_id(origin),
             "thread_id": origin.get("thread_id"),
         }
+        if platform_name.lower() == "qq_napcat" and not _is_valid_qq_napcat_delivery_chat_id(target["chat_id"]):
+            return None
+        return target
 
     if platform_name.lower() not in _KNOWN_DELIVERY_PLATFORMS:
         return None
     chat_id = os.getenv(f"{platform_name.upper()}_HOME_CHANNEL", "")
     if not chat_id:
+        return None
+    if platform_name.lower() == "qq_napcat" and not _is_valid_qq_napcat_delivery_chat_id(chat_id):
         return None
 
     return {
@@ -210,7 +265,16 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     target = _resolve_delivery_target(job)
     if not target:
         if job.get("deliver", "local") != "local":
-            msg = f"no delivery target resolved for deliver={job.get('deliver', 'local')}"
+            deliver = str(job.get("deliver", "local") or "")
+            if deliver.startswith("qq_napcat:"):
+                msg = _qq_napcat_delivery_error(deliver.split(":", 1)[1], source="deliver")
+            elif deliver == "qq_napcat":
+                msg = _qq_napcat_delivery_error(
+                    os.getenv("QQ_NAPCAT_HOME_CHANNEL", ""),
+                    source="home channel",
+                )
+            else:
+                msg = f"no delivery target resolved for deliver={deliver}"
             logger.warning("Job '%s': %s", job["id"], msg)
             return msg
         return None  # local-only jobs don't deliver — not a failure
@@ -228,6 +292,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         "slack": Platform.SLACK,
         "whatsapp": Platform.WHATSAPP,
         "signal": Platform.SIGNAL,
+        "qq_napcat": Platform.QQ_NAPCAT,
         "matrix": Platform.MATRIX,
         "mattermost": Platform.MATTERMOST,
         "homeassistant": Platform.HOMEASSISTANT,
@@ -551,6 +616,10 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             os.environ["HERMES_SESSION_CHAT_ID"] = str(origin["chat_id"])
             if origin.get("chat_name"):
                 os.environ["HERMES_SESSION_CHAT_NAME"] = origin["chat_name"]
+            if origin.get("chat_type"):
+                os.environ["HERMES_SESSION_CHAT_TYPE"] = str(origin["chat_type"])
+            if origin.get("thread_id") is not None:
+                os.environ["HERMES_SESSION_THREAD_ID"] = str(origin["thread_id"])
         # Re-read .env and config.yaml fresh every run so provider/key
         # changes take effect without a gateway restart.
         from dotenv import load_dotenv
@@ -792,6 +861,8 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             "HERMES_SESSION_PLATFORM",
             "HERMES_SESSION_CHAT_ID",
             "HERMES_SESSION_CHAT_NAME",
+            "HERMES_SESSION_CHAT_TYPE",
+            "HERMES_SESSION_THREAD_ID",
             "HERMES_CRON_AUTO_DELIVER_PLATFORM",
             "HERMES_CRON_AUTO_DELIVER_CHAT_ID",
             "HERMES_CRON_AUTO_DELIVER_THREAD_ID",
@@ -823,12 +894,13 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
     Returns:
         Number of jobs executed (0 if another tick is already running)
     """
-    _LOCK_DIR.mkdir(parents=True, exist_ok=True)
+    lock_file_path = _get_tick_lock_file()
+    lock_file_path.parent.mkdir(parents=True, exist_ok=True)
 
     # Cross-platform file locking: fcntl on Unix, msvcrt on Windows
     lock_fd = None
     try:
-        lock_fd = open(_LOCK_FILE, "w")
+        lock_fd = open(lock_file_path, "w")
         if fcntl:
             fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         elif msvcrt:

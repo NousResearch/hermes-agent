@@ -631,6 +631,14 @@ class BasePlatformAdapter(ABC):
         """
         pass
 
+    def _record_successful_response_context(
+        self,
+        event: MessageEvent,
+        sent_message_ids: List[str],
+    ) -> None:
+        """Optional adapter hook after a response is successfully delivered."""
+        return None
+
     async def edit_message(
         self,
         chat_id: str,
@@ -1250,6 +1258,7 @@ class BasePlatformAdapter(ABC):
         # Track delivery outcomes for the processing-complete hook
         delivery_attempted = False
         delivery_succeeded = False
+        sent_message_ids: List[str] = []
 
         def _record_delivery(result):
             nonlocal delivery_attempted, delivery_succeeded
@@ -1258,6 +1267,9 @@ class BasePlatformAdapter(ABC):
             delivery_attempted = True
             if getattr(result, "success", False):
                 delivery_succeeded = True
+                message_id = getattr(result, "message_id", None)
+                if message_id:
+                    sent_message_ids.append(str(message_id))
 
         # Reuse the interrupt event set by handle_message() (which marks
         # the session active before spawning this task to prevent races).
@@ -1379,6 +1391,7 @@ class BasePlatformAdapter(ABC):
                             )
                         if not img_result.success:
                             logger.error("[%s] Failed to send image: %s", self.name, img_result.error)
+                        _record_delivery(img_result)
                     except Exception as img_err:
                         logger.error("[%s] Error sending image: %s", self.name, img_err, exc_info=True)
 
@@ -1419,6 +1432,7 @@ class BasePlatformAdapter(ABC):
 
                         if not media_result.success:
                             logger.warning("[%s] Failed to send media (%s): %s", self.name, ext, media_result.error)
+                        _record_delivery(media_result)
                     except Exception as media_err:
                         logger.warning("[%s] Error sending media: %s", self.name, media_err)
 
@@ -1429,25 +1443,29 @@ class BasePlatformAdapter(ABC):
                     try:
                         ext = Path(file_path).suffix.lower()
                         if ext in _IMAGE_EXTS:
-                            await self.send_image_file(
+                            local_file_result = await self.send_image_file(
                                 chat_id=event.source.chat_id,
                                 image_path=file_path,
                                 metadata=_thread_metadata,
                             )
                         elif ext in _VIDEO_EXTS:
-                            await self.send_video(
+                            local_file_result = await self.send_video(
                                 chat_id=event.source.chat_id,
                                 video_path=file_path,
                                 metadata=_thread_metadata,
                             )
                         else:
-                            await self.send_document(
+                            local_file_result = await self.send_document(
                                 chat_id=event.source.chat_id,
                                 file_path=file_path,
                                 metadata=_thread_metadata,
                             )
+                        _record_delivery(local_file_result)
                     except Exception as file_err:
                         logger.error("[%s] Error sending local file %s: %s", self.name, file_path, file_err)
+
+            if sent_message_ids:
+                self._record_successful_response_context(event, sent_message_ids)
 
             # Determine overall success for the processing hook
             processing_ok = delivery_succeeded if delivery_attempted else not bool(response)

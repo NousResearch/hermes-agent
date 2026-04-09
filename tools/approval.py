@@ -27,6 +27,14 @@ _approval_session_key: contextvars.ContextVar[str] = contextvars.ContextVar(
     "approval_session_key",
     default="",
 )
+_approval_admin_user_ids: contextvars.ContextVar[tuple[str, ...]] = contextvars.ContextVar(
+    "approval_admin_user_ids",
+    default=(),
+)
+_approval_current_user_is_admin: contextvars.ContextVar[Optional[bool]] = contextvars.ContextVar(
+    "approval_current_user_is_admin",
+    default=None,
+)
 
 
 def set_current_session_key(session_key: str) -> contextvars.Token[str]:
@@ -45,6 +53,43 @@ def get_current_session_key(default: str = "default") -> str:
     if session_key:
         return session_key
     return os.getenv("HERMES_SESSION_KEY", default)
+
+
+def set_current_admin_policy(
+    admin_user_ids: list[str] | tuple[str, ...] | None,
+    is_admin: Optional[bool],
+) -> tuple[contextvars.Token[tuple[str, ...]], contextvars.Token[Optional[bool]]]:
+    """Bind the active gateway admin policy to the current context."""
+    ids_token = _approval_admin_user_ids.set(tuple(admin_user_ids or ()))
+    admin_token = _approval_current_user_is_admin.set(is_admin)
+    return ids_token, admin_token
+
+
+def reset_current_admin_policy(
+    tokens: tuple[contextvars.Token[tuple[str, ...]], contextvars.Token[Optional[bool]]],
+) -> None:
+    """Restore the prior admin policy context."""
+    ids_token, admin_token = tokens
+    _approval_admin_user_ids.reset(ids_token)
+    _approval_current_user_is_admin.reset(admin_token)
+
+
+def get_current_admin_policy() -> tuple[list[str], Optional[bool]]:
+    """Return configured admin IDs and whether the current user is an admin."""
+    admin_ids = list(_approval_admin_user_ids.get())
+    if not admin_ids:
+        raw_ids = os.getenv("HERMES_SESSION_ADMIN_USER_IDS", "")
+        admin_ids = [item.strip() for item in raw_ids.split(",") if item.strip()]
+
+    is_admin = _approval_current_user_is_admin.get()
+    if is_admin is None:
+        raw_flag = str(os.getenv("HERMES_SESSION_IS_ADMIN", "")).strip().lower()
+        if raw_flag in ("true", "1", "yes", "on"):
+            is_admin = True
+        elif raw_flag in ("false", "0", "no", "off"):
+            is_admin = False
+
+    return admin_ids, is_admin
 
 # Sensitive write targets that should trigger approval even when referenced
 # via shell expansions like $HOME or $HERMES_HOME.
@@ -257,6 +302,15 @@ def has_blocking_approval(session_key: str) -> bool:
         return bool(_gateway_queues.get(session_key))
 
 
+def peek_blocking_approval(session_key: str) -> Optional[dict]:
+    """Return the oldest blocking approval payload for a session, if any."""
+    with _lock:
+        queue = _gateway_queues.get(session_key)
+        if not queue:
+            return None
+        return dict(queue[0].data)
+
+
 def pending_approval_count(session_key: str) -> int:
     """Return the number of pending blocking approvals for a session."""
     with _lock:
@@ -445,6 +499,144 @@ def prompt_dangerous_approval(command: str, description: str,
         sys.stdout.flush()
 
 
+def request_dangerous_action_approval(
+    *,
+    action_preview: str,
+    description: str,
+    prompt_title: str = "Dangerous action requires approval",
+    approver_name: str = "管理员",
+    approval_callback=None,
+) -> dict:
+    """Require explicit approval for a non-terminal dangerous action.
+
+    This is used for privileged tool calls like QQ group moderation. Unlike
+    terminal command approvals, these approvals are intentionally one-shot:
+    ``/approve session`` or ``/approve always`` still unblock the waiting
+    action, but no persistent allowlist entry is created.
+    """
+    session_key = get_current_session_key()
+    admin_user_ids, current_user_is_admin = get_current_admin_policy()
+    if admin_user_ids and current_user_is_admin is False:
+        admin_list = ", ".join(admin_user_ids)
+        return {
+            "approved": False,
+            "message": (
+                f"BLOCKED: 这类危险操作必须由{approver_name}授权。"
+                f"允许授权的用户 ID：{admin_list}。当前用户无权批准。"
+            ),
+        }
+
+    is_cli = os.getenv("HERMES_INTERACTIVE")
+    is_gateway = os.getenv("HERMES_GATEWAY_SESSION")
+    is_ask = os.getenv("HERMES_EXEC_ASK")
+
+    approval_data = {
+        "command": action_preview,
+        "description": description,
+        "prompt_title": prompt_title,
+        "approver_name": approver_name,
+        "pattern_key": f"dangerous_action:{description}",
+        "pattern_keys": [f"dangerous_action:{description}"],
+        "allow_persistence": False,
+    }
+
+    if is_gateway or is_ask:
+        with _lock:
+            notify_cb = _gateway_notify_cbs.get(session_key)
+
+        if notify_cb is not None:
+            entry = _ApprovalEntry(approval_data)
+            with _lock:
+                _gateway_queues.setdefault(session_key, []).append(entry)
+
+            try:
+                notify_cb(approval_data)
+            except Exception as exc:
+                logger.warning("Gateway approval notify failed for dangerous action: %s", exc)
+                with _lock:
+                    queue = _gateway_queues.get(session_key, [])
+                    if entry in queue:
+                        queue.remove(entry)
+                    if not queue:
+                        _gateway_queues.pop(session_key, None)
+                return {
+                    "approved": False,
+                    "message": "BLOCKED: Failed to send approval request to user. Do NOT retry.",
+                    "description": description,
+                }
+
+            timeout = _get_approval_config().get("gateway_timeout", 300)
+            try:
+                timeout = int(timeout)
+            except (ValueError, TypeError):
+                timeout = 300
+            resolved = entry.event.wait(timeout=timeout)
+
+            with _lock:
+                queue = _gateway_queues.get(session_key, [])
+                if entry in queue:
+                    queue.remove(entry)
+                if not queue:
+                    _gateway_queues.pop(session_key, None)
+
+            choice = entry.result
+            if not resolved or choice is None or choice == "deny":
+                reason = "timed out" if not resolved else "denied by user"
+                return {
+                    "approved": False,
+                    "message": f"BLOCKED: Action {reason}. Do NOT retry this action.",
+                    "description": description,
+                }
+
+            return {
+                "approved": True,
+                "message": None,
+                "user_approved": True,
+                "description": description,
+            }
+
+        submit_pending(session_key, approval_data)
+        return {
+            "approved": False,
+            "status": "approval_required",
+            "command": action_preview,
+            "description": description,
+            "message": (
+                f"⚠️ 这事我得先取得{approver_name}的授权。\n\n"
+                f"**原因：** {description}\n\n"
+                f"**操作：**\n```\n{action_preview}\n```"
+            ),
+        }
+
+    if is_cli:
+        choice = prompt_dangerous_approval(
+            action_preview,
+            description,
+            allow_permanent=False,
+            approval_callback=approval_callback,
+        )
+        if choice == "deny":
+            return {
+                "approved": False,
+                "message": "BLOCKED: User denied. Do NOT retry.",
+                "description": description,
+            }
+        return {
+            "approved": True,
+            "message": None,
+            "user_approved": True,
+            "description": description,
+        }
+
+    return {
+        "approved": False,
+        "message": (
+            f"BLOCKED: 这类危险操作需要先取得{approver_name}授权，但当前没有可用的交互式审批通道。"
+        ),
+        "description": description,
+    }
+
+
 def _normalize_approval_mode(mode) -> str:
     """Normalize approval mode values loaded from YAML/config.
 
@@ -561,6 +753,18 @@ def check_dangerous_command(command: str, env_type: str,
     is_dangerous, pattern_key, description = detect_dangerous_command(command)
     if not is_dangerous:
         return {"approved": True, "message": None}
+
+    admin_user_ids, current_user_is_admin = get_current_admin_policy()
+    if admin_user_ids and current_user_is_admin is False:
+        admin_list = ", ".join(admin_user_ids)
+        return {
+            "approved": False,
+            "message": (
+                "BLOCKED: dangerous actions in this session require administrator "
+                f"approval from user ID(s): {admin_list}. The current user is not "
+                "an administrator."
+            ),
+        }
 
     session_key = get_current_session_key()
     if is_approved(session_key, pattern_key):
@@ -689,12 +893,24 @@ def check_all_command_guards(command: str, env_type: str,
     warnings = []  # list of (pattern_key, description, is_tirith)
 
     session_key = get_current_session_key()
+    has_tirith_warning = tirith_result["action"] in ("block", "warn")
+    admin_user_ids, current_user_is_admin = get_current_admin_policy()
+    if (has_tirith_warning or is_dangerous) and admin_user_ids and current_user_is_admin is False:
+        admin_list = ", ".join(admin_user_ids)
+        return {
+            "approved": False,
+            "message": (
+                "BLOCKED: dangerous actions in this session require administrator "
+                f"approval from user ID(s): {admin_list}. The current user is not "
+                "an administrator."
+            ),
+        }
 
     # Tirith block/warn → approvable warning with rich findings.
     # Previously, tirith "block" was a hard block with no approval prompt.
     # Now both block and warn go through the approval flow so users can
     # inspect the explanation and approve if they understand the risk.
-    if tirith_result["action"] in ("block", "warn"):
+    if has_tirith_warning:
         findings = tirith_result.get("findings") or []
         rule_id = findings[0].get("rule_id", "unknown") if findings else "unknown"
         tirith_key = f"tirith:{rule_id}"

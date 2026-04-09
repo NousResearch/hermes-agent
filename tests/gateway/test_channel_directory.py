@@ -154,6 +154,26 @@ class TestResolveChannelName:
             assert resolve_channel_name("telegram", "Dev Group (group)") == "456"
             assert resolve_channel_name("telegram", "Coaching Chat / topic 17585 (group)") == "-1001:17585"
 
+    def test_qq_legacy_directory_entry_is_normalized_using_type(self, tmp_path):
+        platforms = {
+            "qq_napcat": [
+                {"id": "123456", "name": "Dev Group", "type": "group"},
+                {"id": "654321", "name": "Alice", "type": "dm"},
+            ]
+        }
+        with self._setup(tmp_path, platforms):
+            assert resolve_channel_name("qq_napcat", "Dev Group") == "group:123456"
+            assert resolve_channel_name("qq_napcat", "Alice (dm)") == "dm:654321"
+
+    def test_qq_private_suffix_is_normalized_to_dm_for_resolution(self, tmp_path):
+        platforms = {
+            "qq_napcat": [
+                {"id": "654321", "name": "Alice", "type": "private"},
+            ]
+        }
+        with self._setup(tmp_path, platforms):
+            assert resolve_channel_name("qq_napcat", "Alice (dm)") == "dm:654321"
+
 
 class TestBuildFromSessions:
     def _write_sessions(self, tmp_path, sessions_data):
@@ -211,6 +231,57 @@ class TestBuildFromSessions:
             entries = _build_from_sessions("telegram")
 
         assert len(entries) == 1
+
+    def test_qq_napcat_entries_prefix_chat_type_into_directory_ids(self, tmp_path):
+        self._write_sessions(tmp_path, {
+            "qq_dm": {
+                "origin": {
+                    "platform": "qq_napcat",
+                    "chat_id": "123456",
+                    "chat_name": "Alice",
+                },
+                "chat_type": "dm",
+            },
+            "qq_group": {
+                "origin": {
+                    "platform": "qq_napcat",
+                    "chat_id": "987654",
+                    "chat_name": "Dev Group",
+                },
+                "chat_type": "group",
+            },
+        })
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            entries = _build_from_sessions("qq_napcat")
+
+        ids = {entry["id"] for entry in entries}
+        assert "dm:123456" in ids
+        assert "group:987654" in ids
+
+    def test_qq_napcat_entries_fall_back_to_origin_chat_type_for_display_type(self, tmp_path):
+        self._write_sessions(tmp_path, {
+            "qq_group_old": {
+                "origin": {
+                    "platform": "qq_napcat",
+                    "chat_id": "123456",
+                    "chat_name": "Dev Group",
+                    "chat_type": "group",
+                },
+            },
+        })
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            entries = _build_from_sessions("qq_napcat")
+
+        assert entries == [
+            {
+                "id": "group:123456",
+                "name": "Dev Group",
+                "type": "group",
+                "thread_id": None,
+            }
+        ]
 
     def test_keeps_distinct_topics_with_same_chat_id(self, tmp_path):
         self._write_sessions(tmp_path, {
@@ -270,6 +341,18 @@ class TestFormatDirectoryForDisplay:
         assert "telegram:Alice" in result
         assert "telegram:Dev Group" in result
         assert "telegram:Coaching Chat / topic 17585" in result
+
+    def test_qq_private_suffix_is_normalized_to_dm_for_display(self, tmp_path):
+        cache_file = _write_directory(tmp_path, {
+            "qq_napcat": [
+                {"id": "654321", "name": "Alice", "type": "private"},
+            ]
+        })
+        with patch("gateway.channel_directory.DIRECTORY_PATH", cache_file):
+            result = format_directory_for_display()
+
+        assert "qq_napcat:Alice (dm)" in result
+        assert "qq_napcat:Alice (private)" not in result
 
     def test_discord_grouped_by_guild(self, tmp_path):
         cache_file = _write_directory(tmp_path, {

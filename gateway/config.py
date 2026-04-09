@@ -11,6 +11,7 @@ Handles loading and validating configuration for:
 import logging
 import os
 import json
+import re
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any
@@ -20,6 +21,7 @@ from hermes_cli.config import get_hermes_home
 from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
+_REGEX_DOUBLE_ESCAPE_RE = re.compile(r"\\\\([AbBdDsSwWZ])")
 
 
 def _coerce_bool(value: Any, default: bool = True) -> bool:
@@ -45,6 +47,54 @@ def _normalize_unauthorized_dm_behavior(value: Any, default: str = "pair") -> st
     return default
 
 
+def _coerce_list(value: Any) -> List[str]:
+    """Normalize config/env list values into a list of non-empty strings."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [item.strip() for item in value.split(",") if item.strip()]
+    if isinstance(value, (list, tuple, set)):
+        return [str(item).strip() for item in value if str(item).strip()]
+    text = str(value).strip()
+    return [text] if text else []
+
+
+def _coerce_pattern_list(value: Any) -> List[str]:
+    """Normalize regex-pattern config/env values into a clean list of strings."""
+    if value is None:
+        return []
+
+    items: List[Any]
+    if isinstance(value, str):
+        raw = value.strip()
+        if not raw:
+            return []
+        try:
+            parsed = json.loads(raw)
+        except Exception:
+            parsed = None
+        if isinstance(parsed, list):
+            items = parsed
+        elif parsed is not None:
+            items = [parsed]
+        else:
+            items = [part.strip() for part in raw.splitlines() if part.strip()]
+            if not items:
+                items = [part.strip() for part in raw.split(",") if part.strip()]
+    elif isinstance(value, (list, tuple, set)):
+        items = list(value)
+    else:
+        items = [value]
+
+    normalized: List[str] = []
+    for item in items:
+        text = str(item).strip()
+        if not text:
+            continue
+        normalized.append(_REGEX_DOUBLE_ESCAPE_RE.sub(r"\\\1", text))
+    return normalized
+
+
 class Platform(Enum):
     """Supported messaging platforms."""
     LOCAL = "local"
@@ -63,6 +113,7 @@ class Platform(Enum):
     WEBHOOK = "webhook"
     FEISHU = "feishu"
     WECOM = "wecom"
+    QQ_NAPCAT = "qq_napcat"
 
 
 @dataclass
@@ -286,6 +337,9 @@ class GatewayConfig:
                 connected.append(platform)
             # WeCom uses extra dict for bot credentials
             elif platform == Platform.WECOM and config.extra.get("bot_id"):
+                connected.append(platform)
+            # QQ NapCat uses extra dict for websocket config
+            elif platform == Platform.QQ_NAPCAT and config.extra.get("ws_url"):
                 connected.append(platform)
         return connected
     
@@ -542,6 +596,99 @@ def load_gateway_config() -> GatewayConfig:
                     plat_data["extra"] = extra
                 extra.update(bridged)
 
+            qq_napcat_cfg = yaml_cfg.get("qq_napcat")
+            if isinstance(qq_napcat_cfg, dict):
+                plat_data = platforms_data.setdefault(Platform.QQ_NAPCAT.value, {})
+                if not isinstance(plat_data, dict):
+                    plat_data = {}
+                    platforms_data[Platform.QQ_NAPCAT.value] = plat_data
+
+                plat_data["enabled"] = True
+
+                extra = plat_data.setdefault("extra", {})
+                if not isinstance(extra, dict):
+                    extra = {}
+                    plat_data["extra"] = extra
+
+                for key in (
+                    "ws_url",
+                    "access_token",
+                    "system_prompt",
+                ):
+                    if key in qq_napcat_cfg and qq_napcat_cfg.get(key) is not None:
+                        extra[key] = qq_napcat_cfg.get(key)
+
+                for key in ("allowed_users", "allowed_groups", "admin_users"):
+                    values = _coerce_list(qq_napcat_cfg.get(key))
+                    if values:
+                        extra[key] = values
+
+                for key in ("allow_all_users", "allow_all_groups"):
+                    if key in qq_napcat_cfg:
+                        extra[key] = _coerce_bool(qq_napcat_cfg.get(key), default=False)
+
+                if "require_mention" in qq_napcat_cfg:
+                    extra["require_mention"] = _coerce_bool(
+                        qq_napcat_cfg.get("require_mention"),
+                        default=False,
+                    )
+
+                mention_patterns = _coerce_pattern_list(qq_napcat_cfg.get("mention_patterns"))
+                if mention_patterns:
+                    extra["mention_patterns"] = mention_patterns
+
+                reconnect_interval = qq_napcat_cfg.get("reconnect_interval")
+                if reconnect_interval is not None:
+                    try:
+                        extra["reconnect_interval"] = int(reconnect_interval)
+                    except (TypeError, ValueError):
+                        logger.warning(
+                            "Ignoring invalid qq_napcat.reconnect_interval=%r in config.yaml",
+                            reconnect_interval,
+                        )
+
+                home_channel = qq_napcat_cfg.get("home_channel")
+                if home_channel:
+                    plat_data["home_channel"] = {
+                        "platform": Platform.QQ_NAPCAT.value,
+                        "chat_id": str(home_channel),
+                        "name": qq_napcat_cfg.get("home_channel_name", "Home"),
+                    }
+
+                env_bridge_map = {
+                    "allowed_users": "QQ_NAPCAT_ALLOWED_USERS",
+                    "admin_users": "QQ_NAPCAT_ADMIN_USERS",
+                    "allow_all_users": "QQ_NAPCAT_ALLOW_ALL_USERS",
+                    "allowed_groups": "QQ_NAPCAT_ALLOWED_GROUPS",
+                    "allow_all_groups": "QQ_NAPCAT_ALLOW_ALL_GROUPS",
+                    "require_mention": "QQ_NAPCAT_REQUIRE_MENTION",
+                    "mention_patterns": "QQ_NAPCAT_MENTION_PATTERNS",
+                    "ws_url": "QQ_NAPCAT_WS_URL",
+                    "access_token": "QQ_NAPCAT_ACCESS_TOKEN",
+                    "home_channel": "QQ_NAPCAT_HOME_CHANNEL",
+                    "home_channel_name": "QQ_NAPCAT_HOME_CHANNEL_NAME",
+                    "system_prompt": "QQ_NAPCAT_SYSTEM_PROMPT",
+                    "reconnect_interval": "QQ_NAPCAT_RECONNECT_INTERVAL",
+                }
+                for cfg_key, env_key in env_bridge_map.items():
+                    if os.getenv(env_key):
+                        continue
+                    value = qq_napcat_cfg.get(cfg_key)
+                    if value is None:
+                        continue
+                    if isinstance(value, list):
+                        if cfg_key == "mention_patterns":
+                            os.environ[env_key] = json.dumps(
+                                _coerce_pattern_list(value),
+                                ensure_ascii=False,
+                            )
+                        else:
+                            os.environ[env_key] = ",".join(str(item) for item in value)
+                    elif isinstance(value, bool):
+                        os.environ[env_key] = str(value).lower()
+                    else:
+                        os.environ[env_key] = str(value)
+
             # Discord settings → env vars (env vars take precedence)
             discord_cfg = yaml_cfg.get("discord", {})
             if isinstance(discord_cfg, dict):
@@ -664,6 +811,11 @@ def load_gateway_config() -> GatewayConfig:
 
 def _apply_env_overrides(config: GatewayConfig) -> None:
     """Apply environment variable overrides to config."""
+
+    def _ensure_platform(platform: Platform) -> PlatformConfig:
+        if platform not in config.platforms:
+            config.platforms[platform] = PlatformConfig()
+        return config.platforms[platform]
     
     # Telegram
     telegram_token = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -752,6 +904,92 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             platform=Platform.SIGNAL,
             chat_id=signal_home,
             name=os.getenv("SIGNAL_HOME_CHANNEL_NAME", "Home"),
+        )
+
+    # QQ (NapCat / OneBot 11 WebSocket client)
+    qq_env_keys = (
+        "QQ_NAPCAT_WS_URL",
+        "QQ_NAPCAT_ACCESS_TOKEN",
+        "QQ_NAPCAT_ALLOWED_USERS",
+        "QQ_NAPCAT_ADMIN_USERS",
+        "QQ_NAPCAT_ALLOWED_GROUPS",
+        "QQ_NAPCAT_ALLOW_ALL_USERS",
+        "QQ_NAPCAT_ALLOW_ALL_GROUPS",
+        "QQ_NAPCAT_REQUIRE_MENTION",
+        "QQ_NAPCAT_MENTION_PATTERNS",
+        "QQ_NAPCAT_RECONNECT_INTERVAL",
+        "QQ_NAPCAT_SYSTEM_PROMPT",
+        "QQ_NAPCAT_HOME_CHANNEL",
+        "QQ_NAPCAT_HOME_CHANNEL_NAME",
+    )
+    qq_env_present = any(os.getenv(key) is not None for key in qq_env_keys)
+    qq_ws_url = os.getenv("QQ_NAPCAT_WS_URL")
+    if qq_env_present or Platform.QQ_NAPCAT in config.platforms:
+        qq_config = _ensure_platform(Platform.QQ_NAPCAT)
+        if qq_ws_url:
+            qq_config.enabled = True
+            qq_config.extra["ws_url"] = qq_ws_url
+
+        qq_access_token = os.getenv("QQ_NAPCAT_ACCESS_TOKEN")
+        if qq_access_token:
+            qq_config.extra["access_token"] = qq_access_token
+
+        qq_allowed_users = _coerce_list(os.getenv("QQ_NAPCAT_ALLOWED_USERS"))
+        if qq_allowed_users:
+            qq_config.extra["allowed_users"] = qq_allowed_users
+
+        qq_admin_users = _coerce_list(os.getenv("QQ_NAPCAT_ADMIN_USERS"))
+        if qq_admin_users:
+            qq_config.extra["admin_users"] = qq_admin_users
+
+        qq_allowed_groups = _coerce_list(os.getenv("QQ_NAPCAT_ALLOWED_GROUPS"))
+        if qq_allowed_groups:
+            qq_config.extra["allowed_groups"] = qq_allowed_groups
+
+        if os.getenv("QQ_NAPCAT_ALLOW_ALL_USERS") is not None:
+            qq_config.extra["allow_all_users"] = _coerce_bool(
+                os.getenv("QQ_NAPCAT_ALLOW_ALL_USERS"),
+                default=False,
+            )
+
+        if os.getenv("QQ_NAPCAT_ALLOW_ALL_GROUPS") is not None:
+            qq_config.extra["allow_all_groups"] = _coerce_bool(
+                os.getenv("QQ_NAPCAT_ALLOW_ALL_GROUPS"),
+                default=False,
+            )
+
+        if os.getenv("QQ_NAPCAT_REQUIRE_MENTION") is not None:
+            qq_config.extra["require_mention"] = _coerce_bool(
+                os.getenv("QQ_NAPCAT_REQUIRE_MENTION"),
+                default=False,
+            )
+
+        qq_mention_patterns = os.getenv("QQ_NAPCAT_MENTION_PATTERNS", "").strip()
+        if qq_mention_patterns:
+            patterns = _coerce_pattern_list(qq_mention_patterns)
+            if patterns:
+                qq_config.extra["mention_patterns"] = patterns
+
+        qq_reconnect_interval = os.getenv("QQ_NAPCAT_RECONNECT_INTERVAL")
+        if qq_reconnect_interval:
+            try:
+                qq_config.extra["reconnect_interval"] = int(qq_reconnect_interval)
+            except ValueError:
+                logger.warning(
+                    "Ignoring invalid QQ_NAPCAT_RECONNECT_INTERVAL=%r",
+                    qq_reconnect_interval,
+                )
+
+        qq_system_prompt = os.getenv("QQ_NAPCAT_SYSTEM_PROMPT")
+        if qq_system_prompt:
+            qq_config.extra["system_prompt"] = qq_system_prompt
+
+    qq_home = os.getenv("QQ_NAPCAT_HOME_CHANNEL")
+    if qq_home and Platform.QQ_NAPCAT in config.platforms:
+        config.platforms[Platform.QQ_NAPCAT].home_channel = HomeChannel(
+            platform=Platform.QQ_NAPCAT,
+            chat_id=qq_home,
+            name=os.getenv("QQ_NAPCAT_HOME_CHANNEL_NAME", "Home"),
         )
 
     # Mattermost

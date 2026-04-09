@@ -28,6 +28,7 @@ def mirror_to_session(
     message_text: str,
     source_label: str = "cli",
     thread_id: Optional[str] = None,
+    chat_type: Optional[str] = None,
 ) -> bool:
     """
     Append a delivery-mirror message to the target session's transcript.
@@ -39,7 +40,12 @@ def mirror_to_session(
     All errors are caught -- this is never fatal.
     """
     try:
-        session_id = _find_session_id(platform, str(chat_id), thread_id=thread_id)
+        session_id = _find_session_id(
+            platform,
+            str(chat_id),
+            thread_id=thread_id,
+            chat_type=chat_type,
+        )
         if not session_id:
             logger.debug("Mirror: no session found for %s:%s:%s", platform, chat_id, thread_id)
             return False
@@ -63,7 +69,32 @@ def mirror_to_session(
         return False
 
 
-def _find_session_id(platform: str, chat_id: str, thread_id: Optional[str] = None) -> Optional[str]:
+def _canonical_qq_chat_type(chat_type: Optional[str]) -> Optional[str]:
+    """Normalize QQ chat types to the session-store variants."""
+    normalized = str(chat_type or "").strip().lower()
+    if not normalized:
+        return None
+    if normalized == "private":
+        return "dm"
+    return normalized
+
+
+def _normalize_qq_chat_target(chat_id: str, chat_type: Optional[str] = None) -> tuple[str, Optional[str]]:
+    """Return QQ chat_id without transport prefix plus canonical chat_type."""
+    raw = str(chat_id or "")
+    if raw.startswith("group:"):
+        return raw.split(":", 1)[1], "group"
+    if raw.startswith("dm:"):
+        return raw.split(":", 1)[1], "dm"
+    return raw, _canonical_qq_chat_type(chat_type)
+
+
+def _find_session_id(
+    platform: str,
+    chat_id: str,
+    thread_id: Optional[str] = None,
+    chat_type: Optional[str] = None,
+) -> Optional[str]:
     """
     Find the active session_id for a platform + chat_id pair.
 
@@ -81,6 +112,13 @@ def _find_session_id(platform: str, chat_id: str, thread_id: Optional[str] = Non
         return None
 
     platform_lower = platform.lower()
+    target_chat_id = str(chat_id)
+    target_chat_type = _canonical_qq_chat_type(chat_type)
+    if platform_lower == "qq_napcat":
+        target_chat_id, target_chat_type = _normalize_qq_chat_target(
+            target_chat_id,
+            chat_type=target_chat_type,
+        )
     best_match = None
     best_updated = ""
 
@@ -92,14 +130,25 @@ def _find_session_id(platform: str, chat_id: str, thread_id: Optional[str] = Non
             continue
 
         origin_chat_id = str(origin.get("chat_id", ""))
-        if origin_chat_id == str(chat_id):
-            origin_thread_id = origin.get("thread_id")
-            if thread_id is not None and str(origin_thread_id or "") != str(thread_id):
+        origin_chat_type = None
+        if platform_lower == "qq_napcat":
+            origin_chat_id, origin_chat_type = _normalize_qq_chat_target(
+                origin_chat_id,
+                chat_type=origin.get("chat_type") or entry.get("chat_type"),
+            )
+            if target_chat_type and origin_chat_type and origin_chat_type != target_chat_type:
                 continue
-            updated = entry.get("updated_at", "")
-            if updated > best_updated:
-                best_updated = updated
-                best_match = entry.get("session_id")
+
+        if origin_chat_id != target_chat_id:
+            continue
+
+        origin_thread_id = origin.get("thread_id")
+        if thread_id is not None and str(origin_thread_id or "") != str(thread_id):
+            continue
+        updated = entry.get("updated_at", "")
+        if updated > best_updated:
+            best_updated = updated
+            best_match = entry.get("session_id")
 
     return best_match
 

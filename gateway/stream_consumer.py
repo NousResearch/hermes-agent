@@ -205,21 +205,24 @@ class GatewayStreamConsumer:
     # Matches the simple cleanup regex used by the non-streaming path in
     # gateway/platforms/base.py for post-processing.
     _MEDIA_RE = re.compile(r'''[`"']?MEDIA:\s*\S+[`"']?''')
+    _HIDDEN_MARKERS = ("[[audio_as_voice]]", "[[NO_REPLY]]")
 
     @staticmethod
     def _clean_for_display(text: str) -> str:
         """Strip MEDIA: directives and internal markers from text before display.
 
         The streaming path delivers raw text chunks that may include
-        ``MEDIA:<path>`` tags and ``[[audio_as_voice]]`` directives meant for
-        the platform adapter's post-processing.  The actual media files are
-        delivered separately via ``_deliver_media_from_response()`` after the
-        stream finishes — we just need to hide the raw directives from the
-        user.
+        ``MEDIA:<path>`` tags and internal directives such as
+        ``[[audio_as_voice]]`` or ``[[NO_REPLY]]`` meant for post-processing.
+        The actual media files are delivered separately via
+        ``_deliver_media_from_response()`` after the stream finishes — we just
+        need to hide the raw directives from the user.
         """
-        if "MEDIA:" not in text and "[[audio_as_voice]]" not in text:
+        if "MEDIA:" not in text and not any(marker in text for marker in GatewayStreamConsumer._HIDDEN_MARKERS):
             return text
-        cleaned = text.replace("[[audio_as_voice]]", "")
+        cleaned = text
+        for marker in GatewayStreamConsumer._HIDDEN_MARKERS:
+            cleaned = cleaned.replace(marker, "")
         cleaned = GatewayStreamConsumer._MEDIA_RE.sub("", cleaned)
         # Collapse excessive blank lines left behind by removed tags
         cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)

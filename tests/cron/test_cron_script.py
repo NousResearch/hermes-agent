@@ -526,6 +526,8 @@ class TestRunJobEnvVarCleanup:
             "HERMES_SESSION_PLATFORM",
             "HERMES_SESSION_CHAT_ID",
             "HERMES_SESSION_CHAT_NAME",
+            "HERMES_SESSION_CHAT_TYPE",
+            "HERMES_SESSION_THREAD_ID",
         ):
             monkeypatch.delenv(key, raising=False)
 
@@ -540,6 +542,8 @@ class TestRunJobEnvVarCleanup:
                 "platform": "telegram",
                 "chat_id": "12345",
                 "chat_name": "Test Chat",
+                "chat_type": "group",
+                "thread_id": "42",
             },
         }
 
@@ -555,3 +559,5 @@ class TestRunJobEnvVarCleanup:
         assert os.environ.get("HERMES_SESSION_PLATFORM") is None
         assert os.environ.get("HERMES_SESSION_CHAT_ID") is None
         assert os.environ.get("HERMES_SESSION_CHAT_NAME") is None
+        assert os.environ.get("HERMES_SESSION_CHAT_TYPE") is None
+        assert os.environ.get("HERMES_SESSION_THREAD_ID") is None

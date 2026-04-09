@@ -81,6 +81,7 @@ class ProcessSession:
     watcher_platform: str = ""
     watcher_chat_id: str = ""
     watcher_thread_id: str = ""
+    watcher_chat_type: str = ""
     watcher_interval: int = 0                   # 0 = no watcher configured
     notify_on_complete: bool = False             # Queue agent notification on exit
     _lock: threading.Lock = field(default_factory=threading.Lock)
@@ -138,6 +139,27 @@ class ProcessRegistry:
             return True
         except (ProcessLookupError, PermissionError):
             return False
+
+    @staticmethod
+    def _normalize_watcher_chat_type(chat_type: Optional[str]) -> str:
+        """Normalize persisted watcher chat_type values across adapters."""
+        normalized = str(chat_type or "").strip().lower()
+        if normalized == "private":
+            return "dm"
+        return normalized
+
+    @classmethod
+    def _infer_qq_watcher_chat_type(cls, session_key: str) -> str:
+        """Infer QQ watcher chat_type from legacy session keys."""
+        parts = str(session_key or "").split(":")
+        if len(parts) < 4 or parts[0] != "agent" or parts[1] != "main":
+            return ""
+        if parts[2] != "qq_napcat":
+            return ""
+        inferred = cls._normalize_watcher_chat_type(parts[3])
+        if inferred in {"group", "dm"}:
+            return inferred
+        return ""
 
     def _refresh_detached_session(self, session: Optional[ProcessSession]) -> Optional[ProcessSession]:
         """Update recovered host-PID sessions when the underlying process has exited."""
@@ -814,6 +836,7 @@ class ProcessRegistry:
                             "watcher_platform": s.watcher_platform,
                             "watcher_chat_id": s.watcher_chat_id,
                             "watcher_thread_id": s.watcher_thread_id,
+                            "watcher_chat_type": s.watcher_chat_type,
                             "watcher_interval": s.watcher_interval,
                             "notify_on_complete": s.notify_on_complete,
                         })
@@ -861,6 +884,14 @@ class ProcessRegistry:
             alive = self._is_host_pid_alive(pid)
 
             if alive:
+                watcher_platform = str(entry.get("watcher_platform", "") or "")
+                watcher_chat_type = self._normalize_watcher_chat_type(
+                    entry.get("watcher_chat_type", "")
+                )
+                if not watcher_chat_type and watcher_platform == "qq_napcat":
+                    watcher_chat_type = self._infer_qq_watcher_chat_type(
+                        entry.get("session_key", "")
+                    )
                 session = ProcessSession(
                     id=entry["session_id"],
                     command=entry.get("command", "unknown"),
@@ -871,9 +902,10 @@ class ProcessRegistry:
                     cwd=entry.get("cwd"),
                     started_at=entry.get("started_at", time.time()),
                     detached=True,  # Can't read output, but can report status + kill
-                    watcher_platform=entry.get("watcher_platform", ""),
+                    watcher_platform=watcher_platform,
                     watcher_chat_id=entry.get("watcher_chat_id", ""),
                     watcher_thread_id=entry.get("watcher_thread_id", ""),
+                    watcher_chat_type=watcher_chat_type,
                     watcher_interval=entry.get("watcher_interval", 0),
                     notify_on_complete=entry.get("notify_on_complete", False),
                 )
@@ -891,6 +923,7 @@ class ProcessRegistry:
                         "platform": session.watcher_platform,
                         "chat_id": session.watcher_chat_id,
                         "thread_id": session.watcher_thread_id,
+                        "chat_type": session.watcher_chat_type,
                         "notify_on_complete": session.notify_on_complete,
                     })
 

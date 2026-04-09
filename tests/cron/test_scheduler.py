@@ -62,6 +62,22 @@ class TestResolveDeliveryTarget:
             "thread_id": "17585",
         }
 
+    def test_origin_delivery_normalizes_qq_group_chat_target(self):
+        job = {
+            "deliver": "origin",
+            "origin": {
+                "platform": "qq_napcat",
+                "chat_id": "987654321",
+                "chat_type": "group",
+            },
+        }
+
+        assert _resolve_delivery_target(job) == {
+            "platform": "qq_napcat",
+            "chat_id": "group:987654321",
+            "thread_id": None,
+        }
+
     def test_explicit_telegram_topic_target_with_thread_id(self):
         """deliver: 'telegram:chat_id:thread_id' parses correctly."""
         job = {
@@ -81,6 +97,47 @@ class TestResolveDeliveryTarget:
         assert _resolve_delivery_target(job) == {
             "platform": "telegram",
             "chat_id": "-1003724596514",
+            "thread_id": None,
+        }
+
+    def test_explicit_qq_napcat_group_target_preserves_chat_type_prefix(self):
+        job = {
+            "deliver": "qq_napcat:group:987654321",
+        }
+        assert _resolve_delivery_target(job) == {
+            "platform": "qq_napcat",
+            "chat_id": "group:987654321",
+            "thread_id": None,
+        }
+
+    def test_explicit_qq_napcat_bare_numeric_target_is_rejected(self):
+        job = {"id": "qq-job", "deliver": "qq_napcat:123456"}
+
+        assert _resolve_delivery_target(job) is None
+        error = _deliver_result(job, "hello")
+        assert "qq_napcat" in error
+        assert "group:123456" in error
+        assert "dm:123456" in error
+
+    def test_qq_human_friendly_label_from_legacy_directory_entry_is_normalized(self, tmp_path):
+        job = {"deliver": "qq_napcat:Dev Group"}
+        directory = {
+            "updated_at": "2026-01-01T00:00:00",
+            "platforms": {
+                "qq_napcat": [
+                    {"id": "123456", "name": "Dev Group", "type": "group"},
+                ]
+            },
+        }
+        cache_file = tmp_path / "channel_directory.json"
+        cache_file.write_text(json.dumps(directory))
+
+        with patch("gateway.channel_directory.DIRECTORY_PATH", cache_file):
+            result = _resolve_delivery_target(job)
+
+        assert result == {
+            "platform": "qq_napcat",
+            "chat_id": "group:123456",
             "thread_id": None,
         }
 
@@ -173,6 +230,39 @@ class TestResolveDeliveryTarget:
             "thread_id": None,
         }
 
+    def test_bare_qq_napcat_platform_falls_back_to_home_channel(self, monkeypatch):
+        monkeypatch.setenv("QQ_NAPCAT_HOME_CHANNEL", "group:2002")
+        job = {
+            "deliver": "qq_napcat",
+            "origin": {
+                "platform": "telegram",
+                "chat_id": "abc",
+            },
+        }
+
+        assert _resolve_delivery_target(job) == {
+            "platform": "qq_napcat",
+            "chat_id": "group:2002",
+            "thread_id": None,
+        }
+
+    def test_bare_qq_napcat_platform_rejects_unprefixed_home_channel(self, monkeypatch):
+        monkeypatch.setenv("QQ_NAPCAT_HOME_CHANNEL", "2002")
+        job = {
+            "id": "qq-home",
+            "deliver": "qq_napcat",
+            "origin": {
+                "platform": "telegram",
+                "chat_id": "abc",
+            },
+        }
+
+        assert _resolve_delivery_target(job) is None
+        error = _deliver_result(job, "hello")
+        assert "qq_napcat" in error
+        assert "group:2002" in error
+        assert "dm:2002" in error
+
 
 class TestDeliverResultWrapping:
     """Verify that cron deliveries are wrapped with header/footer and no longer mirrored."""
@@ -223,6 +313,27 @@ class TestDeliverResultWrapping:
 
         sent_content = send_mock.call_args.kwargs.get("content") or send_mock.call_args[0][-1]
         assert "Cronjob Response: abc-123" in sent_content
+
+    def test_delivery_routes_to_qq_napcat_platform(self):
+        from gateway.config import Platform
+
+        platform = getattr(Platform, "QQ_NAPCAT")
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {platform: pconfig}
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock:
+            job = {
+                "id": "qq-job",
+                "deliver": "qq_napcat:group:123456",
+            }
+            _deliver_result(job, "QQ delivery")
+
+        send_mock.assert_called_once()
+        assert send_mock.await_args.args[0] == platform
+        assert send_mock.await_args.args[2] == "group:123456"
 
     def test_delivery_skips_wrapping_when_config_disabled(self):
         """When cron.wrap_response is false, deliver raw content without header/footer."""

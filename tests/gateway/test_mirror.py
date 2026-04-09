@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
+import pytest
+
 import gateway.mirror as mirror_mod
 from gateway.mirror import (
     mirror_to_session,
@@ -110,6 +112,34 @@ class TestFindSessionId:
             result = _find_session_id("telegram", "123")
 
         assert result == "sess_1"
+
+    @pytest.mark.parametrize(
+        ("target_chat_id", "chat_type", "session_key"),
+        [
+            ("group:12345", "group", "sess_group"),
+            ("dm:12345", "dm", "sess_dm"),
+        ],
+    )
+    def test_qq_prefixed_targets_match_session_by_chat_type(
+        self, tmp_path, target_chat_id, chat_type, session_key
+    ):
+        sessions_dir, index_file = _setup_sessions(tmp_path, {
+            session_key: {
+                "session_id": session_key,
+                "origin": {
+                    "platform": "qq_napcat",
+                    "chat_id": "12345",
+                    "chat_type": chat_type,
+                },
+                "chat_type": chat_type,
+                "updated_at": "2026-01-01T00:00:00",
+            }
+        })
+
+        with patch.object(mirror_mod, "_SESSIONS_INDEX", index_file):
+            result = _find_session_id("qq_napcat", target_chat_id, chat_type=chat_type)
+
+        assert result == session_key
 
 
 class TestAppendToJsonl:

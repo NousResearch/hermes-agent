@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform
+from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.run import GatewayRunner
 
 
@@ -243,3 +243,88 @@ async def test_no_thread_id_sends_no_metadata(monkeypatch, tmp_path):
     assert adapter.send.await_count == 1
     _, kwargs = adapter.send.call_args
     assert kwargs["metadata"] is None
+
+
+@pytest.mark.asyncio
+async def test_qq_group_chat_type_is_preserved_for_agent_notify(monkeypatch, tmp_path):
+    """QQ watcher re-entry should keep group routing metadata."""
+    import gateway.run as gateway_run
+    import tools.process_registry as pr_module
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(
+        pr_module,
+        "process_registry",
+        _FakeRegistry(
+            [
+                SimpleNamespace(
+                    output_buffer="done\n",
+                    exited=True,
+                    exit_code=0,
+                    command="sleep 1",
+                )
+            ]
+        ),
+    )
+
+    async def _instant_sleep(*_a, **_kw):
+        pass
+
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+    runner = GatewayRunner(GatewayConfig())
+    qq_platform = getattr(Platform, "QQ_NAPCAT")
+    adapter = SimpleNamespace(handle_message=AsyncMock())
+    runner.adapters[qq_platform] = adapter
+
+    await runner._run_process_watcher(
+        {
+            "session_id": "proc_test",
+            "check_interval": 0,
+            "platform": "qq_napcat",
+            "chat_id": "987654321",
+            "chat_type": "group",
+            "notify_on_complete": True,
+        }
+    )
+
+    synth_event = adapter.handle_message.await_args.args[0]
+    assert synth_event.source.platform == qq_platform
+    assert synth_event.source.chat_id == "987654321"
+    assert synth_event.source.chat_type == "group"
+
+
+@pytest.mark.asyncio
+async def test_qq_group_chat_type_primes_adapter_send_route(monkeypatch, tmp_path):
+    """Recovered QQ watchers should still deliver to groups, not fall back to DM."""
+    import tools.process_registry as pr_module
+    from gateway.platforms.qq_napcat import QqNapCatAdapter
+
+    sessions = [SimpleNamespace(output_buffer="done\n", exited=True, exit_code=0)]
+    monkeypatch.setattr(pr_module, "process_registry", _FakeRegistry(sessions))
+
+    async def _instant_sleep(*_a, **_kw):
+        pass
+
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+    runner = GatewayRunner(GatewayConfig())
+    qq_platform = getattr(Platform, "QQ_NAPCAT")
+    adapter = QqNapCatAdapter(
+        PlatformConfig(enabled=True, extra={"ws_url": "ws://127.0.0.1:3001"})
+    )
+    adapter._call_api = AsyncMock(return_value={"message_id": 999})
+    runner.adapters[qq_platform] = adapter
+
+    await runner._run_process_watcher(
+        {
+            "session_id": "proc_test",
+            "check_interval": 0,
+            "platform": "qq_napcat",
+            "chat_id": "987654321",
+            "chat_type": "group",
+        }
+    )
+
+    assert adapter._call_api.await_args.args[0] == "send_group_msg"
+    assert adapter._call_api.await_args.args[1]["group_id"] == 987654321

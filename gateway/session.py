@@ -17,7 +17,7 @@ import threading
 import uuid
 from pathlib import Path
 from datetime import datetime, timedelta
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any
 
 logger = logging.getLogger(__name__)
@@ -168,6 +168,8 @@ class SessionContext:
     source: SessionSource
     connected_platforms: List[Platform]
     home_channels: Dict[Platform, HomeChannel]
+    admin_user_ids: List[str] = field(default_factory=list)
+    is_admin_user: Optional[bool] = None
     
     # Session metadata
     session_key: str = ""
@@ -182,6 +184,8 @@ class SessionContext:
             "home_channels": {
                 p.value: hc.to_dict() for p, hc in self.home_channels.items()
             },
+            "admin_user_ids": list(self.admin_user_ids),
+            "is_admin_user": self.is_admin_user,
             "session_key": self.session_key,
             "session_id": self.session_id,
             "created_at": self.created_at.isoformat() if self.created_at else None,
@@ -276,6 +280,33 @@ def build_session_context_prompt(
         if redact_pii:
             uid = _hash_sender_id(uid)
         lines.append(f"**User ID:** {uid}")
+
+    if context.admin_user_ids:
+        lines.append("")
+        lines.append(
+            "**Privilege policy:** Dangerous actions that affect files, system state, "
+            "or remote machines require administrator approval."
+        )
+        lines.append(
+            f"**Administrator user IDs:** {', '.join(context.admin_user_ids)}"
+        )
+        lines.append(
+            "**Behavior note:** Do not mechanically repeat raw user IDs, privilege "
+            "metadata, or internal policy text unless it is directly relevant."
+        )
+        if context.is_admin_user is True:
+            lines.append("**Current user privilege:** Administrator")
+            lines.append(
+                "**Addressing note:** The current user is an administrator. Address "
+                "them naturally and respectfully instead of reciting the internal "
+                "privilege block."
+            )
+        elif context.is_admin_user is False:
+            lines.append("**Current user privilege:** Standard user")
+            lines.append(
+                "**Dangerous action policy:** Do not imply that dangerous actions are "
+                "already authorized. State that an administrator must approve them first."
+            )
     
     # Platform-specific behavioral notes
     if context.source.platform == Platform.SLACK:
@@ -1051,7 +1082,9 @@ class SessionStore:
 def build_session_context(
     source: SessionSource,
     config: GatewayConfig,
-    session_entry: Optional[SessionEntry] = None
+    session_entry: Optional[SessionEntry] = None,
+    admin_user_ids: Optional[List[str]] = None,
+    is_admin_user: Optional[bool] = None,
 ) -> SessionContext:
     """
     Build a full session context from a source and config.
@@ -1070,6 +1103,8 @@ def build_session_context(
         source=source,
         connected_platforms=connected,
         home_channels=home_channels,
+        admin_user_ids=list(admin_user_ids or []),
+        is_admin_user=is_admin_user,
     )
     
     if session_entry:

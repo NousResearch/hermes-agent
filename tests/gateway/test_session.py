@@ -219,6 +219,57 @@ class TestBuildSessionContextPrompt:
         assert "cannot search" in prompt.lower()
         assert "pin" in prompt.lower()
 
+    def test_prompt_includes_admin_policy_when_configured(self):
+        config = GatewayConfig(
+            platforms={
+                Platform.QQ_NAPCAT: PlatformConfig(enabled=True),
+            },
+        )
+        source = SessionSource(
+            platform=Platform.QQ_NAPCAT,
+            chat_id="179033731",
+            chat_type="dm",
+            user_id="888888",
+            user_name="visitor",
+        )
+        ctx = build_session_context(
+            source,
+            config,
+            admin_user_ids=["179033731"],
+            is_admin_user=False,
+        )
+
+        prompt = build_session_context_prompt(ctx)
+
+        assert "179033731" in prompt
+        assert "dangerous actions" in prompt.lower()
+        assert "standard user" in prompt.lower()
+
+    def test_prompt_tells_agent_not_to_parrot_admin_metadata(self):
+        config = GatewayConfig(
+            platforms={
+                Platform.QQ_NAPCAT: PlatformConfig(enabled=True),
+            },
+        )
+        source = SessionSource(
+            platform=Platform.QQ_NAPCAT,
+            chat_id="179033731",
+            chat_type="dm",
+            user_id="179033731",
+            user_name="發發發",
+        )
+        ctx = build_session_context(
+            source,
+            config,
+            admin_user_ids=["179033731"],
+            is_admin_user=True,
+        )
+
+        prompt = build_session_context_prompt(ctx)
+
+        assert "address them naturally and respectfully" in prompt.lower()
+        assert "do not mechanically repeat raw user ids" in prompt.lower()
+
     def test_discord_prompt_with_channel_topic(self):
         """Channel topic should appear in the session context prompt."""
         config = GatewayConfig(

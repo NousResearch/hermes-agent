@@ -320,6 +320,7 @@ class TestCheckpoint:
             s.watcher_platform = "telegram"
             s.watcher_chat_id = "999"
             s.watcher_thread_id = "42"
+            s.watcher_chat_type = "group"
             s.watcher_interval = 60
             registry._running[s.id] = s
             registry._write_checkpoint()
@@ -329,6 +330,7 @@ class TestCheckpoint:
             assert data[0]["watcher_platform"] == "telegram"
             assert data[0]["watcher_chat_id"] == "999"
             assert data[0]["watcher_thread_id"] == "42"
+            assert data[0]["watcher_chat_type"] == "group"
             assert data[0]["watcher_interval"] == 60
 
     def test_recover_enqueues_watchers(self, registry, tmp_path):
@@ -342,6 +344,7 @@ class TestCheckpoint:
             "watcher_platform": "telegram",
             "watcher_chat_id": "123",
             "watcher_thread_id": "42",
+            "watcher_chat_type": "group",
             "watcher_interval": 60,
         }]))
         with patch("tools.process_registry.CHECKPOINT_PATH", checkpoint):
@@ -353,7 +356,29 @@ class TestCheckpoint:
             assert w["platform"] == "telegram"
             assert w["chat_id"] == "123"
             assert w["thread_id"] == "42"
+            assert w["chat_type"] == "group"
             assert w["check_interval"] == 60
+
+    def test_recover_inferrs_qq_chat_type_from_session_key_when_checkpoint_is_legacy(self, registry, tmp_path):
+        checkpoint = tmp_path / "procs.json"
+        checkpoint.write_text(json.dumps([{
+            "session_id": "proc_live",
+            "command": "sleep 999",
+            "pid": os.getpid(),
+            "task_id": "t1",
+            "session_key": "agent:main:qq_napcat:group:987654321",
+            "watcher_platform": "qq_napcat",
+            "watcher_chat_id": "987654321",
+            "watcher_interval": 60,
+        }]))
+        with patch("tools.process_registry.CHECKPOINT_PATH", checkpoint):
+            recovered = registry.recover_from_checkpoint()
+            assert recovered == 1
+            assert len(registry.pending_watchers) == 1
+            w = registry.pending_watchers[0]
+            assert w["platform"] == "qq_napcat"
+            assert w["chat_id"] == "987654321"
+            assert w["chat_type"] == "group"
 
     def test_recover_skips_watcher_when_no_interval(self, registry, tmp_path):
         checkpoint = tmp_path / "procs.json"

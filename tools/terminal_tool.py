@@ -1260,9 +1260,11 @@ def terminal_tool(
                     if _gw_platform and not check_interval:
                         _gw_chat_id = os.getenv("HERMES_SESSION_CHAT_ID", "")
                         _gw_thread_id = os.getenv("HERMES_SESSION_THREAD_ID", "")
+                        _gw_chat_type = os.getenv("HERMES_SESSION_CHAT_TYPE", "")
                         proc_session.watcher_platform = _gw_platform
                         proc_session.watcher_chat_id = _gw_chat_id
                         proc_session.watcher_thread_id = _gw_thread_id
+                        proc_session.watcher_chat_type = _gw_chat_type
                         proc_session.watcher_interval = 5
                         process_registry.pending_watchers.append({
                             "session_id": proc_session.id,
@@ -1271,6 +1273,7 @@ def terminal_tool(
                             "platform": _gw_platform,
                             "chat_id": _gw_chat_id,
                             "thread_id": _gw_thread_id,
+                            "chat_type": _gw_chat_type,
                             "notify_on_complete": True,
                         })
 
@@ -1284,11 +1287,13 @@ def terminal_tool(
                     watcher_platform = os.getenv("HERMES_SESSION_PLATFORM", "")
                     watcher_chat_id = os.getenv("HERMES_SESSION_CHAT_ID", "")
                     watcher_thread_id = os.getenv("HERMES_SESSION_THREAD_ID", "")
+                    watcher_chat_type = os.getenv("HERMES_SESSION_CHAT_TYPE", "")
 
                     # Store on session for checkpoint persistence
                     proc_session.watcher_platform = watcher_platform
                     proc_session.watcher_chat_id = watcher_chat_id
                     proc_session.watcher_thread_id = watcher_thread_id
+                    proc_session.watcher_chat_type = watcher_chat_type
                     proc_session.watcher_interval = effective_interval
 
                     process_registry.pending_watchers.append({
@@ -1298,6 +1303,7 @@ def terminal_tool(
                         "platform": watcher_platform,
                         "chat_id": watcher_chat_id,
                         "thread_id": watcher_thread_id,
+                        "chat_type": watcher_chat_type,
                     })
 
                 return json.dumps(result_data, ensure_ascii=False)

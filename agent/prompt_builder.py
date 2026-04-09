@@ -325,6 +325,14 @@ PLATFORM_HINTS = {
         "files arrive as downloadable documents. You can also include image "
         "URLs in markdown format ![alt](url) and they will be sent as photos."
     ),
+    "qq_napcat": (
+        "You are on QQ via NapCat. Please use plain text, not markdown. "
+        "You can send media files natively: include MEDIA:/absolute/path/to/file "
+        "in your response. Images are sent as native photos, audio can be sent "
+        "as voice/audio attachments, videos play inline when supported, and other "
+        "files arrive as documents. In group chats, if a message does not need a "
+        "reply, return exactly [[NO_REPLY]] and nothing else."
+    ),
     "email": (
         "You are communicating via email. Write clear, well-structured responses "
         "suitable for email. Use plain text formatting (no markdown). "

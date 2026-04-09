@@ -48,6 +48,13 @@ class TestCleanForDisplay:
         assert "[[audio_as_voice]]" not in result
         assert "MEDIA:" not in result
 
+    def test_no_reply_marker_stripped(self):
+        """[[NO_REPLY]] must stay hidden in streaming mode."""
+        text = "[[NO_REPLY]]"
+        result = GatewayStreamConsumer._clean_for_display(text)
+        assert "[[NO_REPLY]]" not in result
+        assert result.strip() == ""
+
     def test_multiple_media_tags(self):
         """Multiple MEDIA: tags are all removed."""
         text = "Here are two files:\nMEDIA:/tmp/a.png\nMEDIA:/tmp/b.jpg"
@@ -138,6 +145,20 @@ class TestSendOrEditMediaStripping:
         await consumer._send_or_edit("MEDIA:/tmp/image.png")
 
         adapter.send.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_no_reply_marker_skips_send(self):
+        """A silent reply marker should not produce a visible streamed message."""
+        adapter = MagicMock()
+        adapter.send = AsyncMock()
+        adapter.edit_message = AsyncMock()
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        consumer = GatewayStreamConsumer(adapter, "chat_123")
+        await consumer._send_or_edit("[[NO_REPLY]]")
+
+        adapter.send.assert_not_called()
+        adapter.edit_message.assert_not_called()
 
 
 # ── Integration: full stream run ─────────────────────────────────────────

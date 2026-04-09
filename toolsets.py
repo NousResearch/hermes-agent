@@ -50,6 +50,8 @@ _HERMES_CORE_TOOLS = [
     "todo", "memory",
     # Session history search
     "session_search",
+    # Session-scoped model inspection / switching
+    "session_model",
     # Clarifying questions
     "clarify",
     # Code execution + delegation
@@ -173,7 +175,13 @@ TOOLSETS = {
         "tools": ["session_search"],
         "includes": []
     },
-    
+
+    "session_model": {
+        "description": "Inspect or switch the current session model within an explicit allowlist",
+        "tools": ["session_model"],
+        "includes": []
+    },
+
     "clarify": {
         "description": "Ask the user clarifying questions (multiple-choice or open-ended)",
         "tools": ["clarify"],
@@ -311,6 +319,12 @@ TOOLSETS = {
         "includes": []
     },
 
+    "hermes-qq-napcat": {
+        "description": "QQ (NapCat) bot toolset - personal QQ messaging via OneBot/NapCat",
+        "tools": _HERMES_CORE_TOOLS + ["qq_group_file", "qq_group_moderation"],
+        "includes": []
+    },
+
     "hermes-homeassistant": {
         "description": "Home Assistant bot toolset - smart home event monitoring and control",
         "tools": _HERMES_CORE_TOOLS,
@@ -368,7 +382,7 @@ TOOLSETS = {
     "hermes-gateway": {
         "description": "Gateway toolset - union of all messaging platform tools",
         "tools": [],
-        "includes": ["hermes-telegram", "hermes-discord", "hermes-whatsapp", "hermes-slack", "hermes-signal", "hermes-homeassistant", "hermes-email", "hermes-sms", "hermes-mattermost", "hermes-matrix", "hermes-dingtalk", "hermes-feishu", "hermes-wecom", "hermes-webhook"]
+        "includes": ["hermes-telegram", "hermes-discord", "hermes-whatsapp", "hermes-slack", "hermes-signal", "hermes-qq-napcat", "hermes-homeassistant", "hermes-email", "hermes-sms", "hermes-mattermost", "hermes-matrix", "hermes-dingtalk", "hermes-feishu", "hermes-wecom", "hermes-webhook"]
     }
 }
 

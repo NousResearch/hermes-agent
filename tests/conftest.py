@@ -37,6 +37,12 @@ def _isolate_hermes_home(tmp_path, monkeypatch):
     monkeypatch.delenv("HERMES_SESSION_PLATFORM", raising=False)
     monkeypatch.delenv("HERMES_SESSION_CHAT_ID", raising=False)
     monkeypatch.delenv("HERMES_SESSION_CHAT_NAME", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_CHAT_TYPE", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_THREAD_ID", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_USER_ID", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_USER_NAME", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_ADMIN_USER_IDS", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_IS_ADMIN", raising=False)
     monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
 
 

@@ -217,6 +217,10 @@ DEFAULT_CONFIG = {
         # (force on/off for all models), or a list of model-name substrings
         # to match (e.g. ["gpt", "codex", "gemini", "qwen"]).
         "tool_use_enforcement": "auto",
+        # Optional allowlist for the session_model tool. When empty, the tool
+        # is not exposed to the agent. Entries may be raw model IDs,
+        # "provider:model" strings, or dicts with {provider, model, label}.
+        "allowed_self_models": [],
     },
     
     "terminal": {
@@ -547,7 +551,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 12,
+    "_config_version": 13,
 }
 
 # =============================================================================

@@ -3784,12 +3784,12 @@ class HermesCLI:
 
             # Show authenticated providers with top models
             try:
-                # Load user providers from config
+                # Load user providers from config (providers: + custom_providers:)
                 user_provs = None
                 try:
-                    from hermes_cli.config import load_config
+                    from hermes_cli.config import load_config, build_model_picker_user_providers
                     cfg = load_config()
-                    user_provs = cfg.get("providers")
+                    user_provs = build_model_picker_user_providers(cfg)
                 except Exception:
                     pass
 

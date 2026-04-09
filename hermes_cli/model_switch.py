@@ -803,8 +803,18 @@ def list_authenticated_providers(
         if not has_creds:
             continue
 
-        # Use curated list
+        # Use curated list by default, but prefer Codex live/discovered models so
+        # gateway model pickers stay aligned with /model and setup flows.
         model_ids = curated.get(pid, [])
+        if pid == "openai-codex":
+            try:
+                from hermes_cli.models import provider_model_ids
+
+                discovered = provider_model_ids(pid)
+                if discovered:
+                    model_ids = discovered
+            except Exception as exc:
+                logger.debug("Codex model discovery failed for picker list: %s", exc)
         total = len(model_ids)
         top = model_ids[:max_models]
 
@@ -825,15 +835,24 @@ def list_authenticated_providers(
             if not isinstance(ep_cfg, dict):
                 continue
             display_name = ep_cfg.get("name", "") or ep_name
-            api_url = ep_cfg.get("api", "") or ep_cfg.get("url", "") or ""
+            api_url = ep_cfg.get("api", "") or ep_cfg.get("url", "") or ep_cfg.get("base_url", "") or ""
+            api_key = ep_cfg.get("api_key", "") or ""
             default_model = ep_cfg.get("default_model", "")
 
             models_list = []
             if default_model:
                 models_list.append(default_model)
 
-            # Try to probe /v1/models if URL is set (but don't block on it)
-            # For now just show what we know from config
+            if not models_list and api_url:
+                try:
+                    from hermes_cli.models import fetch_api_models
+
+                    live_models = fetch_api_models(str(api_key), api_url, timeout=4.0)
+                    if live_models:
+                        models_list = live_models
+                except Exception as exc:
+                    logger.debug("Custom provider model probe failed for %s: %s", ep_name, exc)
+
             results.append({
                 "slug": ep_name,
                 "name": display_name,

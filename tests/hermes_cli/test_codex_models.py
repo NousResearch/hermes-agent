@@ -107,6 +107,72 @@ def test_model_command_uses_runtime_access_token_for_codex_list(monkeypatch):
     assert captured["current_model"] == "openai/gpt-5.4"
 
 
+def test_list_authenticated_providers_uses_discovered_codex_models(monkeypatch):
+    from hermes_cli.model_switch import list_authenticated_providers
+
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(
+        "hermes_cli.providers.HERMES_OVERLAYS",
+        {
+            "openai-codex": type(
+                "Overlay",
+                (),
+                {"extra_env_vars": [], "auth_type": "oauth_external"},
+            )()
+        },
+    )
+    monkeypatch.setattr(
+        "hermes_cli.auth._load_auth_store",
+        lambda: {"providers": {"openai-codex": {"access_token": "***"}}},
+    )
+    monkeypatch.setattr(
+        "hermes_cli.models.provider_model_ids",
+        lambda provider: ["gpt-5.4-mini", "gpt-5.4", "gpt-5.3-codex"],
+    )
+
+    providers = list_authenticated_providers(max_models=8)
+
+    codex = next(p for p in providers if p["slug"] == "openai-codex")
+    assert codex["models"][:3] == ["gpt-5.4-mini", "gpt-5.4", "gpt-5.3-codex"]
+    assert codex["total_models"] == 3
+
+
+def test_list_authenticated_providers_falls_back_to_curated_codex_models_on_discovery_error(monkeypatch):
+    from hermes_cli.model_switch import list_authenticated_providers
+
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(
+        "hermes_cli.providers.HERMES_OVERLAYS",
+        {
+            "openai-codex": type(
+                "Overlay",
+                (),
+                {"extra_env_vars": [], "auth_type": "oauth_external"},
+            )()
+        },
+    )
+    monkeypatch.setattr(
+        "hermes_cli.auth._load_auth_store",
+        lambda: {"providers": {"openai-codex": {"access_token": "***"}}},
+    )
+
+    def _boom(provider):
+        raise RuntimeError("codex discovery unavailable")
+
+    monkeypatch.setattr("hermes_cli.models.provider_model_ids", _boom)
+
+    providers = list_authenticated_providers(max_models=8)
+
+    codex = next(p for p in providers if p["slug"] == "openai-codex")
+    assert codex["models"] == [
+        "gpt-5.3-codex",
+        "gpt-5.2-codex",
+        "gpt-5.1-codex-mini",
+        "gpt-5.1-codex-max",
+    ]
+    assert codex["total_models"] == 4
+
+
 # ── Tests for _normalize_model_for_provider ──────────────────────────
 
 

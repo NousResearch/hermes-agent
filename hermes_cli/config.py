@@ -1919,6 +1919,58 @@ def _normalize_max_turns_config(config: Dict[str, Any]) -> Dict[str, Any]:
 
 
 
+def _normalize_custom_provider_name(name: str) -> str:
+    return str(name).strip().lower().replace(" ", "-")
+
+
+def build_model_picker_user_providers(config: Optional[Dict[str, Any]]) -> Optional[Dict[str, Dict[str, Any]]]:
+    """Combine providers: and custom_providers: into one picker-friendly map.
+
+    - ``providers`` entries are kept as-is.
+    - ``custom_providers`` entries become ``custom:<normalized-name>`` slugs.
+    - Custom entries expose ``api``/``base_url`` so the model picker can probe
+      the endpoint for its live ``/v1/models`` list.
+    """
+    if not isinstance(config, dict):
+        return None
+
+    merged: Dict[str, Dict[str, Any]] = {}
+
+    providers = config.get("providers")
+    if isinstance(providers, dict):
+        for slug, entry in providers.items():
+            if isinstance(slug, str) and isinstance(entry, dict):
+                merged[slug] = dict(entry)
+
+    custom_providers = config.get("custom_providers")
+    if isinstance(custom_providers, list):
+        for entry in custom_providers:
+            if not isinstance(entry, dict):
+                continue
+            name = entry.get("name")
+            base_url = str(entry.get("base_url") or entry.get("url") or "").strip()
+            if not isinstance(name, str) or not name.strip() or not base_url:
+                continue
+            slug = f"custom:{_normalize_custom_provider_name(name)}"
+            picker_entry = {
+                "name": name.strip(),
+                "api": base_url,
+                "base_url": base_url,
+            }
+            default_model = str(entry.get("default_model") or entry.get("model") or "").strip()
+            if default_model:
+                picker_entry["default_model"] = default_model
+            api_key = str(entry.get("api_key") or "").strip()
+            if api_key:
+                picker_entry["api_key"] = api_key
+            api_mode = str(entry.get("api_mode") or "").strip()
+            if api_mode:
+                picker_entry["api_mode"] = api_mode
+            merged[slug] = picker_entry
+
+    return merged or None
+
+
 def read_raw_config() -> Dict[str, Any]:
     """Read ~/.hermes/config.yaml as-is, without merging defaults or migrating.
 

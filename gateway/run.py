@@ -3556,7 +3556,8 @@ class GatewayRunner:
                     current_model = model_cfg.get("default", "")
                     current_provider = model_cfg.get("provider", current_provider)
                     current_base_url = model_cfg.get("base_url", "")
-                user_provs = cfg.get("providers")
+                from hermes_cli.config import build_model_picker_user_providers
+                user_provs = build_model_picker_user_providers(cfg)
         except Exception:
             pass
 

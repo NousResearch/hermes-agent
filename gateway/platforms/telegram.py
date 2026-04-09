@@ -1759,7 +1759,14 @@ class TelegramAdapter(BasePlatformAdapter):
 
         try:
             if not os.path.exists(file_path):
-                return SendResult(success=False, error=f"File not found: {file_path}")
+                error = f"File not found: {file_path}"
+                if file_path.startswith(("/workspace/", "/output/")):
+                    error += (
+                        " (path may only exist inside the Docker sandbox. "
+                        "Bind-mount a host directory and emit the host-visible "
+                        "path in MEDIA: for gateway file delivery.)"
+                    )
+                return SendResult(success=False, error=error)
 
             display_name = file_name or os.path.basename(file_path)
             _thread = self._metadata_thread_id(metadata)

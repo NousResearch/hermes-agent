@@ -4728,18 +4728,25 @@ class AIAgent:
                     self._close_request_openai_client(request_client, reason="stream_request_complete")
 
         _stream_stale_timeout_base = float(os.getenv("HERMES_STREAM_STALE_TIMEOUT", 180.0))
-        # Scale the stale timeout for large contexts: slow models (like Opus)
-        # can legitimately think for minutes before producing the first token
-        # when the context is large.  Without this, the stale detector kills
-        # healthy connections during the model's thinking phase, producing
-        # spurious RemoteProtocolError ("peer closed connection").
-        _est_tokens = sum(len(str(v)) for v in api_kwargs.get("messages", [])) // 4
-        if _est_tokens > 100_000:
-            _stream_stale_timeout = max(_stream_stale_timeout_base, 300.0)
-        elif _est_tokens > 50_000:
-            _stream_stale_timeout = max(_stream_stale_timeout_base, 240.0)
+        # Local providers (Ollama, oMLX, llama-cpp) can take 300+ seconds
+        # for prefill on large contexts.  Disable the stale detector unless
+        # the user explicitly set HERMES_STREAM_STALE_TIMEOUT.
+        if _stream_stale_timeout_base == 180.0 and self.base_url and is_local_endpoint(self.base_url):
+            _stream_stale_timeout = float("inf")
+            logger.debug("Local provider detected (%s) — stale stream timeout disabled", self.base_url)
         else:
-            _stream_stale_timeout = _stream_stale_timeout_base
+            # Scale the stale timeout for large contexts: slow models (like Opus)
+            # can legitimately think for minutes before producing the first token
+            # when the context is large.  Without this, the stale detector kills
+            # healthy connections during the model's thinking phase, producing
+            # spurious RemoteProtocolError ("peer closed connection").
+            _est_tokens = sum(len(str(v)) for v in api_kwargs.get("messages", [])) // 4
+            if _est_tokens > 100_000:
+                _stream_stale_timeout = max(_stream_stale_timeout_base, 300.0)
+            elif _est_tokens > 50_000:
+                _stream_stale_timeout = max(_stream_stale_timeout_base, 240.0)
+            else:
+                _stream_stale_timeout = _stream_stale_timeout_base
 
         t = threading.Thread(target=_call, daemon=True)
         t.start()

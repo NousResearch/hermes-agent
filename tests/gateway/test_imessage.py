@@ -60,6 +60,48 @@ def test_config_env_override_imessage_watch_chat_ids():
         assert pconfig.extra.get("watch_chat_ids") == ["123", "456", "789"]
 
 
+def test_config_env_override_imessage_watch_mode():
+    """IMESSAGE_WATCH_MODE should populate extra config."""
+    with patch.dict(os.environ, {
+        "IMESSAGE_ENABLED": "true",
+        "IMESSAGE_WATCH_MODE": "poll",
+    }, clear=False):
+        from gateway.config import load_gateway_config
+        config = load_gateway_config()
+        pconfig = config.platforms.get(Platform.IMESSAGE)
+        assert pconfig is not None
+        assert pconfig.extra.get("watch_mode") == "poll"
+
+
+def test_config_env_override_imessage_poll_interval():
+    """IMESSAGE_POLL_INTERVAL should set poll interval."""
+    with patch.dict(os.environ, {
+        "IMESSAGE_ENABLED": "true",
+        "IMESSAGE_POLL_INTERVAL": "5.0",
+    }, clear=False):
+        from gateway.config import load_gateway_config
+        config = load_gateway_config()
+        pconfig = config.platforms.get(Platform.IMESSAGE)
+        assert pconfig is not None
+        assert pconfig.extra.get("poll_interval") == 5.0
+
+
+def test_adapter_default_watch_mode():
+    """Default watch mode should be auto."""
+    from gateway.platforms.imessage import IMessageAdapter
+    adapter = IMessageAdapter(PlatformConfig(enabled=True))
+    assert adapter._watch_mode == "auto"
+
+
+def test_adapter_poll_mode_from_config():
+    """watch_mode=poll should set poll mode."""
+    from gateway.platforms.imessage import IMessageAdapter
+    config = PlatformConfig(enabled=True, extra={"watch_mode": "poll", "poll_interval": 5.0})
+    adapter = IMessageAdapter(config)
+    assert adapter._watch_mode == "poll"
+    assert adapter._poll_interval == 5.0
+
+
 def test_connected_platforms_includes_imessage():
     """iMessage should appear in connected platforms when enabled."""
     from gateway.config import GatewayConfig

@@ -963,6 +963,17 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             config.platforms[Platform.IMESSAGE].extra["watch_chat_ids"] = [
                 cid.strip() for cid in watch_chat_ids.split(",") if cid.strip()
             ]
+        # Watch mode: fsevents (default imsg watch), poll (DB polling), auto (try fsevents, fallback)
+        watch_mode = os.getenv("IMESSAGE_WATCH_MODE", "auto").lower()
+        if watch_mode in ("fsevents", "poll", "auto"):
+            config.platforms[Platform.IMESSAGE].extra["watch_mode"] = watch_mode
+        # Poll interval in seconds (for poll/auto modes)
+        poll_interval = os.getenv("IMESSAGE_POLL_INTERVAL")
+        if poll_interval:
+            try:
+                config.platforms[Platform.IMESSAGE].extra["poll_interval"] = float(poll_interval)
+            except ValueError:
+                pass
     imessage_home = os.getenv("IMESSAGE_HOME_CHANNEL")
     if imessage_home and Platform.IMESSAGE in config.platforms:
         config.platforms[Platform.IMESSAGE].home_channel = HomeChannel(

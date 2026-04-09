@@ -359,7 +359,7 @@ Use it like:
 Look up the last 10 failed payments and summarize common failure reasons.
 ```
 
-### Exa web search with advanced filtering
+### Exa search with advanced filtering
 
 ```yaml
 mcp_servers:
@@ -382,7 +382,7 @@ The Exa MCP server exposes three tools:
 
 | Tool | Default | Description |
 |------|---------|-------------|
-| `web_search_exa` | enabled | Neural web search with category filtering |
+| `web_search_exa` | enabled | Web search with category filtering |
 | `web_search_advanced_exa` | off | Advanced search with domain, date, text filters, summaries, and highlights |
 | `web_fetch_exa` | enabled | Fetch full page content from a URL |
 

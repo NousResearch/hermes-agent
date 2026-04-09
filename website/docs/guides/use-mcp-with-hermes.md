@@ -236,7 +236,7 @@ Look up customer ACME Corp and summarize recent invoice activity.
 
 This is the sort of place where a strict whitelist is far better than an exclude list.
 
-### Pattern 4: Exa web search and content retrieval
+### Pattern 4: Exa search and content retrieval
 
 ```yaml
 mcp_servers:

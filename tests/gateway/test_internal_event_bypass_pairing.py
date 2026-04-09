@@ -193,6 +193,13 @@ async def test_non_internal_event_without_user_triggers_pairing(monkeypatch, tmp
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     (tmp_path / "config.yaml").write_text("", encoding="utf-8")
 
+    # Clear env vars that could let all users through (loaded by
+    # module-level dotenv in gateway/run.py from the real ~/.hermes/.env).
+    monkeypatch.delenv("DISCORD_ALLOW_ALL_USERS", raising=False)
+    monkeypatch.delenv("DISCORD_ALLOWED_USERS", raising=False)
+    monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
+    monkeypatch.delenv("GATEWAY_ALLOWED_USERS", raising=False)
+
     runner = GatewayRunner(GatewayConfig())
     adapter = SimpleNamespace(send=AsyncMock())
     runner.adapters[Platform.DISCORD] = adapter

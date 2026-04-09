@@ -197,14 +197,44 @@ def _ensure_default_soul_md(home: Path) -> None:
 
 
 def ensure_hermes_home():
-    """Ensure ~/.hermes directory structure exists with secure permissions."""
+    """Ensure ~/.hermes directory structure exists with secure permissions.
+
+    In managed mode (NixOS), dirs are created by the activation script with
+    setgid + group-writable (2770). We skip mkdir and set umask(0o007) so
+    any files created (e.g. SOUL.md) are group-writable (0660).
+    """
     home = get_hermes_home()
-    home.mkdir(parents=True, exist_ok=True)
-    _secure_dir(home)
+    if is_managed():
+        old_umask = os.umask(0o007)
+        try:
+            _ensure_hermes_home_managed(home)
+        finally:
+            os.umask(old_umask)
+    else:
+        home.mkdir(parents=True, exist_ok=True)
+        _secure_dir(home)
+        for subdir in ("cron", "sessions", "logs", "memories"):
+            d = home / subdir
+            d.mkdir(parents=True, exist_ok=True)
+            _secure_dir(d)
+        _ensure_default_soul_md(home)
+
+
+def _ensure_hermes_home_managed(home: Path):
+    """Managed-mode variant: verify dirs exist (activation creates them), seed SOUL.md."""
+    if not home.is_dir():
+        raise RuntimeError(
+            f"HERMES_HOME {home} does not exist. "
+            "Run 'sudo nixos-rebuild switch' first."
+        )
     for subdir in ("cron", "sessions", "logs", "memories"):
         d = home / subdir
-        d.mkdir(parents=True, exist_ok=True)
-        _secure_dir(d)
+        if not d.is_dir():
+            raise RuntimeError(
+                f"{d} does not exist. "
+                "Run 'sudo nixos-rebuild switch' first."
+            )
+    # Inside umask(0o007) scope — SOUL.md will be created as 0660
     _ensure_default_soul_md(home)
 
 

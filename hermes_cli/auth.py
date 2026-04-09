@@ -3017,12 +3017,15 @@ def _login_nous(args, pconfig: ProviderConfig) -> None:
             _save_provider_state(auth_store, "nous", auth_state)
             saved_to = _save_auth_store(auth_store)
 
-        config_path = _update_config_for_provider("nous", inference_base_url)
         print()
         print("Login successful!")
         print(f"  Auth state: {saved_to}")
-        print(f"  Config updated: {config_path} (model.provider=nous)")
 
+        # Resolve model BEFORE writing provider to config.yaml so we never
+        # leave the config in a half-updated state (provider=nous but model
+        # still set to the previous provider's model, e.g. opus from
+        # OpenRouter).  The auth.json active_provider was already set above.
+        selected_model = None
         try:
             runtime_key = auth_state.get("agent_key") or auth_state.get("access_token")
             if not isinstance(runtime_key, str) or not runtime_key:
@@ -3056,9 +3059,6 @@ def _login_nous(args, pconfig: ProviderConfig) -> None:
                     unavailable_models=unavailable_models,
                     portal_url=_portal,
                 )
-                if selected_model:
-                    _save_model_choice(selected_model)
-                    print(f"Default model set to: {selected_model}")
             elif unavailable_models:
                 _url = (_portal or DEFAULT_NOUS_PORTAL_URL).rstrip("/")
                 print("No free models currently available.")
@@ -3069,6 +3069,15 @@ def _login_nous(args, pconfig: ProviderConfig) -> None:
             message = format_auth_error(exc) if isinstance(exc, AuthError) else str(exc)
             print()
             print(f"Login succeeded, but could not fetch available models. Reason: {message}")
+
+        # Write provider + model atomically so config is never mismatched.
+        config_path = _update_config_for_provider(
+            "nous", inference_base_url, default_model=selected_model,
+        )
+        if selected_model:
+            _save_model_choice(selected_model)
+            print(f"Default model set to: {selected_model}")
+        print(f"  Config updated: {config_path} (model.provider=nous)")
 
     except KeyboardInterrupt:
         print("\nLogin cancelled.")

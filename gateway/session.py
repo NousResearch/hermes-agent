@@ -174,6 +174,10 @@ class SessionContext:
     session_id: str = ""
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
+
+    # Runtime tool names — used to make platform notes capability-aware
+    # (e.g. Slack MCP tools detected → update Slack platform note)
+    available_tools: List[str] = None
     
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -266,13 +270,29 @@ def build_session_context_prompt(
     # Platform-specific behavioral notes
     if context.source.platform == Platform.SLACK:
         lines.append("")
-        lines.append(
-            "**Platform notes:** You are running inside Slack. "
-            "You do NOT have access to Slack-specific APIs — you cannot search "
-            "channel history, pin/unpin messages, manage channels, or list users. "
-            "Do not promise to perform these actions. If the user asks, explain "
-            "that you can only read messages sent directly to you and respond."
-        )
+        # Check if scoped Slack MCP tools are available at runtime
+        _slack_tools = [
+            t for t in (getattr(context, "available_tools", None) or [])
+            if "slack" in t.lower()
+        ]
+        if _slack_tools:
+            lines.append(
+                "**Platform notes:** You are running inside Slack. "
+                "Scoped Slack tools are available (e.g. "
+                + ", ".join(f"`{t}`" for t in _slack_tools[:3])
+                + "). You MAY use these tools to resolve Slack permalinks, "
+                "fetch thread replies, or search messages. "
+                "Do NOT assume raw token access or unmanaged API calls — "
+                "only use the explicitly provided Slack tools."
+            )
+        else:
+            lines.append(
+                "**Platform notes:** You are running inside Slack. "
+                "You do NOT have access to Slack-specific APIs — you cannot search "
+                "channel history, pin/unpin messages, manage channels, or list users. "
+                "Do not promise to perform these actions. If the user asks, explain "
+                "that you can only read messages sent directly to you and respond."
+            )
     elif context.source.platform == Platform.DISCORD:
         lines.append("")
         lines.append(

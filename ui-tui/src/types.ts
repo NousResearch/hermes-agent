@@ -24,7 +24,7 @@ export interface ClarifyReq {
 export interface Msg {
   role: Role
   text: string
-  kind?: 'intro'
+  kind?: 'intro' | 'slash'
   info?: SessionInfo
   thinking?: string
   tools?: string[]

@@ -31,6 +31,10 @@ export const MessageLine = memo(function MessageLine({
   const { body, glyph, prefix } = ROLE[msg.role](t)
 
   const content = (() => {
+    if (msg.kind === 'slash') {
+      return <Text color={t.color.dim}>{msg.text}</Text>
+    }
+
     if (msg.role === 'assistant') {
       return hasAnsi(msg.text) ? <Text wrap="wrap">{msg.text}</Text> : <Md compact={compact} t={t} text={msg.text} />
     }
@@ -41,9 +45,11 @@ export const MessageLine = memo(function MessageLine({
       return (
         <Text color={body}>
           {head}
+
           <Text color={t.color.dim} dimColor>
             [long message]
           </Text>
+
           {rest.join('')}
         </Text>
       )
@@ -53,7 +59,7 @@ export const MessageLine = memo(function MessageLine({
   })()
 
   return (
-    <Box flexDirection="column" marginTop={msg.role === 'user' ? 1 : 0}>
+    <Box flexDirection="column" marginTop={msg.role === 'user' || msg.kind === 'slash' ? 1 : 0}>
       {msg.thinking && (
         <Text color={t.color.dim} dimColor wrap="truncate-end">
           💭 {msg.thinking.replace(/\n/g, ' ').slice(0, 200)}

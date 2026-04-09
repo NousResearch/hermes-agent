@@ -516,6 +516,29 @@ def test_interactive_add_chatgpt_web_selects_session_token(monkeypatch):
     assert captured["args"].label == "cookie-account"
 
 
+def test_interactive_add_chatgpt_web_selects_termux_browser_bootstrap(monkeypatch):
+    from hermes_cli import auth_commands as auth_commands_mod
+
+    captured = {}
+    monkeypatch.setattr(auth_commands_mod, "_pick_provider", lambda prompt="Provider": "chatgpt-web")
+
+    answers = iter(["4", "browser-account"])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
+    monkeypatch.setattr(
+        auth_commands_mod,
+        "auth_browser_command",
+        lambda args: captured.setdefault("args", args),
+    )
+
+    auth_commands_mod._interactive_add()
+
+    assert captured["args"].provider == "chatgpt-web"
+    assert captured["args"].label == "browser-account"
+    assert captured["args"].timeout is None
+    assert captured["args"].debug_port is None
+    assert captured["args"].keep_open is False
+
+
 def test_auth_remove_reindexes_priorities(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     # Prevent pool auto-seeding from host env vars and file-backed sources

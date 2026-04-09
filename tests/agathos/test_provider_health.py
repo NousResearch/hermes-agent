@@ -1,4 +1,4 @@
-"""Tests for ARGUS provider health monitoring module."""
+"""Tests for Agathos provider health monitoring module."""
 
 import sqlite3
 from datetime import UTC, datetime, timedelta
@@ -11,7 +11,7 @@ import provider_health
 # ─── Fixtures ────────────────────────────────────────────────────────────
 
 @pytest.fixture
-def argus_db():
+def agathos_db():
     """In-memory agathos.db with provider_health + sessions + tool_calls tables."""
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
@@ -210,16 +210,16 @@ class TestDetectOutage:
 # ─── ensure_table tests ─────────────────────────────────────────────────
 
 class TestEnsureTable:
-    def test_creates_table(self, argus_db):
-        cur, conn = argus_db
+    def test_creates_table(self, agathos_db):
+        cur, conn = agathos_db
         # Table already created by fixture; verify it exists
         cur.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='provider_health'"
         )
         assert cur.fetchone() is not None
 
-    def test_idempotent(self, argus_db):
-        cur, conn = argus_db
+    def test_idempotent(self, agathos_db):
+        cur, conn = agathos_db
         # Calling again should not raise
         provider_health.ensure_table(cur, conn)
 
@@ -332,8 +332,8 @@ class TestFormatAlert:
 # ─── cleanup_old_snapshots tests ────────────────────────────────────────
 
 class TestCleanupOldSnapshots:
-    def test_removes_old(self, argus_db):
-        cur, conn = argus_db
+    def test_removes_old(self, agathos_db):
+        cur, conn = agathos_db
         old = (datetime.now(UTC) - timedelta(hours=100)).isoformat()
         cur.execute(
             "INSERT INTO provider_health (provider, timestamp) VALUES (?, ?)",
@@ -344,8 +344,8 @@ class TestCleanupOldSnapshots:
         deleted = provider_health.cleanup_old_snapshots(cur, conn, keep_hours=72)
         assert deleted == 1
 
-    def test_keeps_recent(self, argus_db):
-        cur, conn = argus_db
+    def test_keeps_recent(self, agathos_db):
+        cur, conn = agathos_db
         recent = datetime.now(UTC).isoformat()
         cur.execute(
             "INSERT INTO provider_health (provider, timestamp) VALUES (?, ?)",
@@ -360,9 +360,9 @@ class TestCleanupOldSnapshots:
 # ─── Integration: run_provider_check ─────────────────────────────────────
 
 class TestRunProviderCheck:
-    def test_clean_state(self, argus_db, state_db, monkeypatch):
+    def test_clean_state(self, agathos_db, state_db, monkeypatch):
         """No errors → report is info severity."""
-        cur, conn = argus_db
+        cur, conn = agathos_db
         db_path, state_conn = state_db
 
         monkeypatch.setattr(provider_health, "_state_db_path", lambda: db_path)
@@ -371,9 +371,9 @@ class TestRunProviderCheck:
         assert report["overall_severity"] == "info"
         assert not report["outage_detected"]
 
-    def test_rate_limit_detected(self, argus_db, state_db, monkeypatch):
+    def test_rate_limit_detected(self, agathos_db, state_db, monkeypatch):
         """429 errors in messages → critical with rate_limit count."""
-        cur, conn = argus_db
+        cur, conn = agathos_db
         db_path, state_conn = state_db
         s_cur = state_conn.cursor()
 
@@ -396,9 +396,9 @@ class TestRunProviderCheck:
         nous_data = report["providers"].get("nous", {})
         assert nous_data.get("rate_limit_count", 0) >= 1
 
-    def test_tool_call_errors(self, argus_db, state_db, monkeypatch):
+    def test_tool_call_errors(self, agathos_db, state_db, monkeypatch):
         """Failed tool calls in agathos.db → detected in report."""
-        cur, conn = argus_db
+        cur, conn = agathos_db
         db_path, _ = state_db
 
         since = (datetime.now(UTC) - timedelta(minutes=10)).isoformat()
@@ -420,9 +420,9 @@ class TestRunProviderCheck:
         anth = report["providers"].get("anthropic", {})
         assert anth.get("timeout_count", 0) >= 1
 
-    def test_snapshots_persisted(self, argus_db, state_db, monkeypatch):
+    def test_snapshots_persisted(self, agathos_db, state_db, monkeypatch):
         """After check, snapshots are written to provider_health table."""
-        cur, conn = argus_db
+        cur, conn = agathos_db
         db_path, state_conn = state_db
         s_cur = state_conn.cursor()
 

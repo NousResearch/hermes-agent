@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Hermes Contributing Guide Compliance Tests for ARGUS.
+Hermes Contributing Guide Compliance Tests for Agathos.
 
-Checks argus.py and wal_monitor.py against:
+Checks agathos.py and wal_monitor.py against:
 https://hermes-agent.nousresearch.com/docs/developer-guide/contributing
 
 Sections verified:
@@ -18,9 +18,9 @@ import unittest
 from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).parent
-ARGUS_DIR = SCRIPT_DIR.parent.parent / "agathos"  # argus/ directory (two levels up from tests/agathos/)
-ARGUS_PATH = ARGUS_DIR / "argus.py"
-WAL_PATH = ARGUS_DIR / "wal_monitor.py"
+AGATHOS_DIR = SCRIPT_DIR.parent.parent / "agathos"
+AGATHOS_PATH = AGATHOS_DIR / "agathos.py"
+WAL_PATH = AGATHOS_DIR / "wal_monitor.py"
 
 
 class _SourceMixin:
@@ -28,9 +28,9 @@ class _SourceMixin:
 
     @classmethod
     def setUpClass(cls):
-        cls.argus_src = ARGUS_PATH.read_text()
+        cls.agathos_src = AGATHOS_PATH.read_text()
         cls.wal_src = WAL_PATH.read_text()
-        cls.argus_lines = cls.argus_src.split("\n")
+        cls.agathos_lines = cls.agathos_src.split("\n")
         cls.wal_lines = cls.wal_src.split("\n")
 
 
@@ -43,9 +43,9 @@ class TestLoggingStyle(_SourceMixin, unittest.TestCase):
     """Contributing guide: Use logger.warning(), logger.error()."""
 
     def test_uses_logger_not_print(self):
-        """ARGUS must use logger, not bare print() for output."""
+        """Agathos must use logger, not bare print() for output."""
         violations = []
-        for i, line in enumerate(self.argus_lines, 1):
+        for i, line in enumerate(self.agathos_lines, 1):
             stripped = line.strip()
             # Skip comments, docstrings, test files
             if (
@@ -68,7 +68,7 @@ class TestLoggingStyle(_SourceMixin, unittest.TestCase):
         # This is a best-practice check, not a hard requirement
         in_except = False
         violations = []
-        for i, line in enumerate(self.argus_lines, 1):
+        for i, line in enumerate(self.agathos_lines, 1):
             stripped = line.strip()
             if stripped.startswith("except "):
                 in_except = True
@@ -93,11 +93,11 @@ class TestHermesHome(_SourceMixin, unittest.TestCase):
 
     def test_no_hardcoded_hermes_home_in_function_bodies(self):
         """Module functions must not hardcode ~/.hermes paths."""
-        # Allow module-level constants (CONFIG, _DEFAULT_ARGUS_CONFIG) but not inside functions
+        # Allow module-level constants (CONFIG, _DEFAULT_Agathos_CONFIG) but not inside functions
         violations = []
         in_function = False
         in_class = False
-        for i, line in enumerate(self.argus_lines, 1):
+        for i, line in enumerate(self.agathos_lines, 1):
             stripped = line.strip()
             if stripped.startswith("def ") and not stripped.startswith("    "):
                 in_function = True
@@ -141,15 +141,15 @@ class TestPathlibUsage(_SourceMixin, unittest.TestCase):
         # Check that Path is imported
         self.assertIn(
             "from pathlib import Path",
-            self.argus_src,
-            "argus.py must import pathlib.Path",
+            self.agathos_src,
+            "agathos.py must import pathlib.Path",
         )
 
     def test_no_os_path_join_for_new_code(self):
         """New code should prefer Path / over os.path.join."""
         violations = []
         in_new_section = False
-        for i, line in enumerate(self.argus_lines, 1):
+        for i, line in enumerate(self.agathos_lines, 1):
             # Flag sections that are clearly new (WAL, PID, launchd)
             if "# ===" in line:
                 section = line.strip()
@@ -177,7 +177,7 @@ class TestSecuritySubprocess(_SourceMixin, unittest.TestCase):
     def test_no_shell_true(self):
         """subprocess calls must not use shell=True."""
         violations = []
-        for i, line in enumerate(self.argus_lines, 1):
+        for i, line in enumerate(self.agathos_lines, 1):
             if "shell=True" in line:
                 violations.append(f"  L{i}: {line.strip()[:80]}")
         self.assertEqual(
@@ -189,13 +189,13 @@ class TestSecuritySubprocess(_SourceMixin, unittest.TestCase):
     def test_no_string_interpolation_in_subprocess(self):
         """subprocess args must not use f-strings or .format() with user data."""
         violations = []
-        for i, line in enumerate(self.argus_lines, 1):
+        for i, line in enumerate(self.agathos_lines, 1):
             stripped = line.strip()
             # Check for subprocess.run with f-string args
             if "subprocess.run(" in stripped or "subprocess.call(" in stripped:
                 # Check next few lines for f-string interpolation
-                for j in range(i, min(i + 5, len(self.argus_lines))):
-                    next_line = self.argus_lines[j].strip()
+                for j in range(i, min(i + 5, len(self.agathos_lines))):
+                    next_line = self.agathos_lines[j].strip()
                     if "f'" in next_line or 'f"' in next_line:
                         if any(cmd in next_line for cmd in ["kill", "hermes", "curl"]):
                             violations.append(f"  L{j + 1}: {next_line[:80]}")
@@ -214,7 +214,7 @@ class TestSecuritySQL(_SourceMixin, unittest.TestCase):
         """All SQL queries must use ? placeholders, not f-strings."""
         violations = []
         in_execute = False
-        for i, line in enumerate(self.argus_lines, 1):
+        for i, line in enumerate(self.agathos_lines, 1):
             stripped = line.strip()
             if "cursor.execute(" in stripped or ".execute(" in stripped:
                 in_execute = True
@@ -237,7 +237,7 @@ class TestSecuritySQL(_SourceMixin, unittest.TestCase):
     def test_no_eval_exec(self):
         """No eval() or exec() — security requirement."""
         violations = []
-        for i, line in enumerate(self.argus_lines, 1):
+        for i, line in enumerate(self.agathos_lines, 1):
             stripped = line.strip()
             if stripped.startswith("#"):
                 continue
@@ -265,7 +265,7 @@ class TestSecurityPathTraversal(_SourceMixin, unittest.TestCase):
 
     def test_file_operations_resolve_paths(self):
         """File write operations should resolve paths to prevent traversal."""
-        for i, line in enumerate(self.argus_lines, 1):
+        for i, line in enumerate(self.agathos_lines, 1):
             stripped = line.strip()
             # Look for direct file writes without realpath
             if "write_text(" in stripped or "write_file(" in stripped:
@@ -289,7 +289,7 @@ class TestImportStructure(_SourceMixin, unittest.TestCase):
         # Check that hermes imports are in try/except
         in_try = False
         hermes_imports_without_try = []
-        for i, line in enumerate(self.argus_lines, 1):
+        for i, line in enumerate(self.agathos_lines, 1):
             stripped = line.strip()
             if stripped.startswith("try:"):
                 in_try = True
@@ -322,7 +322,7 @@ class TestImportStructure(_SourceMixin, unittest.TestCase):
             r"ghp_[a-zA-Z0-9]{36}",
         ]
         for name, lines in [
-            ("argus.py", self.argus_lines),
+            ("agathos.py", self.agathos_lines),
             ("wal_monitor.py", self.wal_lines),
         ]:
             for i, line in enumerate(lines, 1):
@@ -343,7 +343,7 @@ class TestDocstrings(_SourceMixin, unittest.TestCase):
     def test_public_functions_have_docstrings(self):
         """All public methods/functions need docstrings."""
         for name, code in [
-            ("argus.py", self.argus_src),
+            ("agathos.py", self.agathos_src),
             ("wal_monitor.py", self.wal_src),
         ]:
             # Find public functions (not starting with _)
@@ -376,13 +376,13 @@ class TestModuleStructure(_SourceMixin, unittest.TestCase):
         """Module must have if __name__ == '__main__' guard."""
         self.assertIn(
             'if __name__ == "__main__"',
-            self.argus_src,
-            "argus.py must have __main__ guard",
+            self.agathos_src,
+            "agathos.py must have __main__ guard",
         )
 
     def test_shebang_line(self):
         """Module must start with shebang."""
-        first_line = self.argus_lines[0]
+        first_line = self.agathos_lines[0]
         self.assertTrue(
             first_line.startswith("#!"),
             f"First line must be shebang, got: {first_line}",
@@ -391,10 +391,10 @@ class TestModuleStructure(_SourceMixin, unittest.TestCase):
     def test_module_docstring(self):
         """Module must have a docstring."""
         # Check second or third line for docstring
-        for line in self.argus_lines[1:4]:
+        for line in self.agathos_lines[1:4]:
             if '"""' in line:
                 return
-        self.fail("argus.py must have a module-level docstring")
+        self.fail("agathos.py must have a module-level docstring")
 
 
 class TestRuntimeCompatibility(_SourceMixin, unittest.TestCase):
@@ -404,11 +404,11 @@ class TestRuntimeCompatibility(_SourceMixin, unittest.TestCase):
         """Module must import without errors."""
         sys.path.insert(0, str(SCRIPT_DIR))
         try:
-            import argus
+            from agathos import agathos
 
-            self.assertTrue(hasattr(argus, "Agathos"))
-            self.assertTrue(hasattr(argus, "CONFIG"))
-            self.assertTrue(hasattr(argus, "is_argus_running"))
+            self.assertTrue(hasattr(agathos, "Agathos"))
+            self.assertTrue(hasattr(agathos, "CONFIG"))
+            self.assertTrue(hasattr(agathos, "is_argus_running"))
         finally:
             sys.path.pop(0)
 
@@ -416,7 +416,7 @@ class TestRuntimeCompatibility(_SourceMixin, unittest.TestCase):
         """CONFIG must have all required keys."""
         sys.path.insert(0, str(SCRIPT_DIR))
         try:
-            import argus
+            from agathos import agathos
 
             required = [
                 "db_path",
@@ -427,7 +427,7 @@ class TestRuntimeCompatibility(_SourceMixin, unittest.TestCase):
                 "max_restart_count",
             ]
             for key in required:
-                self.assertIn(key, argus.CONFIG, f"CONFIG missing key: {key}")
+                self.assertIn(key, agathos.CONFIG, f"CONFIG missing key: {key}")
         finally:
             sys.path.pop(0)
 

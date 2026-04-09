@@ -223,10 +223,6 @@ def auth_add_command(args) -> None:
         token = (getattr(args, "api_key", None) or "").strip()
         if provider == "chatgpt-web":
             token_mode = str(getattr(args, "token_mode", "") or "").strip().lower()
-            cookie_header = str(getattr(args, "cookie_header", "") or "").strip()
-            browser_cookies = getattr(args, "browser_cookies", None)
-            device_id = str(getattr(args, "device_id", "") or "").strip()
-            user_agent = str(getattr(args, "user_agent", "") or "").strip()
             if not token:
                 if token_mode == "session_token":
                     token = getpass("Paste your ChatGPT Web session token: ").strip()
@@ -252,25 +248,11 @@ def auth_add_command(args) -> None:
                 from hermes_cli.chatgpt_web import _fetch_chatgpt_web_access_token_from_session
 
                 try:
-                    access_token = _fetch_chatgpt_web_access_token_from_session(
-                        token,
-                        cookie_header=cookie_header,
-                        browser_cookies=browser_cookies,
-                        device_id=device_id,
-                        user_agent=user_agent,
-                    )
+                    access_token = _fetch_chatgpt_web_access_token_from_session(token)
                 except Exception as exc:
                     raise SystemExit(f"Could not exchange ChatGPT Web session token: {exc}") from exc
                 source = f"{SOURCE_MANUAL}:session_token"
                 extra["session_token"] = token
-            if cookie_header:
-                extra["cookie_header"] = cookie_header
-            if browser_cookies:
-                extra["browser_cookies"] = browser_cookies
-            if device_id:
-                extra["device_id"] = device_id
-            if user_agent:
-                extra["user_agent"] = user_agent
 
             entry = PooledCredential(
                 provider=provider,
@@ -1226,7 +1208,25 @@ def _interactive_add() -> None:
         raise SystemExit(f"Unknown provider: {provider}")
 
     # For OAuth-capable providers, ask which type
-    if provider in _OAUTH_CAPABLE_PROVIDERS or provider == "chatgpt-web":
+    token_mode = None
+    if provider == "chatgpt-web":
+        print(f"\n{provider} supports API keys/access tokens, OAuth login, and session tokens.")
+        print("  1. API key / access token")
+        print("  2. OAuth login (authenticate via browser/device code)")
+        print("  3. Session token (paste __Secure-next-auth.session-token)")
+        try:
+            type_choice = input("Type [1/2/3]: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            return
+        if type_choice == "2":
+            auth_type = "oauth"
+        elif type_choice == "3":
+            auth_type = "api_key"
+            token_mode = "session_token"
+        else:
+            auth_type = "api_key"
+            token_mode = "access_token"
+    elif provider in _OAUTH_CAPABLE_PROVIDERS:
         print(f"\n{provider} supports both API keys and OAuth login.")
         print("  1. API key (paste a key from the provider dashboard)")
         print("  2. OAuth login (authenticate via browser)")

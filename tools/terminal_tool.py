@@ -821,9 +821,12 @@ def _cleanup_inactive_envs(lifetime_seconds: int = 300):
     # background processes (their _last_activity gets refreshed to keep them alive).
     try:
         from tools.process_registry import process_registry
-        for task_id in list(_last_activity.keys()):
+        with _env_lock:
+            activity_snapshot = list(_last_activity.keys())
+        for task_id in activity_snapshot:
             if process_registry.has_active_processes(task_id):
-                _last_activity[task_id] = current_time  # Keep sandbox alive
+                with _env_lock:
+                    _last_activity[task_id] = current_time  # Keep sandbox alive
     except ImportError:
         pass
 
@@ -937,15 +940,16 @@ def is_persistent_env(task_id: str) -> bool:
 
 def get_active_environments_info() -> Dict[str, Any]:
     """Get information about currently active environments."""
-    info = {
-        "count": len(_active_environments),
-        "task_ids": list(_active_environments.keys()),
-        "workdirs": {},
-    }
-    
+    with _env_lock:
+        info = {
+            "count": len(_active_environments),
+            "task_ids": list(_active_environments.keys()),
+            "workdirs": {},
+        }
+
     # Calculate total disk usage (per-task to avoid double-counting)
     total_size = 0
-    for task_id in _active_environments:
+    for task_id in info["task_ids"]:
         scratch_dir = _get_scratch_dir()
         pattern = f"hermes-*{task_id[:8]}*"
         import glob
@@ -962,7 +966,8 @@ def get_active_environments_info() -> Dict[str, Any]:
 
 def cleanup_all_environments():
     """Clean up ALL active environments. Use with caution."""
-    task_ids = list(_active_environments.keys())
+    with _env_lock:
+        task_ids = list(_active_environments.keys())
     cleaned = 0
     
     for task_id in task_ids:
@@ -1032,8 +1037,9 @@ def cleanup_vm(task_id: str):
 def _atexit_cleanup():
     """Stop cleanup thread and shut down all remaining sandboxes on exit."""
     _stop_cleanup_thread()
-    if _active_environments:
+    with _env_lock:
         count = len(_active_environments)
+    if count:
         logger.info("Shutting down %d remaining sandbox(es)...", count)
         cleanup_all_environments()
 

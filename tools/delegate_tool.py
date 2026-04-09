@@ -312,6 +312,25 @@ def _build_child_agent(
     effective_acp_command = override_acp_command or getattr(parent_agent, "acp_command", None)
     effective_acp_args = list(override_acp_args if override_acp_args is not None else (getattr(parent_agent, "acp_args", []) or []))
 
+    # Resolve reasoning config: delegation override > parent inherit
+    parent_reasoning = getattr(parent_agent, "reasoning_config", None)
+    child_reasoning = parent_reasoning
+    try:
+        delegation_cfg = _load_config()
+        delegation_effort = str(delegation_cfg.get("reasoning_effort") or "").strip()
+        if delegation_effort:
+            from hermes_constants import parse_reasoning_effort
+            parsed = parse_reasoning_effort(delegation_effort)
+            if parsed is not None:
+                child_reasoning = parsed
+            else:
+                logger.warning(
+                    "Unknown delegation.reasoning_effort '%s', inheriting parent level",
+                    delegation_effort,
+                )
+    except Exception as exc:
+        logger.debug("Could not load delegation reasoning_effort: %s", exc)
+
     child = AIAgent(
         base_url=effective_base_url,
         api_key=effective_api_key,
@@ -322,7 +341,7 @@ def _build_child_agent(
         acp_args=effective_acp_args,
         max_iterations=max_iterations,
         max_tokens=getattr(parent_agent, "max_tokens", None),
-        reasoning_config=getattr(parent_agent, "reasoning_config", None),
+        reasoning_config=child_reasoning,
         prefill_messages=getattr(parent_agent, "prefill_messages", None),
         enabled_toolsets=child_toolsets,
         quiet_mode=True,

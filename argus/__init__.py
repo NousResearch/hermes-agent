@@ -32,7 +32,11 @@ from .notifications import (
     send_slack,
     send_matrix,
     send_webhook,
+    send_via_gateway,
 )
+
+# Metrics
+from .metrics import MetricsCollector, write_metrics_file
 
 __all__ = [
     # Core
@@ -56,4 +60,8 @@ __all__ = [
     "send_slack",
     "send_matrix",
     "send_webhook",
+    "send_via_gateway",
+    # Metrics
+    "MetricsCollector",
+    "write_metrics_file",
 ]

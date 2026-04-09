@@ -10,6 +10,10 @@ Supported platforms:
 
 Each platform sender returns (delivered: bool, error: Optional[str]).
 All senders are fire-and-forget with 10s timeout.
+
+Gateway Integration (optional):
+  If gateway is running, notifications can be routed through it
+  for consistent formatting and delivery routing.
 """
 
 import json
@@ -425,13 +429,47 @@ def discover_platforms() -> List[Tuple[str, Callable]]:
 # =============================================================================
 
 
-def send_to_all_platforms(message: str) -> Dict[str, Tuple[bool, Optional[str]]]:
-    """Send message to all configured platforms.
-
-    Returns dict of {platform_name: (delivered, error)}.
+def send_via_gateway(message: str) -> Tuple[bool, Optional[str]]:
+    """Send notification through Hermes gateway if running.
+    
+    Returns (delivered, error). Falls back to direct send if gateway unavailable.
     """
-    results = {}
-    for name, sender_fn in discover_platforms():
+    try:
+        # Try to import gateway delivery router
+        from gateway.delivery import DeliveryRouter
+        
+        router = DeliveryRouter()
+        # Route to home channel or admin alert channel
+        result = router.route_alert(message)
+        return result.get("delivered", False), result.get("error")
+    except ImportError:
+        logger.debug("gateway.delivery unavailable — using direct send")
+        return False, "Gateway not available"
+    except Exception as e:
+        logger.warning("Gateway send failed: %s", e)
+        return False, str(e)
+
+
+def send_to_all_platforms(message: str, prefer_gateway: bool = False) -> Dict[str, Tuple[bool, Optional[str]]]:
+    """Send to all configured platforms in parallel (best-effort).
+    
+    Args:
+        message: Message to send
+        prefer_gateway: If True, try gateway first before direct platform sends
+    """
+    results: Dict[str, Tuple[bool, Optional[str]]] = {}
+    
+    # Try gateway first if preferred
+    if prefer_gateway:
+        delivered, error = send_via_gateway(message)
+        if delivered:
+            results["gateway"] = (True, None)
+            return results
+        else:
+            results["gateway"] = (False, error)
+    
+    # Direct platform sends
+    for name, sender_fn, _ in discover_platforms():
         try:
             delivered, error = sender_fn(message)
             results[name] = (delivered, error)
@@ -440,6 +478,7 @@ def send_to_all_platforms(message: str) -> Dict[str, Tuple[bool, Optional[str]]]
         except Exception as e:
             results[name] = (False, str(e))
             logger.error("%s: sender exception — %s", name, e, exc_info=True)
+    
     return results
 
 
@@ -449,11 +488,13 @@ def send_notification(
     session_id: str,
     notification_type: str,
     message: str,
+    prefer_gateway: bool = False,
 ) -> None:
     """Send notification to all configured platforms + record in DB.
 
     1. Looks up session metadata for message formatting
     2. Sends to all configured platforms (Telegram, Discord, Slack, etc.)
+       or through gateway if prefer_gateway=True and gateway available
     3. Records in notifications table with delivery status per platform
     """
     # Look up session for message formatting
@@ -467,8 +508,8 @@ def send_notification(
         session_id, session, notification_type, message
     )
 
-    # Fan out to all configured platforms
-    results = send_to_all_platforms(full_message)
+    # Fan out to all configured platforms (or gateway)
+    results = send_to_all_platforms(full_message, prefer_gateway=prefer_gateway)
 
     # Determine overall delivery status
     any_delivered = any(ok for ok, _ in results.values())

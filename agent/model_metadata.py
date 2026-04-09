@@ -897,6 +897,62 @@ def _resolve_nous_context_length(model: str) -> Optional[int]:
     return None
 
 
+def resolve_configured_context_length(
+    config: Dict[str, Any] | None,
+    *,
+    model: str,
+    base_url: str = "",
+) -> int | None:
+    """Extract an explicit context-length override from Hermes config.
+
+    This mirrors the config override portion of runtime initialization so callers
+    like the CLI can reuse the same resolution logic before an agent exists.
+    """
+    if not isinstance(config, dict):
+        return None
+
+    model_cfg = config.get("model", {})
+    if isinstance(model_cfg, dict):
+        raw_ctx = model_cfg.get("context_length")
+        if raw_ctx is not None:
+            try:
+                resolved = int(raw_ctx)
+            except (TypeError, ValueError):
+                resolved = None
+            if resolved and resolved > 0:
+                return resolved
+
+    custom_providers = config.get("custom_providers")
+    if isinstance(custom_providers, list):
+        current_base_url = (base_url or "").rstrip("/")
+        current_model = model or ""
+        for entry in custom_providers:
+            if not isinstance(entry, dict):
+                continue
+            entry_base_url = (entry.get("base_url") or "").rstrip("/")
+            if current_base_url and entry_base_url and entry_base_url != current_base_url:
+                continue
+            models_cfg = entry.get("models", {})
+            if not isinstance(models_cfg, dict):
+                continue
+            model_entry = models_cfg.get(current_model, {})
+            if not isinstance(model_entry, dict):
+                continue
+            raw_ctx = model_entry.get("context_length")
+            if raw_ctx is None:
+                raw_ctx = model_entry.get("contextWindow")
+            if raw_ctx is None:
+                continue
+            try:
+                resolved = int(raw_ctx)
+            except (TypeError, ValueError):
+                resolved = None
+            if resolved and resolved > 0:
+                return resolved
+
+    return None
+
+
 def get_model_context_length(
     model: str,
     base_url: str = "",

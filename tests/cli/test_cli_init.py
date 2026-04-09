@@ -85,6 +85,60 @@ class TestMaxTurnsResolution:
         assert isinstance(cli.max_turns, int) and cli.max_turns == 90
 
 
+class TestDisplayContextLength:
+    def test_resolves_context_length_from_config_before_agent_init(self):
+        cli_obj = _make_cli(config_overrides={
+            "model": {
+                "default": "gpt-5.4-fast",
+                "base_url": "https://611996.xyz/v1",
+                "provider": "custom",
+                "context_length": 1_050_000,
+            },
+            "custom_providers": [
+                {
+                    "base_url": "https://611996.xyz/v1",
+                    "models": {
+                        "gpt-5.4-fast": {"contextWindow": 128_000}
+                    },
+                }
+            ],
+        })
+
+        assert cli_obj.agent is None
+        assert cli_obj._resolve_display_context_length() == 1_050_000
+
+    def test_show_banner_passes_resolved_context_length_to_banner(self):
+        cli_obj = _make_cli(config_overrides={
+            "model": {
+                "default": "gpt-5.4-fast",
+                "base_url": "https://611996.xyz/v1",
+                "provider": "custom",
+                "context_length": 1_050_000,
+            },
+            "custom_providers": [
+                {
+                    "base_url": "https://611996.xyz/v1",
+                    "models": {
+                        "gpt-5.4-fast": {"contextWindow": 128_000}
+                    },
+                }
+            ],
+        })
+
+        assert cli_obj.agent is None
+        mock_banner = MagicMock()
+        with patch.dict(
+            cli_obj.show_banner.__globals__,
+            {
+                "build_welcome_banner": mock_banner,
+                "get_tool_definitions": MagicMock(return_value=[]),
+            },
+        ), patch("shutil.get_terminal_size", return_value=os.terminal_size((120, 40))):
+            cli_obj.show_banner()
+
+        assert mock_banner.call_args.kwargs["context_length"] == 1_050_000
+
+
 class TestVerboseAndToolProgress:
     def test_default_verbose_is_bool(self):
         cli = _make_cli()

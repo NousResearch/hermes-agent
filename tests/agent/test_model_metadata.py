@@ -31,6 +31,7 @@ from agent.model_metadata import (
     parse_context_limit_from_error,
     save_context_length,
     fetch_model_metadata,
+    resolve_configured_context_length,
     _MODEL_CACHE_TTL,
 )
 
@@ -193,6 +194,62 @@ class TestDefaultContextLengths:
 
     def test_dict_is_not_empty(self):
         assert len(DEFAULT_CONTEXT_LENGTHS) >= 10
+
+
+# =========================================================================
+# resolve_configured_context_length — explicit config overrides
+# =========================================================================
+
+class TestResolveConfiguredContextLength:
+    def test_prefers_top_level_model_context_length(self):
+        config = {
+            "model": {"context_length": 1_050_000},
+            "custom_providers": [
+                {
+                    "base_url": "https://611996.xyz/v1",
+                    "models": {
+                        "gpt-5.4-fast": {"context_length": 128_000}
+                    },
+                }
+            ],
+        }
+
+        assert (
+            resolve_configured_context_length(
+                config,
+                model="gpt-5.4-fast",
+                base_url="https://611996.xyz/v1",
+            )
+            == 1_050_000
+        )
+
+    def test_reads_matching_custom_provider_context_window(self):
+        config = {
+            "model": {},
+            "custom_providers": [
+                {
+                    "base_url": "https://other.example/v1",
+                    "models": {
+                        "gpt-5.4-fast": {"contextWindow": 256_000}
+                    },
+                },
+                {
+                    "base_url": "https://611996.xyz/v1",
+                    "models": {
+                        "gpt-5.4-fast": {"contextWindow": 1_050_000}
+                    },
+                },
+            ],
+        }
+
+        assert (
+            resolve_configured_context_length(
+                config,
+                model="gpt-5.4-fast",
+                base_url="https://611996.xyz/v1",
+            )
+            == 1_050_000
+        )
 
 
 # =========================================================================

@@ -1768,6 +1768,23 @@ class HermesCLI:
         filled = round((safe_percent / 100) * width)
         return f"[{('█' * filled) + ('░' * max(0, width - filled))}]"
 
+    def _resolve_display_context_length(self) -> Optional[int]:
+        """Return the best-known context length even before the agent is initialized."""
+        agent = getattr(self, "agent", None)
+        compressor = getattr(agent, "context_compressor", None) if agent else None
+        if compressor:
+            context_length = getattr(compressor, "context_length", 0) or 0
+            if context_length > 0:
+                return context_length
+
+        from agent.model_metadata import resolve_configured_context_length
+
+        return resolve_configured_context_length(
+            getattr(self, "config", None),
+            model=getattr(self, "model", "") or "",
+            base_url=getattr(self, "base_url", "") or "",
+        )
+
     def _get_status_bar_snapshot(self) -> Dict[str, Any]:
         # Prefer the agent's model name — it updates on fallback.
         # self.model reflects the originally configured model and never
@@ -1787,7 +1804,7 @@ class HermesCLI:
             "model_short": model_short,
             "duration": format_duration_compact(elapsed_seconds),
             "context_tokens": 0,
-            "context_length": None,
+            "context_length": self._resolve_display_context_length(),
             "context_percent": None,
             "session_input_tokens": 0,
             "session_output_tokens": 0,
@@ -2810,9 +2827,7 @@ class HermesCLI:
 
         # Get context length for display before branching so it remains
         # available to the low-context warning logic in compact mode too.
-        ctx_len = None
-        if hasattr(self, 'agent') and self.agent and hasattr(self.agent, 'context_compressor'):
-            ctx_len = self.agent.context_compressor.context_length
+        ctx_len = self._resolve_display_context_length()
         
         # Auto-compact for narrow terminals — the full banner with caduceus
         # + tool list needs ~80 columns minimum to render without wrapping.

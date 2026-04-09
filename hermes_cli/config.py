@@ -293,6 +293,33 @@ DEFAULT_CONFIG = {
         "max_snapshots": 50,  # Max checkpoints to keep per directory
     },
 
+    # Analyst Council — multi-perspective adversarial review for research tasks.
+    # When enabled, the system prompt instructs the agent to call the
+    # analyst_council tool after substantive research work so 3–5 specialist
+    # reviewers can cross-examine the findings and a chairman synthesizes a
+    # consensus report.  Mirrors the Swift companion's default-ON behavior.
+    # Reviewer calls use a cheap model (see smart_model_routing.cheap_model or
+    # council.reviewer_model) to keep cost overhead low.
+    "council": {
+        # Master toggle — starts false for safe rollout; flip to true once
+        # the tool is verified in the field.
+        "enabled": False,
+        # "quick" (3 reviewers, no peer review) or "full" (5 reviewers + peer review)
+        "default_depth": "quick",
+        # Model used for the 3–5 parallel reviewer calls.  When null, falls
+        # back to smart_model_routing.cheap_model, then to a hardcoded default.
+        "reviewer_model": None,
+        # Model used for the single chairman synthesis call.  When null, falls
+        # back to a hardcoded strong default (see analyst_council_tool.py).
+        "chairman_model": None,
+        # Skip the council entirely for short trivial queries (weather, time,
+        # calculator, small-talk) to avoid wasted cost.
+        "skip_for_trivial": True,
+        "trivial_keywords": [
+            "weather", "time", "calculator", "hello", "thanks",
+        ],
+    },
+
     # Maximum characters returned by a single read_file call.  Reads that
     # exceed this are rejected with guidance to use offset+limit.
     # 100K chars ≈ 25–35K tokens across typical tokenisers.

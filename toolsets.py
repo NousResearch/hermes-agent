@@ -39,6 +39,8 @@ _HERMES_CORE_TOOLS = [
     "vision_analyze", "image_generate",
     # MoA
     "mixture_of_agents",
+    # Analyst Council (universal research integrity review)
+    "analyst_council",
     # Skills
     "skills_list", "skill_view", "skill_manage",
     # Browser automation
@@ -120,6 +122,12 @@ TOOLSETS = {
     "moa": {
         "description": "Advanced reasoning and problem-solving tools",
         "tools": ["mixture_of_agents"],
+        "includes": []
+    },
+
+    "council": {
+        "description": "Analyst Council — multi-perspective adversarial review (3-5 specialists + chairman synthesis) for any research domain",
+        "tools": ["analyst_council"],
         "includes": []
     },
     
@@ -254,7 +262,7 @@ TOOLSETS = {
     
     "safe": {
         "description": "Safe toolkit without terminal access",
-        "tools": ["mixture_of_agents"],
+        "tools": ["mixture_of_agents", "analyst_council"],
         "includes": ["web", "vision", "image_gen"]
     },
     
@@ -301,6 +309,8 @@ TOOLSETS = {
             "mac_help", "mac_workflow",
             # MoA
             "mixture_of_agents",
+            # Analyst Council (universal research integrity review)
+            "analyst_council",
             # Skills
             "skills_list", "skill_view", "skill_manage",
             # Browser automation

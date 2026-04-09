@@ -56,6 +56,24 @@ def check_api_server_requirements() -> bool:
     return AIOHTTP_AVAILABLE
 
 
+def _parse_council_header(header_value: str) -> Optional[bool]:
+    """Parse the X-Hermes-Council request header into an override bool.
+
+    Returns:
+        True  if header is "on"/"true"/"1"/"yes"
+        False if header is "off"/"false"/"0"/"no"
+        None  if header is missing/empty/unrecognized (use config default)
+    """
+    if not header_value:
+        return None
+    normalized = header_value.strip().lower()
+    if normalized in ("on", "true", "1", "yes"):
+        return True
+    if normalized in ("off", "false", "0", "no"):
+        return False
+    return None
+
+
 class ResponseStore:
     """
     SQLite-backed LRU store for Responses API state.
@@ -455,6 +473,7 @@ class APIServerAdapter(BasePlatformAdapter):
         session_id: Optional[str] = None,
         stream_delta_callback=None,
         tool_progress_callback=None,
+        council_enabled: Optional[bool] = None,
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
@@ -463,6 +482,10 @@ class APIServerAdapter(BasePlatformAdapter):
         base_url, etc. from config.yaml / env vars.  Toolsets are resolved
         from config.yaml platform_toolsets.api_server (same as all other
         gateway platforms), falling back to the hermes-api-server default.
+
+        When ``council_enabled`` is not None, it overrides the council.enabled
+        config setting for this single agent instance (honoring a per-request
+        X-Hermes-Council header).
         """
         from run_agent import AIAgent
         from gateway.run import _resolve_runtime_agent_kwargs, _resolve_gateway_model, _load_gateway_config
@@ -488,6 +511,7 @@ class APIServerAdapter(BasePlatformAdapter):
             platform="api_server",
             stream_delta_callback=stream_delta_callback,
             tool_progress_callback=tool_progress_callback,
+            council_enabled=council_enabled,
         )
         return agent
 
@@ -570,6 +594,12 @@ class APIServerAdapter(BasePlatformAdapter):
                 status=400,
             )
 
+        # Per-request Analyst Council override.  When absent, the agent uses
+        # the council.enabled config default.  When "on"/"off", the header
+        # forces council mode for this single request (inside or outside of
+        # a continued session).
+        council_override = _parse_council_header(request.headers.get("X-Hermes-Council", ""))
+
         # Allow caller to continue an existing session by passing X-Hermes-Session-Id.
         # When provided, history is loaded from state.db instead of from the request body.
         provided_session_id = request.headers.get("X-Hermes-Session-Id", "").strip()
@@ -626,6 +656,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 stream_delta_callback=_on_delta,
                 tool_progress_callback=_on_tool_progress,
                 agent_ref=agent_ref,
+                council_enabled=council_override,
             ))
 
             return await self._write_sse_chat_completion(
@@ -640,6 +671,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 conversation_history=history,
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
+                council_enabled=council_override,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
@@ -909,6 +941,9 @@ class APIServerAdapter(BasePlatformAdapter):
         if auth_err:
             return auth_err
 
+        # Per-request Analyst Council override (same header as /v1/chat/completions).
+        council_override = _parse_council_header(request.headers.get("X-Hermes-Council", ""))
+
         # Parse request body
         try:
             body = await request.json()
@@ -995,6 +1030,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 conversation_history=conversation_history,
                 ephemeral_system_prompt=instructions,
                 session_id=session_id,
+                council_enabled=council_override,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
@@ -1586,6 +1622,7 @@ class APIServerAdapter(BasePlatformAdapter):
         stream_delta_callback=None,
         tool_progress_callback=None,
         agent_ref: Optional[list] = None,
+        council_enabled: Optional[bool] = None,
     ) -> tuple:
         """
         Create an agent and run a conversation in a thread executor.
@@ -1597,6 +1634,9 @@ class APIServerAdapter(BasePlatformAdapter):
         at ``agent_ref[0]`` before ``run_conversation`` begins.  This allows
         callers (e.g. the SSE writer) to call ``agent.interrupt()`` from
         another thread to stop in-progress LLM calls.
+
+        ``council_enabled`` overrides the council.enabled config setting when
+        not None (honoring the per-request X-Hermes-Council header).
         """
         loop = asyncio.get_event_loop()
 
@@ -1612,6 +1652,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 session_id=session_id,
                 stream_delta_callback=stream_delta_callback,
                 tool_progress_callback=tool_progress_callback,
+                council_enabled=council_enabled,
             )
             if agent_ref is not None:
                 agent_ref[0] = agent

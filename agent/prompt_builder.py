@@ -189,6 +189,27 @@ KB_WIKI_GUIDANCE = (
     "and 'kb lint' to keep the wiki healthy over time."
 )
 
+# Analyst Council directive — injected when the analyst_council tool is loaded
+# AND the session has council mode enabled.  Mirrors the Swift companion's
+# PromptBuilder.councilDirective (hermes-companion/.../PromptBuilder.swift:199)
+# so the Python stack (CLI, gateway, hermes-webui) enforces the same research
+# integrity discipline as the menu bar app.
+COUNCIL_DIRECTIVE = (
+    "## Council Review: ENABLED\n"
+    "After completing ANY research task (stock analysis, medical research, "
+    "technology evaluation, policy analysis, scientific claims, or any "
+    "substantive research), you MUST call the analyst_council tool with your "
+    "findings before presenting the final answer. Pass the research data as "
+    "the `data` parameter and specify the `domain` ('finance', 'medicine', "
+    "'technology', 'policy', 'science', or 'general'). The council will "
+    "adversarially review your work from multiple expert perspectives and "
+    "produce a consensus report. This is non-negotiable — all research must "
+    "be council-reviewed for quality assurance. The council adds ~5-10 "
+    "seconds but dramatically improves accuracy and catches blind spots. "
+    "DO NOT call the council for trivial queries (weather, time, calculator, "
+    "small-talk)."
+)
+
 TOOL_USE_ENFORCEMENT_GUIDANCE = (
     "# Tool-use enforcement\n"
     "You MUST use your tools to take action — do not describe what you would do "

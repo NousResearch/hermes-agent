@@ -144,6 +144,7 @@ def _discover_tools():
         "tools.file_tools",
         "tools.vision_tools",
         "tools.mixture_of_agents_tool",
+        "tools.analyst_council_tool",
         "tools.image_generation_tool",
         "tools.skills_tool",
         "tools.skill_manager_tool",
@@ -219,6 +220,7 @@ _LEGACY_TOOLSET_MAP = {
     "terminal_tools": ["terminal"],
     "vision_tools": ["vision_analyze"],
     "moa_tools": ["mixture_of_agents"],
+    "council_tools": ["analyst_council"],
     "image_tools": ["image_generate"],
     "skills_tools": ["skills_list", "skill_search", "skill_view", "skill_manage"],
     "browser_tools": [

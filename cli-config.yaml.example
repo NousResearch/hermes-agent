@@ -83,6 +83,39 @@ model:
 #     model: google/gemini-2.5-flash
 
 # =============================================================================
+# Analyst Council (research integrity review)
+# =============================================================================
+# When enabled, the agent's system prompt instructs it to route research work
+# through the analyst_council tool after completing substantive analysis. The
+# council runs 3-5 specialist reviewer personas in parallel (finance/medicine/
+# technology/general), optionally does anonymized peer review, and a chairman
+# LLM synthesizes a consensus report.
+#
+# Mirrors the Swift companion's default-ON behavior so gateway, CLI, and
+# hermes-webui users all get adversarial review on research outputs.
+#
+# Reviewer calls default to the cheap model (smart_model_routing.cheap_model
+# if set, otherwise google/gemini-2.5-flash). Only the chairman uses the
+# stronger synthesis model, keeping cost overhead low (~1.5-2x a single call).
+#
+# council:
+#   enabled: true                    # Master toggle (default: false)
+#   default_depth: quick             # "quick" (3 reviewers) or "full" (5 + peer review)
+#   reviewer_model: null             # null → smart_model_routing.cheap_model
+#   chairman_model: null             # null → FALLBACK_CHAIRMAN_MODEL
+#   skip_for_trivial: true           # bypass for weather/time/calculator
+#   trivial_keywords:
+#     - weather
+#     - time
+#     - calculator
+#     - hello
+#     - thanks
+#
+# Per-request overrides:
+#   - Gateway:  X-Hermes-Council: on|off  (HTTP header)
+#   - CLI:      --council / --no-council
+
+# =============================================================================
 # Git Worktree Isolation
 # =============================================================================
 # When enabled, each CLI session creates an isolated git worktree so multiple

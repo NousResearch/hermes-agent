@@ -79,6 +79,7 @@ from hermes_constants import OPENROUTER_BASE_URL
 from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY, PLATFORM_HINTS,
     MEMORY_GUIDANCE, SESSION_SEARCH_GUIDANCE, SKILLS_GUIDANCE, CONTEXT_GRAPH_GUIDANCE, KB_WIKI_GUIDANCE,
+    COUNCIL_DIRECTIVE,
     build_nous_subscription_prompt,
 )
 from agent.model_metadata import (
@@ -589,6 +590,7 @@ class AIAgent:
         checkpoint_max_snapshots: int = 50,
         pass_session_id: bool = False,
         persist_session: bool = True,
+        council_enabled: Optional[bool] = None,
     ):
         """
         Initialize the AI Agent.
@@ -1094,12 +1096,23 @@ class AIAgent:
             except Exception:
                 pass
         
-        # Load config once for memory, skills, and compression sections
+        # Load config once for memory, skills, compression, and council sections
         try:
             from hermes_cli.config import load_config as _load_agent_config
             _agent_cfg = _load_agent_config()
         except Exception:
             _agent_cfg = {}
+
+        # Analyst Council — resolve per-session toggle.  Precedence:
+        #   1. explicit council_enabled kwarg (gateway header / CLI flag)
+        #   2. council.enabled in hermes-agent config
+        #   3. default False (safe rollout)
+        _council_cfg = _agent_cfg.get("council", {}) if isinstance(_agent_cfg, dict) else {}
+        if council_enabled is not None:
+            self._council_enabled = bool(council_enabled)
+        else:
+            self._council_enabled = bool(_council_cfg.get("enabled", False))
+        self._council_depth = str(_council_cfg.get("default_depth", "quick"))
 
         # Persistent memory (MEMORY.md + USER.md) -- loaded from disk
         self._memory_store = None
@@ -2771,6 +2784,13 @@ class AIAgent:
             tool_guidance.append(CONTEXT_GRAPH_GUIDANCE)
         if "kb" in self.valid_tool_names:
             tool_guidance.append(KB_WIKI_GUIDANCE)
+        # Analyst Council directive — only when the tool is loaded AND council
+        # mode is enabled for this session.  Matches Swift companion behavior.
+        if (
+            "analyst_council" in self.valid_tool_names
+            and getattr(self, "_council_enabled", False)
+        ):
+            tool_guidance.append(COUNCIL_DIRECTIVE)
         if tool_guidance:
             prompt_parts.append(" ".join(tool_guidance))
 

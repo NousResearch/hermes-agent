@@ -651,6 +651,7 @@ def cmd_chat(args):
         "checkpoints": getattr(args, "checkpoints", False),
         "pass_session_id": getattr(args, "pass_session_id", False),
         "max_turns": getattr(args, "max_turns", None),
+        "council": getattr(args, "council", None),
     }
     # Filter out None values
     kwargs = {k: v for k, v in kwargs.items() if v is not None}
@@ -3907,6 +3908,13 @@ For more help on a command:
         "--source",
         default=None,
         help="Session source tag for filtering (default: cli). Use 'tool' for third-party integrations that should not appear in user session lists."
+    )
+    chat_parser.add_argument(
+        "--council",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Enable/disable the Analyst Council adversarial research review for this session. "
+             "Overrides council.enabled from config. Use --council to force on, --no-council to force off."
     )
     chat_parser.set_defaults(func=cmd_chat)
 

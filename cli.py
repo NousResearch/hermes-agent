@@ -1081,6 +1081,7 @@ class HermesCLI:
         resume: str = None,
         checkpoints: bool = False,
         pass_session_id: bool = False,
+        council: Optional[bool] = None,
     ):
         """
         Initialize the Hermes CLI.
@@ -1214,6 +1215,10 @@ class HermesCLI:
         self.checkpoints_enabled = checkpoints or cp_cfg.get("enabled", False)
         self.checkpoint_max_snapshots = cp_cfg.get("max_snapshots", 50)
         self.pass_session_id = pass_session_id
+
+        # Analyst Council — CLI flag (--council/--no-council) overrides config.
+        # None means "defer to council.enabled in config".
+        self.council_override: Optional[bool] = council
         
         # Ephemeral system prompt: env var takes precedence, then config
         self.system_prompt = (
@@ -2231,6 +2236,7 @@ class HermesCLI:
                 checkpoints_enabled=self.checkpoints_enabled,
                 checkpoint_max_snapshots=self.checkpoint_max_snapshots,
                 pass_session_id=self.pass_session_id,
+                council_enabled=self.council_override,
                 tool_progress_callback=self._on_tool_progress,
                 tool_start_callback=self._on_tool_start if self._inline_diffs_enabled else None,
                 tool_complete_callback=self._on_tool_complete if self._inline_diffs_enabled else None,
@@ -8055,6 +8061,7 @@ def main(
     w: bool = False,
     checkpoints: bool = False,
     pass_session_id: bool = False,
+    council: Optional[bool] = None,
 ):
     """
     Hermes Agent CLI - Interactive AI Assistant
@@ -8162,6 +8169,7 @@ def main(
         resume=resume,
         checkpoints=checkpoints,
         pass_session_id=pass_session_id,
+        council=council,
     )
 
     if parsed_skills:

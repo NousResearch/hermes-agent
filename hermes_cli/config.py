@@ -6494,6 +6494,11 @@ def load_env() -> Dict[str, str]:
         for line in lines:
             line = line.strip()
             if line and not line.startswith('#') and '=' in line:
+                # Strip the bash-compatible ``export `` prefix so lines like
+                # ``export API_KEY=...`` parse as ``API_KEY`` rather than being
+                # stored under the wrong key ``"export API_KEY"`` (#6659).
+                if line.startswith('export '):
+                    line = line[7:]
                 key, _, value = line.partition('=')
                 env_vars[key.strip()] = _parse_env_value(value)
 

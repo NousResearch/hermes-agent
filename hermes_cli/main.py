@@ -828,6 +828,8 @@ def _has_any_provider_configured() -> bool:
                 line = line.strip()
                 if line.startswith("#") or "=" not in line:
                     continue
+                if line.startswith("export "):
+                    line = line[7:]
                 key, _, val = line.partition("=")
                 val = val.strip().strip("'\"")
                 if key.strip() in provider_env_vars and val:

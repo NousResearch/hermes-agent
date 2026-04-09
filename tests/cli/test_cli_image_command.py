@@ -5,6 +5,7 @@ from cli import (
     HermesCLI,
     _collect_query_images,
     _format_image_attachment_badges,
+    _termux_example_image_path,
 )
 
 
@@ -78,6 +79,16 @@ class TestCollectQueryImages:
 
         assert message == "describe this"
         assert images == [img]
+
+
+class TestTermuxImageHints:
+    def test_termux_example_image_path_prefers_real_shared_storage_root(self, monkeypatch):
+        existing = {"/sdcard", "/storage/emulated/0"}
+        monkeypatch.setattr("cli.os.path.isdir", lambda path: path in existing)
+
+        hint = _termux_example_image_path()
+
+        assert hint == "/sdcard/Pictures/cat.png"
 
 
 class TestImageBadgeFormatting:

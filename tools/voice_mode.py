@@ -48,6 +48,17 @@ def _audio_available() -> bool:
         return False
 
 
+def _is_termux_environment() -> bool:
+    prefix = os.getenv("PREFIX", "")
+    return bool(os.getenv("TERMUX_VERSION") or "com.termux/files/usr" in prefix)
+
+
+def _voice_capture_install_hint() -> str:
+    if _is_termux_environment():
+        return "pkg install python-numpy portaudio && python -m pip install sounddevice"
+    return "pip install sounddevice numpy"
+
+
 def detect_audio_environment() -> dict:
     """Detect if the current environment supports audio I/O.
 
@@ -98,14 +109,21 @@ def detect_audio_environment() -> dict:
             else:
                 warnings.append("Audio subsystem error (PortAudio cannot query devices)")
     except ImportError:
-        warnings.append("Audio libraries not installed (pip install sounddevice numpy)")
+        warnings.append(f"Audio libraries not installed ({_voice_capture_install_hint()})")
     except OSError:
-        warnings.append(
-            "PortAudio system library not found -- install it first:\n"
-            "  Linux:  sudo apt-get install libportaudio2\n"
-            "  macOS:  brew install portaudio\n"
-            "Then retry /voice on."
-        )
+        if _is_termux_environment():
+            warnings.append(
+                "PortAudio system library not found -- install it first:\n"
+                "  Termux: pkg install portaudio\n"
+                "Then retry /voice on."
+            )
+        else:
+            warnings.append(
+                "PortAudio system library not found -- install it first:\n"
+                "  Linux:  sudo apt-get install libportaudio2\n"
+                "  macOS:  brew install portaudio\n"
+                "Then retry /voice on."
+            )
 
     return {
         "available": not warnings,
@@ -748,7 +766,7 @@ def check_voice_requirements() -> Dict[str, Any]:
     if has_audio:
         details_parts.append("Audio capture: OK")
     else:
-        details_parts.append("Audio capture: MISSING (pip install sounddevice numpy)")
+        details_parts.append(f"Audio capture: MISSING ({_voice_capture_install_hint()})")
 
     if not stt_enabled:
         details_parts.append("STT provider: DISABLED in config (stt.enabled: false)")

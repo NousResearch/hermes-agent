@@ -596,7 +596,7 @@ def run_doctor(args):
         else:
             if _is_termux():
                 check_info("agent-browser is not installed (expected in the tested Termux path)")
-                check_info("Install it manually later with: npm install")
+                check_info("Install it manually later with: npm install -g agent-browser && agent-browser install")
             else:
                 check_warn("agent-browser not installed", "(run: npm install)")
     else:

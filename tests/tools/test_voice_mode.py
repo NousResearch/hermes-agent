@@ -183,6 +183,21 @@ class TestDetectAudioEnvironment:
         assert result["available"] is False
         assert any("PortAudio" in w for w in result["warnings"])
 
+    def test_termux_import_error_shows_termux_install_guidance(self, monkeypatch):
+        monkeypatch.setenv("TERMUX_VERSION", "0.118.3")
+        monkeypatch.setenv("PREFIX", "/data/data/com.termux/files/usr")
+        monkeypatch.delenv("SSH_CLIENT", raising=False)
+        monkeypatch.delenv("SSH_TTY", raising=False)
+        monkeypatch.delenv("SSH_CONNECTION", raising=False)
+        monkeypatch.setattr("tools.voice_mode._import_audio", lambda: (_ for _ in ()).throw(ImportError("no audio libs")))
+
+        from tools.voice_mode import detect_audio_environment
+        result = detect_audio_environment()
+
+        assert result["available"] is False
+        assert any("pkg install python-numpy portaudio" in w for w in result["warnings"])
+        assert any("python -m pip install sounddevice" in w for w in result["warnings"])
+
 
 # ============================================================================
 # check_voice_requirements

@@ -107,6 +107,7 @@ const sidebars: SidebarsConfig = {
         'user-guide/messaging/dingtalk',
         'user-guide/messaging/feishu',
         'user-guide/messaging/wecom',
+        'user-guide/messaging/bluebubbles',
         'user-guide/messaging/open-webui',
         'user-guide/messaging/webhooks',
       ],

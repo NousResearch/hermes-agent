@@ -184,6 +184,8 @@ if _config_path.exists():
             # Env var from .env takes precedence (already in os.environ).
             if "gateway_timeout" in _agent_cfg and "HERMES_AGENT_TIMEOUT" not in os.environ:
                 os.environ["HERMES_AGENT_TIMEOUT"] = str(_agent_cfg["gateway_timeout"])
+            if "gateway_timeout_warning" in _agent_cfg and "HERMES_AGENT_TIMEOUT_WARNING" not in os.environ:
+                os.environ["HERMES_AGENT_TIMEOUT_WARNING"] = str(_agent_cfg["gateway_timeout_warning"])
         # Timezone: bridge config.yaml → HERMES_TIMEZONE env var.
         # HERMES_TIMEZONE from .env takes precedence (already in os.environ).
         _tz_cfg = _cfg.get("timezone", "")
@@ -1073,6 +1075,7 @@ class GatewayRunner:
                        "MATRIX_ALLOWED_USERS", "DINGTALK_ALLOWED_USERS",
                        "FEISHU_ALLOWED_USERS",
                        "WECOM_ALLOWED_USERS",
+                       "BLUEBUBBLES_ALLOWED_USERS",
                        "GATEWAY_ALLOWED_USERS")
         )
         _allow_all = os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in ("true", "1", "yes") or any(
@@ -1083,7 +1086,8 @@ class GatewayRunner:
                        "SMS_ALLOW_ALL_USERS", "MATTERMOST_ALLOW_ALL_USERS",
                        "MATRIX_ALLOW_ALL_USERS", "DINGTALK_ALLOW_ALL_USERS",
                        "FEISHU_ALLOW_ALL_USERS",
-                       "WECOM_ALLOW_ALL_USERS")
+                       "WECOM_ALLOW_ALL_USERS",
+                       "BLUEBUBBLES_ALLOW_ALL_USERS")
         )
         if not _any_allowlist and not _allow_all:
             logger.warning(
@@ -1654,6 +1658,13 @@ class GatewayRunner:
             adapter.gateway_runner = self  # For cross-platform delivery
             return adapter
 
+        elif platform == Platform.BLUEBUBBLES:
+            from gateway.platforms.bluebubbles import BlueBubblesAdapter, check_bluebubbles_requirements
+            if not check_bluebubbles_requirements():
+                logger.warning("BlueBubbles: aiohttp/httpx missing or BLUEBUBBLES_SERVER_URL/BLUEBUBBLES_PASSWORD not configured")
+                return None
+            return BlueBubblesAdapter(config)
+
         return None
     
     def _is_user_authorized(self, source: SessionSource) -> bool:
@@ -1692,6 +1703,7 @@ class GatewayRunner:
             Platform.DINGTALK: "DINGTALK_ALLOWED_USERS",
             Platform.FEISHU: "FEISHU_ALLOWED_USERS",
             Platform.WECOM: "WECOM_ALLOWED_USERS",
+            Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOWED_USERS",
         }
         platform_allow_all_map = {
             Platform.TELEGRAM: "TELEGRAM_ALLOW_ALL_USERS",
@@ -1706,6 +1718,7 @@ class GatewayRunner:
             Platform.DINGTALK: "DINGTALK_ALLOW_ALL_USERS",
             Platform.FEISHU: "FEISHU_ALLOW_ALL_USERS",
             Platform.WECOM: "WECOM_ALLOW_ALL_USERS",
+            Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOW_ALL_USERS",
         }
 
         # Per-platform allow-all flag (e.g., DISCORD_ALLOW_ALL_USERS=true)
@@ -1779,8 +1792,11 @@ class GatewayRunner:
         """
         source = event.source
 
-        # Check if user is authorized
-        if not self._is_user_authorized(source):
+        # Internal events (e.g. background-process completion notifications)
+        # are system-generated and must skip user authorization.
+        if getattr(event, "internal", False):
+            pass
+        elif not self._is_user_authorized(source):
             logger.warning("Unauthorized user: %s (%s) on %s", source.user_id, source.user_name, source.platform.value)
             # In DMs: offer pairing code. In groups: silently ignore.
             if source.chat_type == "dm" and self._get_unauthorized_dm_behavior(source.platform) == "pair":
@@ -5264,19 +5280,28 @@ class GatewayRunner:
 
         agent = self._running_agents.get(session_key)
         if agent and hasattr(agent, "session_total_tokens") and agent.session_api_calls > 0:
-            lines = [
-                "📊 **Session Token Usage**",
-                f"Prompt (input): {agent.session_prompt_tokens:,}",
-                f"Completion (output): {agent.session_completion_tokens:,}",
-                f"Total: {agent.session_total_tokens:,}",
-                f"API calls: {agent.session_api_calls}",
-            ]
+            lines = []
+
+            # Rate limits first (when available from provider headers)
+            rl_state = agent.get_rate_limit_state()
+            if rl_state and rl_state.has_data:
+                from agent.rate_limit_tracker import format_rate_limit_compact
+                lines.append(f"⏱️ **Rate Limits:** {format_rate_limit_compact(rl_state)}")
+                lines.append("")
+
+            # Session token usage
+            lines.append("📊 **Session Token Usage**")
+            lines.append(f"Prompt (input): {agent.session_prompt_tokens:,}")
+            lines.append(f"Completion (output): {agent.session_completion_tokens:,}")
+            lines.append(f"Total: {agent.session_total_tokens:,}")
+            lines.append(f"API calls: {agent.session_api_calls}")
             ctx = agent.context_compressor
             if ctx.last_prompt_tokens:
                 pct = min(100, ctx.last_prompt_tokens / ctx.context_length * 100) if ctx.context_length else 0
                 lines.append(f"Context: {ctx.last_prompt_tokens:,} / {ctx.context_length:,} ({pct:.0f}%)")
             if ctx.compression_count:
                 lines.append(f"Compressions: {ctx.compression_count}")
+
             return "\n".join(lines)
 
         # No running agent -- check session history for a rough count
@@ -5518,7 +5543,7 @@ class GatewayRunner:
         Platform.TELEGRAM, Platform.DISCORD, Platform.SLACK, Platform.WHATSAPP,
         Platform.SIGNAL, Platform.MATTERMOST, Platform.MATRIX,
         Platform.HOMEASSISTANT, Platform.EMAIL, Platform.SMS, Platform.DINGTALK,
-        Platform.FEISHU, Platform.WECOM, Platform.LOCAL,
+        Platform.FEISHU, Platform.WECOM, Platform.BLUEBUBBLES, Platform.LOCAL,
     })
 
     async def _handle_update_command(self, event: MessageEvent) -> str:
@@ -6158,6 +6183,7 @@ class GatewayRunner:
                                 text=synth_text,
                                 message_type=MessageType.TEXT,
                                 source=_source,
+                                internal=True,
                             )
                             logger.info(
                                 "Process %s finished — injecting agent notification for session %s",
@@ -6308,7 +6334,15 @@ class GatewayRunner:
         # Falls back to env vars for backward compatibility.
         # YAML 1.1 parses bare `off` as boolean False — normalise before
         # the `or` chain so it doesn't silently fall through to "all".
-        _raw_tp = user_config.get("display", {}).get("tool_progress")
+        #
+        # Per-platform overrides (display.tool_progress_overrides) take
+        # priority over the global setting — e.g. Signal users can set
+        # tool_progress to "off" while keeping Telegram on "all".
+        _display_cfg = user_config.get("display", {})
+        _overrides = _display_cfg.get("tool_progress_overrides", {})
+        _raw_tp = _overrides.get(platform_key)
+        if _raw_tp is None:
+            _raw_tp = _display_cfg.get("tool_progress")
         if _raw_tp is False:
             _raw_tp = "off"
         progress_mode = (
@@ -6410,6 +6444,18 @@ class GatewayRunner:
 
             adapter = self.adapters.get(source.platform)
             if not adapter:
+                return
+
+            # Skip tool progress for platforms that don't support message
+            # editing (e.g. iMessage/BlueBubbles) — each progress update
+            # would become a separate message bubble, which is noisy.
+            from gateway.platforms.base import BasePlatformAdapter as _BaseAdapter
+            if type(adapter).edit_message is _BaseAdapter.edit_message:
+                while not progress_queue.empty():
+                    try:
+                        progress_queue.get_nowait()
+                    except Exception:
+                        break
                 return
 
             progress_lines = []      # Accumulated tool lines
@@ -7106,6 +7152,9 @@ class GatewayRunner:
             # Default 1800s (30 min inactivity).  0 = unlimited.
             _agent_timeout_raw = float(os.getenv("HERMES_AGENT_TIMEOUT", 1800))
             _agent_timeout = _agent_timeout_raw if _agent_timeout_raw > 0 else None
+            _agent_warning_raw = float(os.getenv("HERMES_AGENT_TIMEOUT_WARNING", 900))
+            _agent_warning = _agent_warning_raw if _agent_warning_raw > 0 else None
+            _warning_fired = False
             loop = asyncio.get_event_loop()
             _executor_task = asyncio.ensure_future(
                 loop.run_in_executor(None, run_sync)
@@ -7138,6 +7187,25 @@ class GatewayRunner:
                             _idle_secs = _act.get("seconds_since_activity", 0.0)
                         except Exception:
                             pass
+                    # Staged warning: fire once before escalating to full timeout.
+                    if (not _warning_fired and _agent_warning is not None
+                            and _idle_secs >= _agent_warning):
+                        _warning_fired = True
+                        _warn_adapter = self.adapters.get(source.platform)
+                        if _warn_adapter:
+                            _elapsed_warn = int(_agent_warning // 60) or 1
+                            _remaining_mins = int((_agent_timeout - _agent_warning) // 60) or 1
+                            try:
+                                await _warn_adapter.send(
+                                    source.chat_id,
+                                    f"⚠️ No activity for {_elapsed_warn} min. "
+                                    f"If the agent does not respond soon, it will "
+                                    f"be timed out in {_remaining_mins} min. "
+                                    f"You can continue waiting or use /reset.",
+                                    metadata=_status_thread_metadata,
+                                )
+                            except Exception as _warn_err:
+                                logger.debug("Inactivity warning send error: %s", _warn_err)
                     if _idle_secs >= _agent_timeout:
                         _inactivity_timeout = True
                         break

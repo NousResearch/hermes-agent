@@ -1,0 +1,5 @@
+name: compress-summary
+version: 1.0.0
+description: "Injects a structured task-state summary before context compression to preserve task continuity."
+hooks:
+  - pre_compress

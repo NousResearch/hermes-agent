@@ -596,6 +596,9 @@ def _classify_400(
         err_obj = body.get("error", {})
         if isinstance(err_obj, dict):
             err_body_msg = (err_obj.get("message") or "").strip().lower()
+        # Responses API (and some providers) use flat body: {"message": "..."}
+        if not err_body_msg:
+            err_body_msg = (body.get("message") or "").strip().lower()
     is_generic = len(err_body_msg) < 30 or err_body_msg in ("error", "")
     is_large = approx_tokens > context_length * 0.4 or approx_tokens > 80000 or num_messages > 80
 

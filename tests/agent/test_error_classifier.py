@@ -507,6 +507,38 @@ class TestClassifyApiError:
         assert result.reason == FailoverReason.format_error
         assert result.retryable is False
 
+    def test_400_flat_body_descriptive_not_context_overflow(self):
+        """Responses API flat body with descriptive error + large session → format error.
+
+        The Codex Responses API returns errors in flat body format:
+        {"message": "...", "type": "..."} without an "error" wrapper.
+        A descriptive 400 must NOT be misclassified as context overflow
+        just because the session is large.
+        """
+        e = MockAPIError(
+            "Invalid 'input[index].name': string does not match pattern.",
+            status_code=400,
+            body={"message": "Invalid 'input[index].name': string does not match pattern.",
+                  "type": "invalid_request_error"},
+        )
+        result = classify_api_error(e, approx_tokens=200000, context_length=400000, num_messages=500)
+        assert result.reason == FailoverReason.format_error
+        assert result.retryable is False
+
+    def test_400_flat_body_generic_large_session_still_context_overflow(self):
+        """Flat body with generic 'Error' message + large session → context overflow.
+
+        Regression: the flat-body fallback must not break the existing heuristic
+        for genuinely generic errors from providers that use flat bodies.
+        """
+        e = MockAPIError(
+            "Error",
+            status_code=400,
+            body={"message": "Error"},
+        )
+        result = classify_api_error(e, approx_tokens=100000, context_length=200000)
+        assert result.reason == FailoverReason.context_overflow
+
     # ── Peer closed + large session ──
 
     def test_peer_closed_large_session(self):

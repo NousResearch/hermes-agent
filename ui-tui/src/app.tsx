@@ -229,15 +229,18 @@ export function App({ gw }: { gw: GatewayClient }) {
   const [cols, setCols] = useState(stdout?.columns ?? 80)
 
   useEffect(() => {
-    if (!stdout) {
-      return
-    }
+    if (!stdout) {return}
 
     const sync = () => setCols(stdout.columns ?? 80)
     stdout.on('resize', sync)
 
+    // Enable bracketed paste so image-only clipboard paste reaches the app
+    if (stdout.isTTY) {stdout.write('\x1b[?2004h')}
+
     return () => {
       stdout.off('resize', sync)
+
+      if (stdout.isTTY) {stdout.write('\x1b[?2004l')}
     }
   }, [stdout])
 
@@ -499,12 +502,28 @@ export function App({ gw }: { gw: GatewayClient }) {
     [pastes]
   )
 
+  const paste = useCallback(
+    (quiet = false) =>
+      rpc('clipboard.paste', { session_id: sid }).then((r: any) =>
+        r?.attached
+          ? sys(`📎 Image #${r.count} attached from clipboard`)
+          : quiet || sys(r?.message || 'No image found in clipboard')
+      ),
+    [rpc, sid, sys]
+  )
+
   const handleTextPaste = useCallback(
-    ({ cursor, text, value }: { cursor: number; text: string; value: string }) => {
+    ({ bracketed, cursor, hotkey, text, value }: import('./components/textInput.js').PasteEvent) => {
+      if (hotkey) { void paste(false);
+
+ return null }
+
+      if (bracketed) {void paste(true)}
+
+      if (!text) {return null}
+
       const lineCount = text.split('\n').length
 
-      // Inline normal paste payloads exactly as typed. Only very large
-      // payloads are tokenized into attached snippets.
       if (text.length < LARGE_PASTE.chars && lineCount < LARGE_PASTE.lines) {
         return { cursor: cursor + text.length, value: value.slice(0, cursor) + text + value.slice(cursor) }
       }
@@ -536,7 +555,7 @@ export function App({ gw }: { gw: GatewayClient }) {
 
       return { cursor: cursor + insert.length, value: value.slice(0, cursor) + insert + value.slice(cursor) }
     },
-    [pushActivity]
+    [paste, pushActivity]
   )
 
   // ── Send ─────────────────────────────────────────────────────────
@@ -598,11 +617,6 @@ export function App({ gw }: { gw: GatewayClient }) {
         setBusy(false)
       })
   }
-
-  const paste = () =>
-    rpc('clipboard.paste', { session_id: sid }).then((r: any) =>
-      pushActivity(r.attached ? `image #${r.count} attached` : r.message || 'no image in clipboard')
-    )
 
   const openEditor = () => {
     const editor = process.env.EDITOR || process.env.VISUAL || 'vi'
@@ -756,37 +770,23 @@ export function App({ gw }: { gw: GatewayClient }) {
 
   // ── Input handling ───────────────────────────────────────────────
 
+  const ctrl = (key: { ctrl: boolean }, ch: string, target: string) =>
+    key.ctrl && ch.toLowerCase() === target
+
   useInput((ch, key) => {
     if (isBlocked) {
       if (pasteReview) {
-        if (key.return) {
-          const t = pasteReview.text
-          setPasteReview(null)
-          dispatchSubmission(t, true)
-        } else if (key.escape || (key.ctrl && ch === 'c')) {
-          setPasteReview(null)
-          setStatus('ready')
-        }
+        if (key.return) { setPasteReview(null); dispatchSubmission(pasteReview.text, true) }
+        else if (key.escape || ctrl(key, ch, 'c')) { setPasteReview(null); setStatus('ready') }
 
         return
       }
 
-      if (key.ctrl && ch === 'c') {
-        if (approval) {
-          gw.request('approval.respond', { choice: 'deny', session_id: sid }).catch(() => {})
-          setApproval(null)
-          sys('denied')
-        } else if (sudo) {
-          gw.request('sudo.respond', { request_id: sudo.requestId, password: '' }).catch(() => {})
-          setSudo(null)
-          sys('sudo cancelled')
-        } else if (secret) {
-          gw.request('secret.respond', { request_id: secret.requestId, value: '' }).catch(() => {})
-          setSecret(null)
-          sys('secret entry cancelled')
-        } else if (picker) {
-          setPicker(false)
-        }
+      if (ctrl(key, ch, 'c')) {
+        if (approval) { gw.request('approval.respond', { choice: 'deny', session_id: sid }).catch(() => {}); setApproval(null); sys('denied') }
+        else if (sudo) { gw.request('sudo.respond', { request_id: sudo.requestId, password: '' }).catch(() => {}); setSudo(null); sys('sudo cancelled') }
+        else if (secret) { gw.request('secret.respond', { request_id: secret.requestId, value: '' }).catch(() => {}); setSecret(null); sys('secret entry cancelled') }
+        else if (picker) {setPicker(false)}
       } else if (key.escape && picker) {
         setPicker(false)
       }
@@ -803,9 +803,7 @@ export function App({ gw }: { gw: GatewayClient }) {
     if (!inputBuf.length && key.tab && completions.length) {
       const row = completions[compIdx]
 
-      if (row) {
-        setInput(input.slice(0, compReplace) + row.text)
-      }
+      if (row) {setInput(input.slice(0, compReplace) + row.text)}
 
       return
     }
@@ -813,19 +811,12 @@ export function App({ gw }: { gw: GatewayClient }) {
     if (key.upArrow && !inputBuf.length) {
       if (queueRef.current.length) {
         const idx = queueEditIdx === null ? 0 : (queueEditIdx + 1) % queueRef.current.length
-        setQueueEdit(idx)
-        setHistoryIdx(null)
-        setInput(queueRef.current[idx] ?? '')
+        setQueueEdit(idx); setHistoryIdx(null); setInput(queueRef.current[idx] ?? '')
       } else if (historyRef.current.length) {
         const idx = historyIdx === null ? historyRef.current.length - 1 : Math.max(0, historyIdx - 1)
 
-        if (historyIdx === null) {
-          historyDraftRef.current = input
-        }
-
-        setHistoryIdx(idx)
-        setQueueEdit(null)
-        setInput(historyRef.current[idx] ?? '')
+        if (historyIdx === null) {historyDraftRef.current = input}
+        setHistoryIdx(idx); setQueueEdit(null); setInput(historyRef.current[idx] ?? '')
       }
 
       return
@@ -833,55 +824,32 @@ export function App({ gw }: { gw: GatewayClient }) {
 
     if (key.downArrow && !inputBuf.length) {
       if (queueRef.current.length) {
-        const idx =
-          queueEditIdx === null
-            ? queueRef.current.length - 1
-            : (queueEditIdx - 1 + queueRef.current.length) % queueRef.current.length
+        const idx = queueEditIdx === null
+          ? queueRef.current.length - 1
+          : (queueEditIdx - 1 + queueRef.current.length) % queueRef.current.length
 
-        setQueueEdit(idx)
-        setHistoryIdx(null)
-        setInput(queueRef.current[idx] ?? '')
+        setQueueEdit(idx); setHistoryIdx(null); setInput(queueRef.current[idx] ?? '')
       } else if (historyIdx !== null) {
         const next = historyIdx + 1
 
-        if (next >= historyRef.current.length) {
-          setHistoryIdx(null)
-          setInput(historyDraftRef.current)
-        } else {
-          setHistoryIdx(next)
-          setInput(historyRef.current[next] ?? '')
-        }
+        if (next >= historyRef.current.length) { setHistoryIdx(null); setInput(historyDraftRef.current) }
+        else { setHistoryIdx(next); setInput(historyRef.current[next] ?? '') }
       }
 
       return
     }
 
-    if (key.ctrl && ch === 'c') {
+    if (ctrl(key, ch, 'c')) {
       if (busy && sid) {
         interruptedRef.current = true
         gw.request('session.interrupt', { session_id: sid }).catch(() => {})
         const partial = (streaming || buf.current).trimStart()
+        partial ? appendMessage({ role: 'assistant', text: partial + '\n\n*[interrupted]*' }) : sys('interrupted')
 
-        if (partial) {
-          appendMessage({ role: 'assistant', text: partial + '\n\n*[interrupted]*' })
-        } else {
-          sys('interrupted')
-        }
+        idle(); setReasoning(''); setActivity([]); turnToolsRef.current = []; setStatus('interrupted')
 
-        idle()
-        setReasoning('')
-        setActivity([])
-        turnToolsRef.current = []
-        setStatus('interrupted')
-
-        if (statusTimerRef.current) {
-          clearTimeout(statusTimerRef.current)
-        }
-
-        statusTimerRef.current = setTimeout(() => {
-          statusTimerRef.current = null
-          setStatus('ready')
-        }, 1500)
+        if (statusTimerRef.current) {clearTimeout(statusTimerRef.current)}
+        statusTimerRef.current = setTimeout(() => { statusTimerRef.current = null; setStatus('ready') }, 1500)
       } else if (input || inputBuf.length) {
         clearIn()
       } else {
@@ -891,26 +859,13 @@ export function App({ gw }: { gw: GatewayClient }) {
       return
     }
 
-    if (key.ctrl && ch === 'd') {
-      die()
-    }
+    if (ctrl(key, ch, 'd')) {return die()}
 
-    if (key.ctrl && ch === 'l') {
-      setStatus('forging session…')
-      newSession()
+    if (ctrl(key, ch, 'l')) { setStatus('forging session…'); newSession();
 
-      return
-    }
+ return }
 
-    if (key.ctrl && ch === 'v') {
-      paste()
-
-      return
-    }
-
-    if (key.ctrl && ch === 'g') {
-      return openEditor()
-    }
+    if (ctrl(key, ch, 'g')) {return openEditor()}
   })
 
   // ── Gateway events ───────────────────────────────────────────────

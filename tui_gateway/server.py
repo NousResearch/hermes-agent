@@ -691,16 +691,15 @@ def _(rid, params: dict) -> dict:
     except Exception as e:
         return _err(rid, 5027, f"clipboard unavailable: {e}")
 
-    if not has_clipboard_image():
-        return _ok(rid, {"attached": False, "message": "No image found in clipboard"})
-
+    session["image_counter"] = session.get("image_counter", 0) + 1
     img_dir = _hermes_home / "images"
     img_dir.mkdir(parents=True, exist_ok=True)
-    session["image_counter"] = session.get("image_counter", 0) + 1
     img_path = img_dir / f"clip_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{session['image_counter']}.png"
 
+    # Save-first: mirrors CLI keybinding path; more robust than has_image() precheck
     if not save_clipboard_image(img_path):
-        return _ok(rid, {"attached": False, "message": "Clipboard has image but extraction failed"})
+        msg = "Clipboard has image but extraction failed" if has_clipboard_image() else "No image found in clipboard"
+        return _ok(rid, {"attached": False, "message": msg})
 
     session.setdefault("attached_images", []).append(str(img_path))
     return _ok(rid, {"attached": True, "path": str(img_path), "count": len(session["attached_images"])})

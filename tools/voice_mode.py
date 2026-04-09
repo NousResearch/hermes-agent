@@ -59,6 +59,22 @@ def _voice_capture_install_hint() -> str:
     return "pip install sounddevice numpy"
 
 
+def _termux_microphone_command() -> Optional[str]:
+    if not _is_termux_environment():
+        return None
+    return shutil.which("termux-microphone-record")
+
+
+def _termux_media_player_command() -> Optional[str]:
+    if not _is_termux_environment():
+        return None
+    return shutil.which("termux-media-player")
+
+
+def _termux_voice_capture_available() -> bool:
+    return _termux_microphone_command() is not None
+
+
 def detect_audio_environment() -> dict:
     """Detect if the current environment supports audio I/O.
 
@@ -68,6 +84,7 @@ def detect_audio_environment() -> dict:
     """
     warnings = []   # hard-fail: these block voice mode
     notices = []     # informational: logged but don't block
+    termux_capture = _termux_voice_capture_available()
 
     # SSH detection
     if any(os.environ.get(v) for v in ('SSH_CLIENT', 'SSH_TTY', 'SSH_CONNECTION')):
@@ -100,18 +117,28 @@ def detect_audio_environment() -> dict:
         try:
             devices = sd.query_devices()
             if not devices:
-                warnings.append("No audio input/output devices detected")
+                if termux_capture:
+                    notices.append("No PortAudio devices detected, but Termux:API microphone capture is available")
+                else:
+                    warnings.append("No audio input/output devices detected")
         except Exception:
             # In WSL with PulseAudio, device queries can fail even though
             # recording/playback works fine. Don't block if PULSE_SERVER is set.
             if os.environ.get('PULSE_SERVER'):
                 notices.append("Audio device query failed but PULSE_SERVER is set -- continuing")
+            elif termux_capture:
+                notices.append("PortAudio device query failed, but Termux:API microphone capture is available")
             else:
                 warnings.append("Audio subsystem error (PortAudio cannot query devices)")
     except ImportError:
-        warnings.append(f"Audio libraries not installed ({_voice_capture_install_hint()})")
+        if termux_capture:
+            notices.append("Termux:API microphone recording available (sounddevice not required)")
+        else:
+            warnings.append(f"Audio libraries not installed ({_voice_capture_install_hint()})")
     except OSError:
-        if _is_termux_environment():
+        if termux_capture:
+            notices.append("Termux:API microphone recording available (PortAudio not required)")
+        elif _is_termux_environment():
             warnings.append(
                 "PortAudio system library not found -- install it first:\n"
                 "  Termux: pkg install portaudio\n"
@@ -193,6 +220,129 @@ def play_beep(frequency: int = 880, duration: float = 0.12, count: int = 1) -> N
 
 
 # ============================================================================
+# Termux Audio Recorder
+# ============================================================================
+class TermuxAudioRecorder:
+    """Recorder backend that uses Termux:API microphone capture commands."""
+
+    supports_silence_autostop = False
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._recording = False
+        self._start_time = 0.0
+        self._recording_path: Optional[str] = None
+        self._current_rms = 0
+
+    @property
+    def is_recording(self) -> bool:
+        return self._recording
+
+    @property
+    def elapsed_seconds(self) -> float:
+        if not self._recording:
+            return 0.0
+        return time.monotonic() - self._start_time
+
+    @property
+    def current_rms(self) -> int:
+        return self._current_rms
+
+    def start(self, on_silence_stop=None) -> None:
+        del on_silence_stop  # Termux:API does not expose live silence callbacks.
+        mic_cmd = _termux_microphone_command()
+        if not mic_cmd:
+            raise RuntimeError(
+                "Termux voice capture requires the termux-api package and app.\n"
+                "Install with: pkg install termux-api\n"
+                "Then install/update the Termux:API Android app."
+            )
+
+        with self._lock:
+            if self._recording:
+                return
+            os.makedirs(_TEMP_DIR, exist_ok=True)
+            timestamp = time.strftime("%Y%m%d_%H%M%S")
+            self._recording_path = os.path.join(_TEMP_DIR, f"recording_{timestamp}.aac")
+
+        command = [
+            mic_cmd,
+            "-f", self._recording_path,
+            "-l", "0",
+            "-e", "aac",
+            "-r", str(SAMPLE_RATE),
+            "-c", str(CHANNELS),
+        ]
+        try:
+            subprocess.run(command, capture_output=True, text=True, timeout=15, check=True)
+        except subprocess.CalledProcessError as e:
+            details = (e.stderr or e.stdout or str(e)).strip()
+            raise RuntimeError(f"Termux microphone start failed: {details}") from e
+        except Exception as e:
+            raise RuntimeError(f"Termux microphone start failed: {e}") from e
+
+        with self._lock:
+            self._start_time = time.monotonic()
+            self._recording = True
+            self._current_rms = 0
+        logger.info("Termux voice recording started")
+
+    def _stop_termux_recording(self) -> None:
+        mic_cmd = _termux_microphone_command()
+        if not mic_cmd:
+            return
+        subprocess.run([mic_cmd, "-q"], capture_output=True, text=True, timeout=15, check=False)
+
+    def stop(self) -> Optional[str]:
+        with self._lock:
+            if not self._recording:
+                return None
+            self._recording = False
+            path = self._recording_path
+            self._recording_path = None
+            started_at = self._start_time
+            self._current_rms = 0
+
+        self._stop_termux_recording()
+        if not path or not os.path.isfile(path):
+            return None
+        if time.monotonic() - started_at < 0.3:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+            return None
+        if os.path.getsize(path) <= 0:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+            return None
+        logger.info("Termux voice recording stopped: %s", path)
+        return path
+
+    def cancel(self) -> None:
+        with self._lock:
+            path = self._recording_path
+            self._recording = False
+            self._recording_path = None
+            self._current_rms = 0
+        try:
+            self._stop_termux_recording()
+        except Exception:
+            pass
+        if path and os.path.isfile(path):
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+        logger.info("Termux voice recording cancelled")
+
+    def shutdown(self) -> None:
+        self.cancel()
+
+
+# ============================================================================
 # AudioRecorder
 # ============================================================================
 class AudioRecorder:
@@ -210,6 +360,8 @@ class AudioRecorder:
     If ``on_silence_stop`` is provided, recording automatically stops when
     the user is silent for ``silence_duration`` seconds and calls the callback.
     """
+
+    supports_silence_autostop = True
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -544,6 +696,13 @@ class AudioRecorder:
         return wav_path
 
 
+def create_audio_recorder() -> AudioRecorder | TermuxAudioRecorder:
+    """Return the best recorder backend for the current environment."""
+    if _termux_voice_capture_available():
+        return TermuxAudioRecorder()
+    return AudioRecorder()
+
+
 # ============================================================================
 # Whisper hallucination filter
 # ============================================================================
@@ -752,7 +911,8 @@ def check_voice_requirements() -> Dict[str, Any]:
     stt_available = stt_enabled and stt_provider != "none"
 
     missing: List[str] = []
-    has_audio = _audio_available()
+    termux_capture = _termux_voice_capture_available()
+    has_audio = _audio_available() or termux_capture
 
     if not has_audio:
         missing.extend(["sounddevice", "numpy"])
@@ -763,7 +923,9 @@ def check_voice_requirements() -> Dict[str, Any]:
     available = has_audio and stt_available and env_check["available"]
     details_parts = []
 
-    if has_audio:
+    if termux_capture:
+        details_parts.append("Audio capture: OK (Termux:API microphone)")
+    elif has_audio:
         details_parts.append("Audio capture: OK")
     else:
         details_parts.append(f"Audio capture: MISSING ({_voice_capture_install_hint()})")

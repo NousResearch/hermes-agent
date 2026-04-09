@@ -161,6 +161,20 @@ class TestBrowserRequirements:
         assert check_browser_requirements() is False
 
 
+class TestRunBrowserCommandTermuxFallback:
+    def test_termux_local_mode_rejects_bare_npx_fallback(self, monkeypatch):
+        monkeypatch.setenv("TERMUX_VERSION", "0.118.3")
+        monkeypatch.setenv("PREFIX", "/data/data/com.termux/files/usr")
+        monkeypatch.setattr("tools.browser_tool._find_agent_browser", lambda: "npx agent-browser")
+        monkeypatch.setattr("tools.browser_tool._get_cloud_provider", lambda: None)
+
+        result = _run_browser_command("task-1", "navigate", ["https://example.com"])
+
+        assert result["success"] is False
+        assert "bare npx fallback" in result["error"]
+        assert "agent-browser install" in result["error"]
+
+
 class TestRunBrowserCommandPathConstruction:
     """Verify _run_browser_command() includes Homebrew node dirs in subprocess PATH."""
 

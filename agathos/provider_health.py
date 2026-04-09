@@ -449,7 +449,7 @@ def run_provider_check(
     """
     now = time.time()
     window_start = now - (_WINDOW_MINUTES * 60)
-    since_iso = datetime.fromtimestamp(window_start, UTC).isoformat()
+    since_iso = datetime.fromtimestamp(window_start, timezone.utc).isoformat()
 
     state_db = _state_db_path()
 
@@ -464,7 +464,7 @@ def run_provider_check(
         all_providers.discard("unknown")
 
     report: Dict[str, Any] = {
-        "timestamp": datetime.fromtimestamp(now, UTC).isoformat(),
+        "timestamp": datetime.fromtimestamp(now, timezone.utc).isoformat(),
         "window_minutes": _WINDOW_MINUTES,
         "providers": {},
         "overall_severity": "info",
@@ -664,7 +664,7 @@ def cleanup_old_snapshots(
 
     Recommended call frequency: Daily during low-activity periods.
     """
-    cutoff = (datetime.now(UTC) - timedelta(hours=keep_hours)).isoformat()
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=keep_hours)).isoformat()
     try:
         cursor.execute("DELETE FROM provider_health WHERE timestamp < ?", (cutoff,))
         deleted = cursor.rowcount

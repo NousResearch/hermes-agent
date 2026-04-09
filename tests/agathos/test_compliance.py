@@ -408,7 +408,7 @@ class TestRuntimeCompatibility(_SourceMixin, unittest.TestCase):
 
             self.assertTrue(hasattr(agathos, "Agathos"))
             self.assertTrue(hasattr(agathos, "CONFIG"))
-            self.assertTrue(hasattr(agathos, "is_argus_running"))
+            self.assertTrue(hasattr(agathos, "is_agathos_running"))
         finally:
             sys.path.pop(0)
 

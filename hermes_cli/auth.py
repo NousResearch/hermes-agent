@@ -2581,7 +2581,7 @@ def _prompt_model_selection(
             custom = input("Enter model name: ").strip()
             return custom if custom else None
         return None
-    except (ImportError, NotImplementedError):
+    except (ImportError, NotImplementedError, OSError, subprocess.SubprocessError):
         pass
 
     # Fallback: numbered list

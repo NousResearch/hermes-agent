@@ -858,7 +858,6 @@ def cmd_whatsapp(args):
 
 def cmd_setup(args):
     """Interactive setup wizard."""
-    _require_tty("setup")
     from hermes_cli.setup import run_setup_wizard
     run_setup_wizard(args)
 
@@ -968,10 +967,11 @@ def select_provider_and_model(args=None):
         ("alibaba", "Alibaba Cloud / DashScope Coding (Qwen + multi-provider)"),
     ]
 
-    # Add user-defined custom providers from config.yaml
-    custom_providers_cfg = config.get("custom_providers") or []
-    _custom_provider_map = {}  # key → {name, base_url, api_key}
-    if isinstance(custom_providers_cfg, list):
+    def _named_custom_provider_map(cfg) -> dict[str, dict[str, str]]:
+        custom_providers_cfg = cfg.get("custom_providers") or []
+        custom_provider_map = {}
+        if not isinstance(custom_providers_cfg, list):
+            return custom_provider_map
         for entry in custom_providers_cfg:
             if not isinstance(entry, dict):
                 continue
@@ -980,16 +980,23 @@ def select_provider_and_model(args=None):
             if not name or not base_url:
                 continue
             key = "custom:" + name.lower().replace(" ", "-")
-            short_url = base_url.replace("https://", "").replace("http://", "").rstrip("/")
-            saved_model = entry.get("model", "")
-            model_hint = f" — {saved_model}" if saved_model else ""
-            top_providers.append((key, f"{name} ({short_url}){model_hint}"))
-            _custom_provider_map[key] = {
+            custom_provider_map[key] = {
                 "name": name,
                 "base_url": base_url,
                 "api_key": entry.get("api_key", ""),
-                "model": saved_model,
+                "model": entry.get("model", ""),
             }
+        return custom_provider_map
+
+    # Add user-defined custom providers from config.yaml
+    _custom_provider_map = _named_custom_provider_map(config)  # key → {name, base_url, api_key}
+    for key, provider_info in _custom_provider_map.items():
+        name = provider_info["name"]
+        base_url = provider_info["base_url"]
+        short_url = base_url.replace("https://", "").replace("http://", "").rstrip("/")
+        saved_model = provider_info.get("model", "")
+        model_hint = f" — {saved_model}" if saved_model else ""
+        top_providers.append((key, f"{name} ({short_url}){model_hint}"))
 
     top_keys = {k for k, _ in top_providers}
     extended_keys = {k for k, _ in extended_providers}
@@ -1054,8 +1061,15 @@ def select_provider_and_model(args=None):
         _model_flow_copilot(config, current_model)
     elif selected_provider == "custom":
         _model_flow_custom(config)
-    elif selected_provider.startswith("custom:") and selected_provider in _custom_provider_map:
-        _model_flow_named_custom(config, _custom_provider_map[selected_provider])
+    elif selected_provider.startswith("custom:"):
+        provider_info = _named_custom_provider_map(load_config()).get(selected_provider)
+        if provider_info is None:
+            print(
+                "Warning: the selected saved custom provider is no longer available. "
+                "It may have been removed from config.yaml. No change."
+            )
+            return
+        _model_flow_named_custom(config, provider_info)
     elif selected_provider == "remove-custom":
         _remove_custom_provider(config)
     elif selected_provider == "anthropic":
@@ -1659,7 +1673,7 @@ def _remove_custom_provider(config):
         )
         idx = menu.show()
         print()
-    except (ImportError, NotImplementedError):
+    except (ImportError, NotImplementedError, OSError, subprocess.SubprocessError):
         for i, c in enumerate(choices, 1):
             print(f"  {i}. {c}")
         print()
@@ -1740,7 +1754,7 @@ def _model_flow_named_custom(config, provider_info):
                 print("Cancelled.")
                 return
             model_name = models[idx]
-        except (ImportError, NotImplementedError):
+        except (ImportError, NotImplementedError, OSError, subprocess.SubprocessError):
             for i, m in enumerate(models, 1):
                 print(f"  {i}. {m}")
             print(f"  {len(models) + 1}. Cancel")
@@ -1861,7 +1875,7 @@ def _prompt_reasoning_effort_selection(efforts, current_effort=""):
         if idx == len(ordered):
             return "none"
         return None
-    except (ImportError, NotImplementedError):
+    except (ImportError, NotImplementedError, OSError, subprocess.SubprocessError):
         pass
 
     print("Select reasoning effort:")
@@ -4472,12 +4486,12 @@ For more help on a command:
         "setup",
         help="Interactive setup wizard",
         description="Configure Hermes Agent with an interactive wizard. "
-                    "Run a specific section: hermes setup model|terminal|gateway|tools|agent"
+                    "Run a specific section: hermes setup model|tts|terminal|gateway|tools|agent"
     )
     setup_parser.add_argument(
         "section",
         nargs="?",
-        choices=["model", "terminal", "gateway", "tools", "agent"],
+        choices=["model", "tts", "terminal", "gateway", "tools", "agent"],
         default=None,
         help="Run a specific setup section instead of the full wizard"
     )

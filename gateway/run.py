@@ -7157,18 +7157,19 @@ class GatewayRunner:
                         _warning_fired = True
                         _warn_adapter = self.adapters.get(source.platform)
                         if _warn_adapter:
-                            _warn_mins = int(_agent_warning // 60) or 1
+                            _elapsed_warn = int(_agent_warning // 60) or 1
+                            _remaining_mins = int((_agent_timeout - _agent_warning) // 60) or 1
                             try:
                                 await _warn_adapter.send(
                                     source.chat_id,
-                                    f"⚠️ No activity for {_warn_mins} min. "
+                                    f"⚠️ No activity for {_elapsed_warn} min. "
                                     f"If the agent does not respond soon, it will "
-                                    f"be timed out in {_warn_mins} min. "
+                                    f"be timed out in {_remaining_mins} min. "
                                     f"You can continue waiting or use /reset.",
                                     metadata=_status_thread_metadata,
                                 )
-                            except Exception:
-                                logger.debug("Inactivity warning send error: %s", _ne)
+                            except Exception as _warn_err:
+                                logger.debug("Inactivity warning send error: %s", _warn_err)
                     if _idle_secs >= _agent_timeout:
                         _inactivity_timeout = True
                         break

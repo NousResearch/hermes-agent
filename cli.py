@@ -265,6 +265,7 @@ def load_cli_config() -> Dict[str, Any]:
             "busy_input_mode": "interrupt",
             "terminal_title": True,   # Set tab/window title via OSC sequences (disable for tmux/screen or if job name is appended by your terminal profile)
             "show_full_user_message": False,  # When true, show all lines instead of first + (+N lines)
+            "image_preview": True,   # Render images inline in terminal when tools produce them (iTerm2/Kitty/chafa)
             "skin": "default",
         },
         "clarify": {

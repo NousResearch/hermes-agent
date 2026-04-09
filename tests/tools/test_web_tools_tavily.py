@@ -225,6 +225,7 @@ class TestWebCrawlTavily:
              patch.dict(os.environ, {"TAVILY_API_KEY": "tvly-test"}), \
              patch("tools.web_tools.httpx.post", return_value=mock_response), \
              patch("tools.web_tools.check_website_access", return_value=None), \
+             patch("tools.web_tools.is_safe_url", return_value=True), \
              patch("tools.interrupt.is_interrupted", return_value=False):
             from tools.web_tools import web_crawl_tool
             result = json.loads(asyncio.get_event_loop().run_until_complete(
@@ -244,6 +245,7 @@ class TestWebCrawlTavily:
              patch.dict(os.environ, {"TAVILY_API_KEY": "tvly-test"}), \
              patch("tools.web_tools.httpx.post", return_value=mock_response) as mock_post, \
              patch("tools.web_tools.check_website_access", return_value=None), \
+             patch("tools.web_tools.is_safe_url", return_value=True), \
              patch("tools.interrupt.is_interrupted", return_value=False):
             from tools.web_tools import web_crawl_tool
             asyncio.get_event_loop().run_until_complete(

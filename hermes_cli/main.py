@@ -646,6 +646,7 @@ def cmd_chat(args):
         "verbose": args.verbose,
         "quiet": getattr(args, "quiet", False),
         "query": args.query,
+        "image": getattr(args, "image", None),
         "resume": getattr(args, "resume", None),
         "worktree": getattr(args, "worktree", False),
         "checkpoints": getattr(args, "checkpoints", False),
@@ -4290,6 +4291,10 @@ For more help on a command:
     chat_parser.add_argument(
         "-q", "--query",
         help="Single query (non-interactive mode)"
+    )
+    chat_parser.add_argument(
+        "--image",
+        help="Optional local image path to attach to a single query"
     )
     chat_parser.add_argument(
         "-m", "--model",

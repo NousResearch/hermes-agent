@@ -16,8 +16,18 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from prompt_toolkit.auto_suggest import AutoSuggest, Suggestion
-from prompt_toolkit.completion import Completer, Completion
+# prompt_toolkit is an optional CLI dependency — only needed for
+# SlashCommandCompleter and SlashCommandAutoSuggest.  Gateway and test
+# environments that lack it must still be able to import this module
+# for resolve_command, gateway_help_lines, and COMMAND_REGISTRY.
+try:
+    from prompt_toolkit.auto_suggest import AutoSuggest, Suggestion
+    from prompt_toolkit.completion import Completer, Completion
+except ImportError:  # pragma: no cover
+    AutoSuggest = object  # type: ignore[assignment,misc]
+    Completer = object    # type: ignore[assignment,misc]
+    Suggestion = None     # type: ignore[assignment]
+    Completion = None     # type: ignore[assignment]
 
 
 # ---------------------------------------------------------------------------

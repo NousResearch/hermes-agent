@@ -5280,19 +5280,28 @@ class GatewayRunner:
 
         agent = self._running_agents.get(session_key)
         if agent and hasattr(agent, "session_total_tokens") and agent.session_api_calls > 0:
-            lines = [
-                "📊 **Session Token Usage**",
-                f"Prompt (input): {agent.session_prompt_tokens:,}",
-                f"Completion (output): {agent.session_completion_tokens:,}",
-                f"Total: {agent.session_total_tokens:,}",
-                f"API calls: {agent.session_api_calls}",
-            ]
+            lines = []
+
+            # Rate limits first (when available from provider headers)
+            rl_state = agent.get_rate_limit_state()
+            if rl_state and rl_state.has_data:
+                from agent.rate_limit_tracker import format_rate_limit_compact
+                lines.append(f"⏱️ **Rate Limits:** {format_rate_limit_compact(rl_state)}")
+                lines.append("")
+
+            # Session token usage
+            lines.append("📊 **Session Token Usage**")
+            lines.append(f"Prompt (input): {agent.session_prompt_tokens:,}")
+            lines.append(f"Completion (output): {agent.session_completion_tokens:,}")
+            lines.append(f"Total: {agent.session_total_tokens:,}")
+            lines.append(f"API calls: {agent.session_api_calls}")
             ctx = agent.context_compressor
             if ctx.last_prompt_tokens:
                 pct = min(100, ctx.last_prompt_tokens / ctx.context_length * 100) if ctx.context_length else 0
                 lines.append(f"Context: {ctx.last_prompt_tokens:,} / {ctx.context_length:,} ({pct:.0f}%)")
             if ctx.compression_count:
                 lines.append(f"Compressions: {ctx.compression_count}")
+
             return "\n".join(lines)
 
         # No running agent -- check session history for a rough count

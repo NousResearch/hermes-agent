@@ -22,6 +22,8 @@ logger = logging.getLogger(__name__)
 import os
 import threading
 import time
+import uuid
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional
 
@@ -80,6 +82,35 @@ def _get_max_concurrent_children() -> int:
 DEFAULT_MAX_ITERATIONS = 50
 _HEARTBEAT_INTERVAL = 30  # seconds between parent activity heartbeats during delegation
 DEFAULT_TOOLSETS = ["terminal", "file", "web"]
+
+
+def _get_background_results_dir() -> str:
+    """Get the directory for background delegation results."""
+    base = os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes"))
+    results_dir = os.path.join(base, "delegation_results")
+    os.makedirs(results_dir, exist_ok=True)
+    return results_dir
+
+
+def _save_background_result(session_id: str, data: dict) -> None:
+    """Save delegation result to a file for later retrieval."""
+    results_dir = _get_background_results_dir()
+    result_file = os.path.join(results_dir, f"{session_id}.json")
+    with open(result_file, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False)
+
+
+def _load_background_result(session_id: str) -> Optional[dict]:
+    """Load a previously saved delegation result."""
+    results_dir = _get_background_results_dir()
+    result_file = os.path.join(results_dir, f"{session_id}.json")
+    if not os.path.exists(result_file):
+        return None
+    try:
+        with open(result_file, encoding="utf-8") as f:
+            return json.load(f)
+    except (json.JSONDecodeError, IOError):
+        return None
 
 
 def check_delegate_requirements() -> bool:
@@ -628,6 +659,8 @@ def delegate_task(
     max_iterations: Optional[int] = None,
     acp_command: Optional[str] = None,
     acp_args: Optional[List[str]] = None,
+    background: bool = False,
+    session_id: Optional[str] = None,
     parent_agent=None,
 ) -> str:
     """
@@ -637,10 +670,28 @@ def delegate_task(
       - Single: provide goal (+ optional context, toolsets)
       - Batch:  provide tasks array [{goal, context, toolsets}, ...]
 
-    Returns JSON with results array, one entry per task.
+    Non-blocking mode (background=True):
+      - Returns immediately with a session_id
+      - Subagent runs in a background thread
+      - Results saved to ~/.hermes/delegation_results/<session_id>.json
+      - Retrieve results with session_id parameter
+
+    Retrieve background results:
+      - Pass session_id to get previously saved results
+      - Returns the same JSON format as normal delegation
     """
     if parent_agent is None:
         return tool_error("delegate_task requires a parent agent context.")
+
+    # Handle result retrieval mode (non-blocking)
+    if session_id and not goal and not tasks:
+        result = _load_background_result(session_id)
+        if result is None:
+            return json.dumps({
+                "error": f"No delegation result found for session_id '{session_id}'. "
+                         "The delegation may still be running or the result was discarded."
+            })
+        return json.dumps(result)
 
     # Depth limit
     depth = getattr(parent_agent, '_delegate_depth', 0)
@@ -807,10 +858,136 @@ def delegate_task(
 
     total_duration = round(time.monotonic() - overall_start, 2)
 
-    return json.dumps({
+    result_data = {
         "results": results,
         "total_duration_seconds": total_duration,
-    }, ensure_ascii=False)
+    }
+
+    if background:
+        # Non-blocking: spawn background thread and return session_id immediately
+        bg_session_id = str(uuid.uuid4())[:8]
+        thread = threading.Thread(
+            target=_run_delegation_background,
+            args=(
+                bg_session_id, task_list, children, n_tasks,
+                task_labels, parent_agent, effective_max_iter,
+                creds, acp_command, acp_args, toolsets,
+            ),
+            daemon=True,
+        )
+        thread.start()
+        return json.dumps({
+            "background": True,
+            "session_id": bg_session_id,
+            "message": "Delegation started in background. Use session_id to retrieve results.",
+        })
+
+    return json.dumps(result_data, ensure_ascii=False)
+
+
+def _run_delegation_background(
+    session_id: str,
+    task_list: list,
+    children: list,
+    n_tasks: int,
+    task_labels: list,
+    parent_agent,
+    effective_max_iter: int,
+    creds: dict,
+    acp_command: Optional[str],
+    acp_args: Optional[List[str]],
+    toolsets: Optional[List[str]],
+) -> None:
+    """Execute delegation in a background thread and save result to file."""
+    # Re-import for thread safety
+    import model_tools as _model_tools
+    _parent_tool_names = list(_model_tools._last_resolved_tool_names)
+
+    try:
+        results = []
+        overall_start = time.monotonic()
+
+        if n_tasks == 1:
+            _i, _t, child = children[0]
+            result = _run_single_child(0, _t["goal"], child, parent_agent)
+            results.append(result)
+        else:
+            completed_count = 0
+            spinner_ref = getattr(parent_agent, '_delegate_spinner', None)
+
+            with ThreadPoolExecutor(max_workers=MAX_CONCURRENT_CHILDREN) as executor:
+                futures = {}
+                for i, t, child in children:
+                    future = executor.submit(
+                        _run_single_child,
+                        task_index=i,
+                        goal=t["goal"],
+                        child=child,
+                        parent_agent=parent_agent,
+                    )
+                    futures[future] = i
+
+                for future in as_completed(futures):
+                    try:
+                        entry = future.result()
+                    except Exception as exc:
+                        idx = futures[future]
+                        entry = {
+                            "task_index": idx,
+                            "status": "error",
+                            "summary": None,
+                            "error": str(exc),
+                            "api_calls": 0,
+                            "duration_seconds": 0,
+                        }
+                    results.append(entry)
+                    completed_count += 1
+
+                    idx = entry["task_index"]
+                    label = task_labels[idx] if idx < len(task_labels) else f"Task {idx}"
+                    dur = entry.get("duration_seconds", 0)
+                    status = entry.get("status", "?")
+                    icon = "✓" if status == "completed" else "✗"
+                    remaining = n_tasks - completed_count
+                    completion_line = f"{icon} [{idx+1}/{n_tasks}] {label}  ({dur}s)"
+                    if spinner_ref:
+                        try:
+                            spinner_ref.print_above(completion_line)
+                        except Exception:
+                            print(f"  {completion_line}")
+                    else:
+                        print(f"  {completion_line}")
+
+                    if spinner_ref and remaining > 0:
+                        try:
+                            spinner_ref.update_text(f"🔀 {remaining} task{'s' if remaining != 1 else ''} remaining")
+                        except Exception as e:
+                            logger.debug("Spinner update_text failed: %s", e)
+
+            results.sort(key=lambda r: r["task_index"])
+
+        if parent_agent and hasattr(parent_agent, '_memory_manager') and parent_agent._memory_manager:
+            for entry in results:
+                try:
+                    _task_goal = task_list[entry["task_index"]]["goal"] if entry["task_index"] < len(task_list) else ""
+                    parent_agent._memory_manager.on_delegation(
+                        task=_task_goal,
+                        result=entry.get("summary", "") or "",
+                        child_session_id=getattr(children[entry["task_index"]][2], "session_id", "") if entry["task_index"] < len(children) else "",
+                    )
+                except Exception:
+                    pass
+
+        total_duration = round(time.monotonic() - overall_start, 2)
+
+        _save_background_result(session_id, {
+            "results": results,
+            "total_duration_seconds": total_duration,
+        })
+
+    finally:
+        import model_tools as _model_tools_2
+        _model_tools_2._last_resolved_tool_names = _parent_tool_names
 
 
 def _resolve_child_credential_pool(effective_provider: Optional[str], parent_agent):
@@ -972,6 +1149,12 @@ DELEGATE_TASK_SCHEMA = {
         "1. Single task: provide 'goal' (+ optional context, toolsets)\n"
         "2. Batch (parallel): provide 'tasks' array with up to 3 items. "
         "All run concurrently and results are returned together.\n\n"
+        "NON-BLOCKING MODE (background=True):\n"
+        "- Set background=True to launch subagent without waiting\n"
+        "- Returns immediately with a session_id (UUID prefix)\n"
+        "- Subagent runs in a background thread\n"
+        "- Results saved to ~/.hermes/delegation_results/<session_id>.json\n"
+        "- Retrieve results later by calling delegate_task with session_id parameter\n\n"
         "WHEN TO USE delegate_task:\n"
         "- Reasoning-heavy subtasks (debugging, code review, research synthesis)\n"
         "- Tasks that would flood your context with intermediate data\n"
@@ -1076,6 +1259,23 @@ DELEGATE_TASK_SCHEMA = {
                     "Only used when acp_command is set. Example: ['--acp', '--stdio', '--model', 'claude-opus-4-6']"
                 ),
             },
+            "background": {
+                "type": "boolean",
+                "description": (
+                    "If True, launch subagent in background and return immediately "
+                    "with a session_id. The subagent runs asynchronously. "
+                    "Use session_id to retrieve results when ready. "
+                    "Default: False (blocking)."
+                ),
+            },
+            "session_id": {
+                "type": "string",
+                "description": (
+                    "Pass a session_id to retrieve results from a previously launched "
+                    "background delegation. When provided without goal/tasks, returns the "
+                    "saved result. session_id is the UUID prefix returned by background=True."
+                ),
+            },
         },
         "required": [],
     },
@@ -1097,6 +1297,8 @@ registry.register(
         max_iterations=args.get("max_iterations"),
         acp_command=args.get("acp_command"),
         acp_args=args.get("acp_args"),
+        background=args.get("background", False),
+        session_id=args.get("session_id"),
         parent_agent=kw.get("parent_agent")),
     check_fn=check_delegate_requirements,
     emoji="🔀",

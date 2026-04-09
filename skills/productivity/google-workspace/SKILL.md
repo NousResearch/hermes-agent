@@ -47,7 +47,10 @@ Install `gws`:
 
 ```bash
 cargo install google-workspace-cli
-# or via npm: npm install -g @anthropic/google-workspace-cli
+# or via npm (recommended, downloads prebuilt binary):
+npm install -g @googleworkspace/cli
+# or via Homebrew:
+brew install googleworkspace-cli
 ```
 
 Verify: `gws --version`
@@ -205,7 +208,19 @@ $GBRIDGE sheets +read --spreadsheet SHEET_ID --range "Sheet1!A1:D10"
 
 ## Output Format
 
-All commands return JSON via `gws --format json`. Output structure varies by `gws` helper.
+All commands return JSON via `gws --format json`. Key output shapes:
+
+- **Gmail search/triage**: Array of message summaries (sender, subject, date, snippet)
+- **Gmail get/read**: Message object with headers and body text
+- **Gmail send/reply**: Confirmation with message ID
+- **Calendar list/agenda**: Array of event objects (summary, start, end, location)
+- **Calendar create**: Confirmation with event ID and htmlLink
+- **Drive search**: Array of file objects (id, name, mimeType, webViewLink)
+- **Sheets get/read**: 2D array of cell values
+- **Docs get**: Full document JSON (use `body.content` for text extraction)
+- **Contacts list**: Array of person objects with names, emails, phones
+
+Parse output with `jq` or read JSON directly.
 
 ## Rules
 
@@ -221,7 +236,7 @@ All commands return JSON via `gws --format json`. Output structure varies by `gw
 |---------|-----|
 | `NOT_AUTHENTICATED` | Run setup Steps 2-5 |
 | `REFRESH_FAILED` | Token revoked — redo Steps 3-5 |
-| `gws: command not found` | Install: `cargo install google-workspace-cli` |
+| `gws: command not found` | Install: `npm install -g @googleworkspace/cli` |
 | `HttpError 403` | Missing scope — `$GSETUP --revoke` then redo Steps 3-5 |
 | `HttpError 403: Access Not Configured` | Enable API in Google Cloud Console |
 | Advanced Protection blocks auth | Admin must allowlist the OAuth client ID |

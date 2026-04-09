@@ -80,15 +80,30 @@ def gmail_modify(args):
 # -- Calendar --
 
 def calendar_list(args):
-    cmd = ["calendar", "+agenda", "--format", "json"]
-    if args.start and args.end:
-        # Calculate days between start and end for --days flag
-        cmd += ["--days", "7"]
+    if args.start or args.end:
+        # Specific date range — use raw Calendar API for precise timeMin/timeMax
+        from datetime import datetime, timedelta, timezone as tz
+        now = datetime.now(tz.utc)
+        time_min = args.start or now.isoformat()
+        time_max = args.end or (now + timedelta(days=7)).isoformat()
+        gws(
+            "calendar", "events", "list",
+            "--params", json.dumps({
+                "calendarId": args.calendar,
+                "timeMin": time_min,
+                "timeMax": time_max,
+                "maxResults": args.max,
+                "singleEvents": True,
+                "orderBy": "startTime",
+            }),
+            "--format", "json",
+        )
     else:
-        cmd += ["--days", "7"]
-    if args.calendar != "primary":
-        cmd += ["--calendar", args.calendar]
-    gws(*cmd)
+        # No date range — use +agenda helper (defaults to 7 days)
+        cmd = ["calendar", "+agenda", "--days", "7", "--format", "json"]
+        if args.calendar != "primary":
+            cmd += ["--calendar", args.calendar]
+        gws(*cmd)
 
 def calendar_create(args):
     cmd = [

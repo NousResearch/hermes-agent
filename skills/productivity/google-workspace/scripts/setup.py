@@ -142,7 +142,9 @@ def check_auth():
     if creds.valid:
         missing_scopes = _missing_scopes_from_payload(payload)
         if missing_scopes:
-            print(f"AUTHENTICATED (partial): Token valid but missing {len(missing_scopes)} scopes")
+            print(f"AUTHENTICATED (partial): Token valid but missing {len(missing_scopes)} scopes:")
+            for s in missing_scopes:
+                print(f"  - {s}")
         print(f"AUTHENTICATED: Token valid at {TOKEN_PATH}")
         return True
 
@@ -152,7 +154,9 @@ def check_auth():
             TOKEN_PATH.write_text(creds.to_json())
             missing_scopes = _missing_scopes_from_payload(_load_token_payload(TOKEN_PATH))
             if missing_scopes:
-                print(f"AUTHENTICATED (partial): Token refreshed but missing {len(missing_scopes)} scopes")
+                print(f"AUTHENTICATED (partial): Token refreshed but missing {len(missing_scopes)} scopes:")
+                for s in missing_scopes:
+                    print(f"  - {s}")
             print(f"AUTHENTICATED: Token refreshed at {TOKEN_PATH}")
             return True
         except Exception as e:

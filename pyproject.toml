@@ -35,6 +35,7 @@ dependencies = [
   "python-dotenv==1.2.1",
   "fire==0.7.1",
   "httpx[socks]==0.28.1",
+  "websockets==15.0.1",
   "rich==14.3.3",
   "tenacity==9.1.4",
   "pyyaml==6.0.3",

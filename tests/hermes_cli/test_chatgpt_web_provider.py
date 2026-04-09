@@ -142,6 +142,38 @@ def test_main_accepts_chatgpt_web_for_login_and_logout(monkeypatch):
     assert seen == [("login", "chatgpt-web"), ("logout", "chatgpt-web")]
 
 
+def test_main_accepts_chatgpt_web_for_auth_browser(monkeypatch):
+    from hermes_cli import main as hermes_main
+
+    seen = []
+    monkeypatch.setattr(
+        hermes_main,
+        "cmd_auth",
+        lambda args: seen.append((args.auth_action, args.provider, args.label, args.timeout, args.debug_port, args.keep_open)),
+    )
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "hermes",
+            "auth",
+            "browser",
+            "chatgpt-web",
+            "--label",
+            "termux-x11-browser",
+            "--timeout",
+            "42",
+            "--debug-port",
+            "9333",
+            "--keep-open",
+        ],
+    )
+    hermes_main.main()
+
+    assert seen == [("browser", "chatgpt-web", "termux-x11-browser", 42, 9333, True)]
+
+
 def test_main_accepts_chatgpt_web_for_chat_provider(monkeypatch):
     from hermes_cli import main as hermes_main
 

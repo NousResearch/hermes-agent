@@ -379,6 +379,78 @@ def test_auth_add_chatgpt_web_session_token_persists_pool_entry(tmp_path, monkey
     assert entry["base_url"] == DEFAULT_CHATGPT_WEB_BASE_URL
 
 
+def test_auth_browser_command_bootstraps_chatgpt_web_from_termux_browser(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+
+    from hermes_cli import auth_commands as auth_commands_mod
+
+    captured = {}
+
+    class _FakeProc:
+        pid = 12345
+
+        def __init__(self):
+            self.terminated = False
+            self.killed = False
+            self.wait_calls = []
+
+        def terminate(self):
+            self.terminated = True
+
+        def wait(self, timeout=None):
+            self.wait_calls.append(timeout)
+            return 0
+
+        def kill(self):
+            self.killed = True
+
+    fake_proc = _FakeProc()
+
+    monkeypatch.setattr(auth_commands_mod, "_is_termux", lambda: True)
+    monkeypatch.setattr(auth_commands_mod, "_termux_x11_android_app_installed", lambda: True)
+    monkeypatch.setattr(auth_commands_mod, "_find_termux_x11_command", lambda: "/usr/bin/termux-x11")
+    monkeypatch.setattr(auth_commands_mod, "_find_chromium_browser_command", lambda: "/usr/bin/chromium-browser")
+    monkeypatch.setattr(auth_commands_mod, "_wait_for_debugger", lambda *args, **kwargs: None)
+    monkeypatch.setattr(auth_commands_mod, "_wait_for_chatgpt_web_session_token", lambda *args, **kwargs: "session-cookie")
+    monkeypatch.setattr(auth_commands_mod, "_launch_chatgpt_web_browser", lambda *args, **kwargs: fake_proc)
+    monkeypatch.setattr(
+        auth_commands_mod,
+        "auth_add_command",
+        lambda args: captured.setdefault("args", args),
+    )
+
+    class _Args:
+        provider = "chatgpt-web"
+        label = "termux-x11-browser"
+        timeout = 30
+        debug_port = 9222
+        keep_open = False
+
+    auth_commands_mod.auth_browser_command(_Args())
+
+    assert captured["args"].provider == "chatgpt-web"
+    assert captured["args"].auth_type == "api-key"
+    assert captured["args"].token_mode == "session_token"
+    assert captured["args"].api_key == "session-cookie"
+    assert captured["args"].label == "termux-x11-browser"
+    assert fake_proc.terminated is True
+    assert fake_proc.killed is False
+
+
+def test_auth_browser_command_rejects_unsupported_provider():
+    from hermes_cli import auth_commands as auth_commands_mod
+
+    class _Args:
+        provider = "openai-codex"
+        label = None
+        timeout = 30
+        debug_port = 9222
+        keep_open = False
+
+    with pytest.raises(SystemExit, match="chatgpt-web"):
+        auth_commands_mod.auth_browser_command(_Args())
+
+
 def test_interactive_add_chatgpt_web_selects_access_token(monkeypatch):
     from hermes_cli import auth_commands as auth_commands_mod
 

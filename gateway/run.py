@@ -314,6 +314,45 @@ def _resolve_runtime_agent_kwargs() -> dict:
     }
 
 
+def _iter_tool_result_text_values(value: Any):
+    """Yield string leaves from structured tool results."""
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for child in value.values():
+            yield from _iter_tool_result_text_values(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from _iter_tool_result_text_values(child)
+
+
+def _extract_tool_result_media_paths(content: str) -> tuple[list[str], bool]:
+    """Parse tool-emitted MEDIA tags using the gateway's canonical parser."""
+    candidates = [content or ""]
+    if isinstance(content, str):
+        stripped = content.strip()
+        if stripped.startswith("{") or stripped.startswith("["):
+            try:
+                parsed = json.loads(stripped)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                parsed = None
+            if parsed is not None:
+                parsed_candidates = list(_iter_tool_result_text_values(parsed))
+                candidates = parsed_candidates or candidates
+
+    paths: list[str] = []
+    seen_paths: set[str] = set()
+    has_voice_directive = False
+    for candidate in candidates:
+        media, _ = BasePlatformAdapter.extract_media(candidate or "")
+        for path, send_as_voice in media:
+            if path and path not in seen_paths:
+                seen_paths.add(path)
+                paths.append(path)
+            has_voice_directive = has_voice_directive or send_as_voice
+    return paths, has_voice_directive
+
+
 def _build_media_placeholder(event) -> str:
     """Build a text placeholder for media-only events so they aren't dropped.
 
@@ -6832,12 +6871,8 @@ class GatewayRunner:
             _history_media_paths: set = set()
             for _hm in agent_history:
                 if _hm.get("role") in ("tool", "function"):
-                    _hc = _hm.get("content", "")
-                    if "MEDIA:" in _hc:
-                        for _match in re.finditer(r'MEDIA:(\S+)', _hc):
-                            _p = _match.group(1).strip().rstrip('",}')
-                            if _p:
-                                _history_media_paths.add(_p)
+                    _paths, _ = _extract_tool_result_media_paths(_hm.get("content", ""))
+                    _history_media_paths.update(_paths)
             
             # Register per-session gateway approval callback so dangerous
             # command approval blocks the agent thread (mirrors CLI input()).
@@ -6975,14 +7010,13 @@ class GatewayRunner:
                 has_voice_directive = False
                 for msg in result.get("messages", []):
                     if msg.get("role") in ("tool", "function"):
-                        content = msg.get("content", "")
-                        if "MEDIA:" in content:
-                            for match in re.finditer(r'MEDIA:(\S+)', content):
-                                path = match.group(1).strip().rstrip('",}')
-                                if path and path not in _history_media_paths:
-                                    media_tags.append(f"MEDIA:{path}")
-                            if "[[audio_as_voice]]" in content:
-                                has_voice_directive = True
+                        paths, has_voice = _extract_tool_result_media_paths(
+                            msg.get("content", "")
+                        )
+                        for path in paths:
+                            if path and path not in _history_media_paths:
+                                media_tags.append(f"MEDIA:{path}")
+                        has_voice_directive = has_voice_directive or has_voice
                 
                 if media_tags:
                     seen = set()

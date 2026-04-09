@@ -7,8 +7,11 @@ This prevents voice messages from accumulating and being sent multiple
 times per reply. (Regression test for #160)
 """
 
-import pytest
 import re
+
+import pytest
+
+from gateway.run import _extract_tool_result_media_paths
 
 
 def extract_media_tags_fixed(result_messages, history_len):
@@ -31,15 +34,10 @@ def extract_media_tags_fixed(result_messages, history_len):
     
     for msg in new_messages:
         if msg.get("role") == "tool" or msg.get("role") == "function":
-            content = msg.get("content", "")
-            if "MEDIA:" in content:
-                for match in re.finditer(r'MEDIA:(\S+)', content):
-                    path = match.group(1).strip().rstrip('",}')
-                    if path:
-                        media_tags.append(f"MEDIA:{path}")
-                if "[[audio_as_voice]]" in content:
-                    has_voice_directive = True
-    
+            paths, has_voice = _extract_tool_result_media_paths(msg.get("content", ""))
+            media_tags.extend(f"MEDIA:{path}" for path in paths)
+            has_voice_directive = has_voice_directive or has_voice
+
     return media_tags, has_voice_directive
 
 
@@ -63,6 +61,28 @@ def extract_media_tags_broken(result_messages):
                     has_voice_directive = True
     
     return media_tags, has_voice_directive
+
+
+def extract_history_media_paths_fixed(result_messages):
+    history_paths = set()
+    for msg in result_messages:
+        if msg.get("role") == "tool" or msg.get("role") == "function":
+            paths, _ = _extract_tool_result_media_paths(msg.get("content", ""))
+            history_paths.update(paths)
+    return history_paths
+
+
+def extract_history_media_paths_broken(result_messages):
+    history_paths = set()
+    for msg in result_messages:
+        if msg.get("role") == "tool" or msg.get("role") == "function":
+            content = msg.get("content", "")
+            if "MEDIA:" in content:
+                for match in re.finditer(r'MEDIA:(\S+)', content):
+                    path = match.group(1).strip().rstrip('",}')
+                    if path:
+                        history_paths.add(path)
+    return history_paths
 
 
 class TestMediaExtraction:
@@ -178,6 +198,41 @@ class TestMediaExtraction:
         seen = set()
         unique = [t for t in tags if t not in seen and not seen.add(t)]
         assert len(unique) == 2  # After dedup: same.ogg and different.ogg
+
+    def test_quoted_windows_media_paths_with_spaces_are_preserved(self):
+        """Quoted Windows-style paths from tool JSON should not be truncated."""
+        new_messages = [
+            {
+                "role": "tool",
+                "tool_call_id": "1",
+                "content": '{"success": true, "media_tag": "[[audio_as_voice]]\\nMEDIA:\\"C:\\\\Users\\\\Test User\\\\voice clip.ogg\\""}',
+            },
+        ]
+
+        tags, voice_directive = extract_media_tags_fixed(new_messages, 0)
+        assert tags == [r"MEDIA:C:\Users\Test User\voice clip.ogg"]
+        assert voice_directive is True
+
+        broken_tags, broken_voice = extract_media_tags_broken(new_messages)
+        assert broken_tags == [r'MEDIA:\"C:\\Users\\Test']
+        assert broken_voice is True
+
+    def test_history_dedup_preserves_quoted_windows_media_paths(self):
+        """History-media tracking should keep full quoted paths for deduplication."""
+        history = [
+            {
+                "role": "tool",
+                "tool_call_id": "1",
+                "content": '{"success": true, "media_tag": "MEDIA:\\"C:\\\\Users\\\\Test User\\\\voice clip.ogg\\""}',
+            },
+        ]
+
+        assert extract_history_media_paths_fixed(history) == {
+            r"C:\Users\Test User\voice clip.ogg"
+        }
+        assert extract_history_media_paths_broken(history) == {
+            r'\"C:\\Users\\Test'
+        }
 
 
 if __name__ == "__main__":

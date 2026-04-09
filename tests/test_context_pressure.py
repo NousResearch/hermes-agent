@@ -219,6 +219,7 @@ class TestContextPressureFlags:
         ]
         agent.context_compressor.context_length = 200_000
         agent.context_compressor.threshold_tokens = 100_000
+        agent.context_compressor.compression_count = 1
 
         agent._todo_store = MagicMock()
         agent._todo_store.format_for_injection.return_value = None

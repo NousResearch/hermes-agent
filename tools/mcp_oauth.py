@@ -34,6 +34,7 @@ Configuration in config.yaml::
 
 import asyncio
 import contextvars
+import html
 import json
 import logging
 import os
@@ -520,7 +521,7 @@ def _make_callback_handler() -> tuple[type, dict]:
                 "<p>You can close this tab and return to Hermes.</p></body></html>"
             ) if code else (
                 "<html><body><h2>Authorization Failed</h2>"
-                f"<p>Error: {error or 'unknown'}</p></body></html>"
+                f"<p>Error: {html.escape(error or 'unknown')}</p></body></html>"
             )
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")

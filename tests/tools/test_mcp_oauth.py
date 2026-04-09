@@ -6,6 +6,7 @@ import stat
 import sys
 from io import BytesIO
 from unittest.mock import patch, MagicMock
+from urllib.parse import quote
 
 import pytest
 
@@ -397,6 +398,28 @@ class TestCallbackHandlerIsolation:
 
         assert result["auth_code"] is None
         assert result["error"] == "access_denied"
+
+
+class TestCallbackHandlerErrorEscaping:
+    """Regression: a hostile ``error`` parameter must be HTML-escaped before
+    being reflected into the callback response body (reflected XSS)."""
+
+    def test_hostile_error_is_escaped_in_response_body(self):
+        HandlerClass, result = _make_callback_handler()
+
+        handler = HandlerClass.__new__(HandlerClass)
+        handler.path = "/callback?error=" + quote("<script>alert(1)</script>")
+        handler.wfile = BytesIO()
+        handler.send_response = MagicMock()
+        handler.send_header = MagicMock()
+        handler.end_headers = MagicMock()
+        handler.do_GET()
+
+        body = handler.wfile.getvalue().decode("utf-8")
+        assert "<script>" not in body
+        assert "&lt;script&gt;alert(1)&lt;/script&gt;" in body
+        # The raw (unescaped) value is still captured for programmatic use.
+        assert result["error"] == "<script>alert(1)</script>"
 
 
 # ---------------------------------------------------------------------------

@@ -213,6 +213,7 @@ export function App({ gw }: { gw: GatewayClient }) {
 
   const { queueRef, queueEditRef, queuedDisplay, queueEditIdx, enqueue, dequeue, replaceQ, setQueueEdit, syncQueue } =
     useQueue()
+
   const { historyRef, historyIdx, setHistoryIdx, historyDraftRef, pushHistory } = useInputHistory()
   const { completions, compIdx, setCompIdx, compReplace } = useCompletion(input, blocked(), gw)
 
@@ -733,6 +734,7 @@ export function App({ gw }: { gw: GatewayClient }) {
           queueEditIdx === null
             ? queueRef.current.length - 1
             : (queueEditIdx - 1 + queueRef.current.length) % queueRef.current.length
+
         setQueueEdit(idx)
         setHistoryIdx(null)
         setInput(queueRef.current[idx] ?? '')
@@ -1014,7 +1016,6 @@ export function App({ gw }: { gw: GatewayClient }) {
 
           break
       }
-      // eslint-disable-next-line react-hooks/exhaustive-deps
     },
     [appendMessage, dequeue, newSession, pushActivity, send, sys]
   )
@@ -1470,7 +1471,6 @@ export function App({ gw }: { gw: GatewayClient }) {
 
           return true
       }
-      // eslint-disable-next-line react-hooks/exhaustive-deps
     },
     [catalog, compact, gw, lastUserMsg, messages, newSession, pastes, pushActivity, rpc, send, sid, statusBar, sys]
   )
@@ -1526,7 +1526,6 @@ export function App({ gw }: { gw: GatewayClient }) {
       }
 
       dispatchSubmission([...inputBuf, value].join('\n'))
-      // eslint-disable-next-line react-hooks/exhaustive-deps
     },
     [dequeue, dispatchSubmission, inputBuf, sid]
   )

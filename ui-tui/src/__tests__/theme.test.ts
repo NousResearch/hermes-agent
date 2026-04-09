@@ -2,9 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import { DEFAULT_THEME, fromSkin } from '../theme.js'
 
-
 describe('DEFAULT_THEME', () => {
-
   it('has brand defaults', () => {
     expect(DEFAULT_THEME.brand.name).toBe('Hermes Agent')
     expect(DEFAULT_THEME.brand.prompt).toBe('❯')
@@ -17,9 +15,7 @@ describe('DEFAULT_THEME', () => {
   })
 })
 
-
 describe('fromSkin', () => {
-
   it('overrides banner colors', () => {
     expect(fromSkin({ banner_title: '#FF0000' }, {}).color.gold).toBe('#FF0000')
   })

@@ -3,9 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { FACES, HOTKEYS, INTERPOLATION_RE, PLACEHOLDERS, ROLE, TOOL_VERBS, VERBS, ZERO } from '../constants.js'
 import { DEFAULT_THEME } from '../theme.js'
 
-
 describe('constants', () => {
-
   it('ZERO', () => expect(ZERO).toEqual({ calls: 0, input: 0, output: 0, total: 0 }))
 
   it('string arrays are populated', () => {

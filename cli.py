@@ -31,9 +31,28 @@ from typing import List, Dict, Any, Optional
 logger = logging.getLogger(__name__)
 
 
+def _normalize_browser_connect_endpoint(endpoint: str) -> str:
+    """Normalize user-supplied browser connect endpoints for local host:port inputs."""
+    raw = (endpoint or "").strip().rstrip("/")
+    if not raw:
+        return raw
+
+    lowered = raw.lower()
+    if lowered.startswith(("http://", "https://", "ws://", "wss://")):
+        return raw
+
+    host, sep, port = raw.rpartition(":")
+    if sep and host.lower() in {"localhost", "127.0.0.1", "0.0.0.0"} and port.isdigit():
+        return f"http://{raw}"
+    if raw.startswith("[::1]:") and raw[len("[::1]:"):].isdigit():
+        return f"http://{raw}"
+
+    return raw
+
+
 def _detect_browser_connect_backend(endpoint: str) -> tuple[str, str]:
     """Classify a /browser connect endpoint as CDP or Camofox."""
-    raw = (endpoint or "").strip().rstrip("/")
+    raw = _normalize_browser_connect_endpoint(endpoint)
     if not raw:
         return "unknown", raw
 
@@ -5064,6 +5083,7 @@ class HermesCLI:
             connect_parts = cmd.strip().split(None, 2)
             cdp_url = connect_parts[2].strip() if len(connect_parts) > 2 else _DEFAULT_CDP
             detected_mode, normalized_endpoint = _detect_browser_connect_backend(cdp_url)
+            cdp_url = normalized_endpoint or cdp_url
 
             try:
                 from tools.browser_tool import cleanup_all_browsers

@@ -2,7 +2,7 @@ import os
 import queue
 from unittest.mock import patch
 
-from cli import HermesCLI
+from cli import HermesCLI, _normalize_browser_connect_endpoint
 
 
 class _FakeResponse:
@@ -24,6 +24,10 @@ def _bare_cli():
     return cli
 
 
+def test_normalize_browser_connect_endpoint_adds_http_for_schemeless_localhost():
+    assert _normalize_browser_connect_endpoint("localhost:9377") == "http://localhost:9377"
+
+
 @patch("tools.browser_tool.cleanup_all_browsers")
 def test_browser_connect_autodetects_camofox_on_9377(mock_cleanup, monkeypatch, capsys):
     cli = _bare_cli()
@@ -40,7 +44,7 @@ def test_browser_connect_autodetects_camofox_on_9377(mock_cleanup, monkeypatch, 
         raise AssertionError(f"unexpected URL {url}")
 
     with patch("requests.get", side_effect=fake_get):
-        cli._handle_browser_command("/browser connect http://localhost:9377")
+        cli._handle_browser_command("/browser connect localhost:9377")
 
     out = capsys.readouterr().out
     assert os.environ.get("CAMOFOX_URL") == "http://localhost:9377"

@@ -333,6 +333,26 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
     return result
 
 
+def _ensure_local_mutable_skill(name: str) -> Dict[str, Any]:
+    """Resolve a skill and refuse mutations outside the active local skills dir."""
+    existing = _find_skill(name)
+    if not existing:
+        return {"success": False, "error": f"Skill '{name}' not found. Use skills_list() to see available skills."}
+
+    try:
+        existing["path"].relative_to(SKILLS_DIR)
+    except ValueError:
+        return {
+            "success": False,
+            "error": (
+                f"Skill '{name}' is installed in external_dirs at {existing['path']} and is read-only. "
+                "Copy it into the active local skills directory before mutating it."
+            ),
+        }
+
+    return {"success": True, "existing": existing}
+
+
 def _edit_skill(name: str, content: str) -> Dict[str, Any]:
     """Replace the SKILL.md of any existing skill (full rewrite)."""
     err = _validate_frontmatter(content)
@@ -343,9 +363,10 @@ def _edit_skill(name: str, content: str) -> Dict[str, Any]:
     if err:
         return {"success": False, "error": err}
 
-    existing = _find_skill(name)
-    if not existing:
-        return {"success": False, "error": f"Skill '{name}' not found. Use skills_list() to see available skills."}
+    resolved = _ensure_local_mutable_skill(name)
+    if not resolved["success"]:
+        return resolved
+    existing = resolved["existing"]
 
     skill_md = existing["path"] / "SKILL.md"
     # Back up original content for rollback
@@ -383,9 +404,10 @@ def _patch_skill(
     if new_string is None:
         return {"success": False, "error": "new_string is required for 'patch'. Use an empty string to delete matched text."}
 
-    existing = _find_skill(name)
-    if not existing:
-        return {"success": False, "error": f"Skill '{name}' not found."}
+    resolved = _ensure_local_mutable_skill(name)
+    if not resolved["success"]:
+        return resolved
+    existing = resolved["existing"]
 
     skill_dir = existing["path"]
 
@@ -454,9 +476,10 @@ def _patch_skill(
 
 def _delete_skill(name: str) -> Dict[str, Any]:
     """Delete a skill."""
-    existing = _find_skill(name)
-    if not existing:
-        return {"success": False, "error": f"Skill '{name}' not found."}
+    resolved = _ensure_local_mutable_skill(name)
+    if not resolved["success"]:
+        return resolved
+    existing = resolved["existing"]
 
     skill_dir = existing["path"]
     shutil.rmtree(skill_dir)

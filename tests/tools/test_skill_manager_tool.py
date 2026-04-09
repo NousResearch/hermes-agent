@@ -268,6 +268,22 @@ class TestEditSkill:
         content = (tmp_path / "my-skill" / "SKILL.md").read_text()
         assert "A test skill" in content
 
+    def test_edit_external_skill_rejected(self, tmp_path):
+        local_skills = tmp_path / "local"
+        external_skills = tmp_path / "external"
+        local_skills.mkdir()
+        (external_skills / "shared-skill").mkdir(parents=True)
+        (external_skills / "shared-skill" / "SKILL.md").write_text(VALID_SKILL_CONTENT)
+
+        with patch("tools.skill_manager_tool.SKILLS_DIR", local_skills), \
+             patch("agent.skill_utils.get_all_skills_dirs", return_value=[local_skills, external_skills]):
+            result = _edit_skill("shared-skill", VALID_SKILL_CONTENT_2)
+
+        assert result["success"] is False
+        assert "read-only" in result["error"]
+        assert "external_dirs" in result["error"]
+        assert "Updated description" not in (external_skills / "shared-skill" / "SKILL.md").read_text()
+
 
 class TestPatchSkill:
     def test_patch_unique_match(self, tmp_path):
@@ -330,6 +346,21 @@ word word
             result = _patch_skill("nonexistent", "old", "new")
         assert result["success"] is False
 
+    def test_patch_external_skill_rejected(self, tmp_path):
+        local_skills = tmp_path / "local"
+        external_skills = tmp_path / "external"
+        local_skills.mkdir()
+        (external_skills / "shared-skill").mkdir(parents=True)
+        (external_skills / "shared-skill" / "SKILL.md").write_text(VALID_SKILL_CONTENT)
+
+        with patch("tools.skill_manager_tool.SKILLS_DIR", local_skills), \
+             patch("agent.skill_utils.get_all_skills_dirs", return_value=[local_skills, external_skills]):
+            result = _patch_skill("shared-skill", "Do the thing.", "Do the new thing.")
+
+        assert result["success"] is False
+        assert "read-only" in result["error"]
+        assert "Do the new thing." not in (external_skills / "shared-skill" / "SKILL.md").read_text()
+
 
 class TestDeleteSkill:
     def test_delete_existing(self, tmp_path):
@@ -349,6 +380,21 @@ class TestDeleteSkill:
             _create_skill("my-skill", VALID_SKILL_CONTENT, category="devops")
             _delete_skill("my-skill")
         assert not (tmp_path / "devops").exists()
+
+    def test_delete_external_skill_rejected(self, tmp_path):
+        local_skills = tmp_path / "local"
+        external_skills = tmp_path / "external"
+        local_skills.mkdir()
+        (external_skills / "shared-skill").mkdir(parents=True)
+        (external_skills / "shared-skill" / "SKILL.md").write_text(VALID_SKILL_CONTENT)
+
+        with patch("tools.skill_manager_tool.SKILLS_DIR", local_skills), \
+             patch("agent.skill_utils.get_all_skills_dirs", return_value=[local_skills, external_skills]):
+            result = _delete_skill("shared-skill")
+
+        assert result["success"] is False
+        assert "read-only" in result["error"]
+        assert (external_skills / "shared-skill").exists()
 
 
 # ---------------------------------------------------------------------------

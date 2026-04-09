@@ -1234,11 +1234,40 @@ class SessionDB:
             )
         self._execute_write(_do)
 
-    def delete_session(self, session_id: str) -> bool:
+    @staticmethod
+    def _remove_session_files(sessions_dir: Optional[Path], session_id: str) -> None:
+        """Remove on-disk transcript files for a session.
+
+        Cleans up `{session_id}.json`, `{session_id}.jsonl`, and any
+        `request_dump_{session_id}_*.json` files left by the gateway.
+        Silently skips files that don't exist.
+        """
+        if sessions_dir is None:
+            return
+        for suffix in (".json", ".jsonl"):
+            p = sessions_dir / f"{session_id}{suffix}"
+            try:
+                p.unlink(missing_ok=True)
+            except OSError:
+                pass
+        # request_dump files use session_id as a prefix component
+        try:
+            for p in sessions_dir.glob(f"request_dump_{session_id}_*.json"):
+                try:
+                    p.unlink(missing_ok=True)
+                except OSError:
+                    pass
+        except OSError:
+            pass
+
+    def delete_session(self, session_id: str,
+                       sessions_dir: Optional[Path] = None) -> bool:
         """Delete a session, its child sessions, and all their messages.
 
         Child sessions (subagent runs, compression continuations) are deleted
         first to satisfy the ``parent_session_id`` foreign key constraint.
+        When *sessions_dir* is provided, also removes on-disk transcript
+        files (``.json`` / ``.jsonl``) for the deleted sessions.
         Returns True if the session was found and deleted.
         """
         def _do(conn):
@@ -1255,20 +1284,29 @@ class SessionDB:
             for cid in child_ids:
                 conn.execute("DELETE FROM messages WHERE session_id = ?", (cid,))
                 conn.execute("DELETE FROM sessions WHERE id = ?", (cid,))
+                self._remove_session_files(sessions_dir, cid)
             # Delete the session itself
             conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
             conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
             return True
-        return self._execute_write(_do)
 
-    def prune_sessions(self, older_than_days: int = 90, source: str = None) -> int:
+        deleted = self._execute_write(_do)
+        if deleted:
+            self._remove_session_files(sessions_dir, session_id)
+        return deleted
+
+    def prune_sessions(self, older_than_days: int = 90, source: str = None,
+                       sessions_dir: Optional[Path] = None) -> int:
         """Delete sessions older than N days. Returns count of deleted sessions.
 
         Only prunes ended sessions (not active ones).  Child sessions whose
         parents are being pruned are deleted first to satisfy the
         ``parent_session_id`` foreign key constraint.
+        When *sessions_dir* is provided, also removes on-disk transcript
+        files (``.json`` / ``.jsonl``) for every pruned session.
         """
         cutoff = time.time() - (older_than_days * 86400)
+        all_removed: list[str] = []
 
         def _do(conn):
             if source:
@@ -1295,10 +1333,16 @@ class SessionDB:
                     conn.execute("DELETE FROM messages WHERE session_id = ?", (cid,))
                     conn.execute("DELETE FROM sessions WHERE id = ?", (cid,))
                     session_ids.discard(cid)  # don't double-delete
+                    all_removed.append(cid)
 
             for sid in session_ids:
                 conn.execute("DELETE FROM messages WHERE session_id = ?", (sid,))
                 conn.execute("DELETE FROM sessions WHERE id = ?", (sid,))
+                all_removed.append(sid)
             return len(session_ids)
 
-        return self._execute_write(_do)
+        count = self._execute_write(_do)
+        # Clean up on-disk files outside the DB transaction
+        for sid in all_removed:
+            self._remove_session_files(sessions_dir, sid)
+        return count

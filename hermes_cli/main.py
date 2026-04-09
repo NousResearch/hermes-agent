@@ -5213,7 +5213,8 @@ For more help on a command:
                 if not _confirm_prompt(f"Delete session '{resolved_session_id}' and all its messages? [y/N] "):
                     print("Cancelled.")
                     return
-            if db.delete_session(resolved_session_id):
+            sessions_dir = get_hermes_home() / "sessions"
+            if db.delete_session(resolved_session_id, sessions_dir=sessions_dir):
                 print(f"Deleted session '{resolved_session_id}'.")
             else:
                 print(f"Session '{args.session_id}' not found.")
@@ -5225,7 +5226,9 @@ For more help on a command:
                 if not _confirm_prompt(f"Delete all ended sessions older than {days} days{source_msg}? [y/N] "):
                     print("Cancelled.")
                     return
-            count = db.prune_sessions(older_than_days=days, source=args.source)
+            sessions_dir = get_hermes_home() / "sessions"
+            count = db.prune_sessions(older_than_days=days, source=args.source,
+                                      sessions_dir=sessions_dir)
             print(f"Pruned {count} session(s).")
 
         elif action == "rename":

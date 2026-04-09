@@ -46,6 +46,7 @@ const STARTUP_RESUME_ID = (process.env.HERMES_TUI_RESUME ?? '').trim()
 
 const LARGE_PASTE = { chars: 8000, lines: 80 }
 const EXCERPT = { chars: 1200, lines: 14 }
+const MAX_HISTORY = 800
 
 const SECRET_PATTERNS = [
   /AKIA[0-9A-Z]{16}/g,
@@ -286,6 +287,8 @@ export function App({ gw }: { gw: GatewayClient }) {
   const pasteCounterRef = useRef(0)
   const colsRef = useRef(cols)
   const turnToolsRef = useRef<string[]>([])
+  const statusTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const onEventRef = useRef<(ev: GatewayEvent) => void>(() => {})
   colsRef.current = cols
   reasoningRef.current = reasoning
 
@@ -322,8 +325,15 @@ export function App({ gw }: { gw: GatewayClient }) {
   // ── Core actions ─────────────────────────────────────────────────
 
   const appendMessage = useCallback((msg: Msg) => {
-    setMessages(prev => [...prev, msg])
-    setHistoryItems(prev => [...prev, msg])
+    const cap = (items: Msg[]) =>
+      items.length <= MAX_HISTORY
+        ? items
+        : items[0]?.kind === 'intro'
+          ? [items[0]!, ...items.slice(-(MAX_HISTORY - 1))]
+          : items.slice(-MAX_HISTORY)
+
+    setMessages(prev => cap([...prev, msg]))
+    setHistoryItems(prev => cap([...prev, msg]))
   }, [])
 
   const sys = useCallback((text: string) => appendMessage({ role: 'system' as const, text }), [appendMessage])
@@ -378,6 +388,8 @@ export function App({ gw }: { gw: GatewayClient }) {
   }
 
   const resetSession = () => {
+    idle()
+    setReasoning('')
     setSid(null as any) // will be set by caller
     setHistoryItems([])
     setMessages([])
@@ -385,6 +397,7 @@ export function App({ gw }: { gw: GatewayClient }) {
     setActivity([])
     setBgTasks(new Set())
     setUsage(ZERO)
+    turnToolsRef.current = []
     lastStatusNoteRef.current = ''
     protocolWarnedRef.current = false
   }
@@ -539,6 +552,11 @@ export function App({ gw }: { gw: GatewayClient }) {
 
     if (payload.redactions > 0) {
       pushActivity(`redacted ${payload.redactions} secret-like value(s)`, 'warn')
+    }
+
+    if (statusTimerRef.current) {
+      clearTimeout(statusTimerRef.current)
+      statusTimerRef.current = null
     }
 
     inflightPasteIdsRef.current = payload.usedIds
@@ -855,7 +873,15 @@ export function App({ gw }: { gw: GatewayClient }) {
         setActivity([])
         turnToolsRef.current = []
         setStatus('interrupted')
-        setTimeout(() => setStatus('ready'), 1500)
+
+        if (statusTimerRef.current) {
+          clearTimeout(statusTimerRef.current)
+        }
+
+        statusTimerRef.current = setTimeout(() => {
+          statusTimerRef.current = null
+          setStatus('ready')
+        }, 1500)
       } else if (input || inputBuf.length) {
         clearIn()
       } else {
@@ -1077,7 +1103,7 @@ export function App({ gw }: { gw: GatewayClient }) {
         case 'btw.complete':
           setBgTasks(prev => {
             const next = new Set(prev)
-            next.delete(`btw:${p.task_id ?? 'x'}`)
+            next.delete('btw:x')
 
             return next
           })
@@ -1096,6 +1122,8 @@ export function App({ gw }: { gw: GatewayClient }) {
           const wasInterrupted = interruptedRef.current
           const savedReasoning = reasoningRef.current.trim()
           const savedTools = [...turnToolsRef.current]
+          const finalText = (p?.rendered ?? p?.text ?? buf.current).trimStart()
+
           idle()
           setReasoning('')
           setStreaming('')
@@ -1108,7 +1136,7 @@ export function App({ gw }: { gw: GatewayClient }) {
           if (!wasInterrupted) {
             appendMessage({
               role: 'assistant',
-              text: (p?.rendered ?? p?.text ?? buf.current).trimStart(),
+              text: finalText,
               thinking: savedReasoning || undefined,
               tools: savedTools.length ? savedTools : undefined
             })
@@ -1152,20 +1180,24 @@ export function App({ gw }: { gw: GatewayClient }) {
     [appendMessage, dequeue, newSession, pushActivity, send, sys]
   )
 
-  const onExit = useCallback(() => {
-    setStatus('gateway exited')
-    exit()
-  }, [exit])
+  onEventRef.current = onEvent
 
   useEffect(() => {
-    gw.on('event', onEvent)
-    gw.on('exit', onExit)
+    const handler = (ev: GatewayEvent) => onEventRef.current(ev)
+
+    const exitHandler = () => {
+      setStatus('gateway exited')
+      exit()
+    }
+
+    gw.on('event', handler)
+    gw.on('exit', exitHandler)
 
     return () => {
-      gw.off('event', onEvent)
-      gw.off('exit', onExit)
+      gw.off('event', handler)
+      gw.off('exit', exitHandler)
     }
-  }, [gw, onEvent, onExit])
+  }, [gw, exit])
 
   // ── Slash commands ───────────────────────────────────────────────
 
@@ -1505,8 +1537,36 @@ export function App({ gw }: { gw: GatewayClient }) {
               setUsage({ input: r.input ?? 0, output: r.output ?? 0, total: r.total ?? 0, calls: r.calls ?? 0 })
             }
 
+            if (!r?.calls) {
+              sys('no API calls yet')
+
+              return
+            }
+
+            const f = (v: number) => (v ?? 0).toLocaleString()
+            const ln = (k: string, v: string) => `  ${k.padEnd(26)}${v.padStart(10)}`
+            const hr = `  ${'─'.repeat(36)}`
+
+            const cost =
+              r.cost_usd != null ? `${r.cost_status === 'estimated' ? '~' : ''}$${r.cost_usd.toFixed(4)}` : null
+
             sys(
-              `${fmtK(r?.input ?? 0)} in · ${fmtK(r?.output ?? 0)} out · ${fmtK(r?.total ?? 0)} total · ${r?.calls ?? 0} calls`
+              [
+                hr,
+                ln('Model:', r.model ?? ''),
+                ln('Input tokens:', f(r.input)),
+                ln('Cache read tokens:', f(r.cache_read)),
+                ln('Cache write tokens:', f(r.cache_write)),
+                ln('Output tokens:', f(r.output)),
+                ln('Total tokens:', f(r.total)),
+                ln('API calls:', f(r.calls)),
+                cost && ln('Cost:', cost),
+                hr,
+                r.context_max && `  Context: ${f(r.context_used)} / ${f(r.context_max)} (${r.context_percent}%)`,
+                r.compressions && `  Compressions: ${r.compressions}`
+              ]
+                .filter(Boolean)
+                .join('\n')
             )
           })
 
@@ -1634,7 +1694,15 @@ export function App({ gw }: { gw: GatewayClient }) {
           setActivity([])
           turnToolsRef.current = []
           setStatus('interrupted')
-          setTimeout(() => setStatus('ready'), 1500)
+
+          if (statusTimerRef.current) {
+            clearTimeout(statusTimerRef.current)
+          }
+
+          statusTimerRef.current = setTimeout(() => {
+            statusTimerRef.current = null
+            setStatus('ready')
+          }, 1500)
 
           return
         }

@@ -232,8 +232,13 @@ def _resolve_model() -> str:
 def _get_usage(agent) -> dict:
     g = lambda k, fb=None: getattr(agent, k, 0) or (getattr(agent, fb, 0) if fb else 0)
     usage = {
+        "model": getattr(agent, "model", "") or "",
         "input": g("session_input_tokens", "session_prompt_tokens"),
         "output": g("session_output_tokens", "session_completion_tokens"),
+        "cache_read": g("session_cache_read_tokens"),
+        "cache_write": g("session_cache_write_tokens"),
+        "prompt": g("session_prompt_tokens"),
+        "completion": g("session_completion_tokens"),
         "total": g("session_total_tokens"),
         "calls": g("session_api_calls"),
     }
@@ -245,6 +250,25 @@ def _get_usage(agent) -> dict:
             usage["context_used"] = ctx_used
             usage["context_max"] = ctx_max
             usage["context_percent"] = max(0, min(100, round(ctx_used / ctx_max * 100)))
+        usage["compressions"] = getattr(comp, "compression_count", 0) or 0
+    try:
+        from agent.usage_pricing import CanonicalUsage, estimate_usage_cost
+        cost = estimate_usage_cost(
+            usage["model"],
+            CanonicalUsage(
+                input_tokens=usage["input"],
+                output_tokens=usage["output"],
+                cache_read_tokens=usage["cache_read"],
+                cache_write_tokens=usage["cache_write"],
+            ),
+            provider=getattr(agent, "provider", None),
+            base_url=getattr(agent, "base_url", None),
+        )
+        usage["cost_status"] = cost.status
+        if cost.amount_usd is not None:
+            usage["cost_usd"] = float(cost.amount_usd)
+    except Exception:
+        pass
     return usage
 
 

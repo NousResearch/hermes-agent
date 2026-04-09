@@ -48,16 +48,22 @@ interface Props {
 
 export function TextInput({ value, onChange, onPaste, onSubmit, placeholder = '', focus = true }: Props) {
   const [cur, setCur] = useState(value.length)
+
   const curRef = useRef(cur)
   const vRef = useRef(value)
   const selfChange = useRef(false)
   const pasteBuf = useRef('')
   const pasteTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pastePos = useRef(0)
-  const undo = useRef<Array<{ cursor: number; value: string }>>([])
-  const redo = useRef<Array<{ cursor: number; value: string }>>([])
-  curRef.current = cur
-  vRef.current = value
+  const undoStack = useRef<Array<{ cursor: number; value: string }>>([])
+  const redoStack = useRef<Array<{ cursor: number; value: string }>>([])
+
+  const onChangeRef = useRef(onChange)
+  const onSubmitRef = useRef(onSubmit)
+  const onPasteRef = useRef(onPaste)
+  onChangeRef.current = onChange
+  onSubmitRef.current = onSubmit
+  onPasteRef.current = onPaste
 
   useEffect(() => {
     if (selfChange.current) {
@@ -65,34 +71,56 @@ export function TextInput({ value, onChange, onPaste, onSubmit, placeholder = ''
     } else {
       setCur(value.length)
       curRef.current = value.length
-      undo.current = []
-      redo.current = []
+      vRef.current = value
+      undoStack.current = []
+      redoStack.current = []
     }
   }, [value])
 
-  const commit = (nextValue: string, nextCursor: number, track = true) => {
-    const currentValue = vRef.current
-    const currentCursor = curRef.current
-    const c = Math.max(0, Math.min(nextCursor, nextValue.length))
+  useEffect(
+    () => () => {
+      if (pasteTimer.current) {
+        clearTimeout(pasteTimer.current)
+      }
+    },
+    []
+  )
 
-    if (track && nextValue !== currentValue) {
-      undo.current.push({ cursor: currentCursor, value: currentValue })
+  // ── Buffer ops (synchronous, ref-based — no stale closures) ─────
 
-      if (undo.current.length > 200) {
-        undo.current.shift()
+  const commit = (next: string, nextCur: number, track = true) => {
+    const prev = vRef.current
+    const c = Math.max(0, Math.min(nextCur, next.length))
+
+    if (track && next !== prev) {
+      undoStack.current.push({ cursor: curRef.current, value: prev })
+
+      if (undoStack.current.length > 200) {
+        undoStack.current.shift()
       }
 
-      redo.current = []
+      redoStack.current = []
     }
 
     setCur(c)
     curRef.current = c
-    vRef.current = nextValue
+    vRef.current = next
 
-    if (nextValue !== currentValue) {
+    if (next !== prev) {
       selfChange.current = true
-      onChange(nextValue)
+      onChangeRef.current(next)
     }
+  }
+
+  const swap = (from: typeof undoStack, to: typeof redoStack) => {
+    const entry = from.current.pop()
+
+    if (!entry) {
+      return
+    }
+
+    to.current.push({ cursor: curRef.current, value: vRef.current })
+    commit(entry.value, entry.cursor, false)
   }
 
   const flushPaste = () => {
@@ -105,19 +133,19 @@ export function TextInput({ value, onChange, onPaste, onSubmit, placeholder = ''
       return
     }
 
-    const currentValue = vRef.current
-    const handled = onPaste?.({ cursor: at, text: pasted, value: currentValue })
+    const v = vRef.current
+    const handled = onPasteRef.current?.({ cursor: at, text: pasted, value: v })
 
     if (handled) {
-      commit(handled.value, handled.cursor)
-
-      return
+      return commit(handled.value, handled.cursor)
     }
 
-    if (pasted.length && PRINTABLE.test(pasted)) {
-      commit(currentValue.slice(0, at) + pasted + currentValue.slice(at), at + pasted.length)
+    if (PRINTABLE.test(pasted)) {
+      commit(v.slice(0, at) + pasted + v.slice(at), at + pasted.length)
     }
   }
+
+  // ── Input handler (reads only from refs) ────────────────────────
 
   useInput(
     (inp, k) => {
@@ -136,42 +164,24 @@ export function TextInput({ value, onChange, onPaste, onSubmit, placeholder = ''
 
       if (k.return) {
         if (k.shift || k.meta) {
-          commit(value.slice(0, cur) + '\n' + value.slice(cur), cur + 1)
+          commit(vRef.current.slice(0, curRef.current) + '\n' + vRef.current.slice(curRef.current), curRef.current + 1)
         } else {
-          onSubmit?.(value)
+          onSubmitRef.current?.(vRef.current)
         }
 
         return
       }
 
-      let c = cur
-      let v = value
+      let c = curRef.current
+      let v = vRef.current
       const mod = k.ctrl || k.meta
 
       if (k.ctrl && inp === 'z') {
-        const prev = undo.current.pop()
-
-        if (!prev) {
-          return
-        }
-
-        redo.current.push({ cursor: curRef.current, value: vRef.current })
-        commit(prev.value, prev.cursor, false)
-
-        return
+        return swap(undoStack, redoStack)
       }
 
       if ((k.ctrl && inp === 'y') || (k.meta && k.shift && inp === 'z')) {
-        const next = redo.current.pop()
-
-        if (!next) {
-          return
-        }
-
-        undo.current.push({ cursor: curRef.current, value: vRef.current })
-        commit(next.value, next.cursor, false)
-
-        return
+        return swap(redoStack, undoStack)
       }
 
       if (k.home || (k.ctrl && inp === 'a')) {
@@ -212,22 +222,18 @@ export function TextInput({ value, onChange, onPaste, onSubmit, placeholder = ''
         }
 
         if (raw === '\n') {
-          commit(v.slice(0, c) + '\n' + v.slice(c), c + 1)
-
-          return
+          return commit(v.slice(0, c) + '\n' + v.slice(c), c + 1)
         }
 
         if (raw.length > 1 || raw.includes('\n')) {
           if (!pasteBuf.current) {
             pastePos.current = c
           }
-
           pasteBuf.current += raw
 
           if (pasteTimer.current) {
             clearTimeout(pasteTimer.current)
           }
-
           pasteTimer.current = setTimeout(flushPaste, 50)
 
           return
@@ -248,6 +254,8 @@ export function TextInput({ value, onChange, onPaste, onSubmit, placeholder = ''
     { isActive: focus }
   )
 
+  // ── Render ──────────────────────────────────────────────────────
+
   if (!focus) {
     return <Text>{value || (placeholder ? DIM + placeholder + DIM_OFF : '')}</Text>
   }
@@ -256,15 +264,9 @@ export function TextInput({ value, onChange, onPaste, onSubmit, placeholder = ''
     return <Text>{INV + (placeholder[0] ?? ' ') + INV_OFF + DIM + placeholder.slice(1) + DIM_OFF}</Text>
   }
 
-  let r = ''
+  const rendered =
+    [...value].map((ch, i) => (i === cur ? INV + ch + INV_OFF : ch)).join('') +
+    (cur === value.length ? INV + ' ' + INV_OFF : '')
 
-  for (let i = 0; i < value.length; i++) {
-    r += i === cur ? INV + value[i] + INV_OFF : value[i]
-  }
-
-  if (cur === value.length) {
-    r += INV + ' ' + INV_OFF
-  }
-
-  return <Text>{r}</Text>
+  return <Text>{rendered}</Text>
 }

@@ -11,4 +11,4 @@ if (!process.stdin.isTTY) {
 
 const gw = new GatewayClient()
 gw.start()
-render(<App gw={gw} />, { exitOnCtrlC: false })
+render(<App gw={gw} />, { exitOnCtrlC: false, maxFps: 60 })

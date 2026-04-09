@@ -33,6 +33,13 @@ def git_repo(tmp_path):
         ["git", "commit", "-m", "Initial commit"],
         cwd=repo, capture_output=True,
     )
+    # Add a fake remote ref so cleanup logic sees the initial commit as
+    # "pushed".  Without this, `git log HEAD --not --remotes` treats every
+    # commit as unpushed and cleanup refuses to delete worktrees.
+    subprocess.run(
+        ["git", "update-ref", "refs/remotes/origin/main", "HEAD"],
+        cwd=repo, capture_output=True,
+    )
     return repo
 
 
@@ -81,7 +88,11 @@ def _setup_worktree(repo_root):
 
 
 def _cleanup_worktree(info):
-    """Test version of _cleanup_worktree."""
+    """Test version of _cleanup_worktree.
+
+    Preserves the worktree only if it has unpushed commits.
+    Dirty working tree alone is not enough to keep it.
+    """
     wt_path = info["path"]
     branch = info["branch"]
     repo_root = info["repo_root"]
@@ -89,15 +100,15 @@ def _cleanup_worktree(info):
     if not Path(wt_path).exists():
         return
 
-    # Check for uncommitted changes
-    status = subprocess.run(
-        ["git", "status", "--porcelain"],
+    # Check for unpushed commits
+    result = subprocess.run(
+        ["git", "log", "--oneline", "HEAD", "--not", "--remotes"],
         capture_output=True, text=True, timeout=10, cwd=wt_path,
     )
-    has_changes = bool(status.stdout.strip())
+    has_unpushed = bool(result.stdout.strip())
 
-    if has_changes:
-        return False  # Did not clean up
+    if has_unpushed:
+        return False  # Did not clean up — has unpushed commits
 
     subprocess.run(
         ["git", "worktree", "remove", wt_path, "--force"],
@@ -204,20 +215,45 @@ class TestWorktreeCleanup:
         assert result is True
         assert not Path(info["path"]).exists()
 
-    def test_dirty_worktree_kept(self, git_repo):
+    def test_dirty_worktree_cleaned_when_no_unpushed(self, git_repo):
+        """Dirty working tree without unpushed commits is cleaned up.
+
+        Agent sessions typically leave untracked files / artifacts behind.
+        Since all real work is in pushed commits, these don't warrant
+        keeping the worktree.
+        """
         info = _setup_worktree(str(git_repo))
         assert info is not None
 
-        # Make uncommitted changes
+        # Make uncommitted changes (untracked file)
         (Path(info["path"]) / "new-file.txt").write_text("uncommitted")
         subprocess.run(
             ["git", "add", "new-file.txt"],
             cwd=info["path"], capture_output=True,
         )
 
+        # The git_repo fixture already has a fake remote ref so the initial
+        # commit is seen as "pushed".  No unpushed commits → cleanup proceeds.
         result = _cleanup_worktree(info)
-        assert result is False
-        assert Path(info["path"]).exists()  # Still there
+        assert result is True  # Cleaned up despite dirty working tree
+        assert not Path(info["path"]).exists()
+
+    def test_worktree_with_unpushed_commits_kept(self, git_repo):
+        """Worktree with unpushed commits is preserved."""
+        info = _setup_worktree(str(git_repo))
+        assert info is not None
+
+        # Make a commit that is NOT on any remote
+        (Path(info["path"]) / "work.txt").write_text("real work")
+        subprocess.run(["git", "add", "work.txt"], cwd=info["path"], capture_output=True)
+        subprocess.run(
+            ["git", "commit", "-m", "agent work"],
+            cwd=info["path"], capture_output=True,
+        )
+
+        result = _cleanup_worktree(info)
+        assert result is False  # Kept — has unpushed commits
+        assert Path(info["path"]).exists()
 
     def test_branch_deleted_on_cleanup(self, git_repo):
         info = _setup_worktree(str(git_repo))
@@ -367,7 +403,7 @@ class TestMultipleWorktrees:
         lines = [l for l in result.stdout.strip().splitlines() if l.strip()]
         assert len(lines) == 11
 
-        # Cleanup all
+        # Cleanup all (git_repo fixture has a fake remote ref so cleanup works)
         for info in worktrees:
             # Discard changes first so cleanup works
             subprocess.run(
@@ -492,32 +528,76 @@ class TestStaleWorktreePruning:
         assert not pruned
         assert Path(info["path"]).exists()
 
-    def test_keeps_dirty_old_worktree(self, git_repo):
-        """Old worktrees with uncommitted changes should NOT be pruned."""
+    def test_keeps_old_worktree_with_unpushed_commits(self, git_repo):
+        """Old worktrees (24-72h) with unpushed commits should NOT be pruned."""
         import time
 
         info = _setup_worktree(str(git_repo))
         assert info is not None
 
-        # Make it dirty
-        (Path(info["path"]) / "dirty.txt").write_text("uncommitted")
+        # Make an unpushed commit
+        (Path(info["path"]) / "work.txt").write_text("real work")
+        subprocess.run(["git", "add", "work.txt"], cwd=info["path"], capture_output=True)
         subprocess.run(
-            ["git", "add", "dirty.txt"],
+            ["git", "commit", "-m", "agent work"],
             cwd=info["path"], capture_output=True,
         )
 
-        # Make it old
+        # Make it old (25h — in the 24-72h soft tier)
         old_time = time.time() - (25 * 3600)
         os.utime(info["path"], (old_time, old_time))
 
-        # Check if it would be pruned
-        status = subprocess.run(
-            ["git", "status", "--porcelain"],
+        # Check for unpushed commits (simulates prune logic)
+        result = subprocess.run(
+            ["git", "log", "--oneline", "HEAD", "--not", "--remotes"],
             capture_output=True, text=True, cwd=info["path"],
         )
-        has_changes = bool(status.stdout.strip())
-        assert has_changes  # Should be dirty → not pruned
+        has_unpushed = bool(result.stdout.strip())
+        assert has_unpushed  # Has unpushed commits → not pruned in soft tier
         assert Path(info["path"]).exists()
+
+    def test_force_prunes_very_old_worktree(self, git_repo):
+        """Worktrees older than 72h should be force-pruned regardless."""
+        import time
+
+        info = _setup_worktree(str(git_repo))
+        assert info is not None
+
+        # Make an unpushed commit (would normally protect it)
+        (Path(info["path"]) / "work.txt").write_text("stale work")
+        subprocess.run(["git", "add", "work.txt"], cwd=info["path"], capture_output=True)
+        subprocess.run(
+            ["git", "commit", "-m", "old agent work"],
+            cwd=info["path"], capture_output=True,
+        )
+
+        # Make it very old (73h — beyond the 72h hard threshold)
+        old_time = time.time() - (73 * 3600)
+        os.utime(info["path"], (old_time, old_time))
+
+        # Simulate the force-prune tier check
+        hard_cutoff = time.time() - (72 * 3600)
+        mtime = Path(info["path"]).stat().st_mtime
+        assert mtime <= hard_cutoff  # Should qualify for force removal
+
+        # Actually remove it (simulates _prune_stale_worktrees force path)
+        branch_result = subprocess.run(
+            ["git", "branch", "--show-current"],
+            capture_output=True, text=True, timeout=5, cwd=info["path"],
+        )
+        branch = branch_result.stdout.strip()
+
+        subprocess.run(
+            ["git", "worktree", "remove", info["path"], "--force"],
+            capture_output=True, text=True, timeout=15, cwd=str(git_repo),
+        )
+        if branch:
+            subprocess.run(
+                ["git", "branch", "-D", branch],
+                capture_output=True, text=True, timeout=10, cwd=str(git_repo),
+            )
+
+        assert not Path(info["path"]).exists()
 
 
 class TestEdgeCases:
@@ -611,6 +691,133 @@ class TestTerminalCWDIntegration:
         assert result.stdout.strip() == "true"
 
 
+class TestOrphanedBranchPruning:
+    """Test cleanup of orphaned hermes/* and pr-* branches."""
+
+    def test_prunes_orphaned_hermes_branch(self, git_repo):
+        """hermes/hermes-* branches with no worktree should be deleted."""
+        # Create a branch that looks like a worktree branch but has no worktree
+        subprocess.run(
+            ["git", "branch", "hermes/hermes-deadbeef", "HEAD"],
+            cwd=str(git_repo), capture_output=True,
+        )
+
+        # Verify it exists
+        result = subprocess.run(
+            ["git", "branch", "--list", "hermes/hermes-deadbeef"],
+            capture_output=True, text=True, cwd=str(git_repo),
+        )
+        assert "hermes/hermes-deadbeef" in result.stdout
+
+        # Simulate _prune_orphaned_branches logic
+        result = subprocess.run(
+            ["git", "branch", "--format=%(refname:short)"],
+            capture_output=True, text=True, cwd=str(git_repo),
+        )
+        all_branches = [b.strip() for b in result.stdout.strip().split("\n") if b.strip()]
+
+        wt_result = subprocess.run(
+            ["git", "worktree", "list", "--porcelain"],
+            capture_output=True, text=True, cwd=str(git_repo),
+        )
+        active_branches = {"main"}
+        for line in wt_result.stdout.split("\n"):
+            if line.startswith("branch refs/heads/"):
+                active_branches.add(line.split("branch refs/heads/", 1)[-1].strip())
+
+        orphaned = [
+            b for b in all_branches
+            if b not in active_branches
+            and (b.startswith("hermes/hermes-") or b.startswith("pr-"))
+        ]
+        assert "hermes/hermes-deadbeef" in orphaned
+
+        # Delete them
+        if orphaned:
+            subprocess.run(
+                ["git", "branch", "-D"] + orphaned,
+                capture_output=True, text=True, cwd=str(git_repo),
+            )
+
+        # Verify gone
+        result = subprocess.run(
+            ["git", "branch", "--list", "hermes/hermes-deadbeef"],
+            capture_output=True, text=True, cwd=str(git_repo),
+        )
+        assert "hermes/hermes-deadbeef" not in result.stdout
+
+    def test_prunes_orphaned_pr_branch(self, git_repo):
+        """pr-* branches should be deleted during pruning."""
+        subprocess.run(
+            ["git", "branch", "pr-1234", "HEAD"],
+            cwd=str(git_repo), capture_output=True,
+        )
+        subprocess.run(
+            ["git", "branch", "pr-5678", "HEAD"],
+            cwd=str(git_repo), capture_output=True,
+        )
+
+        result = subprocess.run(
+            ["git", "branch", "--format=%(refname:short)"],
+            capture_output=True, text=True, cwd=str(git_repo),
+        )
+        all_branches = [b.strip() for b in result.stdout.strip().split("\n") if b.strip()]
+
+        active_branches = {"main"}
+        orphaned = [
+            b for b in all_branches
+            if b not in active_branches and b.startswith("pr-")
+        ]
+        assert "pr-1234" in orphaned
+        assert "pr-5678" in orphaned
+
+        subprocess.run(
+            ["git", "branch", "-D"] + orphaned,
+            capture_output=True, text=True, cwd=str(git_repo),
+        )
+
+        # Verify gone
+        result = subprocess.run(
+            ["git", "branch", "--format=%(refname:short)"],
+            capture_output=True, text=True, cwd=str(git_repo),
+        )
+        remaining = result.stdout.strip()
+        assert "pr-1234" not in remaining
+        assert "pr-5678" not in remaining
+
+    def test_preserves_active_worktree_branch(self, git_repo):
+        """Branches with active worktrees should NOT be pruned."""
+        info = _setup_worktree(str(git_repo))
+        assert info is not None
+
+        result = subprocess.run(
+            ["git", "worktree", "list", "--porcelain"],
+            capture_output=True, text=True, cwd=str(git_repo),
+        )
+        active_branches = set()
+        for line in result.stdout.split("\n"):
+            if line.startswith("branch refs/heads/"):
+                active_branches.add(line.split("branch refs/heads/", 1)[-1].strip())
+
+        assert info["branch"] in active_branches  # Protected
+
+    def test_preserves_main_branch(self, git_repo):
+        """main branch should never be pruned."""
+        result = subprocess.run(
+            ["git", "branch", "--format=%(refname:short)"],
+            capture_output=True, text=True, cwd=str(git_repo),
+        )
+        all_branches = [b.strip() for b in result.stdout.strip().split("\n") if b.strip()]
+        active_branches = {"main"}
+
+        orphaned = [
+            b for b in all_branches
+            if b not in active_branches
+            and (b.startswith("hermes/hermes-") or b.startswith("pr-"))
+        ]
+        assert "main" not in orphaned
+
+
 class TestSystemPromptInjection:
     """Test that the agent gets worktree context in its system prompt."""
 
@@ -625,7 +832,7 @@ class TestSystemPromptInjection:
             f"{info['path']}. Your branch is `{info['branch']}`. "
             f"Changes here do not affect the main working tree or other agents. "
             f"Remember to commit and push your changes, and create a PR if appropriate. "
-            f"The original repo is at {info['repo_root']}.]"
+            f"The original repo is at {info['repo_root']}.]\n"
         )
 
         assert info["path"] in wt_note

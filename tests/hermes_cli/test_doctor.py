@@ -136,3 +136,73 @@ def test_check_gateway_service_linger_skips_when_service_not_installed(monkeypat
     out = capsys.readouterr().out
     assert out == ""
     assert issues == []
+
+
+# ── Memory provider section (doctor should only check the *active* provider) ──
+
+
+class TestDoctorMemoryProviderSection:
+    """The ◆ Memory Provider section should respect memory.provider config."""
+
+    def _make_hermes_home(self, tmp_path, provider=""):
+        """Create a minimal HERMES_HOME with config.yaml."""
+        home = tmp_path / ".hermes"
+        home.mkdir(parents=True, exist_ok=True)
+        import yaml
+        config = {"memory": {"provider": provider}} if provider else {"memory": {}}
+        (home / "config.yaml").write_text(yaml.dump(config))
+        return home
+
+    def _run_doctor_and_capture(self, monkeypatch, tmp_path, provider=""):
+        """Run doctor and capture stdout."""
+        home = self._make_hermes_home(tmp_path, provider)
+        monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+        monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", tmp_path / "project")
+        monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+        (tmp_path / "project").mkdir(exist_ok=True)
+
+        # Stub tool availability (returns empty) so doctor runs past it
+        fake_model_tools = types.SimpleNamespace(
+            check_tool_availability=lambda *a, **kw: ([], []),
+            TOOLSET_REQUIREMENTS={},
+        )
+        monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+        # Stub auth checks to avoid real API calls
+        try:
+            from hermes_cli import auth as _auth_mod
+            monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
+            monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
+        except Exception:
+            pass
+
+        import io, contextlib
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            doctor_mod.run_doctor(Namespace(fix=False))
+        return buf.getvalue()
+
+    def test_no_provider_shows_builtin_ok(self, monkeypatch, tmp_path):
+        out = self._run_doctor_and_capture(monkeypatch, tmp_path, provider="")
+        assert "Memory Provider" in out
+        assert "Built-in memory active" in out
+        # Should NOT mention Honcho or Mem0 errors
+        assert "Honcho API key" not in out
+        assert "Mem0" not in out
+
+    def test_honcho_provider_not_installed_shows_fail(self, monkeypatch, tmp_path):
+        # Make honcho import fail
+        monkeypatch.setitem(
+            sys.modules, "plugins.memory.honcho.client", None
+        )
+        out = self._run_doctor_and_capture(monkeypatch, tmp_path, provider="honcho")
+        assert "Memory Provider" in out
+        # Should show failure since honcho is set but not importable
+        assert "Built-in memory active" not in out
+
+    def test_mem0_provider_not_installed_shows_fail(self, monkeypatch, tmp_path):
+        # Make mem0 import fail
+        monkeypatch.setitem(sys.modules, "plugins.memory.mem0", None)
+        out = self._run_doctor_and_capture(monkeypatch, tmp_path, provider="mem0")
+        assert "Memory Provider" in out
+        assert "Built-in memory active" not in out

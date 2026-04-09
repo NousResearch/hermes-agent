@@ -613,6 +613,11 @@ def _run_cleanup():
     # Shut down memory provider (on_session_end + shutdown_all) at actual
     # session boundary — NOT per-turn inside run_conversation().
     try:
+        from hermes_cli.plugins import invoke_hook as _invoke_hook
+        _invoke_hook("on_session_finalize", session_id=_active_agent_ref.session_id if _active_agent_ref else None, platform="cli")
+    except Exception:
+        pass
+    try:
         if _active_agent_ref and hasattr(_active_agent_ref, 'shutdown_memory_provider'):
             _active_agent_ref.shutdown_memory_provider(
                 getattr(_active_agent_ref, 'conversation_history', None) or []
@@ -755,7 +760,10 @@ def _setup_worktree(repo_root: str = None) -> Optional[Dict[str, str]]:
 def _cleanup_worktree(info: Dict[str, str] = None) -> None:
     """Remove a worktree and its branch on exit.
 
-    If the worktree has uncommitted changes, warn and keep it.
+    Preserves the worktree only if it has unpushed commits (real work
+    that hasn't been pushed to any remote).  Uncommitted changes alone
+    (untracked files, test artifacts) are not enough to keep it — agent
+    work lives in commits/PRs, not the working tree.
     """
     global _active_worktree
     info = info or _active_worktree
@@ -771,23 +779,27 @@ def _cleanup_worktree(info: Dict[str, str] = None) -> None:
     if not Path(wt_path).exists():
         return
 
-    # Check for uncommitted changes
+    # Check for unpushed commits — commits reachable from HEAD but not
+    # from any remote branch.  These represent real work the agent did
+    # but didn't push.
+    has_unpushed = False
     try:
-        status = subprocess.run(
-            ["git", "status", "--porcelain"],
+        result = subprocess.run(
+            ["git", "log", "--oneline", "HEAD", "--not", "--remotes"],
             capture_output=True, text=True, timeout=10, cwd=wt_path,
         )
-        has_changes = bool(status.stdout.strip())
+        has_unpushed = bool(result.stdout.strip())
     except Exception:
-        has_changes = True  # Assume dirty on error — don't delete
+        has_unpushed = True  # Assume unpushed on error — don't delete
 
-    if has_changes:
-        print(f"\n\033[33m⚠ Worktree has uncommitted changes, keeping: {wt_path}\033[0m")
-        print(f"  To clean up manually: git worktree remove {wt_path}")
+    if has_unpushed:
+        print(f"\n\033[33m⚠ Worktree has unpushed commits, keeping: {wt_path}\033[0m")
+        print(f"  To clean up manually: git worktree remove --force {wt_path}")
         _active_worktree = None
         return
 
-    # Remove worktree
+    # Remove worktree (even if working tree is dirty — uncommitted
+    # changes without unpushed commits are just artifacts)
     try:
         subprocess.run(
             ["git", "worktree", "remove", wt_path, "--force"],
@@ -796,7 +808,7 @@ def _cleanup_worktree(info: Dict[str, str] = None) -> None:
     except Exception as e:
         logger.debug("Failed to remove worktree: %s", e)
 
-    # Delete the branch (only if it was never pushed / has no upstream)
+    # Delete the branch
     try:
         subprocess.run(
             ["git", "branch", "-D", branch],
@@ -810,19 +822,27 @@ def _cleanup_worktree(info: Dict[str, str] = None) -> None:
 
 
 def _prune_stale_worktrees(repo_root: str, max_age_hours: int = 24) -> None:
-    """Remove worktrees older than max_age_hours that have no uncommitted changes.
+    """Remove stale worktrees and orphaned branches on startup.
 
-    Runs silently on startup to clean up after crashed/killed sessions.
+    Age-based tiers:
+    - Under max_age_hours (24h): skip — session may still be active.
+    - 24h–72h: remove if no unpushed commits.
+    - Over 72h: force remove regardless (nothing should sit this long).
+
+    Also prunes orphaned ``hermes/*`` and ``pr-*`` local branches that
+    have no corresponding worktree.
     """
     import subprocess
     import time
 
     worktrees_dir = Path(repo_root) / ".worktrees"
     if not worktrees_dir.exists():
+        _prune_orphaned_branches(repo_root)
         return
 
     now = time.time()
-    cutoff = now - (max_age_hours * 3600)
+    soft_cutoff = now - (max_age_hours * 3600)       # 24h default
+    hard_cutoff = now - (max_age_hours * 3 * 3600)   # 72h default
 
     for entry in worktrees_dir.iterdir():
         if not entry.is_dir() or not entry.name.startswith("hermes-"):
@@ -831,21 +851,24 @@ def _prune_stale_worktrees(repo_root: str, max_age_hours: int = 24) -> None:
         # Check age
         try:
             mtime = entry.stat().st_mtime
-            if mtime > cutoff:
+            if mtime > soft_cutoff:
                 continue  # Too recent — skip
         except Exception:
             continue
 
-        # Check for uncommitted changes
-        try:
-            status = subprocess.run(
-                ["git", "status", "--porcelain"],
-                capture_output=True, text=True, timeout=5, cwd=str(entry),
-            )
-            if status.stdout.strip():
-                continue  # Has changes — skip
-        except Exception:
-            continue  # Can't check — skip
+        force = mtime <= hard_cutoff  # Over 72h — force remove
+
+        if not force:
+            # 24h–72h tier: only remove if no unpushed commits
+            try:
+                result = subprocess.run(
+                    ["git", "log", "--oneline", "HEAD", "--not", "--remotes"],
+                    capture_output=True, text=True, timeout=5, cwd=str(entry),
+                )
+                if result.stdout.strip():
+                    continue  # Has unpushed commits — skip
+            except Exception:
+                continue  # Can't check — skip
 
         # Safe to remove
         try:
@@ -864,9 +887,80 @@ def _prune_stale_worktrees(repo_root: str, max_age_hours: int = 24) -> None:
                     ["git", "branch", "-D", branch],
                     capture_output=True, text=True, timeout=10, cwd=repo_root,
                 )
-            logger.debug("Pruned stale worktree: %s", entry.name)
+            logger.debug("Pruned stale worktree: %s (force=%s)", entry.name, force)
         except Exception as e:
             logger.debug("Failed to prune worktree %s: %s", entry.name, e)
+
+    _prune_orphaned_branches(repo_root)
+
+
+def _prune_orphaned_branches(repo_root: str) -> None:
+    """Delete local ``hermes/hermes-*`` and ``pr-*`` branches with no worktree.
+
+    These are auto-generated by ``hermes -w`` sessions and PR review
+    workflows respectively.  Once their worktree is gone they serve no
+    purpose and just accumulate.
+    """
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ["git", "branch", "--format=%(refname:short)"],
+            capture_output=True, text=True, timeout=10, cwd=repo_root,
+        )
+        if result.returncode != 0:
+            return
+        all_branches = [b.strip() for b in result.stdout.strip().split("\n") if b.strip()]
+    except Exception:
+        return
+
+    # Collect branches that are actively checked out in a worktree
+    active_branches: set = set()
+    try:
+        wt_result = subprocess.run(
+            ["git", "worktree", "list", "--porcelain"],
+            capture_output=True, text=True, timeout=10, cwd=repo_root,
+        )
+        for line in wt_result.stdout.split("\n"):
+            if line.startswith("branch refs/heads/"):
+                active_branches.add(line.split("branch refs/heads/", 1)[-1].strip())
+    except Exception:
+        return  # Can't determine active branches — bail
+
+    # Also protect the currently checked-out branch and main
+    try:
+        head_result = subprocess.run(
+            ["git", "branch", "--show-current"],
+            capture_output=True, text=True, timeout=5, cwd=repo_root,
+        )
+        current = head_result.stdout.strip()
+        if current:
+            active_branches.add(current)
+    except Exception:
+        pass
+    active_branches.add("main")
+
+    orphaned = [
+        b for b in all_branches
+        if b not in active_branches
+        and (b.startswith("hermes/hermes-") or b.startswith("pr-"))
+    ]
+
+    if not orphaned:
+        return
+
+    # Delete in batches
+    for i in range(0, len(orphaned), 50):
+        batch = orphaned[i:i + 50]
+        try:
+            subprocess.run(
+                ["git", "branch", "-D"] + batch,
+                capture_output=True, text=True, timeout=30, cwd=repo_root,
+            )
+        except Exception as e:
+            logger.debug("Failed to prune orphaned branches: %s", e)
+
+    logger.debug("Pruned %d orphaned branches", len(orphaned))
 
 # ============================================================================
 # ASCII Art & Branding
@@ -3314,6 +3408,22 @@ class HermesCLI:
         flush_tool_summary()
         print()
     
+    def _notify_session_boundary(self, event_type: str) -> None:
+        """Fire a session-boundary plugin hook (on_session_finalize or on_session_reset).
+
+        Non-blocking — errors are caught and logged.  Safe to call from any
+        lifecycle point (shutdown, /new, /reset).
+        """
+        try:
+            from hermes_cli.plugins import invoke_hook as _invoke_hook
+            _invoke_hook(
+                event_type,
+                session_id=self.agent.session_id if self.agent else None,
+                platform=getattr(self, "platform", None) or "cli",
+            )
+        except Exception:
+            pass
+
     def new_session(self, silent=False):
         """Start a fresh session with a new session ID and cleared agent state."""
         if self.agent and self.conversation_history:
@@ -3321,6 +3431,10 @@ class HermesCLI:
                 self.agent.flush_memories(self.conversation_history)
             except (Exception, KeyboardInterrupt):
                 pass
+            self._notify_session_boundary("on_session_finalize")
+        elif self.agent:
+            # First session or empty history — still finalize the old session
+            self._notify_session_boundary("on_session_finalize")
 
         old_session_id = self.session_id
         if self._session_db and old_session_id:
@@ -3365,6 +3479,7 @@ class HermesCLI:
                     )
                 except Exception:
                     pass
+            self._notify_session_boundary("on_session_reset")
 
         if not silent:
             print("(^_^)v New session started!")
@@ -4553,13 +4668,13 @@ class HermesCLI:
                             if output:
                                 self.console.print(_rich_text_from_ansi(output))
                             else:
-                                ChatConsole().print("[dim]Command returned no output[/]")
+                                self.console.print("[dim]Command returned no output[/]")
                         except subprocess.TimeoutExpired:
-                            ChatConsole().print("[bold red]Quick command timed out (30s)[/]")
+                            self.console.print("[bold red]Quick command timed out (30s)[/]")
                         except Exception as e:
-                            ChatConsole().print(f"[bold red]Quick command error: {e}[/]")
+                            self.console.print(f"[bold red]Quick command error: {e}[/]")
                     else:
-                        ChatConsole().print(f"[bold red]Quick command '{base_cmd}' has no command defined[/]")
+                        self.console.print(f"[bold red]Quick command '{base_cmd}' has no command defined[/]")
                 elif qcmd.get("type") == "alias":
                     target = qcmd.get("target", "").strip()
                     if target:
@@ -4568,9 +4683,9 @@ class HermesCLI:
                         aliased_command = f"{target} {user_args}".strip()
                         return self.process_command(aliased_command)
                     else:
-                        ChatConsole().print(f"[bold red]Quick command '{base_cmd}' has no target defined[/]")
+                        self.console.print(f"[bold red]Quick command '{base_cmd}' has no target defined[/]")
                 else:
-                    ChatConsole().print(f"[bold red]Quick command '{base_cmd}' has unsupported type (supported: 'exec', 'alias')[/]")
+                    self.console.print(f"[bold red]Quick command '{base_cmd}' has unsupported type (supported: 'exec', 'alias')[/]")
             # Check for plugin-registered slash commands
             elif base_cmd.lstrip("/") in _get_plugin_cmd_handler_names():
                 from hermes_cli.plugins import get_plugin_command_handler

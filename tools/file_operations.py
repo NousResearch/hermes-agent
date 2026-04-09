@@ -33,6 +33,7 @@ from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any
 from pathlib import Path
 from hermes_constants import get_hermes_home
+from tools.binary_extensions import BINARY_EXTENSIONS
 
 
 # ---------------------------------------------------------------------------
@@ -279,26 +280,6 @@ class FileOperations(ABC):
 # =============================================================================
 # Shell-based Implementation
 # =============================================================================
-
-# Binary file extensions (fast path check)
-BINARY_EXTENSIONS = {
-    # Images
-    '.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.ico', '.tiff', '.tif',
-    '.svg',  # SVG is text but often treated as binary
-    # Audio/Video
-    '.mp3', '.mp4', '.wav', '.avi', '.mov', '.mkv', '.flac', '.ogg', '.webm',
-    # Archives
-    '.zip', '.tar', '.gz', '.bz2', '.xz', '.7z', '.rar',
-    # Documents
-    '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
-    # Compiled/Binary
-    '.exe', '.dll', '.so', '.dylib', '.o', '.a', '.pyc', '.pyo', '.class',
-    '.wasm', '.bin',
-    # Fonts
-    '.ttf', '.otf', '.woff', '.woff2', '.eot',
-    # Other
-    '.db', '.sqlite', '.sqlite3',
-}
 
 # Image extensions (subset of binary that we can return as base64)
 IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.ico'}

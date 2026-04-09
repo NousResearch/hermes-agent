@@ -163,6 +163,17 @@ def _is_oauth_token(key: str) -> bool:
     return True
 
 
+def _normalize_base_url_text(base_url) -> str:
+    """Normalize SDK/base transport URL values to a plain string for inspection.
+
+    Some client objects expose ``base_url`` as an ``httpx.URL`` instead of a raw
+    string.  Provider/auth detection should accept either shape.
+    """
+    if not base_url:
+        return ""
+    return str(base_url).strip()
+
+
 def _is_third_party_anthropic_endpoint(base_url: str | None) -> bool:
     """Return True for non-Anthropic endpoints using the Anthropic Messages API.
 
@@ -170,9 +181,10 @@ def _is_third_party_anthropic_endpoint(base_url: str | None) -> bool:
     with their own API keys via x-api-key, not Anthropic OAuth tokens. OAuth
     detection should be skipped for these endpoints.
     """
-    if not base_url:
+    normalized = _normalize_base_url_text(base_url)
+    if not normalized:
         return False  # No base_url = direct Anthropic API
-    normalized = base_url.rstrip("/").lower()
+    normalized = normalized.rstrip("/").lower()
     if "anthropic.com" in normalized:
         return False  # Direct Anthropic API — OAuth applies
     return True  # Any other endpoint is a third-party proxy
@@ -182,12 +194,13 @@ def _requires_bearer_auth(base_url: str | None) -> bool:
     """Return True for Anthropic-compatible providers that require Bearer auth.
 
     Some third-party /anthropic endpoints implement Anthropic's Messages API but
-    require Authorization: Bearer instead of Anthropic's native x-api-key header.
+    require Authorization: Bearer *** of Anthropic's native x-api-key header.
     MiniMax's global and China Anthropic-compatible endpoints follow this pattern.
     """
-    if not base_url:
+    normalized = _normalize_base_url_text(base_url)
+    if not normalized:
         return False
-    normalized = base_url.rstrip("/").lower()
+    normalized = normalized.rstrip("/").lower()
     return normalized.startswith(("https://api.minimax.io/anthropic", "https://api.minimaxi.com/anthropic"))
 
 
@@ -203,13 +216,14 @@ def build_anthropic_client(api_key: str, base_url: str = None):
         )
     from httpx import Timeout
 
+    normalized_base_url = _normalize_base_url_text(base_url)
     kwargs = {
         "timeout": Timeout(timeout=900.0, connect=10.0),
     }
-    if base_url:
-        kwargs["base_url"] = base_url
+    if normalized_base_url:
+        kwargs["base_url"] = normalized_base_url
 
-    if _requires_bearer_auth(base_url):
+    if _requires_bearer_auth(normalized_base_url):
         # Some Anthropic-compatible providers (e.g. MiniMax) expect the API key in
         # Authorization: Bearer even for regular API keys. Route those endpoints
         # through auth_token so the SDK sends Bearer auth instead of x-api-key.
@@ -942,12 +956,18 @@ def _convert_content_to_anthropic(content: Any) -> Any:
 
 def convert_messages_to_anthropic(
     messages: List[Dict],
+    base_url: str | None = None,
 ) -> Tuple[Optional[Any], List[Dict]]:
     """Convert OpenAI-format messages to Anthropic format.
 
     Returns (system_prompt, anthropic_messages).
     System messages are extracted since Anthropic takes them as a separate param.
     system_prompt is a string or list of content blocks (when cache_control present).
+
+    When *base_url* is provided and points to a third-party Anthropic-compatible
+    endpoint, all thinking block signatures are stripped.  Signatures are
+    Anthropic-proprietary — third-party endpoints cannot validate them and will
+    reject them with HTTP 400 "Invalid signature in thinking block".
     """
     system = None
     result = []
@@ -1102,7 +1122,15 @@ def convert_messages_to_anthropic(
                         curr_content = [{"type": "text", "text": curr_content}]
                     fixed[-1]["content"] = prev_content + curr_content
             else:
-                # Consecutive assistant messages — merge text content
+                # Consecutive assistant messages — merge text content.
+                # Drop thinking blocks from the *second* message: their
+                # signature was computed against a different turn boundary
+                # and becomes invalid once merged.
+                if isinstance(m["content"], list):
+                    m["content"] = [
+                        b for b in m["content"]
+                        if not (isinstance(b, dict) and b.get("type") in ("thinking", "redacted_thinking"))
+                    ]
                 prev_blocks = fixed[-1]["content"]
                 curr_blocks = m["content"]
                 if isinstance(prev_blocks, list) and isinstance(curr_blocks, list):
@@ -1120,6 +1148,79 @@ def convert_messages_to_anthropic(
             fixed.append(m)
     result = fixed
 
+    # ── Thinking block signature management ──────────────────────────
+    # Anthropic signs thinking blocks against the full turn content.
+    # Any upstream mutation (context compression, session truncation,
+    # orphan stripping, message merging) invalidates the signature,
+    # causing HTTP 400 "Invalid signature in thinking block".
+    #
+    # Signatures are Anthropic-proprietary.  Third-party endpoints
+    # (MiniMax, Azure AI Foundry, self-hosted proxies) cannot validate
+    # them and will reject them outright.  When targeting a third-party
+    # endpoint, strip ALL thinking/redacted_thinking blocks from every
+    # assistant message — the third-party will generate its own
+    # thinking blocks if it supports extended thinking.
+    #
+    # For direct Anthropic (strategy following clawdbot/OpenClaw):
+    # 1. Strip thinking/redacted_thinking from all assistant messages
+    #    EXCEPT the last one — preserves reasoning continuity on the
+    #    current tool-use chain while avoiding stale signature errors.
+    # 2. Downgrade unsigned thinking blocks (no signature) to text —
+    #    Anthropic can't validate them and will reject them.
+    # 3. Strip cache_control from thinking/redacted_thinking blocks —
+    #    cache markers can interfere with signature validation.
+    _THINKING_TYPES = frozenset(("thinking", "redacted_thinking"))
+    _is_third_party = _is_third_party_anthropic_endpoint(base_url)
+
+    last_assistant_idx = None
+    for i in range(len(result) - 1, -1, -1):
+        if result[i].get("role") == "assistant":
+            last_assistant_idx = i
+            break
+
+    for idx, m in enumerate(result):
+        if m.get("role") != "assistant" or not isinstance(m.get("content"), list):
+            continue
+
+        if _is_third_party or idx != last_assistant_idx:
+            # Third-party endpoint: strip ALL thinking blocks from every
+            # assistant message — signatures are Anthropic-proprietary.
+            # Direct Anthropic: strip from non-latest assistant messages only.
+            stripped = [
+                b for b in m["content"]
+                if not (isinstance(b, dict) and b.get("type") in _THINKING_TYPES)
+            ]
+            m["content"] = stripped or [{"type": "text", "text": "(thinking elided)"}]
+        else:
+            # Latest assistant on direct Anthropic: keep signed thinking
+            # blocks for reasoning continuity; downgrade unsigned ones to
+            # plain text.
+            new_content = []
+            for b in m["content"]:
+                if not isinstance(b, dict) or b.get("type") not in _THINKING_TYPES:
+                    new_content.append(b)
+                    continue
+                if b.get("type") == "redacted_thinking":
+                    # Redacted blocks use 'data' for the signature payload
+                    if b.get("data"):
+                        new_content.append(b)
+                    # else: drop — no data means it can't be validated
+                elif b.get("signature"):
+                    # Signed thinking block — keep it
+                    new_content.append(b)
+                else:
+                    # Unsigned thinking — downgrade to text so it's not lost
+                    thinking_text = b.get("thinking", "")
+                    if thinking_text:
+                        new_content.append({"type": "text", "text": thinking_text})
+            m["content"] = new_content or [{"type": "text", "text": "(empty)"}]
+
+        # Strip cache_control from any remaining thinking/redacted_thinking
+        # blocks — cache markers interfere with signature validation.
+        for b in m["content"]:
+            if isinstance(b, dict) and b.get("type") in _THINKING_TYPES:
+                b.pop("cache_control", None)
+
     return system, result
 
 
@@ -1133,6 +1234,7 @@ def build_anthropic_kwargs(
     is_oauth: bool = False,
     preserve_dots: bool = False,
     context_length: Optional[int] = None,
+    base_url: str | None = None,
 ) -> Dict[str, Any]:
     """Build kwargs for anthropic.messages.create().
 
@@ -1146,8 +1248,11 @@ def build_anthropic_kwargs(
 
     When *preserve_dots* is True, model name dots are not converted to hyphens
     (for Alibaba/DashScope anthropic-compatible endpoints: qwen3.5-plus).
+
+    When *base_url* points to a third-party Anthropic-compatible endpoint,
+    thinking block signatures are stripped (they are Anthropic-proprietary).
     """
-    system, anthropic_messages = convert_messages_to_anthropic(messages)
+    system, anthropic_messages = convert_messages_to_anthropic(messages, base_url=base_url)
     anthropic_tools = convert_tools_to_anthropic(tools) if tools else []
 
     model = normalize_model_name(model, preserve_dots=preserve_dots)
@@ -1224,9 +1329,9 @@ def build_anthropic_kwargs(
     # Map reasoning_config to Anthropic's thinking parameter.
     # Claude 4.6 models use adaptive thinking + output_config.effort.
     # Older models use manual thinking with budget_tokens.
-    # Haiku models do NOT support extended thinking at all — skip entirely.
+    # Haiku and MiniMax models do NOT support extended thinking — skip entirely.
     if reasoning_config and isinstance(reasoning_config, dict):
-        if reasoning_config.get("enabled") is not False and "haiku" not in model.lower():
+        if reasoning_config.get("enabled") is not False and "haiku" not in model.lower() and "minimax" not in model.lower():
             effort = str(reasoning_config.get("effort", "medium")).lower()
             budget = THINKING_BUDGET.get(effort, 8000)
             if _supports_adaptive_thinking(model):

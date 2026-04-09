@@ -56,7 +56,15 @@ def wrap_modal_sudo_pipe(command: str, sudo_stdin: str) -> str:
 
 
 class BaseModalExecutionEnvironment(BaseEnvironment):
-    """Common execute() flow for direct and managed Modal transports."""
+    """Execution flow for the *managed* Modal transport (gateway-owned sandbox).
+
+    This deliberately overrides :meth:`BaseEnvironment.execute` because the
+    tool-gateway handles command preparation, CWD tracking, and env-snapshot
+    management on the server side.  The base class's ``_wrap_command`` /
+    ``_wait_for_process`` / snapshot machinery does not apply here — the
+    gateway owns that responsibility.  See ``ManagedModalEnvironment`` for the
+    concrete subclass.
+    """
 
     _stdin_mode = "payload"
     _poll_interval_seconds = 0.25
@@ -124,7 +132,7 @@ class BaseModalExecutionEnvironment(BaseEnvironment):
 
     def _before_execute(self) -> None:
         """Hook for backends that need pre-exec sync or validation."""
-        return None
+        pass
 
     def _prepare_modal_exec(
         self,

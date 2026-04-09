@@ -1670,7 +1670,7 @@ class GatewayRunner:
             if not check_line_requirements():
                 logger.warning("LINE: httpx missing or LINE_CHANNEL_ACCESS_TOKEN/LINE_CHANNEL_SECRET not configured")
                 return None
-            return LineAdapter(config)
+            return LineAdapter(config, platform=platform)
 
         return None
     

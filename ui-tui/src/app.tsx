@@ -907,7 +907,7 @@ export function App({ gw }: { gw: GatewayClient }) {
       } else if (input || inputBuf.length) {
         clearIn()
       } else {
-        die()
+        return die()
       }
 
       return

@@ -205,11 +205,20 @@ class GatewayStreamConsumer:
                             await self._send_or_edit(self._accumulated)
                     return
 
-                # Tool boundary: the should_edit block above already flushed
-                # accumulated text without a cursor.  Reset state so the next
-                # text chunk creates a fresh message below any tool-progress
-                # messages the gateway sent in between.
-                if got_segment_break:
+                # Tool boundary: reset message state so the next text chunk
+                # creates a fresh message below any tool-progress messages.
+                #
+                # Exception: when _message_id is "__no_edit__" the platform
+                # never returned a real message ID (e.g. Signal, webhook with
+                # github_comment delivery).  Resetting to None would re-enter
+                # the "first send" path on every tool boundary and post one
+                # platform message per tool call — that is what caused 155
+                # comments under a single PR.  Instead, keep all state so the
+                # full continuation is delivered once via _send_fallback_final.
+                # (When editing fails mid-stream due to flood control the id is
+                # a real string like "msg_1", not "__no_edit__", so that case
+                # still resets and creates a fresh segment as intended.)
+                if got_segment_break and self._message_id != "__no_edit__":
                     self._message_id = None
                     self._accumulated = ""
                     self._last_sent_text = ""

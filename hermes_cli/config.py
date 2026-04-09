@@ -301,9 +301,11 @@ DEFAULT_CONFIG = {
     # Reviewer calls use a cheap model (see smart_model_routing.cheap_model or
     # council.reviewer_model) to keep cost overhead low.
     "council": {
-        # Master toggle — starts false for safe rollout; flip to true once
-        # the tool is verified in the field.
-        "enabled": False,
+        # Master toggle — default ON to mirror the Swift companion's
+        # councilEnabled UserDefault.  Users can opt out per-session with
+        # --no-council (CLI), X-Hermes-Council: off (gateway), or by
+        # setting council.enabled: false in ~/.hermes/cli-config.yaml.
+        "enabled": True,
         # "quick" (3 reviewers, no peer review) or "full" (5 reviewers + peer review)
         "default_depth": "quick",
         # Model used for the 3–5 parallel reviewer calls.  When null, falls

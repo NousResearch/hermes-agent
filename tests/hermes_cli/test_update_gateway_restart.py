@@ -368,6 +368,9 @@ class TestCmdUpdateLaunchdRestart:
         monkeypatch.setattr(
             gateway_cli, "is_macos", lambda: False,
         )
+        monkeypatch.setattr(
+            gateway_cli, "is_linux", lambda: True,
+        )
 
         mock_run.side_effect = _make_run_side_effect(
             commit_count="3",
@@ -409,6 +412,39 @@ class TestCmdUpdateLaunchdRestart:
         assert "Stopped gateway" not in captured
         assert "Gateway restarted" not in captured
         assert "Gateway restarted via launchd" not in captured
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_update_skip_gateway_restart_env_var_bypasses_restart_logic(
+        self, mock_run, _mock_which, mock_args, capsys, monkeypatch,
+    ):
+        """When HERMES_SKIP_GATEWAY_RESTART is set, update should not restart or stop gateways."""
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_linux", lambda: True)
+        monkeypatch.setenv("HERMES_SKIP_GATEWAY_RESTART", "1")
+
+        mock_run.side_effect = _make_run_side_effect(
+            commit_count="3",
+            systemd_active=True,
+        )
+
+        with patch.object(gateway_cli, "find_gateway_pids", return_value=[12345]), \
+             patch.object(gateway_cli, "_get_service_pids", return_value={12345}), \
+             patch("os.kill") as mock_kill:
+            cmd_update(mock_args)
+
+        captured = capsys.readouterr().out
+        assert "Restarted hermes-gateway" not in captured
+        assert "Stopped" not in captured
+        sigterm_calls = [c for c in mock_kill.call_args_list if len(c.args) >= 2 and c.args[1] != 0]
+        assert sigterm_calls == []
+
+        restart_calls = [
+            c for c in mock_run.call_args_list
+            if "restart" in " ".join(str(a) for a in c.args[0])
+            and "systemctl" in " ".join(str(a) for a in c.args[0])
+        ]
+        assert restart_calls == []
 
 
 # ---------------------------------------------------------------------------

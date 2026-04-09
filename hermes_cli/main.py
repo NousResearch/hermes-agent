@@ -3758,106 +3758,111 @@ def cmd_update(args):
         # Auto-restart ALL gateways after update.
         # The code update (git pull) is shared across all profiles, so every
         # running gateway needs restarting to pick up the new code.
-        try:
-            from hermes_cli.gateway import (
-                is_macos, is_linux, _ensure_user_systemd_env,
-                find_gateway_pids,
-                _get_service_pids,
-            )
-            import signal as _signal
+        # Callers running inside a live gateway process can opt out so they
+        # do not kill their own in-process worker before it records completion.
+        if os.environ.get("HERMES_SKIP_GATEWAY_RESTART"):
+            print("→ Skipping gateway restart (HERMES_SKIP_GATEWAY_RESTART set)")
+        else:
+            try:
+                from hermes_cli.gateway import (
+                    is_macos, is_linux, _ensure_user_systemd_env,
+                    find_gateway_pids,
+                    _get_service_pids,
+                )
+                import signal as _signal
 
-            restarted_services = []
-            killed_pids = set()
+                restarted_services = []
+                killed_pids = set()
 
-            # --- Systemd services (Linux) ---
-            # Discover all hermes-gateway* units (default + profiles)
-            if is_linux():
-                try:
-                    _ensure_user_systemd_env()
-                except Exception:
-                    pass
-
-                for scope, scope_cmd in [("user", ["systemctl", "--user"]), ("system", ["systemctl"])]:
+                # --- Systemd services (Linux) ---
+                # Discover all hermes-gateway* units (default + profiles)
+                if is_linux():
                     try:
-                        result = subprocess.run(
-                            scope_cmd + ["list-units", "hermes-gateway*", "--plain", "--no-legend", "--no-pager"],
-                            capture_output=True, text=True, timeout=10,
-                        )
-                        for line in result.stdout.strip().splitlines():
-                            parts = line.split()
-                            if not parts:
-                                continue
-                            unit = parts[0]  # e.g. hermes-gateway.service or hermes-gateway-coder.service
-                            if not unit.endswith(".service"):
-                                continue
-                            svc_name = unit.removesuffix(".service")
-                            # Check if active
-                            check = subprocess.run(
-                                scope_cmd + ["is-active", svc_name],
-                                capture_output=True, text=True, timeout=5,
-                            )
-                            if check.stdout.strip() == "active":
-                                restart = subprocess.run(
-                                    scope_cmd + ["restart", svc_name],
-                                    capture_output=True, text=True, timeout=15,
-                                )
-                                if restart.returncode == 0:
-                                    restarted_services.append(svc_name)
-                                else:
-                                    print(f"  ⚠ Failed to restart {svc_name}: {restart.stderr.strip()}")
-                    except (FileNotFoundError, subprocess.TimeoutExpired):
+                        _ensure_user_systemd_env()
+                    except Exception:
                         pass
 
-            # --- Launchd services (macOS) ---
-            if is_macos():
-                try:
-                    from hermes_cli.gateway import launchd_restart, get_launchd_label, get_launchd_plist_path
-                    plist_path = get_launchd_plist_path()
-                    if plist_path.exists():
-                        check = subprocess.run(
-                            ["launchctl", "list", get_launchd_label()],
-                            capture_output=True, text=True, timeout=5,
-                        )
-                        if check.returncode == 0:
-                            try:
-                                launchd_restart()
-                                restarted_services.append(get_launchd_label())
-                            except subprocess.CalledProcessError as e:
-                                stderr = (getattr(e, "stderr", "") or "").strip()
-                                print(f"  ⚠ Gateway restart failed: {stderr}")
-                except (FileNotFoundError, subprocess.TimeoutExpired, ImportError):
+                    for scope, scope_cmd in [("user", ["systemctl", "--user"]), ("system", ["systemctl"])]:
+                        try:
+                            result = subprocess.run(
+                                scope_cmd + ["list-units", "hermes-gateway*", "--plain", "--no-legend", "--no-pager"],
+                                capture_output=True, text=True, timeout=10,
+                            )
+                            for line in result.stdout.strip().splitlines():
+                                parts = line.split()
+                                if not parts:
+                                    continue
+                                unit = parts[0]  # e.g. hermes-gateway.service or hermes-gateway-coder.service
+                                if not unit.endswith(".service"):
+                                    continue
+                                svc_name = unit.removesuffix(".service")
+                                # Check if active
+                                check = subprocess.run(
+                                    scope_cmd + ["is-active", svc_name],
+                                    capture_output=True, text=True, timeout=5,
+                                )
+                                if check.stdout.strip() == "active":
+                                    restart = subprocess.run(
+                                        scope_cmd + ["restart", svc_name],
+                                        capture_output=True, text=True, timeout=15,
+                                    )
+                                    if restart.returncode == 0:
+                                        restarted_services.append(svc_name)
+                                    else:
+                                        print(f"  ⚠ Failed to restart {svc_name}: {restart.stderr.strip()}")
+                        except (FileNotFoundError, subprocess.TimeoutExpired):
+                            pass
+
+                # --- Launchd services (macOS) ---
+                if is_macos():
+                    try:
+                        from hermes_cli.gateway import launchd_restart, get_launchd_label, get_launchd_plist_path
+                        plist_path = get_launchd_plist_path()
+                        if plist_path.exists():
+                            check = subprocess.run(
+                                ["launchctl", "list", get_launchd_label()],
+                                capture_output=True, text=True, timeout=5,
+                            )
+                            if check.returncode == 0:
+                                try:
+                                    launchd_restart()
+                                    restarted_services.append(get_launchd_label())
+                                except subprocess.CalledProcessError as e:
+                                    stderr = (getattr(e, "stderr", "") or "").strip()
+                                    print(f"  ⚠ Gateway restart failed: {stderr}")
+                    except (FileNotFoundError, subprocess.TimeoutExpired, ImportError):
+                        pass
+
+                # --- Manual (non-service) gateways ---
+                # Kill any remaining gateway processes not managed by a service.
+                # Exclude PIDs that belong to just-restarted services so we don't
+                # immediately kill the process that systemd/launchd just spawned.
+                service_pids = _get_service_pids()
+                manual_pids = find_gateway_pids(exclude_pids=service_pids)
+                for pid in manual_pids:
+                    try:
+                        os.kill(pid, _signal.SIGTERM)
+                        killed_pids.add(pid)
+                    except (ProcessLookupError, PermissionError):
+                        pass
+
+                if restarted_services or killed_pids:
+                    print()
+                    for svc in restarted_services:
+                        print(f"  ✓ Restarted {svc}")
+                    if killed_pids:
+                        print(f"  → Stopped {len(killed_pids)} manual gateway process(es)")
+                        print("    Restart manually: hermes gateway run")
+                        # Also restart for each profile if needed
+                        if len(killed_pids) > 1:
+                            print("    (or: hermes -p <profile> gateway run  for each profile)")
+
+                if not restarted_services and not killed_pids:
+                    # No gateways were running — nothing to do
                     pass
 
-            # --- Manual (non-service) gateways ---
-            # Kill any remaining gateway processes not managed by a service.
-            # Exclude PIDs that belong to just-restarted services so we don't
-            # immediately kill the process that systemd/launchd just spawned.
-            service_pids = _get_service_pids()
-            manual_pids = find_gateway_pids(exclude_pids=service_pids)
-            for pid in manual_pids:
-                try:
-                    os.kill(pid, _signal.SIGTERM)
-                    killed_pids.add(pid)
-                except (ProcessLookupError, PermissionError):
-                    pass
-
-            if restarted_services or killed_pids:
-                print()
-                for svc in restarted_services:
-                    print(f"  ✓ Restarted {svc}")
-                if killed_pids:
-                    print(f"  → Stopped {len(killed_pids)} manual gateway process(es)")
-                    print("    Restart manually: hermes gateway run")
-                    # Also restart for each profile if needed
-                    if len(killed_pids) > 1:
-                        print("    (or: hermes -p <profile> gateway run  for each profile)")
-
-            if not restarted_services and not killed_pids:
-                # No gateways were running — nothing to do
-                pass
-
-        except Exception as e:
-            logger.debug("Gateway restart during update failed: %s", e)
+            except Exception as e:
+                logger.debug("Gateway restart during update failed: %s", e)
         
         print()
         print("Tip: You can now select a provider and model:")

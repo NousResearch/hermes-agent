@@ -261,6 +261,11 @@ class GatewayConfig:
         for platform, config in self.platforms.items():
             if not config.enabled:
                 continue
+            # Weixin requires both a token and an account_id
+            if platform == Platform.WEIXIN:
+                if config.extra.get("account_id") and (config.token or config.extra.get("token")):
+                    connected.append(platform)
+                continue
             # Platforms that use token/api_key auth
             if config.token or config.api_key:
                 connected.append(platform)
@@ -287,16 +292,6 @@ class GatewayConfig:
                 connected.append(platform)
             # WeCom uses extra dict for bot credentials
             elif platform == Platform.WECOM and config.extra.get("bot_id"):
-                connected.append(platform)
-            # Weixin uses token + account_id, sometimes stored in extra for config.yaml users
-            elif platform == Platform.WEIXIN and (
-                config.token
-                or config.extra.get("token")
-                or (
-                    config.extra.get("account_id")
-                    and (config.token or config.extra.get("token"))
-                )
-            ):
                 connected.append(platform)
         return connected
     

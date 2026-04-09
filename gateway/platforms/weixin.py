@@ -1367,6 +1367,11 @@ class WeixinAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=str(exc))
 
     async def _download_remote_media(self, url: str) -> str:
+        from tools.url_safety import is_safe_url
+
+        if not is_safe_url(url):
+            raise ValueError(f"Blocked unsafe URL (SSRF protection): {url}")
+
         assert self._session is not None
         async with self._session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as response:
             response.raise_for_status()
@@ -1505,9 +1510,9 @@ class WeixinAdapter(BasePlatformAdapter):
         chat_type = "group" if chat_id.endswith("@chatroom") else "dm"
         return {"name": chat_id, "type": chat_type, "chat_id": chat_id}
 
-    def format_message(self, content: str) -> str:
+    def format_message(self, content: Optional[str]) -> str:
         if content is None:
-            return content
+            return ""
         return _normalize_markdown_blocks(content)
 
 

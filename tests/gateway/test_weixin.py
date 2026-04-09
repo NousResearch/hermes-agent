@@ -4,8 +4,8 @@ import asyncio
 import os
 from unittest.mock import AsyncMock, patch
 
-from gateway.config import GatewayConfig, HomeChannel, Platform, PlatformConfig, _apply_env_overrides
 from gateway.config import PlatformConfig
+from gateway.config import GatewayConfig, HomeChannel, Platform, _apply_env_overrides
 from gateway.platforms.weixin import WeixinAdapter
 from tools.send_message_tool import _parse_target_ref, _send_to_platform
 
@@ -54,6 +54,11 @@ class TestWeixinFormatting:
         content = "## Snippet\n\n```python\nprint('hi')\n```"
 
         assert adapter.format_message(content) == "**Snippet**\n\n```python\nprint('hi')\n```"
+
+    def test_format_message_returns_empty_string_for_none(self):
+        adapter = _make_adapter()
+
+        assert adapter.format_message(None) == ""
 
 
 class TestWeixinChunking:
@@ -129,6 +134,18 @@ class TestWeixinConfig:
 
         assert config.get_connected_platforms() == [Platform.WEIXIN]
 
+    def test_get_connected_platforms_requires_account_id(self):
+        config = GatewayConfig(
+            platforms={
+                Platform.WEIXIN: PlatformConfig(
+                    enabled=True,
+                    token="bot-token",
+                )
+            }
+        )
+
+        assert config.get_connected_platforms() == []
+
 
 class TestWeixinSendMessageIntegration:
     def test_parse_target_ref_accepts_weixin_ids(self):
@@ -158,3 +175,16 @@ class TestWeixinSendMessageIntegration:
             "hello",
             media_files=[("/tmp/demo.png", False)],
         )
+
+
+class TestWeixinRemoteMediaSafety:
+    def test_download_remote_media_blocks_unsafe_urls(self):
+        adapter = _make_adapter()
+
+        with patch("tools.url_safety.is_safe_url", return_value=False):
+            try:
+                asyncio.run(adapter._download_remote_media("http://127.0.0.1/private.png"))
+            except ValueError as exc:
+                assert "Blocked unsafe URL" in str(exc)
+            else:
+                raise AssertionError("expected ValueError for unsafe URL")

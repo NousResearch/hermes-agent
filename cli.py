@@ -4988,6 +4988,9 @@ class HermesCLI:
     def _try_launch_chrome_debug(port: int, system: str) -> bool:
         """Try to launch Chrome/Chromium with remote debugging enabled.
 
+        Uses a dedicated user-data-dir so the debug instance doesn't conflict
+        with an already-running Chrome using the default profile.
+
         Returns True if a launch command was executed (doesn't guarantee success).
         """
         import subprocess as _sp
@@ -4997,10 +5000,20 @@ class HermesCLI:
         if not candidates:
             return False
 
+        # Dedicated profile dir so debug Chrome won't collide with normal Chrome
+        data_dir = str(_hermes_home / "chrome-debug")
+        os.makedirs(data_dir, exist_ok=True)
+
         chrome = candidates[0]
         try:
             _sp.Popen(
-                [chrome, f"--remote-debugging-port={port}"],
+                [
+                    chrome,
+                    f"--remote-debugging-port={port}",
+                    f"--user-data-dir={data_dir}",
+                    "--no-first-run",
+                    "--no-default-browser-check",
+                ],
                 stdout=_sp.DEVNULL,
                 stderr=_sp.DEVNULL,
                 start_new_session=True,  # detach from terminal
@@ -5075,18 +5088,33 @@ class HermesCLI:
                         print(f"   ✓ Chrome launched and listening on port {_port}")
                     else:
                         print(f"   ⚠ Chrome launched but port {_port} isn't responding yet")
-                        print("     You may need to close existing Chrome windows first and retry")
+                        print("     Try again in a few seconds — the debug instance may still be starting")
                 else:
                     print("   ⚠ Could not auto-launch Chrome")
                     # Show manual instructions as fallback
+                    _data_dir = str(_hermes_home / "chrome-debug")
                     sys_name = _plat.system()
                     if sys_name == "Darwin":
-                        chrome_cmd = 'open -a "Google Chrome" --args --remote-debugging-port=9222'
+                        chrome_cmd = (
+                            'open -a "Google Chrome" --args'
+                            f" --remote-debugging-port=9222"
+                            f' --user-data-dir="{_data_dir}"'
+                            " --no-first-run --no-default-browser-check"
+                        )
                     elif sys_name == "Windows":
-                        chrome_cmd = 'chrome.exe --remote-debugging-port=9222'
+                        chrome_cmd = (
+                            f'chrome.exe --remote-debugging-port=9222'
+                            f' --user-data-dir="{_data_dir}"'
+                            f" --no-first-run --no-default-browser-check"
+                        )
                     else:
-                        chrome_cmd = "google-chrome --remote-debugging-port=9222"
-                    print(f"     Launch Chrome manually: {chrome_cmd}")
+                        chrome_cmd = (
+                            f"google-chrome --remote-debugging-port=9222"
+                            f' --user-data-dir="{_data_dir}"'
+                            f" --no-first-run --no-default-browser-check"
+                        )
+                    print(f"     Launch Chrome manually:")
+                    print(f"     {chrome_cmd}")
             else:
                 print(f"   ⚠ Port {_port} is not reachable at {cdp_url}")
 

@@ -329,7 +329,7 @@ def build_skill_invocation_message(
 
     loaded_skill, skill_dir, skill_name = loaded
     activation_note = (
-        f'[SYSTEM: The user has invoked the "{skill_name}" skill, indicating they want '
+        f'[IMPORTANT: The user has invoked the "{skill_name}" skill, indicating they want '
         "you to follow its instructions. The full skill content is loaded below.]"
     )
     return _build_skill_message(
@@ -368,7 +368,7 @@ def build_preloaded_skills_prompt(
 
         loaded_skill, skill_dir, skill_name = loaded
         activation_note = (
-            f'[SYSTEM: The user launched this CLI session with the "{skill_name}" skill '
+            f'[IMPORTANT: The user launched this CLI session with the "{skill_name}" skill '
             "preloaded. Treat its instructions as active guidance for the duration of this "
             "session unless the user overrides them.]"
         )

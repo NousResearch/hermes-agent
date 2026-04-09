@@ -182,6 +182,7 @@ const sidebars: SidebarsConfig = {
           label: 'Internals',
           items: [
             'developer-guide/tools-runtime',
+            'developer-guide/tool-budgets',
             'developer-guide/acp-internals',
             'developer-guide/cron-internals',
             'developer-guide/environments',

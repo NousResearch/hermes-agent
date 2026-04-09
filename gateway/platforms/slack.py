@@ -961,6 +961,8 @@ class SlackAdapter(BasePlatformAdapter):
             thread_ts = event.get("thread_ts") or ts  # ts fallback for channels
 
         # In channels, respond if:
+        #   0. Channel is in free_response_channels, OR require_mention is
+        #      disabled — always process regardless of mention.
         #   1. The bot is @mentioned in this message, OR
         #   2. The message is a reply in a thread the bot started/participated in, OR
         #   3. The message is in a thread where the bot was previously @mentioned, OR
@@ -970,24 +972,29 @@ class SlackAdapter(BasePlatformAdapter):
         event_thread_ts = event.get("thread_ts")
         is_thread_reply = bool(event_thread_ts and event_thread_ts != ts)
 
-        if not is_dm and bot_uid and not is_mentioned:
-            reply_to_bot_thread = (
-                is_thread_reply and event_thread_ts in self._bot_message_ts
-            )
-            in_mentioned_thread = (
-                event_thread_ts is not None
-                and event_thread_ts in self._mentioned_threads
-            )
-            has_session = (
-                is_thread_reply
-                and self._has_active_session_for_thread(
-                    channel_id=channel_id,
-                    thread_ts=event_thread_ts,
-                    user_id=user_id,
+        if not is_dm and bot_uid:
+            if channel_id in self._slack_free_response_channels():
+                pass  # Free-response channel — always process
+            elif not self._slack_require_mention():
+                pass  # Mention requirement disabled globally for Slack
+            elif not is_mentioned:
+                reply_to_bot_thread = (
+                    is_thread_reply and event_thread_ts in self._bot_message_ts
                 )
-            )
-            if not reply_to_bot_thread and not in_mentioned_thread and not has_session:
-                return
+                in_mentioned_thread = (
+                    event_thread_ts is not None
+                    and event_thread_ts in self._mentioned_threads
+                )
+                has_session = (
+                    is_thread_reply
+                    and self._has_active_session_for_thread(
+                        channel_id=channel_id,
+                        thread_ts=event_thread_ts,
+                        user_id=user_id,
+                    )
+                )
+                if not reply_to_bot_thread and not in_mentioned_thread and not has_session:
+                    return
 
         if is_mentioned:
             # Strip the bot mention from the text
@@ -1527,3 +1534,30 @@ class SlackAdapter(BasePlatformAdapter):
                         continue
                     raise
         raise last_exc
+
+    # ── Channel mention gating ─────────────────────────────────────────────
+
+    def _slack_require_mention(self) -> bool:
+        """Return whether channel messages require an explicit bot mention.
+
+        Uses explicit-false parsing (like Discord/Matrix) rather than
+        truthy parsing, since the safe default is True (gating on).
+        Unrecognised or empty values keep gating enabled.
+        """
+        configured = self.config.extra.get("require_mention")
+        if configured is not None:
+            if isinstance(configured, str):
+                return configured.lower() not in ("false", "0", "no", "off")
+            return bool(configured)
+        return os.getenv("SLACK_REQUIRE_MENTION", "true").lower() not in ("false", "0", "no", "off")
+
+    def _slack_free_response_channels(self) -> set:
+        """Return channel IDs where no @mention is required."""
+        raw = self.config.extra.get("free_response_channels")
+        if raw is None:
+            raw = os.getenv("SLACK_FREE_RESPONSE_CHANNELS", "")
+        if isinstance(raw, list):
+            return {str(part).strip() for part in raw if str(part).strip()}
+        if isinstance(raw, str) and raw.strip():
+            return {part.strip() for part in raw.split(",") if part.strip()}
+        return set()

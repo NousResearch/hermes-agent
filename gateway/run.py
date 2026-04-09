@@ -6332,6 +6332,32 @@ class GatewayRunner:
         )
         return hashlib.sha256(blob.encode()).hexdigest()[:16]
 
+    def _apply_session_model_override(
+        self, session_key: str, model: str, runtime_kwargs: dict
+    ) -> tuple:
+        """Apply /model session overrides if present, returning (model, runtime_kwargs).
+
+        The gateway /model command stores per-session overrides in
+        ``_session_model_overrides``.  These must take precedence over
+        config.yaml defaults so the switched model is actually used for
+        subsequent messages.  Fields with ``None`` values are skipped so
+        partial overrides don't clobber valid config defaults.
+        """
+        override = self._session_model_overrides.get(session_key)
+        if not override:
+            return model, runtime_kwargs
+        model = override.get("model", model)
+        for key in ("provider", "api_key", "base_url", "api_mode"):
+            val = override.get(key)
+            if val is not None:
+                runtime_kwargs[key] = val
+        return model, runtime_kwargs
+
+    def _is_intentional_model_switch(self, session_key: str, agent_model: str) -> bool:
+        """Return True if *agent_model* matches an active /model session override."""
+        override = self._session_model_overrides.get(session_key)
+        return override is not None and override.get("model") == agent_model
+
     def _evict_cached_agent(self, session_key: str) -> None:
         """Remove a cached agent for a session (called on /new, /model, etc)."""
         _lock = getattr(self, "_agent_cache_lock", None)
@@ -6708,6 +6734,11 @@ class GatewayRunner:
                     "api_calls": 0,
                     "tools": [],
                 }
+
+            # /model overrides take precedence over config.yaml defaults.
+            model, runtime_kwargs = self._apply_session_model_override(
+                session_key, model, runtime_kwargs
+            )
 
             pr = self._provider_routing
             reasoning_config = self._load_reasoning_config()
@@ -7328,14 +7359,15 @@ class GatewayRunner:
             _agent = agent_holder[0]
             if _agent is not None and hasattr(_agent, 'model'):
                 _cfg_model = _resolve_gateway_model()
-                if _agent.model != _cfg_model:
+                if _agent.model != _cfg_model and not self._is_intentional_model_switch(session_key, _agent.model):
                     self._effective_model = _agent.model
                     self._effective_provider = getattr(_agent, 'provider', None)
                     # Fallback activated — evict cached agent so the next
                     # message starts fresh and retries the primary model.
                     self._evict_cached_agent(session_key)
                 else:
-                    # Primary model worked — clear any stale fallback state
+                    # Primary model worked (or intentional /model switch)
+                    # — clear any stale fallback state.
                     self._effective_model = None
                     self._effective_provider = None
 

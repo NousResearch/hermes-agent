@@ -956,26 +956,21 @@ def _exa_extract(urls: List[str]) -> List[Dict[str, Any]]:
 
 
 def _exa_crawl(url: str, limit: int = 20) -> List[Dict[str, Any]]:
-    """Crawl pages from a site using the Exa SDK.
+    """Crawl pages from a URL using the Exa get_contents API with subpages.
 
-    Discovers pages on the same domain via search_and_contents with
-    include_domains, then returns full-text results in the format
-    expected by the LLM post-processing pipeline.
+    Fetches content from the given URL and auto-discovers linked subpages,
+    returning full-text results in the format expected by the LLM
+    post-processing pipeline.
     """
-    from urllib.parse import urlparse
     from tools.interrupt import is_interrupted
     if is_interrupted():
         return [{"url": url, "error": "Interrupted", "title": "", "content": ""}]
 
-    parsed = urlparse(url if url.startswith(("http://", "https://")) else f"https://{url}")
-    domain = parsed.netloc or parsed.path.split("/")[0]
-
-    logger.info("Exa crawl: %s (domain=%s, limit=%d)", url, domain, limit)
-    response = _get_exa_client().search_and_contents(
-        url,
-        num_results=limit,
+    logger.info("Exa crawl: %s (subpages=%d)", url, limit)
+    response = _get_exa_client().get_contents(
+        [url],
         text=True,
-        include_domains=[domain],
+        subpages=limit,
     )
 
     results = []
@@ -990,6 +985,17 @@ def _exa_crawl(url: str, limit: int = 20) -> List[Dict[str, Any]]:
             "raw_content": content,
             "metadata": {"sourceURL": page_url, "title": title},
         })
+        for subpage in result.subpages or []:
+            sub_content = subpage.text or ""
+            sub_url = subpage.url or ""
+            sub_title = subpage.title or ""
+            results.append({
+                "url": sub_url,
+                "title": sub_title,
+                "content": sub_content,
+                "raw_content": sub_content,
+                "metadata": {"sourceURL": sub_url, "title": sub_title},
+            })
 
     return results
 

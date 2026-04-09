@@ -588,7 +588,7 @@ class AIAgent:
         self.provider = provider_name or ""
         self.acp_command = acp_command or command
         self.acp_args = list(acp_args or args or [])
-        if api_mode in {"chat_completions", "codex_responses", "anthropic_messages"}:
+        if api_mode in {"chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse"}:
             self.api_mode = api_mode
         elif self.provider == "openai-codex":
             self.api_mode = "codex_responses"
@@ -603,6 +603,9 @@ class AIAgent:
             # use a URL convention ending in /anthropic. Auto-detect these so the
             # Anthropic Messages API adapter is used instead of chat completions.
             self.api_mode = "anthropic_messages"
+        elif self.provider == "bedrock" or (provider_name is None and "bedrock-runtime" in self._base_url_lower and "amazonaws.com" in self._base_url_lower):
+            self.api_mode = "bedrock_converse"
+            self.provider = self.provider or "bedrock"
         else:
             self.api_mode = "chat_completions"
 
@@ -783,6 +786,14 @@ class AIAgent:
                 print(f"🤖 AI Agent initialized with model: {self.model} (Anthropic native)")
                 if effective_key and len(effective_key) > 12:
                     print(f"🔑 Using token: {effective_key[:8]}...{effective_key[-4:]}")
+        elif self.api_mode == "bedrock_converse":
+            from agent.bedrock_adapter import build_bedrock_client
+            self._bedrock_client = build_bedrock_client(base_url=base_url)
+            self.api_key = api_key or ""
+            self.client = None
+            self._client_kwargs = {}
+            if not self.quiet_mode:
+                print(f"🤖 AI Agent initialized with model: {self.model} (Amazon Bedrock Converse)")
         else:
             if api_key and base_url:
                 # Explicit credentials from CLI/gateway — construct directly.
@@ -1370,6 +1381,11 @@ class AIAgent:
                 effective_key, self._anthropic_base_url,
             )
             self._is_anthropic_oauth = _is_oauth_token(effective_key)
+            self.client = None
+            self._client_kwargs = {}
+        elif api_mode == "bedrock_converse":
+            from agent.bedrock_adapter import build_bedrock_client
+            self._bedrock_client = build_bedrock_client(base_url=base_url or self.base_url)
             self.client = None
             self._client_kwargs = {}
         else:
@@ -4338,6 +4354,8 @@ class AIAgent:
                     )
                 elif self.api_mode == "anthropic_messages":
                     result["response"] = self._anthropic_messages_create(api_kwargs)
+                elif self.api_mode == "bedrock_converse":
+                    result["response"] = self._bedrock_client.converse(**api_kwargs)
                 else:
                     request_client_holder["client"] = self._create_request_openai_client(reason="chat_completion_request")
                     result["response"] = request_client_holder["client"].chat.completions.create(**api_kwargs)
@@ -5584,6 +5602,15 @@ class AIAgent:
 
             return kwargs
 
+        if self.api_mode == "bedrock_converse":
+            from agent.bedrock_adapter import build_converse_kwargs
+            return build_converse_kwargs(
+                model=self.model,
+                messages=api_messages,
+                tools=self.tools,
+                max_tokens=self.max_tokens,
+            )
+
         sanitized_messages = api_messages
         needs_sanitization = False
         for msg in api_messages:
@@ -6107,6 +6134,11 @@ class AIAgent:
             elif self.api_mode == "anthropic_messages" and not _aux_available:
                 from agent.anthropic_adapter import normalize_anthropic_response as _nar_flush
                 _flush_msg, _ = _nar_flush(response, strip_tool_prefix=self._is_anthropic_oauth)
+                if _flush_msg and _flush_msg.tool_calls:
+                    tool_calls = _flush_msg.tool_calls
+            elif self.api_mode == "bedrock_converse" and not _aux_available:
+                from agent.bedrock_adapter import normalize_converse_response as _ncr_flush
+                _flush_msg, _ = _ncr_flush(response)
                 if _flush_msg and _flush_msg.tool_calls:
                     tool_calls = _flush_msg.tool_calls
             elif hasattr(response, "choices") and response.choices:
@@ -7204,8 +7236,11 @@ class AIAgent:
         self.iteration_budget = IterationBudget(self.max_iterations)
 
         # Log conversation turn start for debugging/observability
-        _msg_preview = (user_message[:80] + "...") if len(user_message) > 80 else user_message
-        _msg_preview = _msg_preview.replace("\n", " ")
+        if isinstance(user_message, str):
+            _msg_preview = (user_message[:80] + "...") if len(user_message) > 80 else user_message
+            _msg_preview = _msg_preview.replace("\n", " ")
+        else:
+            _msg_preview = f"[multimodal: {len(user_message)} parts]"
         logger.info(
             "conversation turn: session=%s model=%s provider=%s platform=%s history=%d msg=%r",
             self.session_id or "none", self.model, self.provider or "unknown",
@@ -7260,8 +7295,10 @@ class AIAgent:
         self._persist_user_message_idx = current_turn_user_idx
         
         if not self.quiet_mode:
-            self._safe_print(f"💬 Starting conversation: '{user_message[:60]}{'...' if len(user_message) > 60 else ''}'")
-        
+            if isinstance(user_message, str):
+                self._safe_print(f"💬 Starting conversation: '{user_message[:60]}{'...' if len(user_message) > 60 else ''}'")
+            else:
+                self._safe_print(f"💬 Starting conversation: [multimodal message with {len(user_message)} parts]")
         # ── System prompt (cached per session for prefix caching) ──
         # Built once on first call, reused for all subsequent calls.
         # Only rebuilt after context compression events (which invalidate
@@ -7754,6 +7791,16 @@ class AIAgent:
                         elif not content_blocks:
                             response_invalid = True
                             error_details.append("response.content is empty")
+                    elif self.api_mode == "bedrock_converse":
+                        if response is None:
+                            response_invalid = True
+                            error_details.append("response is None")
+                        elif not isinstance(response, dict):
+                            response_invalid = True
+                            error_details.append("response is not a dict")
+                        elif not response.get("output", {}).get("message", {}).get("content"):
+                            response_invalid = True
+                            error_details.append("response.output.message.content is empty")
                     else:
                         if response is None or not hasattr(response, 'choices') or response.choices is None or not response.choices:
                             response_invalid = True
@@ -7804,7 +7851,7 @@ class AIAgent:
                         # Check for x-openrouter-provider or similar metadata
                         if provider_name == "Unknown" and response:
                             # Log all response attributes for debugging
-                            resp_attrs = {k: str(v)[:100] for k, v in vars(response).items() if not k.startswith('_')}
+                            resp_attrs = {k: str(v)[:100] for k, v in (vars(response) if hasattr(response, '__dict__') else (response if isinstance(response, dict) else {})).items() if not k.startswith('_')}
                             if self.verbose_logging:
                                 logging.debug(f"Response attributes for invalid response: {resp_attrs}")
                         
@@ -7870,6 +7917,9 @@ class AIAgent:
                     elif self.api_mode == "anthropic_messages":
                         stop_reason_map = {"end_turn": "stop", "tool_use": "tool_calls", "max_tokens": "length", "stop_sequence": "stop"}
                         finish_reason = stop_reason_map.get(response.stop_reason, "stop")
+                    elif self.api_mode == "bedrock_converse":
+                        stop_reason_map = {"end_turn": "stop", "tool_use": "tool_calls", "max_tokens": "length", "stop_sequence": "stop", "content_filtered": "content_filter", "guardrail_intervened": "content_filter"}
+                        finish_reason = stop_reason_map.get(response.get("stopReason", "end_turn"), "stop")
                     else:
                         finish_reason = response.choices[0].finish_reason
 
@@ -8843,6 +8893,9 @@ class AIAgent:
                     assistant_message, finish_reason = normalize_anthropic_response(
                         response, strip_tool_prefix=self._is_anthropic_oauth
                     )
+                elif self.api_mode == "bedrock_converse":
+                    from agent.bedrock_adapter import normalize_converse_response
+                    assistant_message, finish_reason = normalize_converse_response(response)
                 else:
                     assistant_message = response.choices[0].message
                 
@@ -9635,8 +9688,15 @@ class AIAgent:
         # injected skill content that bloats / breaks provider queries.
         if self._memory_manager and final_response and original_user_message:
             try:
-                self._memory_manager.sync_all(original_user_message, final_response)
-                self._memory_manager.queue_prefetch_all(original_user_message)
+                _mem_msg = original_user_message
+                if not isinstance(_mem_msg, str):
+                    # Extract text from multimodal content list
+                    _mem_msg = " ".join(
+                        p.get("text", "") for p in _mem_msg
+                        if isinstance(p, dict) and p.get("type") == "text"
+                    ) or "[image]"
+                self._memory_manager.sync_all(_mem_msg, final_response)
+                self._memory_manager.queue_prefetch_all(_mem_msg)
             except Exception:
                 pass
 

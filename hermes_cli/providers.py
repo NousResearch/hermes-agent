@@ -127,6 +127,11 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         is_aggregator=True,
         base_url_env_var="HF_BASE_URL",
     ),
+    "bedrock": HermesOverlay(
+        transport="bedrock_converse",
+        extra_env_vars=("AWS_BEARER_TOKEN_BEDROCK",),
+        base_url_env_var="AWS_BEDROCK_BASE_URL",
+    ),
 }
 
 
@@ -213,6 +218,12 @@ ALIASES: Dict[str, str] = {
     "hugging-face": "huggingface",
     "huggingface-hub": "huggingface",
 
+    # bedrock
+    "aws-bedrock": "bedrock",
+    "aws": "bedrock",
+    "amazon-bedrock": "bedrock",
+    "amazon": "bedrock",
+
     # Local server aliases → virtual "local" concept (resolved via user config)
     "lmstudio": "lmstudio",
     "lm-studio": "lmstudio",
@@ -233,6 +244,7 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "nous": "Nous Portal",
     "openai-codex": "OpenAI Codex",
     "copilot-acp": "GitHub Copilot ACP",
+    "bedrock": "Amazon Bedrock",
     "local": "Local endpoint",
 }
 
@@ -243,6 +255,7 @@ TRANSPORT_TO_API_MODE: Dict[str, str] = {
     "openai_chat": "chat_completions",
     "anthropic_messages": "anthropic_messages",
     "codex_responses": "codex_responses",
+    "bedrock_converse": "bedrock_converse",
 }
 
 
@@ -338,6 +351,7 @@ def get_label(provider_id: str) -> str:
         return pdef.name
 
     return canonical
+
 
 
 

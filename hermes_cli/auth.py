@@ -242,6 +242,14 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=("HF_TOKEN",),
         base_url_env_var="HF_BASE_URL",
     ),
+    "bedrock": ProviderConfig(
+        id="bedrock",
+        name="Amazon Bedrock",
+        auth_type="api_key",
+        inference_base_url="https://bedrock-runtime.us-east-1.amazonaws.com",
+        api_key_env_vars=("AWS_BEARER_TOKEN_BEDROCK",),
+        base_url_env_var="AWS_BEDROCK_BASE_URL",
+    ),
 }
 
 
@@ -358,6 +366,33 @@ def _resolve_api_key_provider_secret(
             return val, env_var
 
     return "", ""
+
+
+# =============================================================================
+# Amazon Bedrock Endpoint Detection
+# =============================================================================
+
+DEFAULT_BEDROCK_REGION = "us-east-1"
+
+
+def _resolve_bedrock_base_url(default_url: str, env_override: str) -> str:
+    """Return the correct Amazon Bedrock base URL.
+
+    If the user has explicitly set AWS_BEDROCK_BASE_URL, that always wins.
+    Otherwise, constructs the URL from AWS_BEDROCK_REGION (default: us-east-1).
+
+    Returns the bare bedrock-runtime endpoint (no path suffix) since the
+    Converse API is called via boto3, not the OpenAI-compatible endpoint.
+    """
+    if env_override:
+        # Strip /openai/v1 suffix if present — that's for Chat Completions,
+        # not the Converse API.
+        url = env_override.rstrip("/")
+        if url.endswith("/openai/v1"):
+            url = url[:-len("/openai/v1")]
+        return url
+    region = os.getenv("AWS_BEDROCK_REGION", "").strip() or DEFAULT_BEDROCK_REGION
+    return f"https://bedrock-runtime.{region}.amazonaws.com"
 
 
 # =============================================================================
@@ -900,6 +935,7 @@ def resolve_provider(
         "opencode": "opencode-zen", "zen": "opencode-zen",
         "qwen-portal": "qwen-oauth", "qwen-cli": "qwen-oauth", "qwen-oauth": "qwen-oauth",
         "hf": "huggingface", "hugging-face": "huggingface", "huggingface-hub": "huggingface",
+        "bedrock": "bedrock", "aws-bedrock": "bedrock", "aws": "bedrock", "amazon-bedrock": "bedrock",
         "go": "opencode-go", "opencode-go-sub": "opencode-go",
         "kilo": "kilocode", "kilo-code": "kilocode", "kilo-gateway": "kilocode",
         # Local server aliases — route through the generic custom provider
@@ -2360,6 +2396,8 @@ def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
         base_url = _resolve_kimi_base_url(api_key, pconfig.inference_base_url, env_url)
     elif provider_id == "zai":
         base_url = _resolve_zai_base_url(api_key, pconfig.inference_base_url, env_url)
+    elif provider_id == "bedrock":
+        base_url = _resolve_bedrock_base_url(pconfig.inference_base_url, env_url)
     elif env_url:
         base_url = env_url.rstrip("/")
     else:

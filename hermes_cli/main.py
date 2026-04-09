@@ -934,6 +934,7 @@ def select_provider_and_model(args=None):
         "kilocode": "Kilo Code",
         "alibaba": "Alibaba Cloud (DashScope)",
         "huggingface": "Hugging Face",
+        "bedrock": "Amazon Bedrock",
         "custom": "Custom endpoint",
     }
     active_label = provider_labels.get(active, active) if active else "none"
@@ -966,6 +967,7 @@ def select_provider_and_model(args=None):
         ("opencode-go", "OpenCode Go (open models, $10/month subscription)"),
         ("ai-gateway", "AI Gateway (Vercel — 200+ models, pay-per-use)"),
         ("alibaba", "Alibaba Cloud / DashScope Coding (Qwen + multi-provider)"),
+        ("bedrock", "Amazon Bedrock (Claude, Nova, DeepSeek, Llama — API key auth)"),
     ]
 
     def _named_custom_provider_map(cfg) -> dict[str, dict[str, str]]:
@@ -1077,6 +1079,8 @@ def select_provider_and_model(args=None):
         _model_flow_anthropic(config, current_model)
     elif selected_provider == "kimi-coding":
         _model_flow_kimi(config, current_model)
+    elif selected_provider == "bedrock":
+        _model_flow_bedrock(config, current_model)
     elif selected_provider in ("gemini", "zai", "minimax", "minimax-cn", "kilocode", "opencode-zen", "opencode-go", "ai-gateway", "alibaba", "huggingface"):
         _model_flow_api_key_provider(config, selected_provider, current_model)
 
@@ -2284,6 +2288,243 @@ def _model_flow_kimi(config, current_model=""):
         print("No change.")
 
 
+def _model_flow_bedrock(config, current_model=""):
+    """Amazon Bedrock model selection with API key and region setup.
+
+    Supports three authentication methods:
+      1. Bedrock API key (AWS_BEARER_TOKEN_BEDROCK) — simplest
+      2. AWS profile (~/.aws/credentials) — for existing AWS users
+      3. AWS access key pair (AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY)
+
+    Also prompts for region selection.
+    """
+    from hermes_cli.auth import (
+        PROVIDER_REGISTRY, _prompt_model_selection, _save_model_choice,
+        deactivate_provider,
+    )
+    from hermes_cli.config import get_env_value, save_env_value, load_config, save_config
+
+    provider_id = "bedrock"
+    pconfig = PROVIDER_REGISTRY[provider_id]
+
+    # ── Step 1: Authentication ──
+    existing_bearer = get_env_value("AWS_BEARER_TOKEN_BEDROCK") or os.getenv("AWS_BEARER_TOKEN_BEDROCK", "")
+    existing_access_key = os.getenv("AWS_ACCESS_KEY_ID", "")
+    aws_profiles = []
+    try:
+        import boto3.session
+        aws_profiles = boto3.session.Session().available_profiles
+    except Exception:
+        pass
+
+    has_bearer = bool(existing_bearer and len(existing_bearer) > 8)
+    has_access_key = bool(existing_access_key and len(existing_access_key) > 8)
+    has_profiles = bool(aws_profiles)
+
+    # Show current auth status
+    if has_bearer:
+        print(f"  Bedrock API key: {existing_bearer[:12]}... ✓")
+    if has_access_key:
+        print(f"  AWS access key:  {existing_access_key[:8]}... ✓")
+    if has_profiles:
+        print(f"  AWS profiles:    {', '.join(aws_profiles)}")
+    if has_bearer or has_access_key or has_profiles:
+        print()
+
+    # Build auth options
+    auth_choices = []
+    if has_bearer:
+        auth_choices.append(("keep_bearer", f"Use existing Bedrock API key ({existing_bearer[:12]}...)"))
+    auth_choices.append(("new_bearer", "Enter a Bedrock API key (from AWS console)"))
+    if has_profiles:
+        for profile in aws_profiles:
+            auth_choices.append((f"profile:{profile}", f"Use AWS profile: {profile}"))
+    if has_access_key:
+        auth_choices.append(("keep_access_key", f"Use existing AWS access key ({existing_access_key[:8]}...)"))
+    auth_choices.append(("new_access_key", "Enter AWS access key + secret key"))
+    auth_choices.append(("cancel", "Cancel"))
+
+    auth_idx = _prompt_provider_choice(
+        [label for _, label in auth_choices], default=0,
+    )
+    if auth_idx is None or auth_choices[auth_idx][0] == "cancel":
+        print("No change.")
+        return
+
+    auth_method = auth_choices[auth_idx][0]
+    selected_profile = ""
+
+    if auth_method == "new_bearer":
+        print()
+        print("  Generate an API key at: https://console.aws.amazon.com/bedrock/")
+        print("  → Navigate to API keys in the left panel")
+        print()
+        try:
+            import getpass
+            new_key = getpass.getpass("  Bedrock API key (or Enter to cancel): ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print()
+            return
+        if not new_key:
+            print("Cancelled.")
+            return
+        save_env_value("AWS_BEARER_TOKEN_BEDROCK", new_key)
+        existing_bearer = new_key
+        print("  API key saved. ✓")
+        print()
+    elif auth_method == "new_access_key":
+        print()
+        try:
+            access_key = input("  AWS Access Key ID: ").strip()
+            if not access_key:
+                print("Cancelled.")
+                return
+            import getpass
+            secret_key = getpass.getpass("  AWS Secret Access Key: ").strip()
+            if not secret_key:
+                print("Cancelled.")
+                return
+        except (KeyboardInterrupt, EOFError):
+            print()
+            return
+        save_env_value("AWS_ACCESS_KEY_ID", access_key)
+        save_env_value("AWS_SECRET_ACCESS_KEY", secret_key)
+        # Clear bearer token to avoid conflicts
+        if get_env_value("AWS_BEARER_TOKEN_BEDROCK"):
+            save_env_value("AWS_BEARER_TOKEN_BEDROCK", "")
+        print("  AWS credentials saved. ✓")
+        print()
+    elif auth_method.startswith("profile:"):
+        selected_profile = auth_method.split(":", 1)[1]
+        save_env_value("AWS_PROFILE", selected_profile)
+        # Clear bearer token to avoid conflicts
+        if get_env_value("AWS_BEARER_TOKEN_BEDROCK"):
+            save_env_value("AWS_BEARER_TOKEN_BEDROCK", "")
+        print(f"  Using AWS profile: {selected_profile} ✓")
+        print()
+    elif auth_method == "keep_bearer":
+        print(f"  Using existing Bedrock API key. ✓")
+        print()
+    elif auth_method == "keep_access_key":
+        print(f"  Using existing AWS access key. ✓")
+        print()
+
+    # ── Step 2: Region selection ──
+    current_region = (
+        get_env_value("AWS_BEDROCK_REGION")
+        or os.getenv("AWS_BEDROCK_REGION", "")
+        or os.getenv("AWS_DEFAULT_REGION", "")
+    )
+
+    # Try to get region from AWS profile
+    if not current_region and selected_profile:
+        try:
+            import boto3.session
+            s = boto3.session.Session(profile_name=selected_profile)
+            current_region = s.region_name or ""
+        except Exception:
+            pass
+    if not current_region:
+        try:
+            import boto3.session
+            current_region = boto3.session.Session().region_name or ""
+        except Exception:
+            pass
+
+    common_regions = [
+        "us-east-1",
+        "us-west-2",
+        "eu-central-1",
+        "eu-west-1",
+        "eu-west-2",
+        "ap-northeast-1",
+        "ap-southeast-1",
+        "ap-southeast-2",
+    ]
+
+    region_choices = []
+    default_region_idx = 0
+    for i, r in enumerate(common_regions):
+        label = r
+        if r == current_region:
+            label += "  ← current"
+            default_region_idx = i
+        region_choices.append((r, label))
+    region_choices.append(("custom", "Enter a different region"))
+    region_choices.append(("cancel", "Cancel"))
+
+    # If current region isn't in the common list, add it at the top
+    if current_region and current_region not in common_regions:
+        region_choices.insert(0, (current_region, f"{current_region}  ← current"))
+        default_region_idx = 0
+
+    print("  Select AWS region:")
+    region_idx = _prompt_provider_choice(
+        [label for _, label in region_choices], default=default_region_idx,
+    )
+    if region_idx is None or region_choices[region_idx][0] == "cancel":
+        print("No change.")
+        return
+
+    if region_choices[region_idx][0] == "custom":
+        try:
+            chosen_region = input("  Region (e.g. eu-central-1): ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print()
+            return
+        if not chosen_region:
+            print("Cancelled.")
+            return
+    else:
+        chosen_region = region_choices[region_idx][0]
+
+    save_env_value("AWS_BEDROCK_REGION", chosen_region)
+    effective_base = f"https://bedrock-runtime.{chosen_region}.amazonaws.com"
+    print(f"  Region: {chosen_region} ✓")
+    print()
+
+    # ── Step 3: Model selection ──
+    # Try live model list from Bedrock APIs first
+    model_list: list = []
+    try:
+        from hermes_cli.models import _fetch_bedrock_models
+        live = _fetch_bedrock_models()
+        if live:
+            model_list = live
+    except Exception:
+        pass
+
+    if not model_list:
+        # Fallback to static curated list
+        model_list = list(_PROVIDER_MODELS.get(provider_id, []))
+    if model_list:
+        print(f"  Showing {len(model_list)} models — use \"Enter custom model name\" for others.")
+        selected = _prompt_model_selection(model_list, current_model=current_model)
+    else:
+        try:
+            selected = input("  Model name (e.g. eu.anthropic.claude-opus-4-6-v1): ").strip()
+        except (KeyboardInterrupt, EOFError):
+            selected = None
+
+    if selected:
+        _save_model_choice(selected)
+
+        cfg = load_config()
+        model = cfg.get("model")
+        if not isinstance(model, dict):
+            model = {"default": model} if model else {}
+            cfg["model"] = model
+        model["provider"] = provider_id
+        model["base_url"] = effective_base
+        model["api_mode"] = "bedrock_converse"
+        save_config(cfg)
+        deactivate_provider()
+
+        print(f"  Default model set to: {selected} (via Amazon Bedrock, {chosen_region})")
+    else:
+        print("No change.")
+
+
 def _model_flow_api_key_provider(config, provider_id, current_model=""):
     """Generic flow for API-key providers (z.ai, MiniMax, OpenCode, etc.)."""
     from hermes_cli.auth import (
@@ -2324,10 +2565,21 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
         print()
 
     # Optional base URL override
+    # Use resolve_api_key_provider_credentials() to get the properly resolved
+    # base URL (handles region-aware URLs like Bedrock, endpoint probing like
+    # Z.AI, and prefix detection like Kimi).
     current_base = ""
     if base_url_env:
         current_base = get_env_value(base_url_env) or os.getenv(base_url_env, "")
-    effective_base = current_base or pconfig.inference_base_url
+    if current_base:
+        effective_base = current_base
+    else:
+        try:
+            from hermes_cli.auth import resolve_api_key_provider_credentials as _resolve_creds
+            _resolved = _resolve_creds(provider_id)
+            effective_base = _resolved.get("base_url", "") or pconfig.inference_base_url
+        except Exception:
+            effective_base = pconfig.inference_base_url
 
     try:
         override = input(f"Base URL [{effective_base}]: ").strip()
@@ -2400,6 +2652,8 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
         model["base_url"] = effective_base
         if provider_id in {"opencode-zen", "opencode-go"}:
             model["api_mode"] = opencode_model_api_mode(provider_id, selected)
+        elif provider_id == "bedrock":
+            model["api_mode"] = "bedrock_converse"
         else:
             model.pop("api_mode", None)
         save_config(cfg)

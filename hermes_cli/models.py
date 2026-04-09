@@ -267,6 +267,25 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "XiaomiMiMo/MiMo-V2-Flash",
         "moonshotai/Kimi-K2-Thinking",
     ],
+    # Amazon Bedrock — Converse API via API key (Bearer token).
+    # This is a FALLBACK list — the live model catalog is fetched at runtime
+    # via _fetch_bedrock_models() (ListInferenceProfiles + ListFoundationModels).
+    # Cross-region inference profile prefixes:
+    #   global. — works from any region
+    #   eu./us./ap. — regional routing
+    #   bare — single-region direct access
+    "bedrock": [
+        "global.anthropic.claude-opus-4-6-v1",
+        "global.anthropic.claude-sonnet-4-6",
+        "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+        "anthropic.claude-opus-4-6-v1",
+        "anthropic.claude-sonnet-4-6",
+        "anthropic.claude-haiku-4-5-20251001-v1:0",
+        "deepseek.v3.2",
+        "amazon.nova-pro-v1:0",
+        "amazon.nova-lite-v1:0",
+        "meta.llama4-maverick-17b-instruct-v1:0",
+    ],
 }
 
 # ---------------------------------------------------------------------------
@@ -479,6 +498,7 @@ _PROVIDER_LABELS = {
     "alibaba": "Alibaba Cloud (DashScope)",
     "qwen-oauth": "Qwen OAuth (Portal)",
     "huggingface": "Hugging Face",
+    "bedrock": "Amazon Bedrock",
     "custom": "Custom endpoint",
 }
 
@@ -521,6 +541,10 @@ _PROVIDER_ALIASES = {
     "hf": "huggingface",
     "hugging-face": "huggingface",
     "huggingface-hub": "huggingface",
+    "bedrock": "bedrock",
+    "aws-bedrock": "bedrock",
+    "aws": "bedrock",
+    "amazon-bedrock": "bedrock",
 }
 
 
@@ -803,7 +827,7 @@ def list_available_providers() -> list[dict[str, str]]:
     # Canonical providers in display order
     _PROVIDER_ORDER = [
         "openrouter", "nous", "openai-codex", "copilot", "copilot-acp",
-        "gemini", "huggingface",
+        "gemini", "huggingface", "bedrock",
         "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode", "anthropic", "alibaba",
         "qwen-oauth",
         "opencode-zen", "opencode-go",
@@ -1194,6 +1218,10 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
             live = fetch_api_models(api_key, base_url)
             if live:
                 return live
+    if normalized == "bedrock":
+        live = _fetch_bedrock_models()
+        if live:
+            return live
     return list(_PROVIDER_MODELS.get(normalized, []))
 
 
@@ -1239,6 +1267,115 @@ def _fetch_anthropic_models(timeout: float = 5.0) -> Optional[list[str]]:
         import logging
         logging.getLogger(__name__).debug("Failed to fetch Anthropic models: %s", e)
         return None
+
+
+def _fetch_bedrock_models() -> Optional[list[str]]:
+    """Fetch available models from Amazon Bedrock.
+
+    Queries both ListInferenceProfiles (cross-region profiles like eu.*, us.*,
+    global.*) and ListFoundationModels (bare model IDs) to build a combined
+    list of text-generating models available in the configured region.
+
+    Returns sorted model IDs with inference profiles first, or None on failure.
+    """
+    try:
+        import boto3
+    except ImportError:
+        return None
+
+    region = os.getenv("AWS_BEDROCK_REGION", "").strip()
+    if not region:
+        try:
+            from hermes_cli.config import get_env_value
+            region = (get_env_value("AWS_BEDROCK_REGION") or "").strip()
+        except Exception:
+            pass
+    if not region:
+        region = "us-east-1"
+
+    try:
+        client = boto3.client("bedrock", region_name=region)
+    except Exception:
+        return None
+
+    # --- Inference profiles (eu.*, us.*, global.*) ---
+    profiles: list[str] = []
+    try:
+        kwargs: dict[str, Any] = {"maxResults": 100}
+        while True:
+            resp = client.list_inference_profiles(**kwargs)
+            for p in resp.get("inferenceProfileSummaries", []):
+                if p.get("status") == "ACTIVE":
+                    pid = p.get("inferenceProfileId", "")
+                    if pid:
+                        profiles.append(pid)
+            token = resp.get("nextToken")
+            if not token:
+                break
+            kwargs["nextToken"] = token
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).debug("Bedrock ListInferenceProfiles failed: %s", e)
+
+    # --- Foundation models (bare IDs) ---
+    bare_models: list[str] = []
+    try:
+        resp = client.list_foundation_models()
+        for m in resp.get("modelSummaries", []):
+            # Only text-output models that support on-demand inference
+            output = m.get("outputModalities", [])
+            inference_types = m.get("inferenceTypesSupported", [])
+            if "TEXT" in output and inference_types:
+                mid = m.get("modelId", "")
+                if mid:
+                    bare_models.append(mid)
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).debug("Bedrock ListFoundationModels failed: %s", e)
+
+    if not profiles and not bare_models:
+        return None
+
+    # Filter out embedding, image, and non-chat models by provider heuristics
+    _EXCLUDED_PREFIXES = (
+        "amazon.titan-embed", "amazon.titan-image", "amazon.nova-canvas",
+        "amazon.nova-reel", "amazon.nova-sonic", "cohere.embed",
+        "cohere.rerank", "stability.", "twelvelabs.",
+    )
+
+    def _is_chat_model(model_id: str) -> bool:
+        lower = model_id.lower()
+        # Strip inference profile prefix for checking
+        for prefix in ("global.", "eu.", "us.", "ap.", "al."):
+            if lower.startswith(prefix):
+                lower = lower[len(prefix):]
+                break
+        return not any(lower.startswith(ex) for ex in _EXCLUDED_PREFIXES)
+
+    # Combine: profiles first (preferred), then bare models not already covered
+    profile_set = set(profiles)
+    # Extract bare model IDs that profiles already cover
+    covered_bare = set()
+    for pid in profiles:
+        for prefix in ("global.", "eu.", "us.", "ap.", "al."):
+            if pid.startswith(prefix):
+                covered_bare.add(pid[len(prefix):])
+                break
+
+    combined: list[str] = []
+    seen: set[str] = set()
+    # Add profiles first
+    for pid in profiles:
+        if _is_chat_model(pid) and pid not in seen:
+            combined.append(pid)
+            seen.add(pid)
+    # Add bare models not covered by profiles
+    for mid in bare_models:
+        if _is_chat_model(mid) and mid not in seen and mid not in covered_bare:
+            combined.append(mid)
+            seen.add(mid)
+
+    return combined if combined else None
 
 
 def _payload_items(payload: Any) -> list[dict[str, Any]]:

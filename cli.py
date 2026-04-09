@@ -3356,6 +3356,43 @@ class HermesCLI:
             return f"{prefix}\n\n{user_text}" if user_text else prefix
         return user_text or "What do you see in this image?"
 
+    def _build_multimodal_message(self, text: str, images: list) -> list:
+        """Build a multimodal content list with inline base64 images.
+
+        Used for providers that natively support images (e.g. Bedrock Converse)
+        so the image goes directly to the main model without pre-analysis.
+        Returns an OpenAI-format content list.
+        """
+        import base64 as _b64
+
+        parts = []
+        if text:
+            parts.append({"type": "text", "text": text})
+
+        for img_path in images:
+            if not img_path.exists():
+                continue
+            size_kb = img_path.stat().st_size // 1024
+            _cprint(f"  {_DIM}\U0001f4ce sending {img_path.name} ({size_kb}KB) to model...{_RST}")
+
+            # Detect MIME type
+            suffix = img_path.suffix.lower()
+            mime_map = {".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+                        ".png": "image/png", ".gif": "image/gif",
+                        ".webp": "image/webp"}
+            mime = mime_map.get(suffix, "image/png")
+
+            data = _b64.b64encode(img_path.read_bytes()).decode()
+            parts.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:{mime};base64,{data}"},
+            })
+
+        if not parts:
+            return text or "What do you see in this image?"
+        return parts
+
+
     def _show_tool_availability_warnings(self):
         """Show warnings about disabled tools due to missing API keys."""
         try:
@@ -6977,10 +7014,17 @@ class HermesCLI:
         # Pre-process images through the vision tool (Gemini Flash) so the
         # main model receives text descriptions instead of raw base64 image
         # content — works with any model, not just vision-capable ones.
+        # Exception: Bedrock Converse API natively supports images, so send
+        # them inline as multimodal content blocks instead of pre-analyzing.
         if images:
-            message = self._preprocess_images_with_vision(
-                message if isinstance(message, str) else "", images
-            )
+            if getattr(self, 'api_mode', '') == 'bedrock_converse':
+                message = self._build_multimodal_message(
+                    message if isinstance(message, str) else "", images
+                )
+            else:
+                message = self._preprocess_images_with_vision(
+                    message if isinstance(message, str) else "", images
+                )
 
         # Expand @ context references (e.g. @file:main.py, @diff, @folder:src/)
         if isinstance(message, str) and "@" in message:

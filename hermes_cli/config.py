@@ -847,6 +847,21 @@ OPTIONAL_ENV_VARS = {
         "category": "provider",
         "advanced": True,
     },
+    "AWS_BEARER_TOKEN_BEDROCK": {
+        "description": "Amazon Bedrock API key (Bearer token for OpenAI-compatible endpoint)",
+        "prompt": "Amazon Bedrock API Key",
+        "url": "https://console.aws.amazon.com/bedrock/",
+        "password": True,
+        "category": "provider",
+    },
+    "AWS_BEDROCK_REGION": {
+        "description": "AWS region for Bedrock (default: us-east-1)",
+        "prompt": "AWS Bedrock Region (leave empty for us-east-1)",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
 
     # ── Tool API keys ──
     "EXA_API_KEY": {

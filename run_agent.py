@@ -8814,13 +8814,24 @@ class AIAgent:
                             tc.function.arguments = str(args)
                             args = tc.function.arguments
                         # Treat empty/whitespace strings as empty object
-                        if not args or not args.strip():
-                            tc.function.arguments = "{}"
-                            continue
-                        try:
-                            json.loads(args)
-                        except json.JSONDecodeError as e:
-                            invalid_json_args.append((tc.function.name, str(e)))
+ if not args or not args.strip():
+ tc.function.arguments = "{}"
+ continue
+ try:
+ json.loads(args)
+ except json.JSONDecodeError as e:
+ # Try to repair malformed JSON from known problematic models
+ try:
+ from tools.kimi_json_sanitizer import sanitize_kimi_json, is_kimi_model
+ if is_kimi_model(getattr(self, 'model', '')):
+ repaired, repair_error = sanitize_kimi_json(args)
+ if repaired is not None:
+ tc.function.arguments = json.dumps(repaired)
+ self._vprint(f"{self.log_prefix}🔧 Repaired malformed JSON for '{tc.function.name}'")
+ continue
+ except ImportError:
+ pass # Sanitizer not available, proceed with normal error handling
+ invalid_json_args.append((tc.function.name, str(e)))
                     
                     if invalid_json_args:
                         # Track retries for invalid JSON arguments

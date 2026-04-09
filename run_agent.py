@@ -97,7 +97,7 @@ from agent.display import (
     _detect_tool_failure,
     get_tool_emoji as _get_tool_emoji,
 )
-from agent.task_review import review_completed_task
+from agent.task_review import apply_memory_writeback, review_completed_task
 from agent.trajectory import (
     convert_scratchpad_to_think, has_incomplete_scratchpad,
     save_trajectory as _save_trajectory_to_file,
@@ -9161,19 +9161,36 @@ class AIAgent:
             completed=completed,
             interrupted=interrupted,
         )
+        # Track whether centralized writeback handled memory for this turn.
+        _centralized_memory_written = False
+
         if self._should_run_task_completion_review(task_completion_payload):
             result["task_completion_payload"] = task_completion_payload
             try:
-                result["task_review"] = review_completed_task(task_completion_payload)
+                task_review = review_completed_task(task_completion_payload)
+                result["task_review"] = task_review
+
+                # Centralized memory writeback — deterministic, runs before
+                # the background LLM review to prevent duplicate writes.
+                if task_review.memory_write_candidates and self._memory_store:
+                    written = apply_memory_writeback(
+                        task_review.memory_write_candidates,
+                        self._memory_store,
+                    )
+                    if written:
+                        _centralized_memory_written = True
+                        logger.debug(
+                            "Centralized writeback wrote %d entries", len(written),
+                        )
             except Exception:
                 logger.debug("task review engine failed", exc_info=True)
 
         self._response_was_previewed = False
-        
+
         # Include interrupt message if one triggered the interrupt
         if interrupted and self._interrupt_message:
             result["interrupt_message"] = self._interrupt_message
-        
+
         # Clear interrupt state after handling
         self.clear_interrupt()
 
@@ -9197,6 +9214,12 @@ class AIAgent:
                 self._memory_manager.queue_prefetch_all(original_user_message)
             except Exception:
                 pass
+
+        # If centralized writeback already handled memory for this turn,
+        # suppress the background LLM memory review to prevent near-duplicate
+        # entries.  Skill review is unaffected.
+        if _centralized_memory_written:
+            _should_review_memory = False
 
         # Background memory/skill review — runs AFTER the response is delivered
         # so it never competes with the user's task for model attention.

@@ -9109,8 +9109,27 @@ class AIAgent:
                             self._save_session_log(messages)
                             continue
 
-                        # Exhausted prefill attempts or no structured
-                        # reasoning — fall through to "(empty)" terminal.
+                        # ── Empty response retry (no reasoning) ──────
+                        # Model returned nothing — no content, no
+                        # structured reasoning, no tool calls.  Common
+                        # with open models (transient provider issues,
+                        # rate limits, sampling flukes).  Silently retry
+                        # up to 3 times before giving up.  Skip when
+                        # content has inline <think> tags (model chose
+                        # to reason, just no visible text).
+                        _truly_empty = not final_response.strip()
+                        if _truly_empty and not _has_structured and self._empty_content_retries < 3:
+                            self._empty_content_retries += 1
+                            self._vprint(
+                                f"{self.log_prefix}↻ Empty response (no content or reasoning) "
+                                f"— retrying ({self._empty_content_retries}/3)",
+                                force=True,
+                            )
+                            continue
+
+                        # Exhausted prefill attempts, empty retries, or
+                        # structured reasoning with no content —
+                        # fall through to "(empty)" terminal.
                         reasoning_text = self._extract_reasoning(assistant_message)
                         assistant_msg = self._build_assistant_message(assistant_message, finish_reason)
                         assistant_msg["content"] = "(empty)"
@@ -9120,7 +9139,7 @@ class AIAgent:
                             reasoning_preview = reasoning_text[:500] + "..." if len(reasoning_text) > 500 else reasoning_text
                             self._vprint(f"{self.log_prefix}ℹ️  Reasoning-only response (no visible content). Reasoning: {reasoning_preview}")
                         else:
-                            self._vprint(f"{self.log_prefix}ℹ️  Empty response (no content or reasoning).")
+                            self._vprint(f"{self.log_prefix}ℹ️  Empty response (no content or reasoning) after 3 retries.")
 
                         final_response = "(empty)"
                         break

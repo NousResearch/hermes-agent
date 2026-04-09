@@ -3488,13 +3488,19 @@ def cmd_update(args):
             print(f"  ⚠ Currently on {label} — switching to main for update...")
             # Stash before checkout so uncommitted work isn't lost
             auto_stash_ref = _stash_local_changes_if_needed(git_cmd, PROJECT_ROOT)
-            subprocess.run(
-                git_cmd + ["checkout", "main"],
+            # Use --force to handle untracked files that would conflict with target branch
+            checkout_result = subprocess.run(
+                git_cmd + ["checkout", "--force", "main"],
                 cwd=PROJECT_ROOT,
                 capture_output=True,
                 text=True,
-                check=True,
             )
+            if checkout_result.returncode != 0:
+                print("✗ Failed to switch to main branch.")
+                if checkout_result.stderr:
+                    print(f" {checkout_result.stderr.splitlines()[0]}")
+                print(" Try manually: git checkout --force main")
+                sys.exit(1)
         else:
             auto_stash_ref = _stash_local_changes_if_needed(git_cmd, PROJECT_ROOT)
 

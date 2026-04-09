@@ -4008,59 +4008,7 @@ class HermesCLI:
 
         print("  To change model or provider, use: hermes model")
 
-    def _handle_prompt_command(self, cmd: str):
-        """Handle the /prompt command to view or set system prompt."""
-        parts = cmd.split(maxsplit=1)
-        
-        if len(parts) > 1:
-            # Set new prompt
-            new_prompt = parts[1].strip()
-            
-            if new_prompt.lower() == "clear":
-                self.system_prompt = ""
-                self.agent = None  # Force re-init
-                if save_config_value("agent.system_prompt", ""):
-                    print("(^_^)b System prompt cleared (saved to config)")
-                else:
-                    print("(^_^) System prompt cleared (session only)")
-            else:
-                self.system_prompt = new_prompt
-                self.agent = None  # Force re-init
-                if save_config_value("agent.system_prompt", new_prompt):
-                    print("(^_^)b System prompt set (saved to config)")
-                else:
-                    print("(^_^) System prompt set (session only)")
-                print(f"  \"{new_prompt[:60]}{'...' if len(new_prompt) > 60 else ''}\"")
-        else:
-            # Show current prompt
-            print()
-            print("+" + "-" * 50 + "+")
-            print("|" + " " * 15 + "(^_^) System Prompt" + " " * 15 + "|")
-            print("+" + "-" * 50 + "+")
-            print()
-            if self.system_prompt:
-                # Word wrap the prompt for display
-                words = self.system_prompt.split()
-                lines = []
-                current_line = ""
-                for word in words:
-                    if len(current_line) + len(word) + 1 <= 50:
-                        current_line += (" " if current_line else "") + word
-                    else:
-                        lines.append(current_line)
-                        current_line = word
-                if current_line:
-                    lines.append(current_line)
-                for line in lines:
-                    print(f"  {line}")
-            else:
-                print("  (no custom prompt set - using default)")
-            print()
-            print("  Usage:")
-            print("    /prompt <text>  - Set a custom system prompt")
-            print("    /prompt clear   - Remove custom prompt")
-            print("    /personality    - Use a predefined personality")
-            print()
+
     
 
     @staticmethod
@@ -4560,9 +4508,7 @@ class HermesCLI:
             self._handle_model_switch(cmd_original)
         elif canonical == "provider":
             self._show_model_and_providers()
-        elif canonical == "prompt":
-            # Use original case so prompt text isn't lowercased
-            self._handle_prompt_command(cmd_original)
+
         elif canonical == "personality":
             # Use original case (handler lowercases the personality name itself)
             self._handle_personality_command(cmd_original)

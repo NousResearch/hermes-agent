@@ -763,6 +763,7 @@ class GatewayRunner:
                         retention_days=int(_sess_cfg.get("retention_days", 90)),
                         min_interval_hours=int(_sess_cfg.get("min_interval_hours", 24)),
                         vacuum=bool(_sess_cfg.get("vacuum_after_prune", True)),
+                        sessions_dir=self.config.sessions_dir,
                     )
             except Exception as exc:
                 logger.debug("state.db auto-maintenance skipped: %s", exc)

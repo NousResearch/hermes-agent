@@ -5,9 +5,32 @@ Pre-flight checklist before submitting Argus to hermes-agent.
 ## Structure Compliance
 
 - [ ] `argus/__init__.py` exists with public API exports in `__all__`
-- [ ] Tests are in `tests/argus/` (not `argus/tests/`)
-- [ ] Production code uses relative imports (`from . import x`)
-- [ ] No `sys.path.insert` in production code (argus.py, wal_monitor.py exempted for standalone mode)
+- Tests are in `tests/argus/` (not `argus/tests/`)
+- Production code uses relative imports (`from . import x`)
+- No `sys.path.insert` in production code (argus.py, wal_monitor.py exempted for standalone mode)
+
+## Optional Features
+
+### ML Data Export (`ml_data.py`)
+
+Exports entropy detections as training data for model improvement.
+
+**Enable in config.yaml:**
+```yaml
+argus:
+  ml_data_enabled: true  # Export ShareGPT trajectories
+  ml_memory_enabled: true  # Record to holographic memory
+```
+
+**What it does:**
+1. Generates trajectories showing failure → detection → recovery
+2. Records entropy facts to holographic memory (if available)
+3. Outputs to `~/.hermes/argus/ml_data/`
+
+**Integration targets:**
+- holographic_memory.db (via hermes_state)
+- ShareGPT format for fine-tuning
+- Native hermes-agent ML pipeline (if available)
 
 ## File Organization
 

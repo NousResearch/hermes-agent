@@ -144,6 +144,9 @@ _DEFAULT_ARGUS_CONFIG = {
     "quality_threshold": 0.92,
     "max_restart_count": 3,
     "session_timeout_minutes": 60,
+    # ML data export (optional feature)
+    "ml_data_enabled": False,  # Export trajectories to ~/.hermes/argus/ml_data/
+    "ml_memory_enabled": True,  # Record entropy facts to holographic memory
 }
 
 
@@ -1169,6 +1172,30 @@ class Argus:
                 action_result="success",
                 metadata={"action_id": action_id, **decision},
             )
+
+            # Export ML training data (optional feature)
+            if CONFIG.get("ml_data_enabled", False):
+                try:
+                    from . import ml_data
+
+                    entropy_type = decision.get("entropy_type", "unknown")
+                    severity = "critical" if action == "kill" else "warning"
+
+                    ml_data.export_entropy_event(
+                        entropy_type=entropy_type,
+                        severity=severity,
+                        session_context={
+                            "session_id": session_id,
+                            "task_description": reason,
+                        },
+                        detection_details=decision,
+                        recovery_action=action,
+                        outcome="success",
+                        enable_trajectory=True,
+                        enable_memory=CONFIG.get("ml_memory_enabled", True),
+                    )
+                except Exception as e:
+                    logger.debug("ML data export failed (non-critical): %s", e)
 
         except Exception as e:
             logger.error(

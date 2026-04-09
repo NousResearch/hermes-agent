@@ -38,6 +38,13 @@ from .notifications import (
 # Metrics
 from .metrics import MetricsCollector, write_metrics_file
 
+# ML Data (optional feature)
+from .ml_data import (
+    MLDataExporter,
+    HolographicMemoryBridge,
+    export_entropy_event,
+)
+
 __all__ = [
     # Core
     "Argus",
@@ -64,4 +71,8 @@ __all__ = [
     # Metrics
     "MetricsCollector",
     "write_metrics_file",
+    # ML Data (optional)
+    "MLDataExporter",
+    "HolographicMemoryBridge",
+    "export_entropy_event",
 ]

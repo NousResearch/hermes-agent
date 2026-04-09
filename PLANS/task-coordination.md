@@ -65,7 +65,7 @@ Since GitHub Issues are disabled in this repository, we use **PLANS/task-coordin
 | **Python Files** | 744 |
 | **Repository Size** | 66 MB |
 | **Primary Language** | Python |
-| **License** | GPL v2 |
+| **License** | LGPL v2.1 |
 
 ### Key Components
 - `run_agent.py` (477KB) - Core AIAgent class with conversation loop

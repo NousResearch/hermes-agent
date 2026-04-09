@@ -2337,6 +2337,7 @@ class GatewayRunner:
         _is_new_session = (
             session_entry.created_at == session_entry.updated_at
             or getattr(session_entry, "was_auto_reset", False)
+            or getattr(session_entry, "was_manual_reset", False)
         )
         if _is_new_session:
             await self.hooks.emit("session:start", {
@@ -2434,6 +2435,10 @@ class GatewayRunner:
 
             session_entry.was_auto_reset = False
             session_entry.auto_reset_reason = None
+
+        # Clear manual reset flag — it has served its purpose for _is_new_session detection
+        if getattr(session_entry, "was_manual_reset", False):
+            session_entry.was_manual_reset = False
 
         # Auto-load skill for DM topic bindings (e.g., Telegram Private Chat Topics)
         # Only inject on NEW sessions — for ongoing conversations the skill content

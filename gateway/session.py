@@ -378,6 +378,10 @@ class SessionEntry:
     was_auto_reset: bool = False
     auto_reset_reason: Optional[str] = None  # "idle" or "daily"
     reset_had_activity: bool = False  # whether the expired session had any messages
+
+    # Set when a session was manually reset via /new or /reset command;
+    # consumed once by the message handler to trigger skill re-injection
+    was_manual_reset: bool = False
     
     # Set by the background expiry watcher after it successfully flushes
     # memories for this session.  Persisted to sessions.json so the flag
@@ -850,6 +854,7 @@ class SessionStore:
                 display_name=old_entry.display_name,
                 platform=old_entry.platform,
                 chat_type=old_entry.chat_type,
+                was_manual_reset=True,
             )
 
             self._entries[session_key] = new_entry

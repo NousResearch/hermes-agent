@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { sameToolTrailGroup } from '../lib/text.js'
+import { fmtK, sameToolTrailGroup } from '../lib/text.js'
 
 describe('sameToolTrailGroup', () => {
   it('matches bare check lines', () => {
@@ -16,5 +16,21 @@ describe('sameToolTrailGroup', () => {
   it('rejects other tools', () => {
     expect(sameToolTrailGroup('🔍 searching', '📖 reading ✓')).toBe(false)
     expect(sameToolTrailGroup('🔍 searching', '🔍 searching extra ✓')).toBe(false)
+  })
+})
+
+describe('fmtK', () => {
+  it('keeps small numbers plain', () => {
+    expect(fmtK(999)).toBe('999')
+  })
+
+  it('formats thousands as K', () => {
+    expect(fmtK(1000)).toBe('1K')
+    expect(fmtK(1500)).toBe('1.5K')
+  })
+
+  it('formats millions and billions', () => {
+    expect(fmtK(1_000_000)).toBe('1M')
+    expect(fmtK(1_000_000_000)).toBe('1B')
   })
 })

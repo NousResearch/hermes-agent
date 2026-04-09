@@ -298,6 +298,7 @@ SUPPORTED_DOCUMENT_TYPES = {
     ".pdf": "application/pdf",
     ".md": "text/markdown",
     ".txt": "text/plain",
+    ".log": "text/plain",
     ".zip": "application/zip",
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

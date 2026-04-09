@@ -1125,6 +1125,27 @@ OPTIONAL_ENV_VARS = {
         "category": "messaging",
         "advanced": True,
     },
+    "BLUEBUBBLES_SERVER_URL": {
+        "description": "BlueBubbles server URL for iMessage integration (e.g. http://192.168.1.10:1234)",
+        "prompt": "BlueBubbles server URL",
+        "url": "https://bluebubbles.app/",
+        "password": False,
+        "category": "messaging",
+    },
+    "BLUEBUBBLES_PASSWORD": {
+        "description": "BlueBubbles server password (from BlueBubbles Server → Settings → API)",
+        "prompt": "BlueBubbles server password",
+        "url": None,
+        "password": True,
+        "category": "messaging",
+    },
+    "BLUEBUBBLES_ALLOWED_USERS": {
+        "description": "Comma-separated iMessage addresses (email or phone) allowed to use the bot",
+        "prompt": "Allowed iMessage addresses (comma-separated)",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+    },
     "GATEWAY_ALLOW_ALL_USERS": {
         "description": "Allow all users to interact with messaging bots (true/false). Default: false.",
         "prompt": "Allow all users (true/false)",

@@ -93,6 +93,16 @@ def parse_reasoning_effort(effort: str) -> dict | None:
     return None
 
 
+def is_termux() -> bool:
+    """Return True when running inside a Termux (Android) environment.
+
+    Checks ``TERMUX_VERSION`` (set by Termux) or the Termux-specific
+    ``PREFIX`` path.  Import-safe — no heavy deps.
+    """
+    prefix = os.getenv("PREFIX", "")
+    return bool(os.getenv("TERMUX_VERSION") or "com.termux/files/usr" in prefix)
+
+
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 OPENROUTER_MODELS_URL = f"{OPENROUTER_BASE_URL}/models"
 OPENROUTER_CHAT_URL = f"{OPENROUTER_BASE_URL}/chat/completions"

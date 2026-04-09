@@ -226,9 +226,7 @@ def is_linux() -> bool:
     return sys.platform.startswith('linux')
 
 
-def is_termux() -> bool:
-    prefix = os.getenv("PREFIX", "")
-    return bool(os.getenv("TERMUX_VERSION") or "com.termux/files/usr" in prefix)
+from hermes_constants import is_termux
 
 
 def supports_systemd_services() -> bool:

@@ -48,9 +48,7 @@ def _audio_available() -> bool:
         return False
 
 
-def _is_termux_environment() -> bool:
-    prefix = os.getenv("PREFIX", "")
-    return bool(os.getenv("TERMUX_VERSION") or "com.termux/files/usr" in prefix)
+from hermes_constants import is_termux as _is_termux_environment
 
 
 def _voice_capture_install_hint() -> str:

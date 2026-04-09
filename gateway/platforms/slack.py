@@ -1229,7 +1229,14 @@ class SlackAdapter(BasePlatformAdapter):
         msg_ts = message.get("ts", "")
         channel_id = body.get("channel", {}).get("id", "")
         user_name = body.get("user", {}).get("name", "unknown")
-
+        user_id = body.get("user", {}).get("id", "")
+        # Only allow authorized users to click approval buttons
+        if self._allowed_user_ids and user_id not in self._allowed_user_ids:
+            logger.warning(
+                "[Slack] Unauthorized approval button click by user %s — ignoring",
+                user_name,
+            )
+            return
         # Map action_id to approval choice
         choice_map = {
             "hermes_approve_once": "once",

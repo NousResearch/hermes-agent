@@ -7,6 +7,7 @@ import type { Theme } from '../theme.js'
 import type { Msg } from '../types.js'
 
 import { Md } from './markdown.js'
+import { ToolTrail } from './thinking.js'
 
 export const MessageLine = memo(function MessageLine({
   cols,
@@ -19,8 +20,6 @@ export const MessageLine = memo(function MessageLine({
   msg: Msg
   t: Theme
 }) {
-  const { body, glyph, prefix } = ROLE[msg.role](t)
-
   if (msg.role === 'tool') {
     return (
       <Box alignSelf="flex-start" borderColor={t.color.dim} borderStyle="round" marginLeft={3} paddingX={1}>
@@ -28,6 +27,8 @@ export const MessageLine = memo(function MessageLine({
       </Box>
     )
   }
+
+  const { body, glyph, prefix } = ROLE[msg.role](t)
 
   const content = (() => {
     if (msg.role === 'assistant') {
@@ -59,6 +60,12 @@ export const MessageLine = memo(function MessageLine({
         </Text>
       )}
 
+      {msg.tools?.length ? (
+        <Box flexDirection="column" marginBottom={1}>
+          <ToolTrail t={t} trail={msg.tools} />
+        </Box>
+      ) : null}
+
       <Box>
         <Box flexShrink={0} width={3}>
           <Text bold={msg.role === 'user'} color={prefix}>
@@ -68,20 +75,6 @@ export const MessageLine = memo(function MessageLine({
 
         <Box width={Math.max(20, cols - 5)}>{content}</Box>
       </Box>
-
-      {!!msg.tools?.length && (
-        <Box flexDirection="column" marginBottom={1} marginTop={1}>
-          {msg.tools.map((tool, i) => (
-            <Text
-              color={tool.endsWith(' ✗') ? t.color.error : t.color.dim}
-              dimColor={!tool.endsWith(' ✗')}
-              key={`${tool}-${i}`}
-            >
-              {t.brand.tool} {tool}
-            </Text>
-          ))}
-        </Box>
-      )}
     </Box>
   )
 })

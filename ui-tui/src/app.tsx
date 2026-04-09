@@ -6,7 +6,6 @@ import { join } from 'node:path'
 import { Box, Text, useApp, useInput, useStdout } from 'ink'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
-import { ActivityLane } from './components/activityLane.js'
 import { Banner, SessionPanel } from './components/branding.js'
 import { MaskedPrompt } from './components/maskedPrompt.js'
 import { MessageLine } from './components/messageLine.js'
@@ -14,7 +13,7 @@ import { ApprovalPrompt, ClarifyPrompt } from './components/prompts.js'
 import { QueuedMessages } from './components/queuedMessages.js'
 import { SessionPicker } from './components/sessionPicker.js'
 import { type PasteEvent, TextInput } from './components/textInput.js'
-import { Thinking } from './components/thinking.js'
+import { Thinking, ToolTrail } from './components/thinking.js'
 import { HOTKEYS, INTERPOLATION_RE, PLACEHOLDERS, TOOL_VERBS, ZERO } from './constants.js'
 import { type GatewayClient, type GatewayEvent } from './gatewayClient.js'
 import { useCompletion } from './hooks/useCompletion.js'
@@ -278,6 +277,7 @@ export function App({ gw }: { gw: GatewayClient }) {
   const [pastes, setPastes] = useState<PendingPaste[]>([])
   const [pasteReview, setPasteReview] = useState<{ largeIds: number[]; text: string } | null>(null)
   const [streaming, setStreaming] = useState('')
+  const [turnTrail, setTurnTrail] = useState<string[]>([])
   const [bgTasks, setBgTasks] = useState<Set<string>>(new Set())
   const [catalog, setCatalog] = useState<SlashCatalog | null>(null)
 
@@ -374,6 +374,7 @@ export function App({ gw }: { gw: GatewayClient }) {
   const idle = () => {
     setThinking(false)
     setTools([])
+    setTurnTrail([])
     setBusy(false)
     setClarify(null)
     setApproval(null)
@@ -1005,6 +1006,7 @@ export function App({ gw }: { gw: GatewayClient }) {
           setBusy(true)
           setReasoning('')
           setActivity([])
+          setTurnTrail([])
           turnToolsRef.current = []
 
           break
@@ -1021,7 +1023,11 @@ export function App({ gw }: { gw: GatewayClient }) {
                   p.kind === 'error' ? 'error' : p.kind === 'warn' || p.kind === 'approval' ? 'warn' : 'info'
                 )
               }
-              if (statusTimerRef.current) clearTimeout(statusTimerRef.current)
+
+              if (statusTimerRef.current) {
+                clearTimeout(statusTimerRef.current)
+              }
+
               statusTimerRef.current = setTimeout(() => {
                 statusTimerRef.current = null
                 setStatus(busyRef.current ? 'running…' : 'ready')
@@ -1067,7 +1073,6 @@ export function App({ gw }: { gw: GatewayClient }) {
           break
         case 'tool.complete': {
           const mark = p.error ? '✗' : '✓'
-          const tone = p.error ? 'error' : 'info'
 
           toolCompleteRibbonRef.current = null
           setTools(prev => {
@@ -1077,15 +1082,12 @@ export function App({ gw }: { gw: GatewayClient }) {
             const line = `${label}${ctx ? ': ' + compactPreview(ctx, 72) : ''} ${mark}`
 
             toolCompleteRibbonRef.current = { label, line }
-            turnToolsRef.current = [...turnToolsRef.current.filter(s => !sameToolTrailGroup(label, s)), line].slice(-8)
+            const next = [...turnToolsRef.current.filter(s => !sameToolTrailGroup(label, s)), line].slice(-8)
+            turnToolsRef.current = next
+            setTurnTrail(next)
 
             return prev.filter(t => t.id !== p.tool_id)
           })
-
-          if (toolCompleteRibbonRef.current) {
-            const { line, label } = toolCompleteRibbonRef.current
-            pushActivity(line, tone, label)
-          }
 
           break
         }
@@ -1787,15 +1789,13 @@ export function App({ gw }: { gw: GatewayClient }) {
       ))}
 
       <Box flexDirection="column" paddingX={1}>
+        <ToolTrail t={theme} tools={tools} trail={turnTrail} />
+
+        {thinking && !tools.length && !streaming && <Thinking key={turnKey} reasoning={reasoning} t={theme} />}
+
         {streaming && (
           <MessageLine cols={cols} compact={compact} msg={{ role: 'assistant', text: streaming }} t={theme} />
         )}
-
-        {(thinking || tools.length > 0) && (!streaming || tools.length > 0) && (
-          <Thinking key={turnKey} reasoning={reasoning} t={theme} tools={tools} />
-        )}
-
-        {busy && <ActivityLane items={activity} t={theme} />}
 
         {pasteReview && (
           <PromptBox color={theme.color.warn}>

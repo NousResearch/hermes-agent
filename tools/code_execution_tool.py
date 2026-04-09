@@ -941,26 +941,62 @@ def execute_code(
             f.write(code)
 
         # --- Start UDS server ---
-        # Restrict the RPC socket to the owning user (0o600). This channel
-        # accepts JSON-RPC requests that execute the sandbox tool surface
-        # (terminal, file ops, web, etc.) with this process's privileges —
-        # on a shared system, default-permission sockets in /tmp let any
-        # local user connect and drive the tools. We set umask before
-        # bind() so the socket inode is created with the correct mode on
-        # filesystems that honour umask, then os.chmod() as defense in
-        # depth for filesystems (NFS, some network mounts) that ignore it.
-        _old_umask = os.umask(0o077)
-        try:
-            server_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            server_sock.bind(sock_path)
-        finally:
-            os.umask(_old_umask)
+        # Restrict the RPC socket to the owning user. This channel accepts
+        # JSON-RPC requests that execute the sandbox tool surface (terminal,
+        # file ops, web, etc.) with this process's privileges — on a shared
+        # system, default-permission sockets in /tmp let any local user
+        # connect and drive the tools.
+        #
+        # Approach:
+        #   1. bind() creates the socket inode with default perms.
+        #   2. Immediately chmod to 0o600 (owner rw only).
+        #   3. Stat-verify the resulting mode and fail-closed if any
+        #      group/other bit is still set — refuses to expose the tool
+        #      surface on a filesystem where chmod was a silent no-op.
+        #
+        # Deliberately avoids `os.umask()` here because umask is process-
+        # global and not thread-safe — any other thread creating files
+        # during the bind window would inherit the temporary umask.
+        server_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        server_sock.bind(sock_path)
         try:
             os.chmod(sock_path, 0o600)
-        except OSError:
-            # Non-fatal: umask already applied the intended perms. Only
-            # hits exotic filesystems where chmod on a UDS is unsupported.
-            pass
+        except OSError as _chmod_err:
+            logger.warning(
+                "Could not chmod RPC socket %s: %s (will verify mode below)",
+                sock_path,
+                _chmod_err,
+            )
+
+        # Fail-closed: verify the socket is actually owner-only before we
+        # accept any connection. If chmod was a no-op on an exotic
+        # filesystem and the mode still allows group/other access, we
+        # cannot safely expose the tool surface — tear down and raise.
+        try:
+            _sock_mode = os.stat(sock_path).st_mode & 0o777
+        except OSError as _stat_err:
+            # If we can't stat our own socket, something is deeply wrong.
+            server_sock.close()
+            try:
+                os.unlink(sock_path)
+            except OSError:
+                pass
+            raise RuntimeError(
+                f"RPC socket {sock_path} could not be stat'd after bind: "
+                f"{_stat_err}; refusing to expose code-execution tool surface."
+            ) from _stat_err
+        if _sock_mode & 0o077:
+            server_sock.close()
+            try:
+                os.unlink(sock_path)
+            except OSError:
+                pass
+            raise RuntimeError(
+                f"RPC socket {sock_path} has permissive mode "
+                f"0o{_sock_mode:03o} after bind+chmod; refusing to expose "
+                f"code-execution tool surface on a shared socket."
+            )
+
         server_sock.listen(1)
 
         rpc_thread = threading.Thread(

@@ -696,6 +696,8 @@ def auth_browser_command(args) -> None:
             ca_bundle=None,
         ))
         print("Stored chatgpt-web credential from Termux browser.")
+        print(f'Added it to the credential pool as "{label}".')
+        print("Verify with: hermes auth list")
     finally:
         if not keep_open:
             _terminate_process(proc)

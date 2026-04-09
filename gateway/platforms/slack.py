@@ -1229,6 +1229,20 @@ class SlackAdapter(BasePlatformAdapter):
         msg_ts = message.get("ts", "")
         channel_id = body.get("channel", {}).get("id", "")
         user_name = body.get("user", {}).get("name", "unknown")
+        user_id = body.get("user", {}).get("id", "")
+
+        # Only authorized users may click approval buttons.  Button clicks
+        # bypass the normal message auth flow in gateway/run.py, so we must
+        # check here as well.
+        allowed_csv = os.getenv("SLACK_ALLOWED_USERS", "").strip()
+        if allowed_csv:
+            allowed_ids = {uid.strip() for uid in allowed_csv.split(",") if uid.strip()}
+            if "*" not in allowed_ids and user_id not in allowed_ids:
+                logger.warning(
+                    "[Slack] Unauthorized approval click by %s (%s) — ignoring",
+                    user_name, user_id,
+                )
+                return
 
         # Map action_id to approval choice
         choice_map = {

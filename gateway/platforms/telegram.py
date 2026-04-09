@@ -1397,7 +1397,11 @@ class TelegramAdapter(BasePlatformAdapter):
                 except (ValueError, IndexError):
                     await query.answer(text="Invalid approval data.")
                     return
-
+                # Only allow authorized users to click approval buttons
+                user_id = str(getattr(query.from_user, "id", ""))
+                if self._allowed_user_ids and user_id not in self._allowed_user_ids:
+                    await query.answer(text="⛔ You are not authorized to approve commands.")
+                    return
                 session_key = self._approval_state.pop(approval_id, None)
                 if not session_key:
                     await query.answer(text="This approval has already been resolved.")

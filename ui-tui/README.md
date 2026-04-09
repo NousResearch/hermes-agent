@@ -84,31 +84,31 @@ Current input behavior is split across `app.tsx`, `components/textInput.tsx`, an
 
 ### Main chat input
 
-| Key | Behavior |
-|---|---|
-| `Enter` | Submit the current draft |
-| empty `Enter` twice | If queued messages exist and the agent is busy, interrupt the current run. If queued messages exist and the agent is idle, send the next queued message |
-| `\` + `Enter` | Append the line to the multiline buffer instead of sending |
-| `Ctrl+C` | Interrupt active run, or clear the current draft, or exit if nothing is pending |
-| `Ctrl+D` | Exit |
-| `Ctrl+G` | Open `$EDITOR` with the current draft |
-| `Ctrl+L` | New session (same as `/clear`) |
-| `Ctrl+V` | Paste clipboard image (same as `/paste`) |
-| `Esc` | Clear the current draft |
-| `Tab` | Apply the active completion |
-| `Up/Down` | Cycle completions if the completion list is open; otherwise edit queued messages first, then walk input history |
-| `Left/Right` | Move the cursor |
-| modified `Left/Right` | Move by word when the terminal sends `Ctrl` or `Meta` with the arrow key |
-| `Home` / `Ctrl+A` | Start of line |
-| `End` / `Ctrl+E` | End of line |
-| `Backspace` / `Delete` | Delete the character to the left of the cursor |
-| modified `Backspace` / `Delete` | Delete the previous word |
-| `Ctrl+W` | Delete the previous word |
-| `Ctrl+U` | Delete from the cursor back to the start of the line |
-| `Ctrl+K` | Delete from the cursor to the end of the line |
-| `Meta+B` / `Meta+F` | Move by word |
-| `!cmd` | Run a shell command through the gateway |
-| `{!cmd}` | Inline shell interpolation before send or queue |
+| Key                             | Behavior                                                                                                                                                |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Enter`                         | Submit the current draft                                                                                                                                |
+| empty `Enter` twice             | If queued messages exist and the agent is busy, interrupt the current run. If queued messages exist and the agent is idle, send the next queued message |
+| `Shift+Enter` / `Alt+Enter`     | Insert a newline in the current draft                                                                                                                   |
+| `\` + `Enter`                   | Append the line to the multiline buffer (fallback for terminals without modifier support)                                                               |
+| `Ctrl+C`                        | Interrupt active run, or clear the current draft, or exit if nothing is pending                                                                         |
+| `Ctrl+D`                        | Exit                                                                                                                                                    |
+| `Ctrl+G`                        | Open `$EDITOR` with the current draft                                                                                                                   |
+| `Ctrl+L`                        | New session (same as `/clear`)                                                                                                                          |
+| `Ctrl+V`                        | Paste clipboard image (same as `/paste`)                                                                                                                |
+| `Tab`                           | Apply the active completion                                                                                                                             |
+| `Up/Down`                       | Cycle completions if the completion list is open; otherwise edit queued messages first, then walk input history                                         |
+| `Left/Right`                    | Move the cursor                                                                                                                                         |
+| modified `Left/Right`           | Move by word when the terminal sends `Ctrl` or `Meta` with the arrow key                                                                                |
+| `Home` / `Ctrl+A`               | Start of line                                                                                                                                           |
+| `End` / `Ctrl+E`                | End of line                                                                                                                                             |
+| `Backspace` / `Delete`          | Delete the character to the left of the cursor                                                                                                          |
+| modified `Backspace` / `Delete` | Delete the previous word                                                                                                                                |
+| `Ctrl+W`                        | Delete the previous word                                                                                                                                |
+| `Ctrl+U`                        | Delete from the cursor back to the start of the line                                                                                                    |
+| `Ctrl+K`                        | Delete from the cursor to the end of the line                                                                                                           |
+| `Meta+B` / `Meta+F`             | Move by word                                                                                                                                            |
+| `!cmd`                          | Run a shell command through the gateway                                                                                                                 |
+| `{!cmd}`                        | Inline shell interpolation before send or queue                                                                                                         |
 
 Notes:
 
@@ -118,20 +118,20 @@ Notes:
 
 ### Prompt and picker modes
 
-| Context | Keys | Behavior |
-|---|---|---|
-| approval prompt | `Up/Down`, `Enter` | Move and confirm the selected approval choice |
-| approval prompt | `o`, `s`, `a`, `d` | Quick-pick `once`, `session`, `always`, `deny` |
-| approval prompt | `Esc`, `Ctrl+C` | Deny |
-| clarify prompt with choices | `Up/Down`, `Enter` | Move and confirm the selected choice |
-| clarify prompt with choices | single-digit number | Quick-pick the matching numbered choice |
-| clarify prompt with choices | `Enter` on "Other" | Switch into free-text entry |
-| clarify free-text mode | `Enter` | Submit typed answer |
-| sudo / secret prompt | `Enter` | Submit typed value |
-| sudo / secret prompt | `Ctrl+C` | Cancel by sending an empty response |
-| resume picker | `Up/Down`, `Enter` | Move and resume the selected session |
-| resume picker | `1-9` | Quick-pick one of the first nine visible sessions |
-| resume picker | `Esc`, `Ctrl+C` | Close the picker |
+| Context                     | Keys                | Behavior                                          |
+| --------------------------- | ------------------- | ------------------------------------------------- |
+| approval prompt             | `Up/Down`, `Enter`  | Move and confirm the selected approval choice     |
+| approval prompt             | `o`, `s`, `a`, `d`  | Quick-pick `once`, `session`, `always`, `deny`    |
+| approval prompt             | `Esc`, `Ctrl+C`     | Deny                                              |
+| clarify prompt with choices | `Up/Down`, `Enter`  | Move and confirm the selected choice              |
+| clarify prompt with choices | single-digit number | Quick-pick the matching numbered choice           |
+| clarify prompt with choices | `Enter` on "Other"  | Switch into free-text entry                       |
+| clarify free-text mode      | `Enter`             | Submit typed answer                               |
+| sudo / secret prompt        | `Enter`             | Submit typed value                                |
+| sudo / secret prompt        | `Ctrl+C`            | Cancel by sending an empty response               |
+| resume picker               | `Up/Down`, `Enter`  | Move and resume the selected session              |
+| resume picker               | `1-9`               | Quick-pick one of the first nine visible sessions |
+| resume picker               | `Esc`, `Ctrl+C`     | Close the picker                                  |
 
 Notes:
 
@@ -213,28 +213,28 @@ That lets Python own aliases, plugins, skills, and registry-backed commands with
 
 Primary event types the client handles today:
 
-| Event | Payload |
-|---|---|
-| `gateway.ready` | `{ skin? }` |
-| `session.info` | session metadata for banner + tool/skill panels |
-| `message.start` | start assistant streaming |
-| `message.delta` | `{ text, rendered? }` |
-| `message.complete` | `{ text, rendered?, usage, status }` |
-| `thinking.delta` | `{ text }` |
-| `reasoning.delta` | `{ text }` |
-| `status.update` | `{ kind, text }` |
-| `tool.start` | `{ tool_id, name, context? }` |
-| `tool.progress` | `{ name, preview }` |
-| `tool.complete` | `{ tool_id, name }` |
-| `clarify.request` | `{ question, choices?, request_id }` |
-| `approval.request` | `{ command, description }` |
-| `sudo.request` | `{ request_id }` |
-| `secret.request` | `{ prompt, env_var, request_id }` |
-| `background.complete` | `{ task_id, text }` |
-| `btw.complete` | `{ text }` |
-| `error` | `{ message }` |
-| `gateway.stderr` | synthesized from child stderr |
-| `gateway.protocol_error` | synthesized from malformed stdout |
+| Event                    | Payload                                         |
+| ------------------------ | ----------------------------------------------- |
+| `gateway.ready`          | `{ skin? }`                                     |
+| `session.info`           | session metadata for banner + tool/skill panels |
+| `message.start`          | start assistant streaming                       |
+| `message.delta`          | `{ text, rendered? }`                           |
+| `message.complete`       | `{ text, rendered?, usage, status }`            |
+| `thinking.delta`         | `{ text }`                                      |
+| `reasoning.delta`        | `{ text }`                                      |
+| `status.update`          | `{ kind, text }`                                |
+| `tool.start`             | `{ tool_id, name, context? }`                   |
+| `tool.progress`          | `{ name, preview }`                             |
+| `tool.complete`          | `{ tool_id, name }`                             |
+| `clarify.request`        | `{ question, choices?, request_id }`            |
+| `approval.request`       | `{ command, description }`                      |
+| `sudo.request`           | `{ request_id }`                                |
+| `secret.request`         | `{ prompt, env_var, request_id }`               |
+| `background.complete`    | `{ task_id, text }`                             |
+| `btw.complete`           | `{ text }`                                      |
+| `error`                  | `{ message }`                                   |
+| `gateway.stderr`         | synthesized from child stderr                   |
+| `gateway.protocol_error` | synthesized from malformed stdout               |
 
 ## Theme model
 

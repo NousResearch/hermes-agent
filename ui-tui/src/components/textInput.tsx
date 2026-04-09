@@ -117,7 +117,11 @@ export function TextInput({ value, onChange, onPaste, onSubmit, placeholder = ''
       }
 
       if (k.return) {
-        onSubmit?.(value)
+        if (k.shift || k.meta) {
+          commit(value.slice(0, cur) + '\n' + value.slice(cur), cur + 1)
+        } else {
+          onSubmit?.(value)
+        }
 
         return
       }
@@ -160,6 +164,12 @@ export function TextInput({ value, onChange, onPaste, onSubmit, placeholder = ''
         const raw = inp.replace(BRACKET_PASTE, '').replace(/\r\n/g, '\n').replace(/\r/g, '\n')
 
         if (!raw) {
+          return
+        }
+
+        if (raw === '\n') {
+          commit(v.slice(0, c) + '\n' + v.slice(c), c + 1)
+
           return
         }
 

@@ -53,6 +53,12 @@ export const MessageLine = memo(function MessageLine({
 
   return (
     <Box flexDirection="column" marginTop={msg.role === 'user' ? 1 : 0}>
+      {msg.thinking && (
+        <Text color={t.color.dim} dimColor wrap="truncate-end">
+          💭 {msg.thinking.replace(/\n/g, ' ').slice(0, 200)}
+        </Text>
+      )}
+
       <Box>
         <Box flexShrink={0} width={3}>
           <Text bold={msg.role === 'user'} color={prefix}>
@@ -62,6 +68,20 @@ export const MessageLine = memo(function MessageLine({
 
         <Box width={Math.max(20, cols - 5)}>{content}</Box>
       </Box>
+
+      {!!msg.tools?.length && (
+        <Box flexDirection="column">
+          {msg.tools.map((tool, i) => (
+            <Text
+              color={tool.endsWith(' ✗') ? t.color.error : t.color.dim}
+              dimColor={!tool.endsWith(' ✗')}
+              key={`${tool}-${i}`}
+            >
+              {t.brand.tool} {tool}
+            </Text>
+          ))}
+        </Box>
+      )}
     </Box>
   )
 })

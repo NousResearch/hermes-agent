@@ -565,11 +565,18 @@ def _launch_tui():
             sys.exit(1)
         print("Installing TUI dependencies…")
         result = subprocess.run(
-            [npm, "install", "--silent"],
-            cwd=str(tui_dir), capture_output=True, text=True,
+            [npm, "install", "--silent", "--no-fund", "--no-audit", "--progress=false"],
+            cwd=str(tui_dir),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
         )
         if result.returncode != 0:
-            print(f"npm install failed:\n{result.stderr}")
+            err = (result.stderr or "").strip()
+            preview = "\n".join(err.splitlines()[-30:])
+            print("npm install failed.")
+            if preview:
+                print(preview)
             sys.exit(1)
 
     tsx = tui_dir / "node_modules" / ".bin" / "tsx"

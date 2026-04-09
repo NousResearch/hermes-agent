@@ -1017,9 +1017,7 @@ _IMAGE_EXTENSIONS = frozenset({
 })
 
 
-def _is_termux_environment() -> bool:
-    prefix = os.getenv("PREFIX", "")
-    return bool(os.getenv("TERMUX_VERSION") or "com.termux/files/usr" in prefix)
+from hermes_constants import is_termux as _is_termux_environment
 
 
 def _termux_example_image_path(filename: str = "cat.png") -> str:

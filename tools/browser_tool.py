@@ -285,9 +285,7 @@ def _get_cloud_provider() -> Optional[CloudBrowserProvider]:
     return _cached_cloud_provider
 
 
-def _is_termux_environment() -> bool:
-    prefix = os.getenv("PREFIX", "")
-    return bool(os.getenv("TERMUX_VERSION") or "com.termux/files/usr" in prefix)
+from hermes_constants import is_termux as _is_termux_environment
 
 
 def _browser_install_hint() -> str:

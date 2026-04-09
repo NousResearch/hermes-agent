@@ -1111,6 +1111,8 @@ def _(rid, params: dict) -> dict:
                 text = f"@{kind}:{rel}{suffix}"
             elif word.startswith("~"):
                 text = "~/" + os.path.relpath(full, os.path.expanduser("~")) + suffix
+            elif word.startswith("./"):
+                text = "./" + rel + suffix
             else:
                 text = rel + suffix
 

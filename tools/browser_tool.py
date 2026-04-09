@@ -285,6 +285,17 @@ def _get_cloud_provider() -> Optional[CloudBrowserProvider]:
     return _cached_cloud_provider
 
 
+def _is_termux_environment() -> bool:
+    prefix = os.getenv("PREFIX", "")
+    return bool(os.getenv("TERMUX_VERSION") or "com.termux/files/usr" in prefix)
+
+
+def _browser_install_hint() -> str:
+    if _is_termux_environment():
+        return "npm install -g agent-browser && agent-browser install"
+    return "npm install -g agent-browser && agent-browser install --with-deps"
+
+
 def _is_local_mode() -> bool:
     """Return True when the browser tool will use a local browser backend."""
     if _get_cdp_override():
@@ -796,7 +807,8 @@ def _find_agent_browser() -> str:
         return "npx agent-browser"
     
     raise FileNotFoundError(
-        "agent-browser CLI not found. Install it with: npm install -g agent-browser\n"
+        "agent-browser CLI not found. Install it with: "
+        f"{_browser_install_hint()}\n"
         "Or run 'npm install' in the repo root to install locally.\n"
         "Or ensure npx is available in your PATH."
     )
@@ -2040,8 +2052,15 @@ def check_browser_requirements() -> bool:
 
     # The agent-browser CLI is always required
     try:
-        _find_agent_browser()
+        browser_cmd = _find_agent_browser()
     except FileNotFoundError:
+        return False
+
+    # On Termux, the bare npx fallback is too fragile to treat as a satisfied
+    # local browser dependency. Require a real install (global or local) so the
+    # browser tool is not advertised as available when it will likely fail on
+    # first use.
+    if _is_termux_environment() and _is_local_mode() and browser_cmd.strip() == "npx agent-browser":
         return False
 
     # In cloud mode, also require provider credentials

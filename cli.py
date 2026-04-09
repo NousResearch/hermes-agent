@@ -1022,6 +1022,20 @@ def _is_termux_environment() -> bool:
     return bool(os.getenv("TERMUX_VERSION") or "com.termux/files/usr" in prefix)
 
 
+def _termux_example_image_path(filename: str = "cat.png") -> str:
+    """Return a realistic example media path for the current Termux setup."""
+    candidates = [
+        os.path.expanduser("~/storage/shared"),
+        "/sdcard",
+        "/storage/emulated/0",
+        "/storage/self/primary",
+    ]
+    for root in candidates:
+        if os.path.isdir(root):
+            return os.path.join(root, "Pictures", filename)
+    return os.path.join("~/storage/shared", "Pictures", filename)
+
+
 def _split_path_input(raw: str) -> tuple[str, str]:
     """Split a leading file path token from trailing free-form text.
 
@@ -3126,7 +3140,7 @@ class HermesCLI:
             _cprint(
                 f"  {_DIM}Clipboard image paste is not available on Termux — "
                 f"use /image <path> or paste a local image path like "
-                f"~/storage/shared/Pictures/cat.png{_RST}"
+                f"{_termux_example_image_path()}{_RST}"
             )
             return
 
@@ -3144,7 +3158,7 @@ class HermesCLI:
         """Handle /image <path> — attach a local image file for the next prompt."""
         raw_args = (cmd_original.split(None, 1)[1].strip() if " " in cmd_original else "")
         if not raw_args:
-            hint = "~/storage/shared/Pictures/cat.png" if _is_termux_environment() else "/path/to/image.png"
+            hint = _termux_example_image_path() if _is_termux_environment() else "/path/to/image.png"
             _cprint(f"  {_DIM}Usage: /image <path>  e.g. /image {hint}{_RST}")
             return
 
@@ -3162,7 +3176,7 @@ class HermesCLI:
         if _remainder:
             _cprint(f"  {_DIM}Now type your prompt (or use --image in single-query mode): {_remainder}{_RST}")
         elif _is_termux_environment():
-            _cprint(f"  {_DIM}Tip: type your next message, or run hermes chat -q --image {image_path} \"What do you see?\"{_RST}")
+            _cprint(f"  {_DIM}Tip: type your next message, or run hermes chat -q --image {_termux_example_image_path(image_path.name)} \"What do you see?\"{_RST}")
 
     def _preprocess_images_with_vision(self, text: str, images: list, *, announce: bool = True) -> str:
         """Analyze attached images via the vision tool and return enriched text.
@@ -3317,7 +3331,7 @@ class HermesCLI:
         _cprint(f"\n  {_DIM}Tip: Just type your message to chat with Hermes!{_RST}")
         _cprint(f"  {_DIM}Multi-line: Alt+Enter for a new line{_RST}")
         if _is_termux_environment():
-            _cprint(f"  {_DIM}Attach image: /image ~/storage/shared/Pictures/cat.png or start your prompt with a local image path{_RST}\n")
+            _cprint(f"  {_DIM}Attach image: /image {_termux_example_image_path()} or start your prompt with a local image path{_RST}\n")
         else:
             _cprint(f"  {_DIM}Paste image: Alt+V (or /paste){_RST}\n")
     
@@ -6229,8 +6243,11 @@ class HermesCLI:
             for line in reqs["details"].split("\n"):
                 _cprint(f"  {_DIM}{line}{_RST}")
             if reqs["missing_packages"]:
-                _cprint(f"\n  {_BOLD}Install: pip install {' '.join(reqs['missing_packages'])}{_RST}")
-                _cprint(f"  {_DIM}Or: pip install hermes-agent[voice]{_RST}")
+                if _is_termux_environment():
+                    _cprint(f"\n  {_BOLD}Install: pkg install python-numpy portaudio && python -m pip install sounddevice{_RST}")
+                else:
+                    _cprint(f"\n  {_BOLD}Install: pip install {' '.join(reqs['missing_packages'])}{_RST}")
+                    _cprint(f"  {_DIM}Or: pip install hermes-agent[voice]{_RST}")
             return
 
         with self._voice_lock:

@@ -13,6 +13,7 @@ from tools.browser_tool import (
     _find_agent_browser,
     _run_browser_command,
     _SANE_PATH,
+    check_browser_requirements,
 )
 
 
@@ -147,6 +148,17 @@ class TestFindAgentBrowser:
              ):
             with pytest.raises(FileNotFoundError, match="agent-browser CLI not found"):
                 _find_agent_browser()
+
+
+class TestBrowserRequirements:
+    def test_termux_requires_real_agent_browser_install_not_npx_fallback(self, monkeypatch):
+        monkeypatch.setenv("TERMUX_VERSION", "0.118.3")
+        monkeypatch.setenv("PREFIX", "/data/data/com.termux/files/usr")
+        monkeypatch.setattr("tools.browser_tool._is_camofox_mode", lambda: False)
+        monkeypatch.setattr("tools.browser_tool._get_cloud_provider", lambda: None)
+        monkeypatch.setattr("tools.browser_tool._find_agent_browser", lambda: "npx agent-browser")
+
+        assert check_browser_requirements() is False
 
 
 class TestRunBrowserCommandPathConstruction:

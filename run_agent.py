@@ -2930,8 +2930,9 @@ class AIAgent:
         so the rebuilt prompt captures any writes from this session.
         """
         self._cached_system_prompt = None
-        if self._memory_store:
-            self._memory_store.load_from_disk()
+        _mem = getattr(self, '_memory_store', None)
+        if _mem:
+            _mem.load_from_disk()
 
     def _responses_tools(self, tools: Optional[List[Dict[str, Any]]] = None) -> Optional[List[Dict[str, Any]]]:
         """Convert chat-completions tool schemas to Responses function-tool schemas."""
@@ -4947,6 +4948,10 @@ class AIAgent:
                     fb_context_length * self.context_compressor.threshold_percent
                 )
 
+            # Invalidate cached system prompt so the model/provider header
+            # reflects the fallback runtime on the next request.
+            self._invalidate_system_prompt()
+
             self._emit_status(
                 f"🔄 Primary model failed — switching to fallback: "
                 f"{fb_model} via {fb_provider}"
@@ -5016,6 +5021,10 @@ class AIAgent:
             # ── Reset fallback chain for the new turn ──
             self._fallback_activated = False
             self._fallback_index = 0
+
+            # Invalidate cached system prompt so the model/provider header
+            # reflects the restored primary runtime.
+            self._invalidate_system_prompt()
 
             logging.info(
                 "Primary runtime restored for new turn: %s (%s)",

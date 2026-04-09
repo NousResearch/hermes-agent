@@ -2208,6 +2208,98 @@ class DiscordAdapter(BasePlatformAdapter):
             self._bot_participated_threads.add(thread_id)
             self._save_participated_threads()
 
+
+    def _has_active_session_for_thread(
+        self,
+        chat_id: str,
+        thread_id: str,
+        user_id: str,
+    ) -> bool:
+        """Check if there's an active session for a thread.
+
+        Uses ``build_session_key()`` as the single source of truth for key
+        construction \u2014 respects ``thread_sessions_per_user`` and
+        ``group_sessions_per_user`` settings correctly.
+        """
+        session_store = getattr(self, "_session_store", None)
+        if not session_store:
+            return False
+
+        try:
+            from gateway.session import SessionSource, build_session_key
+
+            source = SessionSource(
+                platform=Platform.DISCORD,
+                chat_id=chat_id,
+                chat_type="thread",
+                user_id=user_id,
+                thread_id=thread_id,
+            )
+
+            store_cfg = getattr(session_store, "config", None)
+            gspu = getattr(store_cfg, "group_sessions_per_user", True) if store_cfg else True
+            tspu = getattr(store_cfg, "thread_sessions_per_user", False) if store_cfg else False
+
+            session_key = build_session_key(
+                source,
+                group_sessions_per_user=gspu,
+                thread_sessions_per_user=tspu,
+            )
+
+            session_store._ensure_loaded()
+            return session_key in session_store._entries
+        except Exception:
+            return False
+
+    async def _fetch_thread_context(
+        self,
+        thread_channel,
+        current_message_id: str,
+        limit: int = 30,
+    ) -> str:
+        """Fetch recent messages from a Discord thread to provide context when
+        the bot is mentioned mid-thread for the first time.
+
+        Returns a formatted string with thread history, or empty string on
+        failure or if the thread is empty.
+        """
+        try:
+            messages = []
+            async for msg in thread_channel.history(limit=limit, oldest_first=True):
+                messages.append(msg)
+
+            if not messages:
+                return ""
+
+            context_parts = []
+            for msg in messages:
+                if str(msg.id) == current_message_id:
+                    continue
+                if msg.author == self._client.user:
+                    continue
+                msg_text = (msg.content or "").strip()
+                if not msg_text:
+                    continue
+                if self._client.user:
+                    msg_text = msg_text.replace(f"<@{self._client.user.id}>", "").strip()
+                    msg_text = msg_text.replace(f"<@!{self._client.user.id}>", "").strip()
+                if not msg_text:
+                    continue
+                name = msg.author.display_name or msg.author.name or str(msg.author.id)
+                context_parts.append(f"{name}: {msg_text}")
+
+            if not context_parts:
+                return ""
+
+            return (
+                "[Thread context \u2014 previous messages in this thread:]\n"
+                + "\n".join(context_parts)
+                + "\n[End of thread context]\n\n"
+            )
+        except Exception as e:
+            logger.warning("[%s] Failed to fetch Discord thread context: %s", self.name, e)
+            return ""
+
     async def _handle_message(self, message: DiscordMessage) -> None:
         """Handle incoming Discord messages."""
         # In server channels (not DMs), require the bot to be @mentioned
@@ -2315,6 +2407,23 @@ class DiscordAdapter(BasePlatformAdapter):
             chat_name = getattr(message.channel, "name", str(message.channel.id))
             if hasattr(message.channel, "guild") and message.channel.guild:
                 chat_name = f"{message.channel.guild.name} / #{chat_name}"
+
+        # When entering an existing thread for the first time (no prior session),
+        # fetch the thread's message history so the agent has context.
+        _thread_context_prefix = ""
+        if (
+            is_thread
+            and not auto_threaded_channel
+            and not self._has_active_session_for_thread(
+                chat_id=str(effective_channel.id),
+                thread_id=thread_id,
+                user_id=str(message.author.id),
+            )
+        ):
+            _thread_context_prefix = await self._fetch_thread_context(
+                thread_channel=effective_channel,
+                current_message_id=str(message.id),
+            )
 
         # Get channel topic (if available - TextChannels have topics, DMs/threads don't).
         # For threads whose parent is a forum channel, inherit the parent's topic
@@ -2427,6 +2536,10 @@ class DiscordAdapter(BasePlatformAdapter):
                             )
 
         event_text = message.content
+        if _thread_context_prefix and event_text:
+            event_text = _thread_context_prefix + event_text
+        elif _thread_context_prefix:
+            event_text = _thread_context_prefix
         if pending_text_injection:
             event_text = f"{pending_text_injection}\n\n{event_text}" if event_text else pending_text_injection
 

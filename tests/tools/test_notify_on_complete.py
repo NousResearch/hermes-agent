@@ -261,11 +261,30 @@ class TestTerminalSchema:
             assert kwargs["notify_on_complete"] is True
 
     def test_gateway_notify_watcher_captures_user_identity(self, monkeypatch):
+        from types import SimpleNamespace
+
         from tools.terminal_tool import terminal_tool
-        from tools.process_registry import ProcessRegistry
+        from tools.process_registry import ProcessRegistry, ProcessSession
 
         isolated_registry = ProcessRegistry()
         monkeypatch.setattr("tools.process_registry.process_registry", isolated_registry)
+        monkeypatch.setattr("tools.terminal_tool._create_environment", lambda **_kw: SimpleNamespace(env={}))
+        monkeypatch.setattr("tools.terminal_tool._check_all_guards", lambda *_a, **_kw: {"approved": True})
+        monkeypatch.setattr("tools.approval.get_current_session_key", lambda default="": "sess-key")
+
+        def _fake_spawn_local(command, cwd, task_id, session_key, env_vars=None, use_pty=False):
+            session = ProcessSession(
+                id="proc_test_notify_identity",
+                command=command,
+                task_id=task_id,
+                session_key=session_key,
+                started_at=time.time(),
+                pid=4242,
+            )
+            isolated_registry._running[session.id] = session
+            return session
+
+        monkeypatch.setattr(isolated_registry, "spawn_local", _fake_spawn_local)
 
         monkeypatch.setenv("HERMES_SESSION_PLATFORM", "telegram")
         monkeypatch.setenv("HERMES_SESSION_CHAT_ID", "123")

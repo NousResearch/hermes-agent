@@ -1200,6 +1200,12 @@ class AIAgent:
                     pinned_tools=pinned,
                 )
                 self._tool_search_active = True
+                # Re-inject memory provider tools — they were appended to
+                # self.tools earlier but get_tool_definitions() replaced the
+                # list from the registry which doesn't include them.
+                if self._memory_manager:
+                    for _schema in self._memory_manager.get_all_tool_schemas():
+                        self.tools.append({"type": "function", "function": _schema})
                 self.valid_tool_names = {t["function"]["name"] for t in self.tools}
 
         # Track dynamically loaded tools for eviction.

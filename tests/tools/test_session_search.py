@@ -146,6 +146,15 @@ class TestTruncateAroundMatches:
         result = _truncate_around_matches(text, "KEYWORD")
         assert "KEYWORD" in result
 
+    def test_quoted_phrase_prefers_exact_match_over_common_terms(self):
+        text = (
+            ("commonterm " * 20000)
+            + "SPECIAL UNIQUE TARGET PHRASE "
+            + ("tail " * 20000)
+        )
+        result = _truncate_around_matches(text, '"SPECIAL UNIQUE TARGET PHRASE" commonterm')
+        assert "SPECIAL UNIQUE TARGET PHRASE" in result
+
 
 # =========================================================================
 # session_search (dispatcher)
@@ -284,3 +293,331 @@ class TestSessionSearch:
         assert result["count"] == 0
         assert result["results"] == []
         assert result["sessions_searched"] == 0
+
+    def test_child_match_uses_lineage_conversation_in_fallback_preview(self):
+        """Child hits should preview a transcript that includes the matched child content."""
+        from unittest.mock import MagicMock
+        from tools.session_search_tool import session_search
+
+        mock_db = MagicMock()
+        query = "needle phrase"
+        mock_db.search_messages.return_value = [
+            {
+                "session_id": "child_sid",
+                "content": query,
+                "source": "telegram",
+                "session_started": 1709400000,
+                "model": "test",
+            },
+        ]
+
+        def _get_session(session_id):
+            if session_id == "child_sid":
+                return {"parent_session_id": "mid_sid", "source": "telegram", "started_at": 1709400000}
+            if session_id == "mid_sid":
+                return {"parent_session_id": "root_sid", "source": "telegram", "started_at": 1709300000}
+            if session_id == "root_sid":
+                return {"parent_session_id": None, "source": "telegram", "started_at": 1709200000}
+            return None
+
+        def _get_messages(session_id):
+            if session_id == "root_sid":
+                return [
+                    {"role": "user", "content": "root question"},
+                    {"role": "assistant", "content": "root answer"},
+                ]
+            if session_id == "mid_sid":
+                return [
+                    {"role": "assistant", "content": "middle context"},
+                ]
+            if session_id == "child_sid":
+                return [
+                    {"role": "assistant", "content": f"here is the {query} we need"},
+                ]
+            return []
+
+        mock_db.get_session.side_effect = _get_session
+        mock_db.get_messages_as_conversation.side_effect = _get_messages
+
+        # Force the raw preview fallback so we can inspect the exact prepared transcript.
+        from unittest.mock import AsyncMock, patch as _patch
+        with _patch("tools.session_search_tool.async_call_llm",
+                     new_callable=AsyncMock,
+                     side_effect=RuntimeError("no provider")):
+            result = json.loads(session_search(query=query, db=mock_db, limit=1))
+
+        assert result["success"] is True
+        assert result["count"] == 1
+        assert result["results"][0]["session_id"] == "root_sid"
+        assert query in result["results"][0]["summary"]
+        # Root + lineage child should both be included in the prepared preview.
+        assert "root answer" in result["results"][0]["summary"]
+        assert "middle context" in result["results"][0]["summary"]
+
+    def test_child_match_keeps_root_identity_but_uses_root_metadata(self):
+        """Lineage-grouped results should not mix root session_id with child metadata."""
+        from unittest.mock import MagicMock
+        from tools.session_search_tool import session_search
+
+        mock_db = MagicMock()
+        mock_db.search_messages.return_value = [
+            {
+                "session_id": "child_sid",
+                "content": "needle",
+                "source": "telegram",
+                "session_started": 1709400000,
+                "model": "child-model",
+            },
+        ]
+
+        def _get_session(session_id):
+            if session_id == "child_sid":
+                return {"parent_session_id": "root_sid", "source": "telegram", "started_at": 1709400000, "model": "child-model"}
+            if session_id == "root_sid":
+                return {"parent_session_id": None, "source": "cli", "started_at": 1709200000, "model": "root-model"}
+            return None
+
+        def _get_messages(session_id):
+            if session_id == "root_sid":
+                return [{"role": "assistant", "content": "root"}]
+            if session_id == "child_sid":
+                return [{"role": "assistant", "content": "needle child detail"}]
+            return []
+
+        mock_db.get_session.side_effect = _get_session
+        mock_db.get_messages_as_conversation.side_effect = _get_messages
+
+        from unittest.mock import AsyncMock, patch as _patch
+        with _patch("tools.session_search_tool.async_call_llm",
+                     new_callable=AsyncMock,
+                     side_effect=RuntimeError("no provider")):
+            result = json.loads(session_search(query="needle", db=mock_db, limit=1))
+
+        assert result["success"] is True
+        assert result["count"] == 1
+        entry = result["results"][0]
+        assert entry["session_id"] == "root_sid"
+        assert entry["source"] == "cli"
+        assert entry["model"] == "root-model"
+        assert entry["when"] == _format_timestamp(1709200000)
+
+    def test_long_lineage_fallback_preview_is_centered_on_match(self):
+        """Fallback preview should still show the matched child phrase for long lineages."""
+        from unittest.mock import MagicMock
+        from tools.session_search_tool import session_search
+
+        query = 'SPECIAL UNIQUE TARGET PHRASE'
+        mock_db = MagicMock()
+        mock_db.search_messages.return_value = [
+            {
+                "session_id": "child_sid",
+                "content": query,
+                "source": "telegram",
+                "session_started": 1709400000,
+                "model": "test",
+            },
+        ]
+
+        def _get_session(session_id):
+            if session_id == "child_sid":
+                return {"parent_session_id": "root_sid", "source": "telegram", "started_at": 1709400000}
+            if session_id == "root_sid":
+                return {"parent_session_id": None, "source": "telegram", "started_at": 1709200000}
+            return None
+
+        def _get_messages(session_id):
+            if session_id == "root_sid":
+                return [{"role": "assistant", "content": "commonterm " * 20000}]
+            if session_id == "child_sid":
+                return [{"role": "assistant", "content": f"here is the {query} we need"}]
+            return []
+
+        mock_db.get_session.side_effect = _get_session
+        mock_db.get_messages_as_conversation.side_effect = _get_messages
+
+        from unittest.mock import AsyncMock, patch as _patch
+        with _patch("tools.session_search_tool.async_call_llm",
+                     new_callable=AsyncMock,
+                     side_effect=RuntimeError("no provider")):
+            result = json.loads(session_search(query=f'"{query}" commonterm', db=mock_db, limit=1))
+
+        assert result["success"] is True
+        assert result["count"] == 1
+        assert query in result["results"][0]["summary"]
+
+    def test_multiple_results_keep_per_session_metadata(self):
+        """Each result should use its own root session metadata, not the last task's metadata."""
+        from unittest.mock import MagicMock
+        from tools.session_search_tool import session_search
+
+        mock_db = MagicMock()
+        mock_db.search_messages.return_value = [
+            {
+                "session_id": "child_a",
+                "content": "alpha",
+                "source": "telegram",
+                "session_started": 1709400000,
+                "model": "child-a-model",
+            },
+            {
+                "session_id": "child_b",
+                "content": "beta",
+                "source": "telegram",
+                "session_started": 1709500000,
+                "model": "child-b-model",
+            },
+        ]
+
+        def _get_session(session_id):
+            mapping = {
+                "child_a": {"parent_session_id": "root_a", "source": "telegram", "started_at": 1709400000, "model": "child-a-model"},
+                "root_a": {"parent_session_id": None, "source": "cli", "started_at": 1709200000, "model": "root-a-model"},
+                "child_b": {"parent_session_id": "root_b", "source": "telegram", "started_at": 1709500000, "model": "child-b-model"},
+                "root_b": {"parent_session_id": None, "source": "discord", "started_at": 1709300000, "model": "root-b-model"},
+            }
+            return mapping.get(session_id)
+
+        def _get_messages(session_id):
+            mapping = {
+                "root_a": [{"role": "assistant", "content": "root a"}],
+                "child_a": [{"role": "assistant", "content": "alpha detail"}],
+                "root_b": [{"role": "assistant", "content": "root b"}],
+                "child_b": [{"role": "assistant", "content": "beta detail"}],
+            }
+            return mapping.get(session_id, [])
+
+        mock_db.get_session.side_effect = _get_session
+        mock_db.get_messages_as_conversation.side_effect = _get_messages
+
+        from unittest.mock import AsyncMock, patch as _patch
+        with _patch("tools.session_search_tool.async_call_llm",
+                     new_callable=AsyncMock,
+                     side_effect=RuntimeError("no provider")):
+            result = json.loads(session_search(query="alpha OR beta", db=mock_db, limit=2))
+
+        assert result["success"] is True
+        assert result["count"] == 2
+        entry_a, entry_b = result["results"]
+        assert entry_a["session_id"] == "root_a"
+        assert entry_a["source"] == "cli"
+        assert entry_a["model"] == "root-a-model"
+        assert entry_a["when"] == _format_timestamp(1709200000)
+        assert entry_b["session_id"] == "root_b"
+        assert entry_b["source"] == "discord"
+        assert entry_b["model"] == "root-b-model"
+        assert entry_b["when"] == _format_timestamp(1709300000)
+
+    def test_same_root_keeps_child_hit_content_even_if_root_hit_ranks_first(self):
+        """Broad queries should include later continuation content for the same root, not only the first root hit."""
+        from unittest.mock import MagicMock
+        from tools.session_search_tool import session_search
+
+        mock_db = MagicMock()
+        query = 'ADHS OR Notion'
+        mock_db.search_messages.return_value = [
+            {
+                "session_id": "root_sid",
+                "content": "ADHS root mention",
+                "snippet": "ADHS root mention",
+                "source": "telegram",
+                "session_started": 1709200000,
+                "model": "root-model",
+            },
+            {
+                "session_id": "child_sid",
+                "content": "Notion child detail",
+                "snippet": "Notion child detail",
+                "source": "telegram",
+                "session_started": 1709300000,
+                "model": "child-model",
+            },
+        ]
+
+        def _get_session(session_id):
+            if session_id == "root_sid":
+                return {"parent_session_id": None, "source": "telegram", "started_at": 1709200000, "model": "root-model"}
+            if session_id == "child_sid":
+                return {"parent_session_id": "root_sid", "source": "telegram", "started_at": 1709300000, "model": "child-model"}
+            return None
+
+        def _get_messages(session_id):
+            if session_id == "root_sid":
+                return [{"role": "assistant", "content": "ADHS root mention and setup"}]
+            if session_id == "child_sid":
+                return [{"role": "assistant", "content": "Notion child detail with Weekly Actions and Video-Database"}]
+            return []
+
+        mock_db.get_session.side_effect = _get_session
+        mock_db.get_messages_as_conversation.side_effect = _get_messages
+
+        from unittest.mock import AsyncMock, patch as _patch
+        with _patch("tools.session_search_tool.async_call_llm",
+                     new_callable=AsyncMock,
+                     side_effect=RuntimeError("no provider")):
+            result = json.loads(session_search(query=query, db=mock_db, limit=1))
+
+        assert result["success"] is True
+        assert result["count"] == 1
+        summary = result["results"][0]["summary"]
+        assert "ADHS root mention" in summary
+        assert "Notion child detail" in summary
+        assert "Weekly Actions" in summary
+
+    def test_same_root_summary_prompt_includes_all_matched_snippets(self):
+        """Summarizer prompts should receive matched snippets from both root and child hits."""
+        from unittest.mock import MagicMock
+        from tools.session_search_tool import session_search
+
+        mock_db = MagicMock()
+        query = 'ADHS OR Notion'
+        mock_db.search_messages.return_value = [
+            {
+                "session_id": "root_sid",
+                "content": "ADHS root mention",
+                "snippet": "ADHS root mention",
+                "source": "telegram",
+                "session_started": 1709200000,
+                "model": "root-model",
+            },
+            {
+                "session_id": "child_sid",
+                "content": "Notion child detail",
+                "snippet": "Notion child detail",
+                "source": "telegram",
+                "session_started": 1709300000,
+                "model": "child-model",
+            },
+        ]
+
+        def _get_session(session_id):
+            if session_id == "root_sid":
+                return {"parent_session_id": None, "source": "telegram", "started_at": 1709200000, "model": "root-model"}
+            if session_id == "child_sid":
+                return {"parent_session_id": "root_sid", "source": "telegram", "started_at": 1709300000, "model": "child-model"}
+            return None
+
+        def _get_messages(session_id):
+            if session_id == "root_sid":
+                return [{"role": "assistant", "content": "ADHS root mention and setup"}]
+            if session_id == "child_sid":
+                return [{"role": "assistant", "content": "Notion child detail with Weekly Actions and Video-Database"}]
+            return []
+
+        mock_db.get_session.side_effect = _get_session
+        mock_db.get_messages_as_conversation.side_effect = _get_messages
+
+        captured = {}
+
+        async def _fake_async_call_llm(*args, **kwargs):
+            captured['messages'] = kwargs.get('messages')
+            return object()
+
+        from unittest.mock import patch as _patch
+        with _patch("tools.session_search_tool.async_call_llm", side_effect=_fake_async_call_llm), \
+             _patch("tools.session_search_tool.extract_content_or_reasoning", return_value="summary ok"):
+            result = json.loads(session_search(query=query, db=mock_db, limit=1))
+
+        assert result["success"] is True
+        user_prompt = captured['messages'][1]['content']
+        assert 'ADHS root mention' in user_prompt
+        assert 'Notion child detail' in user_prompt

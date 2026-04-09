@@ -19,6 +19,7 @@ import asyncio
 import concurrent.futures
 import json
 import logging
+import re
 from typing import Dict, Any, List, Optional, Union
 
 from agent.auxiliary_client import async_call_llm, extract_content_or_reasoning
@@ -96,14 +97,29 @@ def _truncate_around_matches(
     if len(full_text) <= max_chars:
         return full_text
 
-    # Find the first occurrence of any query term
-    query_terms = query.lower().split()
     text_lower = full_text.lower()
+
+    # Prefer exact quoted phrases when present. Falling back to raw whitespace
+    # splitting can anchor on common words like "wurde" long before the actual
+    # phrase match, which makes previews start at unrelated earlier content.
+    quoted_phrases = [p.strip().lower() for p in re.findall(r'"([^"]+)"', query) if p.strip()]
+    remaining_query = re.sub(r'"[^"]+"', ' ', query.lower())
+    query_terms = [
+        token for token in re.findall(r"\b[\w.-]+\b", remaining_query)
+        if token not in {"and", "or", "not"}
+    ]
+
     first_match = len(full_text)
-    for term in query_terms:
-        pos = text_lower.find(term)
+    for phrase in quoted_phrases:
+        pos = text_lower.find(phrase)
         if pos != -1 and pos < first_match:
             first_match = pos
+
+    if first_match == len(full_text):
+        for term in query_terms:
+            pos = text_lower.find(term)
+            if pos != -1 and pos < first_match:
+                first_match = pos
 
     if first_match == len(full_text):
         # No match found, take from the start
@@ -123,7 +139,10 @@ def _truncate_around_matches(
 
 
 async def _summarize_session(
-    conversation_text: str, query: str, session_meta: Dict[str, Any]
+    conversation_text: str,
+    query: str,
+    session_meta: Dict[str, Any],
+    matched_snippets: List[str] = None,
 ) -> Optional[str]:
     """Summarize a single session conversation focused on the search query."""
     system_prompt = (
@@ -134,17 +153,21 @@ async def _summarize_session(
         "3. Key decisions, solutions found, or conclusions reached\n"
         "4. Any specific commands, files, URLs, or technical details that were important\n"
         "5. Anything left unresolved or notable\n\n"
+        "Important: matched excerpts are high-confidence evidence from search hits. "
+        "If they mention a topic, do not claim that topic was absent. Use them to anchor the summary, then use the transcript for surrounding context. "
         "Be thorough but concise. Preserve specific details (commands, paths, error messages) "
         "that would be useful to recall. Write in past tense as a factual recap."
     )
 
     source = session_meta.get("source", "unknown")
     started = _format_timestamp(session_meta.get("started_at"))
+    matched_block = "\n".join(f"- {snippet}" for snippet in (matched_snippets or []) if snippet)
 
     user_prompt = (
         f"Search topic: {query}\n"
         f"Session source: {source}\n"
         f"Session date: {started}\n\n"
+        f"MATCHED EXCERPTS:\n{matched_block or '(none)'}\n\n"
         f"CONVERSATION TRANSCRIPT:\n{conversation_text}\n\n"
         f"Summarize this conversation with focus on: {query}"
     )
@@ -293,14 +316,17 @@ def session_search(
                 "message": "No matching sessions found.",
             }, ensure_ascii=False)
 
-        # Resolve child sessions to their parent — delegation stores detailed
-        # content in child sessions, but the user's conversation is the parent.
-        def _resolve_to_parent(session_id: str) -> str:
-            """Walk delegation chain to find the root parent session ID."""
+        # Resolve child sessions to their parent/root for dedup + display,
+        # but keep the raw hit session so we can prepare a transcript that
+        # actually contains the matched content.
+        def _lineage_to_root(session_id: str) -> List[str]:
+            """Return [session, parent, grandparent, ..., root] with cycle protection."""
             visited = set()
+            lineage = []
             sid = session_id
             while sid and sid not in visited:
                 visited.add(sid)
+                lineage.append(sid)
                 try:
                     session = db.get_session(sid)
                     if not session:
@@ -318,7 +344,52 @@ def session_search(
                         exc_info=True,
                     )
                     break
-            return sid
+            return lineage
+
+        def _resolve_to_parent(session_id: str) -> str:
+            """Walk continuation/delegation chain to find the root parent session ID."""
+            lineage = _lineage_to_root(session_id)
+            return lineage[-1] if lineage else session_id
+
+        def _load_lineage_conversation(hit_session_id: str) -> List[Dict[str, Any]]:
+            """Load root→...→hit conversation so child-only matches stay visible."""
+            lineage = list(reversed(_lineage_to_root(hit_session_id)))
+            messages: List[Dict[str, Any]] = []
+            for sid in lineage:
+                try:
+                    messages.extend(db.get_messages_as_conversation(sid) or [])
+                except Exception as e:
+                    logging.debug(
+                        "Failed to load lineage segment %s: %s",
+                        sid,
+                        e,
+                        exc_info=True,
+                    )
+            return messages
+
+        def _load_lineage_conversation_for_hits(hit_session_ids: List[str]) -> List[Dict[str, Any]]:
+            """Merge root→hit paths for all matched sessions in the same lineage root."""
+            ordered_session_ids: List[str] = []
+            seen_lineage_ids = set()
+            for hit_session_id in hit_session_ids:
+                lineage = list(reversed(_lineage_to_root(hit_session_id)))
+                for sid in lineage:
+                    if sid not in seen_lineage_ids:
+                        seen_lineage_ids.add(sid)
+                        ordered_session_ids.append(sid)
+
+            messages: List[Dict[str, Any]] = []
+            for sid in ordered_session_ids:
+                try:
+                    messages.extend(db.get_messages_as_conversation(sid) or [])
+                except Exception as e:
+                    logging.debug(
+                        "Failed to load merged lineage segment %s: %s",
+                        sid,
+                        e,
+                        exc_info=True,
+                    )
+            return messages
 
         current_lineage_root = (
             _resolve_to_parent(current_session_id) if current_session_id else None
@@ -338,23 +409,36 @@ def session_search(
             if current_session_id and raw_sid == current_session_id:
                 continue
             if resolved_sid not in seen_sessions:
-                result = dict(result)
-                result["session_id"] = resolved_sid
-                seen_sessions[resolved_sid] = result
-            if len(seen_sessions) >= limit:
-                break
+                if len(seen_sessions) >= limit:
+                    # Ignore additional roots beyond the requested limit, but
+                    # continue collecting more hit sessions for already-selected roots.
+                    continue
+                seen_sessions[resolved_sid] = {
+                    "display_session_id": resolved_sid,
+                    "hit_session_ids": [],
+                    "matched_snippets": [],
+                    "match_info": dict(result),
+                }
+            if raw_sid not in seen_sessions[resolved_sid]["hit_session_ids"]:
+                seen_sessions[resolved_sid]["hit_session_ids"].append(raw_sid)
+            snippet = result.get("snippet") or result.get("content")
+            if snippet and snippet not in seen_sessions[resolved_sid]["matched_snippets"]:
+                seen_sessions[resolved_sid]["matched_snippets"].append(snippet)
 
         # Prepare all sessions for parallel summarization
         tasks = []
-        for session_id, match_info in seen_sessions.items():
+        for session_id, session_info in seen_sessions.items():
             try:
-                messages = db.get_messages_as_conversation(session_id)
+                hit_session_ids = session_info["hit_session_ids"]
+                match_info = session_info["match_info"]
+                matched_snippets = session_info["matched_snippets"]
+                messages = _load_lineage_conversation_for_hits(hit_session_ids)
                 if not messages:
                     continue
                 session_meta = db.get_session(session_id) or {}
                 conversation_text = _format_conversation(messages)
                 conversation_text = _truncate_around_matches(conversation_text, query)
-                tasks.append((session_id, match_info, conversation_text, session_meta))
+                tasks.append((session_id, match_info, conversation_text, session_meta, matched_snippets))
             except Exception as e:
                 logging.warning(
                     "Failed to prepare session %s: %s",
@@ -367,8 +451,8 @@ def session_search(
         async def _summarize_all() -> List[Union[str, Exception]]:
             """Summarize all sessions in parallel."""
             coros = [
-                _summarize_session(text, query, meta)
-                for _, _, text, meta in tasks
+                _summarize_session(text, query, meta, snippets)
+                for _, _, text, meta, snippets in tasks
             ]
             return await asyncio.gather(*coros, return_exceptions=True)
 
@@ -392,7 +476,7 @@ def session_search(
             }, ensure_ascii=False)
 
         summaries = []
-        for (session_id, match_info, conversation_text, _), result in zip(tasks, results):
+        for (session_id, match_info, conversation_text, session_meta, _matched_snippets), result in zip(tasks, results):
             if isinstance(result, Exception):
                 logging.warning(
                     "Failed to summarize session %s: %s",
@@ -402,9 +486,9 @@ def session_search(
 
             entry = {
                 "session_id": session_id,
-                "when": _format_timestamp(match_info.get("session_started")),
-                "source": match_info.get("source", "unknown"),
-                "model": match_info.get("model"),
+                "when": _format_timestamp(session_meta.get("started_at") or match_info.get("session_started")),
+                "source": session_meta.get("source") or match_info.get("source", "unknown"),
+                "model": session_meta.get("model") or match_info.get("model"),
             }
 
             if result:
@@ -412,7 +496,13 @@ def session_search(
             else:
                 # Fallback: raw preview so matched sessions aren't silently
                 # dropped when the summarizer is unavailable (fixes #3409).
-                preview = (conversation_text[:500] + "\n…[truncated]") if conversation_text else "No preview available."
+                # Re-center a short preview around the match; taking the first
+                # 500 chars of a long lineage transcript can hide the very hit
+                # that justified returning this session.
+                preview = (
+                    _truncate_around_matches(conversation_text, query, max_chars=500)
+                    if conversation_text else "No preview available."
+                )
                 entry["summary"] = f"[Raw preview — summarization unavailable]\n{preview}"
 
             summaries.append(entry)

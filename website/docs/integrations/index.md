@@ -40,6 +40,31 @@ web:
 
 If `web.backend` is not set, the backend is auto-detected from whichever API key is available. Self-hosted Firecrawl is also supported via `FIRECRAWL_API_URL`.
 
+### Exa
+
+[Exa](https://exa.ai) provides neural (embedding-based) web search optimized for AI applications. Unlike keyword-based backends, Exa finds semantically relevant results — ideal for research, content discovery, and knowledge retrieval.
+
+**Setup:**
+
+1. Get an API key from [dashboard.exa.ai](https://dashboard.exa.ai)
+2. Add it to `~/.hermes/.env`:
+   ```bash
+   EXA_API_KEY=your-key-here
+   ```
+3. Set the backend (or let auto-detection pick it up):
+   ```yaml
+   web:
+     backend: exa
+   ```
+
+**Features:**
+- Neural search with category filtering (`company`, `research paper`, `news`, `tweet`, `personal site`, `pdf`)
+- Domain include/exclude filters and date range filtering
+- Content extraction via `web_extract`
+- Auto-detected when `EXA_API_KEY` is the only web backend key set
+
+**Also available as MCP:** Exa provides an [MCP server](https://www.npmjs.com/package/exa-mcp-server) (`exa-mcp-server`) that exposes `web_search_exa`, `web_search_advanced_exa`, and `web_fetch_exa` tools — see [MCP configuration](/docs/user-guide/features/mcp) for setup.
+
 ## Browser Automation
 
 Hermes includes full browser automation with multiple backend options for navigating websites, filling forms, and extracting information:

@@ -20,7 +20,7 @@ import { useCompletion } from './hooks/useCompletion.js'
 import { useInputHistory } from './hooks/useInputHistory.js'
 import { useQueue } from './hooks/useQueue.js'
 import { writeOsc52Clipboard } from './lib/osc52.js'
-import { compactPreview, fmtK, hasInterpolation, pick, sameToolTrailGroup } from './lib/text.js'
+import { compactPreview, fmtK, hasInterpolation, isToolTrailResultLine, pick, sameToolTrailGroup } from './lib/text.js'
 import { DEFAULT_THEME, fromSkin, type Theme } from './theme.js'
 import type {
   ActiveTool,
@@ -360,6 +360,19 @@ export function App({ gw }: { gw: GatewayClient }) {
       activityIdRef.current++
 
       return [...base, { id: activityIdRef.current, text, tone }].slice(-8)
+    })
+  }, [])
+
+  const pushTrail = useCallback((line: string) => {
+    setTurnTrail(prev => {
+      if (prev.at(-1) === line) {
+        return prev
+      }
+
+      const next = [...prev, line].slice(-8)
+      turnToolsRef.current = next
+
+      return next
     })
   }, [])
 
@@ -1067,6 +1080,13 @@ export function App({ gw }: { gw: GatewayClient }) {
 
           break
 
+        case 'tool.generating':
+          if (p?.name) {
+            pushTrail(`drafting ${p.name}…`)
+          }
+
+          break
+
         case 'tool.start':
           setTools(prev => [...prev, { id: p.tool_id, name: p.name, context: (p.context as string) || '' }])
 
@@ -1082,11 +1102,18 @@ export function App({ gw }: { gw: GatewayClient }) {
             const line = `${label}${ctx ? ': ' + compactPreview(ctx, 72) : ''} ${mark}`
 
             toolCompleteRibbonRef.current = { label, line }
-            const next = [...turnToolsRef.current.filter(s => !sameToolTrailGroup(label, s)), line].slice(-8)
-            turnToolsRef.current = next
-            setTurnTrail(next)
+            const remaining = prev.filter(t => t.id !== p.tool_id)
+            const next = [...turnToolsRef.current.filter(s => !sameToolTrailGroup(label, s)), line]
 
-            return prev.filter(t => t.id !== p.tool_id)
+            if (!remaining.length) {
+              next.push('analyzing tool output…')
+            }
+
+            const pruned = next.slice(-8)
+            turnToolsRef.current = pruned
+            setTurnTrail(pruned)
+
+            return remaining
           })
 
           break
@@ -1148,7 +1175,7 @@ export function App({ gw }: { gw: GatewayClient }) {
         case 'message.complete': {
           const wasInterrupted = interruptedRef.current
           const savedReasoning = reasoningRef.current.trim()
-          const savedTools = [...turnToolsRef.current]
+          const savedTools = turnToolsRef.current.filter(isToolTrailResultLine)
           const finalText = (p?.rendered ?? p?.text ?? buf.current).trimStart()
 
           idle()
@@ -1204,7 +1231,7 @@ export function App({ gw }: { gw: GatewayClient }) {
           break
       }
     },
-    [appendMessage, dequeue, newSession, pushActivity, send, sys]
+    [appendMessage, dequeue, newSession, pushActivity, pushTrail, send, sys]
   )
 
   onEventRef.current = onEvent
@@ -1789,9 +1816,15 @@ export function App({ gw }: { gw: GatewayClient }) {
       ))}
 
       <Box flexDirection="column" paddingX={1}>
-        <ToolTrail t={theme} tools={tools} trail={turnTrail} />
+        <ToolTrail
+          activity={busy ? activity : []}
+          animateCot={busy && !streaming}
+          t={theme}
+          tools={tools}
+          trail={turnTrail}
+        />
 
-        {thinking && !tools.length && !streaming && <Thinking key={turnKey} reasoning={reasoning} t={theme} />}
+        {busy && !tools.length && !streaming && <Thinking key={turnKey} reasoning={reasoning} t={theme} />}
 
         {streaming && (
           <MessageLine cols={cols} compact={compact} msg={{ role: 'assistant', text: streaming }} t={theme} />

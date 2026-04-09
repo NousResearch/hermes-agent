@@ -20,9 +20,9 @@ describe('constants', () => {
     })
   })
 
-  it('TOOL_VERBS maps known tools', () => {
-    expect(TOOL_VERBS.terminal).toContain('terminal')
-    expect(TOOL_VERBS.read_file).toContain('reading')
+  it('TOOL_VERBS maps known tools (verb-only, no emoji)', () => {
+    expect(TOOL_VERBS.terminal).toBe('terminal')
+    expect(TOOL_VERBS.read_file).toBe('reading')
   })
 
   it('INTERPOLATION_RE matches {!cmd}', () => {

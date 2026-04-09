@@ -16,6 +16,7 @@ import logging
 import os
 import shutil
 import sys
+import copy
 from pathlib import Path
 from typing import Optional, Dict, Any
 
@@ -316,6 +317,7 @@ def _setup_provider_model_selection(config, provider_id, current_model, prompt_c
 
 # Import config helpers
 from hermes_cli.config import (
+    DEFAULT_CONFIG,
     get_hermes_home,
     get_config_path,
     get_env_path,
@@ -921,8 +923,10 @@ def setup_model_provider(config: dict, *, quick: bool = False):
     # changes with stale values (#4172).
     _refreshed = load_config()
     config["model"] = _refreshed.get("model", config.get("model"))
-    if _refreshed.get("custom_providers"):
+    if "custom_providers" in _refreshed:
         config["custom_providers"] = _refreshed["custom_providers"]
+    else:
+        config.pop("custom_providers", None)
 
     # Derive the selected provider for downstream steps (vision setup).
     selected_provider = None
@@ -1006,8 +1010,6 @@ def setup_model_provider(config: dict, *, quick: bool = False):
                 strategy_value = ["fill_first", "round_robin", "random"][strategy_idx]
                 _set_credential_pool_strategy(config, selected_provider, strategy_value)
                 print_success(f"Saved {selected_provider} rotation strategy: {strategy_value}")
-            else:
-                _set_credential_pool_strategy(config, selected_provider, "fill_first")
         except Exception as exc:
             logger.debug("Could not configure same-provider fallback in setup: %s", exc)
 
@@ -2844,6 +2846,7 @@ def run_setup_wizard(args):
     Supports full, quick, and section-specific setup:
       hermes setup           — full or quick (auto-detected)
       hermes setup model     — just model/provider
+      hermes setup tts       — just text-to-speech
       hermes setup terminal  — just terminal backend
       hermes setup gateway   — just messaging platforms
       hermes setup tools     — just tool configuration
@@ -2854,6 +2857,11 @@ def run_setup_wizard(args):
         managed_error("run setup wizard")
         return
     ensure_hermes_home()
+
+    reset_requested = bool(getattr(args, "reset", False))
+    if reset_requested:
+        save_config(copy.deepcopy(DEFAULT_CONFIG))
+        print_success("Configuration reset to defaults.")
 
     config = load_config()
     hermes_home = get_hermes_home()
@@ -2955,18 +2963,13 @@ def run_setup_wizard(args):
         menu_choices = [
             "Quick Setup - configure missing items only",
             "Full Setup - reconfigure everything",
-            "---",
             "Model & Provider",
             "Terminal Backend",
             "Messaging Platforms (Gateway)",
             "Tools",
             "Agent Settings",
-            "---",
             "Exit",
         ]
-
-        # Separator indices (not selectable, but prompt_choice doesn't filter them,
-        # so we handle them below)
         choice = prompt_choice("What would you like to do?", menu_choices, 0)
 
         if choice == 0:
@@ -2976,18 +2979,14 @@ def run_setup_wizard(args):
         elif choice == 1:
             # Full setup — fall through to run all sections
             pass
-        elif choice in (2, 8):
-            # Separator — treat as exit
+        elif choice == 7:
             print_info("Exiting. Run 'hermes setup' again when ready.")
             return
-        elif choice == 9:
-            print_info("Exiting. Run 'hermes setup' again when ready.")
-            return
-        elif 3 <= choice <= 7:
+        elif 2 <= choice <= 6:
             # Individual section — map by key, not by position.
             # SETUP_SECTIONS includes TTS but the returning-user menu skips it,
-            # so positional indexing (choice - 3) would dispatch the wrong section.
-            section_key = RETURNING_USER_MENU_SECTION_KEYS[choice - 3]
+            # so positional indexing (choice - 2) would dispatch the wrong section.
+            section_key = RETURNING_USER_MENU_SECTION_KEYS[choice - 2]
             section = next((s for s in SETUP_SECTIONS if s[0] == section_key), None)
             if section:
                 _, label, func = section

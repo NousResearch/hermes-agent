@@ -79,6 +79,11 @@ def _effective_provider_label() -> str:
     return provider_label(effective)
 
 
+def _is_termux() -> bool:
+    prefix = os.getenv("PREFIX", "")
+    return bool(os.getenv("TERMUX_VERSION") or "com.termux/files/usr" in prefix)
+
+
 def show_status(args):
     """Show status of all Hermes Agent components."""
     show_all = getattr(args, 'all', False)
@@ -325,7 +330,25 @@ def show_status(args):
     print()
     print(color("◆ Gateway Service", Colors.CYAN, Colors.BOLD))
     
-    if sys.platform.startswith('linux'):
+    if _is_termux():
+        try:
+            from hermes_cli.gateway import find_gateway_pids
+            gateway_pids = find_gateway_pids()
+        except Exception:
+            gateway_pids = []
+        is_running = bool(gateway_pids)
+        print(f"  Status:       {check_mark(is_running)} {'running' if is_running else 'stopped'}")
+        print("  Manager:      Termux / manual process")
+        if gateway_pids:
+            rendered = ", ".join(str(pid) for pid in gateway_pids[:3])
+            if len(gateway_pids) > 3:
+                rendered += ", ..."
+            print(f"  PID(s):       {rendered}")
+        else:
+            print("  Start with:   hermes gateway")
+            print("  Note:         Android may stop background jobs when Termux is suspended")
+
+    elif sys.platform.startswith('linux'):
         try:
             from hermes_cli.gateway import get_service_name
             _gw_svc = get_service_name()
@@ -339,7 +362,7 @@ def show_status(args):
                 timeout=5
             )
             is_active = result.stdout.strip() == "active"
-        except subprocess.TimeoutExpired:
+        except (FileNotFoundError, subprocess.TimeoutExpired):
             is_active = False
         print(f"  Status:       {check_mark(is_active)} {'running' if is_active else 'stopped'}")
         print("  Manager:      systemd (user)")

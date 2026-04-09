@@ -121,6 +121,32 @@ is_termux() {
     [ -n "${TERMUX_VERSION:-}" ] || [[ "${PREFIX:-}" == *"com.termux/files/usr"* ]]
 }
 
+get_command_link_dir() {
+    if is_termux && [ -n "${PREFIX:-}" ]; then
+        echo "$PREFIX/bin"
+    else
+        echo "$HOME/.local/bin"
+    fi
+}
+
+get_command_link_display_dir() {
+    if is_termux && [ -n "${PREFIX:-}" ]; then
+        echo '$PREFIX/bin'
+    else
+        echo '~/.local/bin'
+    fi
+}
+
+get_hermes_command_path() {
+    local link_dir
+    link_dir="$(get_command_link_dir)"
+    if [ -x "$link_dir/hermes" ]; then
+        echo "$link_dir/hermes"
+    else
+        echo "hermes"
+    fi
+}
+
 # ============================================================================
 # System detection
 # ============================================================================
@@ -897,15 +923,27 @@ setup_path() {
         return 0
     fi
 
-    # Create symlink in ~/.local/bin (standard user binary location, usually on PATH)
-    mkdir -p "$HOME/.local/bin"
-    ln -sf "$HERMES_BIN" "$HOME/.local/bin/hermes"
-    log_success "Symlinked hermes → ~/.local/bin/hermes"
+    local command_link_dir
+    local command_link_display_dir
+    command_link_dir="$(get_command_link_dir)"
+    command_link_display_dir="$(get_command_link_display_dir)"
+
+    # Create a user-facing shim for the hermes command.
+    mkdir -p "$command_link_dir"
+    ln -sf "$HERMES_BIN" "$command_link_dir/hermes"
+    log_success "Symlinked hermes → $command_link_display_dir/hermes"
+
+    if [ "$DISTRO" = "termux" ]; then
+        export PATH="$command_link_dir:$PATH"
+        log_info "$command_link_display_dir is the native Termux command path"
+        log_success "hermes command ready"
+        return 0
+    fi
 
     # Check if ~/.local/bin is on PATH; if not, add it to shell config.
     # Detect the user's actual login shell (not the shell running this script,
     # which is always bash when piped from curl).
-    if ! echo "$PATH" | tr ':' '\n' | grep -q "^$HOME/.local/bin$"; then
+    if ! echo "$PATH" | tr ':' '\n' | grep -q "^$command_link_dir$"; then
         SHELL_CONFIGS=()
         LOGIN_SHELL="$(basename "${SHELL:-/bin/bash}")"
         case "$LOGIN_SHELL" in
@@ -951,7 +989,7 @@ setup_path() {
     fi
 
     # Export for current session so hermes works immediately
-    export PATH="$HOME/.local/bin:$PATH"
+    export PATH="$command_link_dir:$PATH"
 
     log_success "hermes command ready"
 }
@@ -1149,8 +1187,7 @@ maybe_start_gateway() {
             read -p "Pair WhatsApp now? [Y/n] " -n 1 -r
             echo
             if [[ $REPLY =~ ^[Yy]$ ]] || [[ -z $REPLY ]]; then
-                HERMES_CMD="$HOME/.local/bin/hermes"
-                [ ! -x "$HERMES_CMD" ] && HERMES_CMD="hermes"
+                HERMES_CMD="$(get_hermes_command_path)"
                 $HERMES_CMD whatsapp || true
             fi
         else
@@ -1164,16 +1201,17 @@ maybe_start_gateway() {
     fi
 
     echo ""
-    read -p "Would you like to install the gateway as a background service? [Y/n] " -n 1 -r < /dev/tty
+    if [ "$DISTRO" = "termux" ]; then
+        read -p "Would you like to start the gateway in the background? [Y/n] " -n 1 -r < /dev/tty
+    else
+        read -p "Would you like to install the gateway as a background service? [Y/n] " -n 1 -r < /dev/tty
+    fi
     echo
 
     if [[ $REPLY =~ ^[Yy]$ ]] || [[ -z $REPLY ]]; then
-        HERMES_CMD="$HOME/.local/bin/hermes"
-        if [ ! -x "$HERMES_CMD" ]; then
-            HERMES_CMD="hermes"
-        fi
+        HERMES_CMD="$(get_hermes_command_path)"
 
-        if command -v systemctl &> /dev/null; then
+        if [ "$DISTRO" != "termux" ] && command -v systemctl &> /dev/null; then
             log_info "Installing systemd service..."
             if $HERMES_CMD gateway install 2>/dev/null; then
                 log_success "Gateway service installed"
@@ -1186,12 +1224,19 @@ maybe_start_gateway() {
                 log_warn "Systemd install failed. You can start manually: hermes gateway"
             fi
         else
-            log_info "systemd not available — starting gateway in background..."
+            if [ "$DISTRO" = "termux" ]; then
+                log_info "Termux detected — starting gateway in best-effort background mode..."
+            else
+                log_info "systemd not available — starting gateway in background..."
+            fi
             nohup $HERMES_CMD gateway > "$HERMES_HOME/logs/gateway.log" 2>&1 &
             GATEWAY_PID=$!
             log_success "Gateway started (PID $GATEWAY_PID). Logs: ~/.hermes/logs/gateway.log"
             log_info "To stop: kill $GATEWAY_PID"
             log_info "To restart later: hermes gateway"
+            if [ "$DISTRO" = "termux" ]; then
+                log_warn "Android may stop background processes when Termux is suspended or the system reclaims resources."
+            fi
         fi
     else
         log_info "Skipped. Start the gateway later with: hermes gateway"
@@ -1230,17 +1275,22 @@ print_success() {
 
     echo -e "${CYAN}─────────────────────────────────────────────────────────${NC}"
     echo ""
-    echo -e "${YELLOW}⚡ Reload your shell to use 'hermes' command:${NC}"
-    echo ""
-    LOGIN_SHELL="$(basename "${SHELL:-/bin/bash}")"
-    if [ "$LOGIN_SHELL" = "zsh" ]; then
-        echo "   source ~/.zshrc"
-    elif [ "$LOGIN_SHELL" = "bash" ]; then
-        echo "   source ~/.bashrc"
+    if [ "$DISTRO" = "termux" ]; then
+        echo -e "${YELLOW}⚡ 'hermes' was linked into $(get_command_link_display_dir), which is already on PATH in Termux.${NC}"
+        echo ""
     else
-        echo "   source ~/.bashrc   # or ~/.zshrc"
+        echo -e "${YELLOW}⚡ Reload your shell to use 'hermes' command:${NC}"
+        echo ""
+        LOGIN_SHELL="$(basename "${SHELL:-/bin/bash}")"
+        if [ "$LOGIN_SHELL" = "zsh" ]; then
+            echo "   source ~/.zshrc"
+        elif [ "$LOGIN_SHELL" = "bash" ]; then
+            echo "   source ~/.bashrc"
+        else
+            echo "   source ~/.bashrc   # or ~/.zshrc"
+        fi
+        echo ""
     fi
-    echo ""
 
     # Show Node.js warning if auto-install failed
     if [ "$HAS_NODE" = false ]; then

@@ -51,6 +51,7 @@ On Termux, the installer automatically:
 - uses `pkg` for system packages
 - creates the venv with `python -m venv`
 - installs `.[termux]` with `pip`
+- links `hermes` into `$PREFIX/bin` so it stays on your Termux PATH
 - skips the untested browser / WhatsApp bootstrap
 
 If you want the explicit commands or need to debug a failed install, use the manual path below.
@@ -110,14 +111,22 @@ If you only want the minimal core agent, this also works:
 python -m pip install -e '.' -c constraints-termux.txt
 ```
 
-### 5. Verify the install
+### 5. Put `hermes` on your Termux PATH
+
+```bash
+ln -sf "$PWD/venv/bin/hermes" "$PREFIX/bin/hermes"
+```
+
+`$PREFIX/bin` is already on PATH in Termux, so this makes the `hermes` command persist across new shells without re-activating the venv every time.
+
+### 6. Verify the install
 
 ```bash
 hermes version
 hermes doctor
 ```
 
-### 6. Start Hermes
+### 7. Start Hermes
 
 ```bash
 hermes

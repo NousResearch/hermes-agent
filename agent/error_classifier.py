@@ -677,6 +677,27 @@ def _classify_by_message(
             should_compress=True,
         )
 
+    # Usage-limit patterns need the same disambiguation as 402: some providers
+    # surface "usage limit" errors without an HTTP status code.  A transient
+    # signal ("try again", "resets at", …) means it's a periodic quota, not
+    # billing exhaustion.
+    has_usage_limit = any(p in error_msg for p in _USAGE_LIMIT_PATTERNS)
+    if has_usage_limit:
+        has_transient_signal = any(p in error_msg for p in _USAGE_LIMIT_TRANSIENT_SIGNALS)
+        if has_transient_signal:
+            return result_fn(
+                FailoverReason.rate_limit,
+                retryable=True,
+                should_rotate_credential=True,
+                should_fallback=True,
+            )
+        return result_fn(
+            FailoverReason.billing,
+            retryable=False,
+            should_rotate_credential=True,
+            should_fallback=True,
+        )
+
     # Billing patterns
     if any(p in error_msg for p in _BILLING_PATTERNS):
         return result_fn(

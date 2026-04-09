@@ -172,6 +172,19 @@ class ProcessRegistry:
 
     # ----- Spawn -----
 
+    @staticmethod
+    def _env_temp_dir(env: Any) -> str:
+        """Return the writable sandbox temp dir for env-backed background tasks."""
+        get_temp_dir = getattr(env, "get_temp_dir", None)
+        if callable(get_temp_dir):
+            try:
+                temp_dir = get_temp_dir()
+                if isinstance(temp_dir, str) and temp_dir.startswith("/"):
+                    return temp_dir.rstrip("/") or "/"
+            except Exception as exc:
+                logger.debug("Could not resolve environment temp dir: %s", exc)
+        return "/tmp"
+
     def spawn_local(
         self,
         command: str,
@@ -316,12 +329,20 @@ class ProcessRegistry:
         )
 
         # Run the command in the sandbox with output capture
-        log_path = f"/tmp/hermes_bg_{session.id}.log"
-        pid_path = f"/tmp/hermes_bg_{session.id}.pid"
+        temp_dir = self._env_temp_dir(env)
+        log_path = f"{temp_dir}/hermes_bg_{session.id}.log"
+        pid_path = f"{temp_dir}/hermes_bg_{session.id}.pid"
+        exit_path = f"{temp_dir}/hermes_bg_{session.id}.exit"
         quoted_command = shlex.quote(command)
+        quoted_temp_dir = shlex.quote(temp_dir)
+        quoted_log_path = shlex.quote(log_path)
+        quoted_pid_path = shlex.quote(pid_path)
+        quoted_exit_path = shlex.quote(exit_path)
         bg_command = (
-            f"nohup bash -c {quoted_command} > {log_path} 2>&1 & "
-            f"echo $! > {pid_path} && cat {pid_path}"
+            f"mkdir -p {quoted_temp_dir} && "
+            f"( nohup bash -lc {quoted_command} > {quoted_log_path} 2>&1; "
+            f"rc=$?; printf '%s\\n' \"$rc\" > {quoted_exit_path} ) & "
+            f"echo $! > {quoted_pid_path} && cat {quoted_pid_path}"
         )
 
         try:
@@ -342,7 +363,7 @@ class ProcessRegistry:
             # Start a poller thread that periodically reads the log file
             reader = threading.Thread(
                 target=self._env_poller_loop,
-                args=(session, env, log_path, pid_path),
+                args=(session, env, log_path, pid_path, exit_path),
                 daemon=True,
                 name=f"proc-poller-{session.id}",
             )
@@ -386,14 +407,17 @@ class ProcessRegistry:
         self._move_to_finished(session)
 
     def _env_poller_loop(
-        self, session: ProcessSession, env: Any, log_path: str, pid_path: str
+        self, session: ProcessSession, env: Any, log_path: str, pid_path: str, exit_path: str
     ):
         """Background thread: poll a sandbox log file for non-local backends."""
+        quoted_log_path = shlex.quote(log_path)
+        quoted_pid_path = shlex.quote(pid_path)
+        quoted_exit_path = shlex.quote(exit_path)
         while not session.exited:
             time.sleep(2)  # Poll every 2 seconds
             try:
                 # Read new output from the log file
-                result = env.execute(f"cat {log_path} 2>/dev/null", timeout=10)
+                result = env.execute(f"cat {quoted_log_path} 2>/dev/null", timeout=10)
                 new_output = result.get("output", "")
                 if new_output:
                     with session._lock:
@@ -403,14 +427,14 @@ class ProcessRegistry:
 
                 # Check if process is still running
                 check = env.execute(
-                    f"kill -0 $(cat {pid_path} 2>/dev/null) 2>/dev/null; echo $?",
+                    f"kill -0 \"$(cat {quoted_pid_path} 2>/dev/null)\" 2>/dev/null; echo $?",
                     timeout=5,
                 )
                 check_output = check.get("output", "").strip()
                 if check_output and check_output.splitlines()[-1].strip() != "0":
-                    # Process has exited -- get exit code
+                    # Process has exited -- get exit code captured by the wrapper shell.
                     exit_result = env.execute(
-                        f"wait $(cat {pid_path} 2>/dev/null) 2>/dev/null; echo $?",
+                        f"cat {quoted_exit_path} 2>/dev/null",
                         timeout=5,
                     )
                     exit_str = exit_result.get("output", "").strip()

@@ -335,7 +335,7 @@ def test_auth_add_chatgpt_web_session_token_persists_pool_entry(tmp_path, monkey
     assert entry["base_url"] == DEFAULT_CHATGPT_WEB_BASE_URL
 
 
-def test_auth_browser_command_bootstraps_chatgpt_web_from_termux_browser(tmp_path, monkeypatch):
+def test_auth_browser_command_bootstraps_chatgpt_web_from_termux_browser(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
 
     from hermes_cli import auth_commands as auth_commands_mod
@@ -383,12 +383,16 @@ def test_auth_browser_command_bootstraps_chatgpt_web_from_termux_browser(tmp_pat
         keep_open = False
 
     auth_commands_mod.auth_browser_command(_Args())
+    output = capsys.readouterr().out
 
     assert captured["args"].provider == "chatgpt-web"
     assert captured["args"].auth_type == "api-key"
     assert captured["args"].token_mode == "session_token"
     assert captured["args"].api_key == "session-cookie"
     assert captured["args"].label == "termux-x11-browser"
+    assert "Stored chatgpt-web credential from Termux browser" in output
+    assert "credential pool" in output.lower()
+    assert "hermes auth list" in output
     assert fake_proc.terminated is True
     assert fake_proc.killed is False
 

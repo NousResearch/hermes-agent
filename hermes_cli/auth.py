@@ -198,6 +198,14 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=("DEEPSEEK_API_KEY",),
         base_url_env_var="DEEPSEEK_BASE_URL",
     ),
+    "xai": ProviderConfig(
+        id="xai",
+        name="xAI",
+        auth_type="api_key",
+        inference_base_url="https://api.x.ai/v1",
+        api_key_env_vars=("XAI_API_KEY",),
+        base_url_env_var="XAI_BASE_URL",
+    ),
     "ai-gateway": ProviderConfig(
         id="ai-gateway",
         name="AI Gateway",

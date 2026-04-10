@@ -127,6 +127,11 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         is_aggregator=True,
         base_url_env_var="HF_BASE_URL",
     ),
+    "xai": HermesOverlay(
+        transport="openai_chat",
+        base_url_override="https://api.x.ai/v1",
+        base_url_env_var="XAI_BASE_URL",
+    ),
 }
 
 
@@ -162,6 +167,10 @@ ALIASES: Dict[str, str] = {
     "z-ai": "zai",
     "z.ai": "zai",
     "zhipu": "zai",
+
+    # xai
+    "x-ai": "xai",
+    "x.ai": "xai",
 
     # kimi-for-coding (models.dev ID)
     "kimi": "kimi-for-coding",
@@ -338,6 +347,7 @@ def get_label(provider_id: str) -> str:
         return pdef.name
 
     return canonical
+
 
 
 

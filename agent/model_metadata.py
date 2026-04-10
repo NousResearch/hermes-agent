@@ -213,6 +213,7 @@ _URL_TO_PROVIDER: Dict[str, str] = {
     "models.github.ai": "copilot",
     "api.fireworks.ai": "fireworks",
     "opencode.ai": "opencode-go",
+    "api.x.ai": "xai",
 }
 
 

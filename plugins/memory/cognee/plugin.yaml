@@ -1,0 +1,7 @@
+name: cognee
+version: 1.0.0.dev0
+description: "Cognee V2 — knowledge graph memory with session-aware storage, auto-routing recall, forget capability, and session-end graph improvement."
+pip_dependencies:
+  - cognee
+hooks:
+  - on_session_end

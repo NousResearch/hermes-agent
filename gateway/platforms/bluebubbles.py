@@ -226,24 +226,44 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             self._runner = None
         self._mark_disconnected()
 
+    @property
+    def _webhook_url(self) -> str:
+        """Compute the external webhook URL for BlueBubbles registration."""
+        host = self.webhook_host
+        if host in ("0.0.0.0", "127.0.0.1", "localhost", "::"):
+            host = "localhost"
+        return f"http://{host}:{self.webhook_port}{self.webhook_path}"
+
+    async def _find_registered_webhooks(self, url: str) -> list:
+        """Return list of BB webhook entries matching *url*."""
+        try:
+            res = await self._api_get("/api/v1/webhook")
+            data = res.get("data")
+            if isinstance(data, list):
+                return [wh for wh in data if wh.get("url") == url]
+        except Exception:
+            pass
+        return []
+
     async def _register_webhook(self) -> bool:
         """Register this webhook URL with the BlueBubbles server.
 
         BlueBubbles requires webhooks to be registered via API before
-        it will send events. This method registers our listener URL
-        for new-message and updated-message events.
+        it will send events.  Checks for an existing registration first
+        to avoid duplicates (e.g. after a crash without clean shutdown).
         """
         if not self.client:
             return False
 
-        webhook_url = f"http://{self.webhook_host}:{self.webhook_port}{self.webhook_path}"
-        # Use host.docker.internal or public IP if webhook is 0.0.0.0/127.0.0.1
-        # and server is on a different host
-        if self.webhook_host in ("0.0.0.0", "127.0.0.1", "localhost", "::"):
-            # For local development, we need the external IP that BlueBubbles can reach
-            # Default to localhost for same-machine setups
-            external_host = "localhost"
-            webhook_url = f"http://{external_host}:{self.webhook_port}{self.webhook_path}"
+        webhook_url = self._webhook_url
+
+        # Crash resilience — reuse an existing registration if present
+        existing = await self._find_registered_webhooks(webhook_url)
+        if existing:
+            logger.info(
+                "[bluebubbles] webhook already registered: %s", webhook_url
+            )
+            return True
 
         payload = {
             "url": webhook_url,
@@ -252,16 +272,17 @@ class BlueBubblesAdapter(BasePlatformAdapter):
 
         try:
             res = await self._api_post("/api/v1/webhook", payload)
-            if res.get("status") == 200:
+            status = res.get("status", 0)
+            if 200 <= status < 300:
                 logger.info(
-                    "[bluebubbles] webhook registered successfully with server: %s",
+                    "[bluebubbles] webhook registered with server: %s",
                     webhook_url,
                 )
                 return True
             else:
                 logger.warning(
-                    "[bluebubbles] webhook registration returned non-200 status: %s - %s",
-                    res.get("status"),
+                    "[bluebubbles] webhook registration returned status %s: %s",
+                    status,
                     res.get("message"),
                 )
                 return False
@@ -275,41 +296,34 @@ class BlueBubblesAdapter(BasePlatformAdapter):
     async def _unregister_webhook(self) -> bool:
         """Unregister this webhook URL from the BlueBubbles server.
 
-        Cleans up the webhook registration when the gateway shuts down.
+        Removes *all* matching registrations to clean up any duplicates
+        left by prior crashes.
         """
         if not self.client:
             return False
 
-        webhook_url = f"http://{self.webhook_host}:{self.webhook_port}{self.webhook_path}"
-        if self.webhook_host in ("0.0.0.0", "127.0.0.1", "localhost", "::"):
-            external_host = "localhost"
-            webhook_url = f"http://{external_host}:{self.webhook_port}{self.webhook_path}"
+        webhook_url = self._webhook_url
+        removed = False
 
         try:
-            # Get current webhooks
-            webhooks = await self._api_get("/api/v1/webhook")
-            if webhooks.get("status") == 200:
-                data = webhooks.get("data", [])
-                for webhook in data:
-                    if webhook.get("url") == webhook_url:
-                        # Delete this specific webhook
-                        webhook_id = webhook.get("id")
-                        if webhook_id:
-                            res = await self.client.delete(
-                                self._api_url(f"/api/v1/webhook/{webhook_id}")
-                            )
-                            res.raise_for_status()
-                            logger.info(
-                                "[bluebubbles] webhook unregistered: %s",
-                                webhook_url,
-                            )
-                            return True
+            for wh in await self._find_registered_webhooks(webhook_url):
+                wh_id = wh.get("id")
+                if wh_id:
+                    res = await self.client.delete(
+                        self._api_url(f"/api/v1/webhook/{wh_id}")
+                    )
+                    res.raise_for_status()
+                    removed = True
+            if removed:
+                logger.info(
+                    "[bluebubbles] webhook unregistered: %s", webhook_url
+                )
         except Exception as exc:
             logger.debug(
                 "[bluebubbles] failed to unregister webhook (non-critical): %s",
                 exc,
             )
-        return False
+        return removed
 
     # ------------------------------------------------------------------
     # Chat GUID resolution

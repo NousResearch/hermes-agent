@@ -1502,7 +1502,8 @@ class MatrixAdapter(BasePlatformAdapter):
         reaction_key = (room_id, msg_id)
         if reaction_key in self._pending_reactions:
             eyes_event_id = self._pending_reactions.pop(reaction_key)
-            await self._redact_reaction(room_id, eyes_event_id)
+            if not await self._redact_reaction(room_id, eyes_event_id):
+                logger.debug("Matrix: failed to redact eyes reaction %s", eyes_event_id)
         await self._send_reaction(
             room_id,
             msg_id,

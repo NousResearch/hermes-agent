@@ -109,7 +109,8 @@ class TestGatewayStopCleanup:
         unit_path = tmp_path / "hermes-gateway.service"
         unit_path.write_text("unit\n", encoding="utf-8")
 
-        monkeypatch.setattr(gateway_cli, "is_linux", lambda: True)
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: True)
+        monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
         monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
         monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda system=False: unit_path)
 
@@ -134,7 +135,8 @@ class TestGatewayStopCleanup:
         unit_path = tmp_path / "hermes-gateway.service"
         unit_path.write_text("unit\n", encoding="utf-8")
 
-        monkeypatch.setattr(gateway_cli, "is_linux", lambda: True)
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: True)
+        monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
         monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
         monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda system=False: unit_path)
 
@@ -256,7 +258,8 @@ class TestGatewayServiceDetection:
         user_unit = SimpleNamespace(exists=lambda: True)
         system_unit = SimpleNamespace(exists=lambda: True)
 
-        monkeypatch.setattr(gateway_cli, "is_linux", lambda: True)
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: True)
+        monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
         monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
         monkeypatch.setattr(
             gateway_cli,
@@ -278,7 +281,8 @@ class TestGatewayServiceDetection:
 
 class TestGatewaySystemServiceRouting:
     def test_gateway_install_passes_system_flags(self, monkeypatch):
-        monkeypatch.setattr(gateway_cli, "is_linux", lambda: True)
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: True)
+        monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
         monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
 
         calls = []
@@ -294,11 +298,30 @@ class TestGatewaySystemServiceRouting:
 
         assert calls == [(True, True, "alice")]
 
+    def test_gateway_install_reports_termux_manual_mode(self, monkeypatch, capsys):
+        monkeypatch.setattr(gateway_cli, "is_termux", lambda: True)
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
+
+        try:
+            gateway_cli.gateway_command(
+                SimpleNamespace(gateway_command="install", force=False, system=False, run_as_user=None)
+            )
+        except SystemExit as exc:
+            assert exc.code == 1
+        else:
+            raise AssertionError("Expected gateway_command to exit on unsupported Termux service install")
+
+        out = capsys.readouterr().out
+        assert "not supported on Termux" in out
+        assert "Run manually: hermes gateway" in out
+
     def test_gateway_status_prefers_system_service_when_only_system_unit_exists(self, monkeypatch):
         user_unit = SimpleNamespace(exists=lambda: False)
         system_unit = SimpleNamespace(exists=lambda: True)
 
-        monkeypatch.setattr(gateway_cli, "is_linux", lambda: True)
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: True)
+        monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
         monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
         monkeypatch.setattr(
             gateway_cli,
@@ -312,6 +335,20 @@ class TestGatewaySystemServiceRouting:
         gateway_cli.gateway_command(SimpleNamespace(gateway_command="status", deep=False, system=False))
 
         assert calls == [(False, False)]
+
+    def test_gateway_status_on_termux_shows_manual_guidance(self, monkeypatch, capsys):
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_termux", lambda: True)
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
+        monkeypatch.setattr(gateway_cli, "find_gateway_pids", lambda exclude_pids=None: [])
+        monkeypatch.setattr(gateway_cli, "_runtime_health_lines", lambda: [])
+
+        gateway_cli.gateway_command(SimpleNamespace(gateway_command="status", deep=False, system=False))
+
+        out = capsys.readouterr().out
+        assert "Gateway is not running" in out
+        assert "nohup hermes gateway" in out
+        assert "install as user service" not in out
 
     def test_gateway_restart_does_not_fallback_to_foreground_when_launchd_restart_fails(self, tmp_path, monkeypatch):
         plist_path = tmp_path / "ai.hermes.gateway.plist"
@@ -513,12 +550,22 @@ class TestGeneratedUnitUsesDetectedVenv:
 class TestGeneratedUnitIncludesLocalBin:
     """~/.local/bin must be in PATH so uvx/pipx tools are discoverable."""
 
-    def test_user_unit_includes_local_bin_in_path(self):
+    def test_user_unit_includes_local_bin_in_path(self, monkeypatch):
+        home = Path.home()
+        monkeypatch.setattr(
+            gateway_cli,
+            "_build_user_local_paths",
+            lambda home_path, existing: [str(home / ".local" / "bin")],
+        )
         unit = gateway_cli.generate_systemd_unit(system=False)
-        home = str(Path.home())
         assert f"{home}/.local/bin" in unit
 
-    def test_system_unit_includes_local_bin_in_path(self):
+    def test_system_unit_includes_local_bin_in_path(self, monkeypatch):
+        monkeypatch.setattr(
+            gateway_cli,
+            "_build_user_local_paths",
+            lambda home_path, existing: [str(home_path / ".local" / "bin")],
+        )
         unit = gateway_cli.generate_systemd_unit(system=True)
         # System unit uses the resolved home dir from _system_service_identity
         assert "/.local/bin" in unit

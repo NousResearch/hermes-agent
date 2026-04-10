@@ -603,6 +603,49 @@ def parse_context_limit_from_error(error_msg: str) -> Optional[int]:
     return None
 
 
+def parse_available_output_tokens_from_error(error_msg: str) -> Optional[int]:
+    """Detect an "output cap too large" error and return how many output tokens are available.
+
+    Background — two distinct context errors exist:
+      1. "Prompt too long"  — the INPUT itself exceeds the context window.
+           Fix: compress history and/or halve context_length.
+      2. "max_tokens too large" — input is fine, but input + requested_output > window.
+           Fix: reduce max_tokens (the output cap) for this call.
+           Do NOT touch context_length — the window hasn't shrunk.
+
+    Anthropic's API returns errors like:
+      "max_tokens: 32768 > context_window: 200000 - input_tokens: 190000 = available_tokens: 10000"
+
+    Returns the number of output tokens that would fit (e.g. 10000 above), or None if
+    the error does not look like a max_tokens-too-large error.
+    """
+    error_lower = error_msg.lower()
+
+    # Must look like an output-cap error, not a prompt-length error.
+    is_output_cap_error = (
+        "max_tokens" in error_lower
+        and ("available_tokens" in error_lower or "available tokens" in error_lower)
+    )
+    if not is_output_cap_error:
+        return None
+
+    # Extract the available_tokens figure.
+    # Anthropic format: "… = available_tokens: 10000"
+    patterns = [
+        r'available_tokens[:\s]+(\d+)',
+        r'available\s+tokens[:\s]+(\d+)',
+        # fallback: last number after "=" in expressions like "200000 - 190000 = 10000"
+        r'=\s*(\d+)\s*$',
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, error_lower)
+        if match:
+            tokens = int(match.group(1))
+            if tokens >= 1:
+                return tokens
+    return None
+
+
 def _model_id_matches(candidate_id: str, lookup_model: str) -> bool:
     """Return True if *candidate_id* (from server) matches *lookup_model* (configured).
 

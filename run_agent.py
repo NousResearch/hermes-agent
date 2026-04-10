@@ -87,6 +87,7 @@ from agent.model_metadata import (
     fetch_model_metadata,
     estimate_tokens_rough, estimate_messages_tokens_rough, estimate_request_tokens_rough,
     get_next_probe_tier, parse_context_limit_from_error,
+    parse_available_output_tokens_from_error,
     save_context_length, is_local_endpoint,
     query_ollama_num_ctx,
 )
@@ -621,6 +622,7 @@ class AIAgent:
         self.tool_progress_callback = tool_progress_callback
         self.tool_start_callback = tool_start_callback
         self.tool_complete_callback = tool_complete_callback
+        self.suppress_status_output = False
         self.thinking_callback = thinking_callback
         self.reasoning_callback = reasoning_callback
         self._reasoning_deltas_fired = False  # Set by _fire_reasoning_delta, reset per API call
@@ -1459,7 +1461,14 @@ class AIAgent:
         After the main response has been delivered and the remaining tool
         calls are post-response housekeeping (``_mute_post_response``),
         all non-forced output is suppressed.
+
+        ``suppress_status_output`` is a stricter CLI automation mode used by
+        parseable single-query flows such as ``hermes chat -q``. In that mode,
+        all status/diagnostic prints routed through ``_vprint`` are suppressed
+        so stdout stays machine-readable.
         """
+        if getattr(self, "suppress_status_output", False):
+            return
         if not force and getattr(self, "_mute_post_response", False):
             return
         if not force and self._has_stream_consumers() and not self._executing_tools:
@@ -1484,6 +1493,17 @@ class AIAgent:
             return bool(stream.isatty())
         except (AttributeError, ValueError, OSError):
             return False
+
+    def _should_emit_quiet_tool_messages(self) -> bool:
+        """Return True when quiet-mode tool summaries should print directly.
+
+        When the caller provides ``tool_progress_callback`` (for example the CLI
+        TUI or a gateway progress renderer), that callback owns progress display.
+        Emitting quiet-mode summary lines here duplicates progress and leaks tool
+        previews into flows that are expected to stay silent, such as
+        ``hermes chat -q``.
+        """
+        return self.quiet_mode and not self.tool_progress_callback
 
     def _emit_status(self, message: str) -> None:
         """Emit a lifecycle status message to both CLI and gateway channels.
@@ -4969,9 +4989,21 @@ class AIAgent:
                 # Swap OpenAI client and config in-place
                 self.api_key = fb_client.api_key
                 self.client = fb_client
+                # Preserve provider-specific headers that
+                # resolve_provider_client() may have baked into
+                # fb_client via the default_headers kwarg.  The OpenAI
+                # SDK stores these in _custom_headers.  Without this,
+                # subsequent request-client rebuilds (via
+                # _create_request_openai_client) drop the headers,
+                # causing 403s from providers like Kimi Coding that
+                # require a User-Agent sentinel.
+                fb_headers = getattr(fb_client, "_custom_headers", None)
+                if not fb_headers:
+                    fb_headers = getattr(fb_client, "default_headers", None)
                 self._client_kwargs = {
                     "api_key": fb_client.api_key,
                     "base_url": fb_base_url,
+                    **({"default_headers": dict(fb_headers)} if fb_headers else {}),
                 }
 
             # Re-evaluate prompt caching for the new provider/model
@@ -5386,15 +5418,22 @@ class AIAgent:
         if self.api_mode == "anthropic_messages":
             from agent.anthropic_adapter import build_anthropic_kwargs
             anthropic_messages = self._prepare_anthropic_messages_for_api(api_messages)
-            # Pass context_length so the adapter can clamp max_tokens if the
-            # user configured a smaller context window than the model's output limit.
+            # Pass context_length (total input+output window) so the adapter can
+            # clamp max_tokens (output cap) when the user configured a smaller
+            # context window than the model's native output limit.
             ctx_len = getattr(self, "context_compressor", None)
             ctx_len = ctx_len.context_length if ctx_len else None
+            # _ephemeral_max_output_tokens is set for one call when the API
+            # returns "max_tokens too large given prompt" — it caps output to
+            # the available window space without touching context_length.
+            ephemeral_out = getattr(self, "_ephemeral_max_output_tokens", None)
+            if ephemeral_out is not None:
+                self._ephemeral_max_output_tokens = None  # consume immediately
             return build_anthropic_kwargs(
                 model=self.model,
                 messages=anthropic_messages,
                 tools=self.tools,
-                max_tokens=self.max_tokens,
+                max_tokens=ephemeral_out if ephemeral_out is not None else self.max_tokens,
                 reasoning_config=self.reasoning_config,
                 is_oauth=self._is_anthropic_oauth,
                 preserve_dots=self._anthropic_preserve_dots(),
@@ -6328,7 +6367,7 @@ class AIAgent:
 
         # Start spinner for CLI mode (skip when TUI handles tool progress)
         spinner = None
-        if self.quiet_mode and not self.tool_progress_callback and self._should_start_quiet_spinner():
+        if self._should_emit_quiet_tool_messages() and self._should_start_quiet_spinner():
             face = random.choice(KawaiiSpinner.KAWAII_WAITING)
             spinner = KawaiiSpinner(f"{face} ⚡ running {num_tools} tools concurrently", spinner_type='dots', print_fn=self._print_fn)
             spinner.start()
@@ -6378,7 +6417,7 @@ class AIAgent:
                     logging.debug(f"Tool result ({len(function_result)} chars): {function_result}")
 
             # Print cute message per tool
-            if self.quiet_mode:
+            if self._should_emit_quiet_tool_messages():
                 cute_msg = _get_cute_tool_message_impl(name, args, tool_duration, result=function_result)
                 self._safe_print(f"  {cute_msg}")
             elif not self.quiet_mode:
@@ -6535,7 +6574,7 @@ class AIAgent:
                     store=self._todo_store,
                 )
                 tool_duration = time.time() - tool_start_time
-                if self.quiet_mode:
+                if self._should_emit_quiet_tool_messages():
                     self._vprint(f"  {_get_cute_tool_message_impl('todo', function_args, tool_duration, result=function_result)}")
             elif function_name == "session_search":
                 if not self._session_db:
@@ -6550,7 +6589,7 @@ class AIAgent:
                         current_session_id=self.session_id,
                     )
                 tool_duration = time.time() - tool_start_time
-                if self.quiet_mode:
+                if self._should_emit_quiet_tool_messages():
                     self._vprint(f"  {_get_cute_tool_message_impl('session_search', function_args, tool_duration, result=function_result)}")
             elif function_name == "memory":
                 target = function_args.get("target", "memory")
@@ -6563,7 +6602,7 @@ class AIAgent:
                     store=self._memory_store,
                 )
                 tool_duration = time.time() - tool_start_time
-                if self.quiet_mode:
+                if self._should_emit_quiet_tool_messages():
                     self._vprint(f"  {_get_cute_tool_message_impl('memory', function_args, tool_duration, result=function_result)}")
             elif function_name == "clarify":
                 from tools.clarify_tool import clarify_tool as _clarify_tool
@@ -6573,7 +6612,7 @@ class AIAgent:
                     callback=self.clarify_callback,
                 )
                 tool_duration = time.time() - tool_start_time
-                if self.quiet_mode:
+                if self._should_emit_quiet_tool_messages():
                     self._vprint(f"  {_get_cute_tool_message_impl('clarify', function_args, tool_duration, result=function_result)}")
             elif function_name == "delegate_task":
                 from tools.delegate_tool import delegate_task as _delegate_task
@@ -6584,7 +6623,7 @@ class AIAgent:
                     goal_preview = (function_args.get("goal") or "")[:30]
                     spinner_label = f"🔀 {goal_preview}" if goal_preview else "🔀 delegating"
                 spinner = None
-                if self.quiet_mode and not self.tool_progress_callback and self._should_start_quiet_spinner():
+                if self._should_emit_quiet_tool_messages() and self._should_start_quiet_spinner():
                     face = random.choice(KawaiiSpinner.KAWAII_WAITING)
                     spinner = KawaiiSpinner(f"{face} {spinner_label}", spinner_type='dots', print_fn=self._print_fn)
                     spinner.start()
@@ -6606,13 +6645,13 @@ class AIAgent:
                     cute_msg = _get_cute_tool_message_impl('delegate_task', function_args, tool_duration, result=_delegate_result)
                     if spinner:
                         spinner.stop(cute_msg)
-                    elif self.quiet_mode:
+                    elif self._should_emit_quiet_tool_messages():
                         self._vprint(f"  {cute_msg}")
             elif self._memory_manager and self._memory_manager.has_tool(function_name):
                 # Memory provider tools (hindsight_retain, honcho_search, etc.)
                 # These are not in the tool registry — route through MemoryManager.
                 spinner = None
-                if self.quiet_mode and not self.tool_progress_callback:
+                if self._should_emit_quiet_tool_messages() and self._should_start_quiet_spinner():
                     face = random.choice(KawaiiSpinner.KAWAII_WAITING)
                     emoji = _get_tool_emoji(function_name)
                     preview = _build_tool_preview(function_name, function_args) or function_name
@@ -6630,11 +6669,11 @@ class AIAgent:
                     cute_msg = _get_cute_tool_message_impl(function_name, function_args, tool_duration, result=_mem_result)
                     if spinner:
                         spinner.stop(cute_msg)
-                    elif self.quiet_mode:
+                    elif self._should_emit_quiet_tool_messages():
                         self._vprint(f"  {cute_msg}")
             elif self.quiet_mode:
                 spinner = None
-                if not self.tool_progress_callback:
+                if self._should_emit_quiet_tool_messages() and self._should_start_quiet_spinner():
                     face = random.choice(KawaiiSpinner.KAWAII_WAITING)
                     emoji = _get_tool_emoji(function_name)
                     preview = _build_tool_preview(function_name, function_args) or function_name
@@ -6657,7 +6696,7 @@ class AIAgent:
                     cute_msg = _get_cute_tool_message_impl(function_name, function_args, tool_duration, result=_spinner_result)
                     if spinner:
                         spinner.stop(cute_msg)
-                    else:
+                    elif self._should_emit_quiet_tool_messages():
                         self._vprint(f"  {cute_msg}")
             else:
                 try:
@@ -8295,6 +8334,48 @@ class AIAgent:
                         compressor = self.context_compressor
                         old_ctx = compressor.context_length
 
+                        # ── Distinguish two very different errors ───────────
+                        # 1. "Prompt too long": the INPUT exceeds the context window.
+                        #    Fix: reduce context_length + compress history.
+                        # 2. "max_tokens too large": input is fine, but
+                        #    input_tokens + requested max_tokens > context_window.
+                        #    Fix: reduce max_tokens (the OUTPUT cap) for this call.
+                        #    Do NOT shrink context_length — the window is unchanged.
+                        #
+                        # Note: max_tokens = output token cap (one response).
+                        #       context_length = total window (input + output combined).
+                        available_out = parse_available_output_tokens_from_error(error_msg)
+                        if available_out is not None:
+                            # Error is purely about the output cap being too large.
+                            # Cap output to the available space and retry without
+                            # touching context_length or triggering compression.
+                            safe_out = max(1, available_out - 64)  # small safety margin
+                            self._ephemeral_max_output_tokens = safe_out
+                            self._vprint(
+                                f"{self.log_prefix}⚠️  Output cap too large for current prompt — "
+                                f"retrying with max_tokens={safe_out:,} "
+                                f"(available_tokens={available_out:,}; context_length unchanged at {old_ctx:,})",
+                                force=True,
+                            )
+                            # Still count against compression_attempts so we don't
+                            # loop forever if the error keeps recurring.
+                            compression_attempts += 1
+                            if compression_attempts > max_compression_attempts:
+                                self._vprint(f"{self.log_prefix}❌ Max compression attempts ({max_compression_attempts}) reached.", force=True)
+                                self._vprint(f"{self.log_prefix}   💡 Try /new to start a fresh conversation, or /compress to retry compression.", force=True)
+                                logging.error(f"{self.log_prefix}Context compression failed after {max_compression_attempts} attempts.")
+                                self._persist_session(messages, conversation_history)
+                                return {
+                                    "messages": messages,
+                                    "completed": False,
+                                    "api_calls": api_call_count,
+                                    "error": f"Context length exceeded: max compression attempts ({max_compression_attempts}) reached.",
+                                    "partial": True
+                                }
+                            restart_with_compressed_messages = True
+                            break
+
+                        # Error is about the INPUT being too large — reduce context_length.
                         # Try to parse the actual limit from the error message
                         parsed_limit = parse_context_limit_from_error(error_msg)
                         if parsed_limit and parsed_limit < old_ctx:

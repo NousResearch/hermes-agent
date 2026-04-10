@@ -4,7 +4,7 @@ import base64
 import os
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -355,7 +355,8 @@ class TestMediaUpload:
         assert calls[3][1]["chunk_index"] == 2
 
     @pytest.mark.asyncio
-    async def test_download_remote_bytes_rejects_large_content_length(self):
+    @patch("tools.url_safety.is_safe_url", return_value=True)
+    async def test_download_remote_bytes_rejects_large_content_length(self, _mock_safe):
         from gateway.platforms.wecom import WeComAdapter
 
         class FakeResponse:

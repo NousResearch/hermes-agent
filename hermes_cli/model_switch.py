@@ -733,6 +733,7 @@ def list_authenticated_providers(
         fetch_models_dev,
         get_provider_info as _mdev_pinfo,
     )
+    from hermes_cli.auth import PROVIDER_REGISTRY
     from hermes_cli.models import OPENROUTER_MODELS, _PROVIDER_MODELS
 
     results: List[dict] = []
@@ -753,9 +754,16 @@ def list_authenticated_providers(
         if not isinstance(pdata, dict):
             continue
 
-        env_vars = pdata.get("env", [])
-        if not isinstance(env_vars, list):
-            continue
+        # Prefer auth.py PROVIDER_REGISTRY for env var names — it's our
+        # source of truth.  models.dev can have wrong mappings (e.g.
+        # minimax-cn → MINIMAX_API_KEY instead of MINIMAX_CN_API_KEY).
+        pconfig = PROVIDER_REGISTRY.get(hermes_id)
+        if pconfig and pconfig.api_key_env_vars:
+            env_vars = list(pconfig.api_key_env_vars)
+        else:
+            env_vars = pdata.get("env", [])
+            if not isinstance(env_vars, list):
+                continue
 
         # Check if any env var is set
         has_creds = any(os.environ.get(ev) for ev in env_vars)

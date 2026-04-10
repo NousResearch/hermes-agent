@@ -6,6 +6,8 @@ Provides options for:
 - Keep data: Remove code but keep ~/.hermes/ (configs, sessions, logs)
 """
 
+import os
+import platform
 import shutil
 import subprocess
 from pathlib import Path

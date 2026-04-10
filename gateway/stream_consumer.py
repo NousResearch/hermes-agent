@@ -74,6 +74,7 @@ class GatewayStreamConsumer:
         self._edit_supported = True  # Disabled on first edit failure (Signal/Email/HA)
         self._last_edit_time = 0.0
         self._last_sent_text = ""   # Track last-sent text to skip redundant edits
+        self._last_edit_had_cursor = False  # True when last edit appended the cursor
         self._fallback_final_send = False
         self._fallback_prefix = ""
 
@@ -192,10 +193,9 @@ class GatewayStreamConsumer:
                     self._last_edit_time = time.monotonic()
 
                 if got_done:
-                    # Final edit without cursor. If progressive editing failed
-                    # mid-stream, send a single continuation/fallback message
-                    # here instead of letting the base gateway path send the
-                    # full response again.
+                    # Final edit — always finalize the message, even when
+                    # _accumulated is empty.  The cursor may be stuck on the last
+                    # progressive edit with no new text arriving since.
                     if self._accumulated:
                         if self._fallback_final_send:
                             await self._send_fallback_final(self._accumulated)
@@ -203,6 +203,16 @@ class GatewayStreamConsumer:
                             await self._send_or_edit(self._accumulated)
                         elif not self._already_sent:
                             await self._send_or_edit(self._accumulated)
+                    elif self._last_edit_had_cursor and self._message_id:
+                        # Cursor is stuck — strip it by editing with clean text.
+                        cursor = self.cfg.cursor
+                        clean = (
+                            self._last_sent_text[:-len(cursor)]
+                            if self._last_sent_text.endswith(cursor)
+                            else self._last_sent_text
+                        )
+                        if clean.strip():
+                            await self._send_or_edit(clean)
                     return
 
                 # Tool boundary: reset message state so the next text chunk
@@ -393,6 +403,7 @@ class GatewayStreamConsumer:
                     if result.success:
                         self._already_sent = True
                         self._last_sent_text = text
+                        self._last_edit_had_cursor = text.endswith(self.cfg.cursor)
                     else:
                         # If an edit fails mid-stream (especially Telegram flood control),
                         # stop progressive edits and send only the missing tail once the
@@ -417,6 +428,7 @@ class GatewayStreamConsumer:
                     self._message_id = result.message_id
                     self._already_sent = True
                     self._last_sent_text = text
+                    self._last_edit_had_cursor = text.endswith(self.cfg.cursor)
                 elif result.success:
                     # Platform accepted the message but returned no message_id
                     # (e.g. Signal).  Can't edit without an ID — switch to

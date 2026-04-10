@@ -3987,7 +3987,7 @@ class HermesCLI:
         if pager and pager.endswith("less"):
             try:
                 proc = _subprocess.Popen(
-                    [pager, "-R", "--no-init", "--quit-if-one-screen"],
+                    [pager, "-R", "--quit-if-one-screen"],
                     stdin=_subprocess.PIPE,
                 )
                 proc.communicate(output.encode("utf-8", errors="replace"))

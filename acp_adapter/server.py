@@ -36,6 +36,7 @@ from acp.schema import (
     SessionCapabilities,
     SessionForkCapabilities,
     SessionListCapabilities,
+    SessionResumeCapabilities,
     SessionInfo,
     TextContentBlock,
     UnstructuredCommandInput,
@@ -245,9 +246,11 @@ class HermesACPAgent(acp.Agent):
             protocol_version=acp.PROTOCOL_VERSION,
             agent_info=Implementation(name="hermes-agent", version=HERMES_VERSION),
             agent_capabilities=AgentCapabilities(
+                load_session=True,
                 session_capabilities=SessionCapabilities(
                     fork=SessionForkCapabilities(),
                     list=SessionListCapabilities(),
+                    resume=SessionResumeCapabilities(),
                 ),
             ),
             auth_methods=auth_methods,

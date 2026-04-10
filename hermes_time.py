@@ -89,13 +89,6 @@ def get_timezone() -> Optional[ZoneInfo]:
     return _cached_tz
 
 
-def get_timezone_name() -> str:
-    """Return the IANA name of the configured timezone, or empty string."""
-    if not _cache_resolved:
-        get_timezone()  # populates cache
-    return _cached_tz_name or ""
-
-
 def now() -> datetime:
     """
     Return the current time as a timezone-aware datetime.
@@ -110,9 +103,3 @@ def now() -> datetime:
     return datetime.now().astimezone()
 
 
-def reset_cache() -> None:
-    """Clear the cached timezone. Used by tests and after config changes."""
-    global _cached_tz, _cached_tz_name, _cache_resolved
-    _cached_tz = None
-    _cached_tz_name = None
-    _cache_resolved = False

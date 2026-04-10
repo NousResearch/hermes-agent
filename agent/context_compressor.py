@@ -114,7 +114,6 @@ class ContextCompressor:
 
         self.last_prompt_tokens = 0
         self.last_completion_tokens = 0
-        self.last_total_tokens = 0
 
         self.summary_model = summary_model_override or ""
 
@@ -126,27 +125,11 @@ class ContextCompressor:
         """Update tracked token usage from API response."""
         self.last_prompt_tokens = usage.get("prompt_tokens", 0)
         self.last_completion_tokens = usage.get("completion_tokens", 0)
-        self.last_total_tokens = usage.get("total_tokens", 0)
 
     def should_compress(self, prompt_tokens: int = None) -> bool:
         """Check if context exceeds the compression threshold."""
         tokens = prompt_tokens if prompt_tokens is not None else self.last_prompt_tokens
         return tokens >= self.threshold_tokens
-
-    def should_compress_preflight(self, messages: List[Dict[str, Any]]) -> bool:
-        """Quick pre-flight check using rough estimate (before API call)."""
-        rough_estimate = estimate_messages_tokens_rough(messages)
-        return rough_estimate >= self.threshold_tokens
-
-    def get_status(self) -> Dict[str, Any]:
-        """Get current compression status for display/logging."""
-        return {
-            "last_prompt_tokens": self.last_prompt_tokens,
-            "threshold_tokens": self.threshold_tokens,
-            "context_length": self.context_length,
-            "usage_percent": min(100, (self.last_prompt_tokens / self.context_length * 100)) if self.context_length else 0,
-            "compression_count": self.compression_count,
-        }
 
     # ------------------------------------------------------------------
     # Tool output pruning (cheap pre-pass, no LLM call)

@@ -514,12 +514,6 @@ class GatewayRunner:
         self._agent_cache: Dict[str, tuple] = {}
         self._agent_cache_lock = _threading.Lock()
 
-        # Track active fallback model/provider when primary is rate-limited.
-        # Set after an agent run where fallback was activated; cleared when
-        # the primary model succeeds again or the user switches via /model.
-        self._effective_model: Optional[str] = None
-        self._effective_provider: Optional[str] = None
-
         # Per-session model overrides from /model command.
         # Key: session_key, Value: dict with model/provider/api_key/base_url/api_mode
         self._session_model_overrides: Dict[str, Dict[str, str]] = {}
@@ -7373,16 +7367,9 @@ class GatewayRunner:
             if _agent is not None and hasattr(_agent, 'model'):
                 _cfg_model = _resolve_gateway_model()
                 if _agent.model != _cfg_model and not self._is_intentional_model_switch(session_key, _agent.model):
-                    self._effective_model = _agent.model
-                    self._effective_provider = getattr(_agent, 'provider', None)
                     # Fallback activated — evict cached agent so the next
                     # message starts fresh and retries the primary model.
                     self._evict_cached_agent(session_key)
-                else:
-                    # Primary model worked (or intentional /model switch)
-                    # — clear any stale fallback state.
-                    self._effective_model = None
-                    self._effective_provider = None
 
             # Check if we were interrupted OR have a queued message (/queue).
             result = result_holder[0]

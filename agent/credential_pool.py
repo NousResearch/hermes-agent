@@ -739,17 +739,6 @@ class CredentialPool:
             return False
         return False
 
-    def mark_used(self, entry_id: Optional[str] = None) -> None:
-        """Increment request_count for tracking. Used by least_used strategy."""
-        target_id = entry_id or self._current_id
-        if not target_id:
-            return
-        with self._lock:
-            for idx, entry in enumerate(self._entries):
-                if entry.id == target_id:
-                    self._entries[idx] = replace(entry, request_count=entry.request_count + 1)
-                    return
-
     def select(self) -> Optional[PooledCredential]:
         with self._lock:
             return self._select_unlocked()
@@ -910,11 +899,6 @@ class CredentialPool:
                 self._active_leases.pop(credential_id, None)
             else:
                 self._active_leases[credential_id] = count - 1
-
-    def active_lease_count(self, credential_id: str) -> int:
-        """Return the number of active leases for a credential."""
-        with self._lock:
-            return self._active_leases.get(credential_id, 0)
 
     def try_refresh_current(self) -> Optional[PooledCredential]:
         with self._lock:

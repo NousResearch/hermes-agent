@@ -148,10 +148,6 @@ class ProviderDef:
     doc: str = ""
     source: str = ""                      # "models.dev", "hermes", "user-config"
 
-    @property
-    def is_user_defined(self) -> bool:
-        return self.source == "user-config"
-
 
 # -- Aliases ------------------------------------------------------------------
 # Maps human-friendly / legacy names to canonical provider IDs.
@@ -262,12 +258,6 @@ def normalize_provider(name: str) -> str:
     return ALIASES.get(key, key)
 
 
-def get_overlay(provider_id: str) -> Optional[HermesOverlay]:
-    """Get Hermes overlay for a provider, if one exists."""
-    canonical = normalize_provider(provider_id)
-    return HERMES_OVERLAYS.get(canonical)
-
-
 def get_provider(name: str) -> Optional[ProviderDef]:
     """Look up a provider by id or alias, merging all data sources.
 
@@ -349,37 +339,6 @@ def get_label(provider_id: str) -> str:
 
     return canonical
 
-
-# For direct import compat, expose as module-level dict
-# Built on demand by get_label() calls
-LABELS: Dict[str, str] = {
-    # Static entries for backward compat — get_label() is the proper API
-    "openrouter": "OpenRouter",
-    "nous": "Nous Portal",
-    "openai-codex": "OpenAI Codex",
-    "copilot-acp": "GitHub Copilot ACP",
-    "github-copilot": "GitHub Copilot",
-    "anthropic": "Anthropic",
-    "zai": "Z.AI / GLM",
-    "kimi-for-coding": "Kimi / Moonshot",
-    "minimax": "MiniMax",
-    "minimax-cn": "MiniMax (China)",
-    "deepseek": "DeepSeek",
-    "alibaba": "Alibaba Cloud (DashScope)",
-    "vercel": "Vercel AI Gateway",
-    "opencode": "OpenCode Zen",
-    "opencode-go": "OpenCode Go",
-    "kilo": "Kilo Gateway",
-    "huggingface": "Hugging Face",
-    "local": "Local endpoint",
-    "custom": "Custom endpoint",
-    # Legacy Hermes IDs (point to same providers)
-    "ai-gateway": "Vercel AI Gateway",
-    "kilocode": "Kilo Gateway",
-    "copilot": "GitHub Copilot",
-    "kimi-coding": "Kimi / Moonshot",
-    "opencode-zen": "OpenCode Zen",
-}
 
 
 def is_aggregator(provider: str) -> bool:

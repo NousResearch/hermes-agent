@@ -627,7 +627,6 @@ class AIAgent:
         self.suppress_status_output = False
         self.thinking_callback = thinking_callback
         self.reasoning_callback = reasoning_callback
-        self._reasoning_deltas_fired = False  # Set by _fire_reasoning_delta, reset per API call
         self.clarify_callback = clarify_callback
         self.step_callback = step_callback
         self.stream_delta_callback = stream_delta_callback
@@ -1304,7 +1303,6 @@ class AIAgent:
         if hasattr(self, "context_compressor") and self.context_compressor:
             self.context_compressor.last_prompt_tokens = 0
             self.context_compressor.last_completion_tokens = 0
-            self.context_compressor.last_total_tokens = 0
             self.context_compressor.compression_count = 0
             self.context_compressor._context_probed = False
             self.context_compressor._context_probe_persistable = False
@@ -3875,7 +3873,6 @@ class AIAgent:
         max_stream_retries = 1
         has_tool_calls = False
         first_delta_fired = False
-        self._reasoning_deltas_fired = False
         # Accumulate streamed text so we can recover if get_final_response()
         # returns empty output (e.g. chatgpt.com backend-api sends
         # response.incomplete instead of response.completed).
@@ -4384,7 +4381,6 @@ class AIAgent:
 
     def _fire_reasoning_delta(self, text: str) -> None:
         """Fire reasoning callback if registered."""
-        self._reasoning_deltas_fired = True
         cb = self.reasoning_callback
         if cb is not None:
             try:
@@ -4514,10 +4510,6 @@ class AIAgent:
             role = "assistant"
             reasoning_parts: list = []
             usage_obj = None
-            # Reset per-call reasoning tracking so _build_assistant_message
-            # knows whether reasoning was already displayed during streaming.
-            self._reasoning_deltas_fired = False
-
             _first_chunk_seen = False
             for chunk in stream:
                 last_chunk_time["t"] = time.time()
@@ -4685,7 +4677,6 @@ class AIAgent:
             works unchanged.
             """
             has_tool_use = False
-            self._reasoning_deltas_fired = False
 
             # Reset stale-stream timer for this attempt
             last_chunk_time["t"] = time.time()
@@ -9372,7 +9363,6 @@ class AIAgent:
                     # Reset retry counter/signature on successful content
                     if hasattr(self, '_empty_content_retries'):
                         self._empty_content_retries = 0
-                    self._last_empty_content_signature = None
                     self._thinking_prefill_retries = 0
 
                     if (
@@ -9444,7 +9434,6 @@ class AIAgent:
                 # If an assistant message with tool_calls was already appended,
                 # the API expects a role="tool" result for every tool_call_id.
                 # Fill in error results for any that weren't answered yet.
-                pending_handled = False
                 for idx in range(len(messages) - 1, -1, -1):
                     msg = messages[idx]
                     if not isinstance(msg, dict):

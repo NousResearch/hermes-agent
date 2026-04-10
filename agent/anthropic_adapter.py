@@ -511,35 +511,6 @@ def _prefer_refreshable_claude_code_token(env_token: str, creds: Optional[Dict[s
     return None
 
 
-def get_anthropic_token_source(token: Optional[str] = None) -> str:
-    """Best-effort source classification for an Anthropic credential token."""
-    token = (token or "").strip()
-    if not token:
-        return "none"
-
-    env_token = os.getenv("ANTHROPIC_TOKEN", "").strip()
-    if env_token and env_token == token:
-        return "anthropic_token_env"
-
-    cc_env_token = os.getenv("CLAUDE_CODE_OAUTH_TOKEN", "").strip()
-    if cc_env_token and cc_env_token == token:
-        return "claude_code_oauth_token_env"
-
-    creds = read_claude_code_credentials()
-    if creds and creds.get("accessToken") == token:
-        return str(creds.get("source") or "claude_code_credentials")
-
-    managed_key = read_claude_managed_key()
-    if managed_key and managed_key == token:
-        return "claude_json_primary_api_key"
-
-    api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
-    if api_key and api_key == token:
-        return "anthropic_api_key_env"
-
-    return "unknown"
-
-
 def resolve_anthropic_token() -> Optional[str]:
     """Resolve an Anthropic token from all available sources.
 
@@ -746,21 +717,6 @@ def run_hermes_oauth_login_pure() -> Optional[Dict[str, Any]]:
     }
 
 
-def _save_hermes_oauth_credentials(access_token: str, refresh_token: str, expires_at_ms: int) -> None:
-    """Save OAuth credentials to ~/.hermes/.anthropic_oauth.json."""
-    data = {
-        "accessToken": access_token,
-        "refreshToken": refresh_token,
-        "expiresAt": expires_at_ms,
-    }
-    try:
-        _HERMES_OAUTH_FILE.parent.mkdir(parents=True, exist_ok=True)
-        _HERMES_OAUTH_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
-        _HERMES_OAUTH_FILE.chmod(0o600)
-    except (OSError, IOError) as e:
-        logger.debug("Failed to save Hermes OAuth credentials: %s", e)
-
-
 def read_hermes_oauth_credentials() -> Optional[Dict[str, Any]]:
     """Read Hermes-managed OAuth credentials from ~/.hermes/.anthropic_oauth.json."""
     if _HERMES_OAUTH_FILE.exists():
@@ -807,39 +763,6 @@ def _sanitize_tool_id(tool_id: str) -> str:
         return "tool_0"
     sanitized = re.sub(r"[^a-zA-Z0-9_-]", "_", tool_id)
     return sanitized or "tool_0"
-
-
-def _convert_openai_image_part_to_anthropic(part: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """Convert an OpenAI-style image block to Anthropic's image source format."""
-    image_data = part.get("image_url", {})
-    url = image_data.get("url", "") if isinstance(image_data, dict) else str(image_data)
-    if not isinstance(url, str) or not url.strip():
-        return None
-    url = url.strip()
-
-    if url.startswith("data:"):
-        header, sep, data = url.partition(",")
-        if sep and ";base64" in header:
-            media_type = header[5:].split(";", 1)[0] or "image/png"
-            return {
-                "type": "image",
-                "source": {
-                    "type": "base64",
-                    "media_type": media_type,
-                    "data": data,
-                },
-            }
-
-    if url.startswith(("http://", "https://")):
-        return {
-            "type": "image",
-            "source": {
-                "type": "url",
-                "url": url,
-            },
-        }
-
-    return None
 
 
 def convert_tools_to_anthropic(tools: List[Dict]) -> List[Dict]:

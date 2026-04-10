@@ -332,31 +332,3 @@ def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
 # Batch / convenience helpers
 # ---------------------------------------------------------------------------
 
-def model_display_name(model_id: str) -> str:
-    """Return a short, human-readable display name for a model id.
-
-    Strips the vendor prefix (if any) for a cleaner display in menus
-    and status bars, while preserving dots for readability.
-
-    Examples::
-
-        >>> model_display_name("anthropic/claude-sonnet-4.6")
-        'claude-sonnet-4.6'
-        >>> model_display_name("claude-sonnet-4-6")
-        'claude-sonnet-4-6'
-    """
-    return _strip_vendor_prefix((model_id or "").strip())
-
-
-def is_aggregator_provider(provider: str) -> bool:
-    """Check if a provider is an aggregator that needs vendor/model format."""
-    return (provider or "").strip().lower() in _AGGREGATOR_PROVIDERS
-
-
-def vendor_for_model(model_name: str) -> str:
-    """Return the vendor slug for a model, or ``""`` if unknown.
-
-    Convenience wrapper around :func:`detect_vendor` that never returns
-    ``None``.
-    """
-    return detect_vendor(model_name) or ""

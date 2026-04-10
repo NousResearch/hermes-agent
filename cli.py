@@ -1292,14 +1292,6 @@ HERMES_CADUCEUS = """[#CD7F32]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣀⡀⠀⣀⣀�
 [#B8860B]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠳⠈⣡⠞⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
 [#B8860B]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]"""
 
-# Compact banner for smaller terminals (fallback)
-# Note: built dynamically by _build_compact_banner() to fit terminal width
-COMPACT_BANNER = """
-[bold #FFD700]╔══════════════════════════════════════════════════════════════╗[/]
-[bold #FFD700]║[/]  [#FFBF00]⚕ NOUS HERMES[/] [dim #B8860B]- AI Agent Framework[/]              [bold #FFD700]║[/]
-[bold #FFD700]║[/]  [#CD7F32]Messenger of the Digital Gods[/]    [dim #B8860B]Nous Research[/]   [bold #FFD700]║[/]
-[bold #FFD700]╚══════════════════════════════════════════════════════════════╝[/]
-"""
 
 
 def _build_compact_banner() -> str:
@@ -1545,7 +1537,6 @@ class HermesCLI:
         self._stream_buf = ""        # Partial line buffer for line-buffered rendering
         self._stream_started = False  # True once first delta arrives
         self._stream_box_opened = False  # True once the response box header is printed
-        self._reasoning_stream_started = False  # True once live reasoning starts streaming
         self._reasoning_preview_buf = ""  # Coalesce tiny reasoning chunks for [thinking] output
         self._pending_edit_snapshots = {}
         
@@ -1603,8 +1594,6 @@ class HermesCLI:
             self.api_key = api_key or os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENAI_API_KEY")
         else:
             self.api_key = api_key or os.getenv("OPENAI_API_KEY") or os.getenv("OPENROUTER_API_KEY")
-        self._nous_key_expires_at: Optional[str] = None
-        self._nous_key_source: Optional[str] = None
         # Max turns priority: CLI arg > config file > env var > default
         if max_turns is not None:  # CLI arg was explicitly set
             self.max_turns = max_turns
@@ -2234,7 +2223,6 @@ class HermesCLI:
         """
         if not text:
             return
-        self._reasoning_stream_started = True
         self._reasoning_shown_this_turn = True
         if getattr(self, "_stream_box_opened", False):
             return
@@ -2495,7 +2483,6 @@ class HermesCLI:
         self._stream_buf = ""
         self._stream_started = False
         self._stream_box_opened = False
-        self._reasoning_stream_started = False
         self._stream_text_ansi = ""
         self._stream_prefilt = ""
         self._in_reasoning_block = False
@@ -5775,7 +5762,7 @@ class HermesCLI:
             approx_tokens = estimate_messages_tokens_rough(self.conversation_history)
             print(f"🗜️  Compressing {original_count} messages (~{approx_tokens:,} tokens)...")
 
-            compressed, new_system = self.agent._compress_context(
+            compressed, _new_system = self.agent._compress_context(
                 self.conversation_history,
                 self.agent._cached_system_prompt or "",
                 approx_tokens=approx_tokens,

@@ -332,10 +332,17 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             return float(default)
         return parsed
 
+    def _make_http_session(self) -> "aiohttp.ClientSession":
+        """Return an aiohttp.ClientSession pre-configured with bridge auth headers."""
+        import aiohttp
+        api_key = os.environ.get("BRIDGE_API_KEY", "")
+        headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+        return aiohttp.ClientSession(headers=headers)
+
     async def connect(self) -> bool:
         """
         Start the WhatsApp bridge.
-        
+
         This launches the Node.js bridge process and waits for it to be ready.
         """
         if not check_whatsapp_requirements():
@@ -465,7 +472,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                                     print(f"[{self.name}] Using existing bridge (status: {bridge_status})")
                                     self._mark_connected()
                                     self._bridge_process = None  # Not managed by us
-                                    self._http_session = aiohttp.ClientSession()
+                                    self._http_session = self._make_http_session()
                                     self._poll_task = asyncio.create_task(self._poll_messages())
                                     return True
                                 print(
@@ -591,7 +598,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     print(f"[{self.name}]   If session expired, re-pair: hermes whatsapp")
             
             # Create a persistent HTTP session for all bridge communication
-            self._http_session = aiohttp.ClientSession()
+            self._http_session = self._make_http_session()
 
             # Start message polling task
             self._poll_task = asyncio.create_task(self._poll_messages())

@@ -5196,6 +5196,7 @@ class GatewayRunner:
 
         try:
             from run_agent import AIAgent
+            from agent.manual_compression_feedback import summarize_manual_compression
             from agent.model_metadata import estimate_messages_tokens_rough
 
             runtime_kwargs = _resolve_runtime_agent_kwargs()
@@ -5250,13 +5251,17 @@ class GatewayRunner:
             self.session_store.update_session(
                 session_entry.session_key, last_prompt_tokens=0
             )
-            new_count = len(compressed)
             new_tokens = estimate_messages_tokens_rough(compressed)
-
-            return (
-                f"🗜️ Compressed: {original_count} → {new_count} messages\n"
-                f"Rough transcript estimate: ~{approx_tokens:,} → ~{new_tokens:,} tokens"
+            summary = summarize_manual_compression(
+                msgs,
+                compressed,
+                approx_tokens,
+                new_tokens,
             )
+            lines = [f"🗜️ {summary['headline']}", summary["token_line"]]
+            if summary["note"]:
+                lines.append(summary["note"])
+            return "\n".join(lines)
         except Exception as e:
             logger.warning("Manual compress failed: %s", e)
             return f"Compression failed: {e}"

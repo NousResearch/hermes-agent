@@ -830,3 +830,97 @@ def test_run_conversation_chatgpt_web_downloads_generated_image_when_requested(m
 
     assert result["final_response"] == str(saved_path)
     assert saved_path.exists()
+
+
+def test_chatgpt_web_extract_image_url_from_text_accepts_estuary_links(monkeypatch):
+    agent = _build_agent(monkeypatch, model="gpt-5-instant")
+    url = "https://chatgpt.com/backend-api/estuary/content?id=file_abc123&sig=xyz"
+
+    assert agent._chatgpt_web_extract_image_url_from_text(url) == url
+
+
+class _FakeHTTPResponse:
+    def __init__(self, content: bytes, headers: dict[str, str]):
+        self.content = content
+        self.headers = headers
+
+    def raise_for_status(self):
+        return None
+
+
+def test_chatgpt_web_download_image_to_dir_uses_auth_headers_for_estuary_urls(monkeypatch, tmp_path):
+    agent = _build_agent(monkeypatch, model="gpt-5-instant")
+    captured = {}
+
+    def _fake_get(url, headers=None, timeout=None, follow_redirects=None):
+        captured["url"] = url
+        captured["headers"] = headers
+        return _FakeHTTPResponse(
+            b"png-bytes",
+            {
+                "content-type": "image/png",
+                "content-disposition": 'inline; filename="rainforest.png"',
+            },
+        )
+
+    monkeypatch.setattr("httpx.get", _fake_get)
+
+    saved_path = agent._chatgpt_web_download_image_to_dir(
+        "https://chatgpt.com/backend-api/estuary/content?id=file_abc123&sig=xyz",
+        tmp_path,
+    )
+
+    assert captured["url"].startswith("https://chatgpt.com/backend-api/estuary/content")
+    assert captured["headers"]["Authorization"] == "Bearer chatgpt-web-token"
+    assert saved_path.name == "rainforest.png"
+    assert saved_path.read_bytes() == b"png-bytes"
+
+
+def test_run_conversation_chatgpt_web_downloads_estuary_image_when_user_requests_saved_path(monkeypatch, tmp_path):
+    agent = _build_agent(monkeypatch, model="gpt-5-instant")
+    agent.tools = [{
+        "type": "function",
+        "function": {
+            "name": "search_files",
+            "description": "Search files",
+            "parameters": {"type": "object"},
+        },
+    }]
+    download_dir = tmp_path / "chatgpt-web-images"
+    saved_path = download_dir / "rainforest.png"
+
+    monkeypatch.setattr(
+        agent,
+        "_interruptible_api_call",
+        lambda api_kwargs: agent._wrap_chatgpt_web_response({
+            "content": "https://chatgpt.com/backend-api/estuary/content?id=file_abc123&sig=xyz",
+            "message_id": "msg_estuary_image",
+            "model": "gpt-5-instant",
+            "finish_reason": "stop",
+        }),
+    )
+
+    def _fake_download(url, target_dir):
+        target_dir.mkdir(parents=True, exist_ok=True)
+        saved_path.write_bytes(b"png")
+        return saved_path
+
+    monkeypatch.setattr(agent, "_chatgpt_web_download_image_to_dir", _fake_download)
+
+    result = agent.run_conversation(
+        f"Generate a beautiful image of a rainforest and save it to {download_dir}. Answer only the saved path."
+    )
+
+    assert result["final_response"] == str(saved_path)
+    assert saved_path.exists()
+
+
+def test_chatgpt_web_repair_answer_only_path_does_not_reuse_old_image_urls(monkeypatch):
+    agent = _build_agent(monkeypatch, model="gpt-5-instant")
+    repaired = agent._chatgpt_web_repair_answer_only_response(
+        "Save the report to /tmp/report.txt. Answer only the path.",
+        "/tmp/report.txt",
+        [{"role": "tool", "content": '{"image": "https://example.com/old-image.png"}'}],
+    )
+
+    assert repaired == "/tmp/report.txt"

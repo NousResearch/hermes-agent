@@ -586,7 +586,7 @@ def test_stream_chatgpt_web_completion_tolerates_protocol_close_after_completion
             if url.endswith("/conversation/prepare"):
                 return _JSONResponse({"conduit_token": "conduit-456"})
             if url.endswith("/sentinel/chat-requirements"):
-                return _JSONResponse({"token": "req-token", "proofofwork": {}})
+                return _JSONResponse({"token": "***", "proofofwork": {}})
             raise AssertionError(f"unexpected POST {url}")
 
         def stream(self, method, url, headers=None, json=None):
@@ -605,3 +605,172 @@ def test_stream_chatgpt_web_completion_tolerates_protocol_close_after_completion
     assert result["content"] == "OK"
     assert result["conversation_id"] == "conv_456"
     assert result["message_id"] == "msg_456"
+
+
+def test_stream_chatgpt_web_completion_resolves_async_generated_images(monkeypatch):
+    from hermes_cli.chatgpt_web import stream_chatgpt_web_completion
+
+    class _JSONResponse:
+        def __init__(self, payload, status_code=200):
+            self._payload = payload
+            self.status_code = status_code
+
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                raise httpx.HTTPStatusError("boom", request=None, response=None)
+
+        def json(self):
+            return self._payload
+
+    class _StreamResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def raise_for_status(self):
+            return None
+
+        def iter_lines(self):
+            yield 'data: {"conversation_id":"conv_img","type":"resume_conversation_token"}'
+            yield 'data: {"v":{"message":{"id":"msg_json","author":{"role":"assistant"},"content":{"content_type":"text","parts":[""]},"status":"in_progress","metadata":{"image_gen_multi_stream":true}}}}'
+            yield 'data: {"o":"patch","v":[{"p":"/message/content/parts/0","o":"append","v":"{\\n  \\\"prompt\\\": \\\"A rainforest\\\",\\n  \\\"size\\\": \\\"1024x1024\\\"\\n}"}]}'
+            yield 'data: {"v":{"message":{"id":"msg_image","author":{"role":"tool","name":"image_tool"},"content":{"content_type":"text","parts":["Processing image"]},"status":"in_progress","metadata":{"image_gen_task_id":"task_123"}}}}'
+            yield 'data: {"type":"server_ste_metadata","conversation_id":"conv_img","metadata":{"tool_name":"ImageGenToolTemporal","turn_use_case":"image gen"}}'
+            yield 'data: {"type":"message_stream_complete","conversation_id":"conv_img"}'
+            yield 'data: [DONE]'
+
+    class _Client:
+        def post(self, url, headers=None, json=None):
+            if url.endswith("/conversation/prepare"):
+                return _JSONResponse({"conduit_token": "conduit-img"})
+            if url.endswith("/sentinel/chat-requirements"):
+                return _JSONResponse({"token": "***", "proofofwork": {}})
+            raise AssertionError(f"unexpected POST {url}")
+
+        def get(self, url, headers=None, params=None):
+            if url.endswith("/conversation/conv_img"):
+                return _JSONResponse({
+                    "conversation_id": "conv_img",
+                    "current_node": "msg_image",
+                    "mapping": {
+                        "msg_image": {
+                            "id": "msg_image",
+                            "message": {
+                                "id": "msg_image",
+                                "author": {"role": "tool", "name": "image_tool"},
+                                "content": {
+                                    "content_type": "multimodal_text",
+                                    "parts": [{
+                                        "content_type": "image_asset_pointer",
+                                        "asset_pointer": "sediment://file_abc123",
+                                        "width": 1024,
+                                        "height": 1536,
+                                        "size_bytes": 123,
+                                        "metadata": {"generation": {"orientation": "portrait"}},
+                                    }],
+                                },
+                                "metadata": {"async_task_id": "task_123"},
+                            },
+                            "parent": None,
+                        }
+                    },
+                })
+            if url.endswith("/files/download/file_abc123"):
+                assert params == {"inline": "false", "conversation_id": "conv_img"}
+                return _JSONResponse({
+                    "status": "success",
+                    "download_url": "https://chatgpt.com/backend-api/estuary/content?id=file_abc123&sig=xyz",
+                    "file_name": "rainforest.png",
+                    "mime_type": "image/png",
+                    "file_size_bytes": 123,
+                })
+            raise AssertionError(f"unexpected GET {url}")
+
+        def stream(self, method, url, headers=None, json=None):
+            assert method == "POST"
+            assert url.endswith("/conversation")
+            return _StreamResponse()
+
+    result = stream_chatgpt_web_completion(
+        access_token="chatgpt-web-token",
+        model="gpt-5-3-instant",
+        messages=[{"role": "user", "content": "Generate a rainforest image"}],
+        client=_Client(),
+        history_and_training_disabled=False,
+        timeout=30,
+    )
+
+    assert result["content"] == "https://chatgpt.com/backend-api/estuary/content?id=file_abc123&sig=xyz"
+    assert result["conversation_id"] == "conv_img"
+    assert result["message_id"] == "msg_image"
+    assert result["images"][0]["file_id"] == "file_abc123"
+    assert result["images"][0]["file_name"] == "rainforest.png"
+
+
+def test_stream_chatgpt_web_completion_does_not_extend_timeout_for_image_polling(monkeypatch):
+    from hermes_cli import chatgpt_web as chatgpt_web_mod
+
+    captured = {}
+
+    class _JSONResponse:
+        def __init__(self, payload, status_code=200):
+            self._payload = payload
+            self.status_code = status_code
+
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                raise httpx.HTTPStatusError("boom", request=None, response=None)
+
+        def json(self):
+            return self._payload
+
+    class _StreamResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def raise_for_status(self):
+            return None
+
+        def iter_lines(self):
+            yield 'data: {"conversation_id":"conv_budget","type":"resume_conversation_token"}'
+            yield 'data: {"v":{"message":{"id":"msg_budget","author":{"role":"assistant"},"content":{"content_type":"text","parts":[""]},"status":"in_progress","metadata":{"image_gen_multi_stream":true}}}}'
+            yield 'data: {"o":"patch","v":[{"p":"/message/content/parts/0","o":"append","v":"{\\n  \\\"prompt\\\": \\\"A rainforest\\\",\\n  \\\"size\\\": \\\"1024x1024\\\"\\n}"}]}'
+            yield 'data: {"type":"message_stream_complete","conversation_id":"conv_budget"}'
+            yield 'data: [DONE]'
+
+    class _Client:
+        def post(self, url, headers=None, json=None):
+            if url.endswith("/conversation/prepare"):
+                return _JSONResponse({"conduit_token": "conduit-budget"})
+            if url.endswith("/sentinel/chat-requirements"):
+                return _JSONResponse({"token": "***", "proofofwork": {}})
+            raise AssertionError(f"unexpected POST {url}")
+
+        def stream(self, method, url, headers=None, json=None):
+            return _StreamResponse()
+
+    monotonic_values = iter([100.0, 102.0])
+    monkeypatch.setattr(chatgpt_web_mod.time, "monotonic", lambda: next(monotonic_values))
+    monkeypatch.setattr(
+        chatgpt_web_mod,
+        "_resolve_chatgpt_web_generated_images",
+        lambda *args, **kwargs: captured.setdefault("timeout", kwargs["timeout"]) or [],
+    )
+
+    result = chatgpt_web_mod.stream_chatgpt_web_completion(
+        access_token="chatgpt-web-token",
+        model="gpt-5-3-instant",
+        messages=[{"role": "user", "content": "Generate a rainforest image"}],
+        client=_Client(),
+        history_and_training_disabled=False,
+        timeout=1.0,
+    )
+
+    assert captured == {}
+    assert result["images"] == []
+    assert "prompt" in result["content"]

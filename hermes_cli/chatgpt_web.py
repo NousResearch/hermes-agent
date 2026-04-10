@@ -384,6 +384,226 @@ def _extract_message_text(message: dict[str, Any]) -> str:
     return str(parts[0] or "")
 
 
+def _extract_message_metadata(message: dict[str, Any]) -> dict[str, Any]:
+    metadata = message.get("metadata")
+    return metadata if isinstance(metadata, dict) else {}
+
+
+def _strip_asset_pointer_prefix(asset_pointer: str) -> str:
+    pointer = str(asset_pointer or "").strip()
+    if pointer.startswith("sediment://"):
+        return pointer[len("sediment://"):]
+    if pointer.startswith("file-service://"):
+        return pointer[len("file-service://"):]
+    return pointer
+
+
+def _extract_message_image_assets(message: dict[str, Any]) -> list[dict[str, Any]]:
+    content = message.get("content") if isinstance(message.get("content"), dict) else {}
+    if content.get("content_type") != "multimodal_text":
+        return []
+    parts = content.get("parts")
+    if not isinstance(parts, list) or not parts:
+        return []
+
+    message_id = str(message.get("id") or "").strip()
+    message_metadata = _extract_message_metadata(message)
+    assets: list[dict[str, Any]] = []
+    for part in parts:
+        if not isinstance(part, dict):
+            continue
+        if str(part.get("content_type") or "").strip().lower() != "image_asset_pointer":
+            continue
+        asset_pointer = str(part.get("asset_pointer") or "").strip()
+        file_id = _strip_asset_pointer_prefix(asset_pointer)
+        if not file_id:
+            continue
+        part_metadata = part.get("metadata") if isinstance(part.get("metadata"), dict) else {}
+        assets.append({
+            "message_id": message_id,
+            "asset_pointer": asset_pointer,
+            "file_id": file_id,
+            "width": part.get("width"),
+            "height": part.get("height"),
+            "size_bytes": part.get("size_bytes"),
+            "metadata": part_metadata,
+            "async_task_id": message_metadata.get("async_task_id"),
+        })
+    return assets
+
+
+def _looks_like_image_generation_spec(text: str) -> bool:
+    candidate = str(text or "").strip()
+    if not candidate:
+        return False
+    try:
+        payload = json.loads(candidate)
+    except Exception:
+        return False
+    if not isinstance(payload, dict):
+        return False
+    prompt = payload.get("prompt")
+    return isinstance(prompt, str) and bool(prompt.strip()) and any(key in payload for key in ("size", "n", "transparent_background"))
+
+
+def _message_suggests_image_generation(message: dict[str, Any]) -> bool:
+    metadata = _extract_message_metadata(message)
+    if any(key in metadata for key in ("image_gen_task_id", "async_task_id", "image_gen_multi_stream", "image_gen_async")):
+        return True
+    if _extract_message_image_assets(message):
+        return True
+    author = message.get("author") if isinstance(message.get("author"), dict) else {}
+    role = str(author.get("role") or "").strip().lower()
+    return role == "tool" and bool(str(author.get("name") or "").strip()) and "processing image" in _extract_message_text(message).lower()
+
+
+def _fetch_chatgpt_web_conversation(
+    client: httpx.Client,
+    *,
+    headers: dict[str, str],
+    conversation_id: str,
+) -> dict[str, Any]:
+    response = client.get(
+        f"https://chatgpt.com/backend-api/conversation/{conversation_id}",
+        headers=headers,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    return payload if isinstance(payload, dict) else {}
+
+
+def _conversation_node_order(
+    conversation_payload: dict[str, Any],
+    preferred_message_ids: Optional[list[str]] = None,
+) -> list[dict[str, Any]]:
+    mapping = conversation_payload.get("mapping") if isinstance(conversation_payload.get("mapping"), dict) else {}
+    if not mapping:
+        return []
+
+    ordered_ids: list[str] = []
+    for message_id in preferred_message_ids or []:
+        message_id = str(message_id or "").strip()
+        if message_id and message_id in mapping and message_id not in ordered_ids:
+            ordered_ids.append(message_id)
+
+    current_node = str(conversation_payload.get("current_node") or "").strip()
+    cursor = current_node
+    visited: set[str] = set()
+    while cursor and cursor not in visited:
+        visited.add(cursor)
+        if cursor in mapping and cursor not in ordered_ids:
+            ordered_ids.append(cursor)
+        node = mapping.get(cursor)
+        parent = node.get("parent") if isinstance(node, dict) else None
+        cursor = str(parent or "").strip()
+
+    for node_id in mapping:
+        if node_id not in ordered_ids:
+            ordered_ids.append(node_id)
+
+    return [mapping[node_id] for node_id in ordered_ids if isinstance(mapping.get(node_id), dict)]
+
+
+def _fetch_chatgpt_web_file_download_link(
+    client: httpx.Client,
+    *,
+    headers: dict[str, str],
+    file_id: str,
+    conversation_id: str = "",
+    post_id: str = "",
+    inline: bool = False,
+    check_context_scopes_for_conversation_id: str = "",
+) -> dict[str, Any]:
+    resolved_file_id = str(file_id or "").strip().replace("#", "*")
+    if not resolved_file_id:
+        return {}
+
+    params: dict[str, Any] = {"inline": str(bool(inline)).lower()}
+    if conversation_id:
+        params["conversation_id"] = conversation_id
+    if post_id:
+        params["post_id"] = post_id
+    if check_context_scopes_for_conversation_id:
+        params["check_context_scopes_for_conversation_id"] = check_context_scopes_for_conversation_id
+
+    response = client.get(
+        f"https://chatgpt.com/backend-api/files/download/{resolved_file_id}",
+        headers=headers,
+        params=params,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    return payload if isinstance(payload, dict) else {}
+
+
+def _resolve_chatgpt_web_generated_images(
+    client: httpx.Client,
+    *,
+    headers: dict[str, str],
+    conversation_id: str,
+    preferred_message_ids: Optional[list[str]] = None,
+    timeout: float = 240.0,
+    poll_interval: float = 2.0,
+) -> list[dict[str, Any]]:
+    conversation_id = str(conversation_id or "").strip()
+    if not conversation_id:
+        return []
+
+    deadline = time.monotonic() + max(0.0, timeout)
+    while True:
+        try:
+            conversation_payload = _fetch_chatgpt_web_conversation(
+                client,
+                headers=headers,
+                conversation_id=conversation_id,
+            )
+        except Exception:
+            if time.monotonic() >= deadline:
+                return []
+            time.sleep(poll_interval)
+            continue
+
+        resolved: list[dict[str, Any]] = []
+        seen_file_ids: set[str] = set()
+        for node in _conversation_node_order(conversation_payload, preferred_message_ids=preferred_message_ids):
+            message = node.get("message") if isinstance(node, dict) else None
+            if not isinstance(message, dict):
+                continue
+            for image in _extract_message_image_assets(message):
+                file_id = str(image.get("file_id") or "").strip()
+                if not file_id or file_id in seen_file_ids:
+                    continue
+                try:
+                    link_payload = _fetch_chatgpt_web_file_download_link(
+                        client,
+                        headers=headers,
+                        file_id=file_id,
+                        conversation_id=conversation_id,
+                    )
+                except Exception:
+                    continue
+
+                if str(link_payload.get("status") or "").strip().lower() != "success":
+                    continue
+                download_url = str(link_payload.get("download_url") or "").strip()
+                if not download_url:
+                    continue
+                resolved.append({
+                    **image,
+                    "download_url": download_url,
+                    "file_name": str(link_payload.get("file_name") or "").strip(),
+                    "mime_type": str(link_payload.get("mime_type") or "").strip(),
+                    "file_size_bytes": link_payload.get("file_size_bytes"),
+                })
+                seen_file_ids.add(file_id)
+
+        if resolved:
+            return resolved
+        if time.monotonic() >= deadline:
+            return []
+        time.sleep(poll_interval)
+
+
 def _decode_json_pointer(path: str) -> list[str]:
     if not isinstance(path, str) or not path.startswith("/"):
         return []
@@ -636,6 +856,10 @@ def stream_chatgpt_web_completion(
         final_conversation_id = convo_id
         assistant_message: Optional[dict[str, Any]] = None
         saw_stream_complete = False
+        saw_image_generation = False
+        image_message_ids: list[str] = []
+        resolved_images: list[dict[str, Any]] = []
+        api_start = time.monotonic()
         with client.stream(
             "POST",
             "https://chatgpt.com/backend-api/f/conversation",
@@ -671,8 +895,16 @@ def stream_chatgpt_web_completion(
                     if event_conversation_id:
                         final_conversation_id = event_conversation_id
 
-                    if str(event.get("type") or "").strip() == "message_stream_complete":
+                    event_type = str(event.get("type") or "").strip()
+                    if event_type == "message_stream_complete":
                         saw_stream_complete = True
+                    elif event_type == "server_ste_metadata":
+                        metadata = event.get("metadata") if isinstance(event.get("metadata"), dict) else {}
+                        if (
+                            str(metadata.get("tool_name") or "").strip() == "ImageGenToolTemporal"
+                            or str(metadata.get("turn_use_case") or "").strip().lower() == "image gen"
+                        ):
+                            saw_image_generation = True
 
                     marker_message_id = str(event.get("message_id") or "").strip()
                     if marker_message_id:
@@ -680,6 +912,12 @@ def stream_chatgpt_web_completion(
 
                     message = _extract_event_message(event)
                     if isinstance(message, dict):
+                        if _message_suggests_image_generation(message):
+                            saw_image_generation = True
+                            message_id = str(message.get("id") or "").strip()
+                            if message_id and message_id not in image_message_ids:
+                                image_message_ids.append(message_id)
+
                         author = message.get("author") if isinstance(message.get("author"), dict) else {}
                         if author.get("role") == "assistant":
                             assistant_message = copy.deepcopy(message)
@@ -712,6 +950,8 @@ def stream_chatgpt_web_completion(
                                 continue
                             if not _apply_message_patch(assistant_message, patch_op):
                                 continue
+                            if _message_suggests_image_generation(assistant_message):
+                                saw_image_generation = True
                             text = _extract_message_text(assistant_message)
                             if not text:
                                 continue
@@ -723,6 +963,36 @@ def stream_chatgpt_web_completion(
                 if not final_text.strip() and not saw_stream_complete:
                     raise
 
+        if final_conversation_id and saw_image_generation:
+            default_image_timeout = float(os.getenv("CHATGPT_WEB_IMAGE_POLL_TIMEOUT", "240"))
+            remaining_timeout = max(0.0, float(timeout) - (time.monotonic() - api_start))
+            image_timeout = min(default_image_timeout, remaining_timeout)
+            if image_timeout > 0.0:
+                poll_interval = max(0.25, float(os.getenv("CHATGPT_WEB_IMAGE_POLL_INTERVAL", "2")))
+                resolved_images = _resolve_chatgpt_web_generated_images(
+                    client,
+                    headers=base_headers,
+                    conversation_id=final_conversation_id,
+                    preferred_message_ids=image_message_ids,
+                    timeout=image_timeout,
+                    poll_interval=poll_interval,
+                )
+
+    if resolved_images:
+        image_urls = [str(item.get("download_url") or "").strip() for item in resolved_images]
+        image_urls = [url for url in image_urls if url]
+        if image_urls:
+            cleaned_text = final_text.strip()
+            if not cleaned_text or _looks_like_image_generation_spec(cleaned_text) or cleaned_text.lower().startswith("processing image"):
+                final_text = "\n".join(image_urls)
+            else:
+                joined_urls = "\n".join(image_urls)
+                if joined_urls not in cleaned_text:
+                    final_text = f"{cleaned_text}\n\n{joined_urls}"
+            preferred_message_id = str(resolved_images[0].get("message_id") or "").strip()
+            if preferred_message_id:
+                assistant_message_id = preferred_message_id
+
     if not final_text.strip():
         raise RuntimeError("ChatGPT web transport returned no assistant text")
 
@@ -733,4 +1003,5 @@ def stream_chatgpt_web_completion(
         "message_id": assistant_message_id,
         "model": model,
         "finish_reason": "stop",
+        "images": resolved_images,
     }

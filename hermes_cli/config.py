@@ -870,6 +870,13 @@ OPTIONAL_ENV_VARS = {
         "password": True,
         "category": "tool",
     },
+    "OPENHIVE_API_KEY": {
+        "description": "OpenHive API key for shared knowledge base (query & publish solutions)",
+        "prompt": "OpenHive API key",
+        "url": "https://openhive-api.fly.dev",
+        "password": True,
+        "category": "tool",
+    },
     "BROWSERBASE_API_KEY": {
         "description": "Browserbase API key for cloud browser (optional — local browser works without this)",
         "prompt": "Browserbase API key",

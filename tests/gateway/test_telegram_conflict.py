@@ -20,8 +20,16 @@ def _ensure_telegram_mock():
     telegram_mod.constants.ChatType.CHANNEL = "channel"
     telegram_mod.constants.ChatType.PRIVATE = "private"
 
+    # Provide real exception classes so ``except (NetworkError, ...)`` in
+    # connect() doesn't blow up with "catching classes that do not inherit
+    # from BaseException" when another xdist worker pollutes sys.modules.
+    telegram_mod.error.NetworkError = type("NetworkError", (OSError,), {})
+    telegram_mod.error.TimedOut = type("TimedOut", (OSError,), {})
+    telegram_mod.error.BadRequest = type("BadRequest", (Exception,), {})
+
     for name in ("telegram", "telegram.ext", "telegram.constants", "telegram.request"):
         sys.modules.setdefault(name, telegram_mod)
+    sys.modules.setdefault("telegram.error", telegram_mod.error)
 
 
 _ensure_telegram_mock()

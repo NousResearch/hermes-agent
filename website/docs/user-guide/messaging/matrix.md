@@ -265,13 +265,13 @@ MATRIX_ENCRYPTION=true
 
 When E2EE is enabled, Hermes:
 
-- Stores encryption keys in `~/.hermes/matrix/store/`
+- Stores encryption keys in `~/.hermes/platforms/matrix/store/` (legacy installs: `~/.hermes/matrix/store/`)
 - Uploads device keys on first connection
 - Decrypts incoming messages and encrypts outgoing messages automatically
 - Auto-joins encrypted rooms when invited
 
 :::warning
-If you delete the `~/.hermes/matrix/store/` directory, the bot loses its encryption keys. You'll need to verify the device again in your Matrix client. Back up this directory if you want to preserve encrypted sessions.
+If you delete the `~/.hermes/platforms/matrix/store/` directory, the bot loses its encryption keys. You'll need to verify the device again in your Matrix client. Back up this directory if you want to preserve encrypted sessions.
 :::
 
 :::info

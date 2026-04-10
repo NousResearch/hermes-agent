@@ -19,7 +19,6 @@ from tools.browser_camofox import (
     camofox_type,
     camofox_vision,
     check_camofox_available,
-    cleanup_all_camofox_sessions,
     is_camofox_mode,
 )
 
@@ -274,22 +273,3 @@ class TestBrowserToolRouting:
         assert check_browser_requirements() is True
 
 
-# ---------------------------------------------------------------------------
-# Cleanup helper
-# ---------------------------------------------------------------------------
-
-
-class TestCamofoxCleanup:
-    @patch("tools.browser_camofox.requests.post")
-    @patch("tools.browser_camofox.requests.delete")
-    def test_cleanup_all(self, mock_delete, mock_post, monkeypatch):
-        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
-        mock_post.return_value = _mock_response(json_data={"tabId": "tab_c", "url": "https://x.com"})
-        camofox_navigate("https://x.com", task_id="t_cleanup")
-
-        mock_delete.return_value = _mock_response(json_data={"ok": True})
-        cleanup_all_camofox_sessions()
-
-        # Session should be gone
-        result = json.loads(camofox_snapshot(task_id="t_cleanup"))
-        assert result["success"] is False

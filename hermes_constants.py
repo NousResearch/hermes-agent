@@ -17,6 +17,45 @@ def get_hermes_home() -> Path:
     return Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
 
 
+def get_default_hermes_root() -> Path:
+    """Return the root Hermes directory for profile-level operations.
+
+    In standard deployments this is ``~/.hermes``.
+
+    In Docker or custom deployments where ``HERMES_HOME`` points outside
+    ``~/.hermes`` (e.g. ``/opt/data``), returns ``HERMES_HOME`` directly
+    — that IS the root.
+
+    In profile mode where ``HERMES_HOME`` is ``<root>/profiles/<name>``,
+    returns ``<root>`` so that ``profile list`` can see all profiles.
+    Works both for standard (``~/.hermes/profiles/coder``) and Docker
+    (``/opt/data/profiles/coder``) layouts.
+
+    Import-safe — no dependencies beyond stdlib.
+    """
+    native_home = Path.home() / ".hermes"
+    env_home = os.environ.get("HERMES_HOME", "")
+    if not env_home:
+        return native_home
+    env_path = Path(env_home)
+    try:
+        env_path.resolve().relative_to(native_home.resolve())
+        # HERMES_HOME is under ~/.hermes (normal or profile mode)
+        return native_home
+    except ValueError:
+        pass
+
+    # Docker / custom deployment.
+    # Check if this is a profile path: <root>/profiles/<name>
+    # If the immediate parent dir is named "profiles", the root is
+    # the grandparent — this covers Docker profiles correctly.
+    if env_path.parent.name == "profiles":
+        return env_path.parent.parent
+
+    # Not a profile path — HERMES_HOME itself is the root
+    return env_path
+
+
 def get_optional_skills_dir(default: Path | None = None) -> Path:
     """Return the optional-skills directory, honoring package-manager wrappers.
 
@@ -72,13 +111,13 @@ def display_hermes_home() -> str:
         return str(home)
 
 
-VALID_REASONING_EFFORTS = ("xhigh", "high", "medium", "low", "minimal")
+VALID_REASONING_EFFORTS = ("minimal", "low", "medium", "high", "xhigh")
 
 
 def parse_reasoning_effort(effort: str) -> dict | None:
     """Parse a reasoning effort level into a config dict.
 
-    Valid levels: "xhigh", "high", "medium", "low", "minimal", "none".
+    Valid levels: "none", "minimal", "low", "medium", "high", "xhigh".
     Returns None when the input is empty or unrecognized (caller uses default).
     Returns {"enabled": False} for "none".
     Returns {"enabled": True, "effort": <level>} for valid effort levels.
@@ -93,13 +132,19 @@ def parse_reasoning_effort(effort: str) -> dict | None:
     return None
 
 
+def is_termux() -> bool:
+    """Return True when running inside a Termux (Android) environment.
+
+    Checks ``TERMUX_VERSION`` (set by Termux) or the Termux-specific
+    ``PREFIX`` path.  Import-safe — no heavy deps.
+    """
+    prefix = os.getenv("PREFIX", "")
+    return bool(os.getenv("TERMUX_VERSION") or "com.termux/files/usr" in prefix)
+
+
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 OPENROUTER_MODELS_URL = f"{OPENROUTER_BASE_URL}/models"
-OPENROUTER_CHAT_URL = f"{OPENROUTER_BASE_URL}/chat/completions"
 
 AI_GATEWAY_BASE_URL = "https://ai-gateway.vercel.sh/v1"
-AI_GATEWAY_MODELS_URL = f"{AI_GATEWAY_BASE_URL}/models"
-AI_GATEWAY_CHAT_URL = f"{AI_GATEWAY_BASE_URL}/chat/completions"
 
 NOUS_API_BASE_URL = "https://inference-api.nousresearch.com/v1"
-NOUS_API_CHAT_URL = f"{NOUS_API_BASE_URL}/chat/completions"

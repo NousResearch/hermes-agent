@@ -24,7 +24,7 @@ This is educational cinema. Every frame teaches. Every animation reveals structu
 
 ## Prerequisites
 
-Run `scripts/setup.sh` to verify all dependencies. Requires: Python 3.10+, Manim Community Edition (`pip install manim`), LaTeX (`texlive-full` on Linux, `mactex` on macOS), and ffmpeg.
+Run `scripts/setup.sh` to verify all dependencies. Requires: Python 3.10+, Manim Community Edition v0.20+ (`pip install manim`), LaTeX (`texlive-full` on Linux, `mactex` on macOS), and ffmpeg. Reference docs tested against Manim CE v0.20.1.
 
 ## Modes
 
@@ -234,3 +234,8 @@ Always iterate at `-ql`. Only render `-qh` for final output.
 | `references/scene-planning.md` | Narrative arcs, layout templates, scene transitions, planning template |
 | `references/rendering.md` | CLI reference, quality presets, ffmpeg, voiceover workflow, GIF export |
 | `references/troubleshooting.md` | LaTeX errors, animation errors, common mistakes, debugging |
+| `references/animation-design-thinking.md` | When to animate vs show static, decomposition, pacing, narration sync |
+| `references/updaters-and-trackers.md` | ValueTracker, add_updater, always_redraw, time-based updaters, patterns |
+| `references/paper-explainer.md` | Turning research papers into animations — workflow, templates, domain patterns |
+| `references/decorations.md` | SurroundingRectangle, Brace, arrows, DashedLine, Angle, annotation lifecycle |
+| `references/production-quality.md` | Pre-code, pre-render, post-render checklists, spatial layout, color, tempo |

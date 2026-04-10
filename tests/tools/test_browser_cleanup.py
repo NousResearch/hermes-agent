@@ -65,17 +65,61 @@ class TestBrowserCleanup:
         mock_stop.assert_called_once_with("task-1")
         mock_run.assert_called_once_with("task-1", "close", [], timeout=10)
 
-    def test_browser_close_delegates_to_cleanup_browser(self):
-        import json
-
+    def test_cleanup_camofox_managed_persistence_skips_close(self):
+        """When camofox mode + managed persistence, soft_cleanup fires instead of close."""
         browser_tool = self.browser_tool
-        browser_tool._active_sessions["task-2"] = {"session_name": "sess-2"}
+        browser_tool._active_sessions["task-1"] = {
+            "session_name": "sess-1",
+            "bb_session_id": None,
+        }
+        browser_tool._session_last_activity["task-1"] = 123.0
 
-        with patch("tools.browser_tool.cleanup_browser") as mock_cleanup:
-            result = json.loads(browser_tool.browser_close("task-2"))
+        with (
+            patch("tools.browser_tool._is_camofox_mode", return_value=True),
+            patch("tools.browser_tool._maybe_stop_recording") as mock_stop,
+            patch(
+                "tools.browser_tool._run_browser_command",
+                return_value={"success": True},
+            ),
+            patch("tools.browser_tool.os.path.exists", return_value=False),
+            patch(
+                "tools.browser_camofox.camofox_soft_cleanup",
+                return_value=True,
+            ) as mock_soft,
+            patch("tools.browser_camofox.camofox_close") as mock_close,
+        ):
+            browser_tool.cleanup_browser("task-1")
 
-        assert result == {"success": True, "closed": True}
-        mock_cleanup.assert_called_once_with("task-2")
+        mock_soft.assert_called_once_with("task-1")
+        mock_close.assert_not_called()
+
+    def test_cleanup_camofox_no_persistence_calls_close(self):
+        """When camofox mode but managed persistence is off, camofox_close fires."""
+        browser_tool = self.browser_tool
+        browser_tool._active_sessions["task-1"] = {
+            "session_name": "sess-1",
+            "bb_session_id": None,
+        }
+        browser_tool._session_last_activity["task-1"] = 123.0
+
+        with (
+            patch("tools.browser_tool._is_camofox_mode", return_value=True),
+            patch("tools.browser_tool._maybe_stop_recording") as mock_stop,
+            patch(
+                "tools.browser_tool._run_browser_command",
+                return_value={"success": True},
+            ),
+            patch("tools.browser_tool.os.path.exists", return_value=False),
+            patch(
+                "tools.browser_camofox.camofox_soft_cleanup",
+                return_value=False,
+            ) as mock_soft,
+            patch("tools.browser_camofox.camofox_close") as mock_close,
+        ):
+            browser_tool.cleanup_browser("task-1")
+
+        mock_soft.assert_called_once_with("task-1")
+        mock_close.assert_called_once_with("task-1")
 
     def test_emergency_cleanup_clears_all_tracking_state(self):
         browser_tool = self.browser_tool

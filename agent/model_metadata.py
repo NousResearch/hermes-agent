@@ -24,13 +24,16 @@ logger = logging.getLogger(__name__)
 # are preserved so the full model name reaches cache lookups and server queries.
 _PROVIDER_PREFIXES: frozenset[str] = frozenset({
     "openrouter", "nous", "openai-codex", "copilot", "copilot-acp",
-    "zai", "kimi-coding", "minimax", "minimax-cn", "anthropic", "deepseek",
+    "gemini", "zai", "kimi-coding", "minimax", "minimax-cn", "anthropic", "deepseek",
     "opencode-zen", "opencode-go", "ai-gateway", "kilocode", "alibaba",
+    "qwen-oauth",
     "custom", "local",
     # Common aliases
+    "google", "google-gemini", "google-ai-studio",
     "glm", "z-ai", "z.ai", "zhipu", "github", "github-copilot",
     "github-models", "kimi", "moonshot", "claude", "deep-seek",
     "opencode", "zen", "go", "vercel", "kilo", "dashscope", "aliyun", "qwen",
+    "qwen-portal",
 })
 
 
@@ -101,16 +104,43 @@ DEFAULT_CONTEXT_LENGTHS = {
     "gpt-4": 128000,
     # Google
     "gemini": 1048576,
+    # Gemma (open models served via AI Studio)
+    "gemma-4-31b": 256000,
+    "gemma-4-26b": 256000,
+    "gemma-3": 131072,
+    "gemma": 8192,  # fallback for older gemma models
     # DeepSeek
     "deepseek": 128000,
     # Meta
     "llama": 131072,
     # Qwen
     "qwen": 131072,
-    # MiniMax
-    "minimax": 204800,
+    # MiniMax (lowercase — lookup lowercases model names at line 973)
+    "minimax-m1-256k": 1000000,
+    "minimax-m1-128k": 1000000,
+    "minimax-m1-80k": 1000000,
+    "minimax-m1-40k": 1000000,
+    "minimax-m1": 1000000,
+    "minimax-m2.5": 1048576,
+    "minimax-m2.7": 1048576,
+    "minimax": 1048576,
     # GLM
     "glm": 202752,
+    # xAI Grok — xAI /v1/models does not return context_length metadata,
+    # so these hardcoded fallbacks prevent Hermes from probing-down to
+    # the default 128k when the user points at https://api.x.ai/v1
+    # via a custom provider. Values sourced from models.dev (2026-04).
+    # Keys use substring matching (longest-first), so e.g. "grok-4.20"
+    # matches "grok-4.20-0309-reasoning" / "-non-reasoning" / "-multi-agent-0309".
+    "grok-code-fast": 256000,   # grok-code-fast-1
+    "grok-4-1-fast": 2000000,   # grok-4-1-fast-(non-)reasoning
+    "grok-2-vision": 8192,      # grok-2-vision, -1212, -latest
+    "grok-4-fast": 2000000,     # grok-4-fast-(non-)reasoning
+    "grok-4.20": 2000000,       # grok-4.20-0309-(non-)reasoning, -multi-agent-0309
+    "grok-4": 256000,           # grok-4, grok-4-0709
+    "grok-3": 131072,           # grok-3, grok-3-mini, grok-3-fast, grok-3-mini-fast
+    "grok-2": 131072,           # grok-2, grok-2-1212, grok-2-latest
+    "grok": 131072,             # catch-all (grok-beta, unknown grok-*)
     # Kimi
     "kimi": 262144,
     # Arcee
@@ -121,7 +151,7 @@ DEFAULT_CONTEXT_LENGTHS = {
     "deepseek-ai/DeepSeek-V3.2": 65536,
     "moonshotai/Kimi-K2.5": 262144,
     "moonshotai/Kimi-K2-Thinking": 262144,
-    "MiniMaxAI/MiniMax-M2.5": 204800,
+    "MiniMaxAI/MiniMax-M2.5": 1048576,
     "XiaomiMiMo/MiMo-V2-Flash": 32768,
     "mimo-v2-pro": 1048576,
     "mimo-v2-omni": 1048576,
@@ -174,13 +204,15 @@ _URL_TO_PROVIDER: Dict[str, str] = {
     "api.minimax": "minimax",
     "dashscope.aliyuncs.com": "alibaba",
     "dashscope-intl.aliyuncs.com": "alibaba",
+    "portal.qwen.ai": "qwen-oauth",
     "openrouter.ai": "openrouter",
-    "generativelanguage.googleapis.com": "google",
+    "generativelanguage.googleapis.com": "gemini",
     "inference-api.nousresearch.com": "nous",
     "api.deepseek.com": "deepseek",
     "api.githubcopilot.com": "copilot",
     "models.github.ai": "copilot",
     "api.fireworks.ai": "fireworks",
+    "opencode.ai": "opencode-go",
 }
 
 
@@ -504,8 +536,8 @@ def fetch_endpoint_model_metadata(
 
 def _get_context_cache_path() -> Path:
     """Return path to the persistent context length cache file."""
-    hermes_home = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
-    return hermes_home / "context_length_cache.yaml"
+    from hermes_constants import get_hermes_home
+    return get_hermes_home() / "context_length_cache.yaml"
 
 
 def _load_context_cache() -> Dict[str, int]:
@@ -586,6 +618,49 @@ def parse_context_limit_from_error(error_msg: str) -> Optional[int]:
     return None
 
 
+def parse_available_output_tokens_from_error(error_msg: str) -> Optional[int]:
+    """Detect an "output cap too large" error and return how many output tokens are available.
+
+    Background — two distinct context errors exist:
+      1. "Prompt too long"  — the INPUT itself exceeds the context window.
+           Fix: compress history and/or halve context_length.
+      2. "max_tokens too large" — input is fine, but input + requested_output > window.
+           Fix: reduce max_tokens (the output cap) for this call.
+           Do NOT touch context_length — the window hasn't shrunk.
+
+    Anthropic's API returns errors like:
+      "max_tokens: 32768 > context_window: 200000 - input_tokens: 190000 = available_tokens: 10000"
+
+    Returns the number of output tokens that would fit (e.g. 10000 above), or None if
+    the error does not look like a max_tokens-too-large error.
+    """
+    error_lower = error_msg.lower()
+
+    # Must look like an output-cap error, not a prompt-length error.
+    is_output_cap_error = (
+        "max_tokens" in error_lower
+        and ("available_tokens" in error_lower or "available tokens" in error_lower)
+    )
+    if not is_output_cap_error:
+        return None
+
+    # Extract the available_tokens figure.
+    # Anthropic format: "… = available_tokens: 10000"
+    patterns = [
+        r'available_tokens[:\s]+(\d+)',
+        r'available\s+tokens[:\s]+(\d+)',
+        # fallback: last number after "=" in expressions like "200000 - 190000 = 10000"
+        r'=\s*(\d+)\s*$',
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, error_lower)
+        if match:
+            tokens = int(match.group(1))
+            if tokens >= 1:
+                return tokens
+    return None
+
+
 def _model_id_matches(candidate_id: str, lookup_model: str) -> bool:
     """Return True if *candidate_id* (from server) matches *lookup_model* (configured).
 
@@ -603,6 +678,59 @@ def _model_id_matches(candidate_id: str, lookup_model: str) -> bool:
     if "/" in candidate_id and candidate_id.rsplit("/", 1)[1] == lookup_model:
         return True
     return False
+
+
+def query_ollama_num_ctx(model: str, base_url: str) -> Optional[int]:
+    """Query an Ollama server for the model's context length.
+
+    Returns the model's maximum context from GGUF metadata via ``/api/show``,
+    or the explicit ``num_ctx`` from the Modelfile if set.  Returns None if
+    the server is unreachable or not Ollama.
+
+    This is the value that should be passed as ``num_ctx`` in Ollama chat
+    requests to override the default 2048.
+    """
+    import httpx
+
+    bare_model = _strip_provider_prefix(model)
+    server_url = base_url.rstrip("/")
+    if server_url.endswith("/v1"):
+        server_url = server_url[:-3]
+
+    try:
+        server_type = detect_local_server_type(base_url)
+    except Exception:
+        return None
+    if server_type != "ollama":
+        return None
+
+    try:
+        with httpx.Client(timeout=3.0) as client:
+            resp = client.post(f"{server_url}/api/show", json={"name": bare_model})
+            if resp.status_code != 200:
+                return None
+            data = resp.json()
+
+            # Prefer explicit num_ctx from Modelfile parameters (user override)
+            params = data.get("parameters", "")
+            if "num_ctx" in params:
+                for line in params.split("\n"):
+                    if "num_ctx" in line:
+                        parts = line.strip().split()
+                        if len(parts) >= 2:
+                            try:
+                                return int(parts[-1])
+                            except ValueError:
+                                pass
+
+            # Fall back to GGUF model_info context_length (training max)
+            model_info = data.get("model_info", {})
+            for key, value in model_info.items():
+                if "context_length" in key and isinstance(value, (int, float)):
+                    return int(value)
+    except Exception:
+        pass
+    return None
 
 
 def _query_local_context_length(model: str, base_url: str) -> Optional[int]:

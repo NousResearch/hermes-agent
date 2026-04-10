@@ -67,26 +67,6 @@ def _get_skin():
         return None
 
 
-def get_skin_faces(key: str, default: list) -> list:
-    """Get spinner face list from active skin, falling back to default."""
-    skin = _get_skin()
-    if skin:
-        faces = skin.get_spinner_list(key)
-        if faces:
-            return faces
-    return default
-
-
-def get_skin_verbs() -> list:
-    """Get thinking verbs from active skin."""
-    skin = _get_skin()
-    if skin:
-        verbs = skin.get_spinner_list("thinking_verbs")
-        if verbs:
-            return verbs
-    return KawaiiSpinner.THINKING_VERBS
-
-
 def get_skin_tool_prefix() -> str:
     """Get tool output prefix character from active skin."""
     skin = _get_skin()
@@ -724,46 +704,6 @@ class KawaiiSpinner:
 
 
 # =========================================================================
-# Kawaii face arrays (used by AIAgent._execute_tool_calls for spinner text)
-# =========================================================================
-
-KAWAII_SEARCH = [
-    "♪(´ε` )", "(｡◕‿◕｡)", "ヾ(＾∇＾)", "(◕ᴗ◕✿)", "( ˘▽˘)っ",
-    "٩(◕‿◕｡)۶", "(✿◠‿◠)", "♪～(´ε｀ )", "(ノ´ヮ`)ノ*:・゚✧", "＼(◎o◎)／",
-]
-KAWAII_READ = [
-    "φ(゜▽゜*)♪", "( ˘▽˘)っ", "(⌐■_■)", "٩(｡•́‿•̀｡)۶", "(◕‿◕✿)",
-    "ヾ(＠⌒ー⌒＠)ノ", "(✧ω✧)", "♪(๑ᴖ◡ᴖ๑)♪", "(≧◡≦)", "( ´ ▽ ` )ノ",
-]
-KAWAII_TERMINAL = [
-    "ヽ(>∀<☆)ノ", "(ノ°∀°)ノ", "٩(^ᴗ^)۶", "ヾ(⌐■_■)ノ♪", "(•̀ᴗ•́)و",
-    "┗(＾0＾)┓", "(｀・ω・´)", "＼(￣▽￣)／", "(ง •̀_•́)ง", "ヽ(´▽`)/",
-]
-KAWAII_BROWSER = [
-    "(ノ°∀°)ノ", "(☞゚ヮ゚)☞", "( ͡° ͜ʖ ͡°)", "┌( ಠ_ಠ)┘", "(⊙_⊙)？",
-    "ヾ(•ω•`)o", "(￣ω￣)", "( ˇωˇ )", "(ᵔᴥᵔ)", "＼(◎o◎)／",
-]
-KAWAII_CREATE = [
-    "✧*。٩(ˊᗜˋ*)و✧", "(ﾉ◕ヮ◕)ﾉ*:・ﾟ✧", "ヽ(>∀<☆)ノ", "٩(♡ε♡)۶", "(◕‿◕)♡",
-    "✿◕ ‿ ◕✿", "(*≧▽≦)", "ヾ(＾-＾)ノ", "(☆▽☆)", "°˖✧◝(⁰▿⁰)◜✧˖°",
-]
-KAWAII_SKILL = [
-    "ヾ(＠⌒ー⌒＠)ノ", "(๑˃ᴗ˂)ﻭ", "٩(◕‿◕｡)۶", "(✿╹◡╹)", "ヽ(・∀・)ノ",
-    "(ノ´ヮ`)ノ*:・ﾟ✧", "♪(๑ᴖ◡ᴖ๑)♪", "(◠‿◠)", "٩(ˊᗜˋ*)و", "(＾▽＾)",
-    "ヾ(＾∇＾)", "(★ω★)/", "٩(｡•́‿•̀｡)۶", "(◕ᴗ◕✿)", "＼(◎o◎)／",
-    "(✧ω✧)", "ヽ(>∀<☆)ノ", "( ˘▽˘)っ", "(≧◡≦) ♡", "ヾ(￣▽￣)",
-]
-KAWAII_THINK = [
-    "(っ°Д°;)っ", "(；′⌒`)", "(・_・ヾ", "( ´_ゝ`)", "(￣ヘ￣)",
-    "(。-`ω´-)", "( ˘︹˘ )", "(¬_¬)", "ヽ(ー_ー )ノ", "(；一_一)",
-]
-KAWAII_GENERIC = [
-    "♪(´ε` )", "(◕‿◕✿)", "ヾ(＾∇＾)", "٩(◕‿◕｡)۶", "(✿◠‿◠)",
-    "(ノ´ヮ`)ノ*:・ﾟ✧", "ヽ(>∀<☆)ノ", "(☆▽☆)", "( ˘▽˘)っ", "(≧◡≦)",
-]
-
-
-# =========================================================================
 # Cute tool message (completion line that replaces the spinner)
 # =========================================================================
 
@@ -890,8 +830,6 @@ def get_cute_tool_message(
         return _wrap(f"┊ ◀️  back      {dur}")
     if tool_name == "browser_press":
         return _wrap(f"┊ ⌨️  press     {args.get('key', '?')}  {dur}")
-    if tool_name == "browser_close":
-        return _wrap(f"┊ 🚪 close     browser  {dur}")
     if tool_name == "browser_get_images":
         return _wrap(f"┊ 🖼️  images    extracting  {dur}")
     if tool_name == "browser_vision":
@@ -970,40 +908,6 @@ def get_cute_tool_message(
 _DIM = "\033[2m"
 _SKY_BLUE = "\033[38;5;117m"
 _ANSI_RESET = "\033[0m"
-
-
-def honcho_session_url(workspace: str, session_name: str) -> str:
-    """Build a Honcho app URL for a session."""
-    from urllib.parse import quote
-    return (
-        f"https://app.honcho.dev/explore"
-        f"?workspace={quote(workspace, safe='')}"
-        f"&view=sessions"
-        f"&session={quote(session_name, safe='')}"
-    )
-
-
-def _osc8_link(url: str, text: str) -> str:
-    """OSC 8 terminal hyperlink (clickable in iTerm2, Ghostty, WezTerm, etc.)."""
-    return f"\033]8;;{url}\033\\{text}\033]8;;\033\\"
-
-
-def honcho_session_line(workspace: str, session_name: str) -> str:
-    """One-line session indicator: `Honcho session: <clickable name>`."""
-    url = honcho_session_url(workspace, session_name)
-    linked_name = _osc8_link(url, f"{_SKY_BLUE}{session_name}{_ANSI_RESET}")
-    return f"{_DIM}Honcho session:{_ANSI_RESET} {linked_name}"
-
-
-def write_tty(text: str) -> None:
-    """Write directly to /dev/tty, bypassing stdout capture."""
-    try:
-        fd = os.open("/dev/tty", os.O_WRONLY)
-        os.write(fd, text.encode("utf-8"))
-        os.close(fd)
-    except OSError:
-        sys.stdout.write(text)
-        sys.stdout.flush()
 
 
 # =========================================================================

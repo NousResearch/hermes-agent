@@ -23,6 +23,7 @@ PLATFORMS = {
     "slack":    "💼 Slack",
     "whatsapp": "📱 WhatsApp",
     "signal":   "📡 Signal",
+    "bluebubbles": "💬 BlueBubbles",
     "email":    "📧 Email",
     "homeassistant": "🏠 Home Assistant",
     "mattermost": "💬 Mattermost",
@@ -30,6 +31,7 @@ PLATFORMS = {
     "dingtalk": "💬 DingTalk",
     "feishu": "🪽 Feishu",
     "wecom": "💬 WeCom",
+    "weixin": "💬 Weixin",
     "webhook": "🔗 Webhook",
 }
 

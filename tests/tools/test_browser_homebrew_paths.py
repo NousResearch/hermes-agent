@@ -13,6 +13,7 @@ from tools.browser_tool import (
     _find_agent_browser,
     _run_browser_command,
     _SANE_PATH,
+    check_browser_requirements,
 )
 
 
@@ -149,8 +150,136 @@ class TestFindAgentBrowser:
                 _find_agent_browser()
 
 
+class TestBrowserRequirements:
+    def test_termux_requires_real_agent_browser_install_not_npx_fallback(self, monkeypatch):
+        monkeypatch.setenv("TERMUX_VERSION", "0.118.3")
+        monkeypatch.setenv("PREFIX", "/data/data/com.termux/files/usr")
+        monkeypatch.setattr("tools.browser_tool._is_camofox_mode", lambda: False)
+        monkeypatch.setattr("tools.browser_tool._get_cloud_provider", lambda: None)
+        monkeypatch.setattr("tools.browser_tool._find_agent_browser", lambda: "npx agent-browser")
+
+        assert check_browser_requirements() is False
+
+
+class TestRunBrowserCommandTermuxFallback:
+    def test_termux_local_mode_rejects_bare_npx_fallback(self, monkeypatch):
+        monkeypatch.setenv("TERMUX_VERSION", "0.118.3")
+        monkeypatch.setenv("PREFIX", "/data/data/com.termux/files/usr")
+        monkeypatch.setattr("tools.browser_tool._find_agent_browser", lambda: "npx agent-browser")
+        monkeypatch.setattr("tools.browser_tool._get_cloud_provider", lambda: None)
+
+        result = _run_browser_command("task-1", "navigate", ["https://example.com"])
+
+        assert result["success"] is False
+        assert "bare npx fallback" in result["error"]
+        assert "agent-browser install" in result["error"]
+
+
 class TestRunBrowserCommandPathConstruction:
     """Verify _run_browser_command() includes Homebrew node dirs in subprocess PATH."""
+
+    def test_subprocess_preserves_executable_path_with_spaces(self, tmp_path):
+        """A local agent-browser path containing spaces must stay one argv entry."""
+        captured_cmd = None
+
+        mock_proc = MagicMock()
+        mock_proc.returncode = 0
+        mock_proc.wait.return_value = 0
+
+        def capture_popen(cmd, **kwargs):
+            nonlocal captured_cmd
+            captured_cmd = cmd
+            return mock_proc
+
+        fake_session = {
+            "session_name": "test-session",
+            "session_id": "test-id",
+            "cdp_url": None,
+        }
+        fake_json = json.dumps({"success": True})
+        browser_path = "/Users/test/Library/Application Support/hermes/node_modules/.bin/agent-browser"
+        hermes_home = str(tmp_path / "hermes-home")
+
+        with patch("tools.browser_tool._find_agent_browser", return_value=browser_path), \
+             patch("tools.browser_tool._get_session_info", return_value=fake_session), \
+             patch("tools.browser_tool._socket_safe_tmpdir", return_value=str(tmp_path)), \
+             patch("tools.browser_tool._discover_homebrew_node_dirs", return_value=[]), \
+             patch("hermes_constants.Path.home", return_value=tmp_path), \
+             patch("subprocess.Popen", side_effect=capture_popen), \
+             patch("os.open", return_value=99), \
+             patch("os.close"), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch.dict(
+                 os.environ,
+                 {
+                     "PATH": "/usr/bin:/bin",
+                     "HOME": "/home/test",
+                     "HERMES_HOME": hermes_home,
+                 },
+                 clear=True,
+             ):
+            with patch("builtins.open", mock_open(read_data=fake_json)):
+                _run_browser_command("test-task", "navigate", ["https://example.com"])
+
+        assert captured_cmd is not None
+        assert captured_cmd[0] == browser_path
+        assert captured_cmd[1:5] == [
+            "--session",
+            "test-session",
+            "--json",
+            "navigate",
+        ]
+
+    def test_subprocess_splits_npx_fallback_into_command_and_package(self, tmp_path):
+        """The synthetic npx fallback should still expand into separate argv items."""
+        captured_cmd = None
+
+        mock_proc = MagicMock()
+        mock_proc.returncode = 0
+        mock_proc.wait.return_value = 0
+
+        def capture_popen(cmd, **kwargs):
+            nonlocal captured_cmd
+            captured_cmd = cmd
+            return mock_proc
+
+        fake_session = {
+            "session_name": "test-session",
+            "session_id": "test-id",
+            "cdp_url": None,
+        }
+        fake_json = json.dumps({"success": True})
+        hermes_home = str(tmp_path / "hermes-home")
+
+        with patch("tools.browser_tool._find_agent_browser", return_value="npx agent-browser"), \
+             patch("tools.browser_tool._get_session_info", return_value=fake_session), \
+             patch("tools.browser_tool._socket_safe_tmpdir", return_value=str(tmp_path)), \
+             patch("tools.browser_tool._discover_homebrew_node_dirs", return_value=[]), \
+             patch("hermes_constants.Path.home", return_value=tmp_path), \
+             patch("subprocess.Popen", side_effect=capture_popen), \
+             patch("os.open", return_value=99), \
+             patch("os.close"), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch.dict(
+                 os.environ,
+                 {
+                     "PATH": "/usr/bin:/bin",
+                     "HOME": "/home/test",
+                     "HERMES_HOME": hermes_home,
+                 },
+                 clear=True,
+             ):
+            with patch("builtins.open", mock_open(read_data=fake_json)):
+                _run_browser_command("test-task", "navigate", ["https://example.com"])
+
+        assert captured_cmd is not None
+        assert captured_cmd[:2] == ["npx", "agent-browser"]
+        assert captured_cmd[2:6] == [
+            "--session",
+            "test-session",
+            "--json",
+            "navigate",
+        ]
 
     def test_subprocess_path_includes_homebrew_node_dirs(self, tmp_path):
         """When _discover_homebrew_node_dirs returns dirs, they should appear

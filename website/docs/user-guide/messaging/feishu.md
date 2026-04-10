@@ -310,6 +310,58 @@ Additional webhook protections:
 - **Body read timeout:** 30 seconds
 - **Content-Type enforcement:** Only `application/json` is accepted
 
+## WebSocket Tuning
+
+When using `websocket` mode, you can customize reconnect and ping behavior:
+
+```yaml
+platforms:
+  feishu:
+    extra:
+      ws_reconnect_interval: 120   # Seconds between reconnect attempts (default: 120)
+      ws_ping_interval: 30         # Seconds between WebSocket pings (optional; SDK default if unset)
+```
+
+| Setting | Config key | Default | Description |
+|---------|-----------|---------|-------------|
+| Reconnect interval | `ws_reconnect_interval` | 120s | How long to wait between reconnection attempts |
+| Ping interval | `ws_ping_interval` | _(SDK default)_ | Frequency of WebSocket keepalive pings |
+
+## Per-Group Access Control
+
+Beyond the global `FEISHU_GROUP_POLICY`, you can set fine-grained rules per group chat using `group_rules` in config.yaml:
+
+```yaml
+platforms:
+  feishu:
+    extra:
+      default_group_policy: "open"     # Default for groups not in group_rules
+      admins:                          # Users who can manage bot settings
+        - "ou_admin_open_id"
+      group_rules:
+        "oc_group_chat_id_1":
+          policy: "allowlist"          # open | allowlist | blacklist | admin_only | disabled
+          allowlist:
+            - "ou_user_open_id_1"
+            - "ou_user_open_id_2"
+        "oc_group_chat_id_2":
+          policy: "admin_only"
+        "oc_group_chat_id_3":
+          policy: "blacklist"
+          blacklist:
+            - "ou_blocked_user"
+```
+
+| Policy | Description |
+|--------|-------------|
+| `open` | Anyone in the group can use the bot |
+| `allowlist` | Only users in the group's `allowlist` can use the bot |
+| `blacklist` | Everyone except users in the group's `blacklist` can use the bot |
+| `admin_only` | Only users in the global `admins` list can use the bot in this group |
+| `disabled` | Bot ignores all messages in this group |
+
+Groups not listed in `group_rules` fall back to `default_group_policy` (defaults to the value of `FEISHU_GROUP_POLICY`).
+
 ## Deduplication
 
 Inbound messages are deduplicated using message IDs with a 24-hour TTL. The dedup state is persisted across restarts to `~/.hermes/feishu_seen_message_ids.json`.
@@ -342,6 +394,8 @@ Inbound messages are deduplicated using message IDs with a 24-hour TTL. The dedu
 | `HERMES_FEISHU_TEXT_BATCH_MAX_MESSAGES` | — | `8` | Max messages merged per text batch |
 | `HERMES_FEISHU_TEXT_BATCH_MAX_CHARS` | — | `4000` | Max characters merged per text batch |
 | `HERMES_FEISHU_MEDIA_BATCH_DELAY_SECONDS` | — | `0.8` | Media burst debounce quiet period |
+
+WebSocket and per-group ACL settings are configured via `config.yaml` under `platforms.feishu.extra` (see [WebSocket Tuning](#websocket-tuning) and [Per-Group Access Control](#per-group-access-control) above).
 
 ## Troubleshooting
 

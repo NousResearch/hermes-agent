@@ -430,7 +430,7 @@ class GitHubSource(SkillSource):
                 continue
 
             dir_name = entry["name"]
-            if dir_name.startswith(".") or dir_name.startswith("_"):
+            if dir_name.startswith((".", "_")):
                 continue
 
             prefix = path.rstrip("/")
@@ -1163,7 +1163,7 @@ class SkillsShSource(SkillSource):
                         if entry.get("type") != "dir":
                             continue
                         dir_name = entry["name"]
-                        if dir_name.startswith(".") or dir_name.startswith("_"):
+                        if dir_name.startswith((".", "_")):
                             continue
                         if dir_name in ("skills", ".agents", ".claude"):
                             continue  # already tried
@@ -1382,7 +1382,7 @@ class ClawHubSource(SkillSource):
         if isinstance(tags, list):
             return [str(t) for t in tags]
         if isinstance(tags, dict):
-            return [str(k) for k in tags.keys() if str(k) != "latest"]
+            return [str(k) for k in tags if str(k) != "latest"]
         return []
 
     @staticmethod
@@ -1952,7 +1952,6 @@ class LobeHubSource(SkillSource):
     """
 
     INDEX_URL = "https://chat-agents.lobehub.com/index.json"
-    REPO = "lobehub/lobe-chat-agents"
 
     def source_id(self) -> str:
         return "lobehub"
@@ -2389,10 +2388,6 @@ class HubLockFile:
         for name, entry in data["installed"].items():
             result.append({"name": name, **entry})
         return result
-
-    def is_hub_installed(self, name: str) -> bool:
-        data = self.load()
-        return name in data["installed"]
 
 
 # ---------------------------------------------------------------------------

@@ -4,8 +4,10 @@ FROM python:slim-trixie@sha256:fb83750094b46fd6b8adaa80f66e2302ecbe45d513f6cece6
 
 WORKDIR /opt/hermes
 
-# Install system packages required
-RUN apt-get update &&\
+ENV PYTHONUNBUFFERED=1
+
+# Install system dependencies in one layer, clear APT cache
+RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         git curl ripgrep ffmpeg systemctl &&\
     rm -rf /var/lib/apt/lists/*

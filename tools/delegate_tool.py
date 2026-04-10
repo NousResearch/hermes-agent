@@ -45,7 +45,12 @@ def check_delegate_requirements() -> bool:
     return True
 
 
-def _build_child_system_prompt(goal: str, context: Optional[str] = None) -> str:
+def _build_child_system_prompt(
+    goal: str,
+    context: Optional[str] = None,
+    *,
+    workspace_path: Optional[str] = None,
+) -> str:
     """Build a focused system prompt for a child agent."""
     parts = [
         "You are a focused subagent working on a specific delegated task.",
@@ -54,6 +59,12 @@ def _build_child_system_prompt(goal: str, context: Optional[str] = None) -> str:
     ]
     if context and context.strip():
         parts.append(f"\nCONTEXT:\n{context}")
+    if workspace_path and str(workspace_path).strip():
+        parts.append(
+            "\nWORKSPACE PATH:\n"
+            f"{workspace_path}\n"
+            "Use this exact path for local repository/workdir operations unless the task explicitly says otherwise."
+        )
     parts.append(
         "\nComplete this task using the tools available to you. "
         "When finished, provide a clear, concise summary of:\n"
@@ -61,10 +72,37 @@ def _build_child_system_prompt(goal: str, context: Optional[str] = None) -> str:
         "- What you found or accomplished\n"
         "- Any files you created or modified\n"
         "- Any issues encountered\n\n"
+        "Important workspace rule: Never assume a repository lives at /workspace/... or any other container-style path unless the task/context explicitly gives that path. "
+        "If no exact local path is provided, discover it first before issuing git/workdir-specific commands.\n\n"
         "Be thorough but concise -- your response is returned to the "
         "parent agent as a summary."
     )
     return "\n".join(parts)
+
+
+def _resolve_workspace_hint(parent_agent) -> Optional[str]:
+    """Best-effort local workspace hint for child prompts.
+
+    We only inject a path when we have a concrete absolute directory. This avoids
+    teaching subagents a fake container path while still helping them avoid
+    guessing `/workspace/...` for local repo tasks.
+    """
+    candidates = [
+        os.getenv("TERMINAL_CWD"),
+        getattr(getattr(parent_agent, "_subdirectory_hints", None), "working_dir", None),
+        getattr(parent_agent, "terminal_cwd", None),
+        getattr(parent_agent, "cwd", None),
+    ]
+    for candidate in candidates:
+        if not candidate:
+            continue
+        try:
+            text = os.path.abspath(os.path.expanduser(str(candidate)))
+        except Exception:
+            continue
+        if os.path.isabs(text) and os.path.isdir(text):
+            return text
+    return None
 
 
 def _strip_blocked_tools(toolsets: List[str]) -> List[str]:
@@ -185,16 +223,33 @@ def _build_child_agent(
 
     # When no explicit toolsets given, inherit from parent's enabled toolsets
     # so disabled tools (e.g. web) don't leak to subagents.
-    parent_toolsets = set(getattr(parent_agent, "enabled_toolsets", None) or DEFAULT_TOOLSETS)
+    # Note: enabled_toolsets=None means "all tools enabled" (the default),
+    # so we must derive effective toolsets from the parent's loaded tools.
+    parent_enabled = getattr(parent_agent, "enabled_toolsets", None)
+    if parent_enabled is not None:
+        parent_toolsets = set(parent_enabled)
+    elif parent_agent and hasattr(parent_agent, "valid_tool_names"):
+        # enabled_toolsets is None (all tools) — derive from loaded tool names
+        import model_tools
+        parent_toolsets = {
+            ts for name in parent_agent.valid_tool_names
+            if (ts := model_tools.get_toolset_for_tool(name)) is not None
+        }
+    else:
+        parent_toolsets = set(DEFAULT_TOOLSETS)
+
     if toolsets:
         # Intersect with parent — subagent must not gain tools the parent lacks
         child_toolsets = _strip_blocked_tools([t for t in toolsets if t in parent_toolsets])
-    elif parent_agent and getattr(parent_agent, "enabled_toolsets", None):
-        child_toolsets = _strip_blocked_tools(parent_agent.enabled_toolsets)
+    elif parent_agent and parent_enabled is not None:
+        child_toolsets = _strip_blocked_tools(parent_enabled)
+    elif parent_toolsets:
+        child_toolsets = _strip_blocked_tools(sorted(parent_toolsets))
     else:
         child_toolsets = _strip_blocked_tools(DEFAULT_TOOLSETS)
 
-    child_prompt = _build_child_system_prompt(goal, context)
+    workspace_hint = _resolve_workspace_hint(parent_agent)
+    child_prompt = _build_child_system_prompt(goal, context, workspace_path=workspace_hint)
     # Extract parent's API key so subagents inherit auth (e.g. Nous Portal).
     parent_api_key = getattr(parent_agent, "api_key", None)
     if (not parent_api_key) and hasattr(parent_agent, "_client_kwargs"):
@@ -263,6 +318,12 @@ def _build_child_agent(
     # Set delegation depth so children can't spawn grandchildren
     child._delegate_depth = getattr(parent_agent, '_delegate_depth', 0) + 1
 
+    # Share a credential pool with the child when possible so subagents can
+    # rotate credentials on rate limits instead of getting pinned to one key.
+    child_pool = _resolve_child_credential_pool(effective_provider, parent_agent)
+    if child_pool is not None:
+        child._credential_pool = child_pool
+
     # Register child for interrupt propagation
     if hasattr(parent_agent, '_active_children'):
         lock = getattr(parent_agent, '_active_children_lock', None)
@@ -295,6 +356,18 @@ def _run_single_child(
     import model_tools
     _saved_tool_names = getattr(child, "_delegate_saved_tool_names",
                                 list(model_tools._last_resolved_tool_names))
+
+    child_pool = getattr(child, '_credential_pool', None)
+    leased_cred_id = None
+    if child_pool is not None:
+        leased_cred_id = child_pool.acquire_lease()
+        if leased_cred_id is not None:
+            try:
+                leased_entry = child_pool.current()
+                if leased_entry is not None and hasattr(child, '_swap_credential'):
+                    child._swap_credential(leased_entry)
+            except Exception as exc:
+                logger.debug("Failed to bind child to leased credential: %s", exc)
 
     try:
         result = child.run_conversation(user_message=goal)
@@ -406,6 +479,12 @@ def _run_single_child(
         }
 
     finally:
+        if child_pool is not None and leased_cred_id is not None:
+            try:
+                child_pool.release_lease(leased_cred_id)
+            except Exception as exc:
+                logger.debug("Failed to release credential lease: %s", exc)
+
         # Restore the parent's tool names so the process-global is correct
         # for any subsequent execute_code calls or other consumers.
         import model_tools
@@ -413,6 +492,8 @@ def _run_single_child(
         saved_tool_names = getattr(child, "_delegate_saved_tool_names", None)
         if isinstance(saved_tool_names, list):
             model_tools._last_resolved_tool_names = list(saved_tool_names)
+
+        # Remove child from active tracking
 
         # Unregister child from interrupt propagation
         if hasattr(parent_agent, '_active_children'):
@@ -446,7 +527,7 @@ def delegate_task(
     Returns JSON with results array, one entry per task.
     """
     if parent_agent is None:
-        return json.dumps({"error": "delegate_task requires a parent agent context."})
+        return tool_error("delegate_task requires a parent agent context.")
 
     # Depth limit
     depth = getattr(parent_agent, '_delegate_depth', 0)
@@ -471,7 +552,7 @@ def delegate_task(
     try:
         creds = _resolve_delegation_credentials(cfg, parent_agent)
     except ValueError as exc:
-        return json.dumps({"error": str(exc)})
+        return tool_error(str(exc))
 
     # Normalize to task list
     if tasks and isinstance(tasks, list):
@@ -479,15 +560,15 @@ def delegate_task(
     elif goal and isinstance(goal, str) and goal.strip():
         task_list = [{"goal": goal, "context": context, "toolsets": toolsets}]
     else:
-        return json.dumps({"error": "Provide either 'goal' (single task) or 'tasks' (batch)."})
+        return tool_error("Provide either 'goal' (single task) or 'tasks' (batch).")
 
     if not task_list:
-        return json.dumps({"error": "No tasks provided."})
+        return tool_error("No tasks provided.")
 
     # Validate each task has a goal
     for i, task in enumerate(task_list):
         if not task.get("goal", "").strip():
-            return json.dumps({"error": f"Task {i} is missing a 'goal'."})
+            return tool_error(f"Task {i} is missing a 'goal'.")
 
     overall_start = time.monotonic()
     results = []
@@ -610,6 +691,38 @@ def delegate_task(
     }, ensure_ascii=False)
 
 
+def _resolve_child_credential_pool(effective_provider: Optional[str], parent_agent):
+    """Resolve a credential pool for the child agent.
+
+    Rules:
+    1. Same provider as the parent -> share the parent's pool so cooldown state
+       and rotation stay synchronized.
+    2. Different provider -> try to load that provider's own pool.
+    3. No pool available -> return None and let the child keep the inherited
+       fixed credential behavior.
+    """
+    if not effective_provider:
+        return getattr(parent_agent, "_credential_pool", None)
+
+    parent_provider = getattr(parent_agent, "provider", None) or ""
+    parent_pool = getattr(parent_agent, "_credential_pool", None)
+    if parent_pool is not None and effective_provider == parent_provider:
+        return parent_pool
+
+    try:
+        from agent.credential_pool import load_pool
+        pool = load_pool(effective_provider)
+        if pool is not None and pool.has_credentials():
+            return pool
+    except Exception as exc:
+        logger.debug(
+            "Could not load credential pool for child provider '%s': %s",
+            effective_provider,
+            exc,
+        )
+    return None
+
+
 def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     """Resolve credentials for subagent delegation.
 
@@ -685,7 +798,7 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     if not api_key:
         raise ValueError(
             f"Delegation provider '{configured_provider}' resolved but has no API key. "
-            f"Set the appropriate environment variable or run 'hermes login'."
+            f"Set the appropriate environment variable or run 'hermes auth'."
         )
 
     return {
@@ -845,7 +958,7 @@ DELEGATE_TASK_SCHEMA = {
 
 
 # --- Registry ---
-from tools.registry import registry
+from tools.registry import registry, tool_error
 
 registry.register(
     name="delegate_task",

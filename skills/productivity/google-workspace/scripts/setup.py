@@ -23,11 +23,18 @@ Agent workflow:
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
 
-from hermes_constants import display_hermes_home, get_hermes_home
+try:
+    from hermes_constants import display_hermes_home, get_hermes_home
+except ModuleNotFoundError:
+    HERMES_AGENT_ROOT = Path(__file__).resolve().parents[4]
+    if HERMES_AGENT_ROOT.exists():
+        sys.path.insert(0, str(HERMES_AGENT_ROOT))
+    from hermes_constants import display_hermes_home, get_hermes_home
 
 HERMES_HOME = get_hermes_home()
 TOKEN_PATH = HERMES_HOME / "google_token.json"
@@ -122,7 +129,11 @@ def check_auth():
     from google.auth.transport.requests import Request
 
     try:
-        creds = Credentials.from_authorized_user_file(str(TOKEN_PATH), SCOPES)
+        # Don't pass scopes — user may have authorized only a subset.
+        # Passing scopes forces google-auth to validate them on refresh,
+        # which fails with invalid_scope if the token has fewer scopes
+        # than requested.
+        creds = Credentials.from_authorized_user_file(str(TOKEN_PATH))
     except Exception as e:
         print(f"TOKEN_CORRUPT: {e}")
         return False
@@ -131,8 +142,9 @@ def check_auth():
     if creds.valid:
         missing_scopes = _missing_scopes_from_payload(payload)
         if missing_scopes:
-            print(f"AUTH_SCOPE_MISMATCH: {_format_missing_scopes(missing_scopes)}")
-            return False
+            print(f"AUTHENTICATED (partial): Token valid but missing {len(missing_scopes)} scopes:")
+            for s in missing_scopes:
+                print(f"  - {s}")
         print(f"AUTHENTICATED: Token valid at {TOKEN_PATH}")
         return True
 
@@ -142,8 +154,9 @@ def check_auth():
             TOKEN_PATH.write_text(creds.to_json())
             missing_scopes = _missing_scopes_from_payload(_load_token_payload(TOKEN_PATH))
             if missing_scopes:
-                print(f"AUTH_SCOPE_MISMATCH: {_format_missing_scopes(missing_scopes)}")
-                return False
+                print(f"AUTHENTICATED (partial): Token refreshed but missing {len(missing_scopes)} scopes:")
+                for s in missing_scopes:
+                    print(f"  - {s}")
             print(f"AUTHENTICATED: Token refreshed at {TOKEN_PATH}")
             return True
         except Exception as e:
@@ -266,16 +279,33 @@ def exchange_auth_code(code: str):
 
     _ensure_deps()
     from google_auth_oauthlib.flow import Flow
+    from urllib.parse import parse_qs, urlparse
+
+    # Extract granted scopes from the callback URL if present
+    if returned_state and "scope" in parse_qs(urlparse(code).query if isinstance(code, str) and code.startswith("http") else {}):
+        granted_scopes = parse_qs(urlparse(code).query)["scope"][0].split()
+    else:
+        # Try to extract from code_or_url parameter
+        if isinstance(code, str) and code.startswith("http"):
+            params = parse_qs(urlparse(code).query)
+            if "scope" in params:
+                granted_scopes = params["scope"][0].split()
+            else:
+                granted_scopes = SCOPES
+        else:
+            granted_scopes = SCOPES
 
     flow = Flow.from_client_secrets_file(
         str(CLIENT_SECRET_PATH),
-        scopes=SCOPES,
+        scopes=granted_scopes,
         redirect_uri=pending_auth.get("redirect_uri", REDIRECT_URI),
         state=pending_auth["state"],
         code_verifier=pending_auth["code_verifier"],
     )
 
     try:
+        # Accept partial scopes — user may deselect some permissions in the consent screen
+        os.environ["OAUTHLIB_RELAX_TOKEN_SCOPE"] = "1"
         flow.fetch_token(code=code)
     except Exception as e:
         print(f"ERROR: Token exchange failed: {e}")
@@ -284,11 +314,21 @@ def exchange_auth_code(code: str):
 
     creds = flow.credentials
     token_payload = json.loads(creds.to_json())
+
+    # Store only the scopes actually granted by the user, not what was requested.
+    # creds.to_json() writes the requested scopes, which causes refresh to fail
+    # with invalid_scope if the user only authorized a subset.
+    actually_granted = list(creds.granted_scopes or []) if hasattr(creds, "granted_scopes") and creds.granted_scopes else []
+    if actually_granted:
+        token_payload["scopes"] = actually_granted
+    elif granted_scopes != SCOPES:
+        # granted_scopes was extracted from the callback URL
+        token_payload["scopes"] = granted_scopes
+
     missing_scopes = _missing_scopes_from_payload(token_payload)
     if missing_scopes:
-        print(f"ERROR: Refusing to save incomplete Google Workspace token. {_format_missing_scopes(missing_scopes)}")
-        print(f"Existing token at {TOKEN_PATH} was left unchanged.")
-        sys.exit(1)
+        print(f"WARNING: Token missing some Google Workspace scopes: {', '.join(missing_scopes)}")
+        print("Some services may not be available.")
 
     TOKEN_PATH.write_text(json.dumps(token_payload, indent=2))
     PENDING_AUTH_PATH.unlink(missing_ok=True)

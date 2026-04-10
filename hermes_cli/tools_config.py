@@ -61,22 +61,6 @@ def _prompt(question: str, default: str = None, password: bool = False) -> str:
         print()
         return default or ""
 
-def _prompt_yes_no(question: str, default: bool = True) -> bool:
-    default_str = "Y/n" if default else "y/N"
-    while True:
-        try:
-            value = input(color(f"{question} [{default_str}]: ", Colors.YELLOW)).strip().lower()
-        except (KeyboardInterrupt, EOFError):
-            print()
-            return default
-        if not value:
-            return default
-        if value in ('y', 'yes'):
-            return True
-        if value in ('n', 'no'):
-            return False
-
-
 # ─── Toolset Registry ─────────────────────────────────────────────────────────
 
 # Toolsets shown in the configurator, grouped for display.
@@ -142,12 +126,14 @@ PLATFORMS = {
     "slack":    {"label": "💼 Slack",      "default_toolset": "hermes-slack"},
     "whatsapp": {"label": "📱 WhatsApp",   "default_toolset": "hermes-whatsapp"},
     "signal":   {"label": "📡 Signal",     "default_toolset": "hermes-signal"},
+    "bluebubbles": {"label": "💙 BlueBubbles", "default_toolset": "hermes-bluebubbles"},
     "homeassistant": {"label": "🏠 Home Assistant", "default_toolset": "hermes-homeassistant"},
     "email":    {"label": "📧 Email",      "default_toolset": "hermes-email"},
     "matrix":   {"label": "💬 Matrix",     "default_toolset": "hermes-matrix"},
  "dingtalk": {"label": "💬 DingTalk", "default_toolset": "hermes-dingtalk"},
     "feishu": {"label": "🪽 Feishu", "default_toolset": "hermes-feishu"},
     "wecom": {"label": "💬 WeCom", "default_toolset": "hermes-wecom"},
+    "weixin": {"label": "💬 Weixin", "default_toolset": "hermes-weixin"},
     "api_server": {"label": "🌐 API Server", "default_toolset": "hermes-api-server"},
     "mattermost": {"label": "💬 Mattermost", "default_toolset": "hermes-mattermost"},
     "webhook": {"label": "🔗 Webhook", "default_toolset": "hermes-webhook"},
@@ -280,21 +266,21 @@ TOOL_CATEGORIES = {
         "icon": "🌐",
         "providers": [
             {
-                "name": "Nous Subscription (Browserbase cloud)",
-                "tag": "Managed Browserbase billed to your subscription",
+                "name": "Nous Subscription (Browser Use cloud)",
+                "tag": "Managed Browser Use billed to your subscription",
                 "env_vars": [],
-                "browser_provider": "browserbase",
+                "browser_provider": "browser-use",
                 "requires_nous_auth": True,
                 "managed_nous_feature": "browser",
-                "override_env_vars": ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID"],
-                "post_setup": "browserbase",
+                "override_env_vars": ["BROWSER_USE_API_KEY"],
+                "post_setup": "agent_browser",
             },
             {
                 "name": "Local Browser",
                 "tag": "Free headless Chromium (no API key needed)",
                 "env_vars": [],
                 "browser_provider": "local",
-                "post_setup": "browserbase",  # Same npm install for agent-browser
+                "post_setup": "agent_browser",
             },
             {
                 "name": "Browserbase",
@@ -304,7 +290,7 @@ TOOL_CATEGORIES = {
                     {"key": "BROWSERBASE_PROJECT_ID", "prompt": "Browserbase project ID"},
                 ],
                 "browser_provider": "browserbase",
-                "post_setup": "browserbase",
+                "post_setup": "agent_browser",
             },
             {
                 "name": "Browser Use",
@@ -313,7 +299,16 @@ TOOL_CATEGORIES = {
                     {"key": "BROWSER_USE_API_KEY", "prompt": "Browser Use API key", "url": "https://browser-use.com"},
                 ],
                 "browser_provider": "browser-use",
-                "post_setup": "browserbase",
+                "post_setup": "agent_browser",
+            },
+            {
+                "name": "Firecrawl",
+                "tag": "Cloud browser with remote execution",
+                "env_vars": [
+                    {"key": "FIRECRAWL_API_KEY", "prompt": "Firecrawl API key", "url": "https://firecrawl.dev"},
+                ],
+                "browser_provider": "firecrawl",
+                "post_setup": "agent_browser",
             },
             {
                 "name": "Camofox",
@@ -372,7 +367,7 @@ TOOLSET_ENV_REQUIREMENTS = {
 def _run_post_setup(post_setup_key: str):
     """Run post-setup hooks for tools that need extra installation steps."""
     import shutil
-    if post_setup_key == "browserbase":
+    if post_setup_key in ("agent_browser", "browserbase"):
         node_modules = PROJECT_ROOT / "node_modules" / "agent-browser"
         if not node_modules.exists() and shutil.which("npm"):
             _print_info("    Installing Node.js dependencies for browser tools...")
@@ -561,6 +556,7 @@ def _get_platform_tools(
     # MCP servers are expected to be available on all platforms by default.
     # If the platform explicitly lists one or more MCP server names, treat that
     # as an allowlist. Otherwise include every globally enabled MCP server.
+    # Special sentinel: "no_mcp" in the toolset list disables all MCP servers.
     mcp_servers = config.get("mcp_servers") or {}
     enabled_mcp_servers = {
         name
@@ -568,10 +564,15 @@ def _get_platform_tools(
         if isinstance(server_cfg, dict)
         and _parse_enabled_flag(server_cfg.get("enabled", True), default=True)
     }
-    explicit_mcp_servers = explicit_passthrough & enabled_mcp_servers
-    enabled_toolsets.update(explicit_passthrough - enabled_mcp_servers)
+    # Allow "no_mcp" sentinel to opt out of all MCP servers for this platform
+    if "no_mcp" in toolset_names:
+        explicit_mcp_servers = set()
+        enabled_toolsets.update(explicit_passthrough - enabled_mcp_servers - {"no_mcp"})
+    else:
+        explicit_mcp_servers = explicit_passthrough & enabled_mcp_servers
+        enabled_toolsets.update(explicit_passthrough - enabled_mcp_servers)
     if include_default_mcp_servers:
-        if explicit_mcp_servers:
+        if explicit_mcp_servers or "no_mcp" in toolset_names:
             enabled_toolsets.update(explicit_mcp_servers)
         else:
             enabled_toolsets.update(enabled_mcp_servers)
@@ -720,6 +721,8 @@ def _prompt_choice(question: str, choices: list, default: int = 0) -> int:
                     return
 
         curses.wrapper(_curses_menu)
+        from hermes_cli.curses_ui import flush_stdin
+        flush_stdin()
         return result_holder[0]
 
     except Exception:

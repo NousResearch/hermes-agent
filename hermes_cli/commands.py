@@ -16,8 +16,18 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from prompt_toolkit.auto_suggest import AutoSuggest, Suggestion
-from prompt_toolkit.completion import Completer, Completion
+# prompt_toolkit is an optional CLI dependency — only needed for
+# SlashCommandCompleter and SlashCommandAutoSuggest.  Gateway and test
+# environments that lack it must still be able to import this module
+# for resolve_command, gateway_help_lines, and COMMAND_REGISTRY.
+try:
+    from prompt_toolkit.auto_suggest import AutoSuggest, Suggestion
+    from prompt_toolkit.completion import Completer, Completion
+except ImportError:  # pragma: no cover
+    AutoSuggest = object  # type: ignore[assignment,misc]
+    Completer = object    # type: ignore[assignment,misc]
+    Suggestion = None     # type: ignore[assignment]
+    Completion = None     # type: ignore[assignment]
 
 
 # ---------------------------------------------------------------------------
@@ -73,8 +83,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
                args_hint="<question>"),
     CommandDef("queue", "Queue a prompt for the next turn (doesn't interrupt)", "Session",
                aliases=("q",), args_hint="<prompt>"),
-    CommandDef("status", "Show session info", "Session",
-               gateway_only=True),
+    CommandDef("status", "Show session info", "Session"),
     CommandDef("profile", "Show active profile name and home directory", "Info"),
     CommandDef("sethome", "Set this chat as the home channel", "Session",
                gateway_only=True, aliases=("set-home",)),
@@ -87,8 +96,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("model", "Switch model for this session", "Configuration", args_hint="[model] [--global]"),
     CommandDef("provider", "Show available providers and current provider",
                "Configuration"),
-    CommandDef("prompt", "View/set custom system prompt", "Configuration",
-               cli_only=True, args_hint="[text]", subcommands=("clear",)),
+
     CommandDef("personality", "Set a predefined personality", "Configuration",
                args_hint="[name]"),
     CommandDef("statusbar", "Toggle the context/model status bar", "Configuration",
@@ -100,7 +108,10 @@ COMMAND_REGISTRY: list[CommandDef] = [
                "Configuration"),
     CommandDef("reasoning", "Manage reasoning effort and display", "Configuration",
                args_hint="[level|show|hide]",
-               subcommands=("none", "low", "minimal", "medium", "high", "xhigh", "show", "hide", "on", "off")),
+               subcommands=("none", "minimal", "low", "medium", "high", "xhigh", "show", "hide", "on", "off")),
+    CommandDef("fast", "Toggle fast mode — OpenAI Priority Processing / Anthropic Fast Mode (Normal/Fast)", "Configuration",
+               args_hint="[normal|fast|status]",
+               subcommands=("normal", "fast", "status", "on", "off")),
     CommandDef("skin", "Show or change the display skin/theme", "Configuration",
                cli_only=True, args_hint="[name]"),
     CommandDef("voice", "Toggle voice mode", "Configuration",
@@ -129,13 +140,15 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("commands", "Browse all commands and skills (paginated)", "Info",
                gateway_only=True, args_hint="[page]"),
     CommandDef("help", "Show available commands", "Info"),
-    CommandDef("usage", "Show token usage for the current session", "Info"),
+    CommandDef("usage", "Show token usage and rate limits for the current session", "Info"),
     CommandDef("insights", "Show usage insights and analytics", "Info",
                args_hint="[days]"),
     CommandDef("platforms", "Show gateway/messaging platform status", "Info",
                cli_only=True, aliases=("gateway",)),
     CommandDef("paste", "Check clipboard for an image and attach it", "Info",
                cli_only=True),
+    CommandDef("image", "Attach a local image file for your next prompt", "Info",
+               cli_only=True, args_hint="<path>"),
     CommandDef("update", "Update Hermes Agent to the latest version", "Info",
                gateway_only=True),
 
@@ -168,12 +181,6 @@ def resolve_command(name: str) -> CommandDef | None:
     Accepts names with or without the leading slash.
     """
     return _COMMAND_LOOKUP.get(name.lower().lstrip("/"))
-
-
-def register_plugin_command(cmd: CommandDef) -> None:
-    """Append a plugin-defined command to the registry and refresh lookups."""
-    COMMAND_REGISTRY.append(cmd)
-    rebuild_lookups()
 
 
 def rebuild_lookups() -> None:
@@ -293,16 +300,8 @@ def _resolve_config_gates() -> set[str]:
     if not gated:
         return set()
     try:
-        import yaml
-        config_path = os.path.join(
-            os.getenv("HERMES_HOME", os.path.expanduser("~/.hermes")),
-            "config.yaml",
-        )
-        if os.path.exists(config_path):
-            with open(config_path, encoding="utf-8") as f:
-                cfg = yaml.safe_load(f) or {}
-        else:
-            cfg = {}
+        from hermes_cli.config import read_raw_config
+        cfg = read_raw_config()
     except Exception:
         return set()
     result: set[str] = set()
@@ -366,21 +365,46 @@ def telegram_bot_commands() -> list[tuple[str, str]]:
     for cmd in COMMAND_REGISTRY:
         if not _is_gateway_available(cmd, overrides):
             continue
-        tg_name = cmd.name.replace("-", "_")
-        result.append((tg_name, cmd.description))
+        tg_name = _sanitize_telegram_name(cmd.name)
+        if tg_name:
+            result.append((tg_name, cmd.description))
     return result
 
 
-_TG_NAME_LIMIT = 32
+_CMD_NAME_LIMIT = 32
+"""Max command name length shared by Telegram and Discord."""
+
+# Backward-compat alias — tests and external code may reference the old name.
+_TG_NAME_LIMIT = _CMD_NAME_LIMIT
+
+# Telegram Bot API allows only lowercase a-z, 0-9, and underscores in
+# command names.  This regex strips everything else after initial conversion.
+_TG_INVALID_CHARS = re.compile(r"[^a-z0-9_]")
+_TG_MULTI_UNDERSCORE = re.compile(r"_{2,}")
 
 
-def _clamp_telegram_names(
+def _sanitize_telegram_name(raw: str) -> str:
+    """Convert a command/skill/plugin name to a valid Telegram command name.
+
+    Telegram requires: 1-32 chars, lowercase a-z, digits 0-9, underscores only.
+    Steps: lowercase → replace hyphens with underscores → strip all other
+    invalid characters → collapse consecutive underscores → strip leading/
+    trailing underscores.
+    """
+    name = raw.lower().replace("-", "_")
+    name = _TG_INVALID_CHARS.sub("", name)
+    name = _TG_MULTI_UNDERSCORE.sub("_", name)
+    return name.strip("_")
+
+
+def _clamp_command_names(
     entries: list[tuple[str, str]],
     reserved: set[str],
 ) -> list[tuple[str, str]]:
-    """Enforce Telegram's 32-char command name limit with collision avoidance.
+    """Enforce 32-char command name limit with collision avoidance.
 
-    Names exceeding 32 chars are truncated.  If truncation creates a duplicate
+    Both Telegram and Discord cap slash command names at 32 characters.
+    Names exceeding the limit are truncated.  If truncation creates a duplicate
     (against *reserved* names or earlier entries in the same batch), the name is
     shortened to 31 chars and a digit ``0``-``9`` is appended to differentiate.
     If all 10 digit slots are taken the entry is silently dropped.
@@ -388,10 +412,10 @@ def _clamp_telegram_names(
     used: set[str] = set(reserved)
     result: list[tuple[str, str]] = []
     for name, desc in entries:
-        if len(name) > _TG_NAME_LIMIT:
-            candidate = name[:_TG_NAME_LIMIT]
+        if len(name) > _CMD_NAME_LIMIT:
+            candidate = name[:_CMD_NAME_LIMIT]
             if candidate in used:
-                prefix = name[:_TG_NAME_LIMIT - 1]
+                prefix = name[:_CMD_NAME_LIMIT - 1]
                 for digit in range(10):
                     candidate = f"{prefix}{digit}"
                     if candidate not in used:
@@ -406,6 +430,129 @@ def _clamp_telegram_names(
         result.append((name, desc))
     return result
 
+
+# Backward-compat alias.
+_clamp_telegram_names = _clamp_command_names
+
+
+# ---------------------------------------------------------------------------
+# Shared skill/plugin collection for gateway platforms
+# ---------------------------------------------------------------------------
+
+def _collect_gateway_skill_entries(
+    platform: str,
+    max_slots: int,
+    reserved_names: set[str],
+    desc_limit: int = 100,
+    sanitize_name: "Callable[[str], str] | None" = None,
+) -> tuple[list[tuple[str, str, str]], int]:
+    """Collect plugin + skill entries for a gateway platform.
+
+    Priority order:
+      1. Plugin slash commands (take precedence over skills)
+      2. Built-in skill commands (fill remaining slots, alphabetical)
+
+    Only skills are trimmed when the cap is reached.
+    Hub-installed skills are excluded.  Per-platform disabled skills are
+    excluded.
+
+    Args:
+        platform: Platform identifier for per-platform skill filtering
+            (``"telegram"``, ``"discord"``, etc.).
+        max_slots: Maximum number of entries to return (remaining slots after
+            built-in/core commands).
+        reserved_names: Names already taken by built-in commands.  Mutated
+            in-place as new names are added.
+        desc_limit: Max description length (40 for Telegram, 100 for Discord).
+        sanitize_name: Optional name transform applied before clamping, e.g.
+            :func:`_sanitize_telegram_name` for Telegram.  May return an
+            empty string to signal "skip this entry".
+
+    Returns:
+        ``(entries, hidden_count)`` where *entries* is a list of
+        ``(name, description, cmd_key)`` triples and *hidden_count* is the
+        number of skill entries dropped due to the cap.  ``cmd_key`` is the
+        original ``/skill-name`` key from :func:`get_skill_commands`.
+    """
+    all_entries: list[tuple[str, str, str]] = []
+
+    # --- Tier 1: Plugin slash commands (never trimmed) ---------------------
+    plugin_pairs: list[tuple[str, str]] = []
+    try:
+        from hermes_cli.plugins import get_plugin_manager
+        pm = get_plugin_manager()
+        plugin_cmds = getattr(pm, "_plugin_commands", {})
+        for cmd_name in sorted(plugin_cmds):
+            name = sanitize_name(cmd_name) if sanitize_name else cmd_name
+            if not name:
+                continue
+            desc = "Plugin command"
+            if len(desc) > desc_limit:
+                desc = desc[:desc_limit - 3] + "..."
+            plugin_pairs.append((name, desc))
+    except Exception:
+        pass
+
+    plugin_pairs = _clamp_command_names(plugin_pairs, reserved_names)
+    reserved_names.update(n for n, _ in plugin_pairs)
+    # Plugins have no cmd_key — use empty string as placeholder
+    for n, d in plugin_pairs:
+        all_entries.append((n, d, ""))
+
+    # --- Tier 2: Built-in skill commands (trimmed at cap) -----------------
+    _platform_disabled: set[str] = set()
+    try:
+        from agent.skill_utils import get_disabled_skill_names
+        _platform_disabled = get_disabled_skill_names(platform=platform)
+    except Exception:
+        pass
+
+    skill_triples: list[tuple[str, str, str]] = []
+    try:
+        from agent.skill_commands import get_skill_commands
+        from tools.skills_tool import SKILLS_DIR
+        _skills_dir = str(SKILLS_DIR.resolve())
+        _hub_dir = str((SKILLS_DIR / ".hub").resolve())
+        skill_cmds = get_skill_commands()
+        for cmd_key in sorted(skill_cmds):
+            info = skill_cmds[cmd_key]
+            skill_path = info.get("skill_md_path", "")
+            if not skill_path.startswith(_skills_dir):
+                continue
+            if skill_path.startswith(_hub_dir):
+                continue
+            skill_name = info.get("name", "")
+            if skill_name in _platform_disabled:
+                continue
+            raw_name = cmd_key.lstrip("/")
+            name = sanitize_name(raw_name) if sanitize_name else raw_name
+            if not name:
+                continue
+            desc = info.get("description", "")
+            if len(desc) > desc_limit:
+                desc = desc[:desc_limit - 3] + "..."
+            skill_triples.append((name, desc, cmd_key))
+    except Exception:
+        pass
+
+    # Clamp names; _clamp_command_names works on (name, desc) pairs so we
+    # need to zip/unzip.
+    skill_pairs = [(n, d) for n, d, _ in skill_triples]
+    key_by_pair = {(n, d): k for n, d, k in skill_triples}
+    skill_pairs = _clamp_command_names(skill_pairs, reserved_names)
+
+    # Skills fill remaining slots — only tier that gets trimmed
+    remaining = max(0, max_slots - len(all_entries))
+    hidden_count = max(0, len(skill_pairs) - remaining)
+    for n, d in skill_pairs[:remaining]:
+        all_entries.append((n, d, key_by_pair.get((n, d), "")))
+
+    return all_entries[:max_slots], hidden_count
+
+
+# ---------------------------------------------------------------------------
+# Platform-specific wrappers
+# ---------------------------------------------------------------------------
 
 def telegram_menu_commands(max_commands: int = 100) -> tuple[list[tuple[str, str]], int]:
     """Return Telegram menu commands capped to the Bot API limit.
@@ -425,78 +572,50 @@ def telegram_menu_commands(max_commands: int = 100) -> tuple[list[tuple[str, str
         skill commands omitted due to the cap.
     """
     core_commands = list(telegram_bot_commands())
-    # Reserve core names so plugin/skill truncation can't collide with them
     reserved_names = {n for n, _ in core_commands}
     all_commands = list(core_commands)
 
-    # Plugin slash commands get priority over skills
-    plugin_entries: list[tuple[str, str]] = []
-    try:
-        from hermes_cli.plugins import get_plugin_manager
-        pm = get_plugin_manager()
-        plugin_cmds = getattr(pm, "_plugin_commands", {})
-        for cmd_name in sorted(plugin_cmds):
-            tg_name = cmd_name.replace("-", "_")
-            desc = "Plugin command"
-            if len(desc) > 40:
-                desc = desc[:37] + "..."
-            plugin_entries.append((tg_name, desc))
-    except Exception:
-        pass
-
-    # Clamp plugin names to 32 chars with collision avoidance
-    plugin_entries = _clamp_telegram_names(plugin_entries, reserved_names)
-    reserved_names.update(n for n, _ in plugin_entries)
-    all_commands.extend(plugin_entries)
-
-    # Load per-platform disabled skills so they don't consume menu slots.
-    # get_skill_commands() already filters the *global* disabled list, but
-    # per-platform overrides (skills.platform_disabled.telegram) were never
-    # applied here — that's what this block fixes.
-    _platform_disabled: set[str] = set()
-    try:
-        from agent.skill_utils import get_disabled_skill_names
-        _platform_disabled = get_disabled_skill_names(platform="telegram")
-    except Exception:
-        pass
-
-    # Remaining slots go to built-in skill commands (not hub-installed).
-    skill_entries: list[tuple[str, str]] = []
-    try:
-        from agent.skill_commands import get_skill_commands
-        from tools.skills_tool import SKILLS_DIR
-        _skills_dir = str(SKILLS_DIR.resolve())
-        _hub_dir = str((SKILLS_DIR / ".hub").resolve())
-        skill_cmds = get_skill_commands()
-        for cmd_key in sorted(skill_cmds):
-            info = skill_cmds[cmd_key]
-            skill_path = info.get("skill_md_path", "")
-            if not skill_path.startswith(_skills_dir):
-                continue
-            if skill_path.startswith(_hub_dir):
-                continue
-            # Skip skills disabled for telegram
-            skill_name = info.get("name", "")
-            if skill_name in _platform_disabled:
-                continue
-            name = cmd_key.lstrip("/").replace("-", "_")
-            desc = info.get("description", "")
-            # Keep descriptions short — setMyCommands has an undocumented
-            # total payload limit.  40 chars fits 100 commands safely.
-            if len(desc) > 40:
-                desc = desc[:37] + "..."
-            skill_entries.append((name, desc))
-    except Exception:
-        pass
-
-    # Clamp skill names to 32 chars with collision avoidance
-    skill_entries = _clamp_telegram_names(skill_entries, reserved_names)
-
-    # Skills fill remaining slots — they're the only tier that gets trimmed
     remaining_slots = max(0, max_commands - len(all_commands))
-    hidden_count = max(0, len(skill_entries) - remaining_slots)
-    all_commands.extend(skill_entries[:remaining_slots])
+    entries, hidden_count = _collect_gateway_skill_entries(
+        platform="telegram",
+        max_slots=remaining_slots,
+        reserved_names=reserved_names,
+        desc_limit=40,
+        sanitize_name=_sanitize_telegram_name,
+    )
+    # Drop the cmd_key — Telegram only needs (name, desc) pairs.
+    all_commands.extend((n, d) for n, d, _k in entries)
     return all_commands[:max_commands], hidden_count
+
+
+def discord_skill_commands(
+    max_slots: int,
+    reserved_names: set[str],
+) -> tuple[list[tuple[str, str, str]], int]:
+    """Return skill entries for Discord slash command registration.
+
+    Same priority and filtering logic as :func:`telegram_menu_commands`
+    (plugins > skills, hub excluded, per-platform disabled excluded), but
+    adapted for Discord's constraints:
+
+    - Hyphens are allowed in names (no ``-`` → ``_`` sanitization)
+    - Descriptions capped at 100 chars (Discord's per-field max)
+
+    Args:
+        max_slots: Available command slots (100 minus existing built-in count).
+        reserved_names: Names of already-registered built-in commands.
+
+    Returns:
+        ``(entries, hidden_count)`` where *entries* is a list of
+        ``(discord_name, description, cmd_key)`` triples.  ``cmd_key`` is
+        the original ``/skill-name`` key needed for the slash handler callback.
+    """
+    return _collect_gateway_skill_entries(
+        platform="discord",
+        max_slots=max_slots,
+        reserved_names=set(reserved_names),  # copy — don't mutate caller's set
+        desc_limit=100,
+    )
 
 
 def slack_subcommand_map() -> dict[str, str]:
@@ -526,8 +645,18 @@ class SlashCommandCompleter(Completer):
     def __init__(
         self,
         skill_commands_provider: Callable[[], Mapping[str, dict[str, Any]]] | None = None,
+        command_filter: Callable[[str], bool] | None = None,
     ) -> None:
         self._skill_commands_provider = skill_commands_provider
+        self._command_filter = command_filter
+
+    def _command_allowed(self, slash_command: str) -> bool:
+        if self._command_filter is None:
+            return True
+        try:
+            return bool(self._command_filter(slash_command))
+        except Exception:
+            return True
 
     def _iter_skill_commands(self) -> Mapping[str, dict[str, Any]]:
         if self._skill_commands_provider is None:
@@ -805,7 +934,7 @@ class SlashCommandCompleter(Completer):
                 return
 
             # Static subcommand completions
-            if " " not in sub_text and base_cmd in SUBCOMMANDS:
+            if " " not in sub_text and base_cmd in SUBCOMMANDS and self._command_allowed(base_cmd):
                 for sub in SUBCOMMANDS[base_cmd]:
                     if sub.startswith(sub_lower) and sub != sub_lower:
                         yield Completion(
@@ -818,6 +947,8 @@ class SlashCommandCompleter(Completer):
         word = text[1:]
 
         for cmd, desc in COMMANDS.items():
+            if not self._command_allowed(cmd):
+                continue
             cmd_name = cmd[1:]
             if cmd_name.startswith(word):
                 yield Completion(
@@ -876,6 +1007,8 @@ class SlashCommandAutoSuggest(AutoSuggest):
             # Still typing the command name: /upd → suggest "ate"
             word = text[1:].lower()
             for cmd in COMMANDS:
+                if self._completer is not None and not self._completer._command_allowed(cmd):
+                    continue
                 cmd_name = cmd[1:]  # strip leading /
                 if cmd_name.startswith(word) and cmd_name != word:
                     return Suggestion(cmd_name[len(word):])
@@ -886,6 +1019,8 @@ class SlashCommandAutoSuggest(AutoSuggest):
         sub_lower = sub_text.lower()
 
         # Static subcommands
+        if self._completer is not None and not self._completer._command_allowed(base_cmd):
+            return None
         if base_cmd in SUBCOMMANDS and SUBCOMMANDS[base_cmd]:
             if " " not in sub_text:
                 for sub in SUBCOMMANDS[base_cmd]:

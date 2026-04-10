@@ -10,6 +10,7 @@ Environment variables:
     MATRIX_USER_ID              Full user ID (@bot:server) — required for password login
     MATRIX_PASSWORD             Password (alternative to access token)
     MATRIX_ENCRYPTION           Set "true" to enable E2EE
+    MATRIX_DEVICE_ID            Stable device ID for E2EE persistence across restarts
     MATRIX_ALLOWED_USERS    Comma-separated Matrix user IDs (@user:server)
     MATRIX_HOME_ROOM        Room ID for cron/notification delivery
     MATRIX_REACTIONS        Set "false" to disable processing lifecycle reactions
@@ -39,6 +40,7 @@ from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
     MessageType,
+    ProcessingOutcome,
     SendResult,
 )
 
@@ -65,6 +67,21 @@ _MAX_PENDING_EVENTS = 100
 _PENDING_EVENT_TTL = 300  # seconds — stop retrying after 5 min
 
 
+_E2EE_INSTALL_HINT = (
+    "Install with: pip install 'matrix-nio[e2e]'  "
+    "(requires libolm C library)"
+)
+
+
+def _check_e2ee_deps() -> bool:
+    """Return True if matrix-nio E2EE dependencies (python-olm) are available."""
+    try:
+        from nio.crypto import ENCRYPTION_ENABLED
+        return bool(ENCRYPTION_ENABLED)
+    except (ImportError, AttributeError):
+        return False
+
+
 def check_matrix_requirements() -> bool:
     """Return True if the Matrix adapter can be used."""
     token = os.getenv("MATRIX_ACCESS_TOKEN", "")
@@ -79,7 +96,6 @@ def check_matrix_requirements() -> bool:
         return False
     try:
         import nio  # noqa: F401
-        return True
     except ImportError:
         logger.warning(
             "Matrix: matrix-nio not installed. "
@@ -87,9 +103,28 @@ def check_matrix_requirements() -> bool:
         )
         return False
 
+    # If encryption is requested, verify E2EE deps are available at startup
+    # rather than silently degrading to plaintext-only at connect time.
+    encryption_requested = os.getenv("MATRIX_ENCRYPTION", "").lower() in ("true", "1", "yes")
+    if encryption_requested and not _check_e2ee_deps():
+        logger.error(
+            "Matrix: MATRIX_ENCRYPTION=true but E2EE dependencies are missing. %s. "
+            "Without this, encrypted rooms will not work. "
+            "Set MATRIX_ENCRYPTION=false to disable E2EE.",
+            _E2EE_INSTALL_HINT,
+        )
+        return False
+
+    return True
+
 
 class MatrixAdapter(BasePlatformAdapter):
     """Gateway adapter for Matrix (any homeserver)."""
+
+    # Threshold for detecting Matrix client-side message splits.
+    # When a chunk is near the ~4000-char practical limit, a continuation
+    # is almost certain.
+    _SPLIT_THRESHOLD = 3900
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.MATRIX)
@@ -110,6 +145,10 @@ class MatrixAdapter(BasePlatformAdapter):
         self._encryption: bool = config.extra.get(
             "encryption",
             os.getenv("MATRIX_ENCRYPTION", "").lower() in ("true", "1", "yes"),
+        )
+        self._device_id: str = (
+            config.extra.get("device_id", "")
+            or os.getenv("MATRIX_DEVICE_ID", "")
         )
 
         self._client: Any = None  # nio.AsyncClient
@@ -138,6 +177,16 @@ class MatrixAdapter(BasePlatformAdapter):
         self._reactions_enabled: bool = os.getenv(
             "MATRIX_REACTIONS", "true"
         ).lower() not in ("false", "0", "no")
+        # Tracks the reaction event_id for in-progress (eyes) reactions.
+        # Key: (room_id, message_event_id) → reaction_event_id (for the eyes reaction).
+        self._pending_reactions: dict[tuple[str, str], str] = {}
+
+        # Text batching: merge rapid successive messages (Telegram-style).
+        # Matrix clients split long messages around 4000 chars.
+        self._text_batch_delay_seconds = float(os.getenv("HERMES_MATRIX_TEXT_BATCH_DELAY_SECONDS", "0.6"))
+        self._text_batch_split_delay_seconds = float(os.getenv("HERMES_MATRIX_TEXT_BATCH_SPLIT_DELAY_SECONDS", "2.0"))
+        self._pending_text_batches: Dict[str, MessageEvent] = {}
+        self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
 
     def _is_duplicate_event(self, event_id) -> bool:
         """Return True if this event was already processed. Tracks the ID otherwise."""
@@ -169,24 +218,42 @@ class MatrixAdapter(BasePlatformAdapter):
         _STORE_DIR.mkdir(parents=True, exist_ok=True)
 
         # Create the client.
+        # When a stable device_id is configured, pass it to the constructor
+        # so matrix-nio binds to it from the start (important for E2EE
+        # crypto-store persistence across restarts).
+        ctor_device_id = self._device_id or None
         if self._encryption:
+            if not _check_e2ee_deps():
+                logger.error(
+                    "Matrix: MATRIX_ENCRYPTION=true but E2EE dependencies are missing. %s. "
+                    "Refusing to connect — encrypted rooms would silently fail.",
+                    _E2EE_INSTALL_HINT,
+                )
+                return False
             try:
                 client = nio.AsyncClient(
                     self._homeserver,
                     self._user_id or "",
+                    device_id=ctor_device_id,
                     store_path=store_path,
                 )
-                logger.info("Matrix: E2EE enabled (store: %s)", store_path)
-            except Exception as exc:
-                logger.warning(
-                    "Matrix: failed to create E2EE client (%s), "
-                    "falling back to plain client. Install: "
-                    "pip install 'matrix-nio[e2e]'",
-                    exc,
+                logger.info(
+                    "Matrix: E2EE enabled (store: %s%s)",
+                    store_path,
+                    f", device_id={self._device_id}" if self._device_id else "",
                 )
-                client = nio.AsyncClient(self._homeserver, self._user_id or "")
+            except Exception as exc:
+                logger.error(
+                    "Matrix: failed to create E2EE client: %s. %s",
+                    exc, _E2EE_INSTALL_HINT,
+                )
+                return False
         else:
-            client = nio.AsyncClient(self._homeserver, self._user_id or "")
+            client = nio.AsyncClient(
+                self._homeserver,
+                self._user_id or "",
+                device_id=ctor_device_id,
+            )
 
         self._client = client
 
@@ -205,30 +272,36 @@ class MatrixAdapter(BasePlatformAdapter):
                 if resolved_user_id:
                     self._user_id = resolved_user_id
 
+                # Prefer the user-configured device_id (MATRIX_DEVICE_ID) so
+                # the bot reuses a stable identity across restarts.  Fall back
+                # to whatever whoami returned.
+                effective_device_id = self._device_id or resolved_device_id
+
                 # restore_login() is the matrix-nio path that binds the access
                 # token to a specific device and loads the crypto store.
-                if resolved_device_id and hasattr(client, "restore_login"):
+                if effective_device_id and hasattr(client, "restore_login"):
                     client.restore_login(
                         self._user_id or resolved_user_id,
-                        resolved_device_id,
+                        effective_device_id,
                         self._access_token,
                     )
                 else:
                     if self._user_id:
                         client.user_id = self._user_id
-                    if resolved_device_id:
-                        client.device_id = resolved_device_id
+                    if effective_device_id:
+                        client.device_id = effective_device_id
                     client.access_token = self._access_token
                     if self._encryption:
                         logger.warning(
                             "Matrix: access-token login did not restore E2EE state; "
-                            "encrypted rooms may fail until a device_id is available"
+                            "encrypted rooms may fail until a device_id is available. "
+                            "Set MATRIX_DEVICE_ID to a stable value."
                         )
 
                 logger.info(
                     "Matrix: using access token for %s%s",
                     self._user_id or "(unknown user)",
-                    f" (device {resolved_device_id})" if resolved_device_id else "",
+                    f" (device {effective_device_id})" if effective_device_id else "",
                 )
             else:
                 logger.error(
@@ -271,10 +344,15 @@ class MatrixAdapter(BasePlatformAdapter):
                 except Exception as exc:
                     logger.debug("Matrix: could not import keys: %s", exc)
         elif self._encryption:
-            logger.warning(
-                "Matrix: E2EE requested but crypto store is not loaded; "
-                "encrypted rooms may fail"
+            # E2EE was requested but the crypto store failed to load —
+            # this means encrypted rooms will silently not work.  Hard-fail.
+            logger.error(
+                "Matrix: E2EE requested but crypto store is not loaded — "
+                "cannot decrypt or encrypt messages. %s",
+                _E2EE_INSTALL_HINT,
             )
+            await client.close()
+            return False
 
         # Register event callbacks.
         client.add_event_callback(self._on_room_message, nio.RoomMessageText)
@@ -524,6 +602,11 @@ class MatrixAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Download an image URL and upload it to Matrix."""
+        from tools.url_safety import is_safe_url
+        if not is_safe_url(image_url):
+            logger.warning("Matrix: blocked unsafe image URL (SSRF protection)")
+            return await super().send_image(chat_id, image_url, caption, reply_to, metadata=metadata)
+
         try:
             # Try aiohttp first (always available), fall back to httpx
             try:
@@ -995,7 +1078,7 @@ class MatrixAdapter(BasePlatformAdapter):
 
         # Message type.
         msg_type = MessageType.TEXT
-        if body.startswith("!") or body.startswith("/"):
+        if body.startswith(("!", "/")):
             msg_type = MessageType.COMMAND
 
         source = self.build_source(
@@ -1021,7 +1104,81 @@ class MatrixAdapter(BasePlatformAdapter):
         # Acknowledge receipt so the room shows as read (fire-and-forget).
         self._background_read_receipt(room.room_id, event.event_id)
 
-        await self.handle_message(msg_event)
+        # Only batch plain text messages — commands dispatch immediately.
+        if msg_type == MessageType.TEXT and self._text_batch_delay_seconds > 0:
+            self._enqueue_text_event(msg_event)
+        else:
+            await self.handle_message(msg_event)
+
+    # ------------------------------------------------------------------
+    # Text message aggregation (handles Matrix client-side splits)
+    # ------------------------------------------------------------------
+
+    def _text_batch_key(self, event: MessageEvent) -> str:
+        """Session-scoped key for text message batching."""
+        from gateway.session import build_session_key
+        return build_session_key(
+            event.source,
+            group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
+            thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
+        )
+
+    def _enqueue_text_event(self, event: MessageEvent) -> None:
+        """Buffer a text event and reset the flush timer.
+
+        When a Matrix client splits a long message, the chunks arrive within
+        a few hundred milliseconds.  This merges them into a single event
+        before dispatching.
+        """
+        key = self._text_batch_key(event)
+        existing = self._pending_text_batches.get(key)
+        chunk_len = len(event.text or "")
+        if existing is None:
+            event._last_chunk_len = chunk_len  # type: ignore[attr-defined]
+            self._pending_text_batches[key] = event
+        else:
+            if event.text:
+                existing.text = f"{existing.text}\n{event.text}" if existing.text else event.text
+            existing._last_chunk_len = chunk_len  # type: ignore[attr-defined]
+            # Merge any media that might be attached
+            if event.media_urls:
+                existing.media_urls.extend(event.media_urls)
+                existing.media_types.extend(event.media_types)
+
+        # Cancel any pending flush and restart the timer
+        prior_task = self._pending_text_batch_tasks.get(key)
+        if prior_task and not prior_task.done():
+            prior_task.cancel()
+        self._pending_text_batch_tasks[key] = asyncio.create_task(
+            self._flush_text_batch(key)
+        )
+
+    async def _flush_text_batch(self, key: str) -> None:
+        """Wait for the quiet period then dispatch the aggregated text.
+
+        Uses a longer delay when the latest chunk is near Matrix's ~4000-char
+        split point, since a continuation chunk is almost certain.
+        """
+        current_task = asyncio.current_task()
+        try:
+            pending = self._pending_text_batches.get(key)
+            last_len = getattr(pending, "_last_chunk_len", 0) if pending else 0
+            if last_len >= self._SPLIT_THRESHOLD:
+                delay = self._text_batch_split_delay_seconds
+            else:
+                delay = self._text_batch_delay_seconds
+            await asyncio.sleep(delay)
+            event = self._pending_text_batches.pop(key, None)
+            if not event:
+                return
+            logger.info(
+                "[Matrix] Flushing text batch %s (%d chars)",
+                key, len(event.text or ""),
+            )
+            await self.handle_message(event)
+        finally:
+            if self._pending_text_batch_tasks.get(key) is current_task:
+                self._pending_text_batch_tasks.pop(key, None)
 
     async def _on_room_message_media(self, room: Any, event: Any) -> None:
         """Handle incoming media messages (images, audio, video, files)."""
@@ -1283,12 +1440,14 @@ class MatrixAdapter(BasePlatformAdapter):
 
     async def _send_reaction(
         self, room_id: str, event_id: str, emoji: str,
-    ) -> bool:
-        """Send an emoji reaction to a message in a room."""
+    ) -> Optional[str]:
+        """Send an emoji reaction to a message in a room.
+        Returns the reaction event_id on success, None on failure.
+        """
         import nio
 
         if not self._client:
-            return False
+            return None
         content = {
             "m.relates_to": {
                 "rel_type": "m.annotation",
@@ -1303,12 +1462,12 @@ class MatrixAdapter(BasePlatformAdapter):
             )
             if isinstance(resp, nio.RoomSendResponse):
                 logger.debug("Matrix: sent reaction %s to %s", emoji, event_id)
-                return True
+                return resp.event_id
             logger.debug("Matrix: reaction send failed: %s", resp)
-            return False
+            return None
         except Exception as exc:
             logger.debug("Matrix: reaction send error: %s", exc)
-            return False
+            return None
 
     async def _redact_reaction(
         self, room_id: str, reaction_event_id: str, reason: str = "",
@@ -1323,10 +1482,12 @@ class MatrixAdapter(BasePlatformAdapter):
         msg_id = event.message_id
         room_id = event.source.chat_id
         if msg_id and room_id:
-            await self._send_reaction(room_id, msg_id, "\U0001f440")
+            reaction_event_id = await self._send_reaction(room_id, msg_id, "\U0001f440")
+            if reaction_event_id:
+                self._pending_reactions[(room_id, msg_id)] = reaction_event_id
 
     async def on_processing_complete(
-        self, event: MessageEvent, success: bool,
+        self, event: MessageEvent, outcome: ProcessingOutcome,
     ) -> None:
         """Replace eyes with checkmark (success) or cross (failure)."""
         if not self._reactions_enabled:
@@ -1335,11 +1496,18 @@ class MatrixAdapter(BasePlatformAdapter):
         room_id = event.source.chat_id
         if not msg_id or not room_id:
             return
-        # Note: Matrix doesn't support removing a specific reaction easily
-        # without tracking the reaction event_id. We send the new reaction;
-        # the eyes stays (acceptable UX — both are visible).
+        if outcome == ProcessingOutcome.CANCELLED:
+            return
+        # Remove the eyes reaction first, if we tracked its event_id.
+        reaction_key = (room_id, msg_id)
+        if reaction_key in self._pending_reactions:
+            eyes_event_id = self._pending_reactions.pop(reaction_key)
+            if not await self._redact_reaction(room_id, eyes_event_id):
+                logger.debug("Matrix: failed to redact eyes reaction %s", eyes_event_id)
         await self._send_reaction(
-            room_id, msg_id, "\u2705" if success else "\u274c",
+            room_id,
+            msg_id,
+            "\u2705" if outcome == ProcessingOutcome.SUCCESS else "\u274c",
         )
 
     async def _on_reaction(self, room: Any, event: Any) -> None:

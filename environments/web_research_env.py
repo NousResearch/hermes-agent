@@ -472,6 +472,7 @@ class WebResearchEnv(HermesAgentBaseEnv):
                     temperature=0.0,  # Deterministic for eval
                     max_tokens=self.config.max_token_length,
                     extra_body=self.config.extra_body,
+                    budget_config=self.config.build_budget_config(),
                 )
                 result = await agent.run(messages)
 

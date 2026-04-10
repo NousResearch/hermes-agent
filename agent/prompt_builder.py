@@ -40,7 +40,7 @@ _CONTEXT_THREAT_PATTERNS = [
     (r'disregard\s+(your|all|any)\s+(instructions|rules|guidelines)', "disregard_rules"),
     (r'act\s+as\s+(if|though)\s+you\s+(have\s+no|don\'t\s+have)\s+(restrictions|limits|rules)', "bypass_restrictions"),
     (r'<!--[^>]*(?:ignore|override|system|secret|hidden)[^>]*-->', "html_comment_injection"),
-    (r'<\s*div\s+style\s*=\s*["\'].*display\s*:\s*none', "hidden_div"),
+    (r'<\s*div\s+style\s*=\s*["\'][\s\S]*?display\s*:\s*none', "hidden_div"),
     (r'translate\s+.*\s+into\s+.*\s+and\s+(execute|run|eval)', "translate_execute"),
     (r'curl\s+[^\n]*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)', "exfil_curl"),
     (r'cat\s+[^\n]*(\.env|credentials|\.netrc|\.pgpass)', "read_secrets"),
@@ -187,7 +187,7 @@ TOOL_USE_ENFORCEMENT_GUIDANCE = (
 
 # Model name substrings that trigger tool-use enforcement guidance.
 # Add new patterns here when a model family needs explicit steering.
-TOOL_USE_ENFORCEMENT_MODELS = ("gpt", "codex", "gemini", "gemma")
+TOOL_USE_ENFORCEMENT_MODELS = ("gpt", "codex", "gemini", "gemma", "grok")
 
 # OpenAI GPT/Codex-specific execution guidance.  Addresses known failure modes
 # where GPT models abandon work on partial results, skip prerequisite lookups,
@@ -203,6 +203,30 @@ OPENAI_MODEL_EXECUTION_GUIDANCE = (
     "- Keep calling tools until: (1) the task is complete, AND (2) you have verified "
     "the result.\n"
     "</tool_persistence>\n"
+    "\n"
+    "<mandatory_tool_use>\n"
+    "NEVER answer these from memory or mental computation — ALWAYS use a tool:\n"
+    "- Arithmetic, math, calculations → use terminal or execute_code\n"
+    "- Hashes, encodings, checksums → use terminal (e.g. sha256sum, base64)\n"
+    "- Current time, date, timezone → use terminal (e.g. date)\n"
+    "- System state: OS, CPU, memory, disk, ports, processes → use terminal\n"
+    "- File contents, sizes, line counts → use read_file, search_files, or terminal\n"
+    "- Git history, branches, diffs → use terminal\n"
+    "- Current facts (weather, news, versions) → use web_search\n"
+    "Your memory and user profile describe the USER, not the system you are "
+    "running on. The execution environment may differ from what the user profile "
+    "says about their personal setup.\n"
+    "</mandatory_tool_use>\n"
+    "\n"
+    "<act_dont_ask>\n"
+    "When a question has an obvious default interpretation, act on it immediately "
+    "instead of asking for clarification. Examples:\n"
+    "- 'Is port 443 open?' → check THIS machine (don't ask 'open where?')\n"
+    "- 'What OS am I running?' → check the live system (don't use user profile)\n"
+    "- 'What time is it?' → run `date` (don't guess)\n"
+    "Only ask for clarification when the ambiguity genuinely changes what tool "
+    "you would call.\n"
+    "</act_dont_ask>\n"
     "\n"
     "<prerequisite_checks>\n"
     "- Before taking an action, check whether prerequisite discovery, lookup, or "
@@ -324,6 +348,21 @@ PLATFORM_HINTS = {
         "You are communicating via SMS. Keep responses concise and use plain text "
         "only — no markdown, no formatting. SMS messages are limited to ~1600 "
         "characters, so be brief and direct."
+    ),
+    "bluebubbles": (
+        "You are chatting via iMessage (BlueBubbles). iMessage does not render "
+        "markdown formatting — use plain text. Keep responses concise as they "
+        "appear as text messages. You can send media files natively: include "
+        "MEDIA:/absolute/path/to/file in your response. Images (.jpg, .png, "
+        ".heic) appear as photos and other files arrive as attachments."
+    ),
+    "weixin": (
+        "You are on Weixin/WeChat. Markdown formatting is supported, so you may use it when "
+        "it improves readability, but keep the message compact and chat-friendly. You can send media files natively: "
+        "include MEDIA:/absolute/path/to/file in your response. Images are sent as native "
+        "photos, videos play inline when supported, and other files arrive as downloadable "
+        "documents. You can also include image URLs in markdown format ![alt](url) and they "
+        "will be downloaded and sent as native media when possible."
     ),
 }
 
@@ -458,17 +497,6 @@ def _parse_skill_file(skill_file: Path) -> tuple[bool, dict, str]:
     except Exception as e:
         logger.debug("Failed to parse skill file %s: %s", skill_file, e)
         return True, {}, ""
-
-
-def _read_skill_conditions(skill_file: Path) -> dict:
-    """Extract conditional activation fields from SKILL.md frontmatter."""
-    try:
-        raw = skill_file.read_text(encoding="utf-8")[:2000]
-        frontmatter, _ = parse_frontmatter(raw)
-        return extract_skill_conditions(frontmatter)
-    except Exception as e:
-        logger.debug("Failed to read skill conditions from %s: %s", skill_file, e)
-        return {}
 
 
 def _skill_should_show(
@@ -744,7 +772,6 @@ def build_nous_subscription_prompt(valid_tool_names: "set[str] | None" = None) -
         "browser_type",
         "browser_scroll",
         "browser_console",
-        "browser_close",
         "browser_press",
         "browser_get_images",
         "browser_vision",
@@ -774,13 +801,13 @@ def build_nous_subscription_prompt(valid_tool_names: "set[str] | None" = None) -
 
     lines = [
         "# Nous Subscription",
-        "Nous subscription includes managed web tools (Firecrawl), image generation (FAL), OpenAI TTS, and browser automation (Browserbase) by default. Modal execution is optional.",
+        "Nous subscription includes managed web tools (Firecrawl), image generation (FAL), OpenAI TTS, and browser automation (Browser Use) by default. Modal execution is optional.",
         "Current capability status:",
     ]
     lines.extend(_status_line(feature) for feature in features.items())
     lines.extend(
         [
-            "When a Nous-managed feature is active, do not ask the user for Firecrawl, FAL, OpenAI TTS, or Browserbase API keys.",
+            "When a Nous-managed feature is active, do not ask the user for Firecrawl, FAL, OpenAI TTS, or Browser-Use API keys.",
             "If the user is not subscribed and asks for a capability that Nous subscription would unlock or simplify, suggest Nous subscription as one option alongside direct setup or local alternatives.",
             "Do not mention subscription unless the user asks about it or it directly solves the current missing capability.",
             "Useful commands: hermes setup, hermes setup tools, hermes setup terminal, hermes status.",

@@ -39,10 +39,14 @@ _EXTRA_ENV_KEYS = frozenset({
     "DINGTALK_CLIENT_ID", "DINGTALK_CLIENT_SECRET",
     "FEISHU_APP_ID", "FEISHU_APP_SECRET", "FEISHU_ENCRYPT_KEY", "FEISHU_VERIFICATION_TOKEN",
     "WECOM_BOT_ID", "WECOM_SECRET",
+    "WEIXIN_ACCOUNT_ID", "WEIXIN_TOKEN", "WEIXIN_BASE_URL", "WEIXIN_CDN_BASE_URL",
+    "WEIXIN_HOME_CHANNEL", "WEIXIN_HOME_CHANNEL_NAME", "WEIXIN_DM_POLICY", "WEIXIN_GROUP_POLICY",
+    "WEIXIN_ALLOWED_USERS", "WEIXIN_GROUP_ALLOWED_USERS", "WEIXIN_ALLOW_ALL_USERS",
+    "BLUEBUBBLES_SERVER_URL", "BLUEBUBBLES_PASSWORD",
     "TERMINAL_ENV", "TERMINAL_SSH_KEY", "TERMINAL_SSH_PORT",
     "WHATSAPP_MODE", "WHATSAPP_ENABLED",
     "MATTERMOST_HOME_CHANNEL", "MATTERMOST_REPLY_MODE",
-    "MATRIX_PASSWORD", "MATRIX_ENCRYPTION", "MATRIX_HOME_ROOM",
+    "MATRIX_PASSWORD", "MATRIX_ENCRYPTION", "MATRIX_DEVICE_ID", "MATRIX_HOME_ROOM",
     "MATRIX_REQUIRE_MENTION", "MATRIX_FREE_RESPONSE_ROOMS", "MATRIX_AUTO_THREAD",
 })
 import yaml
@@ -157,15 +161,39 @@ def get_project_root() -> Path:
     return Path(__file__).parent.parent.resolve()
 
 def _secure_dir(path):
-    """Set directory to owner-only access (0700). No-op on Windows."""
+    """Set directory to owner-only access (0700 by default). No-op on Windows.
+
+    Skipped in managed mode — the NixOS module sets group-readable
+    permissions (0750) so interactive users in the hermes group can
+    share state with the gateway service.
+
+    The mode can be overridden via the HERMES_HOME_MODE environment variable
+    (e.g. HERMES_HOME_MODE=0701) for deployments where a web server (nginx,
+    caddy, etc.) needs to traverse HERMES_HOME to reach a served subdirectory.
+    The execute-only bit on a directory permits cd-through without exposing
+    directory listings.
+    """
+    if is_managed():
+        return
     try:
-        os.chmod(path, 0o700)
+        mode_str = os.environ.get("HERMES_HOME_MODE", "").strip()
+        mode = int(mode_str, 8) if mode_str else 0o700
+    except ValueError:
+        mode = 0o700
+    try:
+        os.chmod(path, mode)
     except (OSError, NotImplementedError):
         pass
 
 
 def _secure_file(path):
-    """Set file to owner-only read/write (0600). No-op on Windows."""
+    """Set file to owner-only read/write (0600). No-op on Windows.
+
+    Skipped in managed mode — the NixOS activation script sets
+    group-readable permissions (0640) on config files.
+    """
+    if is_managed():
+        return
     try:
         if os.path.exists(str(path)):
             os.chmod(path, 0o600)
@@ -183,14 +211,44 @@ def _ensure_default_soul_md(home: Path) -> None:
 
 
 def ensure_hermes_home():
-    """Ensure ~/.hermes directory structure exists with secure permissions."""
+    """Ensure ~/.hermes directory structure exists with secure permissions.
+
+    In managed mode (NixOS), dirs are created by the activation script with
+    setgid + group-writable (2770). We skip mkdir and set umask(0o007) so
+    any files created (e.g. SOUL.md) are group-writable (0660).
+    """
     home = get_hermes_home()
-    home.mkdir(parents=True, exist_ok=True)
-    _secure_dir(home)
+    if is_managed():
+        old_umask = os.umask(0o007)
+        try:
+            _ensure_hermes_home_managed(home)
+        finally:
+            os.umask(old_umask)
+    else:
+        home.mkdir(parents=True, exist_ok=True)
+        _secure_dir(home)
+        for subdir in ("cron", "sessions", "logs", "memories"):
+            d = home / subdir
+            d.mkdir(parents=True, exist_ok=True)
+            _secure_dir(d)
+        _ensure_default_soul_md(home)
+
+
+def _ensure_hermes_home_managed(home: Path):
+    """Managed-mode variant: verify dirs exist (activation creates them), seed SOUL.md."""
+    if not home.is_dir():
+        raise RuntimeError(
+            f"HERMES_HOME {home} does not exist. "
+            "Run 'sudo nixos-rebuild switch' first."
+        )
     for subdir in ("cron", "sessions", "logs", "memories"):
         d = home / subdir
-        d.mkdir(parents=True, exist_ok=True)
-        _secure_dir(d)
+        if not d.is_dir():
+            raise RuntimeError(
+                f"{d} does not exist. "
+                "Run 'sudo nixos-rebuild switch' first."
+            )
+    # Inside umask(0o007) scope — SOUL.md will be created as 0660
     _ensure_default_soul_md(home)
 
 
@@ -211,12 +269,17 @@ DEFAULT_CONFIG = {
         # tools or receiving API responses.  Only fires when the agent has
         # been completely idle for this duration.  0 = unlimited.
         "gateway_timeout": 1800,
+        "service_tier": "",
         # Tool-use enforcement: injects system prompt guidance that tells the
         # model to actually call tools instead of describing intended actions.
         # Values: "auto" (default — applies to gpt/codex models), true/false
         # (force on/off for all models), or a list of model-name substrings
         # to match (e.g. ["gpt", "codex", "gemini", "qwen"]).
         "tool_use_enforcement": "auto",
+        # Staged inactivity warning: send a warning to the user at this
+        # threshold before escalating to a full timeout.  The warning fires
+        # once per run and does not interrupt the agent.  0 = disable warning.
+        "gateway_timeout_warning": 900,
     },
     
     "terminal": {
@@ -379,6 +442,7 @@ DEFAULT_CONFIG = {
         "show_cost": False,       # Show $ cost in the status bar (off by default)
         "skin": "default",
         "tool_progress_command": False,  # Enable /verbose command in messaging gateway
+        "tool_progress_overrides": {},  # Per-platform overrides: {"signal": "off", "telegram": "all"}
         "tool_preview_length": 0,  # Max chars for tool call previews (0 = no limit, show full paths/commands)
     },
 
@@ -413,12 +477,16 @@ DEFAULT_CONFIG = {
     
     "stt": {
         "enabled": True,
-        "provider": "local",  # "local" (free, faster-whisper) | "groq" | "openai" (Whisper API)
+        "provider": "local",  # "local" (free, faster-whisper) | "groq" | "openai" (Whisper API) | "mistral" (Voxtral Transcribe)
         "local": {
             "model": "base",  # tiny, base, small, medium, large-v3
+            "language": "",  # auto-detect by default; set to "en", "es", "fr", etc. to force
         },
         "openai": {
             "model": "whisper-1",  # whisper-1, gpt-4o-mini-transcribe, gpt-4o-transcribe
+        },
+        "mistral": {
+            "model": "voxtral-mini-latest",  # voxtral-mini-latest, voxtral-mini-2602
         },
     },
 
@@ -487,6 +555,7 @@ DEFAULT_CONFIG = {
     "discord": {
         "require_mention": True,       # Require @mention to respond in server channels
         "free_response_channels": "",  # Comma-separated channel IDs where bot responds without mention
+        "allowed_channels": "",        # If set, bot ONLY responds in these channel IDs (whitelist)
         "auto_thread": True,           # Auto-create threads on @mention in channels (like Slack)
         "reactions": True,             # Add 👀/✅/❌ reactions to messages during processing
     },
@@ -546,7 +615,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 12,
+    "_config_version": 14,
 }
 
 # =============================================================================
@@ -587,6 +656,30 @@ OPTIONAL_ENV_VARS = {
         "url": "https://openrouter.ai/keys",
         "password": True,
         "tools": ["vision_analyze", "mixture_of_agents"],
+        "category": "provider",
+        "advanced": True,
+    },
+    "GOOGLE_API_KEY": {
+        "description": "Google AI Studio API key (also recognized as GEMINI_API_KEY)",
+        "prompt": "Google AI Studio API key",
+        "url": "https://aistudio.google.com/app/apikey",
+        "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
+    "GEMINI_API_KEY": {
+        "description": "Google AI Studio API key (alias for GOOGLE_API_KEY)",
+        "prompt": "Gemini API key",
+        "url": "https://aistudio.google.com/app/apikey",
+        "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
+    "GEMINI_BASE_URL": {
+        "description": "Google AI Studio base URL override",
+        "prompt": "Gemini base URL (leave empty for default)",
+        "url": None,
+        "password": False,
         "category": "provider",
         "advanced": True,
     },
@@ -695,6 +788,14 @@ OPTIONAL_ENV_VARS = {
         "description": "Custom DashScope base URL (default: coding-intl OpenAI-compat endpoint)",
         "prompt": "DashScope Base URL",
         "url": "",
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
+    "HERMES_QWEN_BASE_URL": {
+        "description": "Qwen Portal base URL override (default: https://portal.qwen.ai/v1)",
+        "prompt": "Qwen Portal base URL (leave empty for default)",
+        "url": None,
         "password": False,
         "category": "provider",
         "advanced": True,
@@ -844,6 +945,13 @@ OPTIONAL_ENV_VARS = {
         "password": True,
         "category": "tool",
     },
+    "FIRECRAWL_BROWSER_TTL": {
+        "description": "Firecrawl browser session TTL in seconds (optional, default 300)",
+        "prompt": "Browser session TTL (seconds)",
+        "tools": ["browser_navigate", "browser_click"],
+        "password": False,
+        "category": "tool",
+    },
     "CAMOFOX_URL": {
         "description": "Camofox browser server URL for local anti-detection browsing (e.g. http://localhost:9377)",
         "prompt": "Camofox server URL",
@@ -939,6 +1047,13 @@ OPTIONAL_ENV_VARS = {
     "DISCORD_ALLOWED_USERS": {
         "description": "Comma-separated Discord user IDs allowed to use the bot",
         "prompt": "Allowed Discord user IDs (comma-separated)",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+    },
+    "DISCORD_REPLY_TO_MODE": {
+        "description": "Discord reply threading mode: 'off' (no reply references), 'first' (reply on first message only, default), 'all' (reply on every chunk)",
+        "prompt": "Discord reply mode (off/first/all)",
         "url": None,
         "password": False,
         "category": "messaging",
@@ -1048,6 +1163,35 @@ OPTIONAL_ENV_VARS = {
         "category": "messaging",
         "advanced": True,
     },
+    "MATRIX_DEVICE_ID": {
+        "description": "Stable Matrix device ID for E2EE persistence across restarts (e.g. HERMES_BOT)",
+        "prompt": "Matrix device ID (stable across restarts)",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+        "advanced": True,
+    },
+    "BLUEBUBBLES_SERVER_URL": {
+        "description": "BlueBubbles server URL for iMessage integration (e.g. http://192.168.1.10:1234)",
+        "prompt": "BlueBubbles server URL",
+        "url": "https://bluebubbles.app/",
+        "password": False,
+        "category": "messaging",
+    },
+    "BLUEBUBBLES_PASSWORD": {
+        "description": "BlueBubbles server password (from BlueBubbles Server → Settings → API)",
+        "prompt": "BlueBubbles server password",
+        "url": None,
+        "password": True,
+        "category": "messaging",
+    },
+    "BLUEBUBBLES_ALLOWED_USERS": {
+        "description": "Comma-separated iMessage addresses (email or phone) allowed to use the bot",
+        "prompt": "Allowed iMessage addresses (comma-separated)",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+    },
     "GATEWAY_ALLOW_ALL_USERS": {
         "description": "Allow all users to interact with messaging bots (true/false). Default: false.",
         "prompt": "Allow all users (true/false)",
@@ -1088,6 +1232,14 @@ OPTIONAL_ENV_VARS = {
         "category": "messaging",
         "advanced": True,
     },
+    "API_SERVER_MODEL_NAME": {
+        "description": "Model name advertised on /v1/models. Defaults to the profile name (or 'hermes-agent' for the default profile). Useful for multi-user setups with OpenWebUI.",
+        "prompt": "API server model name",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+        "advanced": True,
+    },
     "WEBHOOK_ENABLED": {
         "description": "Enable the webhook platform adapter for receiving events from GitHub, GitLab, etc.",
         "prompt": "Enable webhooks (true/false)",
@@ -1119,7 +1271,7 @@ OPTIONAL_ENV_VARS = {
         "category": "setting",
     },
     "SUDO_PASSWORD": {
-        "description": "Sudo password for terminal commands requiring root access",
+        "description": "Sudo password for terminal commands requiring root access; set to an explicit empty string to try empty without prompting",
         "prompt": "Sudo password",
         "url": None,
         "password": True,
@@ -1237,6 +1389,43 @@ def get_missing_config_fields() -> List[Dict[str, Any]]:
                 _check(default_value, current[key], full_key)
 
     _check(DEFAULT_CONFIG, config)
+    return missing
+
+
+def get_missing_skill_config_vars() -> List[Dict[str, Any]]:
+    """Return skill-declared config vars that are missing or empty in config.yaml.
+
+    Scans all enabled skills for ``metadata.hermes.config`` entries, then checks
+    which ones are absent or empty under ``skills.config.<key>`` in the user's
+    config.yaml.  Returns a list of dicts suitable for prompting.
+    """
+    try:
+        from agent.skill_utils import discover_all_skill_config_vars, SKILL_CONFIG_PREFIX
+    except Exception:
+        return []
+
+    all_vars = discover_all_skill_config_vars()
+    if not all_vars:
+        return []
+
+    config = load_config()
+    missing: List[Dict[str, Any]] = []
+    for var in all_vars:
+        # Skill config is stored under skills.config.<logical_key>
+        storage_key = f"{SKILL_CONFIG_PREFIX}.{var['key']}"
+        parts = storage_key.split(".")
+        current = config
+        value = None
+        for part in parts:
+            if isinstance(current, dict) and part in current:
+                current = current[part]
+                value = current
+            else:
+                value = None
+                break
+        # Missing = key doesn't exist or is empty string
+        if value is None or (isinstance(value, str) and not value.strip()):
+            missing.append(var)
     return missing
 
 
@@ -1566,6 +1755,71 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                         ep = providers_dict[key]
                         print(f"    → {key}: {ep.get('api', '')}")
 
+    # ── Version 12 → 13: clear dead LLM_MODEL / OPENAI_MODEL from .env ──
+    # These env vars were written by the old setup wizard but nothing reads
+    # them anymore (config.yaml is the sole source of truth since March 2026).
+    # Stale entries cause user confusion — see issue report.
+    if current_ver < 13:
+        for dead_var in ("LLM_MODEL", "OPENAI_MODEL"):
+            try:
+                old_val = get_env_value(dead_var)
+                if old_val:
+                    save_env_value(dead_var, "")
+                    if not quiet:
+                        print(f"  ✓ Cleared {dead_var} from .env (no longer used — config.yaml is source of truth)")
+            except Exception:
+                pass
+
+    # ── Version 13 → 14: migrate legacy flat stt.model to provider section ──
+    # Old configs (and cli-config.yaml.example) had a flat `stt.model` key
+    # that was provider-agnostic.  When the provider was "local" this caused
+    # OpenAI model names (e.g. "whisper-1") to be fed to faster-whisper,
+    # crashing with "Invalid model size".  Move the value into the correct
+    # provider-specific section and remove the flat key.
+    if current_ver < 14:
+        # Read raw config (no defaults merged) to check what the user actually
+        # wrote, then apply changes to the merged config for saving.
+        raw = read_raw_config()
+        raw_stt = raw.get("stt", {})
+        if isinstance(raw_stt, dict) and "model" in raw_stt:
+            legacy_model = raw_stt["model"]
+            provider = raw_stt.get("provider", "local")
+            config = load_config()
+            stt = config.get("stt", {})
+            # Remove the legacy flat key
+            stt.pop("model", None)
+            # Place it in the appropriate provider section only if the
+            # user didn't already set a model there
+            if provider in ("local", "local_command"):
+                # Don't migrate an OpenAI model name into the local section
+                _local_models = {
+                    "tiny.en", "tiny", "base.en", "base", "small.en", "small",
+                    "medium.en", "medium", "large-v1", "large-v2", "large-v3",
+                    "large", "distil-large-v2", "distil-medium.en",
+                    "distil-small.en", "distil-large-v3", "distil-large-v3.5",
+                    "large-v3-turbo", "turbo",
+                }
+                if legacy_model in _local_models:
+                    # Check raw config — only set if user didn't already
+                    # have a nested local.model
+                    raw_local = raw_stt.get("local", {})
+                    if not isinstance(raw_local, dict) or "model" not in raw_local:
+                        local_cfg = stt.setdefault("local", {})
+                        local_cfg["model"] = legacy_model
+                # else: drop it — it was an OpenAI model name, local section
+                # already defaults to "base" via DEFAULT_CONFIG
+            else:
+                # Cloud provider — put it in that provider's section only
+                # if user didn't already set a nested model
+                raw_provider = raw_stt.get(provider, {})
+                if not isinstance(raw_provider, dict) or "model" not in raw_provider:
+                    provider_cfg = stt.setdefault(provider, {})
+                    provider_cfg["model"] = legacy_model
+            config["stt"] = stt
+            save_config(config)
+            if not quiet:
+                print(f"  ✓ Migrated legacy stt.model to provider-specific config")
+
     if current_ver < latest_ver and not quiet:
         print(f"Config version: {current_ver} → {latest_ver}")
     
@@ -1671,7 +1925,50 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
         config = load_config()
         config["_config_version"] = latest_ver
         save_config(config)
-    
+
+    # ── Skill-declared config vars ──────────────────────────────────────
+    # Skills can declare config.yaml settings they need via
+    # metadata.hermes.config in their SKILL.md frontmatter.
+    # Prompt for any that are missing/empty.
+    missing_skill_config = get_missing_skill_config_vars()
+    if missing_skill_config and interactive and not quiet:
+        print(f"\n  {len(missing_skill_config)} skill setting(s) not configured:")
+        for var in missing_skill_config:
+            skill_name = var.get("skill", "unknown")
+            print(f"    • {var['key']} — {var['description']} (from skill: {skill_name})")
+        print()
+        try:
+            answer = input("  Configure skill settings? [y/N]: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            answer = "n"
+
+        if answer in ("y", "yes"):
+            print()
+            config = load_config()
+            try:
+                from agent.skill_utils import SKILL_CONFIG_PREFIX
+            except Exception:
+                SKILL_CONFIG_PREFIX = "skills.config"
+            for var in missing_skill_config:
+                default = var.get("default", "")
+                default_hint = f" (default: {default})" if default else ""
+                value = input(f"  {var['prompt']}{default_hint}: ").strip()
+                if not value and default:
+                    value = str(default)
+                if value:
+                    storage_key = f"{SKILL_CONFIG_PREFIX}.{var['key']}"
+                    _set_nested(config, storage_key, value)
+                    results["config_added"].append(var["key"])
+                    print(f"  ✓ Saved {var['key']} = {value}")
+                else:
+                    results["warnings"].append(
+                        f"Skipped {var['key']} — skill '{var.get('skill', '?')}' may ask for it later"
+                    )
+                print()
+            save_config(config)
+        else:
+            print("  Set later with: hermes config set <key> <value>")
+
     return results
 
 
@@ -1762,6 +2059,24 @@ def _normalize_max_turns_config(config: Dict[str, Any]) -> Dict[str, Any]:
 
 
 
+def read_raw_config() -> Dict[str, Any]:
+    """Read ~/.hermes/config.yaml as-is, without merging defaults or migrating.
+
+    Returns the raw YAML dict, or ``{}`` if the file doesn't exist or can't
+    be parsed.  Use this for lightweight config reads where you just need a
+    single value and don't want the overhead of ``load_config()``'s deep-merge
+    + migration pipeline.
+    """
+    try:
+        config_path = get_config_path()
+        if config_path.exists():
+            with open(config_path, encoding="utf-8") as f:
+                return yaml.safe_load(f) or {}
+    except Exception:
+        pass
+    return {}
+
+
 def load_config() -> Dict[str, Any]:
     """Load configuration from ~/.hermes/config.yaml."""
     import copy
@@ -1813,8 +2128,8 @@ _FALLBACK_COMMENT = """
 #
 # Supported providers:
 #   openrouter   (OPENROUTER_API_KEY)  — routes to any model
-#   openai-codex (OAuth — hermes login) — OpenAI Codex
-#   nous         (OAuth — hermes login) — Nous Portal
+#   openai-codex (OAuth — hermes auth) — OpenAI Codex
+#   nous         (OAuth — hermes auth) — Nous Portal
 #   zai          (ZAI_API_KEY)         — Z.AI / GLM
 #   kimi-coding  (KIMI_API_KEY)        — Kimi / Moonshot
 #   minimax      (MINIMAX_API_KEY)     — MiniMax
@@ -1856,8 +2171,8 @@ _COMMENTED_SECTIONS = """
 #
 # Supported providers:
 #   openrouter   (OPENROUTER_API_KEY)  — routes to any model
-#   openai-codex (OAuth — hermes login) — OpenAI Codex
-#   nous         (OAuth — hermes login) — Nous Portal
+#   openai-codex (OAuth — hermes auth) — OpenAI Codex
+#   nous         (OAuth — hermes auth) — Nous Portal
 #   zai          (ZAI_API_KEY)         — Z.AI / GLM
 #   kimi-coding  (KIMI_API_KEY)        — Kimi / Moonshot
 #   minimax      (MINIMAX_API_KEY)     — MiniMax
@@ -2325,6 +2640,23 @@ def show_config():
     print(f"  Telegram:     {'configured' if telegram_token else color('not configured', Colors.DIM)}")
     print(f"  Discord:      {'configured' if discord_token else color('not configured', Colors.DIM)}")
     
+    # Skill config
+    try:
+        from agent.skill_utils import discover_all_skill_config_vars, resolve_skill_config_values
+        skill_vars = discover_all_skill_config_vars()
+        if skill_vars:
+            resolved = resolve_skill_config_values(skill_vars)
+            print()
+            print(color("◆ Skill Settings", Colors.CYAN, Colors.BOLD))
+            for var in skill_vars:
+                key = var["key"]
+                value = resolved.get(key, "")
+                skill_name = var.get("skill", "")
+                display_val = str(value) if value else color("(not set)", Colors.DIM)
+                print(f"  {key:<20s} {display_val}  {color(f'[{skill_name}]', Colors.DIM)}")
+    except Exception:
+        pass
+
     print()
     print(color("─" * 60, Colors.DIM))
     print(color("  hermes config edit     # Edit config file", Colors.DIM))
@@ -2384,7 +2716,7 @@ def set_config_value(key: str, value: str):
         'TINKER_API_KEY',
     ]
     
-    if key.upper() in api_keys or key.upper().endswith('_API_KEY') or key.upper().endswith('_TOKEN') or key.upper().startswith('TERMINAL_SSH'):
+    if key.upper() in api_keys or key.upper().endswith(('_API_KEY', '_TOKEN')) or key.upper().startswith('TERMINAL_SSH'):
         save_env_value(key.upper(), value)
         print(f"✓ Set {key} in {get_env_path()}")
         return

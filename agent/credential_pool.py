@@ -577,6 +577,13 @@ class CredentialPool:
                     except Exception as wexc:
                         logger.debug("Failed to write refreshed token to credentials file: %s", wexc)
             elif self.provider == "openai-codex":
+                # Proactively sync from ~/.codex/auth.json before refresh.
+                # The Codex CLI (or another Hermes profile) may have already
+                # consumed our refresh_token.  Syncing first avoids a
+                # "refresh_token_reused" error when the CLI has a newer pair.
+                synced = self._sync_codex_entry_from_cli(entry)
+                if synced is not entry:
+                    entry = synced
                 refreshed = auth_mod.refresh_codex_oauth_pure(
                     entry.access_token,
                     entry.refresh_token,
@@ -661,6 +668,35 @@ class CredentialPool:
                 elif not self._entry_needs_refresh(synced):
                     # Credentials file had a valid (non-expired) token — use it directly
                     logger.debug("Credentials file has valid token, using without refresh")
+                    return synced
+            # For openai-codex: the refresh_token may have been consumed by
+            # the Codex CLI between our proactive sync and the refresh call.
+            # Re-sync and retry once.
+            if self.provider == "openai-codex":
+                synced = self._sync_codex_entry_from_cli(entry)
+                if synced.refresh_token != entry.refresh_token:
+                    logger.debug("Retrying Codex refresh with synced token from ~/.codex/auth.json")
+                    try:
+                        refreshed = auth_mod.refresh_codex_oauth_pure(
+                            synced.access_token,
+                            synced.refresh_token,
+                        )
+                        updated = replace(
+                            synced,
+                            access_token=refreshed["access_token"],
+                            refresh_token=refreshed["refresh_token"],
+                            last_refresh=refreshed.get("last_refresh"),
+                            last_status=STATUS_OK,
+                            last_status_at=None,
+                            last_error_code=None,
+                        )
+                        self._replace_entry(synced, updated)
+                        self._persist()
+                        return updated
+                    except Exception as retry_exc:
+                        logger.debug("Codex retry refresh also failed: %s", retry_exc)
+                elif not self._entry_needs_refresh(synced):
+                    logger.debug("Codex CLI has valid token, using without refresh")
                     return synced
             self._mark_exhausted(entry, None)
             return None

@@ -18,7 +18,7 @@ When a cron job isn't behaving as expected, work through these checks in order. 
 hermes cron list
 ```
 
-Look for the job and confirm its state is `scheduled` (not `paused` or `completed`). If it shows `completed`, the repeat count may be exhausted — edit the job to reset it.
+Look for the job and confirm its state is `[active]` (not `[paused]` or `[completed]`). If it shows `[completed]`, the repeat count may be exhausted — edit the job to reset it.
 
 ### Check 2: Confirm the schedule is correct
 
@@ -34,13 +34,11 @@ A misformatted schedule silently defaults to one-shot or is rejected entirely. T
 
 If the job fires once and then disappears from the list, it's a one-shot schedule (`30m`, `1d`, or an ISO timestamp) — expected behavior.
 
-### Check 3: Is the gateway or CLI actually running?
+### Check 3: Is the gateway running?
 
-Cron ticks are delivered by:
-- **Gateway mode**: the long-running gateway process ticking every 60 seconds
-- **CLI mode**: only when you run `hermes cron` commands or have an active CLI session
+Cron jobs are fired by the gateway's background ticker thread, which ticks every 60 seconds. A regular CLI chat session does **not** automatically fire cron jobs.
 
-If you're expecting jobs to fire automatically, use gateway mode (`hermes gateway` or `hermes serve`). A CLI session that exits will stop cron scheduling.
+If you're expecting jobs to fire automatically, you need a running gateway (`hermes gateway` or `hermes serve`). For one-off debugging, you can manually trigger a tick with `hermes cron tick`.
 
 ### Check 4: Check the system clock and timezone
 
@@ -64,8 +62,15 @@ Delivery targets are case-sensitive and require the correct platform to be confi
 | `telegram` | `TELEGRAM_BOT_TOKEN` in `~/.hermes/.env` |
 | `discord` | `DISCORD_BOT_TOKEN` in `~/.hermes/.env` |
 | `slack` | `SLACK_BOT_TOKEN` in `~/.hermes/.env` |
+| `whatsapp` | WhatsApp gateway configured |
+| `signal` | Signal gateway configured |
+| `matrix` | Matrix homeserver configured |
 | `email` | SMTP configured in `config.yaml` |
+| `sms` | SMS provider configured |
 | `local` | Write access to `~/.hermes/cron/output/` |
+| `origin` | Delivers to the chat where the job was created |
+
+Other supported platforms include `mattermost`, `homeassistant`, `dingtalk`, `feishu`, `wecom`, `bluebubbles`, and `webhook`. You can also target a specific chat with `platform:chat_id` syntax (e.g., `telegram:-1001234567890`).
 
 If delivery fails, the job still runs — it just won't send anywhere. Check `hermes cron list` for updated `last_error` field (if available).
 
@@ -110,7 +115,7 @@ Skill names are case-sensitive and must match the installed skill's folder name.
 
 ### Check 3: Skills that require interactive tools
 
-Cron jobs run with the `cronjob` toolset disabled (recursion guard). If a skill requires browser automation, code execution, or other interactive tools, the job will fail at execution time.
+Cron jobs run with the `cronjob`, `messaging`, and `clarify` toolsets disabled. This prevents recursive cron creation, direct message sending (delivery is handled by the scheduler), and interactive prompts. If a skill relies on these toolsets, it won't work in a cron context.
 
 Check the skill's documentation to confirm it works in non-interactive (headless) mode.
 
@@ -133,7 +138,7 @@ In this example, `context-skill` loads before `target-skill`.
 If a job ran and failed, you may see error context in:
 
 1. The chat where the job delivers (if delivery succeeded)
-2. `~/.hermes/logs/` for scheduler logs
+2. `~/.hermes/logs/agent.log` for scheduler messages (or `errors.log` for warnings)
 3. The job's `last_run` metadata via `hermes cron list`
 
 ### Check 2: Common error patterns
@@ -146,13 +151,13 @@ hermes cron edit <job_id> --script ~/.hermes/scripts/your-script.py
 ```
 
 **"Skill not found" at job execution**
-The skill must be installed on the machine running the scheduler. If you move between machines, skills don't automatically sync. Run `hermes skills sync` or reinstall.
+The skill must be installed on the machine running the scheduler. If you move between machines, skills don't automatically sync — reinstall them with `hermes skills install <skill-name>`.
 
 **Job runs but delivers nothing**
 Likely a delivery target issue (see Delivery Failures above) or a silently suppressed response (`[SILENT]`).
 
 **Job hangs or times out**
-The scheduler has a default execution timeout. Long-running jobs should use scripts to handle collection and deliver only the result — don't let the agent run unbounded loops.
+The scheduler uses an inactivity-based timeout (default 600s, configurable via `HERMES_CRON_TIMEOUT` env var, `0` for unlimited). The agent can run as long as it's actively calling tools — the timer only fires after sustained inactivity. Long-running jobs should use scripts to handle data collection and deliver only the result.
 
 ### Check 3: Lock contention
 
@@ -181,9 +186,9 @@ chmod 600 ~/.hermes/cron/jobs.json   # Your user should own it
 
 Each cron job creates a fresh AIAgent session, which may involve provider authentication and model loading. For time-sensitive schedules, add buffer time (e.g., `0 8 * * *` instead of `0 9 * * *`).
 
-### Too many concurrent jobs
+### Too many overlapping jobs
 
-The default thread pool allows limited concurrent job execution. If you have many overlapping jobs, they queue up. Consider staggering schedules or splitting high-frequency jobs across different time windows.
+The scheduler executes jobs sequentially within each tick. If multiple jobs are due at the same time, they run one after another. Consider staggering schedules (e.g., `0 9 * * *` and `5 9 * * *` instead of both at `0 9 * * *`) to avoid delays.
 
 ### Large script output
 
@@ -195,7 +200,7 @@ Scripts that dump megabytes of output will slow down the agent and may hit token
 
 ```bash
 hermes cron list                    # Show all jobs, states, next_run times
-hermes cron run <job_id>            # Trigger immediate execution (for testing)
+hermes cron run <job_id>            # Schedule for next tick (for testing)
 hermes cron edit <job_id>           # Fix configuration issues
 hermes logs                         # View recent Hermes logs
 hermes skills list                  # Verify installed skills
@@ -207,8 +212,8 @@ hermes skills list                  # Verify installed skills
 
 If you've worked through this guide and the issue persists:
 
-1. Run the job immediately with `hermes cron run <job_id>` and watch for errors in the chat output
-2. Check `~/.hermes/logs/scheduler.log` (if logging is enabled)
+1. Run the job with `hermes cron run <job_id>` (fires on next gateway tick) and watch for errors in the chat output
+2. Check `~/.hermes/logs/agent.log` for scheduler messages and `~/.hermes/logs/errors.log` for warnings
 3. Open an issue at [github.com/NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent) with:
    - The job ID and schedule
    - The delivery target

@@ -16670,9 +16670,10 @@ class AIAgent:
 
             finish_reason = "stop"
             response = None  # Guard against UnboundLocalError if all retries fail
-            api_kwargs = None  # Guard against UnboundLocalError in except handler
+            api_kwargs = {}
 
             while retry_count < max_retries:
+                api_kwargs = {}
                 # ── Nous Portal rate limit guard ──────────────────────
                 # If another session already recorded that Nous is rate-
                 # limited, skip the API call entirely.  Each attempt
@@ -16719,7 +16720,6 @@ class AIAgent:
                         pass
                     except Exception:
                         pass  # Never let rate guard break the agent loop
-
                 try:
                     self._reset_stream_delivery_tracking()
                     api_kwargs = self._build_api_kwargs(api_messages)

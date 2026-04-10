@@ -5,6 +5,13 @@ import os
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _clean_provider_env(monkeypatch):
+    """Keep gate tests hermetic when the outer test runner exports provider creds."""
+    for key in ("ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"):
+        monkeypatch.delenv(key, raising=False)
+
+
 def _write_config(tmp_path, config: dict) -> None:
     hermes_home = tmp_path / "hermes"
     hermes_home.mkdir(parents=True, exist_ok=True)

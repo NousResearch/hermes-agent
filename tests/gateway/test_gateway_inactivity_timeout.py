@@ -85,14 +85,14 @@ class TestStagedInactivityWarning:
     def test_warning_fires_once_before_timeout(self):
         """Warning fires when inactivity reaches warning threshold."""
         agent = SlowFakeAgent(
-            run_duration=10.0,
-            idle_after=0.1,
+            run_duration=0.8,
+            idle_after=0.05,
             activity_desc="api_call_streaming",
         )
 
-        _agent_timeout = 20.0
-        _agent_warning = 5.0
-        _POLL_INTERVAL = 0.1
+        _agent_timeout = 2.0
+        _agent_warning = 0.2
+        _POLL_INTERVAL = 0.02
 
         pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         future = pool.submit(agent.run_conversation, "test prompt")
@@ -129,13 +129,13 @@ class TestStagedInactivityWarning:
     def test_warning_disabled_when_zero(self):
         """No warning fires when gateway_timeout_warning is 0."""
         agent = SlowFakeAgent(
-            run_duration=5.0,
-            idle_after=0.1,
+            run_duration=0.6,
+            idle_after=0.05,
         )
 
-        _agent_timeout = 20.0
+        _agent_timeout = 2.0
         _agent_warning = 0.0
-        _POLL_INTERVAL = 0.1
+        _POLL_INTERVAL = 0.02
 
         pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         future = pool.submit(agent.run_conversation, "test")
@@ -165,13 +165,13 @@ class TestStagedInactivityWarning:
     def test_warning_fires_only_once(self):
         """Warning fires exactly once even if agent remains idle."""
         agent = SlowFakeAgent(
-            run_duration=10.0,
+            run_duration=0.8,
             idle_after=0.05,
         )
 
-        _agent_timeout = 20.0
+        _agent_timeout = 2.0
         _agent_warning = 0.2
-        _POLL_INTERVAL = 0.05
+        _POLL_INTERVAL = 0.02
 
         pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         future = pool.submit(agent.run_conversation, "test")
@@ -201,14 +201,14 @@ class TestStagedInactivityWarning:
     def test_full_timeout_still_fires_after_warning(self):
         """Full timeout fires even after warning was sent."""
         agent = SlowFakeAgent(
-            run_duration=15.0,
-            idle_after=0.1,
+            run_duration=2.0,
+            idle_after=0.05,
             activity_desc="waiting for provider response (streaming)",
         )
 
-        _agent_timeout = 1.0
-        _agent_warning = 0.3
-        _POLL_INTERVAL = 0.05
+        _agent_timeout = 0.6
+        _agent_warning = 0.2
+        _POLL_INTERVAL = 0.02
 
         pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         future = pool.submit(agent.run_conversation, "test")
@@ -277,14 +277,14 @@ class TestWarningThresholdBelowTimeout:
     def test_warning_at_half_timeout(self):
         """Warning fires at half the timeout duration."""
         agent = SlowFakeAgent(
-            run_duration=10.0,
-            idle_after=0.1,
+            run_duration=0.9,
+            idle_after=0.05,
             activity_desc="receiving stream response",
         )
 
-        _agent_timeout = 2.0
-        _agent_warning = 1.0
-        _POLL_INTERVAL = 0.05
+        _agent_timeout = 0.6
+        _agent_warning = 0.3
+        _POLL_INTERVAL = 0.02
 
         pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         future = pool.submit(agent.run_conversation, "test")

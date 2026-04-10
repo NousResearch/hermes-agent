@@ -38,6 +38,8 @@ def _make_runner():
     runner._provider_routing = {}
     runner._fallback_model = None
     runner._running_agents = {}
+    runner._smart_model_routing = {}
+    runner._session_model_overrides = {}
     runner.hooks = MagicMock()
     runner.hooks.emit = AsyncMock()
     runner.hooks.loaded_hooks = []
@@ -360,7 +362,8 @@ class TestReasoningCommand:
         assert "exa" in enabled_toolsets
         assert "web-search-prime" in enabled_toolsets
 
-    def test_run_agent_homeassistant_uses_default_platform_toolset(self, tmp_path, monkeypatch):
+    @pytest.mark.asyncio
+    async def test_run_agent_homeassistant_uses_default_platform_toolset(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / "hermes"
         hermes_home.mkdir()
         (hermes_home / "config.yaml").write_text("", encoding="utf-8")
@@ -375,7 +378,7 @@ class TestReasoningCommand:
                 "provider": "openrouter",
                 "api_mode": "chat_completions",
                 "base_url": "https://openrouter.ai/api/v1",
-                "api_key": "test-key",
+                "api_key": "***",
             },
         )
         fake_run_agent = types.ModuleType("run_agent")
@@ -393,15 +396,13 @@ class TestReasoningCommand:
             user_id="user-1",
         )
 
-        result = asyncio.run(
-            runner._run_agent(
-                message="ping",
-                context_prompt="",
-                history=[],
-                source=source,
-                session_id="session-1",
-                session_key="agent:main:homeassistant:dm",
-            )
+        result = await runner._run_agent(
+            message="ping",
+            context_prompt="",
+            history=[],
+            source=source,
+            session_id="session-1",
+            session_key="agent:main:homeassistant:dm",
         )
 
         assert result["final_response"] == "ok"

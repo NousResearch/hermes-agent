@@ -317,6 +317,7 @@ def test_setup_keyboard_interrupt_gracefully_handled(tmp_path, monkeypatch):
         raise KeyboardInterrupt()
 
     monkeypatch.setattr("hermes_cli.main.select_provider_and_model", fake_select)
+    monkeypatch.setattr("hermes_cli.setup.save_config", lambda *_args, **_kwargs: None)
 
     setup_model_provider(config)
 

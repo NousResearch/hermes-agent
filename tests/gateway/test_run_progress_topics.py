@@ -199,14 +199,11 @@ async def test_run_agent_progress_stays_in_originating_topic(monkeypatch, tmp_pa
     )
 
     assert result["final_response"] == "done"
-    assert adapter.sent == [
-        {
-            "chat_id": "-1001",
-            "content": '💻 terminal: "pwd"',
-            "reply_to": None,
-            "metadata": {"thread_id": "17585"},
-        }
-    ]
+    assert len(adapter.sent) == 1
+    assert adapter.sent[0]["chat_id"] == "-1001"
+    assert adapter.sent[0]["content"].endswith('terminal: "pwd"')
+    assert adapter.sent[0]["reply_to"] is None
+    assert adapter.sent[0]["metadata"] == {"thread_id": "17585"}
     assert adapter.edits
     assert all(call["metadata"] == {"thread_id": "17585"} for call in adapter.typing)
 

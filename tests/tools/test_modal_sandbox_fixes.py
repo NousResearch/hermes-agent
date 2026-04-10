@@ -27,6 +27,19 @@ except ImportError:
     pytest.skip("hermes-agent tools not importable (missing deps)", allow_module_level=True)
 
 
+@pytest.fixture(autouse=True)
+def _clean_terminal_env(monkeypatch):
+    """Keep tool-resolution tests hermetic when other suites change terminal env."""
+    for key in (
+        "TERMINAL_ENV",
+        "TERMINAL_CWD",
+        "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE",
+        "TERMINAL_SSH_HOST",
+        "TERMINAL_SSH_USER",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+
 # =========================================================================
 # Test 1: Tool resolution includes terminal + file tools
 # =========================================================================

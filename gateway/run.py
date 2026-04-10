@@ -12049,7 +12049,7 @@ class GatewayRunner:
         subsequent messages.  Fields with ``None`` values are skipped so
         partial overrides don't clobber valid config defaults.
         """
-        override = self._session_model_overrides.get(session_key)
+        override = getattr(self, "_session_model_overrides", {}).get(session_key)
         if not override:
             return model, runtime_kwargs
         model = override.get("model", model)
@@ -12061,7 +12061,7 @@ class GatewayRunner:
 
     def _is_intentional_model_switch(self, session_key: str, agent_model: str) -> bool:
         """Return True if *agent_model* matches an active /model session override."""
-        override = self._session_model_overrides.get(session_key)
+        override = getattr(self, "_session_model_overrides", {}).get(session_key)
         return override is not None and override.get("model") == agent_model
 
     def _release_running_agent_state(

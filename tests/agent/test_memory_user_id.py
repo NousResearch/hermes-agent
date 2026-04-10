@@ -132,7 +132,8 @@ class TestMemoryManagerUserIdThreading:
 
     def test_multiple_providers_all_receive_user_id(self):
         mgr = MemoryManager()
-        # Use one provider named "builtin" (always accepted) and one external
+        # Use a provider named "builtin" plus one external. MemoryManager gates
+        # on provider.name, so the test should not depend on a removed module.
         p1 = RecordingProvider("builtin")
         p2 = RecordingProvider("external")
         mgr.add_provider(p1)

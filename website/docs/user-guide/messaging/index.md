@@ -1,12 +1,12 @@
 ---
 sidebar_position: 1
 title: "Messaging Gateway"
-description: "Chat with Hermes from Telegram, Discord, Slack, WhatsApp, Signal, SMS, Email, Home Assistant, Mattermost, Matrix, DingTalk, Webhooks, or any OpenAI-compatible frontend via the API server — architecture and setup overview"
+description: "Chat with Hermes from Telegram, Discord, Slack, WhatsApp, Weixin, Signal, SMS, Email, Home Assistant, Mattermost, Matrix, DingTalk, Webhooks, or any OpenAI-compatible frontend via the API server — architecture and setup overview"
 ---
 
 # Messaging Gateway
 
-Chat with Hermes from Telegram, Discord, Slack, WhatsApp, Signal, SMS, Email, Home Assistant, Mattermost, Matrix, DingTalk, Feishu/Lark, WeCom, BlueBubbles (iMessage), or your browser. The gateway is a single background process that connects to all your configured platforms, handles sessions, runs cron jobs, and delivers voice messages.
+Chat with Hermes from Telegram, Discord, Slack, WhatsApp, Weixin, Signal, SMS, Email, Home Assistant, Mattermost, Matrix, DingTalk, Feishu/Lark, WeCom, BlueBubbles (iMessage), or your browser. The gateway is a single background process that connects to all your configured platforms, handles sessions, runs cron jobs, and delivers voice messages.
 
 For the full voice feature set — including CLI microphone mode, spoken replies in messaging, and Discord voice-channel conversations — see [Voice Mode](/docs/user-guide/features/voice-mode) and [Use Voice Mode with Hermes](/docs/guides/use-voice-mode-with-hermes).
 
@@ -18,6 +18,7 @@ For the full voice feature set — including CLI microphone mode, spoken replies
 | Discord | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Slack | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | WhatsApp | — | ✅ | ✅ | — | — | ✅ | ✅ |
+| Weixin | — | — | — | — | — | — | — |
 | Signal | — | ✅ | ✅ | — | — | ✅ | ✅ |
 | SMS | — | — | — | — | — | — | — |
 | Email | — | ✅ | ✅ | ✅ | — | — | — |
@@ -40,6 +41,7 @@ flowchart TB
             tg[Telegram]
             dc[Discord]
             wa[WhatsApp]
+            wx[Weixin]
             sl[Slack]
             sig[Signal]
             sms[SMS]
@@ -63,6 +65,7 @@ flowchart TB
     tg --> store
     dc --> store
     wa --> store
+    wx --> store
     sl --> store
     sig --> store
     sms --> store
@@ -85,9 +88,10 @@ The easiest way to configure messaging platforms is the interactive wizard:
 
 ```bash
 hermes gateway setup        # Interactive setup for all messaging platforms
+hermes weixin               # Pair personal Weixin via QR code
 ```
 
-This walks you through configuring each platform with arrow-key selection, shows which platforms are already configured, and offers to start/restart the gateway when done.
+`hermes gateway setup` walks you through configuring each platform with arrow-key selection, shows which platforms are already configured, and offers to start/restart the gateway when done. `hermes weixin` is the faster path when you only need personal Weixin pairing.
 
 ## Gateway Commands
 
@@ -172,6 +176,7 @@ EMAIL_ALLOWED_USERS=trusted@example.com,colleague@work.com
 MATTERMOST_ALLOWED_USERS=3uo8dkh1p7g1mfk49ear5fzs5c
 MATRIX_ALLOWED_USERS=@alice:matrix.org
 DINGTALK_ALLOWED_USERS=user-id-1
+WEIXIN_ALLOWED_USERS=o9cq808BEvFSo6VGJ4c1Xjqqv0FU@im.wechat
 
 # Or allow
 GATEWAY_ALLOWED_USERS=123456789,987654321

@@ -37,6 +37,7 @@ hermes [global-options] <command> [subcommand/options]
 | `hermes gateway` | Run or manage the messaging gateway service. |
 | `hermes setup` | Interactive setup wizard for all or part of the configuration. |
 | `hermes whatsapp` | Configure and pair the WhatsApp bridge. |
+| `hermes weixin` | Configure and pair the Weixin bridge. |
 | `hermes auth` | Manage credentials — add, list, remove, reset, set strategy. Handles OAuth flows for Codex/Nous/Anthropic. |
 | `hermes login` / `logout` | **Deprecated** — use `hermes auth` instead. |
 | `hermes status` | Show agent, auth, and platform status. |
@@ -179,6 +180,15 @@ hermes whatsapp
 ```
 
 Runs the WhatsApp pairing/setup flow, including mode selection and QR-code pairing.
+
+## `hermes weixin`
+
+```bash
+hermes weixin
+```
+
+Runs the Weixin pairing/setup flow, installs bridge dependencies if needed, launches the
+local bridge, and waits for QR-code pairing to complete.
 
 ## `hermes login` / `hermes logout` *(Deprecated)*
 

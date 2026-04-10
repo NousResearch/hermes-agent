@@ -65,7 +65,7 @@ SEND_MESSAGE_SCHEMA = {
             },
             "target": {
                 "type": "string",
-                "description": "Delivery target. Format: 'platform' (uses home channel), 'platform:#channel-name', 'platform:chat_id', or Telegram topic 'telegram:chat_id:thread_id'. Examples: 'telegram', 'telegram:-1001234567890:17585', 'discord:#bot-home', 'slack:#engineering', 'signal:+15551234567'"
+                "description": "Delivery target. Format: 'platform' (uses home channel), 'platform:#channel-name', 'platform:chat_id', or Telegram topic 'telegram:chat_id:thread_id'. Examples: 'telegram', 'telegram:-1001234567890:17585', 'discord:#bot-home', 'slack:#engineering', 'signal:+15551234567', 'weixin:wxid_example@im.wechat'"
             },
             "message": {
                 "type": "string",
@@ -147,6 +147,7 @@ def _handle_send(args):
         "discord": Platform.DISCORD,
         "slack": Platform.SLACK,
         "whatsapp": Platform.WHATSAPP,
+        "weixin": Platform.WEIXIN,
         "signal": Platform.SIGNAL,
         "bluebubbles": Platform.BLUEBUBBLES,
         "matrix": Platform.MATRIX,
@@ -227,6 +228,8 @@ def _parse_target_ref(platform_name: str, target_ref: str):
         match = _TELEGRAM_TOPIC_TARGET_RE.fullmatch(target_ref)
         if match:
             return match.group(1), match.group(2), True
+    if platform_name == "weixin" and target_ref.endswith("@im.wechat"):
+        return target_ref, None, True
     if platform_name == "feishu":
         match = _FEISHU_TARGET_RE.fullmatch(target_ref)
         if match:
@@ -327,6 +330,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         Platform.TELEGRAM: TelegramAdapter.MAX_MESSAGE_LENGTH,
         Platform.DISCORD: DiscordAdapter.MAX_MESSAGE_LENGTH,
         Platform.SLACK: SlackAdapter.MAX_MESSAGE_LENGTH,
+        Platform.WEIXIN: 4000,
     }
     if _feishu_available:
         _MAX_LENGTHS[Platform.FEISHU] = FeishuAdapter.MAX_MESSAGE_LENGTH
@@ -379,6 +383,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             result = await _send_slack(pconfig.token, chat_id, chunk)
         elif platform == Platform.WHATSAPP:
             result = await _send_whatsapp(pconfig.extra, chat_id, chunk)
+        elif platform == Platform.WEIXIN:
+            result = await _send_weixin(pconfig.extra, chat_id, chunk)
         elif platform == Platform.SIGNAL:
             result = await _send_signal(pconfig.extra, chat_id, chunk)
         elif platform == Platform.EMAIL:
@@ -606,6 +612,34 @@ async def _send_whatsapp(extra, chat_id, message):
                 return _error(f"WhatsApp bridge error ({resp.status}): {body}")
     except Exception as e:
         return _error(f"WhatsApp send failed: {e}")
+
+
+async def _send_weixin(extra, chat_id, message):
+    """Send via the local Weixin bridge HTTP API."""
+    try:
+        import aiohttp
+    except ImportError:
+        return {"error": "aiohttp not installed. Run: pip install aiohttp"}
+    try:
+        bridge_port = extra.get("bridge_port", 3010)
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"http://localhost:{bridge_port}/send",
+                json={"chatId": chat_id, "message": message},
+                timeout=aiohttp.ClientTimeout(total=30),
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    return {
+                        "success": True,
+                        "platform": "weixin",
+                        "chat_id": chat_id,
+                        "message_id": data.get("messageId"),
+                    }
+                body = await resp.text()
+                return _error(f"Weixin bridge error ({resp.status}): {body}")
+    except Exception as e:
+        return _error(f"Weixin send failed: {e}")
 
 
 async def _send_signal(extra, chat_id, message):

@@ -1068,7 +1068,7 @@ class GatewayRunner:
         _any_allowlist = any(
             os.getenv(v)
             for v in ("TELEGRAM_ALLOWED_USERS", "DISCORD_ALLOWED_USERS",
-                       "WHATSAPP_ALLOWED_USERS", "SLACK_ALLOWED_USERS",
+                       "WHATSAPP_ALLOWED_USERS", "WEIXIN_ALLOWED_USERS", "SLACK_ALLOWED_USERS",
                        "SIGNAL_ALLOWED_USERS", "SIGNAL_GROUP_ALLOWED_USERS",
                        "EMAIL_ALLOWED_USERS",
                        "SMS_ALLOWED_USERS", "MATTERMOST_ALLOWED_USERS",
@@ -1081,7 +1081,7 @@ class GatewayRunner:
         _allow_all = os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in ("true", "1", "yes") or any(
             os.getenv(v, "").lower() in ("true", "1", "yes")
             for v in ("TELEGRAM_ALLOW_ALL_USERS", "DISCORD_ALLOW_ALL_USERS",
-                       "WHATSAPP_ALLOW_ALL_USERS", "SLACK_ALLOW_ALL_USERS",
+                       "WHATSAPP_ALLOW_ALL_USERS", "WEIXIN_ALLOW_ALL_USERS", "SLACK_ALLOW_ALL_USERS",
                        "SIGNAL_ALLOW_ALL_USERS", "EMAIL_ALLOW_ALL_USERS",
                        "SMS_ALLOW_ALL_USERS", "MATTERMOST_ALLOW_ALL_USERS",
                        "MATRIX_ALLOW_ALL_USERS", "DINGTALK_ALLOW_ALL_USERS",
@@ -1571,6 +1571,13 @@ class GatewayRunner:
                 logger.warning("WhatsApp: Node.js not installed or bridge not configured")
                 return None
             return WhatsAppAdapter(config)
+
+        elif platform == Platform.WEIXIN:
+            from gateway.platforms.weixin import WeixinAdapter, check_weixin_requirements
+            if not check_weixin_requirements():
+                logger.warning("Weixin: Node.js not installed or bridge not configured")
+                return None
+            return WeixinAdapter(config)
         
         elif platform == Platform.SLACK:
             from gateway.platforms.slack import SlackAdapter, check_slack_requirements
@@ -1694,6 +1701,7 @@ class GatewayRunner:
             Platform.TELEGRAM: "TELEGRAM_ALLOWED_USERS",
             Platform.DISCORD: "DISCORD_ALLOWED_USERS",
             Platform.WHATSAPP: "WHATSAPP_ALLOWED_USERS",
+            Platform.WEIXIN: "WEIXIN_ALLOWED_USERS",
             Platform.SLACK: "SLACK_ALLOWED_USERS",
             Platform.SIGNAL: "SIGNAL_ALLOWED_USERS",
             Platform.EMAIL: "EMAIL_ALLOWED_USERS",
@@ -1709,6 +1717,7 @@ class GatewayRunner:
             Platform.TELEGRAM: "TELEGRAM_ALLOW_ALL_USERS",
             Platform.DISCORD: "DISCORD_ALLOW_ALL_USERS",
             Platform.WHATSAPP: "WHATSAPP_ALLOW_ALL_USERS",
+            Platform.WEIXIN: "WEIXIN_ALLOW_ALL_USERS",
             Platform.SLACK: "SLACK_ALLOW_ALL_USERS",
             Platform.SIGNAL: "SIGNAL_ALLOW_ALL_USERS",
             Platform.EMAIL: "EMAIL_ALLOW_ALL_USERS",
@@ -5541,6 +5550,7 @@ class GatewayRunner:
     # programmatic interfaces that should not trigger system updates.
     _UPDATE_ALLOWED_PLATFORMS = frozenset({
         Platform.TELEGRAM, Platform.DISCORD, Platform.SLACK, Platform.WHATSAPP,
+        Platform.WEIXIN,
         Platform.SIGNAL, Platform.MATTERMOST, Platform.MATRIX,
         Platform.HOMEASSISTANT, Platform.EMAIL, Platform.SMS, Platform.DINGTALK,
         Platform.FEISHU, Platform.WECOM, Platform.BLUEBUBBLES, Platform.LOCAL,

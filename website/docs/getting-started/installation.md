@@ -51,7 +51,7 @@ The only prerequisite is **Git**. The installer automatically handles everything
 
 - **uv** (fast Python package manager)
 - **Python 3.11** (via uv, no sudo needed)
-- **Node.js v22** (for browser automation and WhatsApp bridge)
+- **Node.js v22** (for browser automation and the WhatsApp/Weixin bridges)
 - **ripgrep** (fast file search)
 - **ffmpeg** (audio format conversion for TTS)
 
@@ -147,7 +147,7 @@ Both are optional — if you skip them, the corresponding toolsets simply won't 
 
 ### Step 5: Install Node.js Dependencies (Optional)
 
-Only needed for **browser automation** (Browserbase-powered) and **WhatsApp bridge**:
+Only needed for **browser automation** (Browserbase-powered) and the **WhatsApp / Weixin bridges**:
 
 ```bash
 npm install
@@ -157,7 +157,7 @@ npm install
 
 ```bash
 # Create the directory structure
-mkdir -p ~/.hermes/{cron,sessions,logs,memories,skills,pairing,hooks,image_cache,audio_cache,whatsapp/session}
+mkdir -p ~/.hermes/{cron,sessions,logs,memories,skills,pairing,hooks,image_cache,audio_cache,whatsapp/session,weixin/session}
 
 # Copy the example config file
 cp cli-config.yaml.example ~/.hermes/config.yaml
@@ -240,7 +240,7 @@ export VIRTUAL_ENV="$(pwd)/venv"
 # Install everything
 uv pip install -e ".[all]"
 uv pip install -e "./tinker-atropos"
-npm install  # optional, for browser tools and WhatsApp
+npm install  # optional, for browser tools plus the WhatsApp / Weixin bridges
 
 # Configure
 mkdir -p ~/.hermes/{cron,sessions,logs,memories,skills,pairing,hooks,image_cache,audio_cache,whatsapp/session}

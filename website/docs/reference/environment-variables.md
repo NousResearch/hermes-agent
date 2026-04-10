@@ -185,6 +185,16 @@ For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETI
 | `WHATSAPP_ALLOWED_USERS` | Comma-separated phone numbers (with country code, no `+`), or `*` to allow all senders |
 | `WHATSAPP_ALLOW_ALL_USERS` | Allow all WhatsApp senders without an allowlist (`true`/`false`) |
 | `WHATSAPP_DEBUG` | Log raw message events in the bridge for troubleshooting (`true`/`false`) |
+| `WEIXIN_ENABLED` | Enable the Weixin bridge (`true`/`false`) |
+| `WEIXIN_ALLOWED_USERS` | Comma-separated Weixin user IDs allowed to message the bot |
+| `WEIXIN_ALLOW_ALL_USERS` | Allow all Weixin users without an allowlist (`true`/`false`) |
+| `WEIXIN_HOME_CHANNEL` | Default Weixin chat ID for cron delivery and notifications |
+| `WEIXIN_HOME_CHANNEL_NAME` | Display name for the Weixin home chat |
+| `WEIXIN_BRIDGE_PORT` | Local HTTP port for the Weixin bridge (default: `3010`) |
+| `WEIXIN_SESSION_PATH` | Directory for Weixin bridge credentials and polling state |
+| `WEIXIN_BRIDGE_SCRIPT` | Override path to the local Weixin bridge entry script |
+| `WEIXIN_BOT_TYPE` | Override the Tencent QR-login bot type used by the bridge (default: `3`) |
+| `WEIXIN_APP_ID` | Override the iLink app id header used by the bridge (default: `bot`) |
 | `SIGNAL_HTTP_URL` | signal-cli daemon HTTP endpoint (for example `http://127.0.0.1:8080`) |
 | `SIGNAL_ACCOUNT` | Bot phone number in E.164 format |
 | `SIGNAL_ALLOWED_USERS` | Comma-separated E.164 phone numbers or UUIDs |

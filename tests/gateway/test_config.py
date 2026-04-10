@@ -67,6 +67,17 @@ class TestGetConnectedPlatforms:
         assert Platform.DISCORD not in connected
         assert Platform.SLACK not in connected
 
+    def test_returns_weixin_when_enabled_without_token(self):
+        config = GatewayConfig(
+            platforms={
+                Platform.WEIXIN: PlatformConfig(enabled=True),
+            },
+        )
+
+        connected = config.get_connected_platforms()
+
+        assert connected == [Platform.WEIXIN]
+
     def test_empty_platforms(self):
         config = GatewayConfig()
         assert config.get_connected_platforms() == []
@@ -204,6 +215,35 @@ class TestLoadGatewayConfig:
         config = load_gateway_config()
 
         assert config.quick_commands == {}
+
+
+class TestApplyEnvOverrides:
+    def test_weixin_env_enables_platform_and_home_channel(self):
+        config = GatewayConfig()
+
+        with patch.dict(
+            os.environ,
+            {
+                "WEIXIN_ENABLED": "true",
+                "WEIXIN_BRIDGE_PORT": "3011",
+                "WEIXIN_SESSION_PATH": "/tmp/weixin-session",
+                "WEIXIN_BRIDGE_SCRIPT": "/tmp/weixin-bridge.js",
+                "WEIXIN_HOME_CHANNEL": "wxid_home@im.wechat",
+                "WEIXIN_HOME_CHANNEL_NAME": "Personal Weixin",
+            },
+            clear=False,
+        ):
+            _apply_env_overrides(config)
+
+        assert Platform.WEIXIN in config.platforms
+        pconfig = config.platforms[Platform.WEIXIN]
+        assert pconfig.enabled is True
+        assert pconfig.extra["bridge_port"] == 3011
+        assert pconfig.extra["session_path"] == "/tmp/weixin-session"
+        assert pconfig.extra["bridge_script"] == "/tmp/weixin-bridge.js"
+        assert pconfig.home_channel is not None
+        assert pconfig.home_channel.chat_id == "wxid_home@im.wechat"
+        assert pconfig.home_channel.name == "Personal Weixin"
 
     def test_bridges_unauthorized_dm_behavior_from_config_yaml(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"

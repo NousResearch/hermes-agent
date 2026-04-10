@@ -2167,6 +2167,13 @@ def _setup_whatsapp():
         print_info("or personal self-chat) and pair via QR code.")
 
 
+def _setup_weixin():
+    """Delegate to the existing Weixin setup flow."""
+    from hermes_cli.main import cmd_weixin
+    import argparse
+    cmd_weixin(argparse.Namespace())
+
+
 def _setup_bluebubbles():
     """Configure BlueBubbles iMessage gateway."""
     print_header("BlueBubbles (iMessage)")
@@ -2286,6 +2293,7 @@ _GATEWAY_PLATFORMS = [
     ("Matrix", "MATRIX_ACCESS_TOKEN", _setup_matrix),
     ("Mattermost", "MATTERMOST_TOKEN", _setup_mattermost),
     ("WhatsApp", "WHATSAPP_ENABLED", _setup_whatsapp),
+    ("Weixin", "WEIXIN_ENABLED", _setup_weixin),
     ("BlueBubbles (iMessage)", "BLUEBUBBLES_SERVER_URL", _setup_bluebubbles),
     ("Webhooks (GitHub, GitLab, etc.)", "WEBHOOK_ENABLED", _setup_webhooks),
 ]
@@ -2330,6 +2338,7 @@ def setup_gateway(config: dict):
         or get_env_value("MATRIX_ACCESS_TOKEN")
         or get_env_value("MATRIX_PASSWORD")
         or get_env_value("WHATSAPP_ENABLED")
+        or get_env_value("WEIXIN_ENABLED")
         or get_env_value("BLUEBUBBLES_SERVER_URL")
         or get_env_value("WEBHOOK_ENABLED")
     )

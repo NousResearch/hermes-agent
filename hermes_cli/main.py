@@ -12,6 +12,7 @@ Usage:
     hermes gateway install     # Install gateway service
     hermes gateway uninstall   # Uninstall gateway service
     hermes setup               # Interactive setup wizard
+    hermes weixin              # Set up Weixin integration
     hermes logout              # Clear stored authentication
     hermes status              # Show status of all components
     hermes cron                # Manage cron jobs
@@ -666,6 +667,238 @@ def cmd_gateway(args):
     """Gateway management commands."""
     from hermes_cli.gateway import gateway_command
     gateway_command(args)
+
+
+def _weixin_bridge_health(port: int) -> Optional[dict]:
+    """Return the local Weixin bridge health payload, or None if unavailable."""
+    import json
+    from urllib.request import urlopen
+
+    try:
+        with urlopen(f"http://127.0.0.1:{port}/health", timeout=2) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except Exception:
+        return None
+
+
+def _terminate_child_process(proc: Optional[subprocess.Popen]) -> None:
+    """Best-effort subprocess shutdown for temporary CLI helpers."""
+    if proc is None or proc.poll() is not None:
+        return
+    try:
+        proc.terminate()
+        proc.wait(timeout=3)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+    except Exception:
+        pass
+
+
+def cmd_weixin(args):
+    """Set up Weixin: enable platform, install bridge deps, and pair via QR."""
+    _require_tty("weixin")
+    import json
+    import shutil
+    import time
+    from hermes_cli.config import get_env_value, save_env_value, get_hermes_home
+    from gateway.platforms.weixin import check_weixin_requirements, _kill_port_process
+
+    def _prompt_yes_no(prompt: str, default: bool = True) -> bool:
+        suffix = "[Y/n]" if default else "[y/N]"
+        try:
+            answer = input(f"{prompt} {suffix} ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            return default
+        if not answer:
+            return default
+        return answer in ("y", "yes")
+
+    def _ensure_weixin_access_mode() -> None:
+        current_allowed = (get_env_value("WEIXIN_ALLOWED_USERS") or "").strip()
+        current_allow_all = (get_env_value("WEIXIN_ALLOW_ALL_USERS") or "").strip().lower()
+
+        if current_allowed:
+            print(f"✓ Weixin DM allowlist preserved: {current_allowed}")
+            return
+        if current_allow_all in ("true", "1", "yes"):
+            print("✓ Weixin access already open (WEIXIN_ALLOW_ALL_USERS=true)")
+            return
+
+        save_env_value("WEIXIN_ALLOW_ALL_USERS", "true")
+        print("✓ Weixin access set to open DMs (WEIXIN_ALLOW_ALL_USERS=true)")
+
+    print()
+    print("💬 Weixin Setup")
+    print("=" * 50)
+
+    if not check_weixin_requirements():
+        print("✗ Node.js not found.")
+        print("  Install Node.js 18+ first, then run `hermes weixin` again.")
+        return
+
+    if (get_env_value("WEIXIN_ENABLED") or "").lower() == "true":
+        print("✓ Weixin is already enabled")
+    else:
+        save_env_value("WEIXIN_ENABLED", "true")
+        print("✓ Weixin enabled")
+    _ensure_weixin_access_mode()
+
+    bridge_port_raw = (get_env_value("WEIXIN_BRIDGE_PORT") or "3010").strip()
+    try:
+        bridge_port = int(bridge_port_raw)
+    except ValueError:
+        bridge_port = 3010
+
+    project_root = Path(__file__).resolve().parents[1]
+    bridge_script_raw = (get_env_value("WEIXIN_BRIDGE_SCRIPT") or "").strip()
+    if bridge_script_raw:
+        bridge_script = Path(bridge_script_raw).expanduser()
+        bridge_dir = bridge_script.parent
+    else:
+        bridge_dir = project_root / "scripts" / "weixin-bridge"
+        bridge_script = bridge_dir / "bridge.js"
+
+    session_dir_raw = (get_env_value("WEIXIN_SESSION_PATH") or "").strip()
+    if session_dir_raw:
+        session_dir = Path(session_dir_raw).expanduser()
+    else:
+        session_dir = get_hermes_home() / "weixin" / "session"
+    credentials_path = session_dir / "credentials.json"
+
+    if not bridge_script.exists():
+        print(f"\n✗ Bridge script not found at {bridge_script}")
+        return
+
+    session_dir.mkdir(parents=True, exist_ok=True)
+
+    if credentials_path.exists():
+        try:
+            creds = json.loads(credentials_path.read_text(encoding="utf-8"))
+        except Exception:
+            creds = {}
+        account_id = creds.get("accountId") or "unknown"
+        user_id = creds.get("userId") or "unknown"
+        print()
+        print(f"✓ Existing Weixin session found ({account_id} ← {user_id})")
+        if not _prompt_yes_no("  Re-pair? This clears the existing session.", False):
+            if user_id != "unknown" and not get_env_value("WEIXIN_HOME_CHANNEL"):
+                if _prompt_yes_no(f"  Use {user_id} as WEIXIN_HOME_CHANNEL?", True):
+                    save_env_value("WEIXIN_HOME_CHANNEL", user_id)
+                    print(f"  ✓ Home channel set: {user_id}")
+            print()
+            print("✓ Weixin is already configured and paired.")
+            print("  Start the gateway with: hermes gateway")
+            return
+
+        _kill_port_process(bridge_port)
+        time.sleep(1)
+        shutil.rmtree(session_dir, ignore_errors=True)
+        session_dir.mkdir(parents=True, exist_ok=True)
+        print("  ✓ Existing Weixin session cleared")
+
+    if not (bridge_dir / "node_modules").exists():
+        print("\n→ Installing Weixin bridge dependencies...")
+        result = subprocess.run(
+            ["npm", "install"],
+            cwd=str(bridge_dir),
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        if result.returncode != 0:
+            print(f"  ✗ npm install failed: {result.stderr}")
+            return
+        print("  ✓ Dependencies installed")
+    else:
+        print("✓ Bridge dependencies already installed")
+
+    existing_health = _weixin_bridge_health(bridge_port)
+    bridge_proc = None
+    started_bridge = False
+
+    if existing_health:
+        existing_status = str(existing_health.get("status", "unknown"))
+        if existing_status == "connected" and not credentials_path.exists():
+            print("⚠ Existing connected bridge has no persisted session; restarting fresh pairing.")
+            _kill_port_process(bridge_port)
+            time.sleep(1)
+            existing_health = None
+        else:
+            print(f"✓ Existing Weixin bridge detected on port {bridge_port} ({existing_status})")
+
+    if not existing_health:
+        _kill_port_process(bridge_port)
+        print()
+        print("─" * 50)
+        print("📱 Open Weixin on your phone and scan the QR code below.")
+        print("   If the terminal QR does not render correctly, use the fallback link.")
+        print("─" * 50)
+        print()
+        bridge_proc = subprocess.Popen(
+            [
+                "node",
+                str(bridge_script),
+                "--port",
+                str(bridge_port),
+                "--session",
+                str(session_dir),
+            ],
+            cwd=str(bridge_dir),
+        )
+        started_bridge = True
+
+    last_status = None
+    last_qrcode_url = None
+    deadline = time.time() + 180
+
+    try:
+        while time.time() < deadline:
+            health = _weixin_bridge_health(bridge_port)
+            if bridge_proc is not None and bridge_proc.poll() is not None:
+                print("\n✗ Weixin bridge exited unexpectedly.")
+                return
+
+            if not health:
+                time.sleep(1)
+                continue
+
+            status = str(health.get("status", "unknown"))
+            if status != last_status:
+                print(f"→ Bridge status: {status}")
+                last_status = status
+
+            if status == "qr_ready":
+                qrcode_url = health.get("qrcodeUrl")
+                if qrcode_url and qrcode_url != last_qrcode_url:
+                    print(f"  Fallback QR link: {qrcode_url}")
+                    last_qrcode_url = qrcode_url
+
+            if status == "connected":
+                account_id = health.get("accountId") or "unknown"
+                user_id = health.get("userId") or ""
+                print()
+                print("✓ Weixin paired successfully!")
+                print(f"  Account ID: {account_id}")
+                if user_id:
+                    print(f"  Paired user: {user_id}")
+                    if not get_env_value("WEIXIN_HOME_CHANNEL"):
+                        if _prompt_yes_no(f"  Use {user_id} as WEIXIN_HOME_CHANNEL?", True):
+                            save_env_value("WEIXIN_HOME_CHANNEL", user_id)
+                            print(f"  ✓ Home channel set: {user_id}")
+                print()
+                print("  Next steps:")
+                print("    1. Start the gateway:  hermes gateway")
+                print("    2. Message the paired Weixin chat")
+                print("    3. Hermes will reply in that conversation")
+                return
+
+            time.sleep(2)
+
+        print()
+        print("⚠ Pairing timed out. Run `hermes weixin` again to retry.")
+    finally:
+        if started_bridge:
+            _terminate_child_process(bridge_proc)
 
 
 def cmd_whatsapp(args):
@@ -4425,7 +4658,7 @@ For more help on a command:
     gateway_parser = subparsers.add_parser(
         "gateway",
         help="Messaging gateway management",
-        description="Manage the messaging gateway (Telegram, Discord, WhatsApp)"
+        description="Manage the messaging gateway (Telegram, Discord, WhatsApp, Weixin)"
     )
     gateway_subparsers = gateway_parser.add_subparsers(dest="gateway_command")
     
@@ -4508,6 +4741,16 @@ For more help on a command:
         description="Configure WhatsApp and pair via QR code"
     )
     whatsapp_parser.set_defaults(func=cmd_whatsapp)
+
+    # =========================================================================
+    # weixin command
+    # =========================================================================
+    weixin_parser = subparsers.add_parser(
+        "weixin",
+        help="Set up Weixin integration",
+        description="Configure Weixin and pair via QR code"
+    )
+    weixin_parser.set_defaults(func=cmd_weixin)
 
     # =========================================================================
     # login command

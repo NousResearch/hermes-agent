@@ -51,6 +51,7 @@ class Platform(Enum):
     TELEGRAM = "telegram"
     DISCORD = "discord"
     WHATSAPP = "whatsapp"
+    WEIXIN = "weixin"
     SLACK = "slack"
     SIGNAL = "signal"
     MATTERMOST = "mattermost"
@@ -266,6 +267,9 @@ class GatewayConfig:
                 connected.append(platform)
             # WhatsApp uses enabled flag only (bridge handles auth)
             elif platform == Platform.WHATSAPP:
+                connected.append(platform)
+            # Weixin uses enabled flag only (bridge handles auth)
+            elif platform == Platform.WEIXIN:
                 connected.append(platform)
             # Signal uses extra dict for config (http_url + account)
             elif platform == Platform.SIGNAL and config.extra.get("http_url"):
@@ -729,7 +733,33 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         if Platform.WHATSAPP not in config.platforms:
             config.platforms[Platform.WHATSAPP] = PlatformConfig()
         config.platforms[Platform.WHATSAPP].enabled = True
-    
+
+    # Weixin (bridge-managed auth via QR login)
+    weixin_enabled = os.getenv("WEIXIN_ENABLED", "").lower() in ("true", "1", "yes")
+    if weixin_enabled:
+        if Platform.WEIXIN not in config.platforms:
+            config.platforms[Platform.WEIXIN] = PlatformConfig()
+        config.platforms[Platform.WEIXIN].enabled = True
+        bridge_port = os.getenv("WEIXIN_BRIDGE_PORT", "").strip()
+        if bridge_port:
+            try:
+                config.platforms[Platform.WEIXIN].extra["bridge_port"] = int(bridge_port)
+            except ValueError:
+                pass
+        bridge_script = os.getenv("WEIXIN_BRIDGE_SCRIPT", "").strip()
+        if bridge_script:
+            config.platforms[Platform.WEIXIN].extra["bridge_script"] = bridge_script
+        session_path = os.getenv("WEIXIN_SESSION_PATH", "").strip()
+        if session_path:
+            config.platforms[Platform.WEIXIN].extra["session_path"] = session_path
+    weixin_home = os.getenv("WEIXIN_HOME_CHANNEL")
+    if weixin_home and Platform.WEIXIN in config.platforms:
+        config.platforms[Platform.WEIXIN].home_channel = HomeChannel(
+            platform=Platform.WEIXIN,
+            chat_id=weixin_home,
+            name=os.getenv("WEIXIN_HOME_CHANNEL_NAME", "Home"),
+        )
+
     # Slack
     slack_token = os.getenv("SLACK_BOT_TOKEN")
     if slack_token:

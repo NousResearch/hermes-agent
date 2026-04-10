@@ -39,6 +39,9 @@ _EXTRA_ENV_KEYS = frozenset({
     "DINGTALK_CLIENT_ID", "DINGTALK_CLIENT_SECRET",
     "FEISHU_APP_ID", "FEISHU_APP_SECRET", "FEISHU_ENCRYPT_KEY", "FEISHU_VERIFICATION_TOKEN",
     "WECOM_BOT_ID", "WECOM_SECRET",
+    "WEIXIN_ENABLED", "WEIXIN_ALLOWED_USERS", "WEIXIN_ALLOW_ALL_USERS",
+    "WEIXIN_HOME_CHANNEL", "WEIXIN_HOME_CHANNEL_NAME",
+    "WEIXIN_BRIDGE_PORT", "WEIXIN_SESSION_PATH", "WEIXIN_BRIDGE_SCRIPT",
     "BLUEBUBBLES_SERVER_URL", "BLUEBUBBLES_PASSWORD",
     "TERMINAL_ENV", "TERMINAL_SSH_KEY", "TERMINAL_SSH_PORT",
     "WHATSAPP_MODE", "WHATSAPP_ENABLED",
@@ -520,6 +523,13 @@ DEFAULT_CONFIG = {
         # Default (None) uses the built-in "⚕ *Hermes Agent*" header.
         # Set to "" (empty string) to disable the header entirely.
         # Supports \n for newlines, e.g. "🤖 *My Bot*\n──────\n"
+    },
+
+    # Weixin platform settings (gateway mode)
+    "weixin": {
+        # The bridge stores QR login credentials under ~/.hermes/weixin/session.
+        # Advanced bridge overrides are configured via environment variables:
+        # WEIXIN_BRIDGE_PORT, WEIXIN_SESSION_PATH, WEIXIN_BRIDGE_SCRIPT
     },
 
     # Approval mode for dangerous commands:

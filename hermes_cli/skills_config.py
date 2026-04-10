@@ -22,6 +22,7 @@ PLATFORMS = {
     "discord":  "💬 Discord",
     "slack":    "💼 Slack",
     "whatsapp": "📱 WhatsApp",
+    "weixin":   "💬 Weixin",
     "signal":   "📡 Signal",
     "bluebubbles": "💬 BlueBubbles",
     "email":    "📧 Email",

@@ -293,6 +293,12 @@ PLATFORM_HINTS = {
         "files arrive as downloadable documents. You can also include image "
         "URLs in markdown format ![alt](url) and they will be sent as photos."
     ),
+    "weixin": (
+        "You are on a text messaging communication platform, Weixin. "
+        "Use plain text responses and avoid markdown-heavy formatting. "
+        "Keep replies compact and direct because they are delivered into a "
+        "personal chat thread."
+    ),
     "telegram": (
         "You are on a text messaging communication platform, Telegram. "
         "Please do not use markdown as it does not render. "

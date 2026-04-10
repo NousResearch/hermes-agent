@@ -14,6 +14,7 @@ def _clear_auth_env(monkeypatch) -> None:
         "TELEGRAM_ALLOWED_USERS",
         "DISCORD_ALLOWED_USERS",
         "WHATSAPP_ALLOWED_USERS",
+        "WEIXIN_ALLOWED_USERS",
         "SLACK_ALLOWED_USERS",
         "SIGNAL_ALLOWED_USERS",
         "EMAIL_ALLOWED_USERS",
@@ -25,6 +26,7 @@ def _clear_auth_env(monkeypatch) -> None:
         "TELEGRAM_ALLOW_ALL_USERS",
         "DISCORD_ALLOW_ALL_USERS",
         "WHATSAPP_ALLOW_ALL_USERS",
+        "WEIXIN_ALLOW_ALL_USERS",
         "SLACK_ALLOW_ALL_USERS",
         "SIGNAL_ALLOW_ALL_USERS",
         "EMAIL_ALLOW_ALL_USERS",
@@ -155,6 +157,33 @@ async def test_unauthorized_dm_pairs_by_default(monkeypatch):
     )
     adapter.send.assert_awaited_once()
     assert "ABC12DEF" in adapter.send.await_args.args[1]
+
+
+@pytest.mark.asyncio
+async def test_unauthorized_weixin_dm_pairs_by_default(monkeypatch):
+    _clear_auth_env(monkeypatch)
+    config = GatewayConfig(
+        platforms={Platform.WEIXIN: PlatformConfig(enabled=True)},
+    )
+    runner, adapter = _make_runner(Platform.WEIXIN, config)
+    runner.pairing_store.generate_code.return_value = "WX12PAIR"
+
+    result = await runner._handle_message(
+        _make_event(
+            Platform.WEIXIN,
+            "wxid_test@im.wechat",
+            "wxid_test@im.wechat",
+        )
+    )
+
+    assert result is None
+    runner.pairing_store.generate_code.assert_called_once_with(
+        "weixin",
+        "wxid_test@im.wechat",
+        "tester",
+    )
+    adapter.send.assert_awaited_once()
+    assert "WX12PAIR" in adapter.send.await_args.args[1]
 
 
 @pytest.mark.asyncio

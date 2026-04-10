@@ -1,0 +1,14 @@
+{
+  "name": "hermes-weixin-bridge",
+  "version": "0.1.0",
+  "description": "Weixin bridge for Hermes Agent",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node bridge.js"
+  },
+  "dependencies": {
+    "express": "^4.21.0",
+    "qrcode-terminal": "^0.12.0"
+  }
+}

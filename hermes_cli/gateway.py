@@ -1459,6 +1459,12 @@ _PLATFORMS = [
         "token_var": "WHATSAPP_ENABLED",
     },
     {
+        "key": "weixin",
+        "label": "Weixin",
+        "emoji": "💬",
+        "token_var": "WEIXIN_ENABLED",
+    },
+    {
         "key": "signal",
         "label": "Signal",
         "emoji": "📡",
@@ -1634,6 +1640,13 @@ def _platform_status(platform: dict) -> str:
                 return "configured + paired"
             return "enabled, not paired"
         return "not configured"
+    if token_var == "WEIXIN_ENABLED":
+        if val and val.lower() == "true":
+            session_file = get_hermes_home() / "weixin" / "session" / "credentials.json"
+            if session_file.exists():
+                return "configured + paired"
+            return "enabled, waiting for QR scan"
+        return "not configured"
     if platform.get("key") == "signal":
         account = get_env_value("SIGNAL_ACCOUNT")
         if val and account:
@@ -1797,6 +1810,13 @@ def _setup_whatsapp():
     from hermes_cli.main import cmd_whatsapp
     import argparse
     cmd_whatsapp(argparse.Namespace())
+
+
+def _setup_weixin():
+    """Delegate to the existing Weixin setup flow."""
+    from hermes_cli.main import cmd_weixin
+    import argparse
+    cmd_weixin(argparse.Namespace())
 
 
 def _is_service_installed() -> bool:
@@ -2023,6 +2043,8 @@ def gateway_setup():
 
         if platform["key"] == "whatsapp":
             _setup_whatsapp()
+        elif platform["key"] == "weixin":
+            _setup_weixin()
         elif platform["key"] == "signal":
             _setup_signal()
         else:
@@ -2032,8 +2054,11 @@ def gateway_setup():
     any_configured = any(
         bool(get_env_value(p["token_var"]))
         for p in _PLATFORMS
-        if p["key"] != "whatsapp"
-    ) or (get_env_value("WHATSAPP_ENABLED") or "").lower() == "true"
+        if p["key"] not in {"whatsapp", "weixin"}
+    ) or any(
+        (get_env_value(env_name) or "").lower() == "true"
+        for env_name in ("WHATSAPP_ENABLED", "WEIXIN_ENABLED")
+    )
 
     if any_configured:
         print()

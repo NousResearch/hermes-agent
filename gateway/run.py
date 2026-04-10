@@ -464,20 +464,76 @@ def _load_gateway_config() -> dict:
     return {}
 
 
-def _resolve_gateway_model(config: dict | None = None) -> str:
+def _resolve_gateway_model(config: dict | None = None, platform: str | None = None) -> str:
     """Read model from config.yaml — single source of truth.
 
     Without this, temporary AIAgent instances (memory flush, /compress) fall
     back to the hardcoded default which fails when the active provider is
     openai-codex.
+
+    When *platform* is provided, checks ``model.platforms.{platform}`` first,
+    falling back to the default model. This allows per-platform model overrides
+    (e.g. a cheaper model for Hub conversations).
     """
     cfg = config if config is not None else _load_gateway_config()
     model_cfg = cfg.get("model", {})
     if isinstance(model_cfg, str):
         return model_cfg
     elif isinstance(model_cfg, dict):
+        # Per-platform override (string shorthand or dict with model key)
+        if platform:
+            platforms = model_cfg.get("platforms")
+            if isinstance(platforms, dict):
+                override = platforms.get(platform)
+                if isinstance(override, str) and override:
+                    return override
+                if isinstance(override, dict) and override.get("model"):
+                    return override["model"]
         return model_cfg.get("default") or model_cfg.get("model") or ""
     return ""
+
+
+def _resolve_platform_provider_overrides(
+    config: dict | None = None,
+    platform: str | None = None,
+) -> dict | None:
+    """Return per-platform provider overrides (base_url, api_key) if configured.
+
+    Supports two config forms::
+
+        # String shorthand — model name only, same provider
+        model:
+          platforms:
+            hub: slate-2
+
+        # Dict — full provider override
+        model:
+          platforms:
+            hub:
+              model: slate-2
+              base_url: "https://other-endpoint/v1"
+              api_key: "sk-..."
+
+    Returns a dict with keys to merge into runtime_kwargs, or None.
+    """
+    if not platform:
+        return None
+    cfg = config if config is not None else _load_gateway_config()
+    model_cfg = cfg.get("model", {})
+    if not isinstance(model_cfg, dict):
+        return None
+    platforms = model_cfg.get("platforms")
+    if not isinstance(platforms, dict):
+        return None
+    override = platforms.get(platform)
+    if not isinstance(override, dict):
+        return None
+    result = {}
+    if override.get("base_url"):
+        result["base_url"] = override["base_url"]
+    if override.get("api_key"):
+        result["api_key"] = override["api_key"]
+    return result or None
 
 
 def _resolve_hermes_bin() -> Optional[list[str]]:
@@ -919,6 +975,10 @@ class GatewayRunner:
         If the session override already contains a complete provider bundle
         (provider/api_key/base_url/api_mode), prefer it directly instead of
         resolving fresh global runtime state first.
+
+        When *source* is provided, per-platform model/provider overrides from
+        ``config.yaml`` (``model.platforms.<platform>``) are applied underneath
+        any session override.
         """
         resolved_session_key = session_key
         if not resolved_session_key and source is not None:
@@ -927,7 +987,9 @@ class GatewayRunner:
             except Exception:
                 resolved_session_key = None
 
-        model = _resolve_gateway_model(user_config)
+        platform_key = _platform_config_key(source.platform) if source is not None else None
+
+        model = _resolve_gateway_model(user_config, platform=platform_key)
         override = self._session_model_overrides.get(resolved_session_key) if resolved_session_key else None
         if override:
             override_model = override.get("model", model)
@@ -958,6 +1020,9 @@ class GatewayRunner:
             )
 
         runtime_kwargs = _resolve_runtime_agent_kwargs()
+        platform_overrides = _resolve_platform_provider_overrides(user_config, platform=platform_key)
+        if platform_overrides:
+            runtime_kwargs = {**runtime_kwargs, **platform_overrides}
         if override and resolved_session_key:
             model, runtime_kwargs = self._apply_session_model_override(
                 resolved_session_key, model, runtime_kwargs
@@ -6263,7 +6328,6 @@ class GatewayRunner:
                 )
                 return
 
-            platform_key = _platform_config_key(source.platform)
             reasoning_config = self._load_reasoning_config()
             self._service_tier = self._load_service_tier()
             turn_route = self._resolve_turn_agent_config(question, model, runtime_kwargs)
@@ -9882,7 +9946,8 @@ class GatewayRunner:
             _result_for_fb = result_holder[0]
             _run_failed = _result_for_fb.get("failed") if _result_for_fb else False
             if _agent is not None and hasattr(_agent, 'model') and not _run_failed:
-                _cfg_model = _resolve_gateway_model()
+                _platform_key = _platform_config_key(source.platform) if source else None
+                _cfg_model = _resolve_gateway_model(platform=_platform_key)
                 if _agent.model != _cfg_model and not self._is_intentional_model_switch(session_key, _agent.model):
                     # Fallback activated on a successful run — evict cached
                     # agent so the next message retries the primary model.

@@ -435,8 +435,23 @@ def switch_model(
     # PATH A: Explicit --provider given
     # =================================================================
     if explicit_provider:
-        # Resolve the provider
-        pdef = resolve_provider_full(explicit_provider, user_providers)
+        # Special case: "custom" is not a real provider in the registry — it
+        # represents the current user-defined OpenAI-compatible endpoint
+        # (configured via custom_providers: in config.yaml). When the picker
+        # or user passes --provider custom, synthesize a ProviderDef from the
+        # current runtime base_url / api_key so the model swap works in place.
+        if explicit_provider.strip().lower() == "custom" and (current_provider == "custom" or current_base_url):
+            from hermes_cli.providers import ProviderDef
+            pdef = ProviderDef(
+                id="custom",
+                name="Custom endpoint",
+                transport="openai_chat",
+                api_key_env_vars=[],
+                base_url=current_base_url or "",
+                source="custom_providers",
+            )
+        else:
+            pdef = resolve_provider_full(explicit_provider, user_providers)
         if pdef is None:
             _switch_err = (
                 f"Unknown provider '{explicit_provider}'. "
@@ -709,6 +724,7 @@ def list_authenticated_providers(
     current_provider: str = "",
     user_providers: dict = None,
     max_models: int = 8,
+    custom_providers: list = None,
 ) -> List[dict]:
     """Detect which providers have credentials and list their curated models.
 
@@ -827,7 +843,7 @@ def list_authenticated_providers(
         })
         seen_slugs.add(pid)
 
-    # --- 3. User-defined endpoints from config ---
+    # --- 3. User-defined endpoints from config (providers: dict schema) ---
     if user_providers and isinstance(user_providers, dict):
         for ep_name, ep_cfg in user_providers.items():
             if not isinstance(ep_cfg, dict):
@@ -852,6 +868,42 @@ def list_authenticated_providers(
                 "source": "user-config",
                 "api_url": api_url,
             })
+
+    # --- 4. Custom providers from config (custom_providers: list schema) ---
+    # Collapse all custom_providers entries sharing a base_url into a single
+    # "custom" provider showing every configured model. Clicking a model just
+    # swaps the model on the current custom endpoint — the provider stays
+    # "custom", so this works seamlessly when model.provider is already set
+    # to "custom" (the typical case for user-defined OpenAI-compatible endpoints).
+    if custom_providers and isinstance(custom_providers, list) and "custom" not in seen_slugs:
+        all_models: list[str] = []
+        display_name = ""
+        api_url = ""
+        for entry in custom_providers:
+            if not isinstance(entry, dict):
+                continue
+            model = (entry.get("model") or "").strip()
+            if model and model not in all_models:
+                all_models.append(model)
+            if not api_url:
+                api_url = (entry.get("base_url") or "").strip()
+            if not display_name:
+                first_name = (entry.get("name") or "").strip()
+                if first_name:
+                    display_name = first_name
+
+        if all_models:
+            results.append({
+                "slug": "custom",
+                "name": display_name or "Custom endpoint",
+                "is_current": current_provider == "custom",
+                "is_user_defined": True,
+                "models": all_models,
+                "total_models": len(all_models),
+                "source": "user-config",
+                "api_url": api_url,
+            })
+            seen_slugs.add("custom")
 
     # Sort: current provider first, then by model count descending
     results.sort(key=lambda r: (not r["is_current"], -r["total_models"]))

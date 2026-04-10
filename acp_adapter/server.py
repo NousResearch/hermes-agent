@@ -460,6 +460,14 @@ class HermesACPAgent(acp.Agent):
                 thought_tokens=usage_data.get("reasoning_tokens"),
                 cached_read_tokens=usage_data.get("cached_tokens"),
             )
+        elif any(result.get(key) is not None for key in ("prompt_tokens", "completion_tokens", "total_tokens")):
+            usage = Usage(
+                input_tokens=result.get("prompt_tokens", 0),
+                output_tokens=result.get("completion_tokens", 0),
+                total_tokens=result.get("total_tokens", 0),
+                thought_tokens=result.get("reasoning_tokens"),
+                cached_read_tokens=result.get("cache_read_tokens"),
+            )
 
         stop_reason = "cancelled" if state.cancel_event and state.cancel_event.is_set() else "end_turn"
         return PromptResponse(stop_reason=stop_reason, usage=usage)

@@ -44,6 +44,7 @@ def _make_adapter(tmp_path=None):
         },
     )
     adapter = MatrixAdapter(config)
+    adapter._text_batch_delay_seconds = 0  # disable batching for tests
     adapter.handle_message = AsyncMock()
     adapter._startup_ts = time.time() - 10  # avoid startup grace filter
     return adapter

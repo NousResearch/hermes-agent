@@ -7,11 +7,6 @@
 # constraints currently mirror the explicit API-server runtime deps needed by
 # gateway/platforms/api_server.py.
 # Chaquopy's package index currently provides aiohttp wheels up to the 3.10 line.
-#
-# Note: the Gradle / Chaquopy build installs ../../ with --no-deps, then adds
-# requirements-android-chaquopy.txt plus Android-safe stubs for anthropic and
-# fal-client. This keeps the embedded runtime independent from the broader host
-# constraints used by CI/test installs here.
 
 aiohttp>=3.10.10,<4
 croniter>=6.0.0,<7

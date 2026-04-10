@@ -2,8 +2,6 @@
 
 This file locks the Android APK MVP support matrix for branch `feat/termux-install-path`.
 
-The current app shell now includes a separate in-app Nous Portal web section alongside the Hermes Agent section.
-
 Later Android tasks should match these values until this file and `docs/plans/2026-04-10-android-apk-ci-port-plan.md` are updated together.
 
 ## Repo-grounded constraints

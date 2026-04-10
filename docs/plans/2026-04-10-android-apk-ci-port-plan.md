@@ -153,6 +153,13 @@ Do:
   - CI emulator API level
   - Chaquopy + Python version pairing
   - artifact policy: universal debug APK on PRs; universal release APK + release AAB on GitHub releases; no ABI splits in MVP
+- lock the MVP matrix for this branch to:
+  - min SDK 24
+  - target SDK 35
+  - CI emulator API 35 on a single `x86_64` Google APIs image
+  - Chaquopy 17.0.0 + Python 3.11
+  - universal-only artifacts in MVP, with no ABI splits
+  - narrow ABI scope for MVP: `arm64-v8a` for devices and `x86_64` for emulator / CI coverage
 - keep the first public release narrow and explicit
 Verify:
 - `read_file android/README.md`

@@ -22,25 +22,6 @@ def newest_matching(path: Path, pattern: str) -> Path:
     return matches[0]
 
 
-def select_release_apk(path: Path) -> Path:
-    matches = sorted(path.glob("*.apk"), key=lambda item: item.stat().st_mtime, reverse=True)
-    if not matches:
-        raise FileNotFoundError(f"No APK files found under {path}")
-
-    universal_matches = [item for item in matches if "universal" in item.name.lower()]
-    if universal_matches:
-        return universal_matches[0]
-
-    if len(matches) == 1:
-        return matches[0]
-
-    candidates = ", ".join(item.name for item in matches)
-    raise ValueError(
-        "Multiple release APKs were produced but no universal APK was found. "
-        f"Candidates: {candidates}"
-    )
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(description="Rename Android release artifacts and emit SHA256 manifests")
     parser.add_argument("--tag", required=True, help="Git tag, for example v2026.4.10")
@@ -49,7 +30,7 @@ def main() -> None:
     parser.add_argument("--output-dir", default="dist/android-release")
     args = parser.parse_args()
 
-    apk_src = select_release_apk(Path(args.apk_dir))
+    apk_src = newest_matching(Path(args.apk_dir), "*.apk")
     aab_src = newest_matching(Path(args.aab_dir), "*.aab")
 
     output_dir = Path(args.output_dir)

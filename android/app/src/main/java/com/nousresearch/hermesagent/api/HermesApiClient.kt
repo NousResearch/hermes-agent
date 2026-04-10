@@ -51,7 +51,12 @@ class HermesApiClient(
                 "messages",
                 JSONArray().apply {
                     request.messages.forEach { msg ->
-                        put(msg.toJsonObject())
+                        put(
+                            JSONObject().apply {
+                                put("role", msg.role)
+                                put("content", msg.content)
+                            }
+                        )
                     }
                 }
             )

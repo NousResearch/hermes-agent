@@ -3,10 +3,13 @@ package com.nousresearch.hermesagent.backend
 import android.content.Context
 import com.chaquo.python.PyException
 import com.chaquo.python.Python
+import com.chaquo.python.android.AndroidPlatform
 
 object PythonBootProbe {
     fun readProbe(context: Context): String {
-        HermesRuntimeManager.ensurePythonStarted(context.applicationContext)
+        if (!Python.isStarted()) {
+            Python.start(AndroidPlatform(context.applicationContext))
+        }
 
         return try {
             Python.getInstance()

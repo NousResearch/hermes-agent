@@ -1,41 +1,39 @@
 name: Android Release
 
 on:
-  push:
-    tags:
-      - 'v*'
   release:
     types:
       - published
 
 concurrency:
-  group: android-release-${{ github.event.release.tag_name || github.ref_name }}
-  cancel-in-progress: true
+  group: android-release-${{ github.event.release.tag_name }}
+  cancel-in-progress: false
 
 jobs:
   build-release:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
       contents: write
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v5
+        uses: actions/checkout@v4
 
-      - name: Set up Java 21
-        uses: actions/setup-java@v5
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '21'
+          java-version: '17'
+          cache: gradle
 
-      - name: Set up Python 3.13 for Chaquopy
-        uses: actions/setup-python@v6
+      - name: Set up Python 3.11 for Chaquopy
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.13'
+          python-version: '3.11'
 
       - name: Set up Android SDK
-        uses: android-actions/setup-android@v4
+        uses: android-actions/setup-android@v3
 
       - name: Restore signing material
         env:
@@ -62,61 +60,19 @@ jobs:
       - name: Build signed Android artifacts
         working-directory: android
         env:
-          HERMES_RELEASE_TAG: ${{ github.event.release.tag_name || github.ref_name }}
-          SOURCE_DATE_EPOCH: "315532800"
+          HERMES_RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
-          rm -rf ../build
-          export PYTHON_FOR_BUILD="$(command -v python3.13 || command -v python3 || command -v python)"
+          export PYTHON_FOR_BUILD="$(command -v python3.11 || command -v python3 || command -v python)"
           ./gradlew :app:assembleRelease :app:bundleRelease
 
       - name: Rename artifacts and write checksums
-        env:
-          HERMES_RELEASE_TAG: ${{ github.event.release.tag_name || github.ref_name }}
         run: |
-          python scripts/android_release_manifest.py --tag "$HERMES_RELEASE_TAG"
-
-      - name: Ensure GitHub CLI is available
-        run: |
-          if ! command -v gh >/dev/null 2>&1; then
-            sudo mkdir -p -m 755 /etc/apt/keyrings
-            wget -qO- https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo tee /etc/apt/keyrings/githubcli-archive-keyring.gpg >/dev/null
-            sudo chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg
-            echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list >/dev/null
-            sudo apt-get update
-            sudo apt-get install -y gh
-          fi
-
-      - name: Ensure release exists
-        env:
-          GH_TOKEN: ${{ github.token }}
-          HERMES_RELEASE_TAG: ${{ github.event.release.tag_name || github.ref_name }}
-        run: |
-          title="Hermes Agent ${HERMES_RELEASE_TAG}"
-          notes_file="RELEASE_${HERMES_RELEASE_TAG}.md"
-          if gh release view "$HERMES_RELEASE_TAG" >/dev/null 2>&1; then
-            edit_args=(--title "$title")
-            if [ -f "$notes_file" ]; then
-              edit_args+=(--notes-file "$notes_file")
-            fi
-            gh release edit "$HERMES_RELEASE_TAG" "${edit_args[@]}"
-          else
-            create_args=(--generate-notes)
-            if [ -f "$notes_file" ]; then
-              create_args=(--notes-file "$notes_file")
-            fi
-            gh release create "$HERMES_RELEASE_TAG" \
-              --target "$GITHUB_SHA" \
-              --title "$title" \
-              "${create_args[@]}"
-          fi
+          python scripts/android_release_manifest.py --tag "${{ github.event.release.tag_name }}"
 
       - name: Upload release assets
-        env:
-          GH_TOKEN: ${{ github.token }}
-          HERMES_RELEASE_TAG: ${{ github.event.release.tag_name || github.ref_name }}
-        run: |
-          gh release upload "$HERMES_RELEASE_TAG" \
-            dist/android-release/*.apk \
-            dist/android-release/*.aab \
-            dist/android-release/*.sha256 \
-            --clobber
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/android-release/*.apk
+            dist/android-release/*.aab
+            dist/android-release/*.sha256

@@ -2,21 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import threading
-from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-
-from hermes_android.python_path import prefer_hermes_package_root
-
-prefer_hermes_package_root()
 
 from gateway.config import PlatformConfig
 from gateway.platforms.api_server import APIServerAdapter
 from hermes_android.bootstrap import bootstrap_android_runtime
 from hermes_android.runtime_env import AndroidRuntimeEnv
-
-ANDROID_API_SERVER_CONNECT_TIMEOUT_SECONDS = 90.0
 
 
 @dataclass
@@ -56,7 +49,7 @@ def start_local_api_server(
     *,
     api_server_port: int | None = None,
     api_server_key: str | None = None,
-    connect_timeout: float = ANDROID_API_SERVER_CONNECT_TIMEOUT_SECONDS,
+    connect_timeout: float = 20.0,
 ) -> AndroidServerHandle:
     bootstrap = bootstrap_android_runtime(
         files_dir,
@@ -89,20 +82,9 @@ def start_local_api_server(
     thread.start()
 
     future = asyncio.run_coroutine_threadsafe(adapter.connect(), loop)
-    try:
-        connected = future.result(timeout=connect_timeout)
-    except FutureTimeoutError as exc:
-        future.cancel()
+    if not future.result(timeout=connect_timeout):
         loop.call_soon_threadsafe(loop.stop)
-        thread.join(timeout=min(connect_timeout, 5.0))
-        raise TimeoutError(
-            "Timed out starting the Android local API server after "
-            f"{connect_timeout:.0f} seconds. Free phone storage, retry Hermes, "
-            "or switch to a local LiteRT-LM backend with a completed model."
-        ) from exc
-    if not connected:
-        loop.call_soon_threadsafe(loop.stop)
-        thread.join(timeout=min(connect_timeout, 5.0))
+        thread.join(timeout=connect_timeout)
         raise RuntimeError("Failed to start Android local API server")
 
     return AndroidServerHandle(runtime=runtime, adapter=adapter, loop=loop, thread=thread)

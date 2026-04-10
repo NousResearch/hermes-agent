@@ -10,13 +10,6 @@ plugins {
 val repoRoot = rootDir.parentFile
 val hermesVersionFile = repoRoot.resolve("hermes_cli/__init__.py")
 val releaseTag = System.getenv("HERMES_RELEASE_TAG").orEmpty().trim()
-val generatedPythonBuildLibDir = repoRoot.resolve("build/lib")
-val hermesWheelDir = layout.buildDirectory.dir("hermes-wheel")
-val generatedHermesLinuxAssetsDir = layout.buildDirectory.dir("generated/hermes-linux-assets")
-val generatedHermesNativeLibsDir = layout.buildDirectory.dir("generated/hermes-native-libs")
-val skipHermesAndroidLinuxAssets = providers.gradleProperty("skipHermesAndroidLinuxAssets")
-    .map { it.equals("true", ignoreCase = true) }
-    .getOrElse(false)
 val keystorePropertiesFile = rootDir.resolve("keystore.properties")
 val keystoreProperties = Properties().apply {
     if (keystorePropertiesFile.isFile) {
@@ -31,44 +24,10 @@ fun hermesVersionName(): String {
     return match?.groupValues?.get(1) ?: "0.1.0"
 }
 
-fun androidVersionName(): String {
-    if (releaseTag.isBlank()) {
-        return hermesVersionName()
-    }
-    val semverMatch = Regex("""v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?""").matchEntire(releaseTag)
-    if (semverMatch != null) {
-        return releaseTag.removePrefix("v")
-    }
-    return hermesVersionName()
-}
-
-fun semverVersionCode(versionText: String): Int? {
-    val semverMatch = Regex("""v?(\d+)\.(\d+)\.(\d+)(?:-([A-Za-z]+)(?:[.-]?(\d+))?)?""").matchEntire(versionText)
-    if (semverMatch != null) {
-        val major = semverMatch.groupValues[1].toInt()
-        val minor = semverMatch.groupValues[2].toInt()
-        val patch = semverMatch.groupValues[3].toInt()
-        val prerelease = semverMatch.groupValues[4].lowercase()
-        val prereleaseSeq = semverMatch.groupValues[5].ifBlank { "0" }.toInt().coerceIn(0, 9)
-        val prereleaseRank = when (prerelease) {
-            "alpha" -> 1
-            "beta" -> 2
-            "rc" -> 3
-            "" -> 9
-            else -> 4
-        }
-        return (major * 1_000_000) + (minor * 10_000) + (patch * 100) + (prereleaseRank * 10) + prereleaseSeq
-    }
-    return null
-}
-
 fun hermesVersionCode(): Int {
     if (releaseTag.isBlank()) {
-        return semverVersionCode(hermesVersionName()) ?: 1
+        return 1
     }
-
-    semverVersionCode(releaseTag)?.let { return it }
-
     val releaseMatch = Regex("""v(\d{4})\.(\d{1,2})\.(\d{1,2})(?:\.(\d{1,2}))?""").matchEntire(releaseTag)
         ?: return 1
     val year = releaseMatch.groupValues[1]
@@ -77,17 +36,6 @@ fun hermesVersionCode(): Int {
     val seq = releaseMatch.groupValues[4].ifBlank { "0" }.padStart(2, '0')
     return "$year$month$day$seq".toInt()
 }
-
-fun resolvedBuildPython(): String {
-    val configured = System.getenv("PYTHON_FOR_BUILD").orEmpty().trim()
-    if (configured.isNotBlank()) {
-        return configured
-    }
-    val osName = System.getProperty("os.name").lowercase()
-    return if (osName.contains("windows")) "python" else "python3"
-}
-
-fun hermesWheelName(): String = "hermes_agent-${hermesVersionName()}-py3-none-any.whl"
 
 android {
     namespace = "com.nousresearch.hermesagent"
@@ -98,7 +46,7 @@ android {
         minSdk = 24
         targetSdk = 35
         versionCode = hermesVersionCode()
-        versionName = androidVersionName()
+        versionName = hermesVersionName()
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
             useSupportLibrary = true
@@ -106,20 +54,6 @@ android {
         ndk {
             abiFilters += listOf("arm64-v8a", "x86_64")
         }
-    }
-
-    splits {
-        abi {
-            isEnable = false
-            reset()
-            include("arm64-v8a", "x86_64")
-            isUniversalApk = true
-        }
-    }
-
-    dependenciesInfo {
-        includeInApk = false
-        includeInBundle = false
     }
 
     signingConfigs {
@@ -135,8 +69,10 @@ android {
 
     buildTypes {
         release {
-            if (hasReleaseKeystore) {
-                signingConfig = signingConfigs.getByName("release")
+            signingConfig = if (hasReleaseKeystore) {
+                signingConfigs.getByName("release")
+            } else {
+                signingConfigs.getByName("debug")
             }
             isMinifyEnabled = false
             isShrinkResources = false
@@ -144,12 +80,6 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
-        }
-    }
-
-    testOptions {
-        unitTests {
-            isIncludeAndroidResources = true
         }
     }
 
@@ -163,23 +93,10 @@ android {
     }
 
     buildFeatures {
-        aidl = true
         compose = true
     }
 
-    sourceSets {
-        getByName("main") {
-            if (!skipHermesAndroidLinuxAssets) {
-                assets.srcDir(generatedHermesLinuxAssetsDir)
-                jniLibs.srcDir(generatedHermesNativeLibsDir)
-            }
-        }
-    }
-
     packaging {
-        jniLibs {
-            useLegacyPackaging = true
-        }
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
@@ -188,203 +105,17 @@ android {
 
 chaquopy {
     defaultConfig {
-        version = "3.13"
+        version = "3.11"
 
-        buildPython(resolvedBuildPython())
+        val configuredBuildPython = System.getenv("PYTHON_FOR_BUILD")
+        if (!configuredBuildPython.isNullOrBlank()) {
+            buildPython(configuredBuildPython)
+        } else {
+            buildPython("python3.11")
+        }
 
         pip {
-            // Install Hermes itself from an isolated wheel, then layer an explicit
-            // Android-safe runtime set. Chaquopy applies pip options globally per
-            // block, so the runtime requirements file must include all transitive
-            // dependencies explicitly.
-            options("--no-deps")
-            install("../../android/pip-stubs/anthropic-stub")
-            install("../../android/pip-stubs/fal-client-stub")
-            install("build/hermes-wheel/${hermesWheelName()}")
-            install("-r", "../../requirements-android-chaquopy.txt")
-        }
-    }
-}
-
-val prepareHermesAndroidWheel = tasks.register<Exec>("prepareHermesAndroidWheel") {
-    group = "python"
-    description = "Build a no-deps Hermes wheel for the Android embedded runtime."
-    val wheelDir = hermesWheelDir.get().asFile
-    inputs.file(repoRoot.resolve("pyproject.toml"))
-    inputs.file(repoRoot.resolve("README.md"))
-    listOf(
-        "agent",
-        "tools",
-        "hermes_cli",
-        "gateway",
-        "tui_gateway",
-        "cron",
-        "acp_adapter",
-        "plugins",
-        "providers",
-        "hermes_android",
-    ).forEach { packageDir ->
-        inputs.files(fileTree(repoRoot.resolve(packageDir)) {
-            include("**/*.py")
-            include("**/*.json")
-            include("**/*.yaml")
-            include("**/*.yml")
-            include("**/*.txt")
-            include("**/*.html")
-            include("**/*.js")
-            include("**/*.css")
-        })
-    }
-    outputs.file(wheelDir.resolve(hermesWheelName()))
-    doFirst {
-        wheelDir.mkdirs()
-        val repoRootPath = repoRoot.canonicalFile.toPath()
-        val buildLibPath = generatedPythonBuildLibDir.canonicalFile.toPath()
-        check(buildLibPath.startsWith(repoRootPath)) {
-            "Refusing to remove Python build output outside repository: $buildLibPath"
-        }
-        if (generatedPythonBuildLibDir.exists()) {
-            generatedPythonBuildLibDir.deleteRecursively()
-        }
-    }
-    commandLine(
-        resolvedBuildPython(),
-        "-m",
-        "pip",
-        "wheel",
-        "--no-deps",
-        "--wheel-dir",
-        wheelDir.absolutePath,
-        repoRoot.absolutePath,
-    )
-}
-
-val prepareHermesAndroidLinuxAssets = tasks.register<Exec>("prepareHermesAndroidLinuxAssets") {
-    group = "android"
-    description = "Download and normalize the Android Linux command-suite assets."
-    val outputDir = generatedHermesLinuxAssetsDir.get().asFile
-    outputs.dir(outputDir)
-    doFirst {
-        outputDir.mkdirs()
-    }
-    commandLine(
-        resolvedBuildPython(),
-        repoRoot.resolve("scripts/prepare_android_linux_assets.py").absolutePath,
-        "--output-dir",
-        outputDir.absolutePath,
-    )
-}
-
-val prepareHermesAndroidNativeLibs = tasks.register<Exec>("prepareHermesAndroidNativeLibs") {
-    group = "android"
-    description = "Expose embedded Linux launchers through Android's executable native-library directory."
-    dependsOn(prepareHermesAndroidLinuxAssets)
-    val outputDir = generatedHermesNativeLibsDir.get().asFile
-    inputs.file(repoRoot.resolve("scripts/prepare_android_native_libs.py"))
-    inputs.dir(generatedHermesLinuxAssetsDir)
-    outputs.dir(outputDir)
-    doFirst {
-        outputDir.mkdirs()
-    }
-    commandLine(
-        resolvedBuildPython(),
-        repoRoot.resolve("scripts/prepare_android_native_libs.py").absolutePath,
-        "--linux-assets-dir",
-        generatedHermesLinuxAssetsDir.get().asFile.absolutePath,
-        "--output-dir",
-        outputDir.absolutePath,
-    )
-}
-
-if (!skipHermesAndroidLinuxAssets) {
-    tasks.named("preBuild") {
-        dependsOn(prepareHermesAndroidLinuxAssets)
-        dependsOn(prepareHermesAndroidNativeLibs)
-    }
-}
-
-tasks.matching { it.name.endsWith("PythonRequirements") }.configureEach {
-    dependsOn(prepareHermesAndroidWheel)
-    if (!skipHermesAndroidLinuxAssets) {
-        dependsOn(prepareHermesAndroidLinuxAssets)
-    }
-    val taskName = name
-    val variant = taskName.removePrefix("install").removeSuffix("PythonRequirements")
-    if (variant.isNotEmpty()) {
-        dependsOn("merge${variant}PythonSources")
-        dependsOn("merge${variant}NativeDebugMetadata")
-        dependsOn("check${variant}AarMetadata")
-    }
-}
-
-fun normalizeChaquopyBuildJson(variant: String) {
-    if (variant.isBlank()) {
-        return
-    }
-    val buildJson = layout.buildDirectory.file(
-        "python/assets/build/${variant.lowercase()}/chaquopy/build.json"
-    ).get().asFile
-    if (!buildJson.isFile) {
-        return
-    }
-    exec {
-        commandLine(
-            resolvedBuildPython(),
-            repoRoot.resolve("scripts/normalize_chaquopy_assets.py").absolutePath,
-            "build-json",
-            buildJson.absolutePath,
-        )
-    }
-}
-
-fun normalizeChaquopyRequirementsImy(variant: String) {
-    if (variant.isBlank()) {
-        return
-    }
-    val requirementsImy = layout.buildDirectory.file(
-        "python/assets/requirements/${variant.lowercase()}/chaquopy/requirements-common.imy"
-    ).get().asFile
-    if (!requirementsImy.isFile) {
-        return
-    }
-    exec {
-        commandLine(
-            resolvedBuildPython(),
-            repoRoot.resolve("scripts/normalize_chaquopy_assets.py").absolutePath,
-            "requirements-imy",
-            requirementsImy.absolutePath,
-        )
-    }
-}
-
-afterEvaluate {
-    tasks.matching { it.name.endsWith("PythonRequirementsAssets") }.configureEach {
-        val taskName = name
-        doLast {
-            normalizeChaquopyRequirementsImy(
-                taskName.removePrefix("generate").removeSuffix("PythonRequirementsAssets")
-            )
-        }
-    }
-    tasks.matching { it.name.endsWith("PythonBuildAssets") }.configureEach {
-        val taskName = name
-        doFirst {
-            normalizeChaquopyRequirementsImy(
-                taskName.removePrefix("generate").removeSuffix("PythonBuildAssets")
-            )
-        }
-        doLast {
-            normalizeChaquopyBuildJson(
-                taskName.removePrefix("generate").removeSuffix("PythonBuildAssets")
-            )
-        }
-    }
-    tasks.matching { it.name.startsWith("merge") && it.name.endsWith("Assets") }.configureEach {
-        val taskName = name
-        doFirst {
-            normalizeChaquopyBuildJson(
-                taskName.removePrefix("merge").removeSuffix("Assets")
-            )
+            install("../../[android]")
         }
     }
 }
@@ -393,9 +124,6 @@ dependencies {
     val composeBom = platform("androidx.compose:compose-bom:2024.12.01")
 
     implementation("androidx.core:core-ktx:1.13.1")
-    implementation("dev.rikka.shizuku:api:13.1.5")
-    implementation("dev.rikka.shizuku:provider:13.1.5")
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
     implementation("androidx.lifecycle:lifecycle-viewmodel-ktx:2.8.7")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
@@ -406,22 +134,15 @@ dependencies {
     implementation("androidx.compose.ui:ui-graphics")
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material3:material3")
-    implementation("androidx.documentfile:documentfile:1.0.1")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("com.squareup.okhttp3:okhttp-sse:4.12.0")
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
-    implementation("org.json:json:20240303")
-    implementation("com.google.ai.edge.litertlm:litertlm-android:0.11.0")
-    implementation("org.nanohttpd:nanohttpd:2.3.1")
 
     testImplementation("junit:junit:4.13.2")
-    testImplementation("org.robolectric:robolectric:4.14.1")
     testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
-    testImplementation("org.json:json:20240303")
     androidTestImplementation("androidx.test:core-ktx:1.6.1")
     androidTestImplementation("androidx.test.ext:junit:1.3.0")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.7.0")
-    androidTestImplementation("androidx.test.espresso:espresso-intents:3.7.0")
     androidTestImplementation("androidx.compose.ui:ui-test-junit4")
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")

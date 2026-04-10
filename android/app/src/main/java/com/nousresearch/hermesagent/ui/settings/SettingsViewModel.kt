@@ -1,68 +1,35 @@
 package com.nousresearch.hermesagent.ui.settings
 
 import android.app.Application
-import android.content.ClipData
-import android.content.ClipboardManager
-import android.content.Context
-import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.chaquo.python.Python
-import com.nousresearch.hermesagent.backend.BackendKind
+import com.chaquo.python.android.AndroidPlatform
 import com.nousresearch.hermesagent.backend.HermesRuntimeManager
-import com.nousresearch.hermesagent.backend.OnDeviceBackendManager
-import com.nousresearch.hermesagent.auth.ProviderSetupProbeResult
-import com.nousresearch.hermesagent.auth.ProviderSetupUrlProbe
 import com.nousresearch.hermesagent.data.AppSettings
 import com.nousresearch.hermesagent.data.AppSettingsStore
 import com.nousresearch.hermesagent.data.ProviderPresets
-import com.nousresearch.hermesagent.data.ProviderSetupTarget
 import com.nousresearch.hermesagent.data.SecureSecretsStore
-import com.nousresearch.hermesagent.device.HermesProviderSetupWebActivity
-import com.nousresearch.hermesagent.ui.i18n.AppLanguage
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import org.json.JSONObject
 
 data class SettingsUiState(
     val provider: String = "openrouter",
     val baseUrl: String = "",
     val model: String = "",
     val apiKey: String = "",
-    val dataSaverMode: Boolean = false,
-    val onDeviceBackend: String = BackendKind.NONE.persistedValue,
-    val liteRtLmSpeculativeDecodingMode: String = "auto",
-    val languageTag: String = AppLanguage.ENGLISH.tag,
-    val onDeviceSummary: String = "Remote provider mode",
     val status: String = "",
-)
-
-private data class SettingsSaveResult(
-    val apiKey: String,
-    val onDeviceSummary: String,
-    val statusMessage: String,
 )
 
 class SettingsViewModel(application: Application) : AndroidViewModel(application) {
     private val settingsStore = AppSettingsStore(application)
-    private val secretsStore by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
-        SecureSecretsStore(getApplication<Application>())
-    }
-    private val providerSetupOpenIndexes = mutableMapOf<String, Int>()
-    private var onDeviceSummaryJob: Job? = null
+    private val secretsStore = SecureSecretsStore(application)
 
     private val _uiState = MutableStateFlow(loadInitialState())
     val uiState: StateFlow<SettingsUiState> = _uiState.asStateFlow()
-
-    init {
-        loadApiKeyForProvider(_uiState.value.provider)
-    }
 
     private fun loadInitialState(): SettingsUiState {
         val stored = settingsStore.load()
@@ -70,478 +37,55 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
             provider = stored.provider,
             baseUrl = stored.baseUrl,
             model = stored.model,
-            apiKey = "",
-            dataSaverMode = stored.dataSaverMode,
-            onDeviceBackend = stored.onDeviceBackend,
-            liteRtLmSpeculativeDecodingMode = normalizeSpeculativeDecodingMode(
-                stored.liteRtLmSpeculativeDecodingMode,
-            ),
-            languageTag = AppLanguage.fromTag(stored.languageTag).tag,
-            onDeviceSummary = defaultOnDeviceSummary(stored.onDeviceBackend),
+            apiKey = secretsStore.loadApiKey(stored.provider),
         )
-    }
-
-    fun reload() {
-        val reloaded = loadInitialState()
-        _uiState.value = reloaded
-        loadApiKeyForProvider(reloaded.provider)
-        refreshOnDeviceSummary(reloaded.onDeviceBackend)
     }
 
     fun updateProvider(provider: String) {
         val preset = ProviderPresets.find(provider)
-        var shouldLoadApiKey = false
         _uiState.update {
-            val providerChanged = provider != it.provider
-            shouldLoadApiKey = providerChanged
             it.copy(
                 provider = provider,
-                baseUrl = if (providerChanged && provider != "custom") preset?.baseUrl.orEmpty() else it.baseUrl,
-                model = if (providerChanged && provider != "custom") preset?.modelHint.orEmpty() else it.model,
-                apiKey = if (providerChanged) "" else it.apiKey,
+                baseUrl = if (it.baseUrl.isBlank()) preset?.baseUrl.orEmpty() else it.baseUrl,
+                model = if (it.model.isBlank()) preset?.modelHint.orEmpty() else it.model,
+                apiKey = if (provider == it.provider) it.apiKey else secretsStore.loadApiKey(provider),
             )
-        }
-        if (shouldLoadApiKey) {
-            loadApiKeyForProvider(provider)
         }
     }
 
     fun updateBaseUrl(value: String) = _uiState.update { it.copy(baseUrl = value) }
     fun updateModel(value: String) = _uiState.update { it.copy(model = value) }
     fun updateApiKey(value: String) = _uiState.update { it.copy(apiKey = value) }
-    fun updateDataSaverMode(enabled: Boolean) = _uiState.update { it.copy(dataSaverMode = enabled) }
-    fun updateLiteRtLmSpeculativeDecodingMode(value: String) = _uiState.update {
-        it.copy(liteRtLmSpeculativeDecodingMode = normalizeSpeculativeDecodingMode(value))
-    }
-
-    private fun loadApiKeyForProvider(provider: String) {
-        if (provider.isBlank() || provider == "custom") {
-            return
-        }
-        viewModelScope.launch {
-            val storedKey = withContext(Dispatchers.IO) {
-                secretsStore.loadApiKey(provider)
-            }
-            if (storedKey.isBlank()) {
-                return@launch
-            }
-            _uiState.update {
-                if (it.provider == provider && it.apiKey.isBlank()) {
-                    it.copy(apiKey = storedKey)
-                } else {
-                    it
-                }
-            }
-        }
-    }
-
-    fun updateOnDeviceBackend(value: String) {
-        _uiState.update {
-            it.copy(
-                onDeviceBackend = value,
-                onDeviceSummary = defaultOnDeviceSummary(value),
-            )
-        }
-        refreshOnDeviceSummary(value)
-    }
-
-    fun syncOnDeviceBackendWithRuntimeFlavor(runtimeFlavor: String) {
-        val backendValue = when (runtimeFlavor) {
-            "GGUF" -> BackendKind.LLAMA_CPP.persistedValue
-            "LiteRT-LM" -> BackendKind.LITERT_LM.persistedValue
-            else -> BackendKind.NONE.persistedValue
-        }
-        updateOnDeviceBackend(backendValue)
-    }
-
-    private fun defaultOnDeviceSummary(backendValue: String): String {
-        return if (BackendKind.fromPersistedValue(backendValue) == BackendKind.NONE) {
-            "Remote provider mode"
-        } else {
-            "Checking preferred local model…"
-        }
-    }
-
-    private fun refreshOnDeviceSummary(backendValue: String) {
-        onDeviceSummaryJob?.cancel()
-        if (BackendKind.fromPersistedValue(backendValue) == BackendKind.NONE) {
-            _uiState.update {
-                if (it.onDeviceBackend == backendValue) {
-                    it.copy(onDeviceSummary = "Remote provider mode")
-                } else {
-                    it
-                }
-            }
-            return
-        }
-        onDeviceSummaryJob = viewModelScope.launch {
-            val summary = withContext(Dispatchers.IO) {
-                OnDeviceBackendManager.preferredDownloadSummary(getApplication(), backendValue)
-            }
-            _uiState.update {
-                if (it.onDeviceBackend == backendValue) {
-                    it.copy(onDeviceSummary = summary)
-                } else {
-                    it
-                }
-            }
-        }
-    }
-
-    fun openProviderKeyPage(url: String) {
-        val requestedUrl = url.trim()
-        if (requestedUrl.isBlank()) {
-            return
-        }
-        val providerId = ProviderPresets.providerIdForSetupUrl(requestedUrl)
-        val setupTarget = providerId?.let { nextProviderSetupTarget(it) }
-        val targetUrl = setupTarget?.url ?: requestedUrl
-        val uri = Uri.parse(targetUrl)
-        if (uri.scheme !in setOf("http", "https")) {
-            _uiState.update { it.copy(status = "Provider setup URL must start with https:// or http://") }
-            return
-        }
-        val providerLabel = providerId?.let { ProviderPresets.find(it)?.label }.orEmpty().ifBlank { "provider" }
-        val launch = HermesProviderSetupWebActivity.open(
-            context = getApplication(),
-            uri = uri,
-            title = "Open $providerLabel setup page",
-        )
-        if (launch.success) {
-            copyProviderKeyPage(targetUrl, updateSuccessStatus = false)
-            _uiState.update {
-                it.copy(status = providerSetupOpenedStatus(providerLabel, providerId.orEmpty(), setupTarget))
-            }
-            probeProviderKeyPages(providerLabel, urlsForProviderKeyPage(providerId, requestedUrl))
-        } else {
-            copyProviderKeyPage(targetUrl, updateSuccessStatus = false)
-            _uiState.update {
-                it.copy(status = "Unable to open setup page (${launch.errorName.ifBlank { "setup_page_error" }}); copied the provider setup URLs.")
-            }
-        }
-    }
-
-    fun checkProviderKeyPage(url: String) {
-        val requestedUrl = url.trim()
-        if (requestedUrl.isBlank()) {
-            return
-        }
-        val providerId = ProviderPresets.providerIdForSetupUrl(requestedUrl)
-        val providerLabel = providerId?.let { ProviderPresets.find(it)?.label }.orEmpty().ifBlank { "provider" }
-        val urls = urlsForProviderKeyPage(providerId, requestedUrl)
-        copyProviderKeyPage(requestedUrl, updateSuccessStatus = false)
-        _uiState.update { it.copy(status = "Checking $providerLabel setup pages from this device...") }
-        probeProviderKeyPages(providerLabel, urls)
-    }
-
-    private fun urlsForProviderKeyPage(providerId: String?, requestedUrl: String): List<String> {
-        return providerId?.let { ProviderPresets.setupUrls(it) }
-            .orEmpty()
-            .ifEmpty { listOf(requestedUrl) }
-    }
-
-    private fun probeProviderKeyPages(providerLabel: String, urls: List<String>) {
-        if (urls.isEmpty()) {
-            return
-        }
-        viewModelScope.launch {
-            val results = withContext(Dispatchers.IO) {
-                urls.map(ProviderSetupUrlProbe::probe)
-            }
-            val status = providerSetupProbeStatus(providerLabel, results)
-            _uiState.update { it.copy(status = status) }
-        }
-    }
-
-    private fun providerSetupProbeStatus(
-        providerLabel: String,
-        results: List<ProviderSetupProbeResult>,
-    ): String {
-        val reachable = results.filter { it.reachable }
-        val firstReachable = reachable.firstOrNull()
-        return if (firstReachable != null) {
-            val fallbackHint = if (reachable.size < results.size) {
-                " ${results.size - reachable.size} fallback page(s) did not respond cleanly; tap Open again to cycle official alternatives."
-            } else {
-                ""
-            }
-            "$providerLabel setup is reachable from Hermes: ${firstReachable.url} (${firstReachable.statusLabel}). ${reachable.size}/${results.size} official setup page(s) responded; copied all setup URLs.$fallbackHint"
-        } else {
-            val failureSummary = results.joinToString(separator = "; ") { "${it.url}: ${it.statusLabel}" }
-            "No $providerLabel setup page responded from Hermes. Copied all setup URLs. $failureSummary"
-                .take(ProviderSetupUrlProbe.MAX_STATUS_LENGTH)
-        }
-    }
-
-    private fun nextProviderSetupTarget(providerId: String): ProviderSetupTarget? {
-        val nextIndex = providerSetupOpenIndexes[providerId] ?: 0
-        val target = ProviderPresets.setupTarget(providerId, nextIndex) ?: return null
-        providerSetupOpenIndexes[providerId] = target.nextIndex
-        return target
-    }
-
-    private fun providerSetupOpenedStatus(
-        providerLabel: String,
-        providerId: String,
-        target: ProviderSetupTarget?,
-    ): String {
-        val cycleHint = if (target != null && target.total > 1) {
-            " in your browser ${target.displayIndex}/${target.total}; copied all official setup URLs. Tap Open again for the next fallback if this page stalls."
-        } else {
-            " in your browser or Hermes fallback. If this page stalls, use Copy setup URL."
-        }
-        val qwenLegacyHint = if (providerId == "qwen-oauth") {
-            " Qwen OAuth is legacy; choose Qwen Cloud for new API-key setup."
-        } else {
-            ""
-        }
-        return "Opened $providerLabel setup page$cycleHint$qwenLegacyHint"
-    }
-
-    fun copyProviderKeyPage(url: String) {
-        copyProviderKeyPage(url, updateSuccessStatus = true)
-    }
-
-    fun importSavedProviderCredential() {
-        val snapshot = _uiState.value
-        val preset = ProviderPresets.find(snapshot.provider)
-        val providerLabel = preset?.label ?: snapshot.provider
-        if (snapshot.provider.isBlank() || snapshot.provider == "custom") {
-            _uiState.update { it.copy(status = "Choose a saved provider before importing a Hermes credential.") }
-            return
-        }
-        viewModelScope.launch {
-            _uiState.update { it.copy(status = "Checking saved Hermes credential for $providerLabel…") }
-            val bundleResult = runCatching {
-                withContext(Dispatchers.IO) {
-                    val app = getApplication<Application>()
-                    HermesRuntimeManager.ensurePythonStarted(app)
-                    Python.getInstance()
-                        .getModule("hermes_android.auth_bridge")
-                        .callAttr("read_provider_auth_bundle_json", snapshot.provider)
-                        .toString()
-                }
-            }
-            val payload = bundleResult.getOrElse { error ->
-                _uiState.update {
-                    it.copy(status = "Unable to read saved Hermes credential (${error::class.java.simpleName}).")
-                }
-                return@launch
-            }
-            val json = runCatching { JSONObject(payload) }.getOrElse {
-                _uiState.update { it.copy(status = "Saved Hermes credential for $providerLabel could not be decoded.") }
-                return@launch
-            }
-            val apiKey = listOf(
-                json.optString("api_key"),
-                json.optString("access_token"),
-                json.optString("session_token"),
-            ).firstOrNull { it.isNotBlank() }.orEmpty()
-            val configured = json.optBoolean("configured", false) || apiKey.isNotBlank()
-            if (!configured || apiKey.isBlank()) {
-                _uiState.update { it.copy(status = "No saved Hermes credential found for $providerLabel.") }
-                return@launch
-            }
-
-            val resolvedBaseUrl = json.optString("base_url")
-                .ifBlank { snapshot.baseUrl }
-                .ifBlank { preset?.baseUrl.orEmpty() }
-            val resolvedModel = snapshot.model.ifBlank { preset?.modelHint.orEmpty() }
-            val runtimeConfigBaseUrl = ProviderPresets.runtimeConfigBaseUrl(snapshot.provider, resolvedBaseUrl)
-            val existingSettings = settingsStore.load()
-            val updatedSettings = AppSettings(
-                provider = snapshot.provider,
-                baseUrl = resolvedBaseUrl,
-                model = resolvedModel,
-                corr3xtBaseUrl = existingSettings.corr3xtBaseUrl,
-                dataSaverMode = existingSettings.dataSaverMode,
-                onDeviceBackend = existingSettings.onDeviceBackend,
-                liteRtLmSpeculativeDecodingMode = existingSettings.liteRtLmSpeculativeDecodingMode,
-                languageTag = existingSettings.languageTag,
-            )
-            runCatching {
-                withContext(Dispatchers.IO) {
-                    val app = getApplication<Application>()
-                    HermesRuntimeManager.ensurePythonStarted(app)
-                    val python = Python.getInstance()
-                    python.getModule("hermes_android.auth_bridge").callAttr(
-                        "write_provider_auth_bundle",
-                        snapshot.provider,
-                        apiKey,
-                        json.optString("access_token"),
-                        json.optString("session_token"),
-                        json.optString("refresh_token"),
-                        resolvedBaseUrl,
-                    )
-                    python.getModule("hermes_android.config_bridge").callAttr(
-                        "write_runtime_config",
-                        snapshot.provider,
-                        resolvedModel,
-                        runtimeConfigBaseUrl,
-                    )
-                }
-                settingsStore.save(updatedSettings)
-                secretsStore.saveApiKey(snapshot.provider, apiKey)
-                HermesRuntimeManager.stop()
-                HermesRuntimeManager.ensureStarted(getApplication())
-            }.onSuccess {
-                _uiState.update {
-                    it.copy(
-                        baseUrl = resolvedBaseUrl,
-                        model = resolvedModel,
-                        apiKey = apiKey,
-                        status = "Imported saved Hermes credential for $providerLabel and restarted the runtime.",
-                    )
-                }
-            }.onFailure { error ->
-                _uiState.update {
-                    it.copy(status = "Saved Hermes credential import failed (${error::class.java.simpleName}).")
-                }
-            }
-        }
-    }
-
-    private fun copyProviderKeyPage(url: String, updateSuccessStatus: Boolean) {
-        val target = url.trim()
-        if (target.isBlank()) {
-            return
-        }
-        val providerId = ProviderPresets.providerIdForSetupUrl(target)
-        val setupText = providerId?.let { ProviderPresets.setupClipboardText(it) }
-            .orEmpty()
-            .ifBlank { target }
-        val fallbackCount = providerId?.let { ProviderPresets.setupUrls(it).size - 1 } ?: 0
-        val clipboard = getApplication<Application>().getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
-        clipboard?.setPrimaryClip(ClipData.newPlainText("Hermes provider setup URLs", setupText))
-        if (updateSuccessStatus) {
-            val suffix = when (fallbackCount) {
-                0 -> ""
-                1 -> " and 1 alternate official page"
-                else -> " and $fallbackCount alternate official pages"
-            }
-            _uiState.update { it.copy(status = "Copied provider setup URL$suffix") }
-        }
-    }
-
-    fun startLocalRuntimeForFlavor(runtimeFlavor: String) {
-        val backendValue = when (runtimeFlavor) {
-            "GGUF" -> BackendKind.LLAMA_CPP.persistedValue
-            "LiteRT-LM" -> BackendKind.LITERT_LM.persistedValue
-            else -> BackendKind.NONE.persistedValue
-        }
-        _uiState.update {
-            it.copy(
-                onDeviceBackend = backendValue,
-                onDeviceSummary = OnDeviceBackendManager.preferredDownloadSummary(getApplication(), backendValue),
-                status = "Starting local Hermes runtime…",
-            )
-        }
-        save()
-    }
-
-    fun selectLanguage(language: AppLanguage) {
-        val normalized = language.tag
-        settingsStore.save(settingsStore.load().copy(languageTag = normalized))
-        val strings = com.nousresearch.hermesagent.ui.i18n.hermesStringsFor(language)
-        _uiState.update {
-            it.copy(
-                languageTag = normalized,
-                status = strings.languageSwitchedTo(language.nativeLabel),
-            )
-        }
-    }
 
     fun save() {
         val snapshot = _uiState.value
         viewModelScope.launch {
-            _uiState.update { it.copy(status = "Saving settings and restarting Hermes runtime...") }
-            runCatching {
-                withContext(Dispatchers.IO) {
-                    val existingSettings = settingsStore.load()
-                    val updatedSettings = AppSettings(
-                        provider = snapshot.provider,
-                        baseUrl = snapshot.baseUrl,
-                        model = snapshot.model,
-                        corr3xtBaseUrl = existingSettings.corr3xtBaseUrl,
-                        dataSaverMode = snapshot.dataSaverMode,
-                        onDeviceBackend = snapshot.onDeviceBackend,
-                        liteRtLmSpeculativeDecodingMode = snapshot.liteRtLmSpeculativeDecodingMode,
-                        languageTag = snapshot.languageTag,
-                    )
-                    settingsStore.save(updatedSettings)
+            settingsStore.save(
+                AppSettings(
+                    provider = snapshot.provider,
+                    baseUrl = snapshot.baseUrl,
+                    model = snapshot.model,
+                )
+            )
+            secretsStore.saveApiKey(snapshot.provider, snapshot.apiKey)
 
-                    val app = getApplication<Application>()
-                    val localBackendStatus = OnDeviceBackendManager.ensureConfigured(app, snapshot.onDeviceBackend)
-                    val backendKind = BackendKind.fromPersistedValue(snapshot.onDeviceBackend)
-
-                    HermesRuntimeManager.ensurePythonStarted(app)
-                    val useLocalBackend = localBackendStatus.started
-                    val effectiveProvider = if (useLocalBackend) "custom" else snapshot.provider
-                    val effectiveModel = if (useLocalBackend) localBackendStatus.modelName else snapshot.model
-                    val effectiveBaseUrl = if (useLocalBackend) {
-                        localBackendStatus.baseUrl
-                    } else {
-                        ProviderPresets.runtimeConfigBaseUrl(snapshot.provider, snapshot.baseUrl)
-                    }
-                    Python.getInstance().getModule("hermes_android.config_bridge").callAttr(
-                        "write_runtime_config",
-                        effectiveProvider,
-                        effectiveModel,
-                        effectiveBaseUrl,
-                    )
-                    val parsedCredential = ProviderPresets.parseCredentialInput(snapshot.provider, snapshot.apiKey)
-                    val providerApiKey = parsedCredential.apiKey
-                    val preservedBlankCredential = providerApiKey.isBlank() && snapshot.provider != "custom"
-                    if (providerApiKey.isNotBlank()) {
-                        secretsStore.saveApiKey(snapshot.provider, providerApiKey)
-                        Python.getInstance().getModule("hermes_android.auth_bridge").callAttr(
-                            "write_provider_api_key",
-                            snapshot.provider,
-                            providerApiKey,
-                        )
-                    }
-                    HermesRuntimeManager.stop()
-                    HermesRuntimeManager.ensureStarted(app)
-                    val backendSummary = if (localBackendStatus.started) {
-                        "${localBackendStatus.backendKind.persistedValue} ready · ${localBackendStatus.modelName}"
-                    } else {
-                        OnDeviceBackendManager.preferredDownloadSummary(app, snapshot.onDeviceBackend)
-                    }
-                    val statusMessage = when {
-                        useLocalBackend -> "On-device backend ready and Hermes runtime restarted"
-                        backendKind != BackendKind.NONE -> "${localBackendStatus.statusMessage}. Hermes stayed on your saved remote provider."
-                        parsedCredential.importedFromEnvLine -> "Settings saved, imported ${parsedCredential.sourceLabel} into secure storage, and backend restarted"
-                        snapshot.dataSaverMode -> "Settings saved. Data saver mode now keeps heavy downloads on Wi-Fi / unmetered networks."
-                        preservedBlankCredential -> "Settings saved and backend restarted. Blank API key field left existing Hermes credentials untouched."
-                        else -> "Settings saved and backend restarted"
-                    }
-                    SettingsSaveResult(
-                        apiKey = providerApiKey,
-                        onDeviceSummary = backendSummary,
-                        statusMessage = statusMessage,
-                    )
-                }
-            }.onSuccess { result ->
-                _uiState.update {
-                    it.copy(
-                        onDeviceSummary = result.onDeviceSummary,
-                        apiKey = result.apiKey.ifBlank { it.apiKey },
-                        status = result.statusMessage,
-                    )
-                }
-            }.onFailure { error ->
-                _uiState.update {
-                    it.copy(status = "Settings save failed (${error::class.java.simpleName}).")
-                }
+            if (!Python.isStarted()) {
+                Python.start(AndroidPlatform(getApplication()))
             }
-        }
-    }
-
-    private fun normalizeSpeculativeDecodingMode(value: String): String {
-        return when (value.trim().lowercase()) {
-            "enabled", "on", "force" -> "enabled"
-            "disabled", "off" -> "disabled"
-            else -> "auto"
+            Python.getInstance().getModule("hermes_android.config_bridge").callAttr(
+                "write_runtime_config",
+                snapshot.provider,
+                snapshot.model,
+                snapshot.baseUrl,
+            )
+            Python.getInstance().getModule("hermes_android.auth_bridge").callAttr(
+                "write_provider_api_key",
+                snapshot.provider,
+                snapshot.apiKey,
+            )
+            HermesRuntimeManager.stop()
+            HermesRuntimeManager.ensureStarted(getApplication())
+            _uiState.update { it.copy(status = "Settings saved and backend restarted") }
         }
     }
 }

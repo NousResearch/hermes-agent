@@ -12,22 +12,10 @@ class TestHermesAndroidAppToolset:
 
         resolved = resolve_toolset("hermes-android-app")
         for expected in [
-            "terminal",
-            "process",
-            "android_device_status",
-            "android_system_action",
-            "android_shared_folder_list",
-            "android_shared_folder_read",
-            "android_shared_folder_write",
-            "android_ui_snapshot",
-            "android_ui_action",
-            "read_file",
-            "write_file",
-            "patch",
-            "search_files",
             "web_search",
             "web_extract",
             "vision_analyze",
+            "image_generate",
             "skills_list",
             "skill_view",
             "skill_manage",
@@ -38,7 +26,12 @@ class TestHermesAndroidAppToolset:
             assert expected in resolved
 
         for blocked in [
-            "image_generate",
+            "terminal",
+            "process",
+            "read_file",
+            "write_file",
+            "patch",
+            "search_files",
             "execute_code",
             "delegate_task",
             "cronjob",

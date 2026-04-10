@@ -21,7 +21,6 @@ Current MVP boundaries:
 - native Android shell under `android/`
 - embedded Python runtime and local API server boot
 - mobile-safe default tool profile
-- a separate in-app Nous Portal web section alongside the Hermes Agent chat surface
 - CI-built debug APKs and release APK/AAB artifacts
 
 The Android app does not replace the Termux workflow. They are separate product surfaces with different constraints.

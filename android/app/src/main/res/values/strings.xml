@@ -1,43 +1,4 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">Hermes</string>
-    <string name="hermes_accessibility_service_label">Hermes accessibility control</string>
-    <string name="hermes_accessibility_service_description">Lets Hermes perform high-level phone actions such as Home, Back, Recents, Notifications, and Quick settings after you enable the service.</string>
-    <string name="hermes_notification_listener_service_label">Hermes notification automations</string>
-    <string name="hermes_notification_listener_service_description">Lets Hermes run saved automations when selected apps post notifications after you enable notification access.</string>
-    <string name="hermes_quick_settings_tile_label">Hermes task</string>
-    <string name="hermes_automation_widget_label">Hermes task</string>
-    <string name="hermes_automation_widget_default_title">Hermes task</string>
-    <string name="hermes_automation_widget_empty_status">No automation set</string>
-    <string name="hermes_automation_widget_ready_status">Tap to run</string>
-    <string name="hermes_automation_widget_run">Run</string>
-    <string name="hermes_tasker_plugin_label">Run Hermes automation</string>
-    <string name="hermes_tasker_plugin_title">Run Hermes automation</string>
-    <string name="hermes_tasker_plugin_summary">Choose a saved Hermes automation for Tasker to run through the Locale plugin action.</string>
-    <string name="hermes_tasker_plugin_existing_automation">Saved automation</string>
-    <string name="hermes_tasker_plugin_no_automations">No saved Hermes automations</string>
-    <string name="hermes_tasker_plugin_manual_id">Automation ID</string>
-    <string name="hermes_tasker_plugin_manual_id_hint">Existing Hermes automation id</string>
-    <string name="hermes_tasker_plugin_blurb_label">Tasker action label</string>
-    <string name="hermes_tasker_plugin_label_hint">Optional label shown in Tasker</string>
-    <string name="hermes_tasker_plugin_save">Save</string>
-    <string name="hermes_tasker_plugin_missing_id">Choose or enter a Hermes automation ID.</string>
-    <string name="hermes_tasker_condition_plugin_label">Hermes condition</string>
-    <string name="hermes_tasker_condition_title">Hermes condition</string>
-    <string name="hermes_tasker_condition_summary">Choose a Hermes or Shizuku state that Tasker can use in a profile.</string>
-    <string name="hermes_tasker_condition_type">Condition</string>
-    <string name="hermes_tasker_condition_variable">Hermes variable</string>
-    <string name="hermes_tasker_condition_variable_hint">Variable name, such as %READY</string>
-    <string name="hermes_tasker_condition_expected_value">Expected value</string>
-    <string name="hermes_tasker_condition_expected_value_hint">Required only for variable equals</string>
-    <string name="hermes_tasker_condition_blurb_label">Tasker condition label</string>
-    <string name="hermes_tasker_condition_label_hint">Optional label shown in Tasker</string>
-    <string name="hermes_tasker_condition_invalid">Choose a valid Hermes condition.</string>
-    <string name="hermes_tasker_event_plugin_label">Hermes event</string>
-    <string name="hermes_tasker_event_title">Hermes event</string>
-    <string name="hermes_tasker_event_summary">Choose a Hermes automation or Shizuku event that Tasker can use in a profile.</string>
-    <string name="hermes_tasker_event_type">Event</string>
-    <string name="hermes_tasker_event_blurb_label">Tasker event label</string>
-    <string name="hermes_tasker_event_label_hint">Optional label shown in Tasker</string>
-    <string name="hermes_tasker_event_invalid">Choose a valid Hermes event.</string>
+    <string name="app_name">Hermes Agent</string>
 </resources>

@@ -24,8 +24,9 @@ COPY --from=uv_runtime /uvx /usr/local/bin/uvx
 
 # Install root Node.js dependencies.
 COPY package*.json ./
-RUN npm ci --omit=dev --no-audit &&\
-    npm cache clean --force
+RUN npm ci --no-audit &&\
+    npm cache clean --force &&\
+    rm -rf /tmp/*
 
 # Install the shell chromium browser.
 RUN npx playwright install chromium --with-deps --only-shell &&\

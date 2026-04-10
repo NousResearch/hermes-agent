@@ -2412,6 +2412,13 @@ class DiscordAdapter(BasePlatformAdapter):
         if not event_text or not event_text.strip():
             event_text = "(The user sent a message with no text content)"
 
+        reply_to_message_id = str(message.reference.message_id) if message.reference else None
+        reply_to_text = None
+        if message.reference:
+            resolved = getattr(message.reference, "resolved", None)
+            if resolved is not None:
+                reply_to_text = getattr(resolved, "content", None) or getattr(resolved, "system_content", None)
+
         event = MessageEvent(
             text=event_text,
             message_type=msg_type,
@@ -2420,7 +2427,8 @@ class DiscordAdapter(BasePlatformAdapter):
             message_id=str(message.id),
             media_urls=media_urls,
             media_types=media_types,
-            reply_to_message_id=str(message.reference.message_id) if message.reference else None,
+            reply_to_message_id=reply_to_message_id,
+            reply_to_text=reply_to_text,
             timestamp=message.created_at,
         )
 

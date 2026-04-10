@@ -85,14 +85,14 @@ def adapter(monkeypatch):
     return adapter
 
 
-def make_message(*, channel, content: str, mentions=None):
+def make_message(*, channel, content: str, mentions=None, reference=None):
     author = SimpleNamespace(id=42, display_name="TestUser", name="TestUser")
     return SimpleNamespace(
         id=123,
         content=content,
         mentions=list(mentions or []),
         attachments=[],
-        reference=None,
+        reference=reference,
         created_at=datetime.now(timezone.utc),
         channel=channel,
         author=author,
@@ -197,6 +197,27 @@ async def test_dms_unaffected_by_ignored_channels(adapter, monkeypatch):
     await adapter._handle_message(message)
 
     adapter.handle_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_reply_context_includes_referenced_message_text(adapter, monkeypatch):
+    """Discord replies should carry replied-to text into MessageEvent.reply_to_text."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+
+    referenced = SimpleNamespace(content="Original quiz question")
+    reference = SimpleNamespace(message_id=999, resolved=referenced)
+    message = make_message(
+        channel=FakeTextChannel(channel_id=700),
+        content="my answer",
+        reference=reference,
+    )
+
+    await adapter._handle_message(message)
+
+    event = adapter.handle_message.await_args.args[0]
+    assert event.reply_to_message_id == "999"
+    assert event.reply_to_text == "Original quiz question"
 
 
 # ── no_thread_channels ───────────────────────────────────────────────

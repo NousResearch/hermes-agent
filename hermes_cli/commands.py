@@ -104,7 +104,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
                args_hint="[level|show|hide]",
                subcommands=("none", "low", "minimal", "medium", "high", "xhigh", "show", "hide", "on", "off")),
     CommandDef("skin", "Show or change the display skin/theme", "Configuration",
-               cli_only=True, args_hint="[name]"),
+               args_hint="[name]"),
     CommandDef("voice", "Toggle voice mode", "Configuration",
                args_hint="[on|off|tts|status]", subcommands=("on", "off", "tts", "status")),
 
@@ -861,6 +861,23 @@ class SlashCommandCompleter(Completer):
             )
             count += 1
 
+    @staticmethod
+    def _skin_completions(sub_text: str, sub_lower: str):
+        """Yield completions for /skin from available skins."""
+        try:
+            from hermes_cli.skin_engine import list_skins
+            for s in list_skins():
+                name = s["name"]
+                if name.startswith(sub_lower) and name != sub_lower:
+                    yield Completion(
+                        name,
+                        start_position=-len(sub_text),
+                        display=name,
+                        display_meta=s.get("description", "") or s.get("source", ""),
+                    )
+        except Exception:
+            pass
+
     def _model_completions(self, sub_text: str, sub_lower: str):
         """Yield completions for /model from config aliases + built-in aliases."""
         seen = set()
@@ -915,10 +932,14 @@ class SlashCommandCompleter(Completer):
             sub_text = parts[1] if len(parts) > 1 else ""
             sub_lower = sub_text.lower()
 
-            # Dynamic model alias completions for /model
-            if " " not in sub_text and base_cmd == "/model":
-                yield from self._model_completions(sub_text, sub_lower)
-                return
+            # Dynamic completions for commands with runtime lists
+            if " " not in sub_text:
+                if base_cmd == "/model":
+                    yield from self._model_completions(sub_text, sub_lower)
+                    return
+                if base_cmd == "/skin":
+                    yield from self._skin_completions(sub_text, sub_lower)
+                    return
 
             # Static subcommand completions
             if " " not in sub_text and base_cmd in SUBCOMMANDS:

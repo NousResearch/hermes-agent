@@ -1210,16 +1210,17 @@ def terminal_tool(
         cwd = overrides.get("cwd") or config["cwd"]
         default_timeout = config["timeout"]
         effective_timeout = timeout or default_timeout
-        unclamped_timeout = effective_timeout
 
-        # Clamp foreground commands to FOREGROUND_MAX_TIMEOUT to prevent
-        # a single tool call from blocking the entire agent session.
-        if not background and effective_timeout > FOREGROUND_MAX_TIMEOUT:
-            logger.info(
-                "Clamping foreground timeout from %ds to %ds (max: TERMINAL_MAX_FOREGROUND_TIMEOUT=%d)",
-                effective_timeout, FOREGROUND_MAX_TIMEOUT, FOREGROUND_MAX_TIMEOUT,
-            )
-            effective_timeout = FOREGROUND_MAX_TIMEOUT
+        # Reject foreground commands where the model explicitly requests
+        # a timeout above FOREGROUND_MAX_TIMEOUT — nudge it toward background.
+        if not background and timeout and timeout > FOREGROUND_MAX_TIMEOUT:
+            return json.dumps({
+                "error": (
+                    f"Foreground timeout {timeout}s exceeds the maximum of "
+                    f"{FOREGROUND_MAX_TIMEOUT}s. Use background=true with "
+                    f"notify_on_complete=true for long-running commands."
+                ),
+            }, ensure_ascii=False)
 
         # Start cleanup thread
         _start_cleanup_thread()
@@ -1485,18 +1486,11 @@ def terminal_tool(
                 except Exception as e:
                     error_str = str(e).lower()
                     if "timeout" in error_str:
-                        timeout_result = {
+                        return json.dumps({
                             "output": "",
                             "exit_code": 124,
                             "error": f"Command timed out after {effective_timeout} seconds"
-                        }
-                        if unclamped_timeout != effective_timeout:
-                            timeout_result["timeout_note"] = (
-                                f"Timeout of {unclamped_timeout}s was clamped to "
-                                f"the foreground maximum of {FOREGROUND_MAX_TIMEOUT}s. "
-                                f"Use background=true for long-running processes."
-                            )
-                        return json.dumps(timeout_result, ensure_ascii=False)
+                        }, ensure_ascii=False)
                     
                     # Retry on transient errors
                     if retry_count < max_retries:
@@ -1559,12 +1553,6 @@ def terminal_tool(
                 result_dict["approval"] = approval_note
             if exit_note:
                 result_dict["exit_code_meaning"] = exit_note
-            if unclamped_timeout != effective_timeout:
-                result_dict["timeout_note"] = (
-                    f"Timeout of {unclamped_timeout}s was clamped to "
-                    f"the foreground maximum of {FOREGROUND_MAX_TIMEOUT}s. "
-                    f"Use background=true for long-running processes."
-                )
 
             return json.dumps(result_dict, ensure_ascii=False)
 
@@ -1751,7 +1739,7 @@ TERMINAL_SCHEMA = {
             },
             "timeout": {
                 "type": "integer",
-                "description": f"Max seconds to wait (default: 180, max: {FOREGROUND_MAX_TIMEOUT}). Returns INSTANTLY when command finishes — set high for long tasks, you won't wait unnecessarily.",
+                "description": f"Max seconds to wait (default: 180, foreground max: {FOREGROUND_MAX_TIMEOUT}). Returns INSTANTLY when command finishes — set high for long tasks, you won't wait unnecessarily. Foreground timeout above {FOREGROUND_MAX_TIMEOUT}s is rejected; use background=true for longer commands.",
                 "minimum": 1
             },
             "workdir": {

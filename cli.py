@@ -2308,17 +2308,59 @@ class HermesCLI:
         # Append to a pre-filter buffer first
         self._stream_prefilt = getattr(self, "_stream_prefilt", "") + text
 
-        # Check if we're entering a reasoning block
+        # Check if we're entering a reasoning block.
+        # Only match tags that appear at a "block boundary": start of the
+        # stream, after a newline (with optional whitespace), or when nothing
+        # but whitespace has been emitted on the current line.
+        # This prevents false positives when models *mention* tags in prose
+        # like "(/think not producing <think> tags)".
+        #
+        # _stream_last_was_newline tracks whether the last character emitted
+        # (or the start of the stream) is a line boundary.  It's True at
+        # stream start and set True whenever emitted text ends with '\n'.
+        if not hasattr(self, "_stream_last_was_newline"):
+            self._stream_last_was_newline = True  # start of stream = boundary
+
         if not getattr(self, "_in_reasoning_block", False):
             for tag in _OPEN_TAGS:
-                idx = self._stream_prefilt.find(tag)
-                if idx != -1:
-                    # Emit everything before the tag
-                    before = self._stream_prefilt[:idx]
-                    if before:
-                        self._emit_stream_text(before)
-                    self._in_reasoning_block = True
-                    self._stream_prefilt = self._stream_prefilt[idx + len(tag):]
+                search_start = 0
+                while True:
+                    idx = self._stream_prefilt.find(tag, search_start)
+                    if idx == -1:
+                        break
+                    # Check if this is a block boundary position
+                    preceding = self._stream_prefilt[:idx]
+                    if idx == 0:
+                        # At buffer start — only a boundary if we're at
+                        # a line start (stream start or last emit ended
+                        # with newline)
+                        is_block_boundary = getattr(self, "_stream_last_was_newline", True)
+                    else:
+                        # Find last newline in the buffer before the tag
+                        last_nl = preceding.rfind("\n")
+                        if last_nl == -1:
+                            # No newline in buffer — boundary only if
+                            # last emit was a newline AND only whitespace
+                            # has accumulated before the tag
+                            is_block_boundary = (
+                                getattr(self, "_stream_last_was_newline", True)
+                                and preceding.strip() == ""
+                            )
+                        else:
+                            # Text between last newline and tag must be
+                            # whitespace-only
+                            is_block_boundary = preceding[last_nl + 1:].strip() == ""
+                    if is_block_boundary:
+                        # Emit everything before the tag
+                        if preceding:
+                            self._emit_stream_text(preceding)
+                            self._stream_last_was_newline = preceding.endswith("\n")
+                        self._in_reasoning_block = True
+                        self._stream_prefilt = self._stream_prefilt[idx + len(tag):]
+                        break
+                    # Not a block boundary — keep searching after this occurrence
+                    search_start = idx + 1
+                if getattr(self, "_in_reasoning_block", False):
                     break
 
             # Could also be a partial open tag at the end — hold it back
@@ -2332,6 +2374,7 @@ class HermesCLI:
                             break
                 if safe:
                     self._emit_stream_text(safe)
+                    self._stream_last_was_newline = safe.endswith("\n")
                     self._stream_prefilt = self._stream_prefilt[len(safe):]
                 return
 
@@ -2421,6 +2464,14 @@ class HermesCLI:
 
     def _flush_stream(self) -> None:
         """Emit any remaining partial line from the stream buffer and close the box."""
+        # If we're still inside a "reasoning block" at end-of-stream, it was
+        # a false positive — the model mentioned a tag like <think> in prose
+        # but never closed it.  Recover the buffered content as regular text.
+        if getattr(self, "_in_reasoning_block", False) and getattr(self, "_stream_prefilt", ""):
+            self._in_reasoning_block = False
+            self._emit_stream_text(self._stream_prefilt)
+            self._stream_prefilt = ""
+
         # Close reasoning box if still open (in case no content tokens arrived)
         self._close_reasoning_box()
 
@@ -2443,6 +2494,7 @@ class HermesCLI:
         self._stream_text_ansi = ""
         self._stream_prefilt = ""
         self._in_reasoning_block = False
+        self._stream_last_was_newline = True
         self._reasoning_box_opened = False
         self._reasoning_buf = ""
         self._reasoning_preview_buf = ""

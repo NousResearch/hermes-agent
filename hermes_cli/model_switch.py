@@ -440,23 +440,7 @@ def switch_model(
     # PATH A: Explicit --provider given
     # =================================================================
     if explicit_provider:
-        # Special case: "custom" is not a real provider in the registry — it
-        # represents the current user-defined OpenAI-compatible endpoint
-        # (configured via custom_providers: in config.yaml). When the picker
-        # or user passes --provider custom, synthesize a ProviderDef from the
-        # current runtime base_url / api_key so the model swap works in place.
-        if explicit_provider.strip().lower() == "custom" and (current_provider == "custom" or current_base_url):
-            from hermes_cli.providers import ProviderDef
-            pdef = ProviderDef(
-                id="custom",
-                name="Custom endpoint",
-                transport="openai_chat",
-                api_key_env_vars=[],
-                base_url=current_base_url or "",
-                source="custom_providers",
-            )
-        else:
-            pdef = resolve_provider_full(explicit_provider, user_providers, custom_providers)
+        pdef = resolve_provider_full(explicit_provider, user_providers, custom_providers)
         if pdef is None:
             _switch_err = (
                 f"Unknown provider '{explicit_provider}'. "
@@ -898,35 +882,47 @@ def list_authenticated_providers(
     # Collapse all custom_providers entries into a single "custom" provider
     # showing every configured model. Clicking a model swaps the model on the
     # current custom endpoint — provider stays "custom".
-    if custom_providers and isinstance(custom_providers, list) and "custom" not in seen_slugs:
-        all_models: list[str] = []
-        display_name = ""
-        api_url = ""
+    # --- 4. Saved custom providers from config ---
+    if custom_providers and isinstance(custom_providers, list):
+        from hermes_cli.providers import custom_provider_slug
         for entry in custom_providers:
             if not isinstance(entry, dict):
                 continue
-            model = (entry.get("model") or "").strip()
-            if model and model not in all_models:
-                all_models.append(model)
-            if not api_url:
-                api_url = (entry.get("base_url") or "").strip()
-            if not display_name:
-                first_name = (entry.get("name") or "").strip()
-                if first_name:
-                    display_name = first_name
 
-        if all_models:
+            display_name = (entry.get("name") or "").strip()
+            api_url = (
+                entry.get("base_url", "")
+                or entry.get("url", "")
+                or entry.get("api", "")
+                or ""
+            ).strip()
+            if not display_name or not api_url:
+                continue
+
+            slug = custom_provider_slug(display_name)
+            if slug in seen_slugs:
+                continue
+
+            models_list = []
+            default_model = (entry.get("model") or "").strip()
+            if default_model:
+                models_list.append(default_model)
+
+            total = len(models_list)
+            if total == 0:
+                continue
+
             results.append({
-                "slug": "custom",
-                "name": display_name or "Custom endpoint",
-                "is_current": current_provider == "custom",
+                "slug": slug,
+                "name": display_name,
+                "is_current": slug == current_provider,
                 "is_user_defined": True,
-                "models": all_models,
-                "total_models": len(all_models),
+                "models": models_list,
+                "total_models": total,
                 "source": "user-config",
                 "api_url": api_url,
             })
-            seen_slugs.add("custom")
+            seen_slugs.add(slug)
 
     # Sort: current provider first, then by model count descending
     results.sort(key=lambda r: (not r["is_current"], -r["total_models"]))

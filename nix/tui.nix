@@ -44,7 +44,7 @@ pkgs.buildNpmPackage {
       # cd into ui-tui and reinstall
       cd "$REPO_ROOT/ui-tui"
       rm -rf node_modules/
-      npm install --package-lock-only
+      npm install
       ${pkgs.lib.getExe' npm-lockfile-fix "npm-lockfile-fix"} ./package-lock.json
 
       # compute the new hash

@@ -840,7 +840,7 @@ export function App({ gw }: { gw: GatewayClient }) {
       return
     }
 
-    if (completions.length && input && (key.upArrow || key.downArrow)) {
+    if (completions.length && input && historyIdx === null && (key.upArrow || key.downArrow)) {
       setCompIdx(i => (key.upArrow ? (i - 1 + completions.length) % completions.length : (i + 1) % completions.length))
 
       return
@@ -1000,6 +1000,13 @@ export function App({ gw }: { gw: GatewayClient }) {
           } else {
             setStatus('forging session…')
             newSession()
+          }
+
+          break
+
+        case 'skin.changed':
+          if (p) {
+            setTheme(fromSkin(p.colors ?? {}, p.branding ?? {}, p.banner_logo ?? '', p.banner_hero ?? ''))
           }
 
           break
@@ -1516,6 +1523,15 @@ export function App({ gw }: { gw: GatewayClient }) {
               sys(`model → ${r.value}`)
               setInfo(prev => (prev ? { ...prev, model: r.value } : prev))
             })
+          }
+
+          return true
+
+        case 'skin':
+          if (arg) {
+            rpc('config.set', { key: 'skin', value: arg }).then((r: any) => sys(`skin → ${r.value}`))
+          } else {
+            rpc('config.get', { key: 'skin' }).then((r: any) => sys(`skin: ${r.value || 'default'}`))
           }
 
           return true

@@ -61,7 +61,7 @@ class TestProviderRegistry:
     def test_copilot_env_vars(self):
         pconfig = PROVIDER_REGISTRY["copilot"]
         assert pconfig.api_key_env_vars == ("COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN")
-        assert pconfig.base_url_env_var == ""
+        assert pconfig.base_url_env_var == "COPILOT_API_BASE_URL"
 
     def test_kimi_env_vars(self):
         pconfig = PROVIDER_REGISTRY["kimi-coding"]

@@ -74,6 +74,15 @@ from tools.browser_tool import cleanup_browser
 
 from hermes_constants import OPENROUTER_BASE_URL
 
+
+def _is_copilot_base(url: str) -> bool:
+    """Check if *url* is a Copilot / GitHub Enterprise Copilot endpoint."""
+    try:
+        from hermes_cli.copilot_auth import is_copilot_url
+        return is_copilot_url(url)
+    except Exception:
+        return "api.githubcopilot.com" in (url or "").lower()
+
 # Agent internals extracted to agent/ package for modularity
 from agent.memory_manager import build_memory_context_block
 from agent.retry_utils import jittered_backoff
@@ -788,7 +797,7 @@ class AIAgent:
                         "X-OpenRouter-Title": "Hermes Agent",
                         "X-OpenRouter-Categories": "productivity,cli-agent",
                     }
-                elif "api.githubcopilot.com" in effective_base.lower():
+                elif _is_copilot_base(effective_base):
                     from hermes_cli.models import copilot_default_headers
 
                     client_kwargs["default_headers"] = copilot_default_headers()
@@ -4176,7 +4185,7 @@ class AIAgent:
         normalized = (base_url or "").lower()
         if "openrouter" in normalized:
             self._client_kwargs["default_headers"] = dict(_OR_HEADERS)
-        elif "api.githubcopilot.com" in normalized:
+        elif _is_copilot_base(normalized):
             from hermes_cli.models import copilot_default_headers
 
             self._client_kwargs["default_headers"] = copilot_default_headers()
@@ -5480,7 +5489,7 @@ class AIAgent:
 
             is_github_responses = (
                 "models.github.ai" in self.base_url.lower()
-                or "api.githubcopilot.com" in self.base_url.lower()
+                or _is_copilot_base(self.base_url)
             )
             is_codex_backend = (
                 self.provider == "openai-codex"
@@ -5641,7 +5650,7 @@ class AIAgent:
         _is_openrouter = self._is_openrouter_url()
         _is_github_models = (
             "models.github.ai" in self._base_url_lower
-            or "api.githubcopilot.com" in self._base_url_lower
+            or _is_copilot_base(self._base_url_lower)
         )
 
         # Provider preferences (only, ignore, order, sort) are OpenRouter-
@@ -5715,7 +5724,7 @@ class AIAgent:
             return True
         if "ai-gateway.vercel.sh" in self._base_url_lower:
             return True
-        if "models.github.ai" in self._base_url_lower or "api.githubcopilot.com" in self._base_url_lower:
+        if "models.github.ai" in self._base_url_lower or _is_copilot_base(self._base_url_lower):
             try:
                 from hermes_cli.models import github_model_reasoning_efforts
 

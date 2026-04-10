@@ -30,13 +30,22 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 # OAuth device code flow constants (same client ID as opencode/Copilot CLI)
-COPILOT_OAUTH_CLIENT_ID = "Ov23li8tweQw6odWQebz"
-COPILOT_DEVICE_CODE_URL = "https://github.com/login/device/code"
-COPILOT_ACCESS_TOKEN_URL = "https://github.com/login/oauth/access_token"
+COPILOT_OAUTH_CLIENT_ID = os.getenv("COPILOT_OAUTH_CLIENT_ID", "Ov23li8tweQw6odWQebz")
+COPILOT_DEVICE_CODE_URL = os.getenv("COPILOT_DEVICE_CODE_URL", "https://github.com/login/device/code")
+COPILOT_ACCESS_TOKEN_URL = os.getenv("COPILOT_ACCESS_TOKEN_URL", "https://github.com/login/oauth/access_token")
 
 # Copilot API constants
-COPILOT_TOKEN_EXCHANGE_URL = "https://api.github.com/copilot_internal/v2/token"
-COPILOT_API_BASE_URL = "https://api.githubcopilot.com"
+COPILOT_TOKEN_EXCHANGE_URL = os.getenv("COPILOT_TOKEN_EXCHANGE_URL", "https://api.github.com/copilot_internal/v2/token")
+COPILOT_API_BASE_URL = os.getenv("COPILOT_API_BASE_URL", "https://api.githubcopilot.com")
+
+
+def is_copilot_url(url: str) -> bool:
+    """Return True if *url* points to a Copilot / GitHub Models API endpoint."""
+    lower = (url or "").lower()
+    return (
+        "api.githubcopilot.com" in lower
+        or COPILOT_API_BASE_URL.lower().rstrip("/") in lower
+    )
 
 # Token type prefixes
 _CLASSIC_PAT_PREFIX = "ghp_"
@@ -81,7 +90,17 @@ def resolve_copilot_token() -> tuple[str, str]:
 
     Returns (token, source) where source describes where the token came from.
     Raises ValueError if only a classic PAT is available.
+
+    Respects ``COPILOT_AUTH_MODE``:
+      - ``oauth``  — skip env vars and ``gh auth token``; return empty so the
+                     caller falls through to the OAuth device-code flow.
+      - (unset)    — default behaviour: env vars → ``gh auth token``.
     """
+    auth_mode = os.getenv("COPILOT_AUTH_MODE", "").strip().lower()
+    if auth_mode == "oauth":
+        logger.debug("COPILOT_AUTH_MODE=oauth — skipping env vars and gh CLI")
+        return "", ""
+
     # 1. Check env vars in priority order
     for env_var in COPILOT_ENV_VARS:
         val = os.getenv(env_var, "").strip()
@@ -94,7 +113,7 @@ def resolve_copilot_token() -> tuple[str, str]:
                 continue
             return val, env_var
 
-    # 2. Fall back to gh auth token
+    # 2. Fall back to gh auth token (host-aware when COPILOT_GH_HOST is set)
     token = _try_gh_cli_token()
     if token:
         valid, msg = validate_copilot_token(token)
@@ -129,11 +148,20 @@ def _gh_cli_candidates() -> list[str]:
 
 
 def _try_gh_cli_token() -> Optional[str]:
-    """Return a token from ``gh auth token`` when the GitHub CLI is available."""
+    """Return a token from ``gh auth token`` when the GitHub CLI is available.
+
+    If ``COPILOT_GH_HOST`` is set (e.g. ``cancomictdev.ghe.com``), pass
+    ``--hostname`` so we get the token for the right GitHub instance instead
+    of whichever host happens to be the active default.
+    """
+    gh_host = os.getenv("COPILOT_GH_HOST", "").strip()
     for gh_path in _gh_cli_candidates():
+        cmd = [gh_path, "auth", "token"]
+        if gh_host:
+            cmd += ["--hostname", gh_host]
         try:
             result = subprocess.run(
-                [gh_path, "auth", "token"],
+                cmd,
                 capture_output=True,
                 text=True,
                 timeout=5,
@@ -164,8 +192,8 @@ def copilot_device_code_login(
     import urllib.parse
 
     domain = host.rstrip("/")
-    device_code_url = f"https://{domain}/login/device/code"
-    access_token_url = f"https://{domain}/login/oauth/access_token"
+    device_code_url = COPILOT_DEVICE_CODE_URL
+    access_token_url = COPILOT_ACCESS_TOKEN_URL
 
     # Step 1: Request device code
     data = urllib.parse.urlencode({

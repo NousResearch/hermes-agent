@@ -1999,7 +1999,65 @@ def _model_flow_copilot(config, current_model=""):
         elif source == "gh auth token":
             print("  GitHub token: ✓ (from `gh auth token`)")
         else:
-            print("  GitHub token: ✓")
+            print(f"  GitHub token: ✓ ({source})" if source else "  GitHub token: ✓")
+        print()
+
+        # Offer re-authentication
+        print("  Current credentials will be used. To switch account/host:")
+        print("    1. Continue with current token")
+        print("    2. Re-authenticate (OAuth device code flow)")
+        print("    3. Enter a different token manually")
+        print()
+        try:
+            reauth = input("  Choice [1-3]: ").strip()
+        except (KeyboardInterrupt, EOFError, OSError):
+            print()
+            reauth = "1"
+
+        if reauth == "2":
+            try:
+                from hermes_cli.copilot_auth import copilot_device_code_login
+                token = copilot_device_code_login()
+                if token:
+                    save_env_value("COPILOT_GITHUB_TOKEN", token)
+                    print("  New Copilot token saved.")
+                    print()
+                    creds = resolve_api_key_provider_credentials(provider_id)
+                    api_key = creds.get("api_key", "")
+                    source = creds.get("source", "")
+                else:
+                    print("  Login cancelled — keeping existing token.")
+            except Exception as exc:
+                print(f"  Login failed: {exc} — keeping existing token.")
+        elif reauth == "3":
+            try:
+                import getpass
+                new_key = getpass.getpass("  Token (COPILOT_GITHUB_TOKEN): ").strip()
+            except (KeyboardInterrupt, EOFError):
+                print()
+                new_key = ""
+            if new_key:
+                try:
+                    from hermes_cli.copilot_auth import validate_copilot_token
+                    valid, msg = validate_copilot_token(new_key)
+                    if not valid:
+                        print(f"  ✗ {msg} — keeping existing token.")
+                    else:
+                        save_env_value("COPILOT_GITHUB_TOKEN", new_key)
+                        print("  Token saved.")
+                        print()
+                        creds = resolve_api_key_provider_credentials(provider_id)
+                        api_key = creds.get("api_key", "")
+                        source = creds.get("source", "")
+                except ImportError:
+                    save_env_value("COPILOT_GITHUB_TOKEN", new_key)
+                    print("  Token saved.")
+                    creds = resolve_api_key_provider_credentials(provider_id)
+                    api_key = creds.get("api_key", "")
+                    source = creds.get("source", "")
+            else:
+                print("  Keeping existing token.")
+        # else choice "1" or anything else — continue with current token
         print()
 
     effective_base = pconfig.inference_base_url

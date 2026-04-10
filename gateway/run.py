@@ -6009,68 +6009,8 @@ class GatewayRunner:
         user_text: str,
         image_paths: List[str],
     ) -> str:
-        """
-        Auto-analyze user-attached images with the vision tool and prepend
-        the descriptions to the message text.
-
-        Each image is analyzed with a general-purpose prompt.  The resulting
-        description *and* the local cache path are injected so the model can:
-          1. Immediately understand what the user sent (no extra tool call).
-          2. Re-examine the image with vision_analyze if it needs more detail.
-
-        Args:
-            user_text:   The user's original caption / message text.
-            image_paths: List of local file paths to cached images.
-
-        Returns:
-            The enriched message string with vision descriptions prepended.
-        """
-        from tools.vision_tools import vision_analyze_tool
-        import json as _json
-
-        analysis_prompt = (
-            "Describe everything visible in this image in thorough detail. "
-            "Include any text, code, data, objects, people, layout, colors, "
-            "and any other notable visual information."
-        )
-
-        enriched_parts = []
-        for path in image_paths:
-            try:
-                logger.debug("Auto-analyzing user image: %s", path)
-                result_json = await vision_analyze_tool(
-                    image_url=path,
-                    user_prompt=analysis_prompt,
-                )
-                result = _json.loads(result_json)
-                if result.get("success"):
-                    description = result.get("analysis", "")
-                    enriched_parts.append(
-                        f"[The user sent an image~ Here's what I can see:\n{description}]\n"
-                        f"[If you need a closer look, use vision_analyze with "
-                        f"image_url: {path} ~]"
-                    )
-                else:
-                    enriched_parts.append(
-                        "[The user sent an image but I couldn't quite see it "
-                        "this time (>_<) You can try looking at it yourself "
-                        f"with vision_analyze using image_url: {path}]"
-                    )
-            except Exception as e:
-                logger.error("Vision auto-analysis error: %s", e)
-                enriched_parts.append(
-                    f"[The user sent an image but something went wrong when I "
-                    f"tried to look at it~ You can try examining it yourself "
-                    f"with vision_analyze using image_url: {path}]"
-                )
-
-        # Combine: vision descriptions first, then the user's original text
-        if enriched_parts:
-            prefix = "\n\n".join(enriched_parts)
-            if user_text:
-                return f"{prefix}\n\n{user_text}"
-            return prefix
-        return user_text
+        from gateway.vision import enrich_message_with_vision
+        return await enrich_message_with_vision(user_text, image_paths)
 
     async def _enrich_message_with_transcription(
         self,

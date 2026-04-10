@@ -1519,9 +1519,15 @@ class APIServerAdapter(BasePlatformAdapter):
 
         session_id = body.get("session_id") or run_id
         ephemeral_system_prompt = instructions
+        media_urls = [u for u in (body.get("media_urls") or []) if isinstance(u, str)]
 
         async def _run_and_close():
+            nonlocal user_message
             try:
+                if media_urls:
+                    from gateway.vision import enrich_message_with_vision
+                    user_message = await enrich_message_with_vision(user_message, media_urls)
+
                 agent = self._create_agent(
                     ephemeral_system_prompt=ephemeral_system_prompt,
                     session_id=session_id,

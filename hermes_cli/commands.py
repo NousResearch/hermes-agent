@@ -180,6 +180,53 @@ def register_plugin_command(cmd: CommandDef) -> None:
     rebuild_lookups()
 
 
+def load_user_commands(commands_dir: str | None = None) -> dict[str, str]:
+    """Scan ~/.hermes/commands/ for executable scripts and register them.
+
+    Each executable file becomes a slash command named after the file
+    (without extension). Returns a dict mapping command name -> script path
+    for use at dispatch time.
+
+    Example: ~/.hermes/commands/digest -> /digest runs the script, zero LLM.
+    """
+    from pathlib import Path
+
+    if commands_dir is None:
+        try:
+            from hermes_constants import get_hermes_home
+            commands_dir = str(Path(get_hermes_home()) / "commands")
+        except ImportError:
+            commands_dir = str(Path.home() / ".hermes" / "commands")
+
+    user_commands: dict[str, str] = {}
+    cmds_path = Path(commands_dir)
+    if not cmds_path.exists():
+        return user_commands
+
+    existing_names = {cmd.name for cmd in COMMAND_REGISTRY}
+
+    for script in sorted(cmds_path.iterdir()):
+        if not script.is_file():
+            continue
+        if not os.access(script, os.X_OK):
+            continue
+        # Use stem (filename without extension) as command name
+        name = script.stem.lower()
+        if not name or not re.match(r'^[a-z][a-z0-9_-]*$', name):
+            continue
+        user_commands[name] = str(script)
+        if name not in existing_names:
+            register_plugin_command(CommandDef(
+                name=name,
+                description=f"User script: {script.name}",
+                category="Tools & Skills",
+                args_hint="[args]",
+            ))
+            existing_names.add(name)
+
+    return user_commands
+
+
 def rebuild_lookups() -> None:
     """Rebuild all derived lookup dicts from the current COMMAND_REGISTRY.
 

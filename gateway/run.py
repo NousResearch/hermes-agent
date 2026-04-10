@@ -505,6 +505,10 @@ class GatewayRunner:
         self._running_agents_ts: Dict[str, float] = {}  # start timestamp per session
         self._pending_messages: Dict[str, str] = {}  # Queued messages during interrupt
 
+        # Load user-defined script commands from ~/.hermes/commands/
+        from hermes_cli.commands import load_user_commands
+        self._user_commands: dict[str, str] = load_user_commands()
+
         # Cache AIAgent instances per session to preserve prompt caching.
         # Without this, a new AIAgent is created per message, rebuilding the
         # system prompt (including memory) every turn — breaking prefix cache
@@ -2167,6 +2171,7 @@ class GatewayRunner:
             return await self._handle_voice_command(event)
 
         # User-defined quick commands (bypass agent loop, no LLM call)
+        # Also checks user script commands from ~/.hermes/commands/
         if command:
             if isinstance(self.config, dict):
                 quick_commands = self.config.get("quick_commands", {}) or {}
@@ -2174,6 +2179,30 @@ class GatewayRunner:
                 quick_commands = getattr(self.config, "quick_commands", {}) or {}
             if not isinstance(quick_commands, dict):
                 quick_commands = {}
+
+            # Check user script commands first
+            if canonical in self._user_commands or command in self._user_commands:
+                script_path = self._user_commands.get(canonical) or self._user_commands.get(command)
+                args = event.text.strip()[len(f"/{command}"):].strip() if event.text else ""
+                env = {**__import__("os").environ,
+                       "HERMES_CHAT_ID": str(event.source.chat_id),
+                       "HERMES_PLATFORM": str(event.source.platform.value if hasattr(event.source.platform, "value") else event.source.platform),
+                       "HERMES_ARGS": args}
+                try:
+                    proc = await asyncio.create_subprocess_exec(
+                        script_path, *args.split() if args else [],
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE,
+                        env=env,
+                    )
+                    stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+                    output = stdout.decode().strip() or stderr.decode().strip()
+                    return output if output else "Command returned no output."
+                except asyncio.TimeoutError:
+                    return "User command timed out (30s)."
+                except Exception as e:
+                    return f"User command error: {e}"
+
             if command in quick_commands:
                 qcmd = quick_commands[command]
                 if qcmd.get("type") == "exec":

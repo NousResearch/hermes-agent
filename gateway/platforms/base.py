@@ -727,6 +727,7 @@ class BasePlatformAdapter(ABC):
         # working on a task after --replace or manual restarts.
         self._background_tasks: set[asyncio.Task] = set()
         self._expected_cancelled_tasks: set[asyncio.Task] = set()
+        self._busy_session_handler: Optional[Callable[[MessageEvent, str], Awaitable[bool]]] = None
         # Chats where auto-TTS on voice input is disabled (set by /voice off)
         self._auto_tts_disabled_chats: set = set()
         # Chats where typing indicator is paused (e.g. during approval waits).
@@ -815,6 +816,10 @@ class BasePlatformAdapter(ABC):
         an optional response string.
         """
         self._message_handler = handler
+
+    def set_busy_session_handler(self, handler: Optional[Callable[[MessageEvent, str], Awaitable[bool]]]) -> None:
+        """Set an optional handler for messages arriving during active sessions."""
+        self._busy_session_handler = handler
     
     def set_session_store(self, session_store: Any) -> None:
         """
@@ -1396,7 +1401,7 @@ class BasePlatformAdapter(ABC):
             # session lifecycle and its cleanup races with the running task
             # (see PR #4926).
             cmd = event.get_command()
-            if cmd in ("approve", "deny", "status", "stop", "new", "reset", "background"):
+            if cmd in ("approve", "deny", "status", "stop", "new", "reset", "background", "restart"):
                 logger.debug(
                     "[%s] Command '/%s' bypassing active-session guard for %s",
                     self.name, cmd, session_key,
@@ -1414,6 +1419,13 @@ class BasePlatformAdapter(ABC):
                 except Exception as e:
                     logger.error("[%s] Command '/%s' dispatch failed: %s", self.name, cmd, e, exc_info=True)
                 return
+
+            if self._busy_session_handler is not None:
+                try:
+                    if await self._busy_session_handler(event, session_key):
+                        return
+                except Exception as e:
+                    logger.error("[%s] Busy-session handler failed: %s", self.name, e, exc_info=True)
 
             # Special case: photo bursts/albums frequently arrive as multiple near-
             # simultaneous messages. Queue them without interrupting the active run,

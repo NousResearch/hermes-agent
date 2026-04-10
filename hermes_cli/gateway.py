@@ -15,7 +15,15 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
 from gateway.status import terminate_pid
-from hermes_cli.config import get_env_value, get_hermes_home, save_env_value, is_managed, managed_error
+from hermes_cli.config import (
+    DEFAULT_CONFIG,
+    get_env_value,
+    get_hermes_home,
+    is_managed,
+    managed_error,
+    read_raw_config,
+    save_env_value,
+)
 # display_hermes_home is imported lazily at call sites to avoid ImportError
 # when hermes_constants is cached from a pre-update version during `hermes update`.
 from hermes_cli.setup import (
@@ -687,6 +695,7 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
             path_entries.append(resolved_node_dir)
 
     common_bin_paths = ["/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin"]
+    restart_timeout = max(60, int(_get_restart_drain_timeout() or 0))
 
     if system:
         username, group_name, home_dir = _system_service_identity(run_as_user)
@@ -725,9 +734,11 @@ Environment="VIRTUAL_ENV={venv_dir}"
 Environment="HERMES_HOME={hermes_home}"
 Restart=on-failure
 RestartSec=30
+RestartForceExitStatus=75
 KillMode=mixed
 KillSignal=SIGTERM
-TimeoutStopSec=60
+ExecReload=/bin/kill -USR1 $MAINPID
+TimeoutStopSec={restart_timeout}
 StandardOutput=journal
 StandardError=journal
 
@@ -755,9 +766,11 @@ Environment="VIRTUAL_ENV={venv_dir}"
 Environment="HERMES_HOME={hermes_home}"
 Restart=on-failure
 RestartSec=30
+RestartForceExitStatus=75
 KillMode=mixed
 KillSignal=SIGTERM
-TimeoutStopSec=60
+ExecReload=/bin/kill -USR1 $MAINPID
+TimeoutStopSec={restart_timeout}
 StandardOutput=journal
 StandardError=journal
 
@@ -860,6 +873,19 @@ def _select_systemd_scope(system: bool = False) -> bool:
     return get_systemd_unit_path(system=True).exists() and not get_systemd_unit_path(system=False).exists()
 
 
+def _get_restart_drain_timeout() -> float:
+    """Return the configured gateway restart drain timeout in seconds."""
+    raw = os.getenv("HERMES_RESTART_DRAIN_TIMEOUT", "").strip()
+    if not raw:
+        cfg = read_raw_config()
+        agent_cfg = cfg.get("agent", {}) if isinstance(cfg, dict) else {}
+        raw = str(agent_cfg.get("restart_drain_timeout", DEFAULT_CONFIG["agent"]["restart_drain_timeout"]))
+    try:
+        return max(0.0, float(raw))
+    except (TypeError, ValueError):
+        return float(DEFAULT_CONFIG["agent"]["restart_drain_timeout"])
+
+
 def systemd_install(force: bool = False, system: bool = False, run_as_user: str | None = None):
     if system:
         _require_root_for_system_service("install")
@@ -945,7 +971,7 @@ def systemd_restart(system: bool = False):
     if system:
         _require_root_for_system_service("restart")
     refresh_systemd_unit_if_needed(system=system)
-    subprocess.run(_systemctl_cmd(system) + ["restart", get_service_name()], check=True, timeout=90)
+    subprocess.run(_systemctl_cmd(system) + ["reload-or-restart", get_service_name()], check=True, timeout=90)
     print(f"✓ {_service_scope_label(system).capitalize()} service restarted")
 
 
@@ -1233,7 +1259,7 @@ def launchd_stop():
     _wait_for_gateway_exit(timeout=10.0, force_after=5.0)
     print("✓ Service stopped")
 
-def _wait_for_gateway_exit(timeout: float = 10.0, force_after: float = 5.0):
+def _wait_for_gateway_exit(timeout: float = 10.0, force_after: float | None = 5.0) -> bool:
     """Wait for the gateway process (by saved PID) to exit.
 
     Uses the PID from the gateway.pid file — not launchd labels — so this
@@ -1248,21 +1274,21 @@ def _wait_for_gateway_exit(timeout: float = 10.0, force_after: float = 5.0):
     from gateway.status import get_running_pid
 
     deadline = time.monotonic() + timeout
-    force_deadline = time.monotonic() + force_after
+    force_deadline = (time.monotonic() + force_after) if force_after is not None else None
     force_sent = False
 
     while time.monotonic() < deadline:
         pid = get_running_pid()
         if pid is None:
-            return  # Process exited cleanly.
+            return True  # Process exited cleanly.
 
-        if not force_sent and time.monotonic() >= force_deadline:
+        if force_after is not None and not force_sent and time.monotonic() >= force_deadline:
             # Grace period expired — force-kill the specific PID.
             try:
                 terminate_pid(pid, force=True)
                 print(f"⚠ Gateway PID {pid} did not exit gracefully; sent SIGKILL")
             except (ProcessLookupError, PermissionError, OSError):
-                return  # Already gone or we can't touch it.
+                return True  # Already gone or we can't touch it.
             force_sent = True
 
         time.sleep(0.3)
@@ -1271,15 +1297,27 @@ def _wait_for_gateway_exit(timeout: float = 10.0, force_after: float = 5.0):
     remaining_pid = get_running_pid()
     if remaining_pid is not None:
         print(f"⚠ Gateway PID {remaining_pid} still running after {timeout}s — restart may fail")
+        return False
+    return True
 
 
 def launchd_restart():
     label = get_launchd_label()
     target = f"{_launchd_domain()}/{label}"
-    # Use kickstart -k so launchd performs an atomic kill+restart.
-    # A two-step stop/start from inside the gateway's own process tree
-    # would kill the shell before the start command is reached.
+    drain_timeout = _get_restart_drain_timeout()
+    from gateway.status import get_running_pid
+
     try:
+        pid = get_running_pid()
+        if pid is not None:
+            try:
+                terminate_pid(pid, force=False)
+            except (ProcessLookupError, PermissionError, OSError):
+                pid = None
+            if pid is not None:
+                exited = _wait_for_gateway_exit(timeout=drain_timeout, force_after=None)
+                if not exited:
+                    print(f"⚠ Gateway drain timed out after {drain_timeout:.0f}s — forcing launchd restart")
         subprocess.run(["launchctl", "kickstart", "-k", target], check=True, timeout=90)
         print("✓ Service restarted")
     except subprocess.CalledProcessError as e:
@@ -1750,6 +1788,8 @@ def _runtime_health_lines() -> list[str]:
     lines: list[str] = []
     gateway_state = state.get("gateway_state")
     exit_reason = state.get("exit_reason")
+    active_agents = state.get("active_agents")
+    restart_requested = state.get("restart_requested")
     platforms = state.get("platforms", {}) or {}
 
     for platform, pdata in platforms.items():
@@ -1759,6 +1799,10 @@ def _runtime_health_lines() -> list[str]:
 
     if gateway_state == "startup_failed" and exit_reason:
         lines.append(f"⚠ Last startup issue: {exit_reason}")
+    elif gateway_state == "draining":
+        action = "restart" if restart_requested else "shutdown"
+        count = int(active_agents or 0)
+        lines.append(f"⏳ Gateway draining for {action} ({count} active agent(s))")
     elif gateway_state == "stopped" and exit_reason:
         lines.append(f"⚠ Last shutdown reason: {exit_reason}")
 

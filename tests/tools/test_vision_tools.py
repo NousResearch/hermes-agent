@@ -15,6 +15,8 @@ from tools.vision_tools import (
     _handle_vision_analyze,
     _determine_mime_type,
     _image_to_base64_data_url,
+    _build_vision_messages,
+    _infer_vision_payload_family,
     vision_analyze_tool,
     check_vision_requirements,
     get_debug_session_info,
@@ -424,6 +426,99 @@ class TestVisionSafetyGuards:
             await _download_image("https://allowed.test/cat.png", tmp_path / "cat.png", max_retries=1)
 
         assert not (tmp_path / "cat.png").exists()
+
+
+class TestVisionResponseHandling:
+    def test_infer_codex_payload_family(self):
+        assert _infer_vision_payload_family("openai-codex") == "codex_responses"
+
+    def test_infer_anthropic_payload_family_from_provider(self):
+        assert _infer_vision_payload_family("anthropic") == "anthropic_messages"
+
+    def test_infer_anthropic_payload_family_from_base_url(self):
+        assert (
+            _infer_vision_payload_family(
+                "custom", base_url="https://proxy.example.com/anthropic"
+            )
+            == "anthropic_messages"
+        )
+
+    def test_infer_gemini_payload_family(self):
+        assert _infer_vision_payload_family("gemini") == "gemini_openai"
+
+    def test_build_codex_vision_messages(self):
+        messages = _build_vision_messages(
+            "describe this",
+            "data:image/png;base64,abc",
+            provider_family="codex_responses",
+        )
+        content = messages[0]["content"]
+        assert content[0] == {"type": "input_text", "text": "describe this"}
+        assert content[1] == {
+            "type": "input_image",
+            "image_url": "data:image/png;base64,abc",
+        }
+
+    def test_build_anthropic_vision_messages(self):
+        messages = _build_vision_messages(
+            "describe this",
+            "data:image/png;base64,abc",
+            provider_family="anthropic_messages",
+        )
+        content = messages[0]["content"]
+        assert content[0] == {"type": "text", "text": "describe this"}
+        assert content[1] == {
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": "image/png",
+                "data": "abc",
+            },
+        }
+
+    def test_build_openai_compatible_vision_messages(self):
+        messages = _build_vision_messages(
+            "describe this",
+            "data:image/png;base64,abc",
+            provider_family="gemini_openai",
+        )
+        content = messages[0]["content"]
+        assert content[0] == {"type": "text", "text": "describe this"}
+        assert content[1] == {
+            "type": "image_url",
+            "image_url": {
+                "url": "data:image/png;base64,abc",
+            },
+        }
+
+    @pytest.mark.asyncio
+    async def test_empty_analysis_after_retry_returns_failure(self, tmp_path):
+        image = tmp_path / "image.png"
+        image.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
+
+        with (
+            patch(
+                "tools.vision_tools._image_to_base64_data_url",
+                return_value="data:image/png;base64,abc",
+            ),
+            patch(
+                "tools.vision_tools.async_call_llm",
+                new_callable=AsyncMock,
+                side_effect=[MagicMock(), MagicMock()],
+            ) as mock_llm,
+            patch(
+                "tools.vision_tools.extract_content_or_reasoning",
+                return_value="",
+            ),
+        ):
+            result = json.loads(
+                await vision_analyze_tool(str(image), "describe this", "test/model")
+            )
+
+        assert result["success"] is False
+        assert "empty response twice" in result["analysis"]
+        assert "empty content after retry" in result["error"]
+        assert mock_llm.await_count == 2
 
 
 # ---------------------------------------------------------------------------

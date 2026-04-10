@@ -877,6 +877,28 @@ class TestAuxiliaryPoolAwareness:
         assert isinstance(client, CodexAuxiliaryClient)
         assert model == "gpt-5.2-codex"
 
+    def test_vision_custom_gpt5_uses_responses_adapter(self, monkeypatch):
+        config = {
+            "auxiliary": {
+                "vision": {
+                    "provider": "custom",
+                    "model": "gpt-5.4",
+                    "base_url": "https://pay.kxaug.xyz/v1",
+                    "api_key": "test-key",
+                }
+            }
+        }
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: config)
+
+        with patch("agent.auxiliary_client.OpenAI"):
+            resolved_provider, client, model = resolve_vision_provider_client()
+
+        from agent.auxiliary_client import CodexAuxiliaryClient
+
+        assert resolved_provider == "custom"
+        assert isinstance(client, CodexAuxiliaryClient)
+        assert model == "gpt-5.4"
+
 
 class TestGetAuxiliaryProvider:
     """Tests for _get_auxiliary_provider env var resolution."""

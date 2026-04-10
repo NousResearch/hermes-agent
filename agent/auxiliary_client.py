@@ -881,6 +881,17 @@ def _current_custom_base_url() -> str:
     return custom_base or ""
 
 
+def _model_prefers_openai_responses(model: Optional[str], base_url: Optional[str] = None) -> bool:
+    """Return True when an OpenAI-style model should prefer the Responses API."""
+    slug = str(model or "").strip().lower()
+    base = str(base_url or "").strip().lower()
+    if not slug:
+        return False
+    if base.endswith("/anthropic"):
+        return False
+    return slug.startswith(("gpt-5", "gpt-4.1", "o1", "o3", "o4"))
+
+
 def _try_custom_endpoint() -> Tuple[Optional[OpenAI], Optional[str]]:
     custom_base, custom_key = _resolve_custom_runtime()
     if not custom_base or not custom_key:
@@ -1467,6 +1478,45 @@ def _preferred_main_vision_provider() -> Optional[str]:
     return None
 
 
+def resolve_vision_request_target(
+    provider: Optional[str] = None,
+    model: Optional[str] = None,
+    *,
+    base_url: Optional[str] = None,
+    api_key: Optional[str] = None,
+) -> Tuple[Optional[str], Optional[str]]:
+    """Resolve the likely backend for shaping a vision request payload.
+
+    Returns ``(provider, base_url)`` for the backend that auto-selection would
+    currently choose, without instantiating a client. This is used by callers
+    that need provider-family-specific multimodal message formatting before the
+    actual API call happens.
+    """
+    requested, _resolved_model, resolved_base_url, _resolved_api_key = _resolve_task_provider_model(
+        "vision", provider, model, base_url, api_key
+    )
+    requested = _normalize_vision_provider(requested)
+
+    if resolved_base_url:
+        return "custom", resolved_base_url
+
+    if requested != "auto":
+        if requested == "custom":
+            return "custom", _current_custom_base_url() or None
+        return requested, None
+
+    for candidate in _VISION_AUTO_PROVIDER_ORDER:
+        if _strict_vision_backend_available(candidate):
+            return candidate, None
+
+    main_provider = _normalize_vision_provider(_read_main_provider())
+    if main_provider and main_provider not in ("auto", ""):
+        if main_provider == "custom":
+            return "custom", _current_custom_base_url() or None
+        return main_provider, None
+    return None, None
+
+
 def get_available_vision_backends() -> List[str]:
     """Return the currently available vision backends in auto-selection order.
 
@@ -1510,6 +1560,15 @@ def resolve_vision_provider_client(
         if sync_client is None:
             return resolved_provider, None, None
         final_model = resolved_model or default_model
+        if (
+            resolved_provider == "custom"
+            and not isinstance(sync_client, CodexAuxiliaryClient)
+            and _model_prefers_openai_responses(
+                final_model,
+                getattr(sync_client, "base_url", resolved_base_url),
+            )
+        ):
+            sync_client = CodexAuxiliaryClient(sync_client, final_model)
         if async_mode:
             async_client, async_model = _to_async_client(sync_client, final_model)
             return resolved_provider, async_client, async_model
@@ -1525,6 +1584,28 @@ def resolve_vision_provider_client(
         )
         if client is None:
             return "custom", None, None
+        if (
+            not async_mode
+            and not isinstance(client, CodexAuxiliaryClient)
+            and _model_prefers_openai_responses(final_model, resolved_base_url)
+        ):
+            client = CodexAuxiliaryClient(client, final_model)
+        elif async_mode and _model_prefers_openai_responses(final_model, resolved_base_url):
+            # resolve_provider_client(async_mode=True) returns AsyncOpenAI here.
+            # Rebuild the sync wrapper and convert it so the vision path uses
+            # the Responses adapter for GPT-5/OpenAI-family endpoints.
+            sync_client, _ = resolve_provider_client(
+                "custom",
+                model=resolved_model,
+                async_mode=False,
+                explicit_base_url=resolved_base_url,
+                explicit_api_key=resolved_api_key,
+            )
+            if sync_client is not None:
+                client, final_model = _to_async_client(
+                    CodexAuxiliaryClient(sync_client, final_model),
+                    final_model,
+                )
         return "custom", client, final_model
 
     if requested == "auto":

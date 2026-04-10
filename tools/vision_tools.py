@@ -37,7 +37,11 @@ from pathlib import Path
 from typing import Any, Awaitable, Dict, Optional
 from urllib.parse import urlparse
 import httpx
-from agent.auxiliary_client import async_call_llm, extract_content_or_reasoning
+from agent.auxiliary_client import (
+    async_call_llm,
+    extract_content_or_reasoning,
+    resolve_vision_request_target,
+)
 from tools.debug_helpers import DebugSession
 from tools.website_policy import check_website_access
 
@@ -261,6 +265,76 @@ def _image_to_base64_data_url(image_path: Path, mime_type: Optional[str] = None)
     return data_url
 
 
+def _infer_vision_payload_family(
+    provider: Optional[str],
+    *,
+    base_url: Optional[str] = None,
+) -> str:
+    """Map a resolved vision backend to the payload family it expects."""
+    normalized_provider = str(provider or "").strip().lower()
+    normalized_base_url = str(base_url or "").strip().lower().rstrip("/")
+
+    if normalized_provider == "openai-codex":
+        return "codex_responses"
+    if normalized_provider == "anthropic" or normalized_base_url.endswith("/anthropic"):
+        return "anthropic_messages"
+    if normalized_provider in {"gemini", "google", "google-gemini"}:
+        return "gemini_openai"
+    return "openai_chat"
+
+
+def _anthropic_image_source(image_data_url: str) -> Dict[str, str]:
+    """Convert a data URL or remote URL into Anthropic image source format."""
+    url = str(image_data_url or "").strip()
+    if url.startswith("data:"):
+        header, _, data = url.partition(",")
+        media_type = "image/jpeg"
+        if header.startswith("data:"):
+            mime_part = header[len("data:"):].split(";", 1)[0].strip()
+            if mime_part.startswith("image/"):
+                media_type = mime_part
+        return {
+            "type": "base64",
+            "media_type": media_type,
+            "data": data,
+        }
+    return {"type": "url", "url": url}
+
+
+def _build_vision_messages(
+    comprehensive_prompt: str,
+    image_data_url: str,
+    *,
+    provider_family: str,
+) -> list[Dict[str, Any]]:
+    """Build multimodal messages for the resolved provider family."""
+    if provider_family == "codex_responses":
+        content = [
+            {"type": "input_text", "text": comprehensive_prompt},
+            {"type": "input_image", "image_url": image_data_url},
+        ]
+    elif provider_family == "anthropic_messages":
+        content = [
+            {"type": "text", "text": comprehensive_prompt},
+            {
+                "type": "image",
+                "source": _anthropic_image_source(image_data_url),
+            },
+        ]
+    else:
+        content = [
+            {"type": "text", "text": comprehensive_prompt},
+            {
+                "type": "image_url",
+                "image_url": {
+                    "url": image_data_url,
+                },
+            },
+        ]
+
+    return [{"role": "user", "content": content}]
+
+
 async def vision_analyze_tool(
     image_url: str,
     user_prompt: str,
@@ -368,25 +442,21 @@ async def vision_analyze_tool(
         # Use the prompt as provided (model_tools.py now handles full description formatting)
         comprehensive_prompt = user_prompt
         
-        # Prepare the message with base64-encoded image
-        messages = [
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": comprehensive_prompt
-                    },
-                    {
-                        "type": "image_url",
-                        "image_url": {
-                            "url": image_data_url
-                        }
-                    }
-                ]
-            }
-        ]
-        
+        resolved_provider, resolved_base_url = resolve_vision_request_target(
+            model=model
+        )
+        provider_family = _infer_vision_payload_family(
+            resolved_provider,
+            base_url=resolved_base_url,
+        )
+        messages = _build_vision_messages(
+            comprehensive_prompt,
+            image_data_url,
+            provider_family=provider_family,
+        )
+        debug_call_data["resolved_provider"] = resolved_provider or "unknown"
+        debug_call_data["provider_family"] = provider_family
+
         logger.info("Processing image with vision model...")
         
         # Call the vision API via centralized router.
@@ -420,6 +490,21 @@ async def vision_analyze_tool(
             logger.warning("Vision LLM returned empty content, retrying once")
             response = await async_call_llm(**call_kwargs)
             analysis = extract_content_or_reasoning(response)
+        if not analysis:
+            error_msg = "Error analyzing image: Vision model returned empty content after retry"
+            logger.error("Vision LLM returned empty content after retry")
+            result = {
+                "success": False,
+                "error": error_msg,
+                "analysis": (
+                    "The vision model returned an empty response twice and the "
+                    "image could not be analyzed."
+                ),
+            }
+            debug_call_data["error"] = error_msg
+            _debug.log_call("vision_analyze_tool", debug_call_data)
+            _debug.save()
+            return json.dumps(result, indent=2, ensure_ascii=False)
 
         analysis_length = len(analysis)
         

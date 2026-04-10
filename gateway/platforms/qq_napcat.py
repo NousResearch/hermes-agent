@@ -371,6 +371,41 @@ class QqNapCatAdapter(BasePlatformAdapter):
             return False
         return True
 
+    def _has_recent_session_followup(self, payload: Dict[str, Any]) -> bool:
+        if self._followup_window_seconds <= 0:
+            return False
+
+        session_store = getattr(self, "_session_store", None)
+        if session_store is None or not hasattr(session_store, "list_sessions"):
+            return False
+
+        try:
+            source = self._build_message_event(payload).source
+            session_key = self._session_key_for_source(source)
+        except Exception:
+            return False
+
+        active_minutes = max(1, (self._followup_window_seconds + 59) // 60)
+        cutoff = time.time() - self._followup_window_seconds
+
+        try:
+            entries = session_store.list_sessions(active_minutes=active_minutes)
+        except Exception:
+            return False
+
+        for entry in entries:
+            if getattr(entry, "session_key", None) != session_key:
+                continue
+            updated_at = getattr(entry, "updated_at", None)
+            if updated_at is None:
+                continue
+            try:
+                if updated_at.timestamp() >= cutoff:
+                    return True
+            except Exception:
+                continue
+        return False
+
     def _group_message_allowed(self, payload: Dict[str, Any]) -> bool:
         group_id = str(payload.get("group_id") or "").strip()
         if not group_id:
@@ -397,6 +432,8 @@ class QqNapCatAdapter(BasePlatformAdapter):
         if self._project_group_mode and self._has_group_followup_window(payload):
             return True
         if self._has_followup_window(payload):
+            return True
+        if self._has_recent_session_followup(payload):
             return True
         return self._message_matches_mention_patterns(payload)
 

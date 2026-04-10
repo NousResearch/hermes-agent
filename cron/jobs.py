@@ -19,7 +19,7 @@ from typing import Optional, Dict, List, Any
 
 logger = logging.getLogger(__name__)
 
-from hermes_time import now as _hermes_now
+from hermes_time import get_timezone_name, now as _hermes_now
 
 try:
     from croniter import croniter
@@ -437,8 +437,9 @@ def load_jobs() -> List[Dict[str, Any]]:
         return []
 
     normalized_jobs, repaired_jobs = _normalize_loaded_jobs(jobs)
+    normalized_jobs, repaired_tz = _rebase_jobs_for_current_timezone(normalized_jobs)
 
-    if repaired_control_chars or repaired_jobs:
+    if repaired_control_chars or repaired_jobs or repaired_tz:
         save_jobs(normalized_jobs)
         if repaired_control_chars and repaired_jobs:
             logger.warning(
@@ -446,8 +447,10 @@ def load_jobs() -> List[Dict[str, Any]]:
             )
         elif repaired_control_chars:
             logger.warning("Auto-repaired jobs.json (had invalid control characters)")
-        else:
+        elif repaired_jobs:
             logger.info("Auto-repaired jobs.json (normalized legacy QQ origins)")
+        else:
+            logger.info("Auto-repaired jobs.json (rebased cron jobs to current timezone)")
 
     return normalized_jobs
 
@@ -469,6 +472,30 @@ def save_jobs(jobs: List[Dict[str, Any]]):
         except OSError:
             pass
         raise
+
+
+def _rebase_jobs_for_current_timezone(jobs: List[Dict[str, Any]]) -> tuple[List[Dict[str, Any]], bool]:
+    """Recompute next_run_at when the configured Hermes timezone changes."""
+    current_tz = get_timezone_name() or ""
+    repaired = False
+
+    for job in jobs:
+        stored_tz = str(job.get("timezone") or "")
+        if stored_tz == current_tz:
+            continue
+
+        job["timezone"] = current_tz
+        schedule = job.get("schedule", {}) or {}
+        kind = schedule.get("kind")
+        if (
+            job.get("enabled", True)
+            and job.get("state") != "paused"
+            and kind in {"cron", "interval", "once"}
+        ):
+            job["next_run_at"] = compute_next_run(schedule, job.get("last_run_at"))
+        repaired = True
+
+    return jobs, repaired
 
 
 def create_job(

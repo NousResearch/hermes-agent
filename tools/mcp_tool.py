@@ -1255,9 +1255,17 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                     parts.append(block.text)
             text_result = "\n".join(parts) if parts else ""
 
-            # Prefer structuredContent (machine-readable JSON) over plain text
+            # Combine content + structuredContent when both are present.
+            # MCP spec: content is model-oriented (text), structuredContent
+            # is machine-oriented (JSON metadata).  For an AI agent, content
+            # is the primary payload; structuredContent supplements it.
             structured = getattr(result, "structuredContent", None)
             if structured is not None:
+                if text_result:
+                    return json.dumps({
+                        "result": text_result,
+                        "structuredContent": structured,
+                    })
                 return json.dumps({"result": structured})
             return json.dumps({"result": text_result})
 

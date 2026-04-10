@@ -255,3 +255,57 @@ class TestEdgeCases:
 
         mgr.sync(force=True)
         upload.assert_not_called()  # _file_mtime_key returns None, skipped
+
+
+class TestBulkUpload:
+    """Tests for the optional bulk_upload_fn callback."""
+
+    def test_bulk_upload_used_when_provided(self, tmp_files):
+        """When bulk_upload_fn is set, it's called instead of per-file upload_fn."""
+        upload = MagicMock()
+        bulk_upload = MagicMock()
+        mgr = FileSyncManager(
+            get_files_fn=_make_get_files(tmp_files),
+            upload_fn=upload,
+            delete_fn=MagicMock(),
+            bulk_upload_fn=bulk_upload,
+        )
+
+        mgr.sync(force=True)
+        upload.assert_not_called()
+        bulk_upload.assert_called_once()
+        # All 3 files passed as a list of (host, remote) tuples
+        files_arg = bulk_upload.call_args[0][0]
+        assert len(files_arg) == 3
+
+    def test_fallback_to_upload_fn_when_no_bulk(self, tmp_files):
+        """Without bulk_upload_fn, per-file upload_fn is used (backwards compat)."""
+        upload = MagicMock()
+        mgr = FileSyncManager(
+            get_files_fn=_make_get_files(tmp_files),
+            upload_fn=upload,
+            delete_fn=MagicMock(),
+            bulk_upload_fn=None,
+        )
+
+        mgr.sync(force=True)
+        assert upload.call_count == 3
+
+    def test_bulk_upload_rollback_on_failure(self, tmp_files):
+        """Bulk upload failure rolls back synced state so next sync retries."""
+        bulk_upload = MagicMock(side_effect=RuntimeError("upload failed"))
+        mgr = FileSyncManager(
+            get_files_fn=_make_get_files(tmp_files),
+            upload_fn=MagicMock(),
+            delete_fn=MagicMock(),
+            bulk_upload_fn=bulk_upload,
+        )
+
+        mgr.sync(force=True)  # fails, should rollback
+
+        # State rolled back: next sync should retry all files
+        bulk_upload.side_effect = None
+        bulk_upload.reset_mock()
+        mgr.sync(force=True)
+        bulk_upload.assert_called_once()
+        assert len(bulk_upload.call_args[0][0]) == 3

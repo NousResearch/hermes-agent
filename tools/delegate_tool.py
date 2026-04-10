@@ -20,6 +20,7 @@ import json
 import logging
 logger = logging.getLogger(__name__)
 import os
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional
@@ -37,6 +38,7 @@ DELEGATE_BLOCKED_TOOLS = frozenset([
 MAX_CONCURRENT_CHILDREN = 3
 MAX_DEPTH = 2  # parent (0) -> child (1) -> grandchild rejected (2)
 DEFAULT_MAX_ITERATIONS = 50
+_HEARTBEAT_INTERVAL = 30  # seconds between parent activity heartbeats during delegation
 DEFAULT_TOOLSETS = ["terminal", "file", "web"]
 
 
@@ -369,6 +371,44 @@ def _run_single_child(
             except Exception as exc:
                 logger.debug("Failed to bind child to leased credential: %s", exc)
 
+    # Heartbeat: periodically propagate child activity to the parent so the
+    # gateway inactivity timeout doesn't fire while the subagent is working.
+    # Without this, the parent's _last_activity_ts freezes when delegate_task
+    # starts and the gateway eventually kills the agent for "no activity".
+    _heartbeat_stop = threading.Event()
+
+    def _heartbeat_loop():
+        while not _heartbeat_stop.wait(_HEARTBEAT_INTERVAL):
+            if parent_agent is None:
+                continue
+            touch = getattr(parent_agent, '_touch_activity', None)
+            if not touch:
+                continue
+            # Pull detail from the child's own activity tracker
+            desc = f"delegate_task: subagent {task_index} working"
+            try:
+                child_summary = child.get_activity_summary()
+                child_tool = child_summary.get("current_tool")
+                child_iter = child_summary.get("api_call_count", 0)
+                child_max = child_summary.get("max_iterations", 0)
+                if child_tool:
+                    desc = (f"delegate_task: subagent running {child_tool} "
+                            f"(iteration {child_iter}/{child_max})")
+                else:
+                    child_desc = child_summary.get("last_activity_desc", "")
+                    if child_desc:
+                        desc = (f"delegate_task: subagent {child_desc} "
+                                f"(iteration {child_iter}/{child_max})")
+            except Exception:
+                pass
+            try:
+                touch(desc)
+            except Exception:
+                pass
+
+    _heartbeat_thread = threading.Thread(target=_heartbeat_loop, daemon=True)
+    _heartbeat_thread.start()
+
     try:
         result = child.run_conversation(user_message=goal)
 
@@ -479,6 +519,11 @@ def _run_single_child(
         }
 
     finally:
+        # Stop the heartbeat thread so it doesn't keep touching parent activity
+        # after the child has finished (or failed).
+        _heartbeat_stop.set()
+        _heartbeat_thread.join(timeout=5)
+
         if child_pool is not None and leased_cred_id is not None:
             try:
                 child_pool.release_lease(leased_cred_id)

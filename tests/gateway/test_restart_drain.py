@@ -1,95 +1,27 @@
 import asyncio
+import shutil
+import subprocess
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult
-from gateway.run import GatewayRunner
-from gateway.session import SessionSource, build_session_key
-
-
-class RecordingAdapter(BasePlatformAdapter):
-    def __init__(self):
-        super().__init__(PlatformConfig(enabled=True, token="***"), Platform.TELEGRAM)
-        self.sent: list[str] = []
-
-    async def connect(self):
-        return True
-
-    async def disconnect(self):
-        return None
-
-    async def send(self, chat_id, content, reply_to=None, metadata=None):
-        self.sent.append(content)
-        return SendResult(success=True, message_id="1")
-
-    async def send_typing(self, chat_id, metadata=None):
-        return None
-
-    async def get_chat_info(self, chat_id):
-        return {"id": chat_id}
-
-
-def _source(chat_id="123456"):
-    return SessionSource(
-        platform=Platform.TELEGRAM,
-        chat_id=chat_id,
-        chat_type="dm",
-    )
-
-
-def _make_runner() -> tuple[GatewayRunner, RecordingAdapter]:
-    runner = object.__new__(GatewayRunner)
-    runner.config = GatewayConfig(platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="***")})
-    runner.adapters = {}
-    runner._running = True
-    runner._shutdown_event = asyncio.Event()
-    runner._exit_reason = None
-    runner._exit_code = None
-    runner._running_agents = {}
-    runner._running_agents_ts = {}
-    runner._pending_messages = {}
-    runner._pending_approvals = {}
-    runner._background_tasks = set()
-    runner._draining = False
-    runner._restart_requested = False
-    runner._restart_task_started = False
-    runner._restart_detached = False
-    runner._restart_via_service = False
-    runner._restart_drain_timeout = 60.0
-    runner._stop_task = None
-    runner._busy_input_mode = "interrupt"
-    runner._update_prompt_pending = {}
-    runner._voice_mode = {}
-    runner._update_runtime_status = MagicMock()
-    runner._queue_or_replace_pending_event = GatewayRunner._queue_or_replace_pending_event.__get__(runner, GatewayRunner)
-    runner._session_key_for_source = GatewayRunner._session_key_for_source.__get__(runner, GatewayRunner)
-    runner._handle_active_session_busy_message = GatewayRunner._handle_active_session_busy_message.__get__(runner, GatewayRunner)
-    runner._handle_restart_command = GatewayRunner._handle_restart_command.__get__(runner, GatewayRunner)
-    runner._status_action_label = GatewayRunner._status_action_label.__get__(runner, GatewayRunner)
-    runner._status_action_gerund = GatewayRunner._status_action_gerund.__get__(runner, GatewayRunner)
-    runner._queue_during_drain_enabled = GatewayRunner._queue_during_drain_enabled.__get__(runner, GatewayRunner)
-    runner._running_agent_count = GatewayRunner._running_agent_count.__get__(runner, GatewayRunner)
-    runner.request_restart = MagicMock(return_value=True)
-    runner._is_user_authorized = lambda _source: True
-    runner.hooks = MagicMock()
-    runner.hooks.emit = AsyncMock()
-    runner.pairing_store = MagicMock()
-    runner.session_store = MagicMock()
-    runner.delivery_router = MagicMock()
-
-    adapter = RecordingAdapter()
-    adapter.set_message_handler(AsyncMock(return_value=None))
-    adapter.set_busy_session_handler(runner._handle_active_session_busy_message)
-    runner.adapters = {Platform.TELEGRAM: adapter}
-    return runner, adapter
+import gateway.run as gateway_run
+from gateway.platforms.base import MessageEvent, MessageType
+from gateway.restart import DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
+from gateway.session import build_session_key
+from tests.gateway.restart_test_helpers import make_restart_runner, make_restart_source
 
 
 @pytest.mark.asyncio
 async def test_restart_command_while_busy_requests_drain_without_interrupt():
-    runner, _adapter = _make_runner()
-    event = MessageEvent(text="/restart", message_type=MessageType.TEXT, source=_source(), message_id="m1")
+    runner, _adapter = make_restart_runner()
+    runner.request_restart = MagicMock(return_value=True)
+    event = MessageEvent(
+        text="/restart",
+        message_type=MessageType.TEXT,
+        source=make_restart_source(),
+        message_id="m1",
+    )
     session_key = build_session_key(event.source)
     running_agent = MagicMock()
     runner._running_agents[session_key] = running_agent
@@ -103,12 +35,17 @@ async def test_restart_command_while_busy_requests_drain_without_interrupt():
 
 @pytest.mark.asyncio
 async def test_drain_queue_mode_queues_follow_up_without_interrupt():
-    runner, adapter = _make_runner()
+    runner, adapter = make_restart_runner()
     runner._draining = True
     runner._restart_requested = True
     runner._busy_input_mode = "queue"
 
-    event = MessageEvent(text="follow up", message_type=MessageType.TEXT, source=_source(), message_id="m2")
+    event = MessageEvent(
+        text="follow up",
+        message_type=MessageType.TEXT,
+        source=make_restart_source(),
+        message_id="m2",
+    )
     session_key = build_session_key(event.source)
     adapter._active_sessions[session_key] = asyncio.Event()
 
@@ -122,12 +59,102 @@ async def test_drain_queue_mode_queues_follow_up_without_interrupt():
 
 @pytest.mark.asyncio
 async def test_draining_rejects_new_session_messages():
-    runner, _adapter = _make_runner()
+    runner, _adapter = make_restart_runner()
     runner._draining = True
     runner._restart_requested = True
 
-    event = MessageEvent(text="hello", message_type=MessageType.TEXT, source=_source("fresh"), message_id="m3")
+    event = MessageEvent(
+        text="hello",
+        message_type=MessageType.TEXT,
+        source=make_restart_source("fresh"),
+        message_id="m3",
+    )
 
     result = await runner._handle_message(event)
 
     assert result == "⏳ Gateway is restarting and is not accepting new work right now."
+
+
+def test_load_busy_input_mode_prefers_env_then_config_then_default(tmp_path, monkeypatch):
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.delenv("HERMES_GATEWAY_BUSY_INPUT_MODE", raising=False)
+
+    assert gateway_run.GatewayRunner._load_busy_input_mode() == "interrupt"
+
+    (tmp_path / "config.yaml").write_text(
+        "display:\n  busy_input_mode: queue\n", encoding="utf-8"
+    )
+    assert gateway_run.GatewayRunner._load_busy_input_mode() == "queue"
+
+    monkeypatch.setenv("HERMES_GATEWAY_BUSY_INPUT_MODE", "interrupt")
+    assert gateway_run.GatewayRunner._load_busy_input_mode() == "interrupt"
+
+
+def test_load_restart_drain_timeout_prefers_env_then_config_then_default(
+    tmp_path, monkeypatch, caplog
+):
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.delenv("HERMES_RESTART_DRAIN_TIMEOUT", raising=False)
+
+    assert (
+        gateway_run.GatewayRunner._load_restart_drain_timeout()
+        == DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
+    )
+
+    (tmp_path / "config.yaml").write_text(
+        "agent:\n  restart_drain_timeout: 12\n", encoding="utf-8"
+    )
+    assert gateway_run.GatewayRunner._load_restart_drain_timeout() == 12.0
+
+    monkeypatch.setenv("HERMES_RESTART_DRAIN_TIMEOUT", "7")
+    assert gateway_run.GatewayRunner._load_restart_drain_timeout() == 7.0
+
+    monkeypatch.setenv("HERMES_RESTART_DRAIN_TIMEOUT", "invalid")
+    assert (
+        gateway_run.GatewayRunner._load_restart_drain_timeout()
+        == DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
+    )
+    assert "Invalid restart_drain_timeout" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_request_restart_is_idempotent():
+    runner, _adapter = make_restart_runner()
+    runner.stop = AsyncMock()
+
+    assert runner.request_restart(detached=True, via_service=False) is True
+    first_task = next(iter(runner._background_tasks))
+    assert runner.request_restart(detached=True, via_service=False) is False
+
+    await first_task
+
+    runner.stop.assert_awaited_once_with(
+        restart=True, detached_restart=True, service_restart=False
+    )
+
+
+@pytest.mark.asyncio
+async def test_launch_detached_restart_command_uses_setsid(monkeypatch):
+    runner, _adapter = make_restart_runner()
+    popen_calls = []
+
+    monkeypatch.setattr(gateway_run, "_resolve_hermes_bin", lambda: ["/usr/bin/hermes"])
+    monkeypatch.setattr(gateway_run.os, "getpid", lambda: 321)
+    monkeypatch.setattr(shutil, "which", lambda cmd: "/usr/bin/setsid" if cmd == "setsid" else None)
+
+    def fake_popen(cmd, **kwargs):
+        popen_calls.append((cmd, kwargs))
+        return MagicMock()
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    await runner._launch_detached_restart_command()
+
+    assert len(popen_calls) == 1
+    cmd, kwargs = popen_calls[0]
+    assert cmd[:2] == ["/usr/bin/setsid", "bash"]
+    assert "gateway restart" in cmd[-1]
+    assert "kill -0 321" in cmd[-1]
+    assert kwargs["start_new_session"] is True
+    assert kwargs["stdout"] is subprocess.DEVNULL
+    assert kwargs["stderr"] is subprocess.DEVNULL

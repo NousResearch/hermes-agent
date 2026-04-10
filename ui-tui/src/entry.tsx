@@ -12,4 +12,8 @@ if (!process.stdin.isTTY) {
 
 const gw = new GatewayClient()
 gw.start()
-render(<App gw={gw} />, { exitOnCtrlC: false, maxFps: 60 })
+render(<App gw={gw} />, {
+  exitOnCtrlC: false,
+  maxFps: 60,
+  kittyKeyboard: { mode: 'enabled', flags: ['disambiguateEscapeCodes'] },
+})

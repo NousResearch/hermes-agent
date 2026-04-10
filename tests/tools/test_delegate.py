@@ -67,7 +67,7 @@ class TestDelegateRequirements(unittest.TestCase):
         self.assertIn("context", props)
         self.assertIn("toolsets", props)
         self.assertIn("max_iterations", props)
-        self.assertEqual(props["tasks"]["maxItems"], 3)
+        self.assertNotIn("maxItems", props["tasks"])  # removed — limit is now runtime-configurable
 
 
 class TestChildSystemPrompt(unittest.TestCase):

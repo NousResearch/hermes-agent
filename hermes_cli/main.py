@@ -14544,7 +14544,7 @@ def main():
             msgs = db.message_count()
             print(f"Total sessions: {total}")
             print(f"Total messages: {msgs}")
-            for src in ["cli", "telegram", "discord", "whatsapp", "slack"]:
+            for src in db.session_sources():
                 c = db.session_count(source=src)
                 if c > 0:
                     print(f"  {src}: {c} sessions")

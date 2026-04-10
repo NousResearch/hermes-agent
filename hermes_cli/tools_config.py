@@ -126,12 +126,14 @@ PLATFORMS = {
     "slack":    {"label": "💼 Slack",      "default_toolset": "hermes-slack"},
     "whatsapp": {"label": "📱 WhatsApp",   "default_toolset": "hermes-whatsapp"},
     "signal":   {"label": "📡 Signal",     "default_toolset": "hermes-signal"},
+    "bluebubbles": {"label": "💙 BlueBubbles", "default_toolset": "hermes-bluebubbles"},
     "homeassistant": {"label": "🏠 Home Assistant", "default_toolset": "hermes-homeassistant"},
     "email":    {"label": "📧 Email",      "default_toolset": "hermes-email"},
     "matrix":   {"label": "💬 Matrix",     "default_toolset": "hermes-matrix"},
  "dingtalk": {"label": "💬 DingTalk", "default_toolset": "hermes-dingtalk"},
     "feishu": {"label": "🪽 Feishu", "default_toolset": "hermes-feishu"},
     "wecom": {"label": "💬 WeCom", "default_toolset": "hermes-wecom"},
+    "weixin": {"label": "💬 Weixin", "default_toolset": "hermes-weixin"},
     "api_server": {"label": "🌐 API Server", "default_toolset": "hermes-api-server"},
     "mattermost": {"label": "💬 Mattermost", "default_toolset": "hermes-mattermost"},
     "webhook": {"label": "🔗 Webhook", "default_toolset": "hermes-webhook"},
@@ -719,6 +721,8 @@ def _prompt_choice(question: str, choices: list, default: int = 0) -> int:
                     return
 
         curses.wrapper(_curses_menu)
+        from hermes_cli.curses_ui import flush_stdin
+        flush_stdin()
         return result_holder[0]
 
     except Exception:

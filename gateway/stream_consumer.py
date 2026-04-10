@@ -136,7 +136,34 @@ class GatewayStreamConsumer:
 
                 if should_edit and self._accumulated:
                     # Split overflow: if accumulated text exceeds the platform
-                    # limit, finalize the current message and start a new one.
+                    # limit, split into properly sized chunks.
+                    if (
+                        len(self._accumulated) > _safe_limit
+                        and self._message_id is None
+                    ):
+                        # No existing message to edit (first message or after a
+                        # segment break).  Use truncate_message — the same
+                        # helper the non-streaming path uses — to split with
+                        # proper word/code-fence boundaries and chunk
+                        # indicators like "(1/2)".
+                        chunks = self.adapter.truncate_message(
+                            self._accumulated, _safe_limit
+                        )
+                        for chunk in chunks:
+                            await self._send_new_chunk(chunk, self._message_id)
+                        self._accumulated = ""
+                        self._last_sent_text = ""
+                        self._last_edit_time = time.monotonic()
+                        if got_done:
+                            return
+                        if got_segment_break:
+                            self._message_id = None
+                            self._fallback_final_send = False
+                            self._fallback_prefix = ""
+                        continue
+
+                    # Existing message: edit it with the first chunk, then
+                    # start a new message for the overflow remainder.
                     while (
                         len(self._accumulated) > _safe_limit
                         and self._message_id is not None
@@ -178,11 +205,20 @@ class GatewayStreamConsumer:
                             await self._send_or_edit(self._accumulated)
                     return
 
-                # Tool boundary: the should_edit block above already flushed
-                # accumulated text without a cursor.  Reset state so the next
-                # text chunk creates a fresh message below any tool-progress
-                # messages the gateway sent in between.
-                if got_segment_break:
+                # Tool boundary: reset message state so the next text chunk
+                # creates a fresh message below any tool-progress messages.
+                #
+                # Exception: when _message_id is "__no_edit__" the platform
+                # never returned a real message ID (e.g. Signal, webhook with
+                # github_comment delivery).  Resetting to None would re-enter
+                # the "first send" path on every tool boundary and post one
+                # platform message per tool call — that is what caused 155
+                # comments under a single PR.  Instead, keep all state so the
+                # full continuation is delivered once via _send_fallback_final.
+                # (When editing fails mid-stream due to flood control the id is
+                # a real string like "msg_1", not "__no_edit__", so that case
+                # still resets and creates a fresh segment as intended.)
+                if got_segment_break and self._message_id != "__no_edit__":
                     self._message_id = None
                     self._accumulated = ""
                     self._last_sent_text = ""
@@ -225,6 +261,34 @@ class GatewayStreamConsumer:
         cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
         # Strip trailing whitespace/newlines but preserve leading content
         return cleaned.rstrip()
+
+    async def _send_new_chunk(self, text: str, reply_to_id: Optional[str]) -> Optional[str]:
+        """Send a new message chunk, optionally threaded to a previous message.
+
+        Returns the message_id so callers can thread subsequent chunks.
+        """
+        text = self._clean_for_display(text)
+        if not text.strip():
+            return reply_to_id
+        try:
+            meta = dict(self.metadata) if self.metadata else {}
+            result = await self.adapter.send(
+                chat_id=self.chat_id,
+                content=text,
+                reply_to=reply_to_id,
+                metadata=meta,
+            )
+            if result.success and result.message_id:
+                self._message_id = str(result.message_id)
+                self._already_sent = True
+                self._last_sent_text = text
+                return str(result.message_id)
+            else:
+                self._edit_supported = False
+                return reply_to_id
+        except Exception as e:
+            logger.error("Stream send chunk error: %s", e)
+            return reply_to_id
 
     def _visible_prefix(self) -> str:
         """Return the visible text already shown in the streamed message."""
@@ -353,6 +417,17 @@ class GatewayStreamConsumer:
                     self._message_id = result.message_id
                     self._already_sent = True
                     self._last_sent_text = text
+                elif result.success:
+                    # Platform accepted the message but returned no message_id
+                    # (e.g. Signal).  Can't edit without an ID — switch to
+                    # fallback mode: suppress intermediate deltas, send only
+                    # the missing tail once the final response is ready.
+                    self._already_sent = True
+                    self._edit_supported = False
+                    self._fallback_prefix = self._clean_for_display(text)
+                    self._fallback_final_send = True
+                    # Sentinel prevents re-entering this branch on every delta
+                    self._message_id = "__no_edit__"
                 else:
                     # Initial send failed — disable streaming for this session
                     self._edit_supported = False

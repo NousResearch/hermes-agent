@@ -101,7 +101,8 @@ def _managed_persistence_enabled() -> bool:
     """
     try:
         camofox_cfg = load_config().get("browser", {}).get("camofox", {})
-    except Exception:
+    except Exception as exc:
+        logger.warning("managed_persistence check failed, defaulting to disabled: %s", exc)
         return False
     return bool(camofox_cfg.get("managed_persistence"))
 
@@ -170,6 +171,22 @@ def _drop_session(task_id: Optional[str]) -> Optional[Dict[str, Any]]:
     task_id = task_id or "default"
     with _sessions_lock:
         return _sessions.pop(task_id, None)
+
+
+def camofox_soft_cleanup(task_id: Optional[str] = None) -> bool:
+    """Release the in-memory session without destroying the server-side context.
+
+    When managed persistence is enabled the browser profile (and its cookies)
+    must survive across agent tasks.  This helper drops only the local tracking
+    entry and returns ``True``.  When managed persistence is *not* enabled it
+    does nothing and returns ``False`` so the caller can fall back to
+    :func:`camofox_close`.
+    """
+    if _managed_persistence_enabled():
+        _drop_session(task_id)
+        logger.debug("Camofox soft cleanup for task %s (managed persistence)", task_id)
+        return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -572,18 +589,4 @@ def camofox_console(clear: bool = False, task_id: Optional[str] = None) -> str:
     })
 
 
-# ---------------------------------------------------------------------------
-# Cleanup
-# ---------------------------------------------------------------------------
 
-def cleanup_all_camofox_sessions() -> None:
-    """Close all active camofox sessions."""
-    with _sessions_lock:
-        sessions = list(_sessions.items())
-    for task_id, session in sessions:
-        try:
-            _delete(f"/sessions/{session['user_id']}")
-        except Exception:
-            pass
-    with _sessions_lock:
-        _sessions.clear()

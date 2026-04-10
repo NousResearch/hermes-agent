@@ -1,7 +1,7 @@
 ---
 sidebar_position: 2
 title: "Installation"
-description: "Install Hermes Agent on Linux, macOS, or WSL2"
+description: "Install Hermes Agent on Linux, macOS, WSL2, or Android via Termux"
 ---
 
 # Installation
@@ -15,6 +15,23 @@ Get Hermes Agent up and running in under two minutes with the one-line installer
 ```bash
 curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
 ```
+
+### Android / Termux
+
+Hermes now ships a Termux-aware installer path too:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
+```
+
+The installer detects Termux automatically and switches to a tested Android flow:
+- uses Termux `pkg` for system dependencies (`git`, `python`, `nodejs`, `ripgrep`, `ffmpeg`, build tools)
+- creates the virtualenv with `python -m venv`
+- exports `ANDROID_API_LEVEL` automatically for Android wheel builds
+- installs a curated `.[termux]` extra with `pip`
+- skips the untested browser / WhatsApp bootstrap by default
+
+If you want the fully explicit path, follow the dedicated [Termux guide](./termux.md).
 
 :::warning Windows
 Native Windows is **not supported**. Please install [WSL2](https://learn.microsoft.com/en-us/windows/wsl/install) and run Hermes Agent from there. The install command above works inside WSL2.
@@ -125,6 +142,7 @@ uv pip install -e "."
 | `tts-premium` | ElevenLabs premium voices | `uv pip install -e ".[tts-premium]"` |
 | `voice` | CLI microphone input + audio playback | `uv pip install -e ".[voice]"` |
 | `pty` | PTY terminal support | `uv pip install -e ".[pty]"` |
+| `termux` | Tested Android / Termux bundle (`cron`, `cli`, `pty`, `mcp`, `honcho`, `acp`) | `python -m pip install -e ".[termux]" -c constraints-termux.txt` |
 | `honcho` | AI-native memory (Honcho integration) | `uv pip install -e ".[honcho]"` |
 | `mcp` | Model Context Protocol support | `uv pip install -e ".[mcp]"` |
 | `homeassistant` | Home Assistant integration | `uv pip install -e ".[homeassistant]"` |
@@ -133,6 +151,10 @@ uv pip install -e "."
 | `dev` | pytest & test utilities | `uv pip install -e ".[dev]"` |
 
 You can combine extras: `uv pip install -e ".[messaging,cron]"`
+
+:::tip Termux users
+`.[all]` is not currently available on Android because the `voice` extra pulls `faster-whisper`, which depends on `ctranslate2` wheels that are not published for Android. Use `.[termux]` for the tested mobile install path, then add individual extras only as needed.
+:::
 
 </details>
 

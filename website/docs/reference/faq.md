@@ -36,6 +36,20 @@ Set your provider with `hermes model` or by editing `~/.hermes/.env`. See the [E
 curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
 ```
 
+### Does it work on Android / Termux?
+
+Yes — Hermes now has a tested Termux install path for Android phones.
+
+Quick install:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
+```
+
+For the fully explicit manual steps, supported extras, and current limitations, see the [Termux guide](../getting-started/termux.md).
+
+Important caveat: the full `.[all]` extra is not currently available on Android because the `voice` extra depends on `faster-whisper` → `ctranslate2`, and `ctranslate2` does not publish Android wheels. Use the tested `.[termux]` extra instead.
+
 ### Is my data sent anywhere?
 
 API calls go **only to the LLM provider you configure** (e.g., OpenRouter, your local Ollama instance). Hermes Agent does not collect telemetry, usage data, or analytics. Your conversations, memory, and skills are stored locally in `~/.hermes/`.
@@ -68,6 +82,10 @@ This works with Ollama, vLLM, llama.cpp server, SGLang, LocalAI, and others. See
 
 :::tip Ollama users
 If you set a custom `num_ctx` in Ollama (e.g., `ollama run --num_ctx 16384`), make sure to set the matching context length in Hermes — Ollama's `/api/show` reports the model's *maximum* context, not the effective `num_ctx` you configured.
+:::
+
+:::tip Timeouts with local models
+Hermes auto-detects local endpoints and relaxes streaming timeouts (read timeout raised from 120s to 1800s, stale stream detection disabled). If you still hit timeouts on very large contexts, set `HERMES_STREAM_READ_TIMEOUT=1800` in your `.env`. See the [Local LLM guide](../guides/local-llm-on-mac.md#timeouts) for details.
 :::
 
 ### How much does it cost?

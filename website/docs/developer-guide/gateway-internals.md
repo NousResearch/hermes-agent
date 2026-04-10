@@ -160,6 +160,8 @@ gateway/platforms/
 ├── dingtalk.py          # DingTalk WebSocket
 ├── feishu.py            # Feishu/Lark WebSocket or webhook
 ├── wecom.py             # WeCom (WeChat Work) callback
+├── weixin.py            # Weixin (personal WeChat) via iLink Bot API
+├── bluebubbles.py       # Apple iMessage via BlueBubbles macOS server
 ├── webhook.py           # Inbound/outbound webhook adapter
 ├── api_server.py        # REST API server adapter
 └── homeassistant.py     # Home Assistant conversation integration

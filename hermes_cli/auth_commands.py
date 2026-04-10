@@ -32,7 +32,7 @@ from hermes_constants import OPENROUTER_BASE_URL
 
 
 # Providers that support OAuth login in addition to API keys.
-_OAUTH_CAPABLE_PROVIDERS = {"anthropic", "nous", "openai-codex"}
+_OAUTH_CAPABLE_PROVIDERS = {"anthropic", "nous", "openai-codex", "qwen-oauth"}
 
 
 def _get_custom_provider_names() -> list:
@@ -147,7 +147,7 @@ def auth_add_command(args) -> None:
         if provider.startswith(CUSTOM_POOL_PREFIX):
             requested_type = AUTH_TYPE_API_KEY
         else:
-            requested_type = AUTH_TYPE_OAUTH if provider in {"anthropic", "nous", "openai-codex"} else AUTH_TYPE_API_KEY
+            requested_type = AUTH_TYPE_OAUTH if provider in {"anthropic", "nous", "openai-codex", "qwen-oauth"} else AUTH_TYPE_API_KEY
 
     pool = load_pool(provider)
 
@@ -250,6 +250,26 @@ def auth_add_command(args) -> None:
         print(f'Added {provider} OAuth credential #{len(pool.entries())}: "{entry.label}"')
         return
 
+    if provider == "qwen-oauth":
+        creds = auth_mod.resolve_qwen_runtime_credentials(refresh_if_expiring=False)
+        label = (getattr(args, "label", None) or "").strip() or label_from_token(
+            creds["api_key"],
+            _oauth_default_label(provider, len(pool.entries()) + 1),
+        )
+        entry = PooledCredential(
+            provider=provider,
+            id=uuid.uuid4().hex[:6],
+            label=label,
+            auth_type=AUTH_TYPE_OAUTH,
+            priority=0,
+            source=f"{SOURCE_MANUAL}:qwen_cli",
+            access_token=creds["api_key"],
+            base_url=creds.get("base_url"),
+        )
+        pool.add_entry(entry)
+        print(f'Added {provider} OAuth credential #{len(pool.entries())}: "{entry.label}"')
+        return
+
     raise SystemExit(f"`hermes auth add {provider}` is not implemented for auth type {requested_type} yet.")
 
 
@@ -327,8 +347,11 @@ def auth_remove_command(args) -> None:
             print("Cleared Hermes Anthropic OAuth credentials")
 
     elif removed.source == "claude_code" and provider == "anthropic":
-        print("Note: Claude Code credentials live in ~/.claude/.credentials.json")
-        print("      Remove them manually if you want to deauthorize Claude Code.")
+        from hermes_cli.auth import suppress_credential_source
+        suppress_credential_source(provider, "claude_code")
+        print("Suppressed claude_code credential — it will not be re-seeded.")
+        print("Note: Claude Code credentials still live in ~/.claude/.credentials.json")
+        print("Run `hermes auth add anthropic` to re-enable if needed.")
 
 
 def auth_reset_command(args) -> None:

@@ -502,13 +502,6 @@ class CheckpointManager:
         if count <= self.max_snapshots:
             return
 
-        # Get the hash of the commit at the cutoff point
-        ok, cutoff_hash, _ = _run_git(
-            ["rev-list", "--reverse", "HEAD", "--skip=0",
-             "--max-count=1"],
-            shadow_repo, working_dir,
-        )
-
         # For simplicity, we don't actually prune — git's pack mechanism
         # handles this efficiently, and the objects are small.  The log
         # listing is already limited by max_snapshots.

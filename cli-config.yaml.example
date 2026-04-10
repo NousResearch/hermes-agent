@@ -48,6 +48,25 @@ model:
   # api_key: "your-key-here"  # Uncomment to set here instead of .env
   base_url: "https://openrouter.ai/api/v1"
 
+  # ── Token limits — two settings, easy to confuse ──────────────────────────
+  #
+  # context_length: TOTAL context window (input + output tokens combined).
+  #   Controls when Hermes compresses history and validates requests.
+  #   Leave unset — Hermes auto-detects the correct value from the provider.
+  #   Set manually only when auto-detection is wrong (e.g. a local server with
+  #   a custom num_ctx, or a proxy that doesn't expose /v1/models).
+  #
+  # context_length: 131072
+  #
+  # max_tokens: OUTPUT cap — maximum tokens the model may generate per response.
+  #   Unrelated to how long your conversation history can be.
+  #   The OpenAI-standard name "max_tokens" is a misnomer; Anthropic's native
+  #   API has since renamed it "max_output_tokens" for clarity.
+  #   Leave unset to use the model's native output ceiling (recommended).
+  #   Set only if you want to deliberately limit individual response length.
+  #
+  # max_tokens: 8192
+
 # =============================================================================
 # OpenRouter Provider Routing (only applies when using OpenRouter)
 # =============================================================================
@@ -117,7 +136,8 @@ terminal:
   timeout: 180
   docker_mount_cwd_to_workspace: false  # SECURITY: off by default. Opt in to mount the launch cwd into Docker /workspace.
   lifetime_seconds: 300
-  # sudo_password: ""  # Enable sudo commands (pipes via sudo -S) - SECURITY WARNING: plaintext!
+  # sudo_password: "hunter2"  # Optional: pipe a sudo password via sudo -S. SECURITY WARNING: plaintext.
+  # sudo_password: ""         # Explicit empty password: try empty and never open the interactive sudo prompt.
 
 # -----------------------------------------------------------------------------
 # OPTION 2: SSH remote execution
@@ -208,12 +228,17 @@ terminal:
 #
 # SECURITY WARNING: Password stored in plaintext!
 #
-# INTERACTIVE PROMPT: If no sudo_password is set and the CLI is running,
+# INTERACTIVE PROMPT: If sudo_password is unset and the CLI is running,
 # you'll be prompted to enter your password when sudo is needed:
 # - 45-second timeout (auto-skips if no input)
 # - Press Enter to skip (command fails gracefully)
 # - Password is hidden while typing
 # - Password is cached for the session
+#
+# EMPTY PASSWORDS: Setting sudo_password to an explicit empty string is different
+# from leaving it unset. Hermes will try an empty password via `sudo -S` and
+# will not open the interactive prompt. This is useful for passwordless sudo,
+# Touch ID sudo setups, and environments where prompting is just noise.
 #
 # ALTERNATIVES:
 # - SSH backend: Configure passwordless sudo on the remote server
@@ -445,6 +470,16 @@ agent:
   # Higher = more room for complex tasks, but costs more tokens
   # Recommended: 20-30 for focused tasks, 50-100 for open exploration
   max_turns: 60
+
+  # Inactivity timeout for gateway agent runs (seconds, 0 = unlimited).
+  # The agent can run indefinitely when actively calling tools or receiving
+  # API responses.  Only fires after the agent has been idle for this duration.
+  # gateway_timeout: 1800
+
+  # Staged warning: send a warning before escalating to full timeout.
+  # Fires once per run when inactivity reaches this threshold (seconds).
+  # Set to 0 to disable the warning.
+  # gateway_timeout_warning: 900
   
   # Enable verbose logging
   verbose: false
@@ -644,10 +679,18 @@ platform_toolsets:
 # Voice Transcription (Speech-to-Text)
 # =============================================================================
 # Automatically transcribe voice messages on messaging platforms.
-# Requires OPENAI_API_KEY in .env (uses OpenAI Whisper API directly).
+# Providers: local (free, faster-whisper) | groq (free tier) | openai (Whisper API) | mistral (Voxtral Transcribe)
+# Set the corresponding API key in .env: GROQ_API_KEY, OPENAI_API_KEY, or MISTRAL_API_KEY.
 stt:
   enabled: true
-  model: "whisper-1"  # whisper-1 (cheapest) | gpt-4o-mini-transcribe | gpt-4o-transcribe
+  # provider: "local"          # auto-detected if omitted
+  local:
+    model: "base"              # tiny | base | small | medium | large-v3 | turbo
+    # language: ""             # auto-detect; set to "en", "es", "fr", etc. to force
+  openai:
+    model: "whisper-1"         # whisper-1 | gpt-4o-mini-transcribe | gpt-4o-transcribe
+  # mistral:
+  #   model: "voxtral-mini-latest"  # voxtral-mini-latest | voxtral-mini-2602
 
 # =============================================================================
 # Response Pacing (Messaging Platforms)

@@ -10,18 +10,142 @@ import logging
 import os
 import random
 import re
+import subprocess
+import sys
 import uuid
 from abc import ABC, abstractmethod
 from urllib.parse import urlsplit
 
 logger = logging.getLogger(__name__)
+
+
+def _detect_macos_system_proxy() -> str | None:
+    """Read the macOS system HTTP(S) proxy via ``scutil --proxy``.
+
+    Returns an ``http://host:port`` URL string if an HTTP or HTTPS proxy is
+    enabled, otherwise *None*.  Falls back silently on non-macOS or on any
+    subprocess error.
+    """
+    if sys.platform != "darwin":
+        return None
+    try:
+        out = subprocess.check_output(
+            ["scutil", "--proxy"], timeout=3, text=True, stderr=subprocess.DEVNULL,
+        )
+    except Exception:
+        return None
+
+    props: dict[str, str] = {}
+    for line in out.splitlines():
+        line = line.strip()
+        if " : " in line:
+            key, _, val = line.partition(" : ")
+            props[key.strip()] = val.strip()
+
+    # Prefer HTTPS, fall back to HTTP
+    for enable_key, host_key, port_key in (
+        ("HTTPSEnable", "HTTPSProxy", "HTTPSPort"),
+        ("HTTPEnable", "HTTPProxy", "HTTPPort"),
+    ):
+        if props.get(enable_key) == "1":
+            host = props.get(host_key)
+            port = props.get(port_key)
+            if host and port:
+                return f"http://{host}:{port}"
+    return None
+
+
+def resolve_proxy_url(platform_env_var: str | None = None) -> str | None:
+    """Return a proxy URL from env vars, or macOS system proxy.
+
+    Check order:
+      0. *platform_env_var* (e.g. ``DISCORD_PROXY``) — highest priority
+      1. HTTPS_PROXY / HTTP_PROXY / ALL_PROXY (and lowercase variants)
+      2. macOS system proxy via ``scutil --proxy`` (auto-detect)
+
+    Returns *None* if no proxy is found.
+    """
+    if platform_env_var:
+        value = (os.environ.get(platform_env_var) or "").strip()
+        if value:
+            return value
+    for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",
+                "https_proxy", "http_proxy", "all_proxy"):
+        value = (os.environ.get(key) or "").strip()
+        if value:
+            return value
+    return _detect_macos_system_proxy()
+
+
+def proxy_kwargs_for_bot(proxy_url: str | None) -> dict:
+    """Build kwargs for ``commands.Bot()`` / ``discord.Client()`` with proxy.
+
+    Returns:
+      - SOCKS URL  → ``{"connector": ProxyConnector(..., rdns=True)}``
+      - HTTP URL   → ``{"proxy": url}``
+      - *None*     → ``{}``
+
+    ``rdns=True`` forces remote DNS resolution through the proxy — required
+    by many SOCKS implementations (Shadowrocket, Clash) and essential for
+    bypassing DNS pollution behind the GFW.
+    """
+    if not proxy_url:
+        return {}
+    if proxy_url.lower().startswith("socks"):
+        try:
+            from aiohttp_socks import ProxyConnector
+
+            connector = ProxyConnector.from_url(proxy_url, rdns=True)
+            return {"connector": connector}
+        except ImportError:
+            logger.warning(
+                "aiohttp_socks not installed — SOCKS proxy %s ignored. "
+                "Run: pip install aiohttp-socks",
+                proxy_url,
+            )
+            return {}
+    return {"proxy": proxy_url}
+
+
+def proxy_kwargs_for_aiohttp(proxy_url: str | None) -> tuple[dict, dict]:
+    """Build kwargs for standalone ``aiohttp.ClientSession`` with proxy.
+
+    Returns ``(session_kwargs, request_kwargs)`` where:
+      - SOCKS → ``({"connector": ProxyConnector(...)}, {})``
+      - HTTP  → ``({}, {"proxy": url})``
+      - None  → ``({}, {})``
+
+    Usage::
+
+        sess_kw, req_kw = proxy_kwargs_for_aiohttp(proxy_url)
+        async with aiohttp.ClientSession(**sess_kw) as session:
+            async with session.get(url, **req_kw) as resp:
+                ...
+    """
+    if not proxy_url:
+        return {}, {}
+    if proxy_url.lower().startswith("socks"):
+        try:
+            from aiohttp_socks import ProxyConnector
+
+            connector = ProxyConnector.from_url(proxy_url, rdns=True)
+            return {"connector": connector}, {}
+        except ImportError:
+            logger.warning(
+                "aiohttp_socks not installed — SOCKS proxy %s ignored. "
+                "Run: pip install aiohttp-socks",
+                proxy_url,
+            )
+            return {}, {}
+    return {}, {"proxy": proxy_url}
+
+
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Callable, Awaitable, Tuple
 from enum import Enum
 
-import sys
 from pathlib import Path as _Path
 sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
 
@@ -36,7 +160,7 @@ GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE = (
 )
 
 
-def _safe_url_for_log(url: str, max_len: int = 80) -> str:
+def safe_url_for_log(url: str, max_len: int = 80) -> str:
     """Return a URL string safe for logs (no query/fragment/userinfo)."""
     if max_len <= 0:
         return ""
@@ -73,6 +197,23 @@ def _safe_url_for_log(url: str, max_len: int = 80) -> str:
     return f"{safe[:max_len - 3]}..."
 
 
+async def _ssrf_redirect_guard(response):
+    """Re-validate each redirect target to prevent redirect-based SSRF.
+
+    Without this, an attacker can host a public URL that 302-redirects to
+    http://169.254.169.254/ and bypass the pre-flight is_safe_url() check.
+
+    Must be async because httpx.AsyncClient awaits response event hooks.
+    """
+    if response.is_redirect and response.next_request:
+        redirect_url = str(response.next_request.url)
+        from tools.url_safety import is_safe_url
+        if not is_safe_url(redirect_url):
+            raise ValueError(
+                f"Blocked redirect to private/internal address: {safe_url_for_log(redirect_url)}"
+            )
+
+
 # ---------------------------------------------------------------------------
 # Image cache utilities
 #
@@ -92,6 +233,23 @@ def get_image_cache_dir() -> Path:
     return IMAGE_CACHE_DIR
 
 
+def _looks_like_image(data: bytes) -> bool:
+    """Return True if *data* starts with a known image magic-byte sequence."""
+    if len(data) < 4:
+        return False
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return True
+    if data[:3] == b"\xff\xd8\xff":
+        return True
+    if data[:6] in (b"GIF87a", b"GIF89a"):
+        return True
+    if data[:2] == b"BM":
+        return True
+    if data[:4] == b"RIFF" and len(data) >= 12 and data[8:12] == b"WEBP":
+        return True
+    return False
+
+
 def cache_image_from_bytes(data: bytes, ext: str = ".jpg") -> str:
     """
     Save raw image bytes to the cache and return the absolute file path.
@@ -102,7 +260,17 @@ def cache_image_from_bytes(data: bytes, ext: str = ".jpg") -> str:
 
     Returns:
         Absolute path to the cached image file as a string.
+
+    Raises:
+        ValueError: If *data* does not look like a valid image (e.g. an HTML
+            error page returned by the upstream server).
     """
+    if not _looks_like_image(data):
+        snippet = data[:80].decode("utf-8", errors="replace")
+        raise ValueError(
+            f"Refusing to cache non-image data as {ext} "
+            f"(starts with: {snippet!r})"
+        )
     cache_dir = get_image_cache_dir()
     filename = f"img_{uuid.uuid4().hex[:12]}{ext}"
     filepath = cache_dir / filename
@@ -130,7 +298,7 @@ async def cache_image_from_url(url: str, ext: str = ".jpg", retries: int = 2) ->
     """
     from tools.url_safety import is_safe_url
     if not is_safe_url(url):
-        raise ValueError(f"Blocked unsafe URL (SSRF protection): {_safe_url_for_log(url)}")
+        raise ValueError(f"Blocked unsafe URL (SSRF protection): {safe_url_for_log(url)}")
 
     import asyncio
     import httpx
@@ -138,7 +306,11 @@ async def cache_image_from_url(url: str, ext: str = ".jpg", retries: int = 2) ->
     _log = _logging.getLogger(__name__)
 
     last_exc = None
-    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+    async with httpx.AsyncClient(
+        timeout=30.0,
+        follow_redirects=True,
+        event_hooks={"response": [_ssrf_redirect_guard]},
+    ) as client:
         for attempt in range(retries + 1):
             try:
                 response = await client.get(
@@ -160,7 +332,7 @@ async def cache_image_from_url(url: str, ext: str = ".jpg", retries: int = 2) ->
                         "Media cache retry %d/%d for %s (%.1fs): %s",
                         attempt + 1,
                         retries,
-                        _safe_url_for_log(url),
+                        safe_url_for_log(url),
                         wait,
                         exc,
                     )
@@ -245,7 +417,7 @@ async def cache_audio_from_url(url: str, ext: str = ".ogg", retries: int = 2) ->
     """
     from tools.url_safety import is_safe_url
     if not is_safe_url(url):
-        raise ValueError(f"Blocked unsafe URL (SSRF protection): {_safe_url_for_log(url)}")
+        raise ValueError(f"Blocked unsafe URL (SSRF protection): {safe_url_for_log(url)}")
 
     import asyncio
     import httpx
@@ -253,7 +425,11 @@ async def cache_audio_from_url(url: str, ext: str = ".ogg", retries: int = 2) ->
     _log = _logging.getLogger(__name__)
 
     last_exc = None
-    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+    async with httpx.AsyncClient(
+        timeout=30.0,
+        follow_redirects=True,
+        event_hooks={"response": [_ssrf_redirect_guard]},
+    ) as client:
         for attempt in range(retries + 1):
             try:
                 response = await client.get(
@@ -275,7 +451,7 @@ async def cache_audio_from_url(url: str, ext: str = ".ogg", retries: int = 2) ->
                         "Audio cache retry %d/%d for %s (%.1fs): %s",
                         attempt + 1,
                         retries,
-                        _safe_url_for_log(url),
+                        safe_url_for_log(url),
                         wait,
                         exc,
                     )
@@ -298,6 +474,7 @@ SUPPORTED_DOCUMENT_TYPES = {
     ".pdf": "application/pdf",
     ".md": "text/markdown",
     ".txt": "text/plain",
+    ".log": "text/plain",
     ".zip": "application/zip",
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -377,6 +554,14 @@ class MessageType(Enum):
     COMMAND = "command"  # /command style
 
 
+class ProcessingOutcome(Enum):
+    """Result classification for message-processing lifecycle hooks."""
+
+    SUCCESS = "success"
+    FAILURE = "failure"
+    CANCELLED = "cancelled"
+
+
 @dataclass
 class MessageEvent:
     """
@@ -404,9 +589,14 @@ class MessageEvent:
     reply_to_message_id: Optional[str] = None
     reply_to_text: Optional[str] = None  # Text of the replied-to message (for context injection)
     
-    # Auto-loaded skill for topic/channel bindings (e.g., Telegram DM Topics)
-    auto_skill: Optional[str] = None
+    # Auto-loaded skill(s) for topic/channel bindings (e.g., Telegram DM Topics,
+    # Discord channel_skill_bindings).  A single name or ordered list.
+    auto_skill: Optional[str | list[str]] = None
     
+    # Internal flag — set for synthetic events (e.g. background process
+    # completion notifications) that must bypass user authorization checks.
+    internal: bool = False
+
     # Timestamps
     timestamp: datetime = field(default_factory=datetime.now)
     
@@ -496,6 +686,7 @@ class BasePlatformAdapter(ABC):
         # Gateway shutdown cancels these so an old gateway instance doesn't keep
         # working on a task after --replace or manual restarts.
         self._background_tasks: set[asyncio.Task] = set()
+        self._expected_cancelled_tasks: set[asyncio.Task] = set()
         # Chats where auto-TTS on voice input is disabled (set by /voice off)
         self._auto_tts_disabled_chats: set = set()
         # Chats where typing indicator is paused (e.g. during approval waits).
@@ -1004,7 +1195,7 @@ class BasePlatformAdapter(ABC):
     async def on_processing_start(self, event: MessageEvent) -> None:
         """Hook called when background processing begins."""
 
-    async def on_processing_complete(self, event: MessageEvent, success: bool) -> None:
+    async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
         """Hook called when background processing completes."""
 
     async def _run_processing_hook(self, hook_name: str, *args: Any, **kwargs: Any) -> None:
@@ -1165,7 +1356,7 @@ class BasePlatformAdapter(ABC):
             # session lifecycle and its cleanup races with the running task
             # (see PR #4926).
             cmd = event.get_command()
-            if cmd in ("approve", "deny", "status", "stop", "new", "reset"):
+            if cmd in ("approve", "deny", "status", "stop", "new", "reset", "background"):
                 logger.debug(
                     "[%s] Command '/%s' bypassing active-session guard for %s",
                     self.name, cmd, session_key,
@@ -1223,6 +1414,7 @@ class BasePlatformAdapter(ABC):
             return
         if hasattr(task, "add_done_callback"):
             task.add_done_callback(self._background_tasks.discard)
+            task.add_done_callback(self._expected_cancelled_tasks.discard)
     
     @staticmethod
     def _get_human_delay() -> float:
@@ -1359,7 +1551,7 @@ class BasePlatformAdapter(ABC):
                         logger.info(
                             "[%s] Sending image: %s (alt=%s)",
                             self.name,
-                            _safe_url_for_log(image_url),
+                            safe_url_for_log(image_url),
                             alt_text[:30] if alt_text else "",
                         )
                         # Route animated GIFs through send_animation for proper playback
@@ -1451,7 +1643,11 @@ class BasePlatformAdapter(ABC):
 
             # Determine overall success for the processing hook
             processing_ok = delivery_succeeded if delivery_attempted else not bool(response)
-            await self._run_processing_hook("on_processing_complete", event, processing_ok)
+            await self._run_processing_hook(
+                "on_processing_complete",
+                event,
+                ProcessingOutcome.SUCCESS if processing_ok else ProcessingOutcome.FAILURE,
+            )
 
             # Check if there's a pending message that was queued during our processing
             if session_key in self._pending_messages:
@@ -1470,10 +1666,14 @@ class BasePlatformAdapter(ABC):
                 return  # Already cleaned up
                 
         except asyncio.CancelledError:
-            await self._run_processing_hook("on_processing_complete", event, False)
+            current_task = asyncio.current_task()
+            outcome = ProcessingOutcome.CANCELLED
+            if current_task is None or current_task not in self._expected_cancelled_tasks:
+                outcome = ProcessingOutcome.FAILURE
+            await self._run_processing_hook("on_processing_complete", event, outcome)
             raise
         except Exception as e:
-            await self._run_processing_hook("on_processing_complete", event, False)
+            await self._run_processing_hook("on_processing_complete", event, ProcessingOutcome.FAILURE)
             logger.error("[%s] Error handling message: %s", self.name, e, exc_info=True)
             # Send the error to the user so they aren't left with radio silence
             try:
@@ -1517,10 +1717,12 @@ class BasePlatformAdapter(ABC):
         """
         tasks = [task for task in self._background_tasks if not task.done()]
         for task in tasks:
+            self._expected_cancelled_tasks.add(task)
             task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
         self._background_tasks.clear()
+        self._expected_cancelled_tasks.clear()
         self._pending_messages.clear()
         self._active_sessions.clear()
 

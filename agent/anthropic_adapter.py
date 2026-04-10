@@ -74,8 +74,11 @@ def _get_anthropic_max_output(model: str) -> int:
     model IDs (claude-sonnet-4-5-20250929) and variant suffixes (:1m, :fast)
     resolve correctly.  Longest-prefix match wins to avoid e.g. "claude-3-5"
     matching before "claude-3-5-sonnet".
+
+    Normalizes dots to hyphens so that model names like
+    ``anthropic/claude-opus-4.6`` match the ``claude-opus-4-6`` table key.
     """
-    m = model.lower()
+    m = model.lower().replace(".", "-")
     best_key = ""
     best_val = _ANTHROPIC_DEFAULT_OUTPUT_LIMIT
     for key, val in _ANTHROPIC_OUTPUT_LIMITS.items():
@@ -95,6 +98,15 @@ _COMMON_BETAS = [
     "interleaved-thinking-2025-05-14",
     "fine-grained-tool-streaming-2025-05-14",
 ]
+# MiniMax's Anthropic-compatible endpoints fail tool-use requests when
+# the fine-grained tool streaming beta is present.  Omit it so tool calls
+# fall back to the provider's default response path.
+_TOOL_STREAMING_BETA = "fine-grained-tool-streaming-2025-05-14"
+
+# Fast mode beta — enables the ``speed: "fast"`` request parameter for
+# significantly higher output token throughput on Opus 4.6 (~2.5x).
+# See https://platform.claude.com/docs/en/build-with-claude/fast-mode
+_FAST_MODE_BETA = "fast-mode-2026-02-01"
 
 # Additional beta headers required for OAuth/subscription auth.
 # Matches what Claude Code (and pi-ai / OpenCode) send.
@@ -163,6 +175,17 @@ def _is_oauth_token(key: str) -> bool:
     return True
 
 
+def _normalize_base_url_text(base_url) -> str:
+    """Normalize SDK/base transport URL values to a plain string for inspection.
+
+    Some client objects expose ``base_url`` as an ``httpx.URL`` instead of a raw
+    string.  Provider/auth detection should accept either shape.
+    """
+    if not base_url:
+        return ""
+    return str(base_url).strip()
+
+
 def _is_third_party_anthropic_endpoint(base_url: str | None) -> bool:
     """Return True for non-Anthropic endpoints using the Anthropic Messages API.
 
@@ -170,9 +193,10 @@ def _is_third_party_anthropic_endpoint(base_url: str | None) -> bool:
     with their own API keys via x-api-key, not Anthropic OAuth tokens. OAuth
     detection should be skipped for these endpoints.
     """
-    if not base_url:
+    normalized = _normalize_base_url_text(base_url)
+    if not normalized:
         return False  # No base_url = direct Anthropic API
-    normalized = base_url.rstrip("/").lower()
+    normalized = normalized.rstrip("/").lower()
     if "anthropic.com" in normalized:
         return False  # Direct Anthropic API — OAuth applies
     return True  # Any other endpoint is a third-party proxy
@@ -182,13 +206,27 @@ def _requires_bearer_auth(base_url: str | None) -> bool:
     """Return True for Anthropic-compatible providers that require Bearer auth.
 
     Some third-party /anthropic endpoints implement Anthropic's Messages API but
-    require Authorization: Bearer instead of Anthropic's native x-api-key header.
+    require Authorization: Bearer *** of Anthropic's native x-api-key header.
     MiniMax's global and China Anthropic-compatible endpoints follow this pattern.
     """
-    if not base_url:
+    normalized = _normalize_base_url_text(base_url)
+    if not normalized:
         return False
-    normalized = base_url.rstrip("/").lower()
+    normalized = normalized.rstrip("/").lower()
     return normalized.startswith(("https://api.minimax.io/anthropic", "https://api.minimaxi.com/anthropic"))
+
+
+def _common_betas_for_base_url(base_url: str | None) -> list[str]:
+    """Return the beta headers that are safe for the configured endpoint.
+
+    MiniMax's Anthropic-compatible endpoints (Bearer-auth) reject requests
+    that include Anthropic's ``fine-grained-tool-streaming`` beta — every
+    tool-use message triggers a connection error.  Strip that beta for
+    Bearer-auth endpoints while keeping all other betas intact.
+    """
+    if _requires_bearer_auth(base_url):
+        return [b for b in _COMMON_BETAS if b != _TOOL_STREAMING_BETA]
+    return _COMMON_BETAS
 
 
 def build_anthropic_client(api_key: str, base_url: str = None):
@@ -203,13 +241,15 @@ def build_anthropic_client(api_key: str, base_url: str = None):
         )
     from httpx import Timeout
 
+    normalized_base_url = _normalize_base_url_text(base_url)
     kwargs = {
         "timeout": Timeout(timeout=900.0, connect=10.0),
     }
-    if base_url:
-        kwargs["base_url"] = base_url
+    if normalized_base_url:
+        kwargs["base_url"] = normalized_base_url
+    common_betas = _common_betas_for_base_url(normalized_base_url)
 
-    if _requires_bearer_auth(base_url):
+    if _requires_bearer_auth(normalized_base_url):
         # Some Anthropic-compatible providers (e.g. MiniMax) expect the API key in
         # Authorization: Bearer even for regular API keys. Route those endpoints
         # through auth_token so the SDK sends Bearer auth instead of x-api-key.
@@ -217,21 +257,21 @@ def build_anthropic_client(api_key: str, base_url: str = None):
         # not use Anthropic's sk-ant-api prefix and would otherwise be misread as
         # Anthropic OAuth/setup tokens.
         kwargs["auth_token"] = api_key
-        if _COMMON_BETAS:
-            kwargs["default_headers"] = {"anthropic-beta": ",".join(_COMMON_BETAS)}
+        if common_betas:
+            kwargs["default_headers"] = {"anthropic-beta": ",".join(common_betas)}
     elif _is_third_party_anthropic_endpoint(base_url):
         # Third-party proxies (Azure AI Foundry, AWS Bedrock, etc.) use their
         # own API keys with x-api-key auth. Skip OAuth detection — their keys
         # don't follow Anthropic's sk-ant-* prefix convention and would be
         # misclassified as OAuth tokens.
         kwargs["api_key"] = api_key
-        if _COMMON_BETAS:
-            kwargs["default_headers"] = {"anthropic-beta": ",".join(_COMMON_BETAS)}
+        if common_betas:
+            kwargs["default_headers"] = {"anthropic-beta": ",".join(common_betas)}
     elif _is_oauth_token(api_key):
         # OAuth access token / setup-token → Bearer auth + Claude Code identity.
         # Anthropic routes OAuth requests based on user-agent and headers;
         # without Claude Code's fingerprint, requests get intermittent 500s.
-        all_betas = _COMMON_BETAS + _OAUTH_ONLY_BETAS
+        all_betas = common_betas + _OAUTH_ONLY_BETAS
         kwargs["auth_token"] = api_key
         kwargs["default_headers"] = {
             "anthropic-beta": ",".join(all_betas),
@@ -241,8 +281,8 @@ def build_anthropic_client(api_key: str, base_url: str = None):
     else:
         # Regular API key → x-api-key header + common betas
         kwargs["api_key"] = api_key
-        if _COMMON_BETAS:
-            kwargs["default_headers"] = {"anthropic-beta": ",".join(_COMMON_BETAS)}
+        if common_betas:
+            kwargs["default_headers"] = {"anthropic-beta": ",".join(common_betas)}
 
     return _anthropic_sdk.Anthropic(**kwargs)
 
@@ -471,35 +511,6 @@ def _prefer_refreshable_claude_code_token(env_token: str, creds: Optional[Dict[s
     return None
 
 
-def get_anthropic_token_source(token: Optional[str] = None) -> str:
-    """Best-effort source classification for an Anthropic credential token."""
-    token = (token or "").strip()
-    if not token:
-        return "none"
-
-    env_token = os.getenv("ANTHROPIC_TOKEN", "").strip()
-    if env_token and env_token == token:
-        return "anthropic_token_env"
-
-    cc_env_token = os.getenv("CLAUDE_CODE_OAUTH_TOKEN", "").strip()
-    if cc_env_token and cc_env_token == token:
-        return "claude_code_oauth_token_env"
-
-    creds = read_claude_code_credentials()
-    if creds and creds.get("accessToken") == token:
-        return str(creds.get("source") or "claude_code_credentials")
-
-    managed_key = read_claude_managed_key()
-    if managed_key and managed_key == token:
-        return "claude_json_primary_api_key"
-
-    api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
-    if api_key and api_key == token:
-        return "anthropic_api_key_env"
-
-    return "unknown"
-
-
 def resolve_anthropic_token() -> Optional[str]:
     """Resolve an Anthropic token from all available sources.
 
@@ -706,21 +717,6 @@ def run_hermes_oauth_login_pure() -> Optional[Dict[str, Any]]:
     }
 
 
-def _save_hermes_oauth_credentials(access_token: str, refresh_token: str, expires_at_ms: int) -> None:
-    """Save OAuth credentials to ~/.hermes/.anthropic_oauth.json."""
-    data = {
-        "accessToken": access_token,
-        "refreshToken": refresh_token,
-        "expiresAt": expires_at_ms,
-    }
-    try:
-        _HERMES_OAUTH_FILE.parent.mkdir(parents=True, exist_ok=True)
-        _HERMES_OAUTH_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
-        _HERMES_OAUTH_FILE.chmod(0o600)
-    except (OSError, IOError) as e:
-        logger.debug("Failed to save Hermes OAuth credentials: %s", e)
-
-
 def read_hermes_oauth_credentials() -> Optional[Dict[str, Any]]:
     """Read Hermes-managed OAuth credentials from ~/.hermes/.anthropic_oauth.json."""
     if _HERMES_OAUTH_FILE.exists():
@@ -767,39 +763,6 @@ def _sanitize_tool_id(tool_id: str) -> str:
         return "tool_0"
     sanitized = re.sub(r"[^a-zA-Z0-9_-]", "_", tool_id)
     return sanitized or "tool_0"
-
-
-def _convert_openai_image_part_to_anthropic(part: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """Convert an OpenAI-style image block to Anthropic's image source format."""
-    image_data = part.get("image_url", {})
-    url = image_data.get("url", "") if isinstance(image_data, dict) else str(image_data)
-    if not isinstance(url, str) or not url.strip():
-        return None
-    url = url.strip()
-
-    if url.startswith("data:"):
-        header, sep, data = url.partition(",")
-        if sep and ";base64" in header:
-            media_type = header[5:].split(";", 1)[0] or "image/png"
-            return {
-                "type": "image",
-                "source": {
-                    "type": "base64",
-                    "media_type": media_type,
-                    "data": data,
-                },
-            }
-
-    if url.startswith(("http://", "https://")):
-        return {
-            "type": "image",
-            "source": {
-                "type": "url",
-                "url": url,
-            },
-        }
-
-    return None
 
 
 def convert_tools_to_anthropic(tools: List[Dict]) -> List[Dict]:
@@ -942,12 +905,18 @@ def _convert_content_to_anthropic(content: Any) -> Any:
 
 def convert_messages_to_anthropic(
     messages: List[Dict],
+    base_url: str | None = None,
 ) -> Tuple[Optional[Any], List[Dict]]:
     """Convert OpenAI-format messages to Anthropic format.
 
     Returns (system_prompt, anthropic_messages).
     System messages are extracted since Anthropic takes them as a separate param.
     system_prompt is a string or list of content blocks (when cache_control present).
+
+    When *base_url* is provided and points to a third-party Anthropic-compatible
+    endpoint, all thinking block signatures are stripped.  Signatures are
+    Anthropic-proprietary — third-party endpoints cannot validate them and will
+    reject them with HTTP 400 "Invalid signature in thinking block".
     """
     system = None
     result = []
@@ -1134,7 +1103,14 @@ def convert_messages_to_anthropic(
     # orphan stripping, message merging) invalidates the signature,
     # causing HTTP 400 "Invalid signature in thinking block".
     #
-    # Strategy (following clawdbot/OpenClaw pattern):
+    # Signatures are Anthropic-proprietary.  Third-party endpoints
+    # (MiniMax, Azure AI Foundry, self-hosted proxies) cannot validate
+    # them and will reject them outright.  When targeting a third-party
+    # endpoint, strip ALL thinking/redacted_thinking blocks from every
+    # assistant message — the third-party will generate its own
+    # thinking blocks if it supports extended thinking.
+    #
+    # For direct Anthropic (strategy following clawdbot/OpenClaw):
     # 1. Strip thinking/redacted_thinking from all assistant messages
     #    EXCEPT the last one — preserves reasoning continuity on the
     #    current tool-use chain while avoiding stale signature errors.
@@ -1143,6 +1119,7 @@ def convert_messages_to_anthropic(
     # 3. Strip cache_control from thinking/redacted_thinking blocks —
     #    cache markers can interfere with signature validation.
     _THINKING_TYPES = frozenset(("thinking", "redacted_thinking"))
+    _is_third_party = _is_third_party_anthropic_endpoint(base_url)
 
     last_assistant_idx = None
     for i in range(len(result) - 1, -1, -1):
@@ -1154,16 +1131,19 @@ def convert_messages_to_anthropic(
         if m.get("role") != "assistant" or not isinstance(m.get("content"), list):
             continue
 
-        if idx != last_assistant_idx:
-            # Strip ALL thinking blocks from non-latest assistant messages
+        if _is_third_party or idx != last_assistant_idx:
+            # Third-party endpoint: strip ALL thinking blocks from every
+            # assistant message — signatures are Anthropic-proprietary.
+            # Direct Anthropic: strip from non-latest assistant messages only.
             stripped = [
                 b for b in m["content"]
                 if not (isinstance(b, dict) and b.get("type") in _THINKING_TYPES)
             ]
             m["content"] = stripped or [{"type": "text", "text": "(thinking elided)"}]
         else:
-            # Latest assistant: keep signed thinking blocks for reasoning
-            # continuity; downgrade unsigned ones to plain text.
+            # Latest assistant on direct Anthropic: keep signed thinking
+            # blocks for reasoning continuity; downgrade unsigned ones to
+            # plain text.
             new_content = []
             for b in m["content"]:
                 if not isinstance(b, dict) or b.get("type") not in _THINKING_TYPES:
@@ -1203,28 +1183,58 @@ def build_anthropic_kwargs(
     is_oauth: bool = False,
     preserve_dots: bool = False,
     context_length: Optional[int] = None,
+    base_url: str | None = None,
+    fast_mode: bool = False,
 ) -> Dict[str, Any]:
     """Build kwargs for anthropic.messages.create().
 
-    When *max_tokens* is None, the model's native output limit is used
-    (e.g. 128K for Opus 4.6, 64K for Sonnet 4.6).  If *context_length*
-    is provided, the effective limit is clamped so it doesn't exceed
-    the context window.
+    Naming note — two distinct concepts, easily confused:
+      max_tokens     = OUTPUT token cap for a single response.
+                       Anthropic's API calls this "max_tokens" but it only
+                       limits the *output*.  Anthropic's own native SDK
+                       renamed it "max_output_tokens" for clarity.
+      context_length = TOTAL context window (input tokens + output tokens).
+                       The API enforces: input_tokens + max_tokens ≤ context_length.
+                       Stored on the ContextCompressor; reduced on overflow errors.
+
+    When *max_tokens* is None the model's native output ceiling is used
+    (e.g. 128K for Opus 4.6, 64K for Sonnet 4.6).
+
+    When *context_length* is provided and the model's native output ceiling
+    exceeds it (e.g. a local endpoint with an 8K window), the output cap is
+    clamped to context_length − 1.  This only kicks in for unusually small
+    context windows; for full-size models the native output cap is always
+    smaller than the context window so no clamping happens.
+    NOTE: this clamping does not account for prompt size — if the prompt is
+    large, Anthropic may still reject the request.  The caller must detect
+    "max_tokens too large given prompt" errors and retry with a smaller cap
+    (see parse_available_output_tokens_from_error + _ephemeral_max_output_tokens).
 
     When *is_oauth* is True, applies Claude Code compatibility transforms:
     system prompt prefix, tool name prefixing, and prompt sanitization.
 
     When *preserve_dots* is True, model name dots are not converted to hyphens
     (for Alibaba/DashScope anthropic-compatible endpoints: qwen3.5-plus).
+
+    When *base_url* points to a third-party Anthropic-compatible endpoint,
+    thinking block signatures are stripped (they are Anthropic-proprietary).
+
+    When *fast_mode* is True, adds ``speed: "fast"`` and the fast-mode beta
+    header for ~2.5x faster output throughput on Opus 4.6.  Currently only
+    supported on native Anthropic endpoints (not third-party compatible ones).
     """
-    system, anthropic_messages = convert_messages_to_anthropic(messages)
+    system, anthropic_messages = convert_messages_to_anthropic(messages, base_url=base_url)
     anthropic_tools = convert_tools_to_anthropic(tools) if tools else []
 
     model = normalize_model_name(model, preserve_dots=preserve_dots)
+    # effective_max_tokens = output cap for this call (≠ total context window)
     effective_max_tokens = max_tokens or _get_anthropic_max_output(model)
 
-    # Clamp to context window if the user set a lower context_length
-    # (e.g. custom endpoint with limited capacity).
+    # Clamp output cap to fit inside the total context window.
+    # Only matters for small custom endpoints where context_length < native
+    # output ceiling.  For standard Anthropic models context_length (e.g.
+    # 200K) is always larger than the output ceiling (e.g. 128K), so this
+    # branch is not taken.
     if context_length and effective_max_tokens > context_length:
         effective_max_tokens = max(context_length - 1, 1)
 
@@ -1309,6 +1319,20 @@ def build_anthropic_kwargs(
                 # Anthropic requires temperature=1 when thinking is enabled on older models
                 kwargs["temperature"] = 1
                 kwargs["max_tokens"] = max(effective_max_tokens, budget + 4096)
+
+    # ── Fast mode (Opus 4.6 only) ────────────────────────────────────
+    # Adds speed:"fast" + the fast-mode beta header for ~2.5x output speed.
+    # Only for native Anthropic endpoints — third-party providers would
+    # reject the unknown beta header and speed parameter.
+    if fast_mode and not _is_third_party_anthropic_endpoint(base_url):
+        kwargs["speed"] = "fast"
+        # Build extra_headers with ALL applicable betas (the per-request
+        # extra_headers override the client-level anthropic-beta header).
+        betas = list(_common_betas_for_base_url(base_url))
+        if is_oauth:
+            betas.extend(_OAUTH_ONLY_BETAS)
+        betas.append(_FAST_MODE_BETA)
+        kwargs["extra_headers"] = {"anthropic-beta": ",".join(betas)}
 
     return kwargs
 

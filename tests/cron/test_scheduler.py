@@ -173,6 +173,40 @@ class TestResolveDeliveryTarget:
             "thread_id": None,
         }
 
+    def test_explicit_discord_topic_target_with_thread_id(self):
+        """deliver: 'discord:chat_id:thread_id' parses correctly."""
+        job = {
+            "deliver": "discord:-1001234567890:17585",
+        }
+        assert _resolve_delivery_target(job) == {
+            "platform": "discord",
+            "chat_id": "-1001234567890",
+            "thread_id": "17585",
+        }
+
+    def test_explicit_discord_chat_id_without_thread_id(self):
+        """deliver: 'discord:chat_id' sets thread_id to None."""
+        job = {
+            "deliver": "discord:9876543210",
+        }
+        assert _resolve_delivery_target(job) == {
+            "platform": "discord",
+            "chat_id": "9876543210",
+            "thread_id": None,
+        }
+
+    def test_explicit_discord_channel_without_thread(self):
+        """deliver: 'discord:1001234567890' resolves via explicit platform:chat_id path."""
+        job = {
+            "deliver": "discord:1001234567890",
+        }
+        result = _resolve_delivery_target(job)
+        assert result == {
+            "platform": "discord",
+            "chat_id": "1001234567890",
+            "thread_id": None,
+        }
+
 
 class TestDeliverResultWrapping:
     """Verify that cron deliveries are wrapped with header/footer and no longer mirrored."""

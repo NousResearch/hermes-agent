@@ -49,6 +49,7 @@ from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
     MessageType,
+    ProcessingOutcome,
     SendResult,
     cache_image_from_url,
     cache_audio_from_url,
@@ -422,6 +423,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
     # Discord message limits
     MAX_MESSAGE_LENGTH = 2000
+    _SPLIT_THRESHOLD = 1900  # near the 2000-char split point
 
     # Auto-disconnect from voice channel after this many seconds of inactivity
     VOICE_TIMEOUT = 300
@@ -433,6 +435,11 @@ class DiscordAdapter(BasePlatformAdapter):
         self._allowed_user_ids: set = set()  # For button approval authorization
         # Voice channel state (per-guild)
         self._voice_clients: Dict[int, Any] = {}  # guild_id -> VoiceClient
+        # Text batching: merge rapid successive messages (Telegram-style)
+        self._text_batch_delay_seconds = float(os.getenv("HERMES_DISCORD_TEXT_BATCH_DELAY_SECONDS", "0.6"))
+        self._text_batch_split_delay_seconds = float(os.getenv("HERMES_DISCORD_TEXT_BATCH_SPLIT_DELAY_SECONDS", "2.0"))
+        self._pending_text_batches: Dict[str, MessageEvent] = {}
+        self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
         self._voice_text_channels: Dict[int, int] = {}  # guild_id -> text_channel_id
         self._voice_timeout_tasks: Dict[int, asyncio.Task] = {}  # guild_id -> timeout task
         # Phase 2: voice listening
@@ -455,6 +462,9 @@ class DiscordAdapter(BasePlatformAdapter):
         self._seen_messages: Dict[str, float] = {}
         self._SEEN_TTL = 300   # 5 minutes
         self._SEEN_MAX = 2000  # prune threshold
+        # Reply threading mode: "off" (no replies), "first" (reply on first
+        # chunk only, default), "all" (reply-reference on every chunk).
+        self._reply_to_mode: str = getattr(config, 'reply_to_mode', 'first') or 'first'
 
     async def connect(self) -> bool:
         """Connect to Discord and start receiving events."""
@@ -526,10 +536,17 @@ class DiscordAdapter(BasePlatformAdapter):
             intents.members = any(not entry.isdigit() for entry in self._allowed_user_ids)
             intents.voice_states = True
 
-            # Create bot
+            # Resolve proxy (DISCORD_PROXY > generic env vars > macOS system proxy)
+            from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_bot
+            proxy_url = resolve_proxy_url(platform_env_var="DISCORD_PROXY")
+            if proxy_url:
+                logger.info("[%s] Using proxy for Discord: %s", self.name, proxy_url)
+
+            # Create bot — proxy= for HTTP, connector= for SOCKS
             self._client = commands.Bot(
                 command_prefix="!",  # Not really used, we handle raw messages
                 intents=intents,
+                **proxy_kwargs_for_bot(proxy_url),
             )
             adapter_self = self  # capture for closure
 
@@ -738,14 +755,17 @@ class DiscordAdapter(BasePlatformAdapter):
         if hasattr(message, "add_reaction"):
             await self._add_reaction(message, "👀")
 
-    async def on_processing_complete(self, event: MessageEvent, success: bool) -> None:
+    async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
         """Swap the in-progress reaction for a final success/failure reaction."""
         if not self._reactions_enabled():
             return
         message = event.raw_message
         if hasattr(message, "add_reaction"):
             await self._remove_reaction(message, "👀")
-            await self._add_reaction(message, "✅" if success else "❌")
+            if outcome == ProcessingOutcome.SUCCESS:
+                await self._add_reaction(message, "✅")
+            elif outcome == ProcessingOutcome.FAILURE:
+                await self._add_reaction(message, "❌")
 
     async def send(
         self,
@@ -754,18 +774,34 @@ class DiscordAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None
     ) -> SendResult:
-        """Send a message to a Discord channel."""
+        """Send a message to a Discord channel or thread.
+
+        When metadata contains a thread_id, the message is sent to that
+        thread instead of the parent channel identified by chat_id.
+        """
         if not self._client:
             return SendResult(success=False, error="Not connected")
 
         try:
-            # Get the channel
-            channel = self._client.get_channel(int(chat_id))
-            if not channel:
-                channel = await self._client.fetch_channel(int(chat_id))
+            # Determine target channel: thread_id in metadata takes precedence.
+            thread_id = None
+            if metadata and metadata.get("thread_id"):
+                thread_id = metadata["thread_id"]
 
-            if not channel:
-                return SendResult(success=False, error=f"Channel {chat_id} not found")
+            if thread_id:
+                # Fetch the thread directly — threads are addressed by their own ID.
+                channel = self._client.get_channel(int(thread_id))
+                if not channel:
+                    channel = await self._client.fetch_channel(int(thread_id))
+                if not channel:
+                    return SendResult(success=False, error=f"Thread {thread_id} not found")
+            else:
+                # Get the parent channel
+                channel = self._client.get_channel(int(chat_id))
+                if not channel:
+                    channel = await self._client.fetch_channel(int(chat_id))
+                if not channel:
+                    return SendResult(success=False, error=f"Channel {chat_id} not found")
 
             # Format and split message if needed
             formatted = self.format_message(content)
@@ -774,7 +810,7 @@ class DiscordAdapter(BasePlatformAdapter):
             message_ids = []
             reference = None
 
-            if reply_to:
+            if reply_to and self._reply_to_mode != "off":
                 try:
                     ref_msg = await channel.fetch_message(int(reply_to))
                     reference = ref_msg
@@ -782,7 +818,10 @@ class DiscordAdapter(BasePlatformAdapter):
                     logger.debug("Could not fetch reply-to message: %s", e)
 
             for i, chunk in enumerate(chunks):
-                chunk_reference = reference if i == 0 else None
+                if self._reply_to_mode == "all":
+                    chunk_reference = reference
+                else:  # "first" (default) or "off"
+                    chunk_reference = reference if i == 0 else None
                 try:
                     msg = await channel.send(
                         content=chunk,
@@ -1225,9 +1264,8 @@ class DiscordAdapter(BasePlatformAdapter):
         try:
             await asyncio.to_thread(VoiceReceiver.pcm_to_wav, pcm_data, wav_path)
 
-            from tools.transcription_tools import transcribe_audio, get_stt_model_from_config
-            stt_model = get_stt_model_from_config()
-            result = await asyncio.to_thread(transcribe_audio, wav_path, model=stt_model)
+            from tools.transcription_tools import transcribe_audio
+            result = await asyncio.to_thread(transcribe_audio, wav_path)
 
             if not result.get("success"):
                 return
@@ -1301,8 +1339,11 @@ class DiscordAdapter(BasePlatformAdapter):
 
             # Download the image and send as a Discord file attachment
             # (Discord renders attachments inline, unlike plain URLs)
-            async with aiohttp.ClientSession() as session:
-                async with session.get(image_url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+            from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp
+            _proxy = resolve_proxy_url(platform_env_var="DISCORD_PROXY")
+            _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(_proxy)
+            async with aiohttp.ClientSession(**_sess_kw) as session:
+                async with session.get(image_url, timeout=aiohttp.ClientTimeout(total=30), **_req_kw) as resp:
                     if resp.status != 200:
                         raise Exception(f"Failed to download image: HTTP {resp.status}")
 
@@ -1579,7 +1620,7 @@ class DiscordAdapter(BasePlatformAdapter):
             await self._run_simple_slash(interaction, f"/model {name}".strip())
 
         @tree.command(name="reasoning", description="Show or change reasoning effort")
-        @discord.app_commands.describe(effort="Reasoning effort: xhigh, high, medium, low, minimal, or none.")
+        @discord.app_commands.describe(effort="Reasoning effort: none, minimal, low, medium, high, or xhigh.")
         async def slash_reasoning(interaction: discord.Interaction, effort: str = ""):
             await self._run_simple_slash(interaction, f"/reasoning {effort}".strip())
 
@@ -1761,8 +1802,9 @@ class DiscordAdapter(BasePlatformAdapter):
             if hasattr(interaction.channel, "guild") and interaction.channel.guild:
                 chat_name = f"{interaction.channel.guild.name} / #{chat_name}"
 
-        # Get channel topic (if available)
-        chat_topic = getattr(interaction.channel, "topic", None)
+        # Get channel topic (if available).
+        # For forum threads, inherit the parent forum's topic.
+        chat_topic = self._get_effective_topic(interaction.channel, is_thread=is_thread)
 
         source = self.build_source(
             chat_id=str(interaction.channel_id),
@@ -1836,6 +1878,10 @@ class DiscordAdapter(BasePlatformAdapter):
 
         chat_name = f"{guild_name} / {thread_name}" if guild_name else thread_name
 
+        # Inherit forum topic when the thread was created inside a forum channel.
+        _chan = getattr(interaction, "channel", None)
+        chat_topic = self._get_effective_topic(_chan, is_thread=True) if _chan else None
+
         source = self.build_source(
             chat_id=thread_id,
             chat_name=chat_name,
@@ -1843,15 +1889,44 @@ class DiscordAdapter(BasePlatformAdapter):
             user_id=str(interaction.user.id),
             user_name=interaction.user.display_name,
             thread_id=thread_id,
+            chat_topic=chat_topic,
         )
 
+        _parent_id = str(getattr(getattr(interaction, "channel", None), "parent_id", "") or "")
+        _skills = self._resolve_channel_skills(thread_id, _parent_id or None)
         event = MessageEvent(
             text=text,
             message_type=MessageType.TEXT,
             source=source,
             raw_message=interaction,
+            auto_skill=_skills,
         )
         await self.handle_message(event)
+
+    def _resolve_channel_skills(self, channel_id: str, parent_id: str | None = None) -> list[str] | None:
+        """Look up auto-skill bindings for a Discord channel/forum thread.
+
+        Config format (in platform extra):
+            channel_skill_bindings:
+              - id: "123456"
+                skills: ["skill-a", "skill-b"]
+        Also checks parent_id so forum threads inherit the forum's bindings.
+        """
+        bindings = self.config.extra.get("channel_skill_bindings", [])
+        if not bindings:
+            return None
+        ids_to_check = {channel_id}
+        if parent_id:
+            ids_to_check.add(parent_id)
+        for entry in bindings:
+            entry_id = str(entry.get("id", ""))
+            if entry_id in ids_to_check:
+                skills = entry.get("skills") or entry.get("skill")
+                if isinstance(skills, str):
+                    return [skills]
+                if isinstance(skills, list) and skills:
+                    return list(dict.fromkeys(skills))  # dedup, preserve order
+        return None
 
     def _thread_parent_channel(self, channel: Any) -> Any:
         """Return the parent text channel when invoked from a thread."""
@@ -2128,6 +2203,15 @@ class DiscordAdapter(BasePlatformAdapter):
                 return True
         return False
 
+    def _get_effective_topic(self, channel: Any, is_thread: bool = False) -> Optional[str]:
+        """Return the channel topic, falling back to the parent forum's topic for forum threads."""
+        topic = getattr(channel, "topic", None)
+        if not topic and is_thread:
+            parent = getattr(channel, "parent", None)
+            if parent and self._is_forum_parent(parent):
+                topic = getattr(parent, "topic", None)
+        return topic
+
     def _format_thread_chat_name(self, thread: Any) -> str:
         """Build a readable chat name for thread-like Discord channels, including forum context when available."""
         thread_name = getattr(thread, "name", None) or str(getattr(thread, "id", "thread"))
@@ -2197,6 +2281,7 @@ class DiscordAdapter(BasePlatformAdapter):
         #   discord.require_mention: Require @mention in server channels (default: true)
         #   discord.free_response_channels: Channel IDs where bot responds without mention
         #   discord.ignored_channels: Channel IDs where bot NEVER responds (even when mentioned)
+        #   discord.allowed_channels: If set, bot ONLY responds in these channels (whitelist)
         #   discord.no_thread_channels: Channel IDs where bot responds directly without creating thread
         #   discord.auto_thread: Auto-create thread on @mention in channels (default: true)
 
@@ -2208,12 +2293,21 @@ class DiscordAdapter(BasePlatformAdapter):
             parent_channel_id = self._get_parent_channel_id(message.channel)
 
         if not isinstance(message.channel, discord.DMChannel):
-            # Check ignored channels first - never respond even when mentioned
-            ignored_channels_raw = os.getenv("DISCORD_IGNORED_CHANNELS", "")
-            ignored_channels = {ch.strip() for ch in ignored_channels_raw.split(",") if ch.strip()}
             channel_ids = {str(message.channel.id)}
             if parent_channel_id:
                 channel_ids.add(parent_channel_id)
+
+            # Check allowed channels - if set, only respond in these channels
+            allowed_channels_raw = os.getenv("DISCORD_ALLOWED_CHANNELS", "")
+            if allowed_channels_raw:
+                allowed_channels = {ch.strip() for ch in allowed_channels_raw.split(",") if ch.strip()}
+                if not (channel_ids & allowed_channels):
+                    logger.debug("[%s] Ignoring message in non-allowed channel: %s", self.name, channel_ids)
+                    return
+
+            # Check ignored channels - never respond even when mentioned
+            ignored_channels_raw = os.getenv("DISCORD_IGNORED_CHANNELS", "")
+            ignored_channels = {ch.strip() for ch in ignored_channels_raw.split(",") if ch.strip()}
             if channel_ids & ignored_channels:
                 logger.debug("[%s] Ignoring message in ignored channel: %s", self.name, channel_ids)
                 return
@@ -2295,8 +2389,10 @@ class DiscordAdapter(BasePlatformAdapter):
             if hasattr(message.channel, "guild") and message.channel.guild:
                 chat_name = f"{message.channel.guild.name} / #{chat_name}"
 
-        # Get channel topic (if available - TextChannels have topics, DMs/threads don't)
-        chat_topic = getattr(message.channel, "topic", None)
+        # Get channel topic (if available - TextChannels have topics, DMs/threads don't).
+        # For threads whose parent is a forum channel, inherit the parent's topic
+        # so forum descriptions (e.g. project instructions) appear in the session context.
+        chat_topic = self._get_effective_topic(message.channel, is_thread=is_thread)
 
         # Build source
         source = self.build_source(
@@ -2359,7 +2455,7 @@ class DiscordAdapter(BasePlatformAdapter):
                         ext or "unknown", content_type,
                     )
                 else:
-                    MAX_DOC_BYTES = 20 * 1024 * 1024
+                    MAX_DOC_BYTES = 32 * 1024 * 1024
                     if att.size and att.size > MAX_DOC_BYTES:
                         logger.warning(
                             "[Discord] Document too large (%s bytes), skipping: %s",
@@ -2368,10 +2464,14 @@ class DiscordAdapter(BasePlatformAdapter):
                     else:
                         try:
                             import aiohttp
-                            async with aiohttp.ClientSession() as session:
+                            from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp
+                            _proxy = resolve_proxy_url(platform_env_var="DISCORD_PROXY")
+                            _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(_proxy)
+                            async with aiohttp.ClientSession(**_sess_kw) as session:
                                 async with session.get(
                                     att.url,
                                     timeout=aiohttp.ClientTimeout(total=30),
+                                    **_req_kw,
                                 ) as resp:
                                     if resp.status != 200:
                                         raise Exception(f"HTTP {resp.status}")
@@ -2383,9 +2483,9 @@ class DiscordAdapter(BasePlatformAdapter):
                             media_urls.append(cached_path)
                             media_types.append(doc_mime)
                             logger.info("[Discord] Cached user document: %s", cached_path)
-                            # Inject text content for .txt/.md files (capped at 100 KB)
+                            # Inject text content for plain-text documents (capped at 100 KB)
                             MAX_TEXT_INJECT_BYTES = 100 * 1024
-                            if ext in (".md", ".txt") and len(raw_bytes) <= MAX_TEXT_INJECT_BYTES:
+                            if ext in (".md", ".txt", ".log") and len(raw_bytes) <= MAX_TEXT_INJECT_BYTES:
                                 try:
                                     text_content = raw_bytes.decode("utf-8")
                                     display_name = att.filename or f"document{ext}"
@@ -2412,6 +2512,10 @@ class DiscordAdapter(BasePlatformAdapter):
         if not event_text or not event_text.strip():
             event_text = "(The user sent a message with no text content)"
 
+        _chan = message.channel
+        _parent_id = str(getattr(_chan, "parent_id", "") or "")
+        _chan_id = str(getattr(_chan, "id", ""))
+        _skills = self._resolve_channel_skills(_chan_id, _parent_id or None)
         event = MessageEvent(
             text=event_text,
             message_type=msg_type,
@@ -2422,6 +2526,7 @@ class DiscordAdapter(BasePlatformAdapter):
             media_types=media_types,
             reply_to_message_id=str(message.reference.message_id) if message.reference else None,
             timestamp=message.created_at,
+            auto_skill=_skills,
         )
 
         # Track thread participation so the bot won't require @mention for
@@ -2429,7 +2534,80 @@ class DiscordAdapter(BasePlatformAdapter):
         if thread_id:
             self._track_thread(thread_id)
 
-        await self.handle_message(event)
+        # Only batch plain text messages — commands, media, etc. dispatch
+        # immediately since they won't be split by the Discord client.
+        if msg_type == MessageType.TEXT and self._text_batch_delay_seconds > 0:
+            self._enqueue_text_event(event)
+        else:
+            await self.handle_message(event)
+
+    # ------------------------------------------------------------------
+    # Text message aggregation (handles Discord client-side splits)
+    # ------------------------------------------------------------------
+
+    def _text_batch_key(self, event: MessageEvent) -> str:
+        """Session-scoped key for text message batching."""
+        from gateway.session import build_session_key
+        return build_session_key(
+            event.source,
+            group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
+            thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
+        )
+
+    def _enqueue_text_event(self, event: MessageEvent) -> None:
+        """Buffer a text event and reset the flush timer.
+
+        When Discord splits a long user message at 2000 chars, the chunks
+        arrive within a few hundred milliseconds.  This merges them into
+        a single event before dispatching.
+        """
+        key = self._text_batch_key(event)
+        existing = self._pending_text_batches.get(key)
+        chunk_len = len(event.text or "")
+        if existing is None:
+            event._last_chunk_len = chunk_len  # type: ignore[attr-defined]
+            self._pending_text_batches[key] = event
+        else:
+            if event.text:
+                existing.text = f"{existing.text}\n{event.text}" if existing.text else event.text
+            existing._last_chunk_len = chunk_len  # type: ignore[attr-defined]
+            if event.media_urls:
+                existing.media_urls.extend(event.media_urls)
+                existing.media_types.extend(event.media_types)
+
+        prior_task = self._pending_text_batch_tasks.get(key)
+        if prior_task and not prior_task.done():
+            prior_task.cancel()
+        self._pending_text_batch_tasks[key] = asyncio.create_task(
+            self._flush_text_batch(key)
+        )
+
+    async def _flush_text_batch(self, key: str) -> None:
+        """Wait for the quiet period then dispatch the aggregated text.
+
+        Uses a longer delay when the latest chunk is near Discord's 2000-char
+        split point, since a continuation chunk is almost certain.
+        """
+        current_task = asyncio.current_task()
+        try:
+            pending = self._pending_text_batches.get(key)
+            last_len = getattr(pending, "_last_chunk_len", 0) if pending else 0
+            if last_len >= self._SPLIT_THRESHOLD:
+                delay = self._text_batch_split_delay_seconds
+            else:
+                delay = self._text_batch_delay_seconds
+            await asyncio.sleep(delay)
+            event = self._pending_text_batches.pop(key, None)
+            if not event:
+                return
+            logger.info(
+                "[Discord] Flushing text batch %s (%d chars)",
+                key, len(event.text or ""),
+            )
+            await self.handle_message(event)
+        finally:
+            if self._pending_text_batch_tasks.get(key) is current_task:
+                self._pending_text_batch_tasks.pop(key, None)
 
 
 # ---------------------------------------------------------------------------

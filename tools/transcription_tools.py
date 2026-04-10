@@ -57,6 +57,7 @@ def _safe_find_spec(module_name: str) -> bool:
 
 _HAS_FASTER_WHISPER = _safe_find_spec("faster_whisper")
 _HAS_OPENAI = _safe_find_spec("openai")
+_HAS_MISTRAL = _safe_find_spec("mistralai")
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -67,6 +68,7 @@ DEFAULT_LOCAL_MODEL = "base"
 DEFAULT_LOCAL_STT_LANGUAGE = "en"
 DEFAULT_STT_MODEL = os.getenv("STT_OPENAI_MODEL", "whisper-1")
 DEFAULT_GROQ_STT_MODEL = os.getenv("STT_GROQ_MODEL", "whisper-large-v3-turbo")
+DEFAULT_MISTRAL_STT_MODEL = os.getenv("STT_MISTRAL_MODEL", "voxtral-mini-latest")
 LOCAL_STT_COMMAND_ENV = "HERMES_LOCAL_STT_COMMAND"
 LOCAL_STT_LANGUAGE_ENV = "HERMES_LOCAL_STT_LANGUAGE"
 COMMON_LOCAL_BIN_DIRS = ("/opt/homebrew/bin", "/usr/local/bin")
@@ -74,7 +76,7 @@ COMMON_LOCAL_BIN_DIRS = ("/opt/homebrew/bin", "/usr/local/bin")
 GROQ_BASE_URL = os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1")
 OPENAI_BASE_URL = os.getenv("STT_OPENAI_BASE_URL", "https://api.openai.com/v1")
 
-SUPPORTED_FORMATS = {".mp3", ".mp4", ".mpeg", ".mpga", ".m4a", ".wav", ".webm", ".ogg", ".aac"}
+SUPPORTED_FORMATS = {".mp3", ".mp4", ".mpeg", ".mpga", ".m4a", ".wav", ".webm", ".ogg", ".aac", ".flac"}
 LOCAL_NATIVE_AUDIO_FORMATS = {".wav", ".aiff", ".aif"}
 MAX_FILE_SIZE = 25 * 1024 * 1024  # 25 MB
 
@@ -94,12 +96,28 @@ _local_model_name: Optional[str] = None
 def get_stt_model_from_config() -> Optional[str]:
     """Read the STT model name from ~/.hermes/config.yaml.
 
-    Returns the value of ``stt.model`` if present, otherwise ``None``.
+    Provider-aware: reads from the correct provider-specific section
+    (``stt.local.model``, ``stt.openai.model``, etc.).  Falls back to
+    the legacy flat ``stt.model`` key only for cloud providers — if the
+    resolved provider is ``local`` the legacy key is ignored to prevent
+    OpenAI model names (e.g. ``whisper-1``) from being fed to
+    faster-whisper.
+
     Silently returns ``None`` on any error (missing file, bad YAML, etc.).
     """
     try:
-        from hermes_cli.config import read_raw_config
-        return read_raw_config().get("stt", {}).get("model")
+        stt_cfg = _load_stt_config()
+        provider = stt_cfg.get("provider", DEFAULT_PROVIDER)
+        # Read from the provider-specific section first
+        provider_model = stt_cfg.get(provider, {}).get("model")
+        if provider_model:
+            return provider_model
+        # Legacy flat key — only honour for non-local providers to avoid
+        # feeding OpenAI model names (whisper-1) to faster-whisper.
+        if provider not in ("local", "local_command"):
+            legacy = stt_cfg.get("model")
+            if legacy:
+                return legacy
     except Exception:
         pass
     return None
@@ -227,9 +245,18 @@ def _get_provider(stt_config: dict) -> str:
             )
             return "none"
 
+        if provider == "mistral":
+            if _HAS_MISTRAL and os.getenv("MISTRAL_API_KEY"):
+                return "mistral"
+            logger.warning(
+                "STT provider 'mistral' configured but mistralai package "
+                "not installed or MISTRAL_API_KEY not set"
+            )
+            return "none"
+
         return provider  # Unknown — let it fail downstream
 
-    # --- Auto-detect (no explicit provider): local > groq > openai ---------
+    # --- Auto-detect (no explicit provider): local > groq > openai > mistral -
 
     if _HAS_FASTER_WHISPER:
         return "local"
@@ -241,6 +268,9 @@ def _get_provider(stt_config: dict) -> str:
     if _HAS_OPENAI and _has_openai_audio_backend():
         logger.info("No local STT available, using OpenAI Whisper API")
         return "openai"
+    if _HAS_MISTRAL and os.getenv("MISTRAL_API_KEY"):
+        logger.info("No local STT available, using Mistral Voxtral Transcribe API")
+        return "mistral"
     return "none"
 
 # ---------------------------------------------------------------------------
@@ -517,6 +547,45 @@ def _transcribe_openai(file_path: str, model_name: str) -> Dict[str, Any]:
         return {"success": False, "transcript": "", "error": f"Transcription failed: {e}"}
 
 # ---------------------------------------------------------------------------
+# Provider: mistral (Voxtral Transcribe API)
+# ---------------------------------------------------------------------------
+
+
+def _transcribe_mistral(file_path: str, model_name: str) -> Dict[str, Any]:
+    """Transcribe using Mistral Voxtral Transcribe API.
+
+    Uses the ``mistralai`` Python SDK to call ``/v1/audio/transcriptions``.
+    Requires ``MISTRAL_API_KEY`` environment variable.
+    """
+    api_key = os.getenv("MISTRAL_API_KEY")
+    if not api_key:
+        return {"success": False, "transcript": "", "error": "MISTRAL_API_KEY not set"}
+
+    try:
+        from mistralai.client import Mistral
+
+        with Mistral(api_key=api_key) as client:
+            with open(file_path, "rb") as audio_file:
+                result = client.audio.transcriptions.complete(
+                    model=model_name,
+                    file={"content": audio_file, "file_name": Path(file_path).name},
+                )
+
+            transcript_text = _extract_transcript_text(result)
+            logger.info(
+                "Transcribed %s via Mistral API (%s, %d chars)",
+                Path(file_path).name, model_name, len(transcript_text),
+            )
+            return {"success": True, "transcript": transcript_text, "provider": "mistral"}
+
+    except PermissionError:
+        return {"success": False, "transcript": "", "error": f"Permission denied: {file_path}"}
+    except Exception as e:
+        logger.error("Mistral transcription failed: %s", e, exc_info=True)
+        return {"success": False, "transcript": "", "error": f"Mistral transcription failed: {type(e).__name__}"}
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -577,6 +646,11 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
         model_name = model or openai_cfg.get("model", DEFAULT_STT_MODEL)
         return _transcribe_openai(file_path, model_name)
 
+    if provider == "mistral":
+        mistral_cfg = stt_config.get("mistral", {})
+        model_name = model or mistral_cfg.get("model", DEFAULT_MISTRAL_STT_MODEL)
+        return _transcribe_mistral(file_path, model_name)
+
     # No provider available
     return {
         "success": False,
@@ -584,7 +658,8 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
         "error": (
             "No STT provider available. Install faster-whisper for free local "
             f"transcription, configure {LOCAL_STT_COMMAND_ENV} or install a local whisper CLI, "
-            "set GROQ_API_KEY for free Groq Whisper, or set VOICE_TOOLS_OPENAI_KEY "
+            "set GROQ_API_KEY for free Groq Whisper, set MISTRAL_API_KEY for Mistral "
+            "Voxtral Transcribe, or set VOICE_TOOLS_OPENAI_KEY "
             "or OPENAI_API_KEY for the OpenAI Whisper API."
         ),
     }

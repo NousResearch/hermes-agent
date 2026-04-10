@@ -60,6 +60,7 @@ from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
     MessageType,
+    ProcessingOutcome,
     SendResult,
     cache_image_from_bytes,
     cache_audio_from_bytes,
@@ -121,6 +122,9 @@ class TelegramAdapter(BasePlatformAdapter):
     
     # Telegram message limits
     MAX_MESSAGE_LENGTH = 4096
+    # Threshold for detecting Telegram client-side message splits.
+    # When a chunk is near this limit, a continuation is almost certain.
+    _SPLIT_THRESHOLD = 4000
     MEDIA_GROUP_WAIT_SECONDS = 0.8
     
     def __init__(self, config: PlatformConfig):
@@ -140,6 +144,7 @@ class TelegramAdapter(BasePlatformAdapter):
         # Buffer rapid text messages so Telegram client-side splits of long
         # messages are aggregated into a single MessageEvent.
         self._text_batch_delay_seconds = float(os.getenv("HERMES_TELEGRAM_TEXT_BATCH_DELAY_SECONDS", "0.6"))
+        self._text_batch_split_delay_seconds = float(os.getenv("HERMES_TELEGRAM_TEXT_BATCH_SPLIT_DELAY_SECONDS", "2.0"))
         self._pending_text_batches: Dict[str, MessageEvent] = {}
         self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
         self._token_lock_identity: Optional[str] = None
@@ -513,6 +518,45 @@ class TelegramAdapter(BasePlatformAdapter):
 
             # Build the application
             builder = Application.builder().token(self.config.token)
+            custom_base_url = self.config.extra.get("base_url")
+            if custom_base_url:
+                builder = builder.base_url(custom_base_url)
+                builder = builder.base_file_url(
+                    self.config.extra.get("base_file_url", custom_base_url)
+                )
+                logger.info(
+                    "[%s] Using custom Telegram base_url: %s",
+                    self.name, custom_base_url,
+                )
+
+            # PTB defaults (pool_timeout=1s) are too aggressive on flaky networks and
+            # can trigger "Pool timeout: All connections in the connection pool are occupied"
+            # during reconnect/bootstrap. Use safer defaults and allow env overrides.
+            def _env_int(name: str, default: int) -> int:
+                try:
+                    return int(os.getenv(name, str(default)))
+                except (TypeError, ValueError):
+                    return default
+
+            def _env_float(name: str, default: float) -> float:
+                try:
+                    return float(os.getenv(name, str(default)))
+                except (TypeError, ValueError):
+                    return default
+
+            request_kwargs = {
+                "connection_pool_size": _env_int("HERMES_TELEGRAM_HTTP_POOL_SIZE", 512),
+                "pool_timeout": _env_float("HERMES_TELEGRAM_HTTP_POOL_TIMEOUT", 8.0),
+                "connect_timeout": _env_float("HERMES_TELEGRAM_HTTP_CONNECT_TIMEOUT", 10.0),
+                "read_timeout": _env_float("HERMES_TELEGRAM_HTTP_READ_TIMEOUT", 20.0),
+                "write_timeout": _env_float("HERMES_TELEGRAM_HTTP_WRITE_TIMEOUT", 20.0),
+            }
+
+            proxy_configured = any(
+                (os.getenv(k) or "").strip()
+                for k in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy", "http_proxy", "all_proxy")
+            )
+            disable_fallback = (os.getenv("HERMES_TELEGRAM_DISABLE_FALLBACK_IPS", "").strip().lower() in ("1", "true", "yes", "on"))
             fallback_ips = self._fallback_ips()
             if not fallback_ips:
                 fallback_ips = await discover_fallback_ips()
@@ -521,16 +565,32 @@ class TelegramAdapter(BasePlatformAdapter):
                     self.name,
                     ", ".join(fallback_ips),
                 )
-            if fallback_ips:
+
+            if fallback_ips and not proxy_configured and not disable_fallback:
                 logger.info(
                     "[%s] Telegram fallback IPs active: %s",
                     self.name,
                     ", ".join(fallback_ips),
                 )
-                transport = TelegramFallbackTransport(fallback_ips)
-                request = HTTPXRequest(httpx_kwargs={"transport": transport})
-                get_updates_request = HTTPXRequest(httpx_kwargs={"transport": transport})
-                builder = builder.request(request).get_updates_request(get_updates_request)
+                # Keep request/update pools separate to reduce contention during
+                # polling reconnect + bot API bootstrap/delete_webhook calls.
+                request = HTTPXRequest(
+                    **request_kwargs,
+                    httpx_kwargs={"transport": TelegramFallbackTransport(fallback_ips)},
+                )
+                get_updates_request = HTTPXRequest(
+                    **request_kwargs,
+                    httpx_kwargs={"transport": TelegramFallbackTransport(fallback_ips)},
+                )
+            else:
+                if proxy_configured:
+                    logger.info("[%s] Proxy configured; skipping Telegram fallback-IP transport", self.name)
+                elif disable_fallback:
+                    logger.info("[%s] Telegram fallback-IP transport disabled via env", self.name)
+                request = HTTPXRequest(**request_kwargs)
+                get_updates_request = HTTPXRequest(**request_kwargs)
+
+            builder = builder.request(request).get_updates_request(get_updates_request)
             self._app = builder.build()
             self._bot = self._app.bot
             
@@ -1398,6 +1458,15 @@ class TelegramAdapter(BasePlatformAdapter):
                     await query.answer(text="Invalid approval data.")
                     return
 
+                # Only authorized users may click approval buttons.
+                caller_id = str(getattr(query.from_user, "id", ""))
+                allowed_csv = os.getenv("TELEGRAM_ALLOWED_USERS", "").strip()
+                if allowed_csv:
+                    allowed_ids = {uid.strip() for uid in allowed_csv.split(",") if uid.strip()}
+                    if "*" not in allowed_ids and caller_id not in allowed_ids:
+                        await query.answer(text="⛔ You are not authorized to approve commands.")
+                        return
+
                 session_key = self._approval_state.pop(approval_id, None)
                 if not session_key:
                     await query.answer(text="This approval has already been resolved.")
@@ -2151,12 +2220,15 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         key = self._text_batch_key(event)
         existing = self._pending_text_batches.get(key)
+        chunk_len = len(event.text or "")
         if existing is None:
+            event._last_chunk_len = chunk_len  # type: ignore[attr-defined]
             self._pending_text_batches[key] = event
         else:
             # Append text from the follow-up chunk
             if event.text:
                 existing.text = f"{existing.text}\n{event.text}" if existing.text else event.text
+            existing._last_chunk_len = chunk_len  # type: ignore[attr-defined]
             # Merge any media that might be attached
             if event.media_urls:
                 existing.media_urls.extend(event.media_urls)
@@ -2171,10 +2243,22 @@ class TelegramAdapter(BasePlatformAdapter):
         )
 
     async def _flush_text_batch(self, key: str) -> None:
-        """Wait for the quiet period then dispatch the aggregated text."""
+        """Wait for the quiet period then dispatch the aggregated text.
+
+        Uses a longer delay when the latest chunk is near Telegram's 4096-char
+        split point, since a continuation chunk is almost certain.
+        """
         current_task = asyncio.current_task()
         try:
-            await asyncio.sleep(self._text_batch_delay_seconds)
+            # Adaptive delay: if the latest chunk is near Telegram's 4096-char
+            # split point, a continuation is almost certain — wait longer.
+            pending = self._pending_text_batches.get(key)
+            last_len = getattr(pending, "_last_chunk_len", 0) if pending else 0
+            if last_len >= self._SPLIT_THRESHOLD:
+                delay = self._text_batch_split_delay_seconds
+            else:
+                delay = self._text_batch_delay_seconds
+            await asyncio.sleep(delay)
             event = self._pending_text_batches.pop(key, None)
             if not event:
                 return
@@ -2704,7 +2788,7 @@ class TelegramAdapter(BasePlatformAdapter):
         if chat_id and message_id:
             await self._set_reaction(chat_id, message_id, "\U0001f440")
 
-    async def on_processing_complete(self, event: MessageEvent, success: bool) -> None:
+    async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
         """Swap the in-progress reaction for a final success/failure reaction.
 
         Unlike Discord (additive reactions), Telegram's set_message_reaction
@@ -2714,5 +2798,9 @@ class TelegramAdapter(BasePlatformAdapter):
             return
         chat_id = getattr(event.source, "chat_id", None)
         message_id = getattr(event, "message_id", None)
-        if chat_id and message_id:
-            await self._set_reaction(chat_id, message_id, "\u2705" if success else "\u274c")
+        if chat_id and message_id and outcome != ProcessingOutcome.CANCELLED:
+            await self._set_reaction(
+                chat_id,
+                message_id,
+                "\U0001f44d" if outcome == ProcessingOutcome.SUCCESS else "\U0001f44e",
+            )

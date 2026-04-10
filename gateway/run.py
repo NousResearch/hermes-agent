@@ -3364,17 +3364,15 @@ class GatewayRunner:
             logger.debug("Gateway memory flush on reset failed: %s", e)
         # Close tool resources on the old agent (terminal sandboxes, browser
         # daemons, background processes) before evicting from cache.
-        _lock = getattr(self, "_agent_cache_lock", None)
-        if _lock:
-            with _lock:
-                _cached = self._agent_cache.get(session_key)
-                _old_agent = _cached[0] if isinstance(_cached, tuple) else _cached if _cached else None
-            if _old_agent is not None:
-                try:
-                    if hasattr(_old_agent, "close"):
-                        _old_agent.close()
-                except Exception:
-                    pass
+        with self._agent_cache_lock:
+            _cached = self._agent_cache.get(session_key)
+            _old_agent = _cached[0] if isinstance(_cached, tuple) else _cached if _cached else None
+        if _old_agent is not None:
+            try:
+                if hasattr(_old_agent, "close"):
+                    _old_agent.close()
+            except Exception:
+                pass
         self._evict_cached_agent(session_key)
 
         try:

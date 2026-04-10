@@ -3007,7 +3007,7 @@ def _restore_stashed_changes(
             print(f"Restore manually with: git stash apply {stash_ref}")
             return False
 
-    print("→ Restoring local changes...")
+    print(f"→ Restoring local changes at {cwd}...")
     restore = subprocess.run(
         git_cmd + ["stash", "apply", stash_ref],
         cwd=cwd,
@@ -3078,7 +3078,7 @@ def _restore_stashed_changes(
             _print_stash_cleanup_guidance(stash_ref, stash_selector)
 
     print("⚠ Local changes were restored on top of the updated codebase.")
-    print("  Review `git diff` / `git status` if Hermes behaves unexpectedly.")
+    print(f"  Review `git diff` / `git status` at {cwd} if Hermes behaves unexpectedly.")
     return True
 
 # =========================================================================

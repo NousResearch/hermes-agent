@@ -704,6 +704,27 @@ def write_credential_pool(provider_id: str, entries: List[Dict[str, Any]]) -> Pa
         return _save_auth_store(auth_store)
 
 
+def suppress_credential_source(provider_id: str, source: str) -> None:
+    """Mark a credential source as suppressed so it won't be re-seeded."""
+    with _auth_store_lock():
+        auth_store = _load_auth_store()
+        suppressed = auth_store.setdefault("suppressed_sources", {})
+        provider_list = suppressed.setdefault(provider_id, [])
+        if source not in provider_list:
+            provider_list.append(source)
+        _save_auth_store(auth_store)
+
+
+def is_source_suppressed(provider_id: str, source: str) -> bool:
+    """Check if a credential source has been suppressed by the user."""
+    try:
+        auth_store = _load_auth_store()
+        suppressed = auth_store.get("suppressed_sources", {})
+        return source in suppressed.get(provider_id, [])
+    except Exception:
+        return False
+
+
 def get_provider_auth_state(provider_id: str) -> Optional[Dict[str, Any]]:
     """Return persisted auth state for a provider, or None."""
     auth_store = _load_auth_store()

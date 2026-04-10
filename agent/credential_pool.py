@@ -1077,6 +1077,13 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
             ("claude_code", read_claude_code_credentials()),
         ):
             if creds and creds.get("accessToken"):
+                # Check if user explicitly removed this source
+                try:
+                    from hermes_cli.auth import is_source_suppressed
+                    if is_source_suppressed(provider, source_name):
+                        continue
+                except ImportError:
+                    pass
                 active_sources.add(source_name)
                 changed |= _upsert_entry(
                     entries,

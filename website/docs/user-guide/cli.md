@@ -55,7 +55,7 @@ The welcome banner shows your model, terminal backend, working directory, availa
 A persistent status bar sits above the input area, updating in real time:
 
 ```
- ⚕ claude-sonnet-4-20250514 │ 12.4K/200K │ [██████░░░░] 6% │ $0.06 │ 15m
+ ☤ claude-sonnet-4-20250514 │ 12.4K/200K │ [██████░░░░] 6% │ $0.06 │ 15m
 ```
 
 | Element | Description |
@@ -356,7 +356,7 @@ Each `/background` prompt spawns a **completely separate agent session** in a da
 When a background task finishes, the result appears as a panel in your terminal:
 
 ```
-╭─ ⚕ Hermes (background #1) ──────────────────────────────────╮
+╭─ ☤ Hermes (background #1) ──────────────────────────────────╮
 │ Found 3 errors in syslog from today:                         │
 │ 1. OOM killer invoked at 03:22 — killed process nginx        │
 │ 2. Disk I/O error on /dev/sda1 at 07:15                      │

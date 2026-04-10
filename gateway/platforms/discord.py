@@ -2059,7 +2059,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
             default_hint = f" (default: {default})" if default else ""
             embed = discord.Embed(
-                title="⚕ Update Needs Your Input",
+                title="☤ Update Needs Your Input",
                 description=f"{prompt}{default_hint}",
                 color=discord.Color.gold(),
             )

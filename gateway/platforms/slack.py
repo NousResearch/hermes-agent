@@ -39,6 +39,7 @@ from gateway.platforms.base import (
     MessageType,
     SendResult,
     SUPPORTED_DOCUMENT_TYPES,
+    _safe_url_for_log,
     cache_document_from_bytes,
 )
 
@@ -656,8 +657,19 @@ class SlackAdapter(BasePlatformAdapter):
         try:
             import httpx
 
+            async def _ssrf_redirect_guard(response):
+                """Re-check redirect targets so public URLs cannot bounce into private IPs."""
+                if response.is_redirect and response.next_request:
+                    redirect_url = str(response.next_request.url)
+                    if not is_safe_url(redirect_url):
+                        raise ValueError("Blocked redirect to private/internal address")
+
             # Download the image first
-            async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+            async with httpx.AsyncClient(
+                timeout=30.0,
+                follow_redirects=True,
+                event_hooks={"response": [_ssrf_redirect_guard]},
+            ) as client:
                 response = await client.get(image_url)
                 response.raise_for_status()
 
@@ -674,7 +686,7 @@ class SlackAdapter(BasePlatformAdapter):
         except Exception as e:  # pragma: no cover - defensive logging
             logger.warning(
                 "[Slack] Failed to upload image from URL %s, falling back to text: %s",
-                image_url,
+                _safe_url_for_log(image_url),
                 e,
                 exc_info=True,
             )

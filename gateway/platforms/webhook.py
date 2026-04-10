@@ -201,6 +201,7 @@ class WebhookAdapter(BasePlatformAdapter):
             "dingtalk",
             "feishu",
             "wecom",
+            "weixin",
             "bluebubbles",
         ):
             return await self._deliver_cross_platform(

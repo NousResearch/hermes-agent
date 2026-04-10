@@ -202,6 +202,7 @@ When scheduling jobs, you specify where the output goes:
 | `"dingtalk"` | DingTalk | |
 | `"feishu"` | Feishu/Lark | |
 | `"wecom"` | WeCom | |
+| `"weixin"` | Weixin (WeChat) | |
 | `"bluebubbles"` | BlueBubbles (iMessage) | |
 
 The agent's final response is automatically delivered. You do not need to call `send_message` in the cron prompt.

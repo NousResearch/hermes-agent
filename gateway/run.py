@@ -1082,6 +1082,7 @@ class GatewayRunner:
                        "MATRIX_ALLOW_ALL_USERS", "DINGTALK_ALLOW_ALL_USERS",
                        "FEISHU_ALLOW_ALL_USERS",
                        "WECOM_ALLOW_ALL_USERS",
+                       "WEIXIN_ALLOW_ALL_USERS",
                        "BLUEBUBBLES_ALLOW_ALL_USERS")
         )
         if not _any_allowlist and not _allow_all:

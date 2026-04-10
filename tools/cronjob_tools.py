@@ -104,18 +104,22 @@ def _canonical_skills(skill: Optional[str] = None, skills: Optional[Any] = None)
 
 
 
-def _resolve_model_override(model_obj: Optional[Dict[str, Any]]) -> tuple:
-    """Resolve a model override object into (provider, model) for job storage.
+def _resolve_model_override(model_obj: Optional[Dict[str, Any]]) -> Dict[str, Optional[str]]:
+    """Resolve a model override object into normalized job storage fields.
 
     If provider is omitted, pins the current main provider from config so the
     job doesn't drift when the user later changes their default via hermes model.
-
-    Returns (provider_str_or_none, model_str_or_none).
     """
+    resolved: Dict[str, Optional[str]] = {
+        "provider": None,
+        "model": None,
+        "reasoning_effort": None,
+    }
     if not model_obj or not isinstance(model_obj, dict):
-        return (None, None)
+        return resolved
     model_name = (model_obj.get("model") or "").strip() or None
     provider_name = (model_obj.get("provider") or "").strip() or None
+    reasoning_effort = model_obj.get("reasoning_effort")
     if model_name and not provider_name:
         # Pin to the current main provider so the job is stable
         try:
@@ -126,7 +130,10 @@ def _resolve_model_override(model_obj: Optional[Dict[str, Any]]) -> tuple:
                 provider_name = model_cfg.get("provider") or None
         except Exception:
             pass  # Best-effort; provider stays None
-    return (provider_name, model_name)
+    resolved["provider"] = provider_name
+    resolved["model"] = model_name
+    resolved["reasoning_effort"] = _normalize_reasoning_effort(reasoning_effort, allow_default=True)
+    return resolved
 
 
 def _normalize_optional_job_value(value: Optional[Any], *, strip_trailing_slash: bool = False) -> Optional[str]:
@@ -136,6 +143,28 @@ def _normalize_optional_job_value(value: Optional[Any], *, strip_trailing_slash:
     if strip_trailing_slash:
         text = text.rstrip("/")
     return text or None
+
+
+def _normalize_reasoning_effort(value: Optional[Any], *, allow_default: bool = False) -> Optional[str]:
+    if value is None:
+        return None
+    text = str(value).strip().lower()
+    if not text:
+        return None
+    if allow_default and text == "default":
+        return "default"
+
+    from hermes_constants import VALID_REASONING_EFFORTS
+
+    if text == "none" or text in VALID_REASONING_EFFORTS:
+        return text
+
+    valid_values = ["none", *VALID_REASONING_EFFORTS]
+    if allow_default:
+        valid_values.append("default")
+    raise ValueError(
+        f"reasoning_effort must be one of: {', '.join(valid_values)}"
+    )
 
 
 def _validate_cron_script_path(script: Optional[str]) -> Optional[str]:
@@ -189,6 +218,7 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
         "model": job.get("model"),
         "provider": job.get("provider"),
         "base_url": job.get("base_url"),
+        "reasoning_effort": job.get("reasoning_effort"),
         "schedule": job.get("schedule_display"),
         "repeat": _repeat_display(job),
         "deliver": job.get("deliver", "local"),
@@ -220,6 +250,7 @@ def cronjob(
     model: Optional[str] = None,
     provider: Optional[str] = None,
     base_url: Optional[str] = None,
+    reasoning_effort: Optional[str] = None,
     reason: Optional[str] = None,
     script: Optional[str] = None,
     task_id: str = None,
@@ -258,6 +289,7 @@ def cronjob(
                 model=_normalize_optional_job_value(model),
                 provider=_normalize_optional_job_value(provider),
                 base_url=_normalize_optional_job_value(base_url, strip_trailing_slash=True),
+                reasoning_effort=_normalize_reasoning_effort(reasoning_effort),
                 script=_normalize_optional_job_value(script),
             )
             return json.dumps(
@@ -341,6 +373,9 @@ def cronjob(
                 updates["provider"] = _normalize_optional_job_value(provider)
             if base_url is not None:
                 updates["base_url"] = _normalize_optional_job_value(base_url, strip_trailing_slash=True)
+            if reasoning_effort is not None:
+                normalized_reasoning_effort = _normalize_reasoning_effort(reasoning_effort, allow_default=True)
+                updates["reasoning_effort"] = None if normalized_reasoning_effort == "default" else normalized_reasoning_effort
             if script is not None:
                 # Pass empty string to clear an existing script
                 if script:
@@ -385,6 +420,7 @@ def schedule_cronjob(
     model: Optional[str] = None,
     provider: Optional[str] = None,
     base_url: Optional[str] = None,
+    reasoning_effort: Optional[str] = None,
     task_id: str = None,
 ) -> str:
     return cronjob(
@@ -397,6 +433,7 @@ def schedule_cronjob(
         model=model,
         provider=provider,
         base_url=base_url,
+        reasoning_effort=reasoning_effort,
         task_id=task_id,
     )
 
@@ -464,7 +501,7 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
             },
             "model": {
                 "type": "object",
-                "description": "Optional per-job model override. If provider is omitted, the current main provider is pinned at creation time so the job stays stable.",
+                "description": "Optional per-job model/reasoning override. If model.provider is omitted while model.model is set, the current main provider is pinned at creation time so the job stays stable.",
                 "properties": {
                     "provider": {
                         "type": "string",
@@ -473,9 +510,12 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
                     "model": {
                         "type": "string",
                         "description": "Model name (e.g. 'anthropic/claude-sonnet-4', 'claude-sonnet-4')"
+                    },
+                    "reasoning_effort": {
+                        "type": "string",
+                        "description": "Optional per-job reasoning effort override. One of: none, minimal, low, medium, high, xhigh, default. Use default on update to clear the override and fall back to config."
                     }
-                },
-                "required": ["model"]
+                }
             },
             "script": {
                 "type": "string",
@@ -520,9 +560,10 @@ registry.register(
         include_disabled=args.get("include_disabled", True),
         skill=args.get("skill"),
         skills=args.get("skills"),
-        model=_mo[1],
-        provider=_mo[0] or args.get("provider"),
+        model=_mo["model"],
+        provider=_mo["provider"] or args.get("provider"),
         base_url=args.get("base_url"),
+        reasoning_effort=_mo["reasoning_effort"],
         reason=args.get("reason"),
         script=args.get("script"),
         task_id=kw.get("task_id"),

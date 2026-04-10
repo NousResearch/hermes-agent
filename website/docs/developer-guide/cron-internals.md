@@ -50,6 +50,7 @@ Jobs are stored in `~/.hermes/cron/jobs.json` with atomic write semantics (write
   "created_at": "2025-01-01T00:00:00Z",
   "model": null,
   "provider": null,
+  "reasoning_effort": null,
   "script": null
 }
 ```

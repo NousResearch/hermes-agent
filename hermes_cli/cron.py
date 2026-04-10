@@ -93,6 +93,9 @@ def cron_list(show_all: bool = False):
         script = job.get("script")
         if script:
             print(f"    Script:    {script}")
+        reasoning_effort = job.get("reasoning_effort")
+        if reasoning_effort:
+            print(f"    Thinking:  {reasoning_effort}")
 
         # Execution history
         last_status = job.get("last_status")
@@ -165,6 +168,7 @@ def cron_create(args):
         name=getattr(args, "name", None),
         deliver=getattr(args, "deliver", None),
         repeat=getattr(args, "repeat", None),
+        reasoning_effort=getattr(args, "reasoning_effort", None),
         skill=getattr(args, "skill", None),
         skills=_normalize_skills(getattr(args, "skill", None), getattr(args, "skills", None)),
         script=getattr(args, "script", None),
@@ -180,6 +184,8 @@ def cron_create(args):
     job_data = result.get("job", {})
     if job_data.get("script"):
         print(f"  Script: {job_data['script']}")
+    if job_data.get("reasoning_effort"):
+        print(f"  Thinking: {job_data['reasoning_effort']}")
     print(f"  Next run: {result['next_run_at']}")
     return 0
 
@@ -216,6 +222,7 @@ def cron_edit(args):
         name=getattr(args, "name", None),
         deliver=getattr(args, "deliver", None),
         repeat=getattr(args, "repeat", None),
+        reasoning_effort=getattr(args, "reasoning_effort", None),
         skills=final_skills,
         script=getattr(args, "script", None),
     )
@@ -233,6 +240,8 @@ def cron_edit(args):
         print("  Skills: none")
     if updated.get("script"):
         print(f"  Script: {updated['script']}")
+    if updated.get("reasoning_effort"):
+        print(f"  Thinking: {updated['reasoning_effort']}")
     return 0
 
 

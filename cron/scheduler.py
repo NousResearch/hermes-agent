@@ -624,10 +624,12 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         except Exception as e:
             logger.warning("Job '%s': failed to load config.yaml, using defaults: %s", job_id, e)
 
-        # Reasoning config from config.yaml
+        # Reasoning config: per-job override wins, otherwise fall back to config.yaml
         from hermes_constants import parse_reasoning_effort
-        effort = str(_cfg.get("agent", {}).get("reasoning_effort", "")).strip()
-        reasoning_config = parse_reasoning_effort(effort)
+        job_effort = str(job.get("reasoning_effort") or "").strip()
+        config_effort = str(_cfg.get("agent", {}).get("reasoning_effort", "") or "").strip()
+        effective_effort = job_effort or config_effort
+        reasoning_config = parse_reasoning_effort(effective_effort)
 
         # Prefill messages from env or config.yaml
         prefill_messages = None

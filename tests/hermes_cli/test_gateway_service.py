@@ -754,3 +754,63 @@ class TestProfileArg:
         plist = gateway_cli.generate_launchd_plist()
         assert "<string>--profile</string>" in plist
         assert "<string>mybot</string>" in plist
+
+
+class TestRemapPathForUser:
+    """Unit tests for _remap_path_for_user()."""
+
+    def test_remaps_path_under_current_home(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(Path, "home", lambda: tmp_path / "root")
+        (tmp_path / "root").mkdir()
+        result = gateway_cli._remap_path_for_user(
+            str(tmp_path / "root" / ".hermes" / "hermes-agent"),
+            str(tmp_path / "alice"),
+        )
+        assert result == str(tmp_path / "alice" / ".hermes" / "hermes-agent")
+
+    def test_keeps_system_path_unchanged(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(Path, "home", lambda: tmp_path / "root")
+        (tmp_path / "root").mkdir()
+        result = gateway_cli._remap_path_for_user("/opt/hermes", str(tmp_path / "alice"))
+        assert result == "/opt/hermes"
+
+    def test_noop_when_same_user(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(Path, "home", lambda: tmp_path / "alice")
+        (tmp_path / "alice").mkdir()
+        original = str(tmp_path / "alice" / ".hermes" / "hermes-agent")
+        result = gateway_cli._remap_path_for_user(original, str(tmp_path / "alice"))
+        assert result == original
+
+
+class TestSystemUnitPathRemapping:
+    """System units must remap ALL paths from the caller's home to the target user."""
+
+    def test_system_unit_has_no_root_paths(self, monkeypatch, tmp_path):
+        root_home = tmp_path / "root"
+        root_home.mkdir()
+        project = root_home / ".hermes" / "hermes-agent"
+        project.mkdir(parents=True)
+        venv_bin = project / "venv" / "bin"
+        venv_bin.mkdir(parents=True)
+        (venv_bin / "python").write_text("")
+
+        target_home = "/home/alice"
+
+        monkeypatch.setattr(Path, "home", lambda: root_home)
+        monkeypatch.setenv("HERMES_HOME", str(root_home / ".hermes"))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: root_home / ".hermes")
+        monkeypatch.setattr(gateway_cli, "PROJECT_ROOT", project)
+        monkeypatch.setattr(gateway_cli, "_detect_venv_dir", lambda: project / "venv")
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: str(venv_bin / "python"))
+        monkeypatch.setattr(
+            gateway_cli, "_system_service_identity",
+            lambda run_as_user=None: ("alice", "alice", target_home),
+        )
+
+        unit = gateway_cli.generate_systemd_unit(system=True)
+
+        # No root paths should leak into the unit
+        assert str(root_home) not in unit
+        # Target user paths should be present
+        assert "/home/alice" in unit
+        assert "WorkingDirectory=/home/alice/.hermes/hermes-agent" in unit

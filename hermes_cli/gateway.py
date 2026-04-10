@@ -618,6 +618,24 @@ def _build_user_local_paths(home: Path, path_entries: list[str]) -> list[str]:
     return [p for p in candidates if p not in path_entries and Path(p).exists()]
 
 
+def _remap_path_for_user(path: str, target_home_dir: str) -> str:
+    """Remap *path* from the current user's home to *target_home_dir*.
+
+    If *path* lives under ``Path.home()`` the corresponding prefix is swapped
+    to *target_home_dir*; otherwise the path is returned unchanged.
+
+      /root/.hermes/hermes-agent  -> /home/alice/.hermes/hermes-agent
+      /opt/hermes                 -> /opt/hermes  (kept as-is)
+    """
+    current_home = Path.home().resolve()
+    resolved = Path(path).resolve()
+    try:
+        relative = resolved.relative_to(current_home)
+        return str(Path(target_home_dir) / relative)
+    except ValueError:
+        return str(resolved)
+
+
 def _hermes_home_for_target_user(target_home_dir: str) -> str:
     """Remap the current HERMES_HOME to the equivalent under a target user's home.
 
@@ -665,6 +683,15 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
         username, group_name, home_dir = _system_service_identity(run_as_user)
         hermes_home = _hermes_home_for_target_user(home_dir)
         profile_arg = _profile_arg(hermes_home)
+        # Remap all paths that may resolve under the calling user's home
+        # (e.g. /root/) to the target user's home so the service can
+        # actually access them.
+        python_path = _remap_path_for_user(python_path, home_dir)
+        working_dir = _remap_path_for_user(working_dir, home_dir)
+        venv_dir = _remap_path_for_user(venv_dir, home_dir)
+        venv_bin = _remap_path_for_user(venv_bin, home_dir)
+        node_bin = _remap_path_for_user(node_bin, home_dir)
+        path_entries = [_remap_path_for_user(p, home_dir) for p in path_entries]
         path_entries.extend(_build_user_local_paths(Path(home_dir), path_entries))
         path_entries.extend(common_bin_paths)
         sane_path = ":".join(path_entries)

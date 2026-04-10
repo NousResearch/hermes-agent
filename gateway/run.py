@@ -6586,6 +6586,11 @@ class GatewayRunner:
         import asyncio as _asyncio
 
         args = event.get_command_args().strip()
+
+        # Normalize Unicode dashes (Telegram/iOS auto-converts -- to em/en dash)
+        import re as _re
+        args = _re.sub(r'[\u2012\u2013\u2014\u2015](days|source)', r'--\1', args)
+
         days = 30
         source = None
 

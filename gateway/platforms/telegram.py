@@ -2075,7 +2075,7 @@ class TelegramAdapter(BasePlatformAdapter):
             url = m.group(2).replace('\\', '\\\\').replace(')', '\\)')
             return _ph(f'[{display}]({url})')
 
-        text = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', _convert_link, text)
+        text = re.sub(r'\[([^\]]+)\]\(([^()]*(?:\([^()]*\)[^()]*)*)\)', _convert_link, text)
 
         # 4) Convert markdown headers (## Title) → bold *Title*
         def _convert_header(m):

@@ -1,37 +1,37 @@
-"""Tests for MiniMax provider hardening — context lengths, thinking guard, catalog, beta headers."""
+"""Tests for MiniMax provider hardening — context lengths, thinking, catalog, beta headers, transport."""
 
 from unittest.mock import patch
 
 
 class TestMinimaxContextLengths:
-    """Verify per-model context length entries for MiniMax models."""
+    """Verify context length entries match official docs (204,800 for all models).
 
-    def test_m1_variants_have_1m_context(self):
+    Source: https://platform.minimax.io/docs/api-reference/text-anthropic-api
+    """
+
+    def test_minimax_prefix_has_correct_context(self):
         from agent.model_metadata import DEFAULT_CONTEXT_LENGTHS
-        # Keys are lowercase because the lookup lowercases model names
-        for model in ("minimax-m1", "minimax-m1-40k", "minimax-m1-80k",
-                       "minimax-m1-128k", "minimax-m1-256k"):
-            assert model in DEFAULT_CONTEXT_LENGTHS, f"{model} missing from context lengths"
-            assert DEFAULT_CONTEXT_LENGTHS[model] == 1_000_000, f"{model} expected 1M"
+        assert DEFAULT_CONTEXT_LENGTHS["minimax"] == 204_800
 
-    def test_m2_variants_have_1m_context(self):
-        from agent.model_metadata import DEFAULT_CONTEXT_LENGTHS
-        # Keys are lowercase because the lookup lowercases model names
-        for model in ("minimax-m2.5", "minimax-m2.7"):
-            assert model in DEFAULT_CONTEXT_LENGTHS, f"{model} missing from context lengths"
-            assert DEFAULT_CONTEXT_LENGTHS[model] == 1_048_576, f"{model} expected 1048576"
-
-    def test_minimax_prefix_fallback(self):
-        from agent.model_metadata import DEFAULT_CONTEXT_LENGTHS
-        # The generic "minimax" prefix entry should be 1M for unknown models
-        assert DEFAULT_CONTEXT_LENGTHS["minimax"] == 1_048_576
+    def test_minimax_models_resolve_via_prefix(self):
+        from agent.model_metadata import get_model_context_length
+        # All MiniMax models should resolve to 204,800 via the "minimax" prefix
+        for model in ("MiniMax-M2.7", "MiniMax-M2.5", "MiniMax-M2.1", "MiniMax-M2"):
+            ctx = get_model_context_length(model, "")
+            assert ctx == 204_800, f"{model} expected 204800, got {ctx}"
 
 
 
-class TestMinimaxThinkingGuard:
-    """Verify that build_anthropic_kwargs does NOT add thinking params for MiniMax models."""
+class TestMinimaxThinkingSupport:
+    """Verify that MiniMax gets manual thinking (not adaptive).
 
-    def test_no_thinking_for_minimax_m27(self):
+    MiniMax's Anthropic-compat endpoint officially supports the thinking
+    parameter (https://platform.minimax.io/docs/api-reference/text-anthropic-api).
+    It should get manual thinking (type=enabled + budget_tokens), NOT adaptive
+    thinking (which is Claude 4.6-only).
+    """
+
+    def test_minimax_m27_gets_manual_thinking(self):
         from agent.anthropic_adapter import build_anthropic_kwargs
         kwargs = build_anthropic_kwargs(
             model="MiniMax-M2.7",
@@ -40,19 +40,23 @@ class TestMinimaxThinkingGuard:
             max_tokens=4096,
             reasoning_config={"enabled": True, "effort": "medium"},
         )
-        assert "thinking" not in kwargs
+        assert "thinking" in kwargs
+        assert kwargs["thinking"]["type"] == "enabled"
+        assert "budget_tokens" in kwargs["thinking"]
+        # MiniMax should NOT get adaptive thinking or output_config
         assert "output_config" not in kwargs
 
-    def test_no_thinking_for_minimax_m1(self):
+    def test_minimax_m25_gets_manual_thinking(self):
         from agent.anthropic_adapter import build_anthropic_kwargs
         kwargs = build_anthropic_kwargs(
-            model="MiniMax-M1-128k",
+            model="MiniMax-M2.5",
             messages=[{"role": "user", "content": "hello"}],
             tools=None,
             max_tokens=4096,
             reasoning_config={"enabled": True, "effort": "high"},
         )
-        assert "thinking" not in kwargs
+        assert "thinking" in kwargs
+        assert kwargs["thinking"]["type"] == "enabled"
 
     def test_thinking_still_works_for_claude(self):
         from agent.anthropic_adapter import build_anthropic_kwargs
@@ -81,25 +85,30 @@ class TestMinimaxAuxModel:
 
 
 class TestMinimaxModelCatalog:
-    """Verify the model catalog includes M1 family and excludes deprecated models."""
+    """Verify the model catalog matches official Anthropic-compat endpoint models.
 
-    def test_catalog_includes_m1_family(self):
+    Source: https://platform.minimax.io/docs/api-reference/text-anthropic-api
+    """
+
+    def test_catalog_includes_current_models(self):
         from hermes_cli.models import _PROVIDER_MODELS
         for provider in ("minimax", "minimax-cn"):
             models = _PROVIDER_MODELS[provider]
-            assert "MiniMax-M1" in models
-            assert "MiniMax-M1-40k" in models
-            assert "MiniMax-M1-80k" in models
-            assert "MiniMax-M1-128k" in models
-            assert "MiniMax-M1-256k" in models
+            assert "MiniMax-M2.7" in models
+            assert "MiniMax-M2.5" in models
+            assert "MiniMax-M2.1" in models
+            assert "MiniMax-M2" in models
 
-    def test_catalog_excludes_deprecated(self):
+    def test_catalog_excludes_m1_family(self):
+        """M1 models are not available on the /anthropic endpoint."""
         from hermes_cli.models import _PROVIDER_MODELS
         for provider in ("minimax", "minimax-cn"):
             models = _PROVIDER_MODELS[provider]
-            assert "MiniMax-M2.1" not in models
+            assert "MiniMax-M1" not in models
 
     def test_catalog_excludes_highspeed(self):
+        """Highspeed variants are available but not shown in default catalog
+        (users can still specify them manually)."""
         from hermes_cli.models import _PROVIDER_MODELS
         for provider in ("minimax", "minimax-cn"):
             models = _PROVIDER_MODELS[provider]
@@ -202,3 +211,154 @@ class TestMinimaxBetaHeaders:
     def test_common_betas_regular_url(self):
         from agent.anthropic_adapter import _common_betas_for_base_url, _COMMON_BETAS
         assert _common_betas_for_base_url("https://api.anthropic.com") == _COMMON_BETAS
+
+
+class TestMinimaxApiMode:
+    """Verify determine_api_mode returns anthropic_messages for MiniMax providers.
+
+    The MiniMax /anthropic endpoint speaks Anthropic Messages wire format,
+    not OpenAI chat completions.  The overlay transport must reflect this
+    so that code paths calling determine_api_mode() without a base_url
+    (e.g. /model switch) get the correct api_mode.
+    """
+
+    def test_minimax_returns_anthropic_messages(self):
+        from hermes_cli.providers import determine_api_mode
+        assert determine_api_mode("minimax") == "anthropic_messages"
+
+    def test_minimax_cn_returns_anthropic_messages(self):
+        from hermes_cli.providers import determine_api_mode
+        assert determine_api_mode("minimax-cn") == "anthropic_messages"
+
+    def test_minimax_with_url_also_works(self):
+        from hermes_cli.providers import determine_api_mode
+        # Even with explicit base_url, provider lookup takes priority
+        assert determine_api_mode("minimax", "https://api.minimax.io/anthropic") == "anthropic_messages"
+
+    def test_anthropic_still_returns_anthropic_messages(self):
+        from hermes_cli.providers import determine_api_mode
+        assert determine_api_mode("anthropic") == "anthropic_messages"
+
+    def test_openai_returns_chat_completions(self):
+        from hermes_cli.providers import determine_api_mode
+        # Sanity check: standard providers are unaffected
+        result = determine_api_mode("deepseek")
+        assert result == "chat_completions"
+
+
+class TestMinimaxMaxOutput:
+    """Verify _get_anthropic_max_output returns correct limits for MiniMax models.
+
+    MiniMax max output is 131,072 tokens (source: OpenClaw model definitions,
+    cross-referenced with MiniMax API behavior).
+    """
+
+    def test_minimax_m27_output_limit(self):
+        from agent.anthropic_adapter import _get_anthropic_max_output
+        assert _get_anthropic_max_output("MiniMax-M2.7") == 131_072
+
+    def test_minimax_m25_output_limit(self):
+        from agent.anthropic_adapter import _get_anthropic_max_output
+        assert _get_anthropic_max_output("MiniMax-M2.5") == 131_072
+
+    def test_minimax_m2_output_limit(self):
+        from agent.anthropic_adapter import _get_anthropic_max_output
+        assert _get_anthropic_max_output("MiniMax-M2") == 131_072
+
+    def test_claude_output_unaffected(self):
+        from agent.anthropic_adapter import _get_anthropic_max_output
+        # Sanity: Claude limits are not broken by the MiniMax entry
+        assert _get_anthropic_max_output("claude-sonnet-4-6") == 64_000
+
+
+class TestMinimaxPreserveDots:
+    """Verify that MiniMax model names preserve dots through the Anthropic adapter.
+
+    MiniMax model IDs like 'MiniMax-M2.7' must NOT have dots converted to
+    hyphens — the endpoint expects the exact name with dots.
+    """
+
+    def test_minimax_provider_preserves_dots(self):
+        from types import SimpleNamespace
+        agent = SimpleNamespace(provider="minimax", base_url="")
+        from run_agent import AIAgent
+        assert AIAgent._anthropic_preserve_dots(agent) is True
+
+    def test_minimax_cn_provider_preserves_dots(self):
+        from types import SimpleNamespace
+        agent = SimpleNamespace(provider="minimax-cn", base_url="")
+        from run_agent import AIAgent
+        assert AIAgent._anthropic_preserve_dots(agent) is True
+
+    def test_minimax_url_preserves_dots(self):
+        from types import SimpleNamespace
+        agent = SimpleNamespace(provider="custom", base_url="https://api.minimax.io/anthropic")
+        from run_agent import AIAgent
+        assert AIAgent._anthropic_preserve_dots(agent) is True
+
+    def test_minimax_cn_url_preserves_dots(self):
+        from types import SimpleNamespace
+        agent = SimpleNamespace(provider="custom", base_url="https://api.minimaxi.com/anthropic")
+        from run_agent import AIAgent
+        assert AIAgent._anthropic_preserve_dots(agent) is True
+
+    def test_anthropic_does_not_preserve_dots(self):
+        from types import SimpleNamespace
+        agent = SimpleNamespace(provider="anthropic", base_url="https://api.anthropic.com")
+        from run_agent import AIAgent
+        assert AIAgent._anthropic_preserve_dots(agent) is False
+
+    def test_normalize_preserves_m27_dot(self):
+        from agent.anthropic_adapter import normalize_model_name
+        assert normalize_model_name("MiniMax-M2.7", preserve_dots=True) == "MiniMax-M2.7"
+
+    def test_normalize_converts_without_preserve(self):
+        from agent.anthropic_adapter import normalize_model_name
+        # Without preserve_dots, dots become hyphens (broken for MiniMax)
+        assert normalize_model_name("MiniMax-M2.7", preserve_dots=False) == "MiniMax-M2-7"
+
+
+class TestMinimaxSwitchModelCredentialGuard:
+    """Verify switch_model() does not leak Anthropic credentials to MiniMax.
+
+    The __init__ path correctly guards against this (line 761), but switch_model()
+    must mirror that guard. Without it, /model switch to minimax with no explicit
+    api_key would fall back to resolve_anthropic_token() and send Anthropic creds
+    to the MiniMax endpoint.
+    """
+
+    def test_switch_to_minimax_does_not_resolve_anthropic_token(self):
+        """switch_model() should NOT call resolve_anthropic_token() for MiniMax."""
+        from unittest.mock import patch, MagicMock
+
+        with patch("run_agent.AIAgent.__init__", return_value=None):
+            from run_agent import AIAgent
+            agent = AIAgent.__new__(AIAgent)
+            agent.provider = "anthropic"
+            agent.model = "claude-sonnet-4"
+            agent.api_key = "sk-ant-fake"
+            agent.base_url = "https://api.anthropic.com"
+            agent.api_mode = "anthropic_messages"
+            agent._anthropic_base_url = "https://api.anthropic.com"
+            agent._anthropic_api_key = "sk-ant-fake"
+            agent._is_anthropic_oauth = False
+            agent._client_kwargs = {}
+            agent.client = None
+            agent._anthropic_client = MagicMock()
+
+        with patch("agent.anthropic_adapter.build_anthropic_client") as mock_build, \
+             patch("agent.anthropic_adapter.resolve_anthropic_token", return_value="sk-ant-leaked") as mock_resolve, \
+             patch("agent.anthropic_adapter._is_oauth_token", return_value=False):
+
+            agent.switch_model(
+                new_model="MiniMax-M2.7",
+                new_provider="minimax",
+                api_mode="anthropic_messages",
+                api_key="mm-key-123",
+                base_url="https://api.minimax.io/anthropic",
+            )
+            # resolve_anthropic_token should NOT be called for non-Anthropic providers
+            mock_resolve.assert_not_called()
+            # The key passed to build_anthropic_client should be the MiniMax key
+            build_args = mock_build.call_args
+            assert build_args[0][0] == "mm-key-123"

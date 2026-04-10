@@ -734,6 +734,7 @@ def _classify_by_message(
             FailoverReason.auth,
             retryable=False,
             should_rotate_credential=True,
+            should_fallback=True,
         )
 
     # Model not found patterns

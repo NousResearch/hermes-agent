@@ -15,6 +15,7 @@ Usage:
 
 import logging
 import os
+import re
 import shutil
 import sys
 import json
@@ -1545,6 +1546,32 @@ def _format_image_attachment_badges(attached_images: list[Path], image_counter: 
 def _should_auto_attach_clipboard_image_on_paste(pasted_text: str) -> bool:
     """Auto-attach clipboard images only for image-only paste gestures."""
     return not pasted_text.strip()
+
+
+def _strip_leaked_bracketed_paste_wrappers(text: str) -> str:
+    """Strip leaked bracketed-paste wrapper markers from user-visible text.
+
+    Defensive normalization for cases where terminal/prompt_toolkit parsing
+    fails and bracketed-paste markers end up in the buffer as literal text.
+
+    We strip canonical wrappers unconditionally and also handle degraded
+    visible forms like ``[200~`` / ``[201~`` and ``00~`` / ``01~`` when they
+    look like wrapper boundaries, not arbitrary user content.
+    """
+    if not text:
+        return text
+
+    text = (
+        text.replace("\x1b[200~", "")
+        .replace("\x1b[201~", "")
+        .replace("^[[200~", "")
+        .replace("^[[201~", "")
+    )
+    text = re.sub(r"(^|[\s\n>:\]\)])\[200~", r"\1", text)
+    text = re.sub(r"\[201~(?=$|[\s\n<\[\(\):;.,!?])", "", text)
+    text = re.sub(r"(^|[\s\n>:\]\)])00~", r"\1", text)
+    text = re.sub(r"01~(?=$|[\s\n<\[\(\):;.,!?])", "", text)
+    return text
 
 
 def _collect_query_images(query: str | None, image_arg: str | None = None) -> tuple[str, list[Path]]:
@@ -9759,6 +9786,7 @@ class HermesCLI:
             # Normalise line endings — Windows \r\n and old Mac \r both become \n
             # so the 5-line collapse threshold and display are consistent.
             pasted_text = pasted_text.replace('\r\n', '\n').replace('\r', '\n')
+            pasted_text = _strip_leaked_bracketed_paste_wrappers(pasted_text)
             if _should_auto_attach_clipboard_image_on_paste(pasted_text) and self._try_attach_clipboard_image():
                 event.app.invalidate()
             if pasted_text:
@@ -9900,7 +9928,15 @@ class HermesCLI:
                still batch newlines.  Alt+Enter only adds 1 newline per
                event so it never triggers this.
             """
-            text = buf.text
+            text = _strip_leaked_bracketed_paste_wrappers(buf.text)
+            if text != buf.text:
+                cursor = min(buf.cursor_position, len(text))
+                _paste_just_collapsed[0] = True
+                buf.text = text
+                buf.cursor_position = cursor
+                _prev_text_len[0] = len(text)
+                _prev_newline_count[0] = text.count('\n')
+                return
             chars_added = len(text) - _prev_text_len[0]
             _prev_text_len[0] = len(text)
             if _paste_just_collapsed[0] or self._skip_paste_collapse:
@@ -10648,6 +10684,9 @@ class HermesCLI:
                     submit_images = []
                     if isinstance(user_input, tuple):
                         user_input, submit_images = user_input
+
+                    if isinstance(user_input, str):
+                        user_input = _strip_leaked_bracketed_paste_wrappers(user_input)
                     
                     # Check for commands — but detect dragged/pasted file paths first.
                     # See _detect_file_drop() for details.

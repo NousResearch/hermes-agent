@@ -2,13 +2,15 @@
 { inputs, ... }:
 {
   perSystem =
-    { pkgs, ... }:
+    { pkgs, inputs', ... }:
     let
       hermesVenv = pkgs.callPackage ./python.nix {
         inherit (inputs) uv2nix pyproject-nix pyproject-build-systems;
       };
 
-      hermesTui = pkgs.callPackage ./tui.nix { };
+      hermesTui = pkgs.callPackage ./tui.nix {
+        npm-lockfile-fix = inputs'.npm-lockfile-fix.packages.default;
+      };
 
       # Import bundled skills, excluding runtime caches
       bundledSkills = pkgs.lib.cleanSourceWith {
@@ -57,11 +59,11 @@
 
             ${pkgs.lib.concatMapStringsSep "\n"
               (name: ''
-              makeWrapper ${hermesVenv}/bin/${name} $out/bin/${name} \
-                --suffix PATH : "${runtimePath}" \
-                --set HERMES_BUNDLED_SKILLS $out/share/hermes-agent/skills \
-                --set HERMES_TUI_DIR $out/ui-tui \
-                --set HERMES_PYTHON ${hermesVenv}/bin/python3
+                makeWrapper ${hermesVenv}/bin/${name} $out/bin/${name} \
+                  --suffix PATH : "${runtimePath}" \
+                  --set HERMES_BUNDLED_SKILLS $out/share/hermes-agent/skills \
+                  --set HERMES_TUI_DIR $out/ui-tui \
+                  --set HERMES_PYTHON ${hermesVenv}/bin/python3
               '')
               [
                 "hermes"

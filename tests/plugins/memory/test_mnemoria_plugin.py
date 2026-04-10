@@ -47,6 +47,19 @@ def test_mnemoria_is_discoverable_in_memory_provider_list():
     assert isinstance(available, bool)
 
 
+def test_prefetch_returns_cached_result_from_queue(monkeypatch):
+    provider = MnemoriaMemoryProvider()
+    from unittest.mock import MagicMock
+    mock_fact = MagicMock()
+    mock_fact.fact.fact_type = "V"
+    mock_fact.fact.target = "test"
+    mock_fact.fact.content = "cached content"
+    provider._prefetch_result = [mock_fact]
+    result = provider.prefetch("any query")
+    assert "cached content" in result
+    assert provider._prefetch_result is None
+
+
 def test_get_config_schema_returns_valid_fields():
     provider = MnemoriaMemoryProvider()
     schema = provider.get_config_schema()

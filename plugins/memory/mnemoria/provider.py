@@ -384,31 +384,57 @@ class MnemoriaMemoryProvider(MemoryProvider):
         config_path.write_text(_json.dumps(existing, indent=2))
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
-        """Recall relevant memories and format as injection text."""
+        """Recall relevant memories, using cached result from queue_prefetch if available."""
         if not _UM_AVAILABLE:
             return ""
         if not query:
             return ""
 
-        try:
-            resolved_session = session_id or self._session_id or _SESSION_ID
-            s = _store()
-            results = s.recall(query, top_k=8)
+        results = None
+        with self._prefetch_lock:
+            if self._prefetch_result is not None:
+                results = self._prefetch_result
+                self._prefetch_result = None
 
-            if not results:
+        if results is None:
+            try:
+                results = _store().recall(query, top_k=8)
+            except Exception as exc:
+                logger.warning("MnemoriaMemoryProvider prefetch failed: %s", exc)
                 return ""
 
-            lines = ["[MNEMORIA MEMORY]"]
-            for r in results:
-                fact = r.fact
-                type_sym = _type_sym(fact.fact_type)
-                target = fact.target or "general"
-                lines.append(f"{type_sym}[{target}]: {fact.content}")
-
-            return "\n".join(lines)
-        except Exception as exc:
-            logger.warning("MnemoriaMemoryProvider prefetch failed: %s", exc)
+        if not results:
             return ""
+
+        lines = ["[MNEMORIA MEMORY]"]
+        for r in results:
+            fact = r.fact
+            type_sym = _type_sym(fact.fact_type)
+            target = fact.target or "general"
+            lines.append(f"{type_sym}[{target}]: {fact.content}")
+
+        return "\n".join(lines)
+
+    def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
+        """Start background recall for the next turn's prefetch."""
+        if self._read_only or not _UM_AVAILABLE or not query:
+            return
+
+        if self._prefetch_thread and self._prefetch_thread.is_alive():
+            self._prefetch_thread.join(timeout=2.0)
+
+        def _run():
+            try:
+                results = _store().recall(query, top_k=8)
+                with self._prefetch_lock:
+                    self._prefetch_result = results
+            except Exception as exc:
+                logger.debug("Mnemoria queue_prefetch failed: %s", exc)
+
+        self._prefetch_thread = threading.Thread(
+            target=_run, daemon=True, name="mnemoria-prefetch",
+        )
+        self._prefetch_thread.start()
 
     def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
         """Store a conversation turn. Delegated to tick_unified_memory in the agent loop."""

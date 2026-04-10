@@ -2069,15 +2069,24 @@ def call_llm(
         base_url=resolved_base_url)
 
     # Handle max_tokens vs max_completion_tokens retry, then payment fallback.
+    def _validate_response(resp):
+        """Fail fast if a provider returns a non-standard payload."""
+        if not getattr(resp, "choices", None):
+            raise TypeError(
+                f"LLM response has no 'choices' attribute (got {type(resp).__name__}). "
+                f"The provider may have returned an error page or malformed payload."
+            )
+        return resp
+
     try:
-        return client.chat.completions.create(**kwargs)
+        return _validate_response(client.chat.completions.create(**kwargs))
     except Exception as first_err:
         err_str = str(first_err)
         if "max_tokens" in err_str or "unsupported_parameter" in err_str:
             kwargs.pop("max_tokens", None)
             kwargs["max_completion_tokens"] = max_tokens
             try:
-                return client.chat.completions.create(**kwargs)
+                return _validate_response(client.chat.completions.create(**kwargs))
             except Exception as retry_err:
                 # If the max_tokens retry also hits a payment error,
                 # fall through to the payment fallback below.
@@ -2110,7 +2119,7 @@ def call_llm(
                     temperature=temperature, max_tokens=max_tokens,
                     tools=tools, timeout=effective_timeout,
                     extra_body=extra_body)
-                return fb_client.chat.completions.create(**fb_kwargs)
+                return _validate_response(fb_client.chat.completions.create(**fb_kwargs))
         raise
 
 
@@ -2130,6 +2139,9 @@ def extract_content_or_reasoning(response) -> str:
     Returns the best available text, or ``""`` if nothing found.
     """
     import re
+
+    if not getattr(response, "choices", None):
+        return ""
 
     msg = response.choices[0].message
     content = (msg.content or "").strip()
@@ -2250,12 +2262,21 @@ async def async_call_llm(
         tools=tools, timeout=effective_timeout, extra_body=extra_body,
         base_url=resolved_base_url)
 
+    def _validate_async_response(resp):
+        """Fail fast if a provider returns a non-standard payload."""
+        if not getattr(resp, "choices", None):
+            raise TypeError(
+                f"LLM response has no 'choices' attribute (got {type(resp).__name__}). "
+                f"The provider may have returned an error page or malformed payload."
+            )
+        return resp
+
     try:
-        return await client.chat.completions.create(**kwargs)
+        return _validate_async_response(await client.chat.completions.create(**kwargs))
     except Exception as first_err:
         err_str = str(first_err)
         if "max_tokens" in err_str or "unsupported_parameter" in err_str:
             kwargs.pop("max_tokens", None)
             kwargs["max_completion_tokens"] = max_tokens
-            return await client.chat.completions.create(**kwargs)
+            return _validate_async_response(await client.chat.completions.create(**kwargs))
         raise

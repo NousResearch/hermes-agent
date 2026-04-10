@@ -1153,3 +1153,45 @@ def test_resolve_api_key_provider_skips_unconfigured_anthropic(monkeypatch):
 
     assert "anthropic" not in called, \
         "_try_anthropic() should not be called when anthropic is not explicitly configured"
+
+
+# ---------------------------------------------------------------------------
+# Regression: response validation (#7264)
+# ---------------------------------------------------------------------------
+
+
+class TestResponseValidation:
+    """Regression: call_llm/async_call_llm must reject non-OpenAI payloads (#7264)."""
+
+    def test_call_llm_rejects_string_response(self, monkeypatch):
+        """call_llm raises TypeError when provider returns a bare string."""
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = "not-a-response-object"
+
+        monkeypatch.setattr(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            lambda *a, **k: ("custom", "test-model", "http://localhost/v1", "key"),
+        )
+        monkeypatch.setattr(
+            "agent.auxiliary_client._get_cached_client",
+            lambda *a, **k: (mock_client, "test-model"),
+        )
+
+        with pytest.raises(TypeError, match="no 'choices' attribute"):
+            call_llm(task="test", messages=[{"role": "user", "content": "hi"}])
+
+    def test_extract_content_or_reasoning_handles_bad_response(self):
+        """extract_content_or_reasoning returns '' on non-OpenAI response."""
+        from agent.auxiliary_client import extract_content_or_reasoning
+
+        assert extract_content_or_reasoning("bare string") == ""
+        assert extract_content_or_reasoning(None) == ""
+        assert extract_content_or_reasoning(42) == ""
+
+    def test_extract_content_or_reasoning_handles_empty_choices(self):
+        """extract_content_or_reasoning returns '' when choices is empty."""
+        from agent.auxiliary_client import extract_content_or_reasoning
+        from types import SimpleNamespace
+
+        response = SimpleNamespace(choices=[])
+        assert extract_content_or_reasoning(response) == ""

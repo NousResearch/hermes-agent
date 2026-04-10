@@ -155,6 +155,50 @@ class TestSessionKeyContext:
         assert "set_current_session_key" in called_names
         assert "reset_current_session_key" in called_names
 
+    def test_context_keeps_pending_approval_attached_to_originating_session(self):
+        import os
+        import threading
+
+        clear_session("alice")
+        clear_session("bob")
+        pop_pending("alice")
+        pop_pending("bob")
+        approval_module._permanent_approved.clear()
+
+        alice_ready = threading.Event()
+        bob_ready = threading.Event()
+
+        def worker_alice():
+            token = approval_module.set_current_session_key("alice")
+            try:
+                os.environ["HERMES_EXEC_ASK"] = "1"
+                os.environ["HERMES_SESSION_KEY"] = "alice"
+                alice_ready.set()
+                bob_ready.wait()
+                approval_module.check_all_command_guards("rm -rf /tmp/alice-secret", "local")
+            finally:
+                approval_module.reset_current_session_key(token)
+
+        def worker_bob():
+            alice_ready.wait()
+            token = approval_module.set_current_session_key("bob")
+            try:
+                os.environ["HERMES_SESSION_KEY"] = "bob"
+                bob_ready.set()
+            finally:
+                approval_module.reset_current_session_key(token)
+
+        t1 = threading.Thread(target=worker_alice)
+        t2 = threading.Thread(target=worker_bob)
+        with mock_patch.dict("os.environ", {"HERMES_GATEWAY_SESSION": "1"}, clear=False):
+            t1.start()
+            t2.start()
+            t1.join()
+            t2.join()
+
+        assert pop_pending("alice") is not None
+        assert pop_pending("bob") is None
+
 
 class TestRmFalsePositiveFix:
     """Regression tests: filenames starting with 'r' must NOT trigger recursive delete."""

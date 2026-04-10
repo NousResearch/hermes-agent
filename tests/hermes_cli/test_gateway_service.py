@@ -817,6 +817,11 @@ class TestProfileArg:
         assert "<string>--profile</string>" in plist
         assert "<string>mybot</string>" in plist
 
+    def test_launchd_plist_uses_unconditional_keepalive(self):
+        plist = gateway_cli.generate_launchd_plist()
+        assert "<key>KeepAlive</key>\n    <true/>" in plist
+        assert "SuccessfulExit" not in plist
+
 
 class TestRemapPathForUser:
     """Unit tests for _remap_path_for_user()."""

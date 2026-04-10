@@ -138,3 +138,43 @@ async def test_connect_releases_token_lock_on_timeout(monkeypatch):
     assert ok is False
     assert released == [("discord-bot-token", "test-token")]
     assert adapter._token_lock_identity is None
+
+
+@pytest.mark.asyncio
+async def test_connect_succeeds_even_if_slash_sync_is_slow(monkeypatch):
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+
+    monkeypatch.setattr("gateway.status.acquire_scoped_lock", lambda scope, identity, metadata=None: (True, None))
+    monkeypatch.setattr("gateway.status.release_scoped_lock", lambda scope, identity: None)
+
+    intents = SimpleNamespace(message_content=False, dm_messages=False, guild_messages=False, members=False, voice_states=False)
+    monkeypatch.setattr(discord_platform.Intents, "default", lambda: intents)
+
+    sync_gate = asyncio.Event()
+
+    class SlowTree(FakeTree):
+        async def sync(self):
+            await sync_gate.wait()
+            return []
+
+    class SlowSyncBot(FakeBot):
+        def __init__(self, *, intents, proxy=None):
+            super().__init__(intents=intents, proxy=proxy)
+            self.tree = SlowTree()
+
+    monkeypatch.setattr(
+        discord_platform.commands,
+        "Bot",
+        lambda **kwargs: SlowSyncBot(intents=kwargs["intents"], proxy=kwargs.get("proxy")),
+    )
+    monkeypatch.setattr(adapter, "_resolve_allowed_usernames", AsyncMock())
+
+    ok = await asyncio.wait_for(adapter.connect(), timeout=1)
+
+    assert ok is True
+    assert adapter._ready_event.is_set() is True
+
+    sync_gate.set()
+    await adapter.disconnect()
+    if adapter._bot_task:
+        await adapter._bot_task

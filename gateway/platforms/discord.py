@@ -555,6 +555,12 @@ class DiscordAdapter(BasePlatformAdapter):
             async def on_ready():
                 logger.info("[%s] Connected as %s", adapter_self.name, adapter_self._client.user)
 
+                # Mark the adapter ready as soon as Discord reports the bot online.
+                # Follow-up tasks like allowlist resolution and slash-command sync can
+                # take longer than the initial gateway handshake and should not cause
+                # startup to be treated as a failed connection.
+                adapter_self._ready_event.set()
+
                 # Resolve any usernames in the allowed list to numeric IDs
                 await adapter_self._resolve_allowed_usernames()
 
@@ -564,7 +570,6 @@ class DiscordAdapter(BasePlatformAdapter):
                     logger.info("[%s] Synced %d slash command(s)", adapter_self.name, len(synced))
                 except Exception as e:  # pragma: no cover - defensive logging
                     logger.warning("[%s] Slash command sync failed: %s", adapter_self.name, e, exc_info=True)
-                adapter_self._ready_event.set()
 
             @self._client.event
             async def on_message(message: DiscordMessage):

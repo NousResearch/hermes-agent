@@ -274,6 +274,7 @@ def summarize_background_review_actions(
     # target, and content previews.  Restricting to notify_tools also prevents
     # helper tools from surfacing as memory work just because they succeeded.
     notify_tools = {"memory", "skill_manage"}
+    all_tool_call_ids: set = set()
     call_details: dict = {}
     for msg in review_messages or []:
         if not isinstance(msg, dict) or msg.get("role") != "assistant":
@@ -283,13 +284,15 @@ def summarize_background_review_actions(
                 continue
             fn = tc.get("function", {}) or {}
             fn_name = fn.get("name", "")
+            tcid = tc.get("id")
+            if tcid:
+                all_tool_call_ids.add(tcid)
             if fn_name not in notify_tools:
                 continue
             try:
                 args = json.loads(fn.get("arguments", "{}"))
             except (json.JSONDecodeError, TypeError):
                 args = {}
-            tcid = tc.get("id")
             if tcid:
                 call_details[tcid] = {
                     "tool": fn_name,
@@ -297,6 +300,9 @@ def summarize_background_review_actions(
                     "target": args.get("target", "memory"),
                     "content": args.get("content", ""),
                     "old_text": args.get("old_text", ""),
+                    "name": args.get("name", ""),
+                    "old_string": args.get("old_string", ""),
+                    "new_string": args.get("new_string", ""),
                 }
 
     actions: List[str] = []
@@ -310,7 +316,7 @@ def summarize_background_review_actions(
             content_str = msg.get("content")
             if isinstance(content_str, str) and content_str in existing_tool_contents:
                 continue
-        if tcid and call_details and tcid not in call_details:
+        if tcid and all_tool_call_ids and tcid not in call_details:
             continue
         try:
             data = json.loads(msg.get("content", "{}"))
@@ -319,9 +325,21 @@ def summarize_background_review_actions(
         if not isinstance(data, dict) or not data.get("success"):
             continue
         message = data.get("message", "")
-        target = data.get("target", "")
         detail = call_details.get(tcid, {})
+        target = data.get("target", "") or detail.get("target", "")
         is_skill = detail.get("tool") == "skill_manage"
+
+        message_lower = message.lower()
+        if not verbose:
+            if "created" in message_lower:
+                actions.append(message)
+                continue
+            if "updated" in message_lower:
+                actions.append(message)
+                continue
+            if is_skill and "patched" in message_lower:
+                actions.append(message)
+                continue
 
         if is_skill:
             label = "Skill"
@@ -334,9 +352,30 @@ def summarize_background_review_actions(
             action = detail.get("action", "")
             content = detail.get("content", "")
             old_text = detail.get("old_text", "")
+            skill_name = detail.get("name", "")
             max_preview = 120
             if is_skill:
-                actions.append(f"📝 {message}" if message else f"Skill {action}")
+                change = data.get("_change", {})
+                old_string = change.get("old", "") or detail.get("old_string", "")
+                new_string = change.get("new", "") or detail.get("new_string", "")
+                description = change.get("description", "")
+                if action == "patch" and (old_string or new_string):
+                    old_preview = old_string[:80].replace("\n", " ") + (
+                        "…" if len(old_string) > 80 else ""
+                    )
+                    new_preview = new_string[:80].replace("\n", " ") + (
+                        "…" if len(new_string) > 80 else ""
+                    )
+                    actions.append(
+                        f"📝 Skill '{skill_name}' patched: "
+                        f"\"{old_preview}\" → \"{new_preview}\""
+                    )
+                elif action == "create" and description:
+                    actions.append(f"📝 Skill '{skill_name}' created: {description}")
+                elif action == "edit" and description:
+                    actions.append(f"📝 Skill '{skill_name}' rewritten: {description}")
+                else:
+                    actions.append(f"📝 {message}" if message else f"Skill {action}")
             elif action == "add" and content:
                 preview = content[:max_preview] + ("…" if len(content) > max_preview else "")
                 actions.append(f"{label} ➕ {preview}")
@@ -348,14 +387,10 @@ def summarize_background_review_actions(
                 actions.append(f"{label} ➖ {preview}")
             else:
                 actions.append(f"{label} updated")
-        elif "created" in message.lower():
-            actions.append(message)
-        elif "updated" in message.lower():
-            actions.append(message)
         elif (
-            "added" in message.lower()
-            or "replaced" in message.lower()
-            or "removed" in message.lower()
+            "added" in message_lower
+            or "replaced" in message_lower
+            or "removed" in message_lower
             or (target and "add" in message.lower())
             or "Entry added" in message
         ):

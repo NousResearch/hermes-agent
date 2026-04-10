@@ -1411,10 +1411,15 @@ class AIAgent:
     def _summarize_background_review_actions(
         review_messages: List[Dict],
         prior_snapshot: List[Dict],
+        notification_mode: str = "on",
     ) -> List[str]:
         """Forwarder — see ``agent.background_review.summarize_background_review_actions``."""
         from agent.background_review import summarize_background_review_actions
-        return summarize_background_review_actions(review_messages, prior_snapshot)
+        return summarize_background_review_actions(
+            review_messages,
+            prior_snapshot,
+            notification_mode=notification_mode,
+        )
 
     def _spawn_background_review(
         self,

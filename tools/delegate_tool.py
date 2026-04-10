@@ -18,11 +18,17 @@ never the child's intermediate tool calls or reasoning.
 
 import json
 import logging
+import threading
 logger = logging.getLogger(__name__)
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional
+
+# Lock for process-global model_tools._last_resolved_tool_names restoration.
+# Concurrent _run_single_child threads restore the parent's tool names in their
+# finally blocks; without synchronization the last writer wins non-deterministically.
+_tool_names_lock = threading.Lock()
 
 
 # Tools that children must never have access to
@@ -491,7 +497,8 @@ def _run_single_child(
 
         saved_tool_names = getattr(child, "_delegate_saved_tool_names", None)
         if isinstance(saved_tool_names, list):
-            model_tools._last_resolved_tool_names = list(saved_tool_names)
+            with _tool_names_lock:
+                model_tools._last_resolved_tool_names = list(saved_tool_names)
 
         # Remove child from active tracking
 

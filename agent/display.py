@@ -575,6 +575,7 @@ class KawaiiSpinner:
         self.frame_idx = 0
         self.start_time = None
         self.last_line_len = 0
+        self._lock = threading.Lock()  # guards message, last_line_len
         # Optional callable to route all output through (e.g. a no-op for silent
         # background agents).  When set, bypasses self._out entirely so that
         # agents with _print_fn overridden remain fully silent.
@@ -656,14 +657,17 @@ class KawaiiSpinner:
                 continue
             frame = self.spinner_frames[self.frame_idx % len(self.spinner_frames)]
             elapsed = time.time() - self.start_time
+            with self._lock:
+                msg = self.message
             if wings:
                 left, right = wings[self.frame_idx % len(wings)]
-                line = f"  {left} {frame} {self.message} {right} ({elapsed:.1f}s)"
+                line = f"  {left} {frame} {msg} {right} ({elapsed:.1f}s)"
             else:
-                line = f"  {frame} {self.message} ({elapsed:.1f}s)"
+                line = f"  {frame} {msg} ({elapsed:.1f}s)"
             pad = max(self.last_line_len - len(line), 0)
             self._write(f"\r{line}{' ' * pad}", end='', flush=True)
-            self.last_line_len = len(line)
+            with self._lock:
+                self.last_line_len = len(line)
             self.frame_idx += 1
             time.sleep(0.12)
 
@@ -676,7 +680,8 @@ class KawaiiSpinner:
         self.thread.start()
 
     def update_text(self, new_message: str):
-        self.message = new_message
+        with self._lock:
+            self.message = new_message
 
     def print_above(self, text: str):
         """Print a line above the spinner without disrupting animation.
@@ -693,7 +698,8 @@ class KawaiiSpinner:
         # Clear spinner line with spaces (not \033[K) to avoid garbled escape
         # codes when prompt_toolkit's patch_stdout is active — same approach
         # as stop(). Then print text; spinner redraws on next tick.
-        blanks = ' ' * max(self.last_line_len + 5, 40)
+        with self._lock:
+            blanks = ' ' * max(self.last_line_len + 5, 40)
         self._write(f"\r{blanks}\r  {text}", flush=True)
 
     def stop(self, final_message: str = None):

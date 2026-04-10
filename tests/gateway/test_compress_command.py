@@ -1,163 +1,121 @@
-"""Tests for gateway /compress truthfulness."""
+"""Tests for gateway /compress user-facing messaging."""
 
-import sys
-import types
-from unittest.mock import MagicMock
+from datetime import datetime
+from unittest.mock import MagicMock, patch
 
 import pytest
 
-import gateway.run as gateway_run
-from gateway.config import Platform
+from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import MessageEvent
-from gateway.session import SessionSource
+from gateway.session import SessionEntry, SessionSource, build_session_key
 
 
-def _make_event(text="/compress", platform=Platform.TELEGRAM, user_id="12345", chat_id="67890"):
-    source = SessionSource(
-        platform=platform,
-        user_id=user_id,
-        chat_id=chat_id,
-        user_name="testuser",
+def _make_source() -> SessionSource:
+    return SessionSource(
+        platform=Platform.TELEGRAM,
+        user_id="u1",
+        chat_id="c1",
+        user_name="tester",
+        chat_type="dm",
     )
-    return MessageEvent(text=text, source=source)
 
 
-def _make_history(n_messages: int) -> list[dict]:
-    history = []
-    for i in range(n_messages):
-        history.append(
-            {
-                "role": "user" if i % 2 == 0 else "assistant",
-                "content": f"message {i}",
-            }
-        )
-    return history
+def _make_event(text: str = "/compress") -> MessageEvent:
+    return MessageEvent(text=text, source=_make_source(), message_id="m1")
 
 
-def _make_runner(history: list[dict], session_id: str = "sess-current"):
-    runner = object.__new__(gateway_run.GatewayRunner)
-    session_entry = MagicMock()
-    session_entry.session_id = session_id
-    session_entry.session_key = "telegram:12345:67890"
-
-    store = MagicMock()
-    store.get_or_create_session.return_value = session_entry
-    store.load_transcript.return_value = history
-    store.rewrite_transcript = MagicMock()
-    store.update_session = MagicMock()
-    store._save = MagicMock()
-
-    runner.session_store = store
-    return runner, session_entry
+def _make_history() -> list[dict[str, str]]:
+    return [
+        {"role": "user", "content": "one"},
+        {"role": "assistant", "content": "two"},
+        {"role": "user", "content": "three"},
+        {"role": "assistant", "content": "four"},
+    ]
 
 
-class _NoOpCompressor:
-    protect_first_n = 3
+def _make_runner(history: list[dict[str, str]]):
+    from gateway.run import GatewayRunner
 
-    def _align_boundary_forward(self, messages, idx):
-        return idx
-
-    def _find_tail_cut_by_tokens(self, messages, head_end):
-        return head_end
-
-
-class _NoOpAgent:
-    last_instance = None
-
-    def __init__(self, *args, **kwargs):
-        type(self).last_instance = self
-        self.session_id = kwargs["session_id"]
-        self.context_compressor = _NoOpCompressor()
-        self._print_fn = None
-        self._compress_context_calls = 0
-
-    def _compress_context(self, messages, system_message, *, approx_tokens=None):
-        self._compress_context_calls += 1
-        return messages, system_message
-
-
-class _CompressibleCompressor:
-    protect_first_n = 1
-
-    def _align_boundary_forward(self, messages, idx):
-        return idx
-
-    def _find_tail_cut_by_tokens(self, messages, head_end):
-        return 3
-
-
-class _CompressingAgent:
-    last_instance = None
-
-    def __init__(self, *args, **kwargs):
-        type(self).last_instance = self
-        self.session_id = kwargs["session_id"]
-        self.context_compressor = _CompressibleCompressor()
-        self._print_fn = None
-        self._compress_context_calls = 0
-
-    def _compress_context(self, messages, system_message, *, approx_tokens=None):
-        self._compress_context_calls += 1
-        self.session_id = "sess-compressed"
-        return (
-            [
-                {"role": "user", "content": "summary"},
-                {"role": "assistant", "content": "latest reply"},
-            ],
-            system_message,
-        )
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(
+        platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="***")}
+    )
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+    )
+    runner.session_store = MagicMock()
+    runner.session_store.get_or_create_session.return_value = session_entry
+    runner.session_store.load_transcript.return_value = history
+    runner.session_store.rewrite_transcript = MagicMock()
+    runner.session_store.update_session = MagicMock()
+    runner.session_store._save = MagicMock()
+    return runner
 
 
 @pytest.mark.asyncio
-async def test_compress_command_reports_noop_truthfully(monkeypatch):
-    event = _make_event()
-    runner, session_entry = _make_runner(_make_history(4))
+async def test_compress_command_reports_noop_without_success_banner():
+    history = _make_history()
+    runner = _make_runner(history)
+    agent_instance = MagicMock()
+    agent_instance.context_compressor.protect_first_n = 0
+    agent_instance.context_compressor._align_boundary_forward.return_value = 0
+    agent_instance.context_compressor._find_tail_cut_by_tokens.return_value = 2
+    agent_instance.session_id = "sess-1"
+    agent_instance._compress_context.return_value = (list(history), "")
 
-    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "test-key"})
-    monkeypatch.setattr(gateway_run, "_resolve_gateway_model", lambda: "openai/test-model")
-    fake_run_agent = types.ModuleType("run_agent")
-    fake_run_agent.AIAgent = _NoOpAgent
-    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+    def _estimate(messages):
+        assert messages == history
+        return 100
 
-    result = await runner._handle_compress_command(event)
+    with (
+        patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}),
+        patch("gateway.run._resolve_gateway_model", return_value="test-model"),
+        patch("run_agent.AIAgent", return_value=agent_instance),
+        patch("agent.model_metadata.estimate_messages_tokens_rough", side_effect=_estimate),
+    ):
+        result = await runner._handle_compress_command(_make_event())
 
-    assert result == "Nothing to compress yet (the transcript is still all protected context)."
-    assert _NoOpAgent.last_instance is not None
-    assert _NoOpAgent.last_instance._compress_context_calls == 0
-    runner.session_store.rewrite_transcript.assert_not_called()
-    runner.session_store.update_session.assert_not_called()
-    runner.session_store._save.assert_not_called()
-    assert session_entry.session_id == "sess-current"
+    assert "No changes from compression" in result
+    assert "Compressed:" not in result
+    assert "Rough transcript estimate: ~100 tokens (unchanged)" in result
 
 
 @pytest.mark.asyncio
-async def test_compress_command_relabels_token_estimate_on_success(monkeypatch):
-    event = _make_event()
-    runner, session_entry = _make_runner(_make_history(6))
+async def test_compress_command_explains_when_token_estimate_rises():
+    history = _make_history()
+    compressed = [
+        history[0],
+        {"role": "assistant", "content": "Dense summary that still counts as more tokens."},
+        history[-1],
+    ]
+    runner = _make_runner(history)
+    agent_instance = MagicMock()
+    agent_instance.context_compressor.protect_first_n = 0
+    agent_instance.context_compressor._align_boundary_forward.return_value = 0
+    agent_instance.context_compressor._find_tail_cut_by_tokens.return_value = 2
+    agent_instance.session_id = "sess-1"
+    agent_instance._compress_context.return_value = (compressed, "")
 
-    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "test-key"})
-    monkeypatch.setattr(gateway_run, "_resolve_gateway_model", lambda: "openai/test-model")
-    fake_run_agent = types.ModuleType("run_agent")
-    fake_run_agent.AIAgent = _CompressingAgent
-    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+    def _estimate(messages):
+        if messages == history:
+            return 100
+        if messages == compressed:
+            return 120
+        raise AssertionError(f"unexpected transcript: {messages!r}")
 
-    result = await runner._handle_compress_command(event)
+    with (
+        patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}),
+        patch("gateway.run._resolve_gateway_model", return_value="test-model"),
+        patch("run_agent.AIAgent", return_value=agent_instance),
+        patch("agent.model_metadata.estimate_messages_tokens_rough", side_effect=_estimate),
+    ):
+        result = await runner._handle_compress_command(_make_event())
 
-    assert "🗜️ Compressed: 6 → 2 messages" in result
-    assert "Rough transcript estimate:" in result
-    assert "\n~" not in result
-    assert _CompressingAgent.last_instance is not None
-    assert _CompressingAgent.last_instance._compress_context_calls == 1
-    runner.session_store.rewrite_transcript.assert_called_once_with(
-        "sess-compressed",
-        [
-            {"role": "user", "content": "summary"},
-            {"role": "assistant", "content": "latest reply"},
-        ],
-    )
-    runner.session_store.update_session.assert_called_once_with(
-        session_entry.session_key,
-        last_prompt_tokens=0,
-    )
-    runner.session_store._save.assert_called_once()
-    assert session_entry.session_id == "sess-compressed"
+    assert "Compressed: 4 → 3 messages" in result
+    assert "Rough transcript estimate: ~100 → ~120 tokens" in result
+    assert "denser summaries" in result

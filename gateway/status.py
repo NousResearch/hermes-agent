@@ -158,6 +158,8 @@ def _build_runtime_status_record() -> dict[str, Any]:
     payload.update({
         "gateway_state": "starting",
         "exit_reason": None,
+        "restart_requested": False,
+        "active_agents": 0,
         "platforms": {},
         "updated_at": _utc_now_iso(),
     })
@@ -218,6 +220,8 @@ def write_runtime_status(
     *,
     gateway_state: Optional[str] = None,
     exit_reason: Optional[str] = None,
+    restart_requested: Optional[bool] = None,
+    active_agents: Optional[int] = None,
     platform: Optional[str] = None,
     platform_state: Optional[str] = None,
     error_code: Optional[str] = None,
@@ -236,6 +240,10 @@ def write_runtime_status(
         payload["gateway_state"] = gateway_state
     if exit_reason is not None:
         payload["exit_reason"] = exit_reason
+    if restart_requested is not None:
+        payload["restart_requested"] = bool(restart_requested)
+    if active_agents is not None:
+        payload["active_agents"] = max(0, int(active_agents))
 
     if platform is not None:
         platform_payload = payload["platforms"].get(platform, {})

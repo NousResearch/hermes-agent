@@ -2496,10 +2496,35 @@ def run_doctor(args):
         else:
             check_info("Vercel persistence: ephemeral filesystem")
 
+    # Apple Container (if using apple_container backend)
+    if terminal_env == "apple_container":
+        container_bin = shutil.which("container")
+        if not container_bin:
+            for _path in ["/opt/homebrew/bin/container", "/usr/local/bin/container"]:
+                if os.path.isfile(_path) and os.access(_path, os.X_OK):
+                    container_bin = _path
+                    break
+        if container_bin:
+            try:
+                result = subprocess.run(
+                    [container_bin, "system", "status"],
+                    capture_output=True, text=True, timeout=10,
+                )
+            except subprocess.TimeoutExpired:
+                result = None
+            if result is not None and result.returncode == 0 and "running" in result.stdout.lower():
+                check_ok("Apple Container", "(system running)")
+            else:
+                check_fail("Apple Container system not running")
+                issues.append("Start with: container system start")
+        else:
+            check_fail("container CLI not found", "(required for TERMINAL_ENV=apple_container)")
+            issues.append("Install: brew install container (requires macOS 26+)")
+
     # Plugin-registered terminal backends (if one is the active backend)
     if terminal_env not in {
         "local", "docker", "singularity", "modal", "managed_modal",
-        "daytona", "vercel_sandbox", "ssh",
+        "daytona", "vercel_sandbox", "ssh", "apple_container",
     }:
         try:
             from hermes_cli.plugins import discover_plugins

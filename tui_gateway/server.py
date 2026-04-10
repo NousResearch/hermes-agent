@@ -121,7 +121,7 @@ def write_json(obj: dict) -> bool:
 
 def _emit(event: str, sid: str, payload: dict | None = None):
     params = {"type": event, "session_id": sid}
-    if payload:
+    if payload is not None:
         params["payload"] = payload
     write_json({"jsonrpc": "2.0", "method": "event", "params": params})
 
@@ -842,6 +842,8 @@ def _(rid, params: dict) -> dict:
                 cfg.setdefault("display", {})[key] = value
                 nv = value
             _save_cfg(cfg)
+            if key == "skin":
+                _emit("skin.changed", "", resolve_skin())
             return _ok(rid, {"key": key, "value": nv})
         except Exception as e:
             return _err(rid, 5001, str(e))
@@ -868,6 +870,8 @@ def _(rid, params: dict) -> dict:
         return _ok(rid, {"config": _load_cfg()})
     if key == "prompt":
         return _ok(rid, {"prompt": _load_cfg().get("custom_prompt", "")})
+    if key == "skin":
+        return _ok(rid, {"value": _load_cfg().get("display", {}).get("skin", "default")})
     return _err(rid, 4002, f"unknown config key: {key}")
 
 

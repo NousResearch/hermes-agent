@@ -1799,7 +1799,7 @@ def _setup_standard_platform(platform: dict):
                     print_warning("  Open access enabled — anyone can use your bot!")
                 elif access_idx == 1:
                     print_success("  DM pairing mode — users will receive a code to request access.")
-                    print_info("  Approve with: hermes pairing approve {platform} {code}")
+                    print_info("  Approve with: hermes pairing approve <platform> <code>")
                 else:
                     print_info("  Skipped — configure later with 'hermes gateway setup'")
             continue

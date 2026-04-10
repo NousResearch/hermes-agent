@@ -47,6 +47,10 @@ class _Mem9Client:
 
     Uses ``httpx`` (already a core dependency) for HTTP.  All methods are
     synchronous — background threading is handled by the provider layer.
+
+    The ``agent_id`` is sent as the ``X-Mnemo-Agent-Id`` header and is what
+    the server uses to set ``Memory.Source``.  Per-user isolation works by
+    setting this header to a user-specific value (see ``Mem9MemoryProvider``).
     """
 
     def __init__(self, api_url: str, api_key: str, agent_id: str):
@@ -68,59 +72,45 @@ class _Mem9Client:
 
     @staticmethod
     def _safe_json(resp) -> dict:
-        """Parse JSON from response, returning {} for empty/non-JSON bodies."""
-        if resp.status_code in (202, 204) and not resp.content.strip():
-            return {}
+        """Parse JSON from response, returning {} for non-JSON bodies."""
         try:
             return resp.json()
         except Exception:
             return {}
 
     def store(self, content: str, *, tags: List[str] = None,
-              session_id: str = "", source: str = "") -> dict:
-        """Store a memory (content mode, server may return 202 with empty body)."""
+              session_id: str = "") -> dict:
+        """Store a memory. Server returns 202 with ``{"status":"accepted"}``."""
         body: dict = {"content": content}
         if tags:
             body["tags"] = tags
         if session_id:
             body["session_id"] = session_id
-        if source:
-            body["source"] = source
         resp = self._http.post(f"{self._base}/v1alpha2/mem9s/memories", json=body)
         resp.raise_for_status()
         return self._safe_json(resp)
 
-    def ingest(self, messages: List[dict], *, session_id: str = "",
-               source: str = "") -> dict:
+    def ingest(self, messages: List[dict], *, session_id: str = "") -> dict:
         """Ingest a conversation turn for server-side fact extraction (202)."""
         body: dict = {"messages": messages}
         if session_id:
             body["session_id"] = session_id
-        if source:
-            body["source"] = source
         resp = self._http.post(f"{self._base}/v1alpha2/mem9s/memories", json=body)
         resp.raise_for_status()
         return self._safe_json(resp)
 
-    def search(self, query: str, *, limit: int = 10, tags: str = "",
-               source: str = "") -> dict:
-        """Search memories by semantic similarity."""
+    def search(self, query: str, *, limit: int = 10, tags: str = "") -> dict:
+        """Search memories by semantic similarity.
+
+        User scoping is handled by the ``X-Mnemo-Agent-Id`` header set at
+        client construction time — the server uses this to derive the source
+        filter internally.
+        """
         params: dict = {"q": query, "limit": str(limit)}
         if tags:
             params["tags"] = tags
-        if source:
-            params["source"] = source
         resp = self._http.get(
             f"{self._base}/v1alpha2/mem9s/memories", params=params,
-        )
-        resp.raise_for_status()
-        return resp.json()
-
-    def list_recent(self, limit: int = 20) -> dict:
-        """List recent memories (no query filter)."""
-        resp = self._http.get(
-            f"{self._base}/v1alpha2/mem9s/memories",
-            params={"limit": str(limit)},
         )
         resp.raise_for_status()
         return resp.json()
@@ -128,9 +118,9 @@ class _Mem9Client:
     def get(self, memory_id: str) -> Optional[dict]:
         """Get a single memory by ID.
 
-        Note: By-ID operations are scoped at the tenant level (API key).
-        Cross-user isolation is enforced by source-filtering on search —
-        users never see IDs belonging to other source scopes.
+        By-ID operations are scoped at the tenant level (API key).
+        Per-user isolation is enforced at the ``X-Mnemo-Agent-Id`` header
+        level — the server sets Memory.Source from this header.
         """
         resp = self._http.get(
             f"{self._base}/v1alpha2/mem9s/memories/{memory_id}",
@@ -176,9 +166,8 @@ class _Mem9Client:
     def autoprovision(api_url: str = _DEFAULT_API_URL) -> dict:
         """Create a new mem9 tenant via POST /v1alpha1/mem9s.
 
-        Returns ``{"id": "...", "claim_url": "..."}`` on success.
-        The returned ``id`` doubles as both tenant ID and API key for
-        v1alpha2 header-based auth.
+        Returns ``{"id": "..."}`` on success.  The returned ``id``
+        doubles as both tenant ID and API key for v1alpha2 header auth.
         """
         import httpx
 
@@ -250,7 +239,7 @@ SEARCH_SCHEMA = {
         "type": "object",
         "properties": {
             "query": {"type": "string", "description": "What to search for."},
-            "limit": {"type": "integer", "description": "Max results (default: 10, max: 50)."},
+            "limit": {"type": "integer", "description": "Max results (default: 10, max: 50).", "maximum": 50},
         },
         "required": ["query"],
     },
@@ -318,7 +307,8 @@ class Mem9MemoryProvider(MemoryProvider):
         self._prefetch_lock = threading.Lock()
         self._prefetch_thread: Optional[threading.Thread] = None
         self._sync_thread: Optional[threading.Thread] = None
-        # Circuit breaker
+        # Circuit breaker (protected by _breaker_lock for thread safety)
+        self._breaker_lock = threading.Lock()
         self._consecutive_failures = 0
         self._breaker_open_until = 0.0
 
@@ -394,15 +384,11 @@ class Mem9MemoryProvider(MemoryProvider):
             try:
                 result = _Mem9Client.autoprovision(api_url)
                 api_key = result.get("id", "")
-                claim_url = result.get("claim_url", "")
                 if not api_key:
                     print("  ✗ Provisioning failed: no tenant ID returned.")
                     return
                 env_writes["MEM9_API_KEY"] = api_key
                 print(f"  ✓ Tenant created: {api_key[:12]}...")
-                if claim_url:
-                    print(f"\n  Claim your tenant at: {claim_url}")
-                    print("  (Optional — links this tenant to your account)")
             except Exception as e:
                 print(f"  ✗ Provisioning failed: {e}")
                 print("  Try manual setup or check https://app.mem9.ai")
@@ -470,22 +456,39 @@ class Mem9MemoryProvider(MemoryProvider):
 
     # -- lifecycle -----------------------------------------------------------
 
+    def _get_client(self) -> Optional[_Mem9Client]:
+        """Lazily create the HTTP client on first use.
+
+        This avoids connection-pool leaks if the provider is replaced or
+        an error occurs before shutdown() is called.
+        """
+        if self._client is not None:
+            return self._client
+        with self._client_lock:
+            if self._client is not None:
+                return self._client
+            api_key = self._config.get("api_key", "")
+            api_url = self._config.get("api_url", _DEFAULT_API_URL)
+            if not api_key:
+                return None
+            # Use _user_id as X-Mnemo-Agent-Id so the server sets
+            # Memory.Source per user — this is the real isolation mechanism.
+            self._client = _Mem9Client(api_url, api_key, self._user_id)
+            return self._client
+
     def initialize(self, session_id: str, **kwargs) -> None:
         self._config = _load_config()
         self._session_id = session_id
         self._agent_id = self._config.get("agent_id", _DEFAULT_AGENT_ID)
         # Prefer gateway-provided user_id for per-user memory scoping;
         # fall back to agent_identity (CLI profile), then agent_id.
+        # This value becomes the X-Mnemo-Agent-Id header which the server
+        # uses to set Memory.Source — the real per-user isolation mechanism.
         self._user_id = (
             kwargs.get("user_id")
             or kwargs.get("agent_identity")
             or self._agent_id
         )
-
-        api_key = self._config.get("api_key", "")
-        api_url = self._config.get("api_url", _DEFAULT_API_URL)
-        if api_key:
-            self._client = _Mem9Client(api_url, api_key, self._agent_id)
 
     def shutdown(self) -> None:
         for t in (self._prefetch_thread, self._sync_thread):
@@ -499,63 +502,49 @@ class Mem9MemoryProvider(MemoryProvider):
     # -- circuit breaker -----------------------------------------------------
 
     def _is_breaker_open(self) -> bool:
-        if self._consecutive_failures < _BREAKER_THRESHOLD:
-            return False
-        if time.monotonic() >= self._breaker_open_until:
-            self._consecutive_failures = 0
-            return False
-        return True
+        with self._breaker_lock:
+            if self._consecutive_failures < _BREAKER_THRESHOLD:
+                return False
+            if time.monotonic() >= self._breaker_open_until:
+                self._consecutive_failures = 0
+                return False
+            return True
 
     def _record_success(self) -> None:
-        self._consecutive_failures = 0
+        with self._breaker_lock:
+            self._consecutive_failures = 0
 
     def _record_failure(self) -> None:
-        self._consecutive_failures += 1
-        if self._consecutive_failures >= _BREAKER_THRESHOLD:
-            self._breaker_open_until = time.monotonic() + _BREAKER_COOLDOWN_SECS
-            logger.warning(
-                "mem9 circuit breaker tripped after %d failures. "
-                "Pausing API calls for %ds.",
-                self._consecutive_failures, _BREAKER_COOLDOWN_SECS,
-            )
-
-    # -- scope helpers (centralised to avoid source-passing drift) -----------
-
-    def _write_scope(self) -> dict:
-        """Scope params for write operations (store, ingest)."""
-        scope: dict = {"session_id": self._session_id}
-        if self._user_id:
-            scope["source"] = self._user_id
-        return scope
-
-    def _read_scope(self) -> dict:
-        """Scope params for read operations (search, prefetch)."""
-        scope: dict = {}
-        if self._user_id:
-            scope["source"] = self._user_id
-        return scope
+        with self._breaker_lock:
+            self._consecutive_failures += 1
+            if self._consecutive_failures >= _BREAKER_THRESHOLD:
+                self._breaker_open_until = time.monotonic() + _BREAKER_COOLDOWN_SECS
+                logger.warning(
+                    "mem9 circuit breaker tripped after %d failures. "
+                    "Pausing API calls for %ds.",
+                    self._consecutive_failures, _BREAKER_COOLDOWN_SECS,
+                )
 
     # -- system prompt / prefetch / sync -------------------------------------
 
     def system_prompt_block(self) -> str:
-        if not self._client:
+        if not self._config.get("api_key"):
             return ""
         return (
             "# mem9 Memory\n"
-            f"Active. Agent: {self._agent_id}.\n"
+            f"Active. Agent: {self._user_id}.\n"
             "Use mem9_search to find memories, mem9_store to save facts, "
             "mem9_get/mem9_update/mem9_delete for CRUD."
         )
 
     def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
-        if not self._client or self._is_breaker_open():
+        client = self._get_client()
+        if not client or self._is_breaker_open():
             return
 
         def _run():
             try:
-                result = self._client.search(
-                    query[:200], limit=5, **self._read_scope(),
-                )
+                result = client.search(query[:200], limit=5)
                 memories = result.get("memories") or []
                 if memories:
                     lines = []
@@ -589,7 +578,8 @@ class Mem9MemoryProvider(MemoryProvider):
     def sync_turn(self, user_content: str, assistant_content: str,
                   *, session_id: str = "") -> None:
         """Send the turn to mem9 for server-side fact extraction."""
-        if not self._client or self._is_breaker_open():
+        client = self._get_client()
+        if not client or self._is_breaker_open():
             return
 
         def _sync():
@@ -598,7 +588,7 @@ class Mem9MemoryProvider(MemoryProvider):
                     {"role": "user", "content": user_content},
                     {"role": "assistant", "content": assistant_content},
                 ]
-                self._client.ingest(messages, **self._write_scope())
+                client.ingest(messages, session_id=self._session_id)
                 self._record_success()
             except Exception as e:
                 self._record_failure()
@@ -618,7 +608,7 @@ class Mem9MemoryProvider(MemoryProvider):
 
     def handle_tool_call(self, tool_name: str, args: Dict[str, Any],
                          **kwargs) -> str:
-        if not self._client:
+        if not self._get_client():
             return tool_error("mem9 is not configured")
 
         if self._is_breaker_open():
@@ -645,7 +635,7 @@ class Mem9MemoryProvider(MemoryProvider):
         tags = args.get("tags") or []
         try:
             result = self._client.store(
-                content, tags=tags, **self._write_scope(),
+                content, tags=tags, session_id=self._session_id,
             )
             self._record_success()
             return json.dumps({"stored": True, "id": result.get("id", "")})
@@ -659,9 +649,7 @@ class Mem9MemoryProvider(MemoryProvider):
             return tool_error("Missing required parameter: query")
         limit = min(int(args.get("limit", 10) or 10), 50)
         try:
-            result = self._client.search(
-                query, limit=limit, **self._read_scope(),
-            )
+            result = self._client.search(query, limit=limit)
             self._record_success()
             memories = result.get("memories") or []
             items = []

@@ -79,13 +79,18 @@ class TestProviderMetadata:
             "mem9_update", "mem9_delete",
         ]
 
+    def test_search_schema_has_limit_maximum(self):
+        p = Mem9MemoryProvider()
+        search = [s for s in p.get_tool_schemas() if s["name"] == "mem9_search"][0]
+        assert search["parameters"]["properties"]["limit"]["maximum"] == 50
+
     def test_config_schema(self):
         p = Mem9MemoryProvider()
         keys = [f["key"] for f in p.get_config_schema()]
         assert "api_key" in keys
         assert "api_url" in keys
 
-    def test_system_prompt_empty_without_client(self):
+    def test_system_prompt_empty_without_key(self):
         p = Mem9MemoryProvider()
         assert p.system_prompt_block() == ""
 
@@ -176,8 +181,9 @@ class TestToolDispatch:
         assert "error" in result
 
     def test_breaker_open_returns_error(self, provider):
-        provider._consecutive_failures = 10
-        provider._breaker_open_until = float("inf")
+        with provider._breaker_lock:
+            provider._consecutive_failures = 10
+            provider._breaker_open_until = float("inf")
         result = json.loads(provider.handle_tool_call(
             "mem9_search", {"query": "test"},
         ))
@@ -241,16 +247,12 @@ class TestAutoprovision:
         import httpx
         mock_resp = MagicMock(spec=httpx.Response)
         mock_resp.status_code = 200
-        mock_resp.json.return_value = {
-            "id": "tenant-abc-123",
-            "claim_url": "https://app.mem9.ai/claim/tenant-abc-123",
-        }
+        mock_resp.json.return_value = {"id": "tenant-abc-123"}
         mock_resp.raise_for_status = MagicMock()
 
         with patch("httpx.post", return_value=mock_resp) as mock_post:
             result = _Mem9Client.autoprovision("https://api.mem9.ai")
         assert result["id"] == "tenant-abc-123"
-        assert "claim_url" in result
         mock_post.assert_called_once_with(
             "https://api.mem9.ai/v1alpha1/mem9s",
             timeout=8.0,
@@ -271,7 +273,7 @@ class TestAutoprovision:
 
 
 # ---------------------------------------------------------------------------
-# User scoping (source isolation)
+# User scoping via X-Mnemo-Agent-Id header
 # ---------------------------------------------------------------------------
 
 class TestUserScoping:
@@ -302,60 +304,103 @@ class TestUserScoping:
             p.initialize("s", user_id="u", agent_identity="ai")
         assert p._user_id == "u"
 
-    def test_store_passes_source(self):
-        p = Mem9MemoryProvider()
-        p._client = MagicMock(spec=_Mem9Client)
-        p._client.store.return_value = {"id": "m1"}
-        p._user_id = "user-99"
-        p._session_id = "sess"
-        p.handle_tool_call("mem9_store", {"content": "hello"})
-        _, kwargs = p._client.store.call_args
-        assert kwargs["source"] == "user-99"
+    def test_client_uses_user_id_as_agent_header(self):
+        """The httpx client should set X-Mnemo-Agent-Id to user_id."""
+        with patch.dict(os.environ, {"MEM9_API_KEY": "sk-test"}, clear=True):
+            p = Mem9MemoryProvider()
+            p.initialize("s", user_id="gateway-user-7")
+            client = p._get_client()
+        assert client is not None
+        assert client._agent_id == "gateway-user-7"
+        assert client._http.headers["X-Mnemo-Agent-Id"] == "gateway-user-7"
+        client.close()
 
-    def test_search_passes_source(self):
-        p = Mem9MemoryProvider()
-        p._client = MagicMock(spec=_Mem9Client)
-        p._client.search.return_value = {"memories": [], "total": 0}
-        p._user_id = "user-99"
-        p.handle_tool_call("mem9_search", {"query": "test"})
-        _, kwargs = p._client.search.call_args
-        assert kwargs["source"] == "user-99"
+    def test_different_users_get_different_agent_ids(self):
+        """Each user_id should produce a client with a unique agent header."""
+        with patch.dict(os.environ, {"MEM9_API_KEY": "sk-test"}, clear=True):
+            p1 = Mem9MemoryProvider()
+            p1.initialize("s1", user_id="alice")
+            p2 = Mem9MemoryProvider()
+            p2.initialize("s2", user_id="bob")
+        c1, c2 = p1._get_client(), p2._get_client()
+        assert c1._http.headers["X-Mnemo-Agent-Id"] == "alice"
+        assert c2._http.headers["X-Mnemo-Agent-Id"] == "bob"
+        c1.close()
+        c2.close()
 
 
 # ---------------------------------------------------------------------------
-# Safe JSON parsing (202/204 handling)
+# Lazy client init (#4 — no leaked httpx.Client on failure paths)
+# ---------------------------------------------------------------------------
+
+class TestLazyClientInit:
+    def test_client_not_created_on_initialize(self):
+        """initialize() should NOT eagerly create the httpx client."""
+        with patch.dict(os.environ, {"MEM9_API_KEY": "sk-test"}, clear=True):
+            p = Mem9MemoryProvider()
+            p.initialize("s")
+        assert p._client is None  # lazy — not yet created
+
+    def test_client_created_on_first_get(self):
+        with patch.dict(os.environ, {"MEM9_API_KEY": "sk-test"}, clear=True):
+            p = Mem9MemoryProvider()
+            p.initialize("s")
+            client = p._get_client()
+        assert client is not None
+        assert p._client is client  # now cached
+        client.close()
+
+    def test_no_client_without_api_key(self):
+        with patch.dict(os.environ, {}, clear=True):
+            p = Mem9MemoryProvider()
+            p.initialize("s")
+        assert p._get_client() is None
+
+
+# ---------------------------------------------------------------------------
+# Safe JSON parsing
 # ---------------------------------------------------------------------------
 
 class TestSafeJson:
-    def test_202_empty_body(self):
-        mock_resp = MagicMock()
-        mock_resp.status_code = 202
-        mock_resp.content = b""
-        assert _Mem9Client._safe_json(mock_resp) == {}
-
-    def test_204_empty_body(self):
-        mock_resp = MagicMock()
-        mock_resp.status_code = 204
-        mock_resp.content = b""
-        assert _Mem9Client._safe_json(mock_resp) == {}
-
     def test_200_with_json(self):
         mock_resp = MagicMock()
         mock_resp.status_code = 200
-        mock_resp.content = b'{"id": "m1"}'
         mock_resp.json.return_value = {"id": "m1"}
         assert _Mem9Client._safe_json(mock_resp) == {"id": "m1"}
 
     def test_202_with_json_body(self):
         mock_resp = MagicMock()
         mock_resp.status_code = 202
-        mock_resp.content = b'{"id": "m1"}'
-        mock_resp.json.return_value = {"id": "m1"}
-        assert _Mem9Client._safe_json(mock_resp) == {"id": "m1"}
+        mock_resp.json.return_value = {"status": "accepted"}
+        assert _Mem9Client._safe_json(mock_resp) == {"status": "accepted"}
 
     def test_malformed_json_returns_empty(self):
         mock_resp = MagicMock()
         mock_resp.status_code = 200
-        mock_resp.content = b"not json"
         mock_resp.json.side_effect = ValueError("bad json")
         assert _Mem9Client._safe_json(mock_resp) == {}
+
+
+# ---------------------------------------------------------------------------
+# Post-setup connection test gate
+# ---------------------------------------------------------------------------
+
+class TestPostSetupGate:
+    def test_connection_failure_prevents_config_save(self):
+        """post_setup should NOT save config when connection test fails."""
+        p = Mem9MemoryProvider()
+        config = {}
+        with patch.dict(os.environ, {}, clear=True), \
+             patch("plugins.memory.mem9._Mem9Client.autoprovision",
+                   return_value={"id": "tenant-123"}), \
+             patch("plugins.memory.mem9._Mem9Client.search",
+                   side_effect=ConnectionError("refused")), \
+             patch("plugins.memory.mem9._Mem9Client.close"), \
+             patch("hermes_cli.memory_setup._curses_select", return_value=0), \
+             patch("hermes_cli.memory_setup._write_env_vars"), \
+             patch("hermes_cli.config.save_config") as mock_save, \
+             patch("builtins.input", return_value=""):
+            p.post_setup("/tmp/hermes", config)
+        # save_config should NOT have been called
+        mock_save.assert_not_called()
+        assert "memory" not in config

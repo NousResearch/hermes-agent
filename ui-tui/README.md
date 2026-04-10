@@ -101,8 +101,10 @@ Current input behavior is split across `app.tsx`, `components/textInput.tsx`, an
 | modified `Left/Right`           | Move by word when the terminal sends `Ctrl` or `Meta` with the arrow key                                                                                |
 | `Home` / `Ctrl+A`               | Start of line                                                                                                                                           |
 | `End` / `Ctrl+E`                | End of line                                                                                                                                             |
-| `Backspace` / `Delete`          | Delete the character to the left of the cursor                                                                                                          |
-| modified `Backspace` / `Delete` | Delete the previous word                                                                                                                                |
+| `Backspace`                     | Delete the character to the left of the cursor                                                                                                          |
+| `Delete`                        | Delete the character to the right of the cursor                                                                                                         |
+| modified `Backspace`            | Delete the previous word                                                                                                                                |
+| modified `Delete`               | Delete the next word                                                                                                                                    |
 | `Ctrl+W`                        | Delete the previous word                                                                                                                                |
 | `Ctrl+U`                        | Delete from the cursor back to the start of the line                                                                                                    |
 | `Ctrl+K`                        | Delete from the cursor to the end of the line                                                                                                           |

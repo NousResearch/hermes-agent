@@ -594,13 +594,20 @@ def camofox_console(clear: bool = False, task_id: Optional[str] = None) -> str:
 # ---------------------------------------------------------------------------
 
 def cleanup_all_camofox_sessions() -> None:
-    """Close all active camofox sessions."""
+    """Close all active camofox sessions.
+
+    When managed persistence is enabled, only clears local tracking state
+    without destroying server-side browser profiles (cookies, logins, etc.
+    must survive).  Ephemeral sessions are fully deleted on the server.
+    """
+    managed = _managed_persistence_enabled()
     with _sessions_lock:
         sessions = list(_sessions.items())
-    for task_id, session in sessions:
-        try:
-            _delete(f"/sessions/{session['user_id']}")
-        except Exception:
-            pass
+    if not managed:
+        for _task_id, session in sessions:
+            try:
+                _delete(f"/sessions/{session['user_id']}")
+            except Exception:
+                pass
     with _sessions_lock:
         _sessions.clear()

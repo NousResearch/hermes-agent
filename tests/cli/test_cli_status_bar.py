@@ -41,6 +41,7 @@ def _attach_agent(
         session_completion_tokens=completion_tokens,
         session_total_tokens=total_tokens,
         session_api_calls=api_calls,
+        get_rate_limit_state=lambda: None,
         context_compressor=SimpleNamespace(
             last_prompt_tokens=context_tokens,
             context_length=context_length,
@@ -204,6 +205,59 @@ class TestCLIStatusBar:
 
         assert "⚕" in text
         assert "claude-sonnet-4-20250514" in text
+
+    def test_minimal_tui_chrome_threshold(self):
+        cli_obj = _make_cli()
+
+        assert cli_obj._use_minimal_tui_chrome(width=63) is True
+        assert cli_obj._use_minimal_tui_chrome(width=64) is False
+
+    def test_bottom_input_rule_hides_on_narrow_terminals(self):
+        cli_obj = _make_cli()
+
+        assert cli_obj._tui_input_rule_height("top", width=50) == 1
+        assert cli_obj._tui_input_rule_height("bottom", width=50) == 0
+        assert cli_obj._tui_input_rule_height("bottom", width=90) == 1
+
+    def test_agent_spacer_reclaimed_on_narrow_terminals(self):
+        cli_obj = _make_cli()
+        cli_obj._agent_running = True
+
+        assert cli_obj._agent_spacer_height(width=50) == 0
+        assert cli_obj._agent_spacer_height(width=90) == 1
+        cli_obj._agent_running = False
+        assert cli_obj._agent_spacer_height(width=90) == 0
+
+    def test_spinner_line_hidden_on_narrow_terminals(self):
+        cli_obj = _make_cli()
+        cli_obj._spinner_text = "thinking"
+
+        assert cli_obj._spinner_widget_height(width=50) == 0
+        assert cli_obj._spinner_widget_height(width=90) == 1
+        cli_obj._spinner_text = ""
+        assert cli_obj._spinner_widget_height(width=90) == 0
+
+    def test_voice_status_bar_compacts_on_narrow_terminals(self):
+        cli_obj = _make_cli()
+        cli_obj._voice_mode = True
+        cli_obj._voice_recording = False
+        cli_obj._voice_processing = False
+        cli_obj._voice_tts = True
+        cli_obj._voice_continuous = True
+
+        fragments = cli_obj._get_voice_status_fragments(width=50)
+
+        assert fragments == [("class:voice-status", " 🎤 Ctrl+B ")]
+
+    def test_voice_recording_status_bar_compacts_on_narrow_terminals(self):
+        cli_obj = _make_cli()
+        cli_obj._voice_mode = True
+        cli_obj._voice_recording = True
+        cli_obj._voice_processing = False
+
+        fragments = cli_obj._get_voice_status_fragments(width=50)
+
+        assert fragments == [("class:voice-status-recording", " ● REC ")]
 
 
 class TestCLIUsageReport:

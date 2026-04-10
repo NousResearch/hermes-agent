@@ -2572,8 +2572,119 @@ _OPENCLAW_SCRIPT = (
 )
 
 
+def _load_openclaw_migration_module():
+    """Load the openclaw_to_hermes migration script as a module.
+
+    Returns the loaded module, or None if the script can't be loaded.
+    """
+    if not _OPENCLAW_SCRIPT.exists():
+        return None
+
+    spec = importlib.util.spec_from_file_location(
+        "openclaw_to_hermes", _OPENCLAW_SCRIPT
+    )
+    if spec is None or spec.loader is None:
+        return None
+
+    mod = importlib.util.module_from_spec(spec)
+    # Register in sys.modules so @dataclass can resolve the module
+    # (Python 3.11+ requires this for dynamically loaded modules)
+    import sys as _sys
+    _sys.modules[spec.name] = mod
+    try:
+        spec.loader.exec_module(mod)
+    except Exception:
+        _sys.modules.pop(spec.name, None)
+        raise
+    return mod
+
+
+# Item kinds that represent high-impact changes warranting explicit warnings.
+# Gateway tokens/channels can hijack messaging platforms from the old agent.
+# Config values may have different semantics between OpenClaw and Hermes.
+# Instruction/context files (.md) can contain incompatible setup procedures.
+_HIGH_IMPACT_KIND_KEYWORDS = {
+    "gateway": "⚠ Gateway/messaging — this will configure Hermes to use your OpenClaw messaging channels",
+    "telegram": "⚠ Telegram — this will point Hermes at your OpenClaw Telegram bot",
+    "slack": "⚠ Slack — this will point Hermes at your OpenClaw Slack workspace",
+    "discord": "⚠ Discord — this will point Hermes at your OpenClaw Discord bot",
+    "whatsapp": "⚠ WhatsApp — this will point Hermes at your OpenClaw WhatsApp connection",
+    "config": "⚠ Config values — OpenClaw settings may not map 1:1 to Hermes equivalents",
+    "soul": "⚠ Instruction file — may contain OpenClaw-specific setup/restart procedures",
+    "memory": "⚠ Memory/context file — may reference OpenClaw-specific infrastructure",
+    "context": "⚠ Context file — may contain OpenClaw-specific instructions",
+}
+
+
+def _print_migration_preview(report: dict):
+    """Print a detailed dry-run preview of what migration would do.
+
+    Groups items by category and adds explicit warnings for high-impact
+    changes like gateway token takeover and config value differences.
+    """
+    items = report.get("items", [])
+    if not items:
+        print_info("Nothing to migrate.")
+        return
+
+    migrated_items = [i for i in items if i.get("status") == "migrated"]
+    conflict_items = [i for i in items if i.get("status") == "conflict"]
+    skipped_items = [i for i in items if i.get("status") == "skipped"]
+
+    warnings_shown = set()
+
+    if migrated_items:
+        print(color("  Would import:", Colors.GREEN))
+        for item in migrated_items:
+            kind = item.get("kind", "unknown")
+            dest = item.get("destination", "")
+            if dest:
+                dest_short = str(dest).replace(str(Path.home()), "~")
+                print(f"      {kind:<22s} → {dest_short}")
+            else:
+                print(f"      {kind}")
+
+            # Check for high-impact items and collect warnings
+            kind_lower = kind.lower()
+            dest_lower = str(dest).lower()
+            for keyword, warning in _HIGH_IMPACT_KIND_KEYWORDS.items():
+                if keyword in kind_lower or keyword in dest_lower:
+                    warnings_shown.add(warning)
+        print()
+
+    if conflict_items:
+        print(color("  Would overwrite (conflicts with existing Hermes config):", Colors.YELLOW))
+        for item in conflict_items:
+            kind = item.get("kind", "unknown")
+            reason = item.get("reason", "already exists")
+            print(f"      {kind:<22s}  {reason}")
+        print()
+
+    if skipped_items:
+        print(color("  Would skip:", Colors.DIM))
+        for item in skipped_items:
+            kind = item.get("kind", "unknown")
+            reason = item.get("reason", "")
+            print(f"      {kind:<22s}  {reason}")
+        print()
+
+    # Print collected warnings
+    if warnings_shown:
+        print(color("  ── Warnings ──", Colors.YELLOW))
+        for warning in sorted(warnings_shown):
+            print(color(f"    {warning}", Colors.YELLOW))
+        print()
+        print(color("  Note: OpenClaw config values may have different semantics in Hermes.", Colors.YELLOW))
+        print(color("  For example, OpenClaw's tool_call_execution: \"auto\" ≠ Hermes's yolo mode.", Colors.YELLOW))
+        print(color("  Instruction files (.md) from OpenClaw may contain incompatible procedures.", Colors.YELLOW))
+        print()
+
+
 def _offer_openclaw_migration(hermes_home: Path) -> bool:
     """Detect ~/.openclaw and offer to migrate during first-time setup.
+
+    Runs a dry-run first to show the user exactly what would be imported,
+    overwritten, or taken over. Only executes after explicit confirmation.
 
     Returns True if migration ran successfully, False otherwise.
     """
@@ -2587,12 +2698,12 @@ def _offer_openclaw_migration(hermes_home: Path) -> bool:
     print()
     print_header("OpenClaw Installation Detected")
     print_info(f"Found OpenClaw data at {openclaw_dir}")
-    print_info("Hermes can import your settings, memories, skills, and API keys.")
+    print_info("Hermes can preview what would be imported before making any changes.")
     print()
 
-    if not prompt_yes_no("Would you like to import from OpenClaw?", default=True):
+    if not prompt_yes_no("Would you like to see what can be imported?", default=True):
         print_info(
-            "Skipping migration. You can run it later via the openclaw-migration skill."
+            "Skipping migration. You can run it later with: hermes claw migrate --dry-run"
         )
         return False
 
@@ -2601,34 +2712,71 @@ def _offer_openclaw_migration(hermes_home: Path) -> bool:
     if not config_path.exists():
         save_config(load_config())
 
-    # Dynamically load the migration script
+    # Load the migration module
     try:
-        spec = importlib.util.spec_from_file_location(
-            "openclaw_to_hermes", _OPENCLAW_SCRIPT
-        )
-        if spec is None or spec.loader is None:
+        mod = _load_openclaw_migration_module()
+        if mod is None:
             print_warning("Could not load migration script.")
             return False
+    except Exception as e:
+        print_warning(f"Could not load migration script: {e}")
+        logger.debug("OpenClaw migration module load error", exc_info=True)
+        return False
 
-        mod = importlib.util.module_from_spec(spec)
-        # Register in sys.modules so @dataclass can resolve the module
-        # (Python 3.11+ requires this for dynamically loaded modules)
-        import sys as _sys
-        _sys.modules[spec.name] = mod
-        try:
-            spec.loader.exec_module(mod)
-        except Exception:
-            _sys.modules.pop(spec.name, None)
-            raise
-
-        # Run migration with the "full" preset, execute mode, no overwrite
+    # ── Phase 1: Dry-run preview ──
+    try:
         selected = mod.resolve_selected_options(None, None, preset="full")
+        dry_migrator = mod.Migrator(
+            source_root=openclaw_dir.resolve(),
+            target_root=hermes_home.resolve(),
+            execute=False,  # dry-run — no files modified
+            workspace_target=None,
+            overwrite=True,  # show everything including conflicts
+            migrate_secrets=True,
+            output_dir=None,
+            selected_options=selected,
+            preset_name="full",
+        )
+        preview_report = dry_migrator.migrate()
+    except Exception as e:
+        print_warning(f"Migration preview failed: {e}")
+        logger.debug("OpenClaw migration preview error", exc_info=True)
+        return False
+
+    # Display the full preview
+    preview_summary = preview_report.get("summary", {})
+    preview_count = preview_summary.get("migrated", 0)
+
+    if preview_count == 0:
+        print()
+        print_info("Nothing to import from OpenClaw.")
+        return False
+
+    print()
+    print_header(f"Migration Preview — {preview_count} item(s) would be imported")
+    print_info("No changes have been made yet. Review the list below:")
+    print()
+    _print_migration_preview(preview_report)
+
+    # ── Phase 2: Confirm and execute ──
+    if not prompt_yes_no("Proceed with migration?", default=False):
+        print_info(
+            "Migration cancelled. You can run it later with: hermes claw migrate"
+        )
+        print_info(
+            "Use --dry-run to preview again, or --preset minimal for a lighter import."
+        )
+        return False
+
+    # Execute the migration — overwrite=False so existing Hermes configs are
+    # preserved. The user saw the preview; conflicts are skipped by default.
+    try:
         migrator = mod.Migrator(
             source_root=openclaw_dir.resolve(),
             target_root=hermes_home.resolve(),
             execute=True,
             workspace_target=None,
-            overwrite=True,
+            overwrite=False,  # preserve existing Hermes config
             migrate_secrets=True,
             output_dir=None,
             selected_options=selected,
@@ -2640,7 +2788,7 @@ def _offer_openclaw_migration(hermes_home: Path) -> bool:
         logger.debug("OpenClaw migration error", exc_info=True)
         return False
 
-    # Print summary
+    # Print final summary
     summary = report.get("summary", {})
     migrated = summary.get("migrated", 0)
     skipped = summary.get("skipped", 0)
@@ -2651,7 +2799,7 @@ def _offer_openclaw_migration(hermes_home: Path) -> bool:
     if migrated:
         print_success(f"Imported {migrated} item(s) from OpenClaw.")
     if conflicts:
-        print_info(f"Skipped {conflicts} item(s) that already exist in Hermes.")
+        print_info(f"Skipped {conflicts} item(s) that already exist in Hermes (use hermes claw migrate --overwrite to force).")
     if skipped:
         print_info(f"Skipped {skipped} item(s) (not found or unchanged).")
     if errors:

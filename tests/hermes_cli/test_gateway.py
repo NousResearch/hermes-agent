@@ -10,6 +10,7 @@ import hermes_cli.gateway as gateway
 class TestSystemdLingerStatus:
     def test_reports_enabled(self, monkeypatch):
         monkeypatch.setattr(gateway, "is_linux", lambda: True)
+        monkeypatch.setattr(gateway, "is_termux", lambda: False)
         monkeypatch.setenv("USER", "alice")
         monkeypatch.setattr(
             gateway.subprocess,
@@ -22,6 +23,7 @@ class TestSystemdLingerStatus:
 
     def test_reports_disabled(self, monkeypatch):
         monkeypatch.setattr(gateway, "is_linux", lambda: True)
+        monkeypatch.setattr(gateway, "is_termux", lambda: False)
         monkeypatch.setenv("USER", "alice")
         monkeypatch.setattr(
             gateway.subprocess,
@@ -31,6 +33,11 @@ class TestSystemdLingerStatus:
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/loginctl")
 
         assert gateway.get_systemd_linger_status() == (False, "")
+
+    def test_reports_termux_as_not_supported(self, monkeypatch):
+        monkeypatch.setattr(gateway, "is_termux", lambda: True)
+
+        assert gateway.get_systemd_linger_status() == (None, "not supported in Termux")
 
 
 def test_systemd_status_warns_when_linger_disabled(monkeypatch, tmp_path, capsys):

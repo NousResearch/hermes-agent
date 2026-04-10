@@ -33,6 +33,7 @@ import json
 import logging
 import os
 import platform
+import shlex
 import signal
 import socket
 import subprocess
@@ -246,9 +247,9 @@ def _call(tool_name, args):
 
 _FILE_TRANSPORT_HEADER = '''\
 """Auto-generated Hermes tools RPC stubs (file-based transport)."""
-import json, os, shlex, time
+import json, os, shlex, tempfile, time
 
-_RPC_DIR = os.environ.get("HERMES_RPC_DIR", "/tmp/hermes_rpc")
+_RPC_DIR = os.environ.get("HERMES_RPC_DIR") or os.path.join(tempfile.gettempdir(), "hermes_rpc")
 _seq = 0
 ''' + _COMMON_HELPERS + '''\
 
@@ -536,11 +537,28 @@ def _ship_file_to_remote(env, remote_path: str, content: str) -> None:
     quotes are fine.
     """
     encoded = base64.b64encode(content.encode("utf-8")).decode("ascii")
+    quoted_remote_path = shlex.quote(remote_path)
     env.execute(
-        f"echo '{encoded}' | base64 -d > {remote_path}",
+        f"echo '{encoded}' | base64 -d > {quoted_remote_path}",
         cwd="/",
         timeout=30,
     )
+
+
+def _env_temp_dir(env: Any) -> str:
+    """Return a writable temp dir for env-backed execute_code sandboxes."""
+    get_temp_dir = getattr(env, "get_temp_dir", None)
+    if callable(get_temp_dir):
+        try:
+            temp_dir = get_temp_dir()
+            if isinstance(temp_dir, str) and temp_dir.startswith("/"):
+                return temp_dir.rstrip("/") or "/"
+        except Exception as exc:
+            logger.debug("Could not resolve execute_code env temp dir: %s", exc)
+    candidate = tempfile.gettempdir()
+    if isinstance(candidate, str) and candidate.startswith("/"):
+        return candidate.rstrip("/") or "/"
+    return "/tmp"
 
 
 def _rpc_poll_loop(
@@ -563,11 +581,12 @@ def _rpc_poll_loop(
 
     poll_interval = 0.1  # 100 ms
 
+    quoted_rpc_dir = shlex.quote(rpc_dir)
     while not stop_event.is_set():
         try:
             # List pending request files (skip .tmp partials)
             ls_result = env.execute(
-                f"ls -1 {rpc_dir}/req_* 2>/dev/null || true",
+                f"ls -1 {quoted_rpc_dir}/req_* 2>/dev/null || true",
                 cwd="/",
                 timeout=10,
             )
@@ -589,9 +608,10 @@ def _rpc_poll_loop(
 
                 call_start = time.monotonic()
 
+                quoted_req_file = shlex.quote(req_file)
                 # Read request
                 read_result = env.execute(
-                    f"cat {req_file}",
+                    f"cat {quoted_req_file}",
                     cwd="/",
                     timeout=10,
                 )
@@ -600,7 +620,7 @@ def _rpc_poll_loop(
                 except (json.JSONDecodeError, ValueError):
                     logger.debug("Malformed RPC request in %s", req_file)
                     # Remove bad request to avoid infinite retry
-                    env.execute(f"rm -f {req_file}", cwd="/", timeout=5)
+                    env.execute(f"rm -f {quoted_req_file}", cwd="/", timeout=5)
                     continue
 
                 tool_name = request.get("tool", "")
@@ -608,6 +628,7 @@ def _rpc_poll_loop(
                 seq = request.get("seq", 0)
                 seq_str = f"{seq:06d}"
                 res_file = f"{rpc_dir}/res_{seq_str}"
+                quoted_res_file = shlex.quote(res_file)
 
                 # Enforce allow-list
                 if tool_name not in allowed_tools:
@@ -665,14 +686,14 @@ def _rpc_poll_loop(
                     tool_result.encode("utf-8")
                 ).decode("ascii")
                 env.execute(
-                    f"echo '{encoded_result}' | base64 -d > {res_file}.tmp"
-                    f" && mv {res_file}.tmp {res_file}",
+                    f"echo '{encoded_result}' | base64 -d > {quoted_res_file}.tmp"
+                    f" && mv {quoted_res_file}.tmp {quoted_res_file}",
                     cwd="/",
                     timeout=60,
                 )
 
                 # Remove the request file
-                env.execute(f"rm -f {req_file}", cwd="/", timeout=5)
+                env.execute(f"rm -f {quoted_req_file}", cwd="/", timeout=5)
 
         except Exception as e:
             if not stop_event.is_set():
@@ -707,7 +728,10 @@ def _execute_remote(
     env, env_type = _get_or_create_env(effective_task_id)
 
     sandbox_id = uuid.uuid4().hex[:12]
-    sandbox_dir = f"/tmp/hermes_exec_{sandbox_id}"
+    temp_dir = _env_temp_dir(env)
+    sandbox_dir = f"{temp_dir}/hermes_exec_{sandbox_id}"
+    quoted_sandbox_dir = shlex.quote(sandbox_dir)
+    quoted_rpc_dir = shlex.quote(f"{sandbox_dir}/rpc")
 
     tool_call_log: list = []
     tool_call_counter = [0]
@@ -735,7 +759,7 @@ def _execute_remote(
 
         # Create sandbox directory on remote
         env.execute(
-            f"mkdir -p {sandbox_dir}/rpc", cwd="/", timeout=10,
+            f"mkdir -p {quoted_rpc_dir}", cwd="/", timeout=10,
         )
 
         # Generate and ship files
@@ -759,7 +783,7 @@ def _execute_remote(
 
         # Build environment variable prefix for the script
         env_prefix = (
-            f"HERMES_RPC_DIR={sandbox_dir}/rpc "
+            f"HERMES_RPC_DIR={shlex.quote(f'{sandbox_dir}/rpc')} "
             f"PYTHONDONTWRITEBYTECODE=1"
         )
         tz = os.getenv("HERMES_TIMEZONE", "").strip()
@@ -770,7 +794,7 @@ def _execute_remote(
         logger.info("Executing code on %s backend (task %s)...",
                      env_type, effective_task_id[:8])
         script_result = env.execute(
-            f"cd {sandbox_dir} && {env_prefix} python3 script.py",
+            f"cd {quoted_sandbox_dir} && {env_prefix} python3 script.py",
             timeout=timeout,
         )
 
@@ -807,7 +831,7 @@ def _execute_remote(
         # Clean up remote sandbox dir
         try:
             env.execute(
-                f"rm -rf {sandbox_dir}", cwd="/", timeout=15,
+                f"rm -rf {quoted_sandbox_dir}", cwd="/", timeout=15,
             )
         except Exception:
             logger.debug("Failed to clean up remote sandbox %s", sandbox_dir)

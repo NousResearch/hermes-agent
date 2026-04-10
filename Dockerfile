@@ -1,5 +1,8 @@
 FROM debian:13.4
 
+# Disable Python stdout buffering to ensure logs are printed immediately
+ENV PYTHONUNBUFFERED=1
+
 # Install system dependencies in one layer, clear APT cache
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \

@@ -1,4 +1,4 @@
-import { Text, useInput } from 'ink'
+import { Text, useInput, useStdin } from 'ink'
 import { useEffect, useRef, useState } from 'react'
 
 function wordLeft(s: string, p: number) {
@@ -29,6 +29,29 @@ function wordRight(s: string, p: number) {
   return i
 }
 
+const FWD_DELETE_RE = /\x1b\[3[~$^]|\x1b\[3;/
+
+function useForwardDeleteRef(isActive: boolean) {
+  const ref = useRef(false)
+  const { internal_eventEmitter: ee } = useStdin()
+
+  useEffect(() => {
+    if (!isActive) return
+
+    const onInput = (data: string) => {
+      ref.current = FWD_DELETE_RE.test(data)
+    }
+
+    ee.prependListener('input', onInput)
+
+    return () => {
+      ee.removeListener('input', onInput)
+    }
+  }, [isActive, ee])
+
+  return ref
+}
+
 const ESC = '\x1b'
 const INV = ESC + '[7m'
 const INV_OFF = ESC + '[27m'
@@ -56,6 +79,7 @@ interface Props {
 
 export function TextInput({ value, onChange, onPaste, onSubmit, placeholder = '', focus = true }: Props) {
   const [cur, setCur] = useState(value.length)
+  const isFwdDelete = useForwardDeleteRef(focus)
 
   const curRef = useRef(cur)
   const vRef = useRef(value)
@@ -211,7 +235,7 @@ export function TextInput({ value, onChange, onPaste, onSubmit, placeholder = ''
         c = mod ? wordLeft(v, c) : Math.max(0, c - 1)
       } else if (k.rightArrow) {
         c = mod ? wordRight(v, c) : Math.min(v.length, c + 1)
-      } else if ((k.backspace || k.delete) && c > 0) {
+      } else if ((k.backspace || k.delete) && !isFwdDelete.current && c > 0) {
         if (mod) {
           const t = wordLeft(v, c)
           v = v.slice(0, t) + v.slice(c)
@@ -219,6 +243,13 @@ export function TextInput({ value, onChange, onPaste, onSubmit, placeholder = ''
         } else {
           v = v.slice(0, c - 1) + v.slice(c)
           c--
+        }
+      } else if (k.delete && isFwdDelete.current && c < v.length) {
+        if (mod) {
+          const t = wordRight(v, c)
+          v = v.slice(0, c) + v.slice(t)
+        } else {
+          v = v.slice(0, c) + v.slice(c + 1)
         }
       } else if (k.ctrl && inp === 'w' && c > 0) {
         const t = wordLeft(v, c)

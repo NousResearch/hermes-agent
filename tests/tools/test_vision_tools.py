@@ -30,7 +30,10 @@ class TestValidateImageUrl:
     """Tests for URL validation, including urlparse-based netloc check."""
 
     def test_valid_https_url(self):
-        assert _validate_image_url("https://example.com/image.jpg") is True
+        with patch("tools.url_safety.socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("93.184.216.34", 0)),
+        ]):
+            assert _validate_image_url("https://example.com/image.jpg") is True
 
     def test_valid_http_url(self):
         with patch("tools.url_safety.socket.getaddrinfo", return_value=[
@@ -56,10 +59,16 @@ class TestValidateImageUrl:
         assert _validate_image_url("http://localhost:8080/image.png") is False
 
     def test_valid_url_with_port(self):
-        assert _validate_image_url("http://example.com:8080/image.png") is True
+        with patch("tools.url_safety.socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("93.184.216.34", 0)),
+        ]):
+            assert _validate_image_url("http://example.com:8080/image.png") is True
 
     def test_valid_url_with_path_only(self):
-        assert _validate_image_url("https://example.com/") is True
+        with patch("tools.url_safety.socket.getaddrinfo", return_value=[
+            (2, 1, 6, "", ("93.184.216.34", 0)),
+        ]):
+            assert _validate_image_url("https://example.com/") is True
 
     def test_rejects_empty_string(self):
         assert _validate_image_url("") is False
@@ -440,6 +449,11 @@ class TestVisionRequirements:
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         (tmp_path / "auth.json").write_text(
             '{"active_provider":"openai-codex","providers":{"openai-codex":{"tokens":{"access_token":"codex-access-token","refresh_token":"codex-refresh-token"}}}}'
+        )
+        # config.yaml must reference the codex provider so vision auto-detect
+        # falls back to the active provider via _read_main_provider().
+        (tmp_path / "config.yaml").write_text(
+            'model:\n  default: gpt-4o\n  provider: openai-codex\n'
         )
         monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
         monkeypatch.delenv("OPENAI_BASE_URL", raising=False)

@@ -147,6 +147,20 @@ class TestEscapedSpaces:
         assert result["path"] == tmp_image_with_spaces
         assert result["remainder"] == "what is this?"
 
+    def test_tilde_prefixed_path(self, tmp_path, monkeypatch):
+        home = tmp_path / "home"
+        img = home / "storage" / "shared" / "Pictures" / "cat.png"
+        img.parent.mkdir(parents=True, exist_ok=True)
+        img.write_bytes(b"\x89PNG\r\n\x1a\n")
+        monkeypatch.setenv("HOME", str(home))
+
+        result = _detect_file_drop("~/storage/shared/Pictures/cat.png what is this?")
+
+        assert result is not None
+        assert result["path"] == img
+        assert result["is_image"] is True
+        assert result["remainder"] == "what is this?"
+
 
 # ---------------------------------------------------------------------------
 # Tests: edge cases

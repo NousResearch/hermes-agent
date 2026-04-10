@@ -13,9 +13,13 @@ This guide walks you through installing Hermes Agent, setting up a provider, and
 Run the one-line installer:
 
 ```bash
-# Linux / macOS / WSL2
+# Linux / macOS / WSL2 / Android (Termux)
 curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
 ```
+
+:::tip Android / Termux
+If you're installing on a phone, see the dedicated [Termux guide](./termux.md) for the tested manual path, supported extras, and current Android-specific limitations.
+:::
 
 :::tip Windows Users
 Install [WSL2](https://learn.microsoft.com/en-us/windows/wsl/install) first, then run the command above inside your WSL2 terminal.

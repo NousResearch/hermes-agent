@@ -38,10 +38,11 @@ def _make_timeout_error() -> httpx.TimeoutException:
 # cache_image_from_url (base.py)
 # ---------------------------------------------------------------------------
 
+@patch("tools.url_safety.is_safe_url", return_value=True)
 class TestCacheImageFromUrl:
     """Tests for gateway.platforms.base.cache_image_from_url"""
 
-    def test_success_on_first_attempt(self, tmp_path, monkeypatch):
+    def test_success_on_first_attempt(self, _mock_safe, tmp_path, monkeypatch):
         """A clean 200 response caches the image and returns a path."""
         monkeypatch.setattr("gateway.platforms.base.IMAGE_CACHE_DIR", tmp_path / "img")
 
@@ -65,7 +66,7 @@ class TestCacheImageFromUrl:
         assert path.endswith(".jpg")
         mock_client.get.assert_called_once()
 
-    def test_retries_on_timeout_then_succeeds(self, tmp_path, monkeypatch):
+    def test_retries_on_timeout_then_succeeds(self, _mock_safe, tmp_path, monkeypatch):
         """A timeout on the first attempt is retried; second attempt succeeds."""
         monkeypatch.setattr("gateway.platforms.base.IMAGE_CACHE_DIR", tmp_path / "img")
 
@@ -95,7 +96,7 @@ class TestCacheImageFromUrl:
         assert mock_client.get.call_count == 2
         mock_sleep.assert_called_once()
 
-    def test_retries_on_429_then_succeeds(self, tmp_path, monkeypatch):
+    def test_retries_on_429_then_succeeds(self, _mock_safe, tmp_path, monkeypatch):
         """A 429 response on the first attempt is retried; second attempt succeeds."""
         monkeypatch.setattr("gateway.platforms.base.IMAGE_CACHE_DIR", tmp_path / "img")
 
@@ -122,7 +123,7 @@ class TestCacheImageFromUrl:
         assert path.endswith(".jpg")
         assert mock_client.get.call_count == 2
 
-    def test_raises_after_max_retries_exhausted(self, tmp_path, monkeypatch):
+    def test_raises_after_max_retries_exhausted(self, _mock_safe, tmp_path, monkeypatch):
         """Timeout on every attempt raises after all retries are consumed."""
         monkeypatch.setattr("gateway.platforms.base.IMAGE_CACHE_DIR", tmp_path / "img")
 
@@ -145,7 +146,7 @@ class TestCacheImageFromUrl:
         # 3 total calls: initial + 2 retries
         assert mock_client.get.call_count == 3
 
-    def test_non_retryable_4xx_raises_immediately(self, tmp_path, monkeypatch):
+    def test_non_retryable_4xx_raises_immediately(self, _mock_safe, tmp_path, monkeypatch):
         """A 404 (non-retryable) is raised immediately without any retry."""
         monkeypatch.setattr("gateway.platforms.base.IMAGE_CACHE_DIR", tmp_path / "img")
 
@@ -175,10 +176,11 @@ class TestCacheImageFromUrl:
 # cache_audio_from_url (base.py)
 # ---------------------------------------------------------------------------
 
+@patch("tools.url_safety.is_safe_url", return_value=True)
 class TestCacheAudioFromUrl:
     """Tests for gateway.platforms.base.cache_audio_from_url"""
 
-    def test_success_on_first_attempt(self, tmp_path, monkeypatch):
+    def test_success_on_first_attempt(self, _mock_safe, tmp_path, monkeypatch):
         """A clean 200 response caches the audio and returns a path."""
         monkeypatch.setattr("gateway.platforms.base.AUDIO_CACHE_DIR", tmp_path / "audio")
 
@@ -202,7 +204,7 @@ class TestCacheAudioFromUrl:
         assert path.endswith(".ogg")
         mock_client.get.assert_called_once()
 
-    def test_retries_on_timeout_then_succeeds(self, tmp_path, monkeypatch):
+    def test_retries_on_timeout_then_succeeds(self, _mock_safe, tmp_path, monkeypatch):
         """A timeout on the first attempt is retried; second attempt succeeds."""
         monkeypatch.setattr("gateway.platforms.base.AUDIO_CACHE_DIR", tmp_path / "audio")
 
@@ -232,7 +234,7 @@ class TestCacheAudioFromUrl:
         assert mock_client.get.call_count == 2
         mock_sleep.assert_called_once()
 
-    def test_retries_on_429_then_succeeds(self, tmp_path, monkeypatch):
+    def test_retries_on_429_then_succeeds(self, _mock_safe, tmp_path, monkeypatch):
         """A 429 response on the first attempt is retried; second attempt succeeds."""
         monkeypatch.setattr("gateway.platforms.base.AUDIO_CACHE_DIR", tmp_path / "audio")
 
@@ -259,7 +261,7 @@ class TestCacheAudioFromUrl:
         assert path.endswith(".ogg")
         assert mock_client.get.call_count == 2
 
-    def test_retries_on_500_then_succeeds(self, tmp_path, monkeypatch):
+    def test_retries_on_500_then_succeeds(self, _mock_safe, tmp_path, monkeypatch):
         """A 500 response on the first attempt is retried; second attempt succeeds."""
         monkeypatch.setattr("gateway.platforms.base.AUDIO_CACHE_DIR", tmp_path / "audio")
 
@@ -286,7 +288,7 @@ class TestCacheAudioFromUrl:
         assert path.endswith(".ogg")
         assert mock_client.get.call_count == 2
 
-    def test_raises_after_max_retries_exhausted(self, tmp_path, monkeypatch):
+    def test_raises_after_max_retries_exhausted(self, _mock_safe, tmp_path, monkeypatch):
         """Timeout on every attempt raises after all retries are consumed."""
         monkeypatch.setattr("gateway.platforms.base.AUDIO_CACHE_DIR", tmp_path / "audio")
 
@@ -309,7 +311,7 @@ class TestCacheAudioFromUrl:
         # 3 total calls: initial + 2 retries
         assert mock_client.get.call_count == 3
 
-    def test_non_retryable_4xx_raises_immediately(self, tmp_path, monkeypatch):
+    def test_non_retryable_4xx_raises_immediately(self, _mock_safe, tmp_path, monkeypatch):
         """A 404 (non-retryable) is raised immediately without any retry."""
         monkeypatch.setattr("gateway.platforms.base.AUDIO_CACHE_DIR", tmp_path / "audio")
 

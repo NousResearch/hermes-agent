@@ -36,6 +36,20 @@ Set your provider with `hermes model` or by editing `~/.hermes/.env`. See the [E
 curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
 ```
 
+### Does it work on Android / Termux?
+
+Yes — Hermes now has a tested Termux install path for Android phones.
+
+Quick install:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
+```
+
+For the fully explicit manual steps, supported extras, and current limitations, see the [Termux guide](../getting-started/termux.md).
+
+Important caveat: the full `.[all]` extra is not currently available on Android because the `voice` extra depends on `faster-whisper` → `ctranslate2`, and `ctranslate2` does not publish Android wheels. Use the tested `.[termux]` extra instead.
+
 ### Is my data sent anywhere?
 
 API calls go **only to the LLM provider you configure** (e.g., OpenRouter, your local Ollama instance). Hermes Agent does not collect telemetry, usage data, or analytics. Your conversations, memory, and skills are stored locally in `~/.hermes/`.

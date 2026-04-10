@@ -6,6 +6,17 @@ from unittest.mock import patch
 from cli import HermesCLI
 
 
+def _assert_chrome_debug_cmd(cmd, expected_chrome, expected_port):
+    """Verify the auto-launch command has all required flags."""
+    assert cmd[0] == expected_chrome
+    assert f"--remote-debugging-port={expected_port}" in cmd
+    assert "--no-first-run" in cmd
+    assert "--no-default-browser-check" in cmd
+    user_data_args = [a for a in cmd if a.startswith("--user-data-dir=")]
+    assert len(user_data_args) == 1, "Expected exactly one --user-data-dir flag"
+    assert "chrome-debug" in user_data_args[0]
+
+
 class TestChromeDebugLaunch:
     def test_windows_launch_uses_browser_found_on_path(self):
         captured = {}
@@ -20,7 +31,7 @@ class TestChromeDebugLaunch:
              patch("subprocess.Popen", side_effect=fake_popen):
             assert HermesCLI._try_launch_chrome_debug(9333, "Windows") is True
 
-        assert captured["cmd"] == [r"C:\Chrome\chrome.exe", "--remote-debugging-port=9333"]
+        _assert_chrome_debug_cmd(captured["cmd"], r"C:\Chrome\chrome.exe", 9333)
         assert captured["kwargs"]["start_new_session"] is True
 
     def test_windows_launch_falls_back_to_common_install_dirs(self, monkeypatch):
@@ -43,4 +54,4 @@ class TestChromeDebugLaunch:
              patch("subprocess.Popen", side_effect=fake_popen):
             assert HermesCLI._try_launch_chrome_debug(9222, "Windows") is True
 
-        assert captured["cmd"] == [installed, "--remote-debugging-port=9222"]
+        _assert_chrome_debug_cmd(captured["cmd"], installed, 9222)

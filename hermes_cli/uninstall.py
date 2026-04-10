@@ -122,6 +122,10 @@ def uninstall_gateway_service():
     
     if platform.system() != "Linux":
         return False
+
+    prefix = os.getenv("PREFIX", "")
+    if os.getenv("TERMUX_VERSION") or "com.termux/files/usr" in prefix:
+        return False
     
     try:
         from hermes_cli.gateway import get_service_name

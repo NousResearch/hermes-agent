@@ -3546,6 +3546,7 @@ class GatewayRunner:
         current_base_url = ""
         current_api_key = ""
         user_provs = None
+        custom_provs = None
         config_path = _hermes_home / "config.yaml"
         try:
             if config_path.exists():
@@ -3557,6 +3558,7 @@ class GatewayRunner:
                     current_provider = model_cfg.get("provider", current_provider)
                     current_base_url = model_cfg.get("base_url", "")
                 user_provs = cfg.get("providers")
+                custom_provs = cfg.get("custom_providers")
         except Exception:
             pass
 
@@ -3584,6 +3586,7 @@ class GatewayRunner:
                     providers = list_authenticated_providers(
                         current_provider=current_provider,
                         user_providers=user_provs,
+                        custom_providers=custom_provs,
                         max_models=50,
                     )
                 except Exception:
@@ -3689,6 +3692,7 @@ class GatewayRunner:
                 providers = list_authenticated_providers(
                     current_provider=current_provider,
                     user_providers=user_provs,
+                    custom_providers=custom_provs,
                     max_models=5,
                 )
                 for p in providers:

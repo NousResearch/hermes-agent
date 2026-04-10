@@ -342,7 +342,8 @@ def load_permanent_allowlist() -> set:
         if patterns:
             load_permanent(patterns)
         return patterns
-    except Exception:
+    except Exception as e:
+        logger.warning("Failed to load permanent allowlist: %s", e)
         return set()
 
 
@@ -384,7 +385,8 @@ def prompt_dangerous_approval(command: str, description: str,
         try:
             return approval_callback(command, description,
                                      allow_permanent=allow_permanent)
-        except Exception:
+        except Exception as e:
+            logger.error("Approval callback failed: %s", e, exc_info=True)
             return "deny"
 
     os.environ["HERMES_SPINNER_PAUSE"] = "1"
@@ -466,7 +468,8 @@ def _get_approval_config() -> dict:
         from hermes_cli.config import load_config
         config = load_config()
         return config.get("approvals", {}) or {}
-    except Exception:
+    except Exception as e:
+        logger.warning("Failed to load approval config: %s", e)
         return {}
 
 

@@ -32,12 +32,15 @@ import base64
 import json
 import logging
 import os
+import re
+import traceback
 import uuid
 from pathlib import Path
 from typing import Any, Awaitable, Dict, Optional
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 import httpx
 from agent.auxiliary_client import async_call_llm, extract_content_or_reasoning
+from agent.redact import redact_sensitive_text
 from tools.debug_helpers import DebugSession
 from tools.website_policy import check_website_access
 
@@ -66,6 +69,84 @@ def _resolve_download_timeout() -> float:
     return 30.0
 
 _VISION_DOWNLOAD_TIMEOUT = _resolve_download_timeout()
+
+_URL_RE = re.compile(r"https?://[^\s'\"<>]+")
+_SENSITIVE_QUERY_MARKERS = (
+    "token",
+    "secret",
+    "signature",
+    "credential",
+    "password",
+    "passwd",
+    "passcode",
+    "auth",
+    "apikey",
+)
+
+
+def _query_key_looks_sensitive(key: str) -> bool:
+    """Return True when a URL query parameter name likely carries a secret."""
+    collapsed = re.sub(r"[^a-z0-9]", "", key.lower())
+    if collapsed == "key":
+        return True
+    return any(marker in collapsed for marker in _SENSITIVE_QUERY_MARKERS)
+
+
+def _redact_url_for_log(value: str) -> str:
+    """Mask secret-bearing URL components before they reach logs/debug JSON."""
+    if value is None:
+        return value
+
+    text = str(value)
+    try:
+        parsed = urlparse(text)
+        if not parsed.scheme or not parsed.netloc:
+            return redact_sensitive_text(text)
+
+        hostname = parsed.hostname or ""
+        if ":" in hostname and not hostname.startswith("["):
+            hostname = f"[{hostname}]"
+        netloc = hostname
+        if parsed.port is not None:
+            netloc = f"{netloc}:{parsed.port}"
+
+        redacted_query = urlencode(
+            [
+                (key, "***" if _query_key_looks_sensitive(key) else query_value)
+                for key, query_value in parse_qsl(parsed.query, keep_blank_values=True)
+            ],
+            doseq=True,
+            safe="*",
+        )
+
+        sanitized = urlunparse(
+            parsed._replace(netloc=netloc, query=redacted_query, fragment="")
+        )
+        return redact_sensitive_text(sanitized)
+    except Exception:
+        return redact_sensitive_text(text)
+
+
+def _sanitize_log_text(value: object) -> str:
+    """Redact URL query secrets and known token formats inside free-form text."""
+    if value is None:
+        return ""
+
+    text = str(value)
+    text = _URL_RE.sub(lambda match: _redact_url_for_log(match.group(0)), text)
+    return redact_sensitive_text(text)
+
+
+def _truncate_for_log(text: str, max_length: int) -> str:
+    """Trim long log strings without dropping the redacted prefix."""
+    if len(text) <= max_length:
+        return text
+    return text[: max_length - 3] + "..."
+
+
+def _format_sanitized_exception(exc: BaseException) -> str:
+    """Return a sanitized traceback string safe for logging."""
+    return _sanitize_log_text("".join(traceback.format_exception(type(exc), exc, exc.__traceback__))).rstrip()
 
 
 def _validate_image_url(url: str) -> bool:
@@ -194,15 +275,21 @@ async def _download_image(image_url: str, destination: Path, max_retries: int = 
             last_error = e
             if attempt < max_retries - 1:
                 wait_time = 2 ** (attempt + 1)  # 2s, 4s, 8s
-                logger.warning("Image download failed (attempt %s/%s): %s", attempt + 1, max_retries, str(e)[:50])
+                logger.warning(
+                    "Image download failed (attempt %s/%s): %s",
+                    attempt + 1,
+                    max_retries,
+                    _truncate_for_log(_sanitize_log_text(e), 50),
+                )
                 logger.warning("Retrying in %ss...", wait_time)
                 await asyncio.sleep(wait_time)
             else:
+                sanitized_traceback = _format_sanitized_exception(e)
                 logger.error(
-                    "Image download failed after %s attempts: %s",
+                    "Image download failed after %s attempts: %s\n%s",
                     max_retries,
-                    str(e)[:100],
-                    exc_info=True,
+                    _truncate_for_log(_sanitize_log_text(e), 100),
+                    sanitized_traceback,
                 )
     
     if last_error is None:
@@ -300,7 +387,7 @@ async def vision_analyze_tool(
     """
     debug_call_data = {
         "parameters": {
-            "image_url": image_url,
+            "image_url": _redact_url_for_log(image_url),
             "user_prompt": user_prompt[:200] + "..." if len(user_prompt) > 200 else user_prompt,
             "model": model
         },
@@ -322,7 +409,10 @@ async def vision_analyze_tool(
         if is_interrupted():
             return tool_error("Interrupted", success=False)
 
-        logger.info("Analyzing image: %s", image_url[:60])
+        logger.info(
+            "Analyzing image: %s",
+            _truncate_for_log(_sanitize_log_text(image_url), 60),
+        )
         logger.info("User prompt: %s", user_prompt[:100])
         
         # Determine if this is a local file path or a remote URL
@@ -441,8 +531,10 @@ async def vision_analyze_tool(
         return json.dumps(result, indent=2, ensure_ascii=False)
         
     except Exception as e:
-        error_msg = f"Error analyzing image: {str(e)}"
-        logger.error("%s", error_msg, exc_info=True)
+        sanitized_error = _sanitize_log_text(e)
+        sanitized_traceback = _format_sanitized_exception(e)
+        error_msg = f"Error analyzing image: {sanitized_error}"
+        logger.error("%s\n%s", error_msg, sanitized_traceback)
         
         # Detect vision capability errors — give the model a clear message
         # so it can inform the user instead of a cryptic API error.
@@ -452,7 +544,7 @@ async def vision_analyze_tool(
         )):
             analysis = (
                 "Insufficient credits or payment required. Please top up your "
-                f"API provider account and try again. Error: {e}"
+                f"API provider account and try again. Error: {sanitized_error}"
             )
         elif any(hint in err_str for hint in (
             "does not support", "not support image", "invalid_request",
@@ -461,12 +553,12 @@ async def vision_analyze_tool(
         )):
             analysis = (
                 f"{model} does not support vision or our request was not "
-                f"accepted by the server. Error: {e}"
+                f"accepted by the server. Error: {sanitized_error}"
             )
         else:
             analysis = (
                 "There was a problem with the request and the image could not "
-                f"be analyzed. Error: {e}"
+                f"be analyzed. Error: {sanitized_error}"
             )
         
         # Prepare error response

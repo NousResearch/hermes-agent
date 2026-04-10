@@ -2234,6 +2234,7 @@ class DiscordAdapter(BasePlatformAdapter):
         #   discord.require_mention: Require @mention in server channels (default: true)
         #   discord.free_response_channels: Channel IDs where bot responds without mention
         #   discord.ignored_channels: Channel IDs where bot NEVER responds (even when mentioned)
+        #   discord.allowed_channels: If set, bot ONLY responds in these channels (whitelist)
         #   discord.no_thread_channels: Channel IDs where bot responds directly without creating thread
         #   discord.auto_thread: Auto-create thread on @mention in channels (default: true)
 
@@ -2245,12 +2246,21 @@ class DiscordAdapter(BasePlatformAdapter):
             parent_channel_id = self._get_parent_channel_id(message.channel)
 
         if not isinstance(message.channel, discord.DMChannel):
-            # Check ignored channels first - never respond even when mentioned
-            ignored_channels_raw = os.getenv("DISCORD_IGNORED_CHANNELS", "")
-            ignored_channels = {ch.strip() for ch in ignored_channels_raw.split(",") if ch.strip()}
             channel_ids = {str(message.channel.id)}
             if parent_channel_id:
                 channel_ids.add(parent_channel_id)
+
+            # Check allowed channels - if set, only respond in these channels
+            allowed_channels_raw = os.getenv("DISCORD_ALLOWED_CHANNELS", "")
+            if allowed_channels_raw:
+                allowed_channels = {ch.strip() for ch in allowed_channels_raw.split(",") if ch.strip()}
+                if not (channel_ids & allowed_channels):
+                    logger.debug("[%s] Ignoring message in non-allowed channel: %s", self.name, channel_ids)
+                    return
+
+            # Check ignored channels - never respond even when mentioned
+            ignored_channels_raw = os.getenv("DISCORD_IGNORED_CHANNELS", "")
+            ignored_channels = {ch.strip() for ch in ignored_channels_raw.split(",") if ch.strip()}
             if channel_ids & ignored_channels:
                 logger.debug("[%s] Ignoring message in ignored channel: %s", self.name, channel_ids)
                 return

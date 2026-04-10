@@ -386,9 +386,7 @@ class ShellFileOperations(FileOperations):
         
         # Content analysis: >30% non-printable chars = binary
         if content_sample:
-            if not content_sample:
-                return False
-            non_printable = sum(1 for c in content_sample[:1000] 
+            non_printable = sum(1 for c in content_sample[:1000]
                                if ord(c) < 32 and c not in '\n\r\t')
             return non_printable / min(len(content_sample), 1000) > 0.30
         
@@ -810,7 +808,7 @@ class ShellFileOperations(FileOperations):
             return LintResult(skipped=True, message=f"{base_cmd} not available")
         
         # Run linter
-        cmd = linter_cmd.format(file=self._escape_shell_arg(path))
+        cmd = linter_cmd.replace("{file}", self._escape_shell_arg(path))
         result = self._exec(cmd, timeout=30)
         
         return LintResult(

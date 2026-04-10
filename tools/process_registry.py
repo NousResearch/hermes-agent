@@ -585,7 +585,10 @@ class ProcessRegistry:
         from tools.ansi_strip import strip_ansi
         from tools.terminal_tool import _interrupt_event
 
-        default_timeout = int(os.getenv("TERMINAL_TIMEOUT", "180"))
+        try:
+            default_timeout = int(os.getenv("TERMINAL_TIMEOUT", "180"))
+        except (ValueError, TypeError):
+            default_timeout = 180
         max_timeout = default_timeout
         requested_timeout = timeout
         timeout_note = None

@@ -498,17 +498,41 @@ def _build_job_prompt(job: dict) -> str:
 
     # Always prepend cron execution guidance so the agent knows how
     # delivery works and can suppress delivery when appropriate.
-    cron_hint = (
-        "[SYSTEM: You are running as a scheduled cron job. "
-        "DELIVERY: Your final response will be automatically delivered "
-        "to the user — do NOT use send_message or try to deliver "
-        "the output yourself. Just produce your report/output as your "
-        "final response and the system handles the rest. "
-        "SILENT: If there is genuinely nothing new to report, respond "
-        "with exactly \"[SILENT]\" (nothing else) to suppress delivery. "
-        "Never combine [SILENT] with content — either report your "
-        "findings normally, or say [SILENT] and nothing more.]\n\n"
-    )
+    # When HERMES_CRON_ALLOW_MESSAGING is set, the messaging toolset is
+    # available in the cron session — adjust the hint so the agent knows
+    # it *may* call send_message as part of the job (vs. the default
+    # behavior where delivery is handled entirely by the scheduler).
+    _cron_allow_messaging = os.getenv("HERMES_CRON_ALLOW_MESSAGING", "").strip().lower() in ("1", "true", "yes", "on")
+    if _cron_allow_messaging:
+        cron_hint = (
+            "[SYSTEM: You are running as a scheduled cron job. "
+            "DELIVERY: If the job has a `deliver` target set, your final "
+            "response will be automatically delivered there — in that case "
+            "just produce your report/output as your final response and the "
+            "system handles delivery. "
+            "If the job's purpose is to send a message as a side-effect "
+            "(e.g. a check-in, a nudge, a notification to someone else), "
+            "call send_message normally inside the turn loop — messages "
+            "sent that way are mirrored into the recipient's session so "
+            "future replies retain context. Do not call send_message to "
+            "deliver your own final report; that's what `deliver` is for. "
+            "SILENT: If there is genuinely nothing to do or report, respond "
+            "with exactly \"[SILENT]\" (nothing else) to suppress delivery. "
+            "Never combine [SILENT] with content — either report your "
+            "findings normally, or say [SILENT] and nothing more.]\n\n"
+        )
+    else:
+        cron_hint = (
+            "[SYSTEM: You are running as a scheduled cron job. "
+            "DELIVERY: Your final response will be automatically delivered "
+            "to the user — do NOT use send_message or try to deliver "
+            "the output yourself. Just produce your report/output as your "
+            "final response and the system handles the rest. "
+            "SILENT: If there is genuinely nothing new to report, respond "
+            "with exactly \"[SILENT]\" (nothing else) to suppress delivery. "
+            "Never combine [SILENT] with content — either report your "
+            "findings normally, or say [SILENT] and nothing more.]\n\n"
+        )
     prompt = cron_hint + prompt
     if skills is None:
         legacy = job.get("skill")
@@ -719,7 +743,11 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             providers_ignored=pr.get("ignore"),
             providers_order=pr.get("order"),
             provider_sort=pr.get("sort"),
-            disabled_toolsets=["cronjob", "messaging", "clarify"],
+            disabled_toolsets=(
+                ["cronjob", "clarify"]
+                if os.getenv("HERMES_CRON_ALLOW_MESSAGING", "").strip().lower() in ("1", "true", "yes", "on")
+                else ["cronjob", "messaging", "clarify"]
+            ),
             quiet_mode=True,
             skip_memory=True,  # Cron system prompts would corrupt user representations
             platform="cron",

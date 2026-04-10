@@ -24,6 +24,7 @@ import hmac
 import json
 import logging
 import os
+import re
 import sqlite3
 import time
 import uuid
@@ -533,6 +534,12 @@ class APIServerAdapter(BasePlatformAdapter):
         # When provided, history is loaded from state.db instead of from the request body.
         provided_session_id = request.headers.get("X-Hermes-Session-Id", "").strip()
         if provided_session_id:
+            # Sanitize: reject control characters that could enable header injection.
+            if re.search(r'[\r\n\x00]', provided_session_id):
+                return web.json_response(
+                    {"error": {"message": "Invalid session ID", "type": "invalid_request_error"}},
+                    status=400,
+                )
             session_id = provided_session_id
             try:
                 db = self._ensure_session_db()

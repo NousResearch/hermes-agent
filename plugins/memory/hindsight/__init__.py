@@ -324,6 +324,60 @@ def _materialize_embedded_profile_env(config: dict[str, Any], *, llm_api_key: st
     )
     return profile_env
 
+def _sanitize_bank_segment(value: str) -> str:
+    """Sanitize a bank_id_template placeholder value.
+
+    Bank IDs should be safe for URL paths and filesystem use. Replaces any
+    character that isn't alphanumeric, dash, or underscore with a dash, and
+    collapses runs of dashes.
+    """
+    if not value:
+        return ""
+    out = []
+    prev_dash = False
+    for ch in str(value):
+        if ch.isalnum() or ch == "-" or ch == "_":
+            out.append(ch)
+            prev_dash = False
+        else:
+            if not prev_dash:
+                out.append("-")
+                prev_dash = True
+    return "".join(out).strip("-_")
+
+
+def _resolve_bank_id_template(template: str, fallback: str, **placeholders: str) -> str:
+    """Resolve a bank_id template string with the given placeholders.
+
+    Supported placeholders (each is sanitized before substitution):
+      {profile}   — active Hermes profile name (from agent_identity)
+      {workspace} — Hermes workspace name (from agent_workspace)
+      {platform}  — "cli", "telegram", "discord", etc.
+      {user}      — platform user id (gateway sessions)
+      {session}   — current session id
+
+    Missing/empty placeholders are rendered as the empty string and then
+    collapsed — e.g. ``hermes-{user}`` with no user becomes ``hermes``.
+
+    If the template is empty, resolution falls back to *fallback*.
+    Returns the sanitized bank id.
+    """
+    if not template:
+        return fallback
+    sanitized = {k: _sanitize_bank_segment(v) for k, v in placeholders.items()}
+    try:
+        rendered = template.format(**sanitized)
+    except (KeyError, IndexError) as exc:
+        logger.warning("Invalid bank_id_template %r: %s — using fallback %r",
+                       template, exc, fallback)
+        return fallback
+    while "--" in rendered:
+        rendered = rendered.replace("--", "-")
+    while "__" in rendered:
+        rendered = rendered.replace("__", "_")
+    rendered = rendered.strip("-_")
+    return rendered or fallback
+
 
 # ---------------------------------------------------------------------------
 # MemoryProvider implementation
@@ -354,6 +408,7 @@ class HindsightMemoryProvider(MemoryProvider):
         self._chat_type = ""
         self._thread_id = ""
         self._agent_identity = ""
+        self._agent_workspace = ""
         self._turn_index = 0
         self._client = None
         self._timeout = _DEFAULT_TIMEOUT
@@ -388,6 +443,7 @@ class HindsightMemoryProvider(MemoryProvider):
         # Bank
         self._bank_mission = ""
         self._bank_retain_mission: str | None = None
+        self._bank_id_template = ""
 
     @property
     def name(self) -> str:
@@ -615,7 +671,8 @@ class HindsightMemoryProvider(MemoryProvider):
             {"key": "llm_base_url", "description": "Endpoint URL (e.g. http://192.168.1.10:8080/v1)", "default": "", "when": {"mode": "local_embedded", "llm_provider": "openai_compatible"}},
             {"key": "llm_api_key", "description": "LLM API key (optional for openai_compatible)", "secret": True, "env_var": "HINDSIGHT_LLM_API_KEY", "when": {"mode": "local_embedded"}},
             {"key": "llm_model", "description": "LLM model", "default": "gpt-4o-mini", "default_from": {"field": "llm_provider", "map": _PROVIDER_DEFAULT_MODELS}, "when": {"mode": "local_embedded"}},
-            {"key": "bank_id", "description": "Memory bank name", "default": "hermes"},
+            {"key": "bank_id", "description": "Memory bank name (static fallback when bank_id_template is unset)", "default": "hermes"},
+            {"key": "bank_id_template", "description": "Optional template to derive bank_id dynamically. Placeholders: {profile}, {workspace}, {platform}, {user}, {session}. Example: hermes-{profile}", "default": ""},
             {"key": "bank_mission", "description": "Mission/purpose description for the memory bank"},
             {"key": "bank_retain_mission", "description": "Custom extraction prompt for memory retention"},
             {"key": "recall_budget", "description": "Recall thoroughness", "default": "mid", "choices": ["low", "mid", "high"]},
@@ -728,6 +785,7 @@ class HindsightMemoryProvider(MemoryProvider):
         self._chat_type = str(kwargs.get("chat_type") or "").strip()
         self._thread_id = str(kwargs.get("thread_id") or "").strip()
         self._agent_identity = str(kwargs.get("agent_identity") or "").strip()
+        self._agent_workspace = str(kwargs.get("agent_workspace") or "").strip()
         self._turn_index = 0
         self._session_turns = []
         self._mode = self._config.get("mode", "cloud")
@@ -751,7 +809,17 @@ class HindsightMemoryProvider(MemoryProvider):
         self._llm_base_url = self._config.get("llm_base_url", "")
 
         banks = self._config.get("banks", {}).get("hermes", {})
-        self._bank_id = self._config.get("bank_id") or banks.get("bankId", "hermes")
+        static_bank_id = self._config.get("bank_id") or banks.get("bankId", "hermes")
+        self._bank_id_template = self._config.get("bank_id_template", "") or ""
+        self._bank_id = _resolve_bank_id_template(
+            self._bank_id_template,
+            fallback=static_bank_id,
+            profile=self._agent_identity,
+            workspace=self._agent_workspace,
+            platform=self._platform,
+            user=self._user_id,
+            session=self._session_id,
+        )
         budget = self._config.get("recall_budget") or self._config.get("budget") or banks.get("budget", "mid")
         self._budget = budget if budget in _VALID_BUDGETS else "mid"
 
@@ -804,6 +872,10 @@ class HindsightMemoryProvider(MemoryProvider):
             pass
         logger.info("Hindsight initialized: mode=%s, api_url=%s, bank=%s, budget=%s, memory_mode=%s, prefetch_method=%s, client=%s",
                      self._mode, self._api_url, self._bank_id, self._budget, self._memory_mode, self._prefetch_method, _client_version)
+        if self._bank_id_template:
+            logger.debug("Hindsight bank resolved from template %r: profile=%s workspace=%s platform=%s user=%s -> bank=%s",
+                         self._bank_id_template, self._agent_identity, self._agent_workspace,
+                         self._platform, self._user_id, self._bank_id)
         logger.debug("Hindsight config: auto_retain=%s, auto_recall=%s, retain_every_n=%d, "
                      "retain_async=%s, retain_context=%s, recall_max_tokens=%d, recall_max_input_chars=%d, tags=%s, recall_tags=%s",
                      self._auto_retain, self._auto_recall, self._retain_every_n_turns,

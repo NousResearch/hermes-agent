@@ -6614,6 +6614,21 @@ class GatewayRunner:
                     "tools": [],
                 }
 
+            # Apply /model session override (non-global switch).
+            # _session_model_overrides is set by _handle_model_command on every
+            # /model call but was never consumed during agent creation.  The
+            # in-place switch via agent.switch_model() only worked when a cached
+            # agent already existed from a prior message; for fresh sessions or
+            # after /new the override was silently dropped and the config-file
+            # model was used instead.
+            if session_key:
+                _model_override = self._session_model_overrides.get(session_key, {})
+                if _model_override:
+                    model = _model_override.get("model", model)
+                    for _k in ("api_key", "base_url", "provider", "api_mode"):
+                        if _model_override.get(_k):
+                            runtime_kwargs[_k] = _model_override[_k]
+
             pr = self._provider_routing
             reasoning_config = self._load_reasoning_config()
             self._reasoning_config = reasoning_config

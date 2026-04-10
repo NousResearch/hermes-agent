@@ -1624,7 +1624,7 @@ class HermesCLI:
         # ── Paste collapse thresholds ──
         # Bracketed paste (Cmd+V): appends a file reference after cursor,
         # preserving existing prompt text.  Safe.
-        self._paste_collapse_threshold = CLI_CONFIG["display"].get("paste_collapse_threshold", 5)
+        self._paste_collapse_threshold = CLI_CONFIG["display"].get("paste_collapse_threshold", 25)
         # Fallback heuristic (terminals without bracketed paste): REPLACES the
         # entire buffer with a file reference.  Destructive — disabled by default.
         self._paste_collapse_threshold_fallback = CLI_CONFIG["display"].get("paste_collapse_threshold_fallback", 0)
@@ -8223,7 +8223,7 @@ class HermesCLI:
             if pasted_text:
                 line_count = pasted_text.count('\n')
                 buf = event.current_buffer
-                if line_count >= 5 and not buf.text.strip().startswith('/'):
+                if line_count >= self._paste_collapse_threshold and not buf.text.strip().startswith('/'):
                     _paste_counter[0] += 1
                     paste_dir = _hermes_home / "pastes"
                     paste_dir.mkdir(parents=True, exist_ok=True)
@@ -8361,7 +8361,7 @@ class HermesCLI:
             newlines_added = line_count - _prev_newline_count[0]
             _prev_newline_count[0] = line_count
             is_paste = chars_added > 1 or newlines_added >= 4
-            if line_count >= 5 and is_paste and not text.startswith('/'):
+            if line_count >= cli_ref._paste_collapse_threshold and is_paste and not text.startswith('/'):
                 _paste_counter[0] += 1
                 # Save to temp file
                 paste_dir = _hermes_home / "pastes"

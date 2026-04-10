@@ -2419,37 +2419,41 @@ class GatewayRunner:
             session_entry.was_auto_reset = False
             session_entry.auto_reset_reason = None
 
-        # Auto-load skill for DM topic bindings (e.g., Telegram Private Chat Topics)
-        # Only inject on NEW sessions — for ongoing conversations the skill content
-        # is already in the conversation history from the first message.
-        if _is_new_session and getattr(event, "auto_skill", None):
+        # Auto-load skill(s) for topic/channel bindings (Telegram DM Topics,
+        # Discord channel_skill_bindings).  Supports a single name or ordered list.
+        # Only inject on NEW sessions — ongoing conversations already have the
+        # skill content in their conversation history from the first message.
+        _auto = getattr(event, "auto_skill", None)
+        if _is_new_session and _auto:
+            _skill_names = [_auto] if isinstance(_auto, str) else list(_auto)
             try:
                 from agent.skill_commands import _load_skill_payload, _build_skill_message
-                _skill_name = event.auto_skill
-                _loaded = _load_skill_payload(_skill_name, task_id=_quick_key)
-                if _loaded:
-                    _loaded_skill, _skill_dir, _display_name = _loaded
-                    _activation_note = (
-                        f'[SYSTEM: This conversation is in a topic with the "{_display_name}" skill '
-                        f"auto-loaded. Follow its instructions for the duration of this session.]"
-                    )
-                    _skill_msg = _build_skill_message(
-                        _loaded_skill, _skill_dir, _activation_note,
-                        user_instruction=event.text,
-                    )
-                    if _skill_msg:
-                        event.text = _skill_msg
-                        logger.info(
-                            "[Gateway] Auto-loaded skill '%s' for DM topic session %s",
-                            _skill_name, session_key,
+                _combined_parts: list[str] = []
+                _loaded_names: list[str] = []
+                for _sname in _skill_names:
+                    _loaded = _load_skill_payload(_sname, task_id=_quick_key)
+                    if _loaded:
+                        _loaded_skill, _skill_dir, _display_name = _loaded
+                        _note = (
+                            f'[SYSTEM: The "{_display_name}" skill is auto-loaded. '
+                            f"Follow its instructions for this session.]"
                         )
-                else:
-                    logger.warning(
-                        "[Gateway] DM topic skill '%s' not found in available skills",
-                        _skill_name,
+                        _part = _build_skill_message(_loaded_skill, _skill_dir, _note)
+                        if _part:
+                            _combined_parts.append(_part)
+                            _loaded_names.append(_sname)
+                    else:
+                        logger.warning("[Gateway] Auto-skill '%s' not found", _sname)
+                if _combined_parts:
+                    # Append the user's original text after all skill payloads
+                    _combined_parts.append(event.text)
+                    event.text = "\n\n".join(_combined_parts)
+                    logger.info(
+                        "[Gateway] Auto-loaded skill(s) %s for session %s",
+                        _loaded_names, session_key,
                     )
             except Exception as e:
-                logger.warning("[Gateway] Failed to auto-load topic skill '%s': %s", event.auto_skill, e)
+                logger.warning("[Gateway] Failed to auto-load skill(s) %s: %s", _skill_names, e)
 
         # Load conversation history from transcript
         history = self.session_store.load_transcript(session_entry.session_id)

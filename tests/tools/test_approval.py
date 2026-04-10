@@ -155,7 +155,7 @@ class TestSessionKeyContext:
         assert "set_current_session_key" in called_names
         assert "reset_current_session_key" in called_names
 
-    def test_context_keeps_pending_approval_attached_to_originating_session(self):
+    def test_context_keeps_pending_approval_attached_to_originating_session(self, monkeypatch):
         import os
         import threading
 
@@ -164,6 +164,11 @@ class TestSessionKeyContext:
         pop_pending("alice")
         pop_pending("bob")
         approval_module._permanent_approved.clear()
+        monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
+        monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+        monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
+        monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
+        monkeypatch.delenv("HERMES_SESSION_KEY", raising=False)
 
         alice_ready = threading.Event()
         bob_ready = threading.Event()
@@ -190,7 +195,8 @@ class TestSessionKeyContext:
 
         t1 = threading.Thread(target=worker_alice)
         t2 = threading.Thread(target=worker_bob)
-        with mock_patch.dict("os.environ", {"HERMES_GATEWAY_SESSION": "1"}, clear=False):
+        with mock_patch("tools.approval._get_approval_mode", return_value="manual"), \
+             mock_patch.dict("os.environ", {"HERMES_GATEWAY_SESSION": "1"}, clear=False):
             t1.start()
             t2.start()
             t1.join()

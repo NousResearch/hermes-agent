@@ -880,47 +880,48 @@ def list_authenticated_providers(
 
     # --- 4. Custom providers from config (custom_providers: list schema) ---
     # Collapse all custom_providers entries into a single "custom" provider
-    # showing every configured model. Clicking a model swaps the model on the
-    # current custom endpoint — provider stays "custom".
-    # --- 4. Saved custom providers from config ---
+    # --- 4. Custom providers from config (custom_providers: list schema) ---
+    # Each entry represents one model under a named provider.
+    # Entries sharing the same name are grouped into a single provider row
+    # so that e.g. four Ollama Cloud models appear as one picker entry.
+    # Entries with distinct names produce separate rows (e.g. Moonshot vs Ollama).
     if custom_providers and isinstance(custom_providers, list):
         from hermes_cli.providers import custom_provider_slug
+        from collections import OrderedDict
+        groups: OrderedDict = OrderedDict()
         for entry in custom_providers:
             if not isinstance(entry, dict):
                 continue
-
-            display_name = (entry.get("name") or "").strip()
+            name = (entry.get("name") or "").strip()
+            model = (entry.get("model") or "").strip()
             api_url = (
                 entry.get("base_url", "")
                 or entry.get("url", "")
                 or entry.get("api", "")
                 or ""
             ).strip()
-            if not display_name or not api_url:
+            if not name or not api_url:
                 continue
+            slug = custom_provider_slug(name)
+            if slug not in groups:
+                groups[slug] = {"name": name, "models": [], "api_url": api_url}
+            if model and model not in groups[slug]["models"]:
+                groups[slug]["models"].append(model)
 
-            slug = custom_provider_slug(display_name)
+        for slug, grp in groups.items():
             if slug in seen_slugs:
                 continue
-
-            models_list = []
-            default_model = (entry.get("model") or "").strip()
-            if default_model:
-                models_list.append(default_model)
-
-            total = len(models_list)
-            if total == 0:
+            if not grp["models"]:
                 continue
-
             results.append({
                 "slug": slug,
-                "name": display_name,
+                "name": grp["name"],
                 "is_current": slug == current_provider,
                 "is_user_defined": True,
-                "models": models_list,
-                "total_models": total,
+                "models": grp["models"],
+                "total_models": len(grp["models"]),
                 "source": "user-config",
-                "api_url": api_url,
+                "api_url": grp["api_url"],
             })
             seen_slugs.add(slug)
 

@@ -17,6 +17,45 @@ def get_hermes_home() -> Path:
     return Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
 
 
+def get_default_hermes_root() -> Path:
+    """Return the root Hermes directory for profile-level operations.
+
+    In standard deployments this is ``~/.hermes``.
+
+    In Docker or custom deployments where ``HERMES_HOME`` points outside
+    ``~/.hermes`` (e.g. ``/opt/data``), returns ``HERMES_HOME`` directly
+    — that IS the root.
+
+    In profile mode where ``HERMES_HOME`` is ``<root>/profiles/<name>``,
+    returns ``<root>`` so that ``profile list`` can see all profiles.
+    Works both for standard (``~/.hermes/profiles/coder``) and Docker
+    (``/opt/data/profiles/coder``) layouts.
+
+    Import-safe — no dependencies beyond stdlib.
+    """
+    native_home = Path.home() / ".hermes"
+    env_home = os.environ.get("HERMES_HOME", "")
+    if not env_home:
+        return native_home
+    env_path = Path(env_home)
+    try:
+        env_path.resolve().relative_to(native_home.resolve())
+        # HERMES_HOME is under ~/.hermes (normal or profile mode)
+        return native_home
+    except ValueError:
+        pass
+
+    # Docker / custom deployment.
+    # Check if this is a profile path: <root>/profiles/<name>
+    # If the immediate parent dir is named "profiles", the root is
+    # the grandparent — this covers Docker profiles correctly.
+    if env_path.parent.name == "profiles":
+        return env_path.parent.parent
+
+    # Not a profile path — HERMES_HOME itself is the root
+    return env_path
+
+
 def get_optional_skills_dir(default: Path | None = None) -> Path:
     """Return the optional-skills directory, honoring package-manager wrappers.
 

@@ -97,10 +97,11 @@ def _apply_profile_override() -> None:
             consume = 1
             break
 
-    # 2. If no flag, check ~/.hermes/active_profile
+    # 2. If no flag, check active_profile in the hermes root
     if profile_name is None:
         try:
-            active_path = Path.home() / ".hermes" / "active_profile"
+            from hermes_constants import get_default_hermes_root
+            active_path = get_default_hermes_root() / "active_profile"
             if active_path.exists():
                 name = active_path.read_text().strip()
                 if name and name != "default":
@@ -3313,10 +3314,11 @@ def _invalidate_update_cache():
     ``hermes update``, every profile is now current.
     """
     homes = []
-    # Default profile home
-    default_home = Path.home() / ".hermes"
+    # Default profile home (Docker-aware — uses /opt/data in Docker)
+    from hermes_constants import get_default_hermes_root
+    default_home = get_default_hermes_root()
     homes.append(default_home)
-    # Named profiles under ~/.hermes/profiles/
+    # Named profiles under <root>/profiles/
     profiles_root = default_home / "profiles"
     if profiles_root.is_dir():
         for entry in profiles_root.iterdir():
@@ -4053,7 +4055,10 @@ def cmd_profile(args):
             print(f"  {name} chat               Start chatting")
             print(f"  {name} gateway start      Start the messaging gateway")
             if clone or clone_all:
-                profile_dir_display = f"~/.hermes/profiles/{name}"
+                try:
+                    profile_dir_display = "~/" + str(profile_dir.relative_to(Path.home()))
+                except ValueError:
+                    profile_dir_display = str(profile_dir)
                 print(f"\n  Edit {profile_dir_display}/.env for different API keys")
                 print(f"  Edit {profile_dir_display}/SOUL.md for different personality")
             print()

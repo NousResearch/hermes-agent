@@ -755,6 +755,7 @@ class TestProfileArg:
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
         result = gateway_cli._profile_arg(str(hermes_home))
         assert result == ""
 
@@ -763,6 +764,7 @@ class TestProfileArg:
         profile_dir = tmp_path / ".hermes" / "profiles" / "mybot"
         profile_dir.mkdir(parents=True)
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
         result = gateway_cli._profile_arg(str(profile_dir))
         assert result == "--profile mybot"
 
@@ -771,6 +773,7 @@ class TestProfileArg:
         custom_home = tmp_path / "custom" / "hermes"
         custom_home.mkdir(parents=True)
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
         result = gateway_cli._profile_arg(str(custom_home))
         assert result == ""
 
@@ -779,6 +782,7 @@ class TestProfileArg:
         nested = tmp_path / ".hermes" / "profiles" / "mybot" / "subdir"
         nested.mkdir(parents=True)
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
         result = gateway_cli._profile_arg(str(nested))
         assert result == ""
 
@@ -787,6 +791,7 @@ class TestProfileArg:
         bad_profile = tmp_path / ".hermes" / "profiles" / "My Bot!"
         bad_profile.mkdir(parents=True)
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
         result = gateway_cli._profile_arg(str(bad_profile))
         assert result == ""
 

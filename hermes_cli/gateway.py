@@ -251,18 +251,18 @@ SERVICE_DESCRIPTION = "Hermes Agent Gateway - Messaging Platform Integration"
 def _profile_suffix() -> str:
     """Derive a service-name suffix from the current HERMES_HOME.
 
-    Returns ``""`` for the default ``~/.hermes``, the profile name for
-    ``~/.hermes/profiles/<name>``, or a short hash for any other custom
-    HERMES_HOME path.
+    Returns ``""`` for the default root, the profile name for
+    ``<root>/profiles/<name>``, or a short hash for any other path.
+    Works correctly in Docker (HERMES_HOME=/opt/data) and standard deployments.
     """
     import hashlib
     import re
-    from pathlib import Path as _Path
+    from hermes_constants import get_default_hermes_root
     home = get_hermes_home().resolve()
-    default = (_Path.home() / ".hermes").resolve()
+    default = get_default_hermes_root().resolve()
     if home == default:
         return ""
-    # Detect ~/.hermes/profiles/<name> pattern → use the profile name
+    # Detect <root>/profiles/<name> pattern → use the profile name
     profiles_root = (default / "profiles").resolve()
     try:
         rel = home.relative_to(profiles_root)
@@ -287,9 +287,9 @@ def _profile_arg(hermes_home: str | None = None) -> str:
             service definition for a different user (e.g. system service).
     """
     import re
-    from pathlib import Path as _Path
+    from hermes_constants import get_default_hermes_root
     home = Path(hermes_home or str(get_hermes_home())).resolve()
-    default = (_Path.home() / ".hermes").resolve()
+    default = get_default_hermes_root().resolve()
     if home == default:
         return ""
     profiles_root = (default / "profiles").resolve()

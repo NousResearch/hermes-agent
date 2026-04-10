@@ -1539,7 +1539,12 @@ class HermesCLI:
         self._stream_box_opened = False  # True once the response box header is printed
         self._reasoning_preview_buf = ""  # Coalesce tiny reasoning chunks for [thinking] output
         self._pending_edit_snapshots = {}
-        
+
+        # Tool progress tracking
+        from hermes_cli.tool_progress_widget import ToolProgressTracker
+        self._tool_tracker = ToolProgressTracker()
+        self._turn_start_time: float = 0.0
+
         # Configuration - priority: CLI args > env vars > config file
         # Model comes from: CLI arg or config.yaml (single source of truth).
         # LLM_MODEL/OPENAI_MODEL env vars are NOT checked — config.yaml is
@@ -1961,6 +1966,14 @@ class HermesCLI:
             return []
         try:
             snapshot = self._get_status_bar_snapshot()
+
+            # Animated icon when agent is running — breathe animation
+            if self._agent_running:
+                import time as _time
+                from hermes_cli.braille_animations import get_frame
+                _agent_icon = f" {get_frame('breathe', int(_time.monotonic() * 1000))} "
+            else:
+                _agent_icon = " ⚕ "
             # Use prompt_toolkit's own terminal width when running inside the
             # TUI — shutil.get_terminal_size() can return stale or fallback
             # values (especially on SSH) that differ from what prompt_toolkit
@@ -1971,7 +1984,7 @@ class HermesCLI:
 
             if width < 52:
                 frags = [
-                    ("class:status-bar", " ⚕ "),
+                    ("class:status-bar", _agent_icon),
                     ("class:status-bar-strong", snapshot["model_short"]),
                     ("class:status-bar-dim", " · "),
                     ("class:status-bar-dim", duration_label),
@@ -1982,7 +1995,7 @@ class HermesCLI:
                 percent_label = f"{percent}%" if percent is not None else "--"
                 if width < 76:
                     frags = [
-                        ("class:status-bar", " ⚕ "),
+                        ("class:status-bar", _agent_icon),
                         ("class:status-bar-strong", snapshot["model_short"]),
                         ("class:status-bar-dim", " · "),
                         (self._status_bar_context_style(percent), percent_label),
@@ -2000,7 +2013,7 @@ class HermesCLI:
 
                     bar_style = self._status_bar_context_style(percent)
                     frags = [
-                        ("class:status-bar", " ⚕ "),
+                        ("class:status-bar", _agent_icon),
                         ("class:status-bar-strong", snapshot["model_short"]),
                         ("class:status-bar-dim", " │ "),
                         ("class:status-bar-dim", context_label),
@@ -2531,8 +2544,22 @@ class HermesCLI:
         return "Processing command..."
 
     def _command_spinner_frame(self) -> str:
-        """Return the current spinner frame for slow slash commands."""
+        """Return the current spinner frame for slow slash commands.
+
+        If the active skin specifies a braille animation, use that instead
+        of the default 10-frame braille dots.
+        """
         import time as _time
+
+        try:
+            from hermes_cli.skin_engine import get_active_skin
+            anim_name = get_active_skin().get_spinner_animation()
+            if anim_name:
+                from hermes_cli.braille_animations import get_frame
+                elapsed_ms = int(_time.monotonic() * 1000)
+                return get_frame(anim_name, elapsed_ms)
+        except Exception:
+            pass
 
         frame_idx = int(_time.monotonic() * 10) % len(_COMMAND_SPINNER_FRAMES)
         return _COMMAND_SPINNER_FRAMES[frame_idx]
@@ -6144,9 +6171,17 @@ class HermesCLI:
 
         Updates the TUI spinner widget so the user can see what the agent
         is doing during tool execution (fills the gap between thinking
-        spinner and next response).  Also plays audio cue in voice mode.
+        spinner and next response).  Also plays audio cue in voice mode
+        and updates the tool progress tracker.
         """
-        # Only act on tool.started; ignore tool.completed, reasoning.available, etc.
+        # Track tool activity for the progress widget (respects tool_progress config)
+        if self.tool_progress_mode != "off" and function_name and not function_name.startswith("_"):
+            if event_type == "tool.started":
+                self._tool_tracker.on_tool_start(function_name, preview or function_name)
+            elif event_type == "tool.completed":
+                self._tool_tracker.on_tool_complete(function_name)
+
+        # Only update spinner text on tool.started
         if event_type != "tool.started":
             return
         if function_name and not function_name.startswith("_"):
@@ -7552,6 +7587,7 @@ class HermesCLI:
         approval_widget,
         clarify_widget,
         spinner_widget,
+        tool_progress_widget=None,
         spacer,
         status_bar,
         input_rule_top,
@@ -7567,13 +7603,17 @@ class HermesCLI:
         this method.  Override this only when you need full control over widget
         ordering.
         """
-        return [
+        children = [
             Window(height=0),
             sudo_widget,
             secret_widget,
             approval_widget,
             clarify_widget,
             spinner_widget,
+        ]
+        if tool_progress_widget is not None:
+            children.append(tool_progress_widget)
+        children.extend([
             spacer,
             *self._get_extra_tui_widgets(),
             status_bar,
@@ -7583,7 +7623,8 @@ class HermesCLI:
             input_rule_bot,
             voice_status_bar,
             completions_menu,
-        ]
+        ])
+        return children
 
     def run(self):
         """Run the interactive CLI loop with persistent input at bottom."""
@@ -8369,6 +8410,31 @@ class HermesCLI:
             height=get_spinner_height,
         )
 
+        # --- Tool progress widget: multi-lane tool activity display ---
+
+        from hermes_cli.tool_progress_widget import build_progress_fragments
+
+        def get_tool_progress_fragments():
+            if not cli_ref._tool_tracker.has_activity():
+                return []
+            try:
+                cols = shutil.get_terminal_size((80, 24)).columns
+            except Exception:
+                cols = 80
+            return build_progress_fragments(cli_ref._tool_tracker, cols)
+
+        def get_tool_progress_height():
+            lanes = cli_ref._tool_tracker.get_active_lanes()
+            return len(lanes) + 4 if lanes else 0  # header + border lines + lanes + footer
+
+        tool_progress_widget = ConditionalContainer(
+            Window(
+                content=FormattedTextControl(get_tool_progress_fragments),
+                height=get_tool_progress_height,
+            ),
+            filter=Condition(lambda: cli_ref._tool_tracker.has_activity()),
+        )
+
         spacer = Window(
             content=FormattedTextControl(get_hint_text),
             height=get_hint_height,
@@ -8629,6 +8695,7 @@ class HermesCLI:
                     approval_widget=approval_widget,
                     clarify_widget=clarify_widget,
                     spinner_widget=spinner_widget,
+                    tool_progress_widget=tool_progress_widget,
                     spacer=spacer,
                     status_bar=status_bar,
                     input_rule_top=input_rule_top,
@@ -8755,9 +8822,26 @@ class HermesCLI:
                 if not self._app:
                     _time.sleep(0.1)
                     continue
-                if self._command_running:
-                    self._invalidate(min_interval=0.1)
-                    _time.sleep(0.1)
+                if self._command_running or self._agent_running:
+                    # Adapt tick rate to skin animation interval if present
+                    tick = 0.1
+                    try:
+                        from hermes_cli.skin_engine import get_active_skin
+                        skin = get_active_skin()
+                        anim_name = skin.get_spinner_animation()
+                        if anim_name:
+                            # Skin can override interval; fall back to animation default
+                            override_ms = skin.get_spinner_animation_interval()
+                            if override_ms > 0:
+                                tick = override_ms / 1000.0
+                            else:
+                                from hermes_cli.braille_animations import get_animation
+                                tick = get_animation(anim_name)["interval_ms"] / 1000.0
+                            tick = max(tick, 0.05)  # floor at 50ms
+                    except Exception:
+                        pass
+                    self._invalidate(min_interval=tick)
+                    _time.sleep(tick)
                 else:
                     now = _time.monotonic()
                     if now - last_idle_refresh >= 1.0:
@@ -8886,6 +8970,7 @@ class HermesCLI:
 
                     # Regular chat - run agent
                     self._agent_running = True
+                    self._turn_start_time = time.monotonic()
                     app.invalidate()  # Refresh status line
 
                     try:
@@ -8894,6 +8979,17 @@ class HermesCLI:
                         self._agent_running = False
                         self._spinner_text = ""
 
+                        # Post-turn stats (guarded so it can't suppress the real exception)
+                        try:
+                            if self.tool_progress_mode != "off" and self._turn_start_time:
+                                from hermes_cli.session_stats import format_turn_summary
+                                duration = time.monotonic() - self._turn_start_time
+                                summary = self._tool_tracker.get_turn_summary()
+                                if sum(summary.values()) > 0:
+                                    _cprint(f"\033[2m{format_turn_summary(duration, summary)}\033[0m")
+                            self._tool_tracker.on_turn_end()
+                        except Exception:
+                            pass
                         app.invalidate()  # Refresh status line
 
                         # Continuous voice: auto-restart recording after agent responds.

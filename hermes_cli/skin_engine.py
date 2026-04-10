@@ -47,6 +47,12 @@ All fields are optional. Missing values inherit from the ``default`` skin.
       wings:                              # Optional left/right spinner decorations
         - ["⟪⚔", "⚔⟫"]                  # Each entry is [left, right] pair
         - ["⟪▲", "▲⟫"]
+      animation: breathe                    # Braille animation name (from braille_animations)
+                                            # Valid: braille, braillewave, dna, scan, rain,
+                                            #   scanline, pulse, snake, sparkle, cascade,
+                                            #   columns, orbit, breathe, waverows,
+                                            #   checkerboard, helix, fillsweep, diagswipe
+      animation_interval_ms: 120            # Override default interval (optional)
 
     # Branding: text strings used throughout the CLI
     branding:
@@ -143,6 +149,19 @@ class SkinConfig:
         """Get a branding value with fallback."""
         return self.branding.get(key, fallback)
 
+    def get_spinner_animation(self) -> str:
+        """Get the braille animation name for the command spinner, or empty string.
+
+        When set, the CLI uses animated braille frames from
+        ``hermes_cli.braille_animations`` instead of the default spinner.
+        Valid values: any key in ``braille_animations.ANIMATIONS``.
+        """
+        return str(self.spinner.get("animation", ""))
+
+    def get_spinner_animation_interval(self) -> int:
+        """Get the animation interval override in ms, or 0 for default."""
+        return int(self.spinner.get("animation_interval_ms", 0))
+
 
 # =============================================================================
 # Built-in skin definitions
@@ -215,6 +234,7 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
                 ["⟪╸", "╺⟫"],
                 ["⟪⛨", "⛨⟫"],
             ],
+            "animation": "dna",
         },
         "branding": {
             "agent_name": "Ares Agent",
@@ -342,6 +362,7 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
                 ["⟪∿", "∿⟫"],
                 ["⟪◌", "◌⟫"],
             ],
+            "animation": "braillewave",
         },
         "branding": {
             "agent_name": "Poseidon Agent",
@@ -406,6 +427,7 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
                 ["⟪◌", "◌⟫"],
                 ["⟪⬤", "⬤⟫"],
             ],
+            "animation": "breathe",
         },
         "branding": {
             "agent_name": "Sisyphus Agent",
@@ -471,6 +493,7 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
                 ["⟪◌", "◌⟫"],
                 ["⟪◇", "◇⟫"],
             ],
+            "animation": "cascade",
         },
         "branding": {
             "agent_name": "Charizard Agent",

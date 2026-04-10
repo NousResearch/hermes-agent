@@ -18,14 +18,35 @@ def test_normalize_provider_maps_chatgpt_aliases():
 def test_provider_model_ids_chatgpt_web_prefers_live_catalog(monkeypatch):
     monkeypatch.setattr(
         "hermes_cli.chatgpt_web.resolve_chatgpt_web_runtime_credentials",
-        lambda **kwargs: {"api_key": "chatgpt-web-token"},
+        lambda **kwargs: {"api_key": "***"},
     )
     monkeypatch.setattr(
         "hermes_cli.chatgpt_web.fetch_chatgpt_web_model_ids",
         lambda access_token=None, **kwargs: ["gpt-5-thinking", "gpt-5-instant", "gpt-5"],
     )
 
-    assert provider_model_ids("chatgpt-web") == ["gpt-5-thinking", "gpt-5-instant", "gpt-5"]
+    models = provider_model_ids("chatgpt-web")
+
+    assert models[:3] == ["gpt-5-thinking", "gpt-5-instant", "gpt-5"]
+    assert "gpt-4o" in models
+
+
+def test_provider_model_ids_chatgpt_web_keeps_legacy_aliases_alongside_live_catalog(monkeypatch):
+    monkeypatch.setattr(
+        "hermes_cli.chatgpt_web.resolve_chatgpt_web_runtime_credentials",
+        lambda **kwargs: {"api_key": "***"},
+    )
+    monkeypatch.setattr(
+        "hermes_cli.chatgpt_web.fetch_chatgpt_web_model_ids",
+        lambda access_token=None, **kwargs: ["gpt-5-4-thinking", "gpt-5-4-instant", "gpt-5"],
+    )
+
+    models = provider_model_ids("chatgpt-web")
+
+    assert "gpt-5-4-thinking" in models
+    assert "gpt-5-4-instant" in models
+    assert "gpt-5-thinking" in models
+    assert "gpt-5-instant" in models
 
 
 def test_resolve_runtime_provider_chatgpt_web_uses_chatgpt_web_mode(monkeypatch):

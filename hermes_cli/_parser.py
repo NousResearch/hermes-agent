@@ -12,6 +12,20 @@ because its dispatch is tightly coupled to module-level ``cmd_*`` functions.
 
 import argparse
 
+from iteration_limits import is_unlimited_iteration_limit, parse_iteration_limit
+
+
+def _parse_max_turns_arg(value: str):
+    try:
+        parsed = parse_iteration_limit(value, default=None)
+        if not is_unlimited_iteration_limit(parsed) and int(parsed) <= 0:
+            raise ValueError("max turns must be positive")
+        return parsed
+    except (TypeError, ValueError) as exc:
+        raise argparse.ArgumentTypeError(
+            "max turns must be a positive integer or 'unlimited'"
+        ) from exc
+
 
 # `--profile` / `-p` is consumed by ``main._apply_profile_override`` before
 # argparse runs (it sets ``HERMES_HOME`` and strips itself from ``sys.argv``),
@@ -319,10 +333,10 @@ def build_top_level_parser():
     )
     chat_parser.add_argument(
         "--max-turns",
-        type=int,
+        type=_parse_max_turns_arg,
         default=None,
-        metavar="N",
-        help="Maximum tool-calling iterations per conversation turn (default: 90, or agent.max_turns in config)",
+        metavar="N|unlimited",
+        help="Maximum tool-calling iterations per conversation turn (default: 90, or agent.max_turns in config). Accepts 'unlimited'.",
     )
     _inherited_flag(
         chat_parser,

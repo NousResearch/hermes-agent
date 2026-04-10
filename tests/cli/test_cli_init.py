@@ -1,6 +1,7 @@
 """Tests for HermesCLI initialization -- catches configuration bugs
 that only manifest at runtime (not in mocked unit tests)."""
 
+import math
 import os
 import sys
 from types import SimpleNamespace
@@ -80,6 +81,14 @@ class TestMaxTurnsResolution:
         """Invalid env values should not crash CLI init."""
         cli_obj = _make_cli(env_overrides={"HERMES_MAX_ITERATIONS": "not-a-number"})
         assert cli_obj.max_turns == 90
+
+    def test_env_var_max_turns_accepts_unlimited(self):
+        cli_obj = _make_cli(env_overrides={"HERMES_MAX_ITERATIONS": "unlimited"})
+        assert cli_obj.max_turns == math.inf
+
+    def test_agent_config_max_turns_accepts_unlimited(self):
+        cli_obj = _make_cli(config_overrides={"agent": {"max_turns": "unlimited"}})
+        assert cli_obj.max_turns == math.inf
 
     def test_legacy_root_max_turns_is_used_when_agent_key_exists_without_value(self):
         cli_obj = _make_cli(config_overrides={"agent": {}, "max_turns": 77})

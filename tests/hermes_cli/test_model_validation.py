@@ -518,13 +518,37 @@ class TestValidateApiFound:
 
     def test_model_found_for_custom_endpoint(self):
         result = _validate(
-            "my-model", provider="openrouter",
-            api_models=["my-model"], base_url="http://localhost:11434/v1",
+            "my-model",
+            provider="custom",
+            api_models=["my-model"],
+            api_key="key",
+            base_url="http://localhost:11434",
         )
         assert result["accepted"] is True
         assert result["persist"] is True
         assert result["recognized"] is True
 
+    def test_custom_endpoint_unreachable_warns_but_accepts(self):
+        result = _validate("llama3.2", "custom", api_models=None, api_key="key", base_url="http://localhost:11434")
+        assert result["accepted"] is True
+        assert result["persist"] is True
+        assert result["recognized"] is False
+        assert "could not reach this custom endpoint's model listing" in result["message"].lower()
+
+    def test_chatgpt_web_validation_uses_provider_catalog_instead_of_generic_models_probe(self):
+        with patch("hermes_cli.models.provider_model_ids", return_value=["gpt-5-thinking", "gpt-5-instant"]), \
+             patch("hermes_cli.models.fetch_api_models", side_effect=AssertionError("generic /models probe should not be used for chatgpt-web")):
+            result = validate_requested_model(
+                "gpt-5-thinking",
+                "chatgpt-web",
+                api_key="chatgpt-web-token",
+                base_url="https://chatgpt.com/backend-api/f",
+            )
+
+        assert result["accepted"] is True
+        assert result["persist"] is True
+        assert result["recognized"] is True
+        assert result["message"] is None
 
 # -- validate — API not found ------------------------------------------------
 
@@ -634,7 +658,7 @@ class TestValidateApiFallback:
         # Unreachable /models on a custom endpoint no longer hard-rejects —
         # the model is persisted with a warning so Cloudflare-protected /
         # proxy endpoints that don't expose /models still work. See #12950.
-        assert result["accepted"] is False
+        assert result["accepted"] is True
         assert result["persist"] is True
         assert "http://localhost:8000/v1/models" in result["message"]
         assert "http://localhost:8000/v1" in result["message"]

@@ -96,6 +96,7 @@ from agent.markdown_tables import (
 # top — it transitively pulls the OpenAI SDK chain (~230 ms cold) and is only
 # needed when the user runs `/limits`. Lazy-imported inside the handler below.
 from hermes_cli.banner import _format_context_length, format_banner_version_label
+from iteration_limits import parse_iteration_limit
 
 _COMMAND_SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
 
@@ -2668,14 +2669,14 @@ class HermesCLI:
             self.api_key = api_key or os.getenv("OPENAI_API_KEY") or os.getenv("OPENROUTER_API_KEY")
         # Max turns priority: CLI arg > config file > env var > default
         if max_turns is not None:  # CLI arg was explicitly set
-            self.max_turns = max_turns
-        elif CLI_CONFIG["agent"].get("max_turns"):
-            self.max_turns = CLI_CONFIG["agent"]["max_turns"]
-        elif CLI_CONFIG.get("max_turns"):  # Backwards compat: root-level max_turns
-            self.max_turns = CLI_CONFIG["max_turns"]
+            self.max_turns = parse_iteration_limit(max_turns, default=90)
+        elif CLI_CONFIG["agent"].get("max_turns") is not None:
+            self.max_turns = parse_iteration_limit(CLI_CONFIG["agent"]["max_turns"], default=90)
+        elif CLI_CONFIG.get("max_turns") is not None:  # Backwards compat: root-level max_turns
+            self.max_turns = parse_iteration_limit(CLI_CONFIG["max_turns"], default=90)
         elif os.getenv("HERMES_MAX_ITERATIONS"):
             try:
-                self.max_turns = int(os.getenv("HERMES_MAX_ITERATIONS", ""))
+                self.max_turns = parse_iteration_limit(os.getenv("HERMES_MAX_ITERATIONS"), default=90)
             except (TypeError, ValueError):
                 self.max_turns = 90
         else:
@@ -5763,7 +5764,7 @@ class HermesCLI:
         print(f"  Timeout:      {terminal_timeout}s")
         print()
         print("  -- Agent --")
-        print(f"  Max Turns:  {self.max_turns}")
+        print(f"  Max Turns:  {format_iteration_limit(self.max_turns)}")
         print(f"  Toolsets:   {', '.join(self.enabled_toolsets) if self.enabled_toolsets else 'all'}")
         print(f"  Verbose:    {self.verbose}")
         print()

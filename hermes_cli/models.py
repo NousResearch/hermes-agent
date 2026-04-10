@@ -2195,6 +2195,7 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
     if normalized == "chatgpt-web":
         try:
             from hermes_cli.chatgpt_web import (
+                DEFAULT_CHATGPT_WEB_MODELS,
                 fetch_chatgpt_web_model_ids,
                 resolve_chatgpt_web_runtime_credentials,
             )
@@ -2202,7 +2203,11 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
             creds = resolve_chatgpt_web_runtime_credentials()
             live = fetch_chatgpt_web_model_ids(access_token=creds.get("api_key", ""))
             if live:
-                return live
+                merged: list[str] = []
+                for mid in list(live) + list(DEFAULT_CHATGPT_WEB_MODELS):
+                    if mid and mid not in merged:
+                        merged.append(mid)
+                return merged
         except Exception:
             pass
     if normalized in {"copilot", "copilot-acp"}:
@@ -3478,7 +3483,7 @@ def validate_requested_model(
             message += f"\n  If this server expects `/v1`, try base URL: `{probe.get('suggested_base_url')}`"
 
         return {
-            "accepted": api_mode == "anthropic_messages",
+            "accepted": True,
             "persist": True,
             "recognized": False,
             "message": message,
@@ -3514,12 +3519,48 @@ def validate_requested_model(
                 suggestion_text = "\n  Similar models: " + ", ".join(f"`{s}`" for s in suggestions)
             provider_label = "OpenAI Codex" if normalized == "openai-codex" else "xAI Grok OAuth (SuperGrok Subscription)"
             return {
-                "accepted": True,
-                "persist": True,
+                "accepted": False,
+                "persist": False,
                 "recognized": False,
                 "message": (
                     f"Note: `{requested}` was not found in the {provider_label} model listing. "
                     "It may still work if your account has access to a newer or hidden model ID."
+                    f"{suggestion_text}"
+                ),
+            }
+
+    if normalized == "chatgpt-web":
+        try:
+            chatgpt_models = provider_model_ids("chatgpt-web")
+        except Exception:
+            chatgpt_models = []
+        if chatgpt_models:
+            if requested_for_lookup in set(chatgpt_models):
+                return {
+                    "accepted": True,
+                    "persist": True,
+                    "recognized": True,
+                    "message": None,
+                }
+            auto = get_close_matches(requested_for_lookup, chatgpt_models, n=1, cutoff=0.9)
+            if auto:
+                return {
+                    "accepted": True,
+                    "persist": True,
+                    "recognized": True,
+                    "corrected_model": auto[0],
+                    "message": f"Auto-corrected `{requested}` → `{auto[0]}`",
+                }
+            suggestions = get_close_matches(requested_for_lookup, chatgpt_models, n=3, cutoff=0.5)
+            suggestion_text = ""
+            if suggestions:
+                suggestion_text = "\n  Similar models: " + ", ".join(f"`{s}`" for s in suggestions)
+            return {
+                "accepted": False,
+                "persist": False,
+                "recognized": False,
+                "message": (
+                    f"`{requested}` was not found in the ChatGPT Web model catalog."
                     f"{suggestion_text}"
                 ),
             }

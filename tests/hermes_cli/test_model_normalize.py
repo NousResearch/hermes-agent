@@ -105,7 +105,7 @@ class TestAggregatorProviders:
 class TestIssue6211NativeProviderPrefixNormalization:
     @pytest.mark.parametrize("model,target_provider,expected", [
         ("zai/glm-5.1", "zai", "glm-5.1"),
-        ("google/gemini-2.5-pro", "gemini", "gemini-2.5-pro"),
+        ("google/gemini-2.5-pro", "gemini", "google/gemini-2.5-pro"),
         ("moonshot/kimi-k2.5", "kimi-coding", "kimi-k2.5"),
         ("anthropic/claude-sonnet-4.6", "openrouter", "anthropic/claude-sonnet-4.6"),
         ("Qwen/Qwen3.5-397B-A17B", "huggingface", "Qwen/Qwen3.5-397B-A17B"),

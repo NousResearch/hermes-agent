@@ -19,6 +19,9 @@
     "agent-browser": "^0.13.0",
     "@askjo/camoufox-browser": "^1.0.0"
   },
+  "overrides": {
+    "lodash": "4.18.1"
+  },
   "engines": {
     "node": ">=18.0.0"
   }

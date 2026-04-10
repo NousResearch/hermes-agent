@@ -1069,6 +1069,7 @@ class GatewayRunner:
                        "MATRIX_ALLOWED_USERS", "DINGTALK_ALLOWED_USERS",
                        "FEISHU_ALLOWED_USERS",
                        "WECOM_ALLOWED_USERS",
+                       "WEIXIN_ALLOWED_USERS",
                        "BLUEBUBBLES_ALLOWED_USERS",
                        "GATEWAY_ALLOWED_USERS")
         )
@@ -1622,6 +1623,13 @@ class GatewayRunner:
                 return None
             return WeComAdapter(config)
 
+        elif platform == Platform.WEIXIN:
+            from gateway.platforms.weixin import WeixinAdapter, check_weixin_requirements
+            if not check_weixin_requirements():
+                logger.warning("Weixin: aiohttp/cryptography not installed")
+                return None
+            return WeixinAdapter(config)
+
         elif platform == Platform.MATTERMOST:
             from gateway.platforms.mattermost import MattermostAdapter, check_mattermost_requirements
             if not check_mattermost_requirements():
@@ -1697,6 +1705,7 @@ class GatewayRunner:
             Platform.DINGTALK: "DINGTALK_ALLOWED_USERS",
             Platform.FEISHU: "FEISHU_ALLOWED_USERS",
             Platform.WECOM: "WECOM_ALLOWED_USERS",
+            Platform.WEIXIN: "WEIXIN_ALLOWED_USERS",
             Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOWED_USERS",
         }
         platform_allow_all_map = {
@@ -1712,6 +1721,7 @@ class GatewayRunner:
             Platform.DINGTALK: "DINGTALK_ALLOW_ALL_USERS",
             Platform.FEISHU: "FEISHU_ALLOW_ALL_USERS",
             Platform.WECOM: "WECOM_ALLOW_ALL_USERS",
+            Platform.WEIXIN: "WEIXIN_ALLOW_ALL_USERS",
             Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOW_ALL_USERS",
         }
 
@@ -5610,7 +5620,7 @@ class GatewayRunner:
         Platform.TELEGRAM, Platform.DISCORD, Platform.SLACK, Platform.WHATSAPP,
         Platform.SIGNAL, Platform.MATTERMOST, Platform.MATRIX,
         Platform.HOMEASSISTANT, Platform.EMAIL, Platform.SMS, Platform.DINGTALK,
-        Platform.FEISHU, Platform.WECOM, Platform.BLUEBUBBLES, Platform.LOCAL,
+        Platform.FEISHU, Platform.WECOM, Platform.WEIXIN, Platform.BLUEBUBBLES, Platform.LOCAL,
     })
 
     async def _handle_update_command(self, event: MessageEvent) -> str:

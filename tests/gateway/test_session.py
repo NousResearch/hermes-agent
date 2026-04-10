@@ -385,6 +385,32 @@ class TestBuildSessionContextPrompt:
         assert "**User:** Alice" in prompt
         assert "Multi-user thread" not in prompt
 
+    def test_shared_group_session_prompt_uses_multi_user_group_note(self):
+        """Shared non-thread group sessions should not pin a single user name."""
+        config = GatewayConfig(
+            group_sessions_per_user=True,
+            platforms={
+                Platform.QQ_NAPCAT: PlatformConfig(
+                    enabled=True,
+                    extra={"group_sessions_per_user": False},
+                ),
+            },
+        )
+        source = SessionSource(
+            platform=Platform.QQ_NAPCAT,
+            chat_id="987654321",
+            chat_name="项目群",
+            chat_type="group",
+            user_name="Alice",
+            user_id="123456",
+        )
+        ctx = build_session_context(source, config)
+        prompt = build_session_context_prompt(ctx)
+
+        assert "Multi-user group" in prompt
+        assert "[sender name]" in prompt
+        assert "**User:** Alice" not in prompt
+
     def test_dm_thread_shows_user_not_multi(self):
         """DM threads are single-user and should show User, not multi-user note."""
         config = GatewayConfig(
@@ -673,6 +699,35 @@ class TestWhatsAppDMSessionKeyConsistency:
 
         assert first_entry.session_key == "agent:main:discord:group:guild-123"
         assert second_entry.session_key == "agent:main:discord:group:guild-123"
+        assert first_entry.session_id == second_entry.session_id
+
+    def test_store_honors_platform_override_for_shared_qq_group_sessions(self, store):
+        store.config.group_sessions_per_user = True
+        store.config.platforms[Platform.QQ_NAPCAT] = PlatformConfig(
+            enabled=True,
+            extra={"group_sessions_per_user": False},
+        )
+
+        first = SessionSource(
+            platform=Platform.QQ_NAPCAT,
+            chat_id="987654321",
+            chat_type="group",
+            user_id="alice",
+            user_name="Alice",
+        )
+        second = SessionSource(
+            platform=Platform.QQ_NAPCAT,
+            chat_id="987654321",
+            chat_type="group",
+            user_id="bob",
+            user_name="Bob",
+        )
+
+        first_entry = store.get_or_create_session(first)
+        second_entry = store.get_or_create_session(second)
+
+        assert first_entry.session_key == "agent:main:qq_napcat:group:987654321"
+        assert second_entry.session_key == "agent:main:qq_napcat:group:987654321"
         assert first_entry.session_id == second_entry.session_id
 
     def test_telegram_dm_includes_chat_id(self):

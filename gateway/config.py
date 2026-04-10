@@ -305,6 +305,30 @@ class GatewayConfig:
     # Streaming configuration
     streaming: StreamingConfig = field(default_factory=StreamingConfig)
 
+    def get_session_isolation(self, platform: Optional[Platform] = None) -> tuple[bool, bool]:
+        """Return effective group/thread isolation flags for a platform."""
+        group_sessions_per_user = bool(getattr(self, "group_sessions_per_user", True))
+        thread_sessions_per_user = bool(getattr(self, "thread_sessions_per_user", False))
+
+        if platform is not None:
+            platform_config = self.platforms.get(platform)
+            extra = getattr(platform_config, "extra", None) if platform_config else None
+            if isinstance(extra, dict):
+                if _coerce_bool(extra.get("project_group_mode"), default=False) and "group_sessions_per_user" not in extra:
+                    group_sessions_per_user = False
+                if "group_sessions_per_user" in extra:
+                    group_sessions_per_user = _coerce_bool(
+                        extra.get("group_sessions_per_user"),
+                        default=group_sessions_per_user,
+                    )
+                if "thread_sessions_per_user" in extra:
+                    thread_sessions_per_user = _coerce_bool(
+                        extra.get("thread_sessions_per_user"),
+                        default=thread_sessions_per_user,
+                    )
+
+        return group_sessions_per_user, thread_sessions_per_user
+
     def get_connected_platforms(self) -> List[Platform]:
         """Return list of platforms that are enabled and configured."""
         connected = []
@@ -627,6 +651,47 @@ def load_gateway_config() -> GatewayConfig:
                     if key in qq_napcat_cfg:
                         extra[key] = _coerce_bool(qq_napcat_cfg.get(key), default=False)
 
+                for key, default in (
+                    ("group_sessions_per_user", True),
+                    ("thread_sessions_per_user", False),
+                    ("project_group_mode", False),
+                ):
+                    if key in qq_napcat_cfg:
+                        extra[key] = _coerce_bool(
+                            qq_napcat_cfg.get(key),
+                            default=default,
+                        )
+
+                for key in (
+                    "group_batch_debounce_seconds",
+                    "group_min_model_interval_seconds",
+                    "group_batch_retry_seconds",
+                ):
+                    value = qq_napcat_cfg.get(key)
+                    if value is None:
+                        continue
+                    try:
+                        extra[key] = float(value)
+                    except (TypeError, ValueError):
+                        logger.warning(
+                            "Ignoring invalid qq_napcat.%s=%r in config.yaml",
+                            key,
+                            value,
+                        )
+
+                for key in ("group_observed_max_messages", "group_batch_max_messages"):
+                    value = qq_napcat_cfg.get(key)
+                    if value is None:
+                        continue
+                    try:
+                        extra[key] = int(value)
+                    except (TypeError, ValueError):
+                        logger.warning(
+                            "Ignoring invalid qq_napcat.%s=%r in config.yaml",
+                            key,
+                            value,
+                        )
+
                 if "require_mention" in qq_napcat_cfg:
                     extra["require_mention"] = _coerce_bool(
                         qq_napcat_cfg.get("require_mention"),
@@ -661,6 +726,9 @@ def load_gateway_config() -> GatewayConfig:
                     "allow_all_users": "QQ_NAPCAT_ALLOW_ALL_USERS",
                     "allowed_groups": "QQ_NAPCAT_ALLOWED_GROUPS",
                     "allow_all_groups": "QQ_NAPCAT_ALLOW_ALL_GROUPS",
+                    "group_sessions_per_user": "QQ_NAPCAT_GROUP_SESSIONS_PER_USER",
+                    "thread_sessions_per_user": "QQ_NAPCAT_THREAD_SESSIONS_PER_USER",
+                    "project_group_mode": "QQ_NAPCAT_PROJECT_GROUP_MODE",
                     "require_mention": "QQ_NAPCAT_REQUIRE_MENTION",
                     "mention_patterns": "QQ_NAPCAT_MENTION_PATTERNS",
                     "ws_url": "QQ_NAPCAT_WS_URL",
@@ -669,6 +737,11 @@ def load_gateway_config() -> GatewayConfig:
                     "home_channel_name": "QQ_NAPCAT_HOME_CHANNEL_NAME",
                     "system_prompt": "QQ_NAPCAT_SYSTEM_PROMPT",
                     "reconnect_interval": "QQ_NAPCAT_RECONNECT_INTERVAL",
+                    "group_batch_debounce_seconds": "QQ_NAPCAT_GROUP_BATCH_DEBOUNCE_SECONDS",
+                    "group_min_model_interval_seconds": "QQ_NAPCAT_GROUP_MIN_MODEL_INTERVAL_SECONDS",
+                    "group_batch_retry_seconds": "QQ_NAPCAT_GROUP_BATCH_RETRY_SECONDS",
+                    "group_observed_max_messages": "QQ_NAPCAT_GROUP_OBSERVED_MAX_MESSAGES",
+                    "group_batch_max_messages": "QQ_NAPCAT_GROUP_BATCH_MAX_MESSAGES",
                 }
                 for cfg_key, env_key in env_bridge_map.items():
                     if os.getenv(env_key):
@@ -915,9 +988,17 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         "QQ_NAPCAT_ALLOWED_GROUPS",
         "QQ_NAPCAT_ALLOW_ALL_USERS",
         "QQ_NAPCAT_ALLOW_ALL_GROUPS",
+        "QQ_NAPCAT_GROUP_SESSIONS_PER_USER",
+        "QQ_NAPCAT_THREAD_SESSIONS_PER_USER",
+        "QQ_NAPCAT_PROJECT_GROUP_MODE",
         "QQ_NAPCAT_REQUIRE_MENTION",
         "QQ_NAPCAT_MENTION_PATTERNS",
         "QQ_NAPCAT_RECONNECT_INTERVAL",
+        "QQ_NAPCAT_GROUP_BATCH_DEBOUNCE_SECONDS",
+        "QQ_NAPCAT_GROUP_MIN_MODEL_INTERVAL_SECONDS",
+        "QQ_NAPCAT_GROUP_BATCH_RETRY_SECONDS",
+        "QQ_NAPCAT_GROUP_OBSERVED_MAX_MESSAGES",
+        "QQ_NAPCAT_GROUP_BATCH_MAX_MESSAGES",
         "QQ_NAPCAT_SYSTEM_PROMPT",
         "QQ_NAPCAT_HOME_CHANNEL",
         "QQ_NAPCAT_HOME_CHANNEL_NAME",
@@ -958,6 +1039,24 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 default=False,
             )
 
+        if os.getenv("QQ_NAPCAT_GROUP_SESSIONS_PER_USER") is not None:
+            qq_config.extra["group_sessions_per_user"] = _coerce_bool(
+                os.getenv("QQ_NAPCAT_GROUP_SESSIONS_PER_USER"),
+                default=True,
+            )
+
+        if os.getenv("QQ_NAPCAT_THREAD_SESSIONS_PER_USER") is not None:
+            qq_config.extra["thread_sessions_per_user"] = _coerce_bool(
+                os.getenv("QQ_NAPCAT_THREAD_SESSIONS_PER_USER"),
+                default=False,
+            )
+
+        if os.getenv("QQ_NAPCAT_PROJECT_GROUP_MODE") is not None:
+            qq_config.extra["project_group_mode"] = _coerce_bool(
+                os.getenv("QQ_NAPCAT_PROJECT_GROUP_MODE"),
+                default=False,
+            )
+
         if os.getenv("QQ_NAPCAT_REQUIRE_MENTION") is not None:
             qq_config.extra["require_mention"] = _coerce_bool(
                 os.getenv("QQ_NAPCAT_REQUIRE_MENTION"),
@@ -979,6 +1078,31 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                     "Ignoring invalid QQ_NAPCAT_RECONNECT_INTERVAL=%r",
                     qq_reconnect_interval,
                 )
+
+        for env_key, extra_key in (
+            ("QQ_NAPCAT_GROUP_BATCH_DEBOUNCE_SECONDS", "group_batch_debounce_seconds"),
+            ("QQ_NAPCAT_GROUP_MIN_MODEL_INTERVAL_SECONDS", "group_min_model_interval_seconds"),
+            ("QQ_NAPCAT_GROUP_BATCH_RETRY_SECONDS", "group_batch_retry_seconds"),
+        ):
+            raw_value = os.getenv(env_key)
+            if raw_value is None:
+                continue
+            try:
+                qq_config.extra[extra_key] = float(raw_value)
+            except ValueError:
+                logger.warning("Ignoring invalid %s=%r", env_key, raw_value)
+
+        for env_key, extra_key in (
+            ("QQ_NAPCAT_GROUP_OBSERVED_MAX_MESSAGES", "group_observed_max_messages"),
+            ("QQ_NAPCAT_GROUP_BATCH_MAX_MESSAGES", "group_batch_max_messages"),
+        ):
+            raw_value = os.getenv(env_key)
+            if raw_value is None:
+                continue
+            try:
+                qq_config.extra[extra_key] = int(raw_value)
+            except ValueError:
+                logger.warning("Ignoring invalid %s=%r", env_key, raw_value)
 
         qq_system_prompt = os.getenv("QQ_NAPCAT_SYSTEM_PROMPT")
         if qq_system_prompt:

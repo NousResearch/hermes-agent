@@ -170,6 +170,8 @@ class SessionContext:
     home_channels: Dict[Platform, HomeChannel]
     admin_user_ids: List[str] = field(default_factory=list)
     is_admin_user: Optional[bool] = None
+    shared_session: bool = False
+    shared_session_kind: Optional[str] = None
     
     # Session metadata
     session_key: str = ""
@@ -186,6 +188,8 @@ class SessionContext:
             },
             "admin_user_ids": list(self.admin_user_ids),
             "is_admin_user": self.is_admin_user,
+            "shared_session": self.shared_session,
+            "shared_session_kind": self.shared_session_kind,
             "session_key": self.session_key,
             "session_id": self.session_id,
             "created_at": self.created_at.isoformat() if self.created_at else None,
@@ -264,13 +268,14 @@ def build_session_context_prompt(
     # in the system prompt — it changes per-turn and would bust the prompt
     # cache.  Instead, note that this is a multi-user thread; individual
     # sender names are prefixed on each user message by the gateway.
-    _is_shared_thread = (
-        context.source.chat_type != "dm"
-        and context.source.thread_id
-    )
-    if _is_shared_thread:
+    if context.shared_session and context.shared_session_kind == "thread":
         lines.append(
             "**Session type:** Multi-user thread — messages are prefixed "
+            "with [sender name]. Multiple users may participate."
+        )
+    elif context.shared_session and context.shared_session_kind == "group":
+        lines.append(
+            "**Session type:** Multi-user group — messages are prefixed "
             "with [sender name]. Multiple users may participate."
         )
     elif context.source.user_name:
@@ -610,10 +615,13 @@ class SessionStore:
     
     def _generate_session_key(self, source: SessionSource) -> str:
         """Generate a session key from a source."""
+        group_sessions_per_user, thread_sessions_per_user = self.config.get_session_isolation(
+            source.platform
+        )
         return build_session_key(
             source,
-            group_sessions_per_user=getattr(self.config, "group_sessions_per_user", True),
-            thread_sessions_per_user=getattr(self.config, "thread_sessions_per_user", False),
+            group_sessions_per_user=group_sessions_per_user,
+            thread_sessions_per_user=thread_sessions_per_user,
         )
     
     def _is_session_expired(self, entry: SessionEntry) -> bool:
@@ -1098,13 +1106,25 @@ def build_session_context(
         home = config.get_home_channel(platform)
         if home:
             home_channels[platform] = home
-    
+
+    group_sessions_per_user, thread_sessions_per_user = config.get_session_isolation(
+        source.platform
+    )
+    shared_session_kind = None
+    if source.chat_type != "dm":
+        if source.thread_id and not thread_sessions_per_user:
+            shared_session_kind = "thread"
+        elif not source.thread_id and not group_sessions_per_user:
+            shared_session_kind = "group"
+
     context = SessionContext(
         source=source,
         connected_platforms=connected,
         home_channels=home_channels,
         admin_user_ids=list(admin_user_ids or []),
         is_admin_user=is_admin_user,
+        shared_session=shared_session_kind is not None,
+        shared_session_kind=shared_session_kind,
     )
     
     if session_entry:

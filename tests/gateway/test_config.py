@@ -241,6 +241,10 @@ class TestLoadGatewayConfig:
             "    - '987654'\n"
             "  home_channel: group:987654\n"
             "  home_channel_name: QQ Home\n"
+            "  project_group_mode: true\n"
+            "  group_batch_debounce_seconds: 1.5\n"
+            "  group_min_model_interval_seconds: 8\n"
+            "  group_batch_max_messages: 40\n"
             "  reconnect_interval: 9\n"
             "  system_prompt: Return [[NO_REPLY]] when the group message does not need a reply.\n",
             encoding="utf-8",
@@ -262,6 +266,10 @@ class TestLoadGatewayConfig:
         assert config.platforms[platform].extra["require_mention"] is True
         assert config.platforms[platform].extra["mention_patterns"] == [r"^\s*马噶\b"]
         assert config.platforms[platform].extra["allowed_groups"] == ["987654"]
+        assert config.platforms[platform].extra["project_group_mode"] is True
+        assert config.platforms[platform].extra["group_batch_debounce_seconds"] == 1.5
+        assert config.platforms[platform].extra["group_min_model_interval_seconds"] == 8.0
+        assert config.platforms[platform].extra["group_batch_max_messages"] == 40
         assert config.platforms[platform].extra["reconnect_interval"] == 9
         assert "[[NO_REPLY]]" in config.platforms[platform].extra["system_prompt"]
 
@@ -352,9 +360,13 @@ class TestQqNapCatEnvOverrides:
                 "QQ_NAPCAT_MENTION_PATTERNS": "[\"^\\\\s*马噶\\\\b\"]",
                 "QQ_NAPCAT_ALLOWED_GROUPS": "12345, 67890",
                 "QQ_NAPCAT_ALLOW_ALL_GROUPS": "true",
+                "QQ_NAPCAT_PROJECT_GROUP_MODE": "true",
                 "QQ_NAPCAT_HOME_CHANNEL": "group:12345",
                 "QQ_NAPCAT_HOME_CHANNEL_NAME": "QQ Home",
                 "QQ_NAPCAT_SYSTEM_PROMPT": "Use [[NO_REPLY]] for low-signal group chatter.",
+                "QQ_NAPCAT_GROUP_BATCH_DEBOUNCE_SECONDS": "1.25",
+                "QQ_NAPCAT_GROUP_MIN_MODEL_INTERVAL_SECONDS": "8",
+                "QQ_NAPCAT_GROUP_BATCH_MAX_MESSAGES": "50",
                 "QQ_NAPCAT_RECONNECT_INTERVAL": "12",
             },
             clear=False,
@@ -372,5 +384,47 @@ class TestQqNapCatEnvOverrides:
         assert config.platforms[platform].extra["mention_patterns"] == [r"^\s*马噶\b"]
         assert config.platforms[platform].extra["allowed_groups"] == ["12345", "67890"]
         assert config.platforms[platform].extra["allow_all_groups"] is True
+        assert config.platforms[platform].extra["project_group_mode"] is True
+        assert config.platforms[platform].extra["group_batch_debounce_seconds"] == 1.25
+        assert config.platforms[platform].extra["group_min_model_interval_seconds"] == 8.0
+        assert config.platforms[platform].extra["group_batch_max_messages"] == 50
         assert config.platforms[platform].extra["reconnect_interval"] == 12
         assert "[[NO_REPLY]]" in config.platforms[platform].extra["system_prompt"]
+
+    def test_qq_platform_can_override_group_session_isolation(self):
+        platform = getattr(Platform, "QQ_NAPCAT")
+        config = GatewayConfig(
+            group_sessions_per_user=True,
+            thread_sessions_per_user=True,
+            platforms={
+                platform: PlatformConfig(
+                    enabled=True,
+                    extra={
+                        "group_sessions_per_user": False,
+                        "thread_sessions_per_user": False,
+                    },
+                ),
+            },
+        )
+
+        group_per_user, thread_per_user = config.get_session_isolation(platform)
+
+        assert group_per_user is False
+        assert thread_per_user is False
+
+    def test_project_group_mode_defaults_qq_group_sessions_to_shared(self):
+        platform = getattr(Platform, "QQ_NAPCAT")
+        config = GatewayConfig(
+            group_sessions_per_user=True,
+            platforms={
+                platform: PlatformConfig(
+                    enabled=True,
+                    extra={"project_group_mode": True},
+                ),
+            },
+        )
+
+        group_per_user, thread_per_user = config.get_session_isolation(platform)
+
+        assert group_per_user is False
+        assert thread_per_user is False

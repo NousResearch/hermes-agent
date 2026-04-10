@@ -73,6 +73,15 @@ def _safe_url_for_log(url: str, max_len: int = 80) -> str:
     return f"{safe[:max_len - 3]}..."
 
 
+def _coerce_platform_bool(value: Any, default: bool) -> bool:
+    """Parse platform extra booleans from config/env derived values."""
+    if value is None:
+        return default
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
 # ---------------------------------------------------------------------------
 # Image cache utilities
 #
@@ -594,6 +603,33 @@ class BasePlatformAdapter(ABC):
         thread replies without explicit mentions).
         """
         self._session_store = session_store
+
+    def _session_isolation(self) -> tuple[bool, bool]:
+        """Return effective group/thread isolation flags for this adapter."""
+        store_cfg = getattr(getattr(self, "_session_store", None), "config", None)
+        if store_cfg is not None and hasattr(store_cfg, "get_session_isolation"):
+            try:
+                return store_cfg.get_session_isolation(self.platform)
+            except Exception:
+                pass
+
+        extra = getattr(self.config, "extra", None) or {}
+        default_group_isolation = True
+        if _coerce_platform_bool(extra.get("project_group_mode"), False) and "group_sessions_per_user" not in extra:
+            default_group_isolation = False
+        return (
+            _coerce_platform_bool(extra.get("group_sessions_per_user"), default_group_isolation),
+            _coerce_platform_bool(extra.get("thread_sessions_per_user"), False),
+        )
+
+    def _session_key_for_source(self, source: SessionSource) -> str:
+        """Build the effective session key for a source routed by this adapter."""
+        group_sessions_per_user, thread_sessions_per_user = self._session_isolation()
+        return build_session_key(
+            source,
+            group_sessions_per_user=group_sessions_per_user,
+            thread_sessions_per_user=thread_sessions_per_user,
+        )
     
     @abstractmethod
     async def connect(self) -> bool:
@@ -1154,11 +1190,7 @@ class BasePlatformAdapter(ABC):
         if not self._message_handler:
             return
         
-        session_key = build_session_key(
-            event.source,
-            group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
-            thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
-        )
+        session_key = self._session_key_for_source(event.source)
         
         # Check if there's already an active handler for this session
         if session_key in self._active_sessions:

@@ -2134,12 +2134,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
     def _text_batch_key(self, event: MessageEvent) -> str:
         """Session-scoped key for text message batching."""
-        from gateway.session import build_session_key
-        return build_session_key(
-            event.source,
-            group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
-            thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
-        )
+        return self._session_key_for_source(event.source)
 
     def _enqueue_text_event(self, event: MessageEvent) -> None:
         """Buffer a text event and reset the flush timer.
@@ -2193,12 +2188,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
     def _photo_batch_key(self, event: MessageEvent, msg: Message) -> str:
         """Return a batching key for Telegram photos/albums."""
-        from gateway.session import build_session_key
-        session_key = build_session_key(
-            event.source,
-            group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
-            thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
-        )
+        session_key = self._session_key_for_source(event.source)
         media_group_id = getattr(msg, "media_group_id", None)
         if media_group_id:
             return f"{session_key}:album:{media_group_id}"

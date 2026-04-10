@@ -9,6 +9,7 @@ import logging
 import os
 import re
 import time
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
@@ -36,6 +37,13 @@ from gateway.platforms.base import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class _BufferedGroupMessage:
+    event: MessageEvent
+    payload: Dict[str, Any]
+    observed_at: float
 
 
 def check_qq_napcat_requirements() -> bool:
@@ -97,6 +105,14 @@ def normalize_qq_napcat_local_path(path: str) -> str:
     return str(Path(os.path.abspath(os.path.expanduser(path))))
 
 
+def _coerce_bool(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, str):
+        return value.strip().lower() in ("true", "1", "yes", "on")
+    return bool(value)
+
+
 class QqNapCatAdapter(BasePlatformAdapter):
     """Hermes platform adapter for QQ via NapCat's OneBot websocket."""
 
@@ -114,9 +130,36 @@ class QqNapCatAdapter(BasePlatformAdapter):
         self._mention_patterns = self._compile_mention_patterns()
         self._bot_user_id = ""
         self._followup_window_seconds = int(extra.get("followup_window_seconds") or 900)
+        self._project_group_mode = _coerce_bool(extra.get("project_group_mode"), False)
+        self._group_batch_debounce_seconds = max(
+            0.0,
+            float(extra.get("group_batch_debounce_seconds") or 1.0),
+        )
+        self._group_min_model_interval_seconds = max(
+            0.0,
+            float(extra.get("group_min_model_interval_seconds") or 8.0),
+        )
+        self._group_batch_retry_seconds = max(
+            0.05,
+            float(extra.get("group_batch_retry_seconds") or 0.5),
+        )
+        self._group_observed_max_messages = max(
+            1,
+            int(extra.get("group_observed_max_messages") or 80),
+        )
+        self._group_batch_max_messages = max(
+            1,
+            int(extra.get("group_batch_max_messages") or 30),
+        )
         self._group_followup_windows: Dict[Tuple[str, str], float] = {}
+        self._group_shared_followup_windows: Dict[str, float] = {}
         self._recent_group_bot_messages: Dict[str, Tuple[str, float]] = {}
         self._max_recent_group_messages = 500
+        self._group_observed_messages: Dict[str, list[_BufferedGroupMessage]] = {}
+        self._group_pending_batches: Dict[str, list[_BufferedGroupMessage]] = {}
+        self._group_batch_tasks: Dict[str, asyncio.Task] = {}
+        self._group_last_dispatch_at: Dict[str, float] = {}
+        self._group_last_included_at: Dict[str, float] = {}
 
         self._session: Optional[aiohttp.ClientSession] = None
         self._ws: Optional[aiohttp.ClientWebSocketResponse] = None
@@ -254,6 +297,14 @@ class QqNapCatAdapter(BasePlatformAdapter):
         for key in expired_followups:
             self._group_followup_windows.pop(key, None)
 
+        expired_shared_followups = [
+            group_id
+            for group_id, expires_at in self._group_shared_followup_windows.items()
+            if expires_at <= now
+        ]
+        for group_id in expired_shared_followups:
+            self._group_shared_followup_windows.pop(group_id, None)
+
         expired_message_ids = [
             message_id
             for message_id, (_, expires_at) in self._recent_group_bot_messages.items()
@@ -270,6 +321,10 @@ class QqNapCatAdapter(BasePlatformAdapter):
             )[:overflow]
             for message_id, _ in stale_items:
                 self._recent_group_bot_messages.pop(message_id, None)
+
+        for group_id, items in list(self._group_observed_messages.items()):
+            if len(items) > self._group_observed_max_messages:
+                self._group_observed_messages[group_id] = items[-self._group_observed_max_messages:]
 
     def _message_is_reply_to_bot(self, payload: Dict[str, Any]) -> bool:
         group_id = str(payload.get("group_id") or "").strip()
@@ -302,13 +357,32 @@ class QqNapCatAdapter(BasePlatformAdapter):
             return False
         return True
 
-    def _should_process_group_message(self, payload: Dict[str, Any]) -> bool:
+    def _has_group_followup_window(self, payload: Dict[str, Any]) -> bool:
+        group_id = str(payload.get("group_id") or "").strip()
+        if not group_id:
+            return False
+
+        self._cleanup_group_tracking_state()
+        expires_at = self._group_shared_followup_windows.get(group_id)
+        if not expires_at:
+            return False
+        if expires_at <= time.time():
+            self._group_shared_followup_windows.pop(group_id, None)
+            return False
+        return True
+
+    def _group_message_allowed(self, payload: Dict[str, Any]) -> bool:
         group_id = str(payload.get("group_id") or "").strip()
         if not group_id:
             return False
         if not self.allow_all_groups and self.allowed_groups and group_id not in self.allowed_groups:
             return False
         if not self.allow_all_groups and not self.allowed_groups:
+            return False
+        return True
+
+    def _group_message_triggers_ai(self, payload: Dict[str, Any]) -> bool:
+        if not self._group_message_allowed(payload):
             return False
         if not self._qq_require_mention():
             return True
@@ -320,9 +394,14 @@ class QqNapCatAdapter(BasePlatformAdapter):
             return True
         if self._message_is_reply_to_bot(payload):
             return True
+        if self._project_group_mode and self._has_group_followup_window(payload):
+            return True
         if self._has_followup_window(payload):
             return True
         return self._message_matches_mention_patterns(payload)
+
+    def _should_process_group_message(self, payload: Dict[str, Any]) -> bool:
+        return self._group_message_triggers_ai(payload)
 
     async def connect(self) -> bool:
         if not QQ_NAPCAT_AVAILABLE:
@@ -352,6 +431,13 @@ class QqNapCatAdapter(BasePlatformAdapter):
 
     async def disconnect(self) -> None:
         self._running = False
+
+        pending_batch_tasks = list(self._group_batch_tasks.values())
+        for task in pending_batch_tasks:
+            task.cancel()
+        if pending_batch_tasks:
+            await asyncio.gather(*pending_batch_tasks, return_exceptions=True)
+        self._group_batch_tasks.clear()
 
         if self._reader_task:
             self._reader_task.cancel()
@@ -532,12 +618,15 @@ class QqNapCatAdapter(BasePlatformAdapter):
 
         group_id = str(getattr(source, "chat_id", "") or "").strip()
         user_id = str(getattr(source, "user_id", "") or "").strip()
-        if not group_id or not user_id or self._followup_window_seconds <= 0:
+        if not group_id or self._followup_window_seconds <= 0:
             return
 
         self._cleanup_group_tracking_state()
         expires_at = time.time() + self._followup_window_seconds
-        self._group_followup_windows[(group_id, user_id)] = expires_at
+        if user_id:
+            self._group_followup_windows[(group_id, user_id)] = expires_at
+        if self._project_group_mode:
+            self._group_shared_followup_windows[group_id] = expires_at
 
         for message_id in sent_message_ids:
             normalized_message_id = str(message_id or "").strip()
@@ -549,15 +638,176 @@ class QqNapCatAdapter(BasePlatformAdapter):
 
         self._cleanup_group_tracking_state()
 
+    def _remember_group_message(self, group_id: str, item: _BufferedGroupMessage) -> None:
+        messages = self._group_observed_messages.setdefault(group_id, [])
+        messages.append(item)
+        if len(messages) > self._group_observed_max_messages:
+            del messages[:-self._group_observed_max_messages]
+
+    def _seed_group_batch(self, group_id: str) -> list[_BufferedGroupMessage]:
+        since = self._group_last_included_at.get(group_id, 0.0)
+        messages = self._group_observed_messages.get(group_id, [])
+        seeded = [item for item in messages if item.observed_at > since]
+        if not seeded and messages:
+            seeded = [messages[-1]]
+        return list(seeded)
+
+    def _schedule_group_batch_flush(self, group_id: str) -> None:
+        prior_task = self._group_batch_tasks.get(group_id)
+        if prior_task and not prior_task.done():
+            prior_task.cancel()
+        self._group_batch_tasks[group_id] = asyncio.create_task(
+            self._flush_group_batch(group_id)
+        )
+
+    def _describe_group_message(self, item: _BufferedGroupMessage) -> str:
+        text = str(item.event.text or "").strip()
+        if text:
+            return text
+
+        segments = item.payload.get("message")
+        if not isinstance(segments, list):
+            return "[空消息]"
+
+        labels = []
+        for segment in segments:
+            seg_type = str(segment.get("type") or "").lower()
+            if seg_type == "image":
+                labels.append("[图片]")
+            elif seg_type == "record":
+                labels.append("[语音]")
+            elif seg_type == "video":
+                labels.append("[视频]")
+            elif seg_type == "file":
+                labels.append("[文件]")
+        return " ".join(labels) or "[空消息]"
+
+    async def _build_group_batch_event(
+        self,
+        group_id: str,
+        batch: list[_BufferedGroupMessage],
+    ) -> MessageEvent:
+        selected = batch[-self._group_batch_max_messages:]
+        omitted_count = len(batch) - len(selected)
+        latest = selected[-1]
+        merged_lines = [f"[QQ项目群合并消息，共 {len(batch)} 条]"]
+        if omitted_count > 0:
+            merged_lines.append(f"[已截取最近 {len(selected)} 条，省略 {omitted_count} 条更早消息]")
+
+        merged_media_urls = []
+        merged_media_types = []
+        for item in selected:
+            if item.event.media_urls or item.event.message_type in {
+                MessageType.PHOTO,
+                MessageType.VIDEO,
+                MessageType.VOICE,
+                MessageType.DOCUMENT,
+            }:
+                await self._populate_media(item.event, item.payload)
+                merged_media_urls.extend(item.event.media_urls)
+                merged_media_types.extend(item.event.media_types)
+
+            speaker = str(item.event.source.user_name or item.event.source.user_id or "unknown").strip()
+            merged_lines.append(f"{speaker}: {self._describe_group_message(item)}")
+
+        return MessageEvent(
+            text="\n".join(line for line in merged_lines if line),
+            message_type=MessageType.TEXT,
+            source=latest.event.source,
+            raw_message={
+                "qq_group_batch": True,
+                "group_id": group_id,
+                "message_ids": [item.event.message_id for item in selected if item.event.message_id],
+            },
+            message_id=latest.event.message_id,
+            media_urls=merged_media_urls,
+            media_types=merged_media_types,
+            reply_to_message_id=latest.event.reply_to_message_id,
+            timestamp=latest.event.timestamp,
+        )
+
+    async def _flush_group_batch(self, group_id: str) -> None:
+        current_task = asyncio.current_task()
+        try:
+            while True:
+                batch = self._group_pending_batches.get(group_id)
+                if not batch:
+                    return
+
+                last_observed_at = batch[-1].observed_at
+                next_ready_at = max(
+                    last_observed_at + self._group_batch_debounce_seconds,
+                    self._group_last_dispatch_at.get(group_id, 0.0) + self._group_min_model_interval_seconds,
+                )
+                wait_seconds = max(0.0, next_ready_at - time.time())
+                if wait_seconds > 0:
+                    await asyncio.sleep(wait_seconds)
+                    continue
+
+                merged_event = await self._build_group_batch_event(group_id, batch)
+                session_key = self._session_key_for_source(merged_event.source)
+                if session_key in self._active_sessions:
+                    await asyncio.sleep(self._group_batch_retry_seconds)
+                    continue
+
+                self._group_pending_batches.pop(group_id, None)
+                self._group_last_dispatch_at[group_id] = time.time()
+                self._group_last_included_at[group_id] = max(
+                    item.observed_at for item in batch
+                )
+                await self.handle_message(merged_event)
+                return
+        finally:
+            if self._group_batch_tasks.get(group_id) is current_task:
+                self._group_batch_tasks.pop(group_id, None)
+
+    async def _handle_project_group_payload(self, payload: Dict[str, Any]) -> None:
+        event = self._build_message_event(payload)
+        event.text = self._clean_bot_mention_text(event.text, payload)
+
+        raw_text = str(payload.get("raw_message") or "").strip()
+        if raw_text.startswith("/"):
+            await self._populate_media(event, payload)
+            await self.handle_message(event)
+            return
+
+        group_id = str(payload.get("group_id") or "").strip()
+        item = _BufferedGroupMessage(
+            event=event,
+            payload=payload,
+            observed_at=time.time(),
+        )
+        self._remember_group_message(group_id, item)
+
+        if group_id in self._group_pending_batches:
+            self._group_pending_batches[group_id].append(item)
+            self._schedule_group_batch_flush(group_id)
+            return
+
+        if not self._group_message_triggers_ai(payload):
+            return
+
+        seed = self._seed_group_batch(group_id)
+        if not seed:
+            seed = [item]
+        self._group_pending_batches[group_id] = seed
+        self._schedule_group_batch_flush(group_id)
+
     async def _handle_payload(self, payload: Dict[str, Any]) -> None:
         if payload.get("post_type") != "message":
             return
 
         message_type = str(payload.get("message_type") or "").lower()
-        if message_type == "group" and not self._should_process_group_message(payload):
-            return
 
         try:
+            if message_type == "group":
+                if not self._group_message_allowed(payload):
+                    return
+                if self._project_group_mode:
+                    await self._handle_project_group_payload(payload)
+                    return
+                if not self._should_process_group_message(payload):
+                    return
             event = self._build_message_event(payload)
             if message_type == "group":
                 event.text = self._clean_bot_mention_text(event.text, payload)

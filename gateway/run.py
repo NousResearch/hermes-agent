@@ -773,10 +773,19 @@ class GatewayRunner:
             except Exception:
                 pass
         config = getattr(self, "config", None)
+        group_sessions_per_user = getattr(config, "group_sessions_per_user", True)
+        thread_sessions_per_user = getattr(config, "thread_sessions_per_user", False)
+        if config is not None and hasattr(config, "get_session_isolation"):
+            try:
+                group_sessions_per_user, thread_sessions_per_user = config.get_session_isolation(
+                    source.platform
+                )
+            except Exception:
+                pass
         return build_session_key(
             source,
-            group_sessions_per_user=getattr(config, "group_sessions_per_user", True),
-            thread_sessions_per_user=getattr(config, "thread_sessions_per_user", False),
+            group_sessions_per_user=group_sessions_per_user,
+            thread_sessions_per_user=thread_sessions_per_user,
         )
 
     def _resolve_turn_agent_config(self, user_message: str, model: str, runtime_kwargs: dict) -> dict:

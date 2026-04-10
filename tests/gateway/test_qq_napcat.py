@@ -1,5 +1,6 @@
 """Tests for the QQ (NapCat) platform adapter."""
 
+import asyncio
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -7,6 +8,20 @@ import pytest
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import MessageType
+
+
+def _group_payload(*, message_id, user_id, group_id=987654321, text, nickname, card=None, self_id=999001, segments=None):
+    return {
+        "post_type": "message",
+        "message_type": "group",
+        "self_id": self_id,
+        "message_id": message_id,
+        "user_id": user_id,
+        "group_id": group_id,
+        "raw_message": text,
+        "message": segments or [{"type": "text", "data": {"text": text}}],
+        "sender": {"nickname": nickname, "card": card or nickname},
+    }
 
 
 @pytest.mark.asyncio
@@ -322,6 +337,238 @@ async def test_group_reply_to_recent_bot_message_is_processed():
     adapter.handle_message.assert_awaited_once()
     event = adapter.handle_message.await_args.args[0]
     assert event.reply_to_message_id == "bot-msg-3"
+
+
+@pytest.mark.asyncio
+async def test_project_group_mode_merges_observed_messages_before_trigger_dispatch():
+    from gateway.platforms.qq_napcat import QqNapCatAdapter
+
+    adapter = QqNapCatAdapter(
+        PlatformConfig(
+            enabled=True,
+            extra={
+                "ws_url": "ws://127.0.0.1:3001",
+                "allow_all_groups": True,
+                "require_mention": True,
+                "project_group_mode": True,
+                "group_batch_debounce_seconds": 0.01,
+            },
+        )
+    )
+    adapter.handle_message = AsyncMock()
+
+    await adapter._handle_payload(
+        _group_payload(
+            message_id=201,
+            user_id=456789,
+            text="今天天气真好",
+            nickname="Alice",
+            card="AliceCard",
+        )
+    )
+    adapter.handle_message.assert_not_awaited()
+
+    await adapter._handle_payload(
+        _group_payload(
+            message_id=202,
+            user_id=111222,
+            text="@999001 不知道马噶那边怎么样",
+            nickname="Bob",
+            card="BobCard",
+            segments=[
+                {"type": "at", "data": {"qq": "999001"}},
+                {"type": "text", "data": {"text": " 不知道马噶那边怎么样"}},
+            ],
+        )
+    )
+
+    await asyncio.sleep(0.03)
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.message_id == "202"
+    assert "AliceCard: 今天天气真好" in event.text
+    assert "BobCard: 不知道马噶那边怎么样" in event.text
+
+
+@pytest.mark.asyncio
+async def test_project_group_mode_enforces_min_interval_and_merges_cooldown_messages():
+    from gateway.platforms.qq_napcat import QqNapCatAdapter
+
+    adapter = QqNapCatAdapter(
+        PlatformConfig(
+            enabled=True,
+            extra={
+                "ws_url": "ws://127.0.0.1:3001",
+                "allow_all_groups": True,
+                "require_mention": True,
+                "project_group_mode": True,
+                "group_batch_debounce_seconds": 0.01,
+                "group_min_model_interval_seconds": 0.08,
+            },
+        )
+    )
+    adapter.handle_message = AsyncMock()
+
+    await adapter._handle_payload(
+        _group_payload(
+            message_id=203,
+            user_id=456789,
+            text="@999001 第一问",
+            nickname="Alice",
+            card="AliceCard",
+            segments=[
+                {"type": "at", "data": {"qq": "999001"}},
+                {"type": "text", "data": {"text": " 第一问"}},
+            ],
+        )
+    )
+    await asyncio.sleep(0.03)
+    assert adapter.handle_message.await_count == 1
+
+    await adapter._handle_payload(
+        _group_payload(
+            message_id=204,
+            user_id=111222,
+            text="@999001 第二问",
+            nickname="Bob",
+            card="BobCard",
+            segments=[
+                {"type": "at", "data": {"qq": "999001"}},
+                {"type": "text", "data": {"text": " 第二问"}},
+            ],
+        )
+    )
+    await asyncio.sleep(0.02)
+    await adapter._handle_payload(
+        _group_payload(
+            message_id=205,
+            user_id=333444,
+            text="补一句上下文",
+            nickname="Carol",
+            card="CarolCard",
+        )
+    )
+    await asyncio.sleep(0.03)
+
+    assert adapter.handle_message.await_count == 1
+
+    await asyncio.sleep(0.06)
+
+    assert adapter.handle_message.await_count == 2
+    event = adapter.handle_message.await_args_list[1].args[0]
+    assert "BobCard: 第二问" in event.text
+    assert "CarolCard: 补一句上下文" in event.text
+
+
+@pytest.mark.asyncio
+async def test_project_group_mode_waits_for_active_session_before_flushing():
+    from gateway.platforms.qq_napcat import QqNapCatAdapter
+
+    adapter = QqNapCatAdapter(
+        PlatformConfig(
+            enabled=True,
+            extra={
+                "ws_url": "ws://127.0.0.1:3001",
+                "allow_all_groups": True,
+                "require_mention": True,
+                "project_group_mode": True,
+                "group_sessions_per_user": False,
+                "group_batch_debounce_seconds": 0.01,
+                "group_min_model_interval_seconds": 0.01,
+                "group_batch_retry_seconds": 0.01,
+            },
+        )
+    )
+    adapter.handle_message = AsyncMock()
+
+    source = adapter._build_message_event(
+        _group_payload(
+            message_id=206,
+            user_id=456789,
+            text="@999001 先别打断",
+            nickname="Alice",
+            card="AliceCard",
+            segments=[
+                {"type": "at", "data": {"qq": "999001"}},
+                {"type": "text", "data": {"text": " 先别打断"}},
+            ],
+        )
+    ).source
+    session_key = adapter._session_key_for_source(source)
+    adapter._active_sessions[session_key] = asyncio.Event()
+
+    await adapter._handle_payload(
+        _group_payload(
+            message_id=206,
+            user_id=456789,
+            text="@999001 先别打断",
+            nickname="Alice",
+            card="AliceCard",
+            segments=[
+                {"type": "at", "data": {"qq": "999001"}},
+                {"type": "text", "data": {"text": " 先别打断"}},
+            ],
+        )
+    )
+
+    await asyncio.sleep(0.04)
+    adapter.handle_message.assert_not_awaited()
+
+    adapter._active_sessions.pop(session_key, None)
+    await asyncio.sleep(0.04)
+
+    adapter.handle_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_project_group_mode_follow_up_window_is_group_shared():
+    from gateway.platforms.qq_napcat import QqNapCatAdapter
+    from gateway.platforms.base import MessageEvent
+    from gateway.session import SessionSource
+
+    adapter = QqNapCatAdapter(
+        PlatformConfig(
+            enabled=True,
+            extra={
+                "ws_url": "ws://127.0.0.1:3001",
+                "allow_all_groups": True,
+                "require_mention": True,
+                "project_group_mode": True,
+                "group_batch_debounce_seconds": 0.01,
+            },
+        )
+    )
+    adapter.handle_message = AsyncMock()
+
+    adapter._record_successful_response_context(
+        MessageEvent(
+            text="hello group",
+            source=SessionSource(
+                platform=Platform.QQ_NAPCAT,
+                chat_id="987654321",
+                chat_type="group",
+                user_id="456789",
+                user_name="Alice",
+            ),
+        ),
+        ["bot-msg-9"],
+    )
+
+    await adapter._handle_payload(
+        _group_payload(
+            message_id=207,
+            user_id=111222,
+            text="那接下来怎么做",
+            nickname="Bob",
+            card="BobCard",
+        )
+    )
+    await asyncio.sleep(0.03)
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert "BobCard: 那接下来怎么做" in event.text
 
 
 @pytest.mark.asyncio

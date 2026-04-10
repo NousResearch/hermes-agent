@@ -77,6 +77,13 @@ export interface PendingPaste {
 
 export interface SlashCatalog {
   canon: Record<string, string>
+  categories: SlashCategory[]
   pairs: [string, string][]
+  skillCount: number
   sub: Record<string, string[]>
+}
+
+export interface SlashCategory {
+  name: string
+  pairs: [string, string][]
 }

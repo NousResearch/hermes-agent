@@ -96,12 +96,28 @@ _local_model_name: Optional[str] = None
 def get_stt_model_from_config() -> Optional[str]:
     """Read the STT model name from ~/.hermes/config.yaml.
 
-    Returns the value of ``stt.model`` if present, otherwise ``None``.
+    Provider-aware: reads from the correct provider-specific section
+    (``stt.local.model``, ``stt.openai.model``, etc.).  Falls back to
+    the legacy flat ``stt.model`` key only for cloud providers — if the
+    resolved provider is ``local`` the legacy key is ignored to prevent
+    OpenAI model names (e.g. ``whisper-1``) from being fed to
+    faster-whisper.
+
     Silently returns ``None`` on any error (missing file, bad YAML, etc.).
     """
     try:
-        from hermes_cli.config import read_raw_config
-        return read_raw_config().get("stt", {}).get("model")
+        stt_cfg = _load_stt_config()
+        provider = stt_cfg.get("provider", DEFAULT_PROVIDER)
+        # Read from the provider-specific section first
+        provider_model = stt_cfg.get(provider, {}).get("model")
+        if provider_model:
+            return provider_model
+        # Legacy flat key — only honour for non-local providers to avoid
+        # feeding OpenAI model names (whisper-1) to faster-whisper.
+        if provider not in ("local", "local_command"):
+            legacy = stt_cfg.get("model")
+            if legacy:
+                return legacy
     except Exception:
         pass
     return None

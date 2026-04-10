@@ -612,7 +612,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 13,
+    "_config_version": 14,
 }
 
 # =============================================================================
@@ -1766,6 +1766,56 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                         print(f"  ✓ Cleared {dead_var} from .env (no longer used — config.yaml is source of truth)")
             except Exception:
                 pass
+
+    # ── Version 13 → 14: migrate legacy flat stt.model to provider section ──
+    # Old configs (and cli-config.yaml.example) had a flat `stt.model` key
+    # that was provider-agnostic.  When the provider was "local" this caused
+    # OpenAI model names (e.g. "whisper-1") to be fed to faster-whisper,
+    # crashing with "Invalid model size".  Move the value into the correct
+    # provider-specific section and remove the flat key.
+    if current_ver < 14:
+        # Read raw config (no defaults merged) to check what the user actually
+        # wrote, then apply changes to the merged config for saving.
+        raw = read_raw_config()
+        raw_stt = raw.get("stt", {})
+        if isinstance(raw_stt, dict) and "model" in raw_stt:
+            legacy_model = raw_stt["model"]
+            provider = raw_stt.get("provider", "local")
+            config = load_config()
+            stt = config.get("stt", {})
+            # Remove the legacy flat key
+            stt.pop("model", None)
+            # Place it in the appropriate provider section only if the
+            # user didn't already set a model there
+            if provider in ("local", "local_command"):
+                # Don't migrate an OpenAI model name into the local section
+                _local_models = {
+                    "tiny.en", "tiny", "base.en", "base", "small.en", "small",
+                    "medium.en", "medium", "large-v1", "large-v2", "large-v3",
+                    "large", "distil-large-v2", "distil-medium.en",
+                    "distil-small.en", "distil-large-v3", "distil-large-v3.5",
+                    "large-v3-turbo", "turbo",
+                }
+                if legacy_model in _local_models:
+                    # Check raw config — only set if user didn't already
+                    # have a nested local.model
+                    raw_local = raw_stt.get("local", {})
+                    if not isinstance(raw_local, dict) or "model" not in raw_local:
+                        local_cfg = stt.setdefault("local", {})
+                        local_cfg["model"] = legacy_model
+                # else: drop it — it was an OpenAI model name, local section
+                # already defaults to "base" via DEFAULT_CONFIG
+            else:
+                # Cloud provider — put it in that provider's section only
+                # if user didn't already set a nested model
+                raw_provider = raw_stt.get(provider, {})
+                if not isinstance(raw_provider, dict) or "model" not in raw_provider:
+                    provider_cfg = stt.setdefault(provider, {})
+                    provider_cfg["model"] = legacy_model
+            config["stt"] = stt
+            save_config(config)
+            if not quiet:
+                print(f"  ✓ Migrated legacy stt.model to provider-specific config")
 
     if current_ver < latest_ver and not quiet:
         print(f"Config version: {current_ver} → {latest_ver}")

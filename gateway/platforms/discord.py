@@ -1260,9 +1260,8 @@ class DiscordAdapter(BasePlatformAdapter):
         try:
             await asyncio.to_thread(VoiceReceiver.pcm_to_wav, pcm_data, wav_path)
 
-            from tools.transcription_tools import transcribe_audio, get_stt_model_from_config
-            stt_model = get_stt_model_from_config()
-            result = await asyncio.to_thread(transcribe_audio, wav_path, model=stt_model)
+            from tools.transcription_tools import transcribe_audio
+            result = await asyncio.to_thread(transcribe_audio, wav_path)
 
             if not result.get("success"):
                 return

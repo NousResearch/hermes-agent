@@ -138,17 +138,29 @@ def _resolve_delivery_target(job: dict) -> Optional[dict]:
         }
 
     platform_name = deliver
-    if origin and origin.get("platform") == platform_name:
-        return {
-            "platform": platform_name,
-            "chat_id": str(origin["chat_id"]),
-            "thread_id": origin.get("thread_id"),
-        }
 
     if platform_name.lower() not in _KNOWN_DELIVERY_PLATFORMS:
         return None
+
     chat_id = os.getenv(f"{platform_name.upper()}_HOME_CHANNEL", "")
     if not chat_id:
+        # Home channel not configured — fall back to origin if available, otherwise suppress.
+        if origin and origin.get("platform") == platform_name:
+            logger.warning(
+                "Job '%s': deliver='%s' but %s_HOME_CHANNEL is not set — "
+                "falling back to origin chat %s.",
+                job.get("id"), deliver, platform_name.upper(), origin["chat_id"],
+            )
+            return {
+                "platform": platform_name,
+                "chat_id": str(origin["chat_id"]),
+                "thread_id": origin.get("thread_id"),
+            }
+        logger.warning(
+            "Job '%s': deliver='%s' but %s_HOME_CHANNEL is not set and no origin available — "
+            "delivery suppressed.",
+            job.get("id"), deliver, platform_name.upper(),
+        )
         return None
 
     return {

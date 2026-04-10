@@ -81,6 +81,9 @@ class TestBuildAnthropicClient:
             build_anthropic_client("sk-ant-api03-x", base_url="https://custom.api.com")
             kwargs = mock_sdk.Anthropic.call_args[1]
             assert kwargs["base_url"] == "https://custom.api.com"
+            assert kwargs["default_headers"] == {
+                "anthropic-beta": "interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14"
+            }
 
     def test_minimax_anthropic_endpoint_uses_bearer_auth_for_regular_api_keys(self):
         with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
@@ -92,7 +95,20 @@ class TestBuildAnthropicClient:
             assert kwargs["auth_token"] == "minimax-secret-123"
             assert "api_key" not in kwargs
             assert kwargs["default_headers"] == {
-                "anthropic-beta": "interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14"
+                "anthropic-beta": "interleaved-thinking-2025-05-14"
+            }
+
+    def test_minimax_cn_anthropic_endpoint_omits_tool_streaming_beta(self):
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            build_anthropic_client(
+                "minimax-cn-secret-123",
+                base_url="https://api.minimaxi.com/anthropic",
+            )
+            kwargs = mock_sdk.Anthropic.call_args[1]
+            assert kwargs["auth_token"] == "minimax-cn-secret-123"
+            assert "api_key" not in kwargs
+            assert kwargs["default_headers"] == {
+                "anthropic-beta": "interleaved-thinking-2025-05-14"
             }
 
 

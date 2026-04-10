@@ -95,6 +95,10 @@ _COMMON_BETAS = [
     "interleaved-thinking-2025-05-14",
     "fine-grained-tool-streaming-2025-05-14",
 ]
+# MiniMax's Anthropic-compatible endpoints fail tool-use requests when
+# the fine-grained tool streaming beta is present.  Omit it so tool calls
+# fall back to the provider's default response path.
+_TOOL_STREAMING_BETA = "fine-grained-tool-streaming-2025-05-14"
 
 # Additional beta headers required for OAuth/subscription auth.
 # Matches what Claude Code (and pi-ai / OpenCode) send.
@@ -204,6 +208,19 @@ def _requires_bearer_auth(base_url: str | None) -> bool:
     return normalized.startswith(("https://api.minimax.io/anthropic", "https://api.minimaxi.com/anthropic"))
 
 
+def _common_betas_for_base_url(base_url: str | None) -> list[str]:
+    """Return the beta headers that are safe for the configured endpoint.
+
+    MiniMax's Anthropic-compatible endpoints (Bearer-auth) reject requests
+    that include Anthropic's ``fine-grained-tool-streaming`` beta — every
+    tool-use message triggers a connection error.  Strip that beta for
+    Bearer-auth endpoints while keeping all other betas intact.
+    """
+    if _requires_bearer_auth(base_url):
+        return [b for b in _COMMON_BETAS if b != _TOOL_STREAMING_BETA]
+    return _COMMON_BETAS
+
+
 def build_anthropic_client(api_key: str, base_url: str = None):
     """Create an Anthropic client, auto-detecting setup-tokens vs API keys.
 
@@ -222,6 +239,7 @@ def build_anthropic_client(api_key: str, base_url: str = None):
     }
     if normalized_base_url:
         kwargs["base_url"] = normalized_base_url
+    common_betas = _common_betas_for_base_url(normalized_base_url)
 
     if _requires_bearer_auth(normalized_base_url):
         # Some Anthropic-compatible providers (e.g. MiniMax) expect the API key in
@@ -231,21 +249,21 @@ def build_anthropic_client(api_key: str, base_url: str = None):
         # not use Anthropic's sk-ant-api prefix and would otherwise be misread as
         # Anthropic OAuth/setup tokens.
         kwargs["auth_token"] = api_key
-        if _COMMON_BETAS:
-            kwargs["default_headers"] = {"anthropic-beta": ",".join(_COMMON_BETAS)}
+        if common_betas:
+            kwargs["default_headers"] = {"anthropic-beta": ",".join(common_betas)}
     elif _is_third_party_anthropic_endpoint(base_url):
         # Third-party proxies (Azure AI Foundry, AWS Bedrock, etc.) use their
         # own API keys with x-api-key auth. Skip OAuth detection — their keys
         # don't follow Anthropic's sk-ant-* prefix convention and would be
         # misclassified as OAuth tokens.
         kwargs["api_key"] = api_key
-        if _COMMON_BETAS:
-            kwargs["default_headers"] = {"anthropic-beta": ",".join(_COMMON_BETAS)}
+        if common_betas:
+            kwargs["default_headers"] = {"anthropic-beta": ",".join(common_betas)}
     elif _is_oauth_token(api_key):
         # OAuth access token / setup-token → Bearer auth + Claude Code identity.
         # Anthropic routes OAuth requests based on user-agent and headers;
         # without Claude Code's fingerprint, requests get intermittent 500s.
-        all_betas = _COMMON_BETAS + _OAUTH_ONLY_BETAS
+        all_betas = common_betas + _OAUTH_ONLY_BETAS
         kwargs["auth_token"] = api_key
         kwargs["default_headers"] = {
             "anthropic-beta": ",".join(all_betas),
@@ -255,8 +273,8 @@ def build_anthropic_client(api_key: str, base_url: str = None):
     else:
         # Regular API key → x-api-key header + common betas
         kwargs["api_key"] = api_key
-        if _COMMON_BETAS:
-            kwargs["default_headers"] = {"anthropic-beta": ",".join(_COMMON_BETAS)}
+        if common_betas:
+            kwargs["default_headers"] = {"anthropic-beta": ",".join(common_betas)}
 
     return _anthropic_sdk.Anthropic(**kwargs)
 

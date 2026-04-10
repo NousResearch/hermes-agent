@@ -33,6 +33,7 @@ import json
 import logging
 import os
 import platform
+import re
 import shlex
 import signal
 import subprocess
@@ -57,6 +58,31 @@ CHECKPOINT_PATH = get_hermes_home() / "processes.json"
 MAX_OUTPUT_CHARS = 200_000      # 200KB rolling output buffer
 FINISHED_TTL_SECONDS = 1800     # Keep finished processes for 30 minutes
 MAX_PROCESSES = 64              # Max concurrent tracked processes (LRU pruning)
+
+
+_GATEWAY_RUNTIME_COMMAND_MARKERS = (
+    "python -m hermes_cli.main",
+    "python3 -m hermes_cli.main",
+    "hermes_cli.main gateway run",
+    "hermes gateway run",
+)
+
+
+def _normalize_command_for_match(command: str) -> str:
+    return re.sub(r"\s+", " ", (command or "").strip().lower())
+
+
+def _is_gateway_runtime_command(command: str) -> bool:
+    """Return True for background commands that launch Hermes gateway itself.
+
+    These commands are unsafe to checkpoint and recover from processes.json
+    because the gateway is typically supervised separately (launchd/systemd)
+    and reviving a stale copy can create duplicate live gateways.
+    """
+    normalized = _normalize_command_for_match(command)
+    if " gateway run" not in normalized:
+        return False
+    return any(marker in normalized for marker in _GATEWAY_RUNTIME_COMMAND_MARKERS)
 
 
 @dataclass
@@ -848,22 +874,29 @@ class ProcessRegistry:
             with self._lock:
                 entries = []
                 for s in self._running.values():
-                    if not s.exited:
-                        entries.append({
-                            "session_id": s.id,
-                            "command": s.command,
-                            "pid": s.pid,
-                            "pid_scope": s.pid_scope,
-                            "cwd": s.cwd,
-                            "started_at": s.started_at,
-                            "task_id": s.task_id,
-                            "session_key": s.session_key,
-                            "watcher_platform": s.watcher_platform,
-                            "watcher_chat_id": s.watcher_chat_id,
-                            "watcher_thread_id": s.watcher_thread_id,
-                            "watcher_interval": s.watcher_interval,
-                            "notify_on_complete": s.notify_on_complete,
-                        })
+                    if s.exited:
+                        continue
+                    if _is_gateway_runtime_command(s.command):
+                        logger.info(
+                            "Skipping checkpoint for gateway runtime command: %s",
+                            s.command[:120],
+                        )
+                        continue
+                    entries.append({
+                        "session_id": s.id,
+                        "command": s.command,
+                        "pid": s.pid,
+                        "pid_scope": s.pid_scope,
+                        "cwd": s.cwd,
+                        "started_at": s.started_at,
+                        "task_id": s.task_id,
+                        "session_key": s.session_key,
+                        "watcher_platform": s.watcher_platform,
+                        "watcher_chat_id": s.watcher_chat_id,
+                        "watcher_thread_id": s.watcher_thread_id,
+                        "watcher_interval": s.watcher_interval,
+                        "notify_on_complete": s.notify_on_complete,
+                    })
             
             # Atomic write to avoid corruption on crash
             from utils import atomic_json_write
@@ -889,6 +922,12 @@ class ProcessRegistry:
         for entry in entries:
             pid = entry.get("pid")
             if not pid:
+                continue
+            if _is_gateway_runtime_command(entry.get("command", "")):
+                logger.info(
+                    "Skipping recovery for gateway runtime command: %s",
+                    entry.get("command", "unknown")[:120],
+                )
                 continue
 
             pid_scope = entry.get("pid_scope", "host")

@@ -17,6 +17,7 @@ from tools.process_registry import (
     MAX_OUTPUT_CHARS,
     FINISHED_TTL_SECONDS,
     MAX_PROCESSES,
+    _is_gateway_runtime_command,
 )
 
 
@@ -407,6 +408,19 @@ class TestSpawnEnvSanitization:
 # =========================================================================
 
 class TestCheckpoint:
+    @pytest.mark.parametrize("command", [
+        "python -m hermes_cli.main gateway run --replace",
+        "source venv/bin/activate && python -m hermes_cli.main gateway run --replace & disown",
+        "/opt/homebrew/bin/python3 -m hermes_cli.main -p coder gateway run",
+        "hermes gateway run --replace",
+    ])
+    def test_detects_gateway_runtime_commands(self, command):
+        assert _is_gateway_runtime_command(command) is True
+
+    def test_does_not_flag_normal_background_commands(self):
+        assert _is_gateway_runtime_command("python -m pytest -q") is False
+        assert _is_gateway_runtime_command("hermes gateway status") is False
+
     def test_write_checkpoint(self, registry, tmp_path):
         with patch("tools.process_registry.CHECKPOINT_PATH", tmp_path / "procs.json"):
             s = _make_session()
@@ -416,6 +430,23 @@ class TestCheckpoint:
             data = json.loads((tmp_path / "procs.json").read_text())
             assert len(data) == 1
             assert data[0]["session_id"] == s.id
+
+    def test_write_checkpoint_skips_gateway_runtime_commands(self, registry, tmp_path):
+        with patch("tools.process_registry.CHECKPOINT_PATH", tmp_path / "procs.json"):
+            normal = _make_session(sid="proc_normal", command="python -m pytest -q")
+            gateway = _make_session(
+                sid="proc_gateway",
+                command="source venv/bin/activate && python -m hermes_cli.main gateway run --replace",
+            )
+            registry._running[normal.id] = normal
+            registry._running[gateway.id] = gateway
+
+            registry._write_checkpoint()
+
+            data = json.loads((tmp_path / "procs.json").read_text())
+            assert len(data) == 1
+            assert data[0]["session_id"] == normal.id
+            assert data[0]["command"] == normal.command
 
     def test_recover_no_file(self, registry, tmp_path):
         with patch("tools.process_registry.CHECKPOINT_PATH", tmp_path / "missing.json"):
@@ -508,6 +539,33 @@ class TestCheckpoint:
             assert data[0]["session_id"] == "proc_live"
             assert data[0]["pid"] == os.getpid()
             assert data != []
+
+    def test_recovery_skips_gateway_runtime_entries(self, registry, tmp_path):
+        checkpoint = tmp_path / "procs.json"
+        checkpoint.write_text(json.dumps([
+            {
+                "session_id": "proc_gateway",
+                "command": "python -m hermes_cli.main gateway run --replace",
+                "pid": os.getpid(),
+                "task_id": "t1",
+            },
+            {
+                "session_id": "proc_live",
+                "command": "sleep 999",
+                "pid": os.getpid(),
+                "task_id": "t2",
+            },
+        ]))
+
+        with patch("tools.process_registry.CHECKPOINT_PATH", checkpoint):
+            recovered = registry.recover_from_checkpoint()
+            assert recovered == 1
+            assert registry.get("proc_gateway") is None
+            assert registry.get("proc_live") is not None
+
+            data = json.loads(checkpoint.read_text())
+            assert len(data) == 1
+            assert data[0]["session_id"] == "proc_live"
 
     def test_recovery_skips_explicit_sandbox_backed_entries(self, registry, tmp_path):
         checkpoint = tmp_path / "procs.json"

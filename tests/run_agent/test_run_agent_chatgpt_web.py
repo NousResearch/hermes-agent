@@ -163,6 +163,47 @@ def test_build_api_kwargs_chatgpt_web_prefers_skill_manage_for_skill_creation(mo
 
 
 
+def test_build_api_kwargs_chatgpt_web_prefers_memory_remove_for_forget_requests(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    agent.tools = [
+        {"type": "function", "function": {"name": "search_files", "description": "Search files", "parameters": {"type": "object"}}},
+        {"type": "function", "function": {"name": "memory", "description": "Store durable memory", "parameters": {"type": "object"}}},
+    ]
+
+    kwargs = agent._build_api_kwargs([
+        {"role": "system", "content": "Be concise."},
+        {"role": "user", "content": "Forget that my temporary chatgpt-web canary is cobalt-otter-314. Answer only removed."},
+    ])
+
+    rewritten_user = kwargs["messages"][-1]["content"]
+    assert 'The tool available for this turn is: memory.' in rewritten_user
+    assert '"name": "memory"' in rewritten_user
+    assert '"action": "remove"' in rewritten_user
+    assert '"target": "user"' in rewritten_user
+    assert 'cobalt-otter-314' in rewritten_user
+
+
+
+def test_build_api_kwargs_chatgpt_web_prefers_skill_manage_for_skill_delete(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    agent.tools = [
+        {"type": "function", "function": {"name": "search_files", "description": "Search files", "parameters": {"type": "object"}}},
+        {"type": "function", "function": {"name": "skill_manage", "description": "Manage skills", "parameters": {"type": "object"}}},
+    ]
+
+    kwargs = agent._build_api_kwargs([
+        {"role": "system", "content": "Be concise."},
+        {"role": "user", "content": "Delete the temporary skill named chatgpt-web-e2e-temp-skill. Answer only deleted."},
+    ])
+
+    rewritten_user = kwargs["messages"][-1]["content"]
+    assert 'The tool available for this turn is: skill_manage.' in rewritten_user
+    assert '"name": "skill_manage"' in rewritten_user
+    assert '"action": "delete"' in rewritten_user
+    assert 'chatgpt-web-e2e-temp-skill' in rewritten_user
+
+
+
 def test_build_api_kwargs_chatgpt_web_prefers_vision_for_local_image_prompt(monkeypatch, tmp_path):
     agent = _build_agent(monkeypatch)
     image_path = tmp_path / "red-square.png"
@@ -181,6 +222,130 @@ def test_build_api_kwargs_chatgpt_web_prefers_vision_for_local_image_prompt(monk
     assert 'The tool available for this turn is: vision_analyze.' in rewritten_user
     assert '"name": "vision_analyze"' in rewritten_user
     assert f'"image_url": "{image_path}"' in rewritten_user
+
+
+
+def test_build_api_kwargs_chatgpt_web_supports_image_paths_with_spaces(monkeypatch, tmp_path):
+    agent = _build_agent(monkeypatch)
+    image_dir = tmp_path / "space dir"
+    image_dir.mkdir()
+    image_path = image_dir / "sample image.png"
+    image_path.write_bytes(b"png")
+    agent.tools = [
+        {"type": "function", "function": {"name": "search_files", "description": "Search files", "parameters": {"type": "object"}}},
+        {"type": "function", "function": {"name": "vision_analyze", "description": "Analyze images", "parameters": {"type": "object"}}},
+    ]
+
+    kwargs = agent._build_api_kwargs([
+        {"role": "system", "content": "Be concise."},
+        {"role": "user", "content": f'Look at this local image: "{image_path}". Answer only the dominant color.'},
+    ])
+
+    rewritten_user = kwargs["messages"][-1]["content"]
+    assert 'The tool available for this turn is: vision_analyze.' in rewritten_user
+    assert f'"image_url": "{image_path}"' in rewritten_user
+
+
+
+def test_build_api_kwargs_chatgpt_web_prefers_search_files_for_definition_lookup(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    agent.tools = [
+        {"type": "function", "function": {"name": "search_files", "description": "Search files", "parameters": {"type": "object"}}},
+        {"type": "function", "function": {"name": "read_file", "description": "Read files", "parameters": {"type": "object"}}},
+    ]
+
+    kwargs = agent._build_api_kwargs([
+        {"role": "system", "content": "Be concise."},
+        {"role": "user", "content": "First use search_files, then read_file. Find the definition of _chatgpt_web_tool_args in run_agent.py. Answer only the exact def line."},
+    ])
+
+    rewritten_user = kwargs["messages"][-1]["content"]
+    assert 'The tool available for this turn is: search_files.' in rewritten_user
+    assert '"pattern": "_chatgpt_web_tool_args"' in rewritten_user
+    assert '"path": "run_agent.py"' in rewritten_user
+
+
+
+def test_build_api_kwargs_chatgpt_web_infers_read_file_after_search_result(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    agent.tools = [
+        {"type": "function", "function": {"name": "search_files", "description": "Search files", "parameters": {"type": "object"}}},
+        {"type": "function", "function": {"name": "read_file", "description": "Read files", "parameters": {"type": "object"}}},
+    ]
+
+    kwargs = agent._build_api_kwargs([
+        {"role": "system", "content": "Be concise."},
+        {"role": "user", "content": "First use search_files, then read_file. Find the definition of _chatgpt_web_tool_args in run_agent.py. Answer only the exact def line."},
+        {"role": "tool", "content": '{"total_count": 1, "matches": [{"path": "run_agent.py", "line": 2671, "content": "def _chatgpt_web_tool_args(self, tool_name: str, payload_messages: list[dict[str, Any]]) -> Optional[dict[str, Any]]:"}]}'},
+    ])
+
+    rewritten_user = kwargs["messages"][0]["content"]
+    assert 'The tool available for this turn is: read_file.' in rewritten_user
+    assert '"path": "run_agent.py"' in rewritten_user
+    assert '"offset": 2671' in rewritten_user
+    assert '"limit": 1' in rewritten_user
+
+
+
+def test_build_api_kwargs_chatgpt_web_prefers_read_file_for_explicit_path_with_spaces(monkeypatch, tmp_path):
+    agent = _build_agent(monkeypatch)
+    target_dir = tmp_path / "space dir"
+    target_dir.mkdir()
+    target_path = target_dir / "sample file.txt"
+    target_path.write_text("alpha\nsecond\n")
+    agent.tools = [
+        {"type": "function", "function": {"name": "search_files", "description": "Search files", "parameters": {"type": "object"}}},
+        {"type": "function", "function": {"name": "read_file", "description": "Read files", "parameters": {"type": "object"}}},
+    ]
+
+    kwargs = agent._build_api_kwargs([
+        {"role": "system", "content": "Be concise."},
+        {"role": "user", "content": f'Use Hermes tools to read the first line of "{target_path}". Answer only the first line.'},
+    ])
+
+    rewritten_user = kwargs["messages"][-1]["content"]
+    assert 'The tool available for this turn is: read_file.' in rewritten_user
+    assert f'"path": "{target_path}"' in rewritten_user
+    assert '"offset": 1' in rewritten_user
+    assert '"limit": 1' in rewritten_user
+
+
+
+def test_build_api_kwargs_chatgpt_web_prefers_terminal_for_general_run_command(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    agent.tools = [
+        {"type": "function", "function": {"name": "terminal", "description": "Run shell commands", "parameters": {"type": "object"}}},
+    ]
+
+    kwargs = agent._build_api_kwargs([
+        {"role": "system", "content": "Be concise."},
+        {"role": "user", "content": "Use Hermes tools to run uname -s. Answer only the result."},
+    ])
+
+    rewritten_user = kwargs["messages"][-1]["content"]
+    assert 'The tool available for this turn is: terminal.' in rewritten_user
+    assert '"command": "uname -s"' in rewritten_user
+
+
+
+def test_build_api_kwargs_chatgpt_web_prefers_write_file_for_exact_file_contents(monkeypatch, tmp_path):
+    agent = _build_agent(monkeypatch)
+    target_path = tmp_path / "edit_target.txt"
+    target_path.write_text("foo\n")
+    agent.tools = [
+        {"type": "function", "function": {"name": "patch", "description": "Patch files", "parameters": {"type": "object"}}},
+        {"type": "function", "function": {"name": "write_file", "description": "Write files", "parameters": {"type": "object"}}},
+    ]
+
+    kwargs = agent._build_api_kwargs([
+        {"role": "system", "content": "Be concise."},
+        {"role": "user", "content": f"Use Hermes tools to edit {target_path} so the file contains exactly beta on one line. Then answer only beta."},
+    ])
+
+    rewritten_user = kwargs["messages"][-1]["content"]
+    assert 'The tool available for this turn is: write_file.' in rewritten_user
+    assert f'"path": "{target_path}"' in rewritten_user
+    assert '"content": "beta\\n"' in rewritten_user
 
 
 
@@ -641,6 +806,50 @@ def test_run_conversation_chatgpt_web_repairs_saved_only_answer_from_memory_tool
     result = agent.run_conversation("Remember that my temporary chatgpt-web canary is cobalt-otter-999. Answer only saved.")
 
     assert result["final_response"] == "saved"
+
+
+@pytest.mark.parametrize("model", ["gpt-5-thinking", "gpt-5-instant"])
+def test_run_conversation_chatgpt_web_repairs_removed_only_answer_from_memory_tool(monkeypatch, model):
+    agent = _build_agent(monkeypatch, model=model)
+    agent.tools = [{
+        "type": "function",
+        "function": {
+            "name": "memory",
+            "description": "Store durable memory",
+            "parameters": {"type": "object", "properties": {"old_text": {"type": "string"}}},
+        },
+    }]
+    agent.valid_tool_names = {"memory"}
+
+    responses = [
+        {
+            "content": "I can't update memory from here.",
+            "message_id": "msg_tool_memory_remove",
+            "model": model,
+            "finish_reason": "stop",
+        },
+        {
+            "content": "The memory entry has been removed successfully.",
+            "message_id": "msg_final_memory_remove",
+            "model": model,
+            "finish_reason": "stop",
+        },
+    ]
+    monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: agent._wrap_chatgpt_web_response(responses.pop(0)))
+
+    def _fake_execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count=0):
+        for call in assistant_message.tool_calls:
+            messages.append({
+                "role": "tool",
+                "tool_call_id": call.id,
+                "content": '{"success": true, "message": "Entry removed."}',
+            })
+
+    monkeypatch.setattr(agent, "_execute_tool_calls", _fake_execute_tool_calls)
+
+    result = agent.run_conversation("Forget that my temporary chatgpt-web canary is cobalt-otter-999. Answer only removed.")
+
+    assert result["final_response"] == "removed"
 
 
 @pytest.mark.parametrize("model", ["gpt-5-thinking", "gpt-5-instant"])

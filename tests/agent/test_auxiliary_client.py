@@ -1111,3 +1111,45 @@ class TestCallLlmPaymentFallback:
                     task="compression",
                     messages=[{"role": "user", "content": "hello"}],
                 )
+
+
+# ---------------------------------------------------------------------------
+# Gate: _resolve_api_key_provider must skip anthropic when not configured
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_api_key_provider_skips_unconfigured_anthropic(monkeypatch):
+    """_resolve_api_key_provider must not try anthropic when user never configured it."""
+    from collections import OrderedDict
+    from hermes_cli.auth import ProviderConfig
+
+    # Build a minimal registry with only "anthropic" so the loop is guaranteed
+    # to reach it without being short-circuited by earlier providers.
+    fake_registry = OrderedDict({
+        "anthropic": ProviderConfig(
+            id="anthropic",
+            name="Anthropic",
+            auth_type="api_key",
+            inference_base_url="https://api.anthropic.com",
+            api_key_env_vars=("ANTHROPIC_API_KEY",),
+        ),
+    })
+
+    called = []
+
+    def mock_try_anthropic():
+        called.append("anthropic")
+        return None, None
+
+    monkeypatch.setattr("agent.auxiliary_client._try_anthropic", mock_try_anthropic)
+    monkeypatch.setattr("hermes_cli.auth.PROVIDER_REGISTRY", fake_registry)
+    monkeypatch.setattr(
+        "hermes_cli.auth.is_provider_explicitly_configured",
+        lambda pid: False,
+    )
+
+    from agent.auxiliary_client import _resolve_api_key_provider
+    _resolve_api_key_provider()
+
+    assert "anthropic" not in called, \
+        "_try_anthropic() should not be called when anthropic is not explicitly configured"

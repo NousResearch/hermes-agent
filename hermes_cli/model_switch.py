@@ -739,7 +739,6 @@ def list_authenticated_providers(
     user_providers: dict = None,
     custom_providers: list | None = None,
     max_models: int = 8,
-    custom_providers: list = None,
 ) -> List[dict]:
     """Detect which providers have credentials and list their curated models.
 

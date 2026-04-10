@@ -28,8 +28,16 @@ def _make_run_side_effect(
     system_service_active=False,
     system_restart_rc=0,
     launchctl_loaded=False,
+    post_restart_active=True,
 ):
-    """Build a subprocess.run side_effect that simulates git + service commands."""
+    """Build a subprocess.run side_effect that simulates git + service commands.
+
+    *post_restart_active* controls whether the service survives after restart.
+    When False, the post-restart ``is-active`` check returns ``inactive``.
+    """
+    # Track is-active calls per scope to distinguish pre-restart vs
+    # post-restart checks.
+    _is_active_counts = {"user": 0, "system": 0}
 
     def side_effect(cmd, **kwargs):
         joined = " ".join(str(c) for c in cmd)
@@ -65,15 +73,16 @@ def _make_run_side_effect(
 
         # systemctl is-active — distinguish --user from system scope
         if "systemctl" in joined and "is-active" in joined:
-            if "--user" in joined:
-                if systemd_active:
+            scope = "user" if "--user" in joined else "system"
+            _is_active_counts[scope] += 1
+            is_configured = systemd_active if scope == "user" else system_service_active
+            if is_configured:
+                # First call is the pre-restart check (always active).
+                # Subsequent calls are post-restart verification.
+                if _is_active_counts[scope] == 1 or post_restart_active:
                     return subprocess.CompletedProcess(cmd, 0, stdout="active\n", stderr="")
                 return subprocess.CompletedProcess(cmd, 3, stdout="inactive\n", stderr="")
-            else:
-                # System-level check (no --user)
-                if system_service_active:
-                    return subprocess.CompletedProcess(cmd, 0, stdout="active\n", stderr="")
-                return subprocess.CompletedProcess(cmd, 3, stdout="inactive\n", stderr="")
+            return subprocess.CompletedProcess(cmd, 3, stdout="inactive\n", stderr="")
 
         # systemctl restart — distinguish --user from system scope
         if "systemctl" in joined and "restart" in joined:
@@ -359,10 +368,11 @@ class TestCmdUpdateLaunchdRestart:
         captured = capsys.readouterr().out
         assert "Restart manually: hermes gateway run" in captured
 
+    @patch("hermes_cli.main._time.sleep")
     @patch("shutil.which", return_value=None)
     @patch("subprocess.run")
     def test_update_with_systemd_still_restarts_via_systemd(
-        self, mock_run, _mock_which, mock_args, capsys, monkeypatch,
+        self, mock_run, _mock_which, _mock_sleep, mock_args, capsys, monkeypatch,
     ):
         """On Linux with systemd active, update should restart via systemctl."""
         monkeypatch.setattr(
@@ -412,6 +422,31 @@ class TestCmdUpdateLaunchdRestart:
         assert "Gateway restarted" not in captured
         assert "Gateway restarted via launchd" not in captured
 
+    @patch("hermes_cli.main._time.sleep")
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_update_warns_when_service_dies_after_restart(
+        self, mock_run, _mock_which, _mock_sleep, mock_args, capsys, monkeypatch,
+    ):
+        """When systemctl restart returns 0 but the service exits immediately,
+        warn the user instead of silently reporting success."""
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: True)
+        monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
+
+        mock_run.side_effect = _make_run_side_effect(
+            commit_count="3",
+            systemd_active=True,
+            post_restart_active=False,
+        )
+
+        with patch.object(gateway_cli, "find_gateway_pids", return_value=[]):
+            cmd_update(mock_args)
+
+        captured = capsys.readouterr().out
+        assert "failed to stay running" in captured
+        assert "Restarted hermes-gateway" not in captured
+
 
 # ---------------------------------------------------------------------------
 # cmd_update — system-level systemd service detection
@@ -421,10 +456,11 @@ class TestCmdUpdateLaunchdRestart:
 class TestCmdUpdateSystemService:
     """cmd_update detects system-level gateway services where --user fails."""
 
+    @patch("hermes_cli.main._time.sleep")
     @patch("shutil.which", return_value=None)
     @patch("subprocess.run")
     def test_update_detects_system_service_and_restarts(
-        self, mock_run, _mock_which, mock_args, capsys, monkeypatch,
+        self, mock_run, _mock_which, _mock_sleep, mock_args, capsys, monkeypatch,
     ):
         """When user systemd is inactive but a system service exists, restart via system scope."""
         monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
@@ -451,10 +487,11 @@ class TestCmdUpdateSystemService:
         ]
         assert len(restart_calls) == 1
 
+    @patch("hermes_cli.main._time.sleep")
     @patch("shutil.which", return_value=None)
     @patch("subprocess.run")
     def test_update_system_service_restart_failure_shows_error(
-        self, mock_run, _mock_which, mock_args, capsys, monkeypatch,
+        self, mock_run, _mock_which, _mock_sleep, mock_args, capsys, monkeypatch,
     ):
         """When system service restart fails, show the failure message."""
         monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
@@ -474,10 +511,11 @@ class TestCmdUpdateSystemService:
         captured = capsys.readouterr().out
         assert "Failed to restart" in captured
 
+    @patch("hermes_cli.main._time.sleep")
     @patch("shutil.which", return_value=None)
     @patch("subprocess.run")
     def test_user_service_takes_priority_over_system(
-        self, mock_run, _mock_which, mock_args, capsys, monkeypatch,
+        self, mock_run, _mock_which, _mock_sleep, mock_args, capsys, monkeypatch,
     ):
         """When both user and system services are active, both are restarted."""
         monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
@@ -558,10 +596,11 @@ class TestServicePidExclusion:
         # Should NOT show manual restart message
         assert "Restart manually" not in captured
 
+    @patch("hermes_cli.main._time.sleep")
     @patch("shutil.which", return_value=None)
     @patch("subprocess.run")
     def test_update_systemd_does_not_kill_service_pid(
-        self, mock_run, _mock_which, mock_args, capsys, monkeypatch,
+        self, mock_run, _mock_which, _mock_sleep, mock_args, capsys, monkeypatch,
     ):
         """After systemd restart, the sweep must exclude the service PID."""
         monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)

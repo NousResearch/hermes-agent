@@ -3759,6 +3759,15 @@ def cmd_update(args):
         print()
         print("✓ Update complete!")
         
+        def _verify_service_active(scope_cmd, svc_name):
+            """Sleep briefly, then return True if the service is still active."""
+            _time.sleep(2)
+            chk = subprocess.run(
+                scope_cmd + ["is-active", svc_name],
+                capture_output=True, text=True, timeout=5,
+            )
+            return chk.stdout.strip() == "active"
+
         # Auto-restart ALL gateways after update.
         # The code update (git pull) is shared across all profiles, so every
         # running gateway needs restarting to pick up the new code.
@@ -3805,10 +3814,22 @@ def cmd_update(args):
                                     scope_cmd + ["restart", svc_name],
                                     capture_output=True, text=True, timeout=15,
                                 )
-                                if restart.returncode == 0:
-                                    restarted_services.append(svc_name)
-                                else:
+                                if restart.returncode != 0:
                                     print(f"  ⚠ Failed to restart {svc_name}: {restart.stderr.strip()}")
+                                    continue
+                                # Verify the service actually survived startup.
+                                # systemctl restart returns 0 even if the process
+                                # crashes immediately after starting.
+                                if not _verify_service_active(scope_cmd, svc_name):
+                                    print(f"  ⚠ {svc_name} restarted but exited immediately — retrying…")
+                                    subprocess.run(
+                                        scope_cmd + ["restart", svc_name],
+                                        capture_output=True, text=True, timeout=15,
+                                    )
+                                    if not _verify_service_active(scope_cmd, svc_name):
+                                        print(f"  ⚠ {svc_name} failed to stay running after update")
+                                        continue
+                                restarted_services.append(svc_name)
                     except (FileNotFoundError, subprocess.TimeoutExpired):
                         pass
 

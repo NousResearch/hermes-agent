@@ -180,6 +180,14 @@ TOOL_CATEGORIES = {
                 ],
                 "tts_provider": "elevenlabs",
             },
+            {
+                "name": "Naga.ac",
+                "tag": "OpenAI-compatible TTS/STT",
+                "env_vars": [
+                    {"key": "NAGA_API_KEY", "prompt": "Naga.ac API key", "url": "https://naga.ac/"},
+                ],
+                "tts_provider": "naga",
+            },
         ],
     },
     "web": {

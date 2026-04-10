@@ -295,6 +295,95 @@ class TestStreamingTTSActivation:
 
 
 # ============================================================================
+# ElevenLabs API key resolution (config fallback)
+# ============================================================================
+
+class TestElevenLabsApiKeyResolution:
+    def test_generate_elevenlabs_uses_config_api_key_when_env_missing(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)
+
+        mock_client = MagicMock()
+        mock_client.text_to_speech.convert.return_value = [b"audio-bytes"]
+        mock_elevenlabs_cls = MagicMock(return_value=mock_client)
+
+        with patch("tools.tts_tool._import_elevenlabs", return_value=mock_elevenlabs_cls):
+            from tools.tts_tool import _generate_elevenlabs
+
+            output_path = tmp_path / "tts.mp3"
+            _generate_elevenlabs(
+                "hello",
+                str(output_path),
+                {
+                    "elevenlabs": {
+                        "api_key": "cfg-key",
+                        "voice_id": "voice-id",
+                        "model_id": "model-id",
+                    }
+                },
+            )
+
+        assert output_path.exists()
+        assert output_path.read_bytes() == b"audio-bytes"
+        assert mock_elevenlabs_cls.call_args.kwargs["api_key"] == "cfg-key"
+
+    def test_check_tts_requirements_accepts_config_api_key(self, monkeypatch):
+        monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)
+        with patch("tools.tts_tool._import_edge_tts", side_effect=ImportError("no edge")), \
+             patch("tools.tts_tool._import_elevenlabs", return_value=MagicMock()), \
+             patch("tools.tts_tool._load_tts_config", return_value={"elevenlabs": {"api_key": "cfg-key"}}), \
+             patch("tools.tts_tool._import_openai_client", side_effect=ImportError("no openai")), \
+             patch("tools.tts_tool._check_neutts_available", return_value=False):
+            from tools.tts_tool import check_tts_requirements
+            assert check_tts_requirements() is True
+
+
+# ============================================================================
+# Naga.ac API key resolution
+# ============================================================================
+
+class TestNagaApiKeyResolution:
+    def test_generate_naga_uses_config_api_key_when_env_missing(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("NAGA_API_KEY", raising=False)
+
+        mock_response = MagicMock()
+        mock_response.stream_to_file.side_effect = lambda path: open(path, "wb").write(b"audio-bytes")
+        mock_client = MagicMock()
+        mock_client.audio.speech.create.return_value = mock_response
+        mock_openai_cls = MagicMock(return_value=mock_client)
+
+        with patch("tools.tts_tool._import_openai_client", return_value=mock_openai_cls):
+            from tools.tts_tool import _generate_naga_tts
+
+            output_path = tmp_path / "tts.mp3"
+            _generate_naga_tts(
+                "hello",
+                str(output_path),
+                {
+                    "naga": {
+                        "api_key": "cfg-key",
+                        "voice": "alloy",
+                        "model": "eleven-multilingual-v2:free",
+                    }
+                },
+            )
+
+        assert output_path.exists()
+        assert output_path.read_bytes() == b"audio-bytes"
+        assert mock_openai_cls.call_args.kwargs["api_key"] == "cfg-key"
+        assert mock_openai_cls.call_args.kwargs["base_url"] == "https://api.naga.ac/v1"
+
+    def test_check_tts_requirements_accepts_naga_config_api_key(self, monkeypatch):
+        monkeypatch.delenv("NAGA_API_KEY", raising=False)
+        with patch("tools.tts_tool._import_edge_tts", side_effect=ImportError("no edge")), \
+             patch("tools.tts_tool._import_elevenlabs", side_effect=ImportError("no eleven")), \
+             patch("tools.tts_tool._import_openai_client", side_effect=ImportError("no openai")), \
+             patch("tools.tts_tool._check_neutts_available", return_value=False), \
+             patch("tools.tts_tool._load_tts_config", return_value={"naga": {"api_key": "cfg-key"}}):
+            from tools.tts_tool import check_tts_requirements
+            assert check_tts_requirements() is True
+
+
+# ============================================================================
 # Voice mode user message prefix (Bug B fix)
 # ============================================================================
 

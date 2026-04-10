@@ -2,9 +2,10 @@
 """
 Text-to-Speech Tool Module
 
-Supports five TTS providers:
+Supports six TTS providers:
 - Edge TTS (default, free, no API key): Microsoft Edge neural voices
 - ElevenLabs (premium): High-quality voices, needs ELEVENLABS_API_KEY
+- Naga.ac (OpenAI-compatible): needs NAGA_API_KEY
 - OpenAI TTS: Good quality, needs OPENAI_API_KEY
 - MiniMax TTS: High-quality with voice cloning, needs MINIMAX_API_KEY
 - NeuTTS (local, free, no API key): On-device TTS via neutts_cli, needs neutts installed
@@ -76,6 +77,9 @@ DEFAULT_EDGE_VOICE = "en-US-AriaNeural"
 DEFAULT_ELEVENLABS_VOICE_ID = "pNInz6obpgDQGcFmaJgB"  # Adam
 DEFAULT_ELEVENLABS_MODEL_ID = "eleven_multilingual_v2"
 DEFAULT_ELEVENLABS_STREAMING_MODEL_ID = "eleven_flash_v2_5"
+DEFAULT_NAGA_MODEL = "eleven-multilingual-v2:free"
+DEFAULT_NAGA_VOICE = "jsCqWAovK2LkecY7zXl4"
+DEFAULT_NAGA_TTS_BASE_URL = "https://api.naga.ac/v1"
 DEFAULT_OPENAI_MODEL = "gpt-4o-mini-tts"
 DEFAULT_OPENAI_VOICE = "alloy"
 DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
@@ -116,6 +120,28 @@ def _load_tts_config() -> Dict[str, Any]:
 def _get_provider(tts_config: Dict[str, Any]) -> str:
     """Get the configured TTS provider name."""
     return (tts_config.get("provider") or DEFAULT_PROVIDER).lower().strip()
+
+
+def _resolve_elevenlabs_api_key(tts_config: Optional[Dict[str, Any]] = None) -> str:
+    """Resolve ElevenLabs API key from config first, then environment."""
+    cfg = tts_config if tts_config is not None else _load_tts_config()
+    el_cfg = cfg.get("elevenlabs", {}) if isinstance(cfg, dict) else {}
+    if isinstance(el_cfg, dict):
+        cfg_key = str(el_cfg.get("api_key", "")).strip()
+        if cfg_key:
+            return cfg_key
+    return os.getenv("ELEVENLABS_API_KEY", "").strip()
+
+
+def _resolve_naga_api_key(tts_config: Optional[Dict[str, Any]] = None) -> str:
+    """Resolve Naga API key from config first, then environment."""
+    cfg = tts_config if tts_config is not None else _load_tts_config()
+    naga_cfg = cfg.get("naga", {}) if isinstance(cfg, dict) else {}
+    if isinstance(naga_cfg, dict):
+        cfg_key = str(naga_cfg.get("api_key", "")).strip()
+        if cfg_key:
+            return cfg_key
+    return os.getenv("NAGA_API_KEY", "").strip()
 
 
 # ===========================================================================
@@ -200,7 +226,7 @@ def _generate_elevenlabs(text: str, output_path: str, tts_config: Dict[str, Any]
     Returns:
         Path to the saved audio file.
     """
-    api_key = os.getenv("ELEVENLABS_API_KEY", "")
+    api_key = _resolve_elevenlabs_api_key(tts_config)
     if not api_key:
         raise ValueError("ELEVENLABS_API_KEY not set. Get one at https://elevenlabs.io/")
 
@@ -276,6 +302,76 @@ def _generate_openai_tts(text: str, output_path: str, tts_config: Dict[str, Any]
         close = getattr(client, "close", None)
         if callable(close):
             close()
+
+
+# ===========================================================================
+# Provider: Naga.ac TTS
+# ===========================================================================
+def _generate_naga_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
+    """Generate audio using Naga.ac TTS API."""
+    api_key = _resolve_naga_api_key(tts_config)
+    if not api_key:
+        raise ValueError("NAGA_API_KEY not set. Get one at https://naga.ac/")
+
+    naga_config = tts_config.get("naga", {})
+    model = naga_config.get("model", DEFAULT_NAGA_MODEL)
+    # Force the validated Naga voice ID to avoid provider-side 400s from
+    # unsupported aliases (for example "alloy").
+    voice = DEFAULT_NAGA_VOICE
+    base_url = naga_config.get("base_url", DEFAULT_NAGA_TTS_BASE_URL)
+    # Backward compatibility: users may still have the old full endpoint
+    # configured (https://api.naga.ac/v1/audio/speech). Normalize to API root.
+    normalized_base_url = str(base_url).rstrip("/")
+    if normalized_base_url.endswith("/audio/speech"):
+        normalized_base_url = normalized_base_url[: -len("/audio/speech")]
+
+    try:
+        OpenAIClient = _import_openai_client()
+        client = OpenAIClient(api_key=api_key, base_url=normalized_base_url)
+        try:
+            response = client.audio.speech.create(
+                model=model,
+                voice=voice,
+                input=text,
+                response_format="opus" if output_path.endswith(".ogg") else "mp3",
+                extra_headers={"x-idempotency-key": str(uuid.uuid4())},
+            )
+            response.stream_to_file(output_path)
+            return output_path
+        finally:
+            close = getattr(client, "close", None)
+            if callable(close):
+                close()
+    except Exception as e:
+        # Keep a direct HTTP fallback with detailed error body in case
+        # the OpenAI SDK is unavailable/incompatible with this endpoint.
+        try:
+            import requests
+
+            endpoint = normalized_base_url + "/audio/speech"
+            payload = {"model": model, "voice": voice, "input": text}
+            headers = {
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            }
+            response = requests.post(endpoint, json=payload, headers=headers, timeout=60)
+            if response.status_code >= 400:
+                error_body = (response.text or "").strip()
+                if len(error_body) > 800:
+                    error_body = error_body[:800] + "... [truncated]"
+                detail = error_body or response.reason or "unknown error"
+                raise ValueError(
+                    f"Naga API error {response.status_code} (model={model}, voice={voice}): {detail}"
+                ) from e
+            with open(output_path, "wb") as f:
+                f.write(response.content)
+            return output_path
+        except ValueError:
+            raise
+        except Exception as fallback_exc:
+            raise ValueError(
+                f"Naga TTS failed via OpenAI-compatible client and HTTP fallback (model={model}, voice={voice}): {fallback_exc}"
+            ) from e
 
 
 # ===========================================================================
@@ -514,6 +610,10 @@ def text_to_speech_tool(
             logger.info("Generating speech with ElevenLabs...")
             _generate_elevenlabs(text, file_str, tts_config)
 
+        elif provider == "naga":
+            logger.info("Generating speech with Naga.ac TTS...")
+            _generate_naga_tts(text, file_str, tts_config)
+
         elif provider == "openai":
             try:
                 _import_openai_client()
@@ -578,7 +678,7 @@ def text_to_speech_tool(
         # Try Opus conversion for Telegram compatibility
         # Edge TTS outputs MP3, NeuTTS outputs WAV — both need ffmpeg conversion
         voice_compatible = False
-        if provider in ("edge", "neutts", "minimax") and not file_str.endswith(".ogg"):
+        if provider in ("edge", "neutts", "minimax", "naga") and not file_str.endswith(".ogg"):
             opus_path = _convert_to_opus(file_str)
             if opus_path:
                 file_str = opus_path
@@ -639,10 +739,17 @@ def check_tts_requirements() -> bool:
     except ImportError:
         pass
     try:
+        tts_config = _load_tts_config()
         _import_elevenlabs()
-        if os.getenv("ELEVENLABS_API_KEY"):
+        if _resolve_elevenlabs_api_key(tts_config):
             return True
     except ImportError:
+        pass
+    try:
+        tts_config = _load_tts_config()
+        if _resolve_naga_api_key(tts_config):
+            return True
+    except Exception:
         pass
     try:
         _import_openai_client()
@@ -746,7 +853,7 @@ def stream_tts_to_speaker(
         model_id = el_config.get("streaming_model_id",
                                  el_config.get("model_id", model_id))
 
-        api_key = os.getenv("ELEVENLABS_API_KEY", "")
+        api_key = _resolve_elevenlabs_api_key(tts_config)
         if not api_key:
             logger.warning("ELEVENLABS_API_KEY not set; streaming TTS audio disabled")
         else:
@@ -932,7 +1039,7 @@ if __name__ == "__main__":
     print("\nProvider availability:")
     print(f"  Edge TTS:   {'installed' if _check(_import_edge_tts, 'edge') else 'not installed (pip install edge-tts)'}")
     print(f"  ElevenLabs: {'installed' if _check(_import_elevenlabs, 'el') else 'not installed (pip install elevenlabs)'}")
-    print(f"    API Key:  {'set' if os.getenv('ELEVENLABS_API_KEY') else 'not set'}")
+    print(f"    API Key:  {'set' if _resolve_elevenlabs_api_key(_load_tts_config()) else 'not set'}")
     print(f"  OpenAI:     {'installed' if _check(_import_openai_client, 'oai') else 'not installed'}")
     print(
         "    API Key:  "

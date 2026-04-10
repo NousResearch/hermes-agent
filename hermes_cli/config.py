@@ -408,7 +408,7 @@ DEFAULT_CONFIG = {
     
     # Text-to-speech configuration
     "tts": {
-        "provider": "edge",  # "edge" (free) | "elevenlabs" (premium) | "openai" | "neutts" (local)
+        "provider": "edge",  # "edge" (free) | "elevenlabs" | "naga" | "openai" | "neutts" (local)
         "edge": {
             "voice": "en-US-AriaNeural",
             # Popular: AriaNeural, JennyNeural, AndrewNeural, BrianNeural, SoniaNeural
@@ -416,6 +416,11 @@ DEFAULT_CONFIG = {
         "elevenlabs": {
             "voice_id": "pNInz6obpgDQGcFmaJgB",  # Adam
             "model_id": "eleven_multilingual_v2",
+        },
+        "naga": {
+            "model": "eleven-multilingual-v2:free",
+            "voice": "jsCqWAovK2LkecY7zXl4",
+            "base_url": "https://api.naga.ac/v1",
         },
         "openai": {
             "model": "gpt-4o-mini-tts",
@@ -432,7 +437,7 @@ DEFAULT_CONFIG = {
     
     "stt": {
         "enabled": True,
-        "provider": "local",  # "local" (free, faster-whisper) | "groq" | "openai" (Whisper API) | "mistral" (Voxtral Transcribe)
+        "provider": "local",  # "local" | "groq" | "openai" | "mistral" | "elevenlabs" | "naga"
         "local": {
             "model": "base",  # tiny, base, small, medium, large-v3
             "language": "",  # auto-detect by default; set to "en", "es", "fr", etc. to force
@@ -442,6 +447,13 @@ DEFAULT_CONFIG = {
         },
         "mistral": {
             "model": "voxtral-mini-latest",  # voxtral-mini-latest, voxtral-mini-2602
+        },
+        "elevenlabs": {
+            "model": "scribe_v1",  # scribe_v1, scribe_v1_experimental
+        },
+        "naga": {
+            "model": "whisper-large-v3:free",
+            "base_url": "https://api.naga.ac/v1",
         },
     },
 
@@ -950,6 +962,13 @@ OPTIONAL_ENV_VARS = {
         "description": "ElevenLabs API key for premium text-to-speech voices",
         "prompt": "ElevenLabs API key",
         "url": "https://elevenlabs.io/",
+        "password": True,
+        "category": "tool",
+    },
+    "NAGA_API_KEY": {
+        "description": "Naga.ac API key for TTS and STT",
+        "prompt": "Naga.ac API key",
+        "url": "https://naga.ac/",
         "password": True,
         "category": "tool",
     },
@@ -2424,6 +2443,7 @@ def show_config():
     keys = [
         ("OPENROUTER_API_KEY", "OpenRouter"),
         ("VOICE_TOOLS_OPENAI_KEY", "OpenAI (STT/TTS)"),
+        ("NAGA_API_KEY", "Naga.ac (STT/TTS)"),
         ("EXA_API_KEY", "Exa"),
         ("PARALLEL_API_KEY", "Parallel"),
         ("FIRECRAWL_API_KEY", "Firecrawl"),

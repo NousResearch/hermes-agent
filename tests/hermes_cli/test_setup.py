@@ -305,3 +305,33 @@ def test_modal_setup_persists_direct_mode_when_user_chooses_their_own_account(tm
 
     assert config["terminal"]["backend"] == "modal"
     assert config["terminal"]["modal_mode"] == "direct"
+
+
+def test_setup_sections_include_stt():
+    from hermes_cli.setup import SETUP_SECTIONS
+
+    section_keys = [key for key, _label, _func in SETUP_SECTIONS]
+    assert "stt" in section_keys
+
+
+def test_setup_stt_provider_naga_saves_key(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from hermes_cli.setup import setup_stt
+
+    config = {"stt": {"provider": "local"}}
+    saved_env = {}
+
+    def fake_prompt_choice(question, choices, default=0):
+        assert question == "Select STT provider:"
+        return choices.index("Naga.ac (OpenAI-compatible STT, needs API key)")
+
+    monkeypatch.setattr("hermes_cli.setup.prompt_choice", fake_prompt_choice)
+    monkeypatch.setattr("hermes_cli.setup.prompt", lambda *_a, **_kw: "ng-test-key")
+    monkeypatch.setattr("hermes_cli.setup.get_env_value", lambda _k: "")
+    monkeypatch.setattr("hermes_cli.setup.save_env_value", lambda k, v: saved_env.setdefault(k, v))
+    monkeypatch.setattr("hermes_cli.setup.save_config", lambda _cfg: None)
+
+    setup_stt(config)
+
+    assert config["stt"]["provider"] == "naga"
+    assert saved_env.get("NAGA_API_KEY") == "ng-test-key"

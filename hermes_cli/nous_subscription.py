@@ -142,6 +142,7 @@ def _tts_label(current_provider: str) -> str:
     mapping = {
         "openai": "OpenAI TTS",
         "elevenlabs": "ElevenLabs",
+        "naga": "Naga.ac",
         "edge": "Edge TTS",
         "neutts": "NeuTTS",
     }
@@ -263,6 +264,7 @@ def get_nous_subscription_features(
     direct_fal = bool(get_env_value("FAL_KEY"))
     direct_openai_tts = bool(resolve_openai_audio_api_key())
     direct_elevenlabs = bool(get_env_value("ELEVENLABS_API_KEY"))
+    direct_naga = bool(get_env_value("NAGA_API_KEY"))
     direct_camofox = bool(get_env_value("CAMOFOX_URL"))
     direct_browserbase = bool(get_env_value("BROWSERBASE_API_KEY") and get_env_value("BROWSERBASE_PROJECT_ID"))
     direct_browser_use = bool(get_env_value("BROWSER_USE_API_KEY"))
@@ -309,6 +311,7 @@ def get_nous_subscription_features(
         tts_current_provider in {"edge", "neutts"}
         or (tts_current_provider == "openai" and (managed_tts_available or direct_openai_tts))
         or (tts_current_provider == "elevenlabs" and direct_elevenlabs)
+        or (tts_current_provider == "naga" and direct_naga)
     )
     tts_active = bool(tts_tool_enabled and tts_available)
 

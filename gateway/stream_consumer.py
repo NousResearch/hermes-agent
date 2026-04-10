@@ -79,6 +79,8 @@ class GatewayStreamConsumer:
         # When set, send/edit uses HTML mode with this prefix prepended.
         # Used for thinking/reasoning expandable blockquote on Telegram.
         self._html_prefix: str = ""
+        # True while streaming thinking content (before text starts)
+        self._in_thinking_phase: bool = False
 
     @property
     def already_sent(self) -> bool:
@@ -97,6 +99,21 @@ class GatewayStreamConsumer:
             self._queue.put(text)
         elif text is None:
             self._queue.put(_NEW_SEGMENT)
+
+    def start_thinking(self) -> None:
+        """Mark the start of thinking phase — deltas will show as thinking text."""
+        self._in_thinking_phase = True
+
+    def switch_to_html_mode(self, html_prefix: str) -> None:
+        """Switch from thinking phase to text phase.
+
+        Converts accumulated thinking text into an HTML expandable blockquote
+        prefix, clears the buffer, and subsequent edits use HTML mode.
+        Called from the agent's worker thread when the first text_delta arrives.
+        """
+        self._in_thinking_phase = False
+        self._html_prefix = html_prefix
+        self._accumulated = ""
 
     def finish(self) -> None:
         """Signal that the stream is complete."""

@@ -6990,33 +6990,36 @@ class GatewayRunner:
             agent.service_tier = self._service_tier
             agent.request_overrides = turn_route.get("request_overrides")
 
-            # Reasoning streaming: collect thinking deltas and inject them
-            # as an HTML expandable blockquote prefix on the stream consumer
-            # so thinking + response appear in the same message.
+            # Reasoning streaming: thinking deltas stream in real-time,
+            # then collapse into an expandable blockquote when text starts.
             _reasoning_buf = []
             _reasoning_sent = [False]
+            _thinking_started = [False]
             _show_reasoning_live = getattr(self, "_show_reasoning", False)
 
             def _reasoning_cb(text: str) -> None:
+                """Stream thinking deltas to the consumer in real-time."""
                 _reasoning_buf.append(text)
-
-            def _flush_reasoning_prefix():
-                if _reasoning_sent[0] or not _reasoning_buf:
-                    return
-                _reasoning_sent[0] = True
                 if _stream_consumer is not None:
-                    import html as _html
-                    _escaped = _html.escape("".join(_reasoning_buf))
-                    _stream_consumer._html_prefix = (
-                        '<blockquote expandable>\U0001f4ad <b>Thinking</b>\n'
-                        + _escaped + '</blockquote>\n\n'
-                    )
+                    if not _thinking_started[0]:
+                        _thinking_started[0] = True
+                        _stream_consumer.start_thinking()
+                        _stream_consumer.on_delta("\U0001f4ad Thinking\u2026\n")
+                    _stream_consumer.on_delta(text)
 
             _orig_stream_delta_cb = _stream_delta_cb
 
             def _wrapped_stream_delta_cb(text: str) -> None:
-                if not _reasoning_sent[0] and _reasoning_buf:
-                    _flush_reasoning_prefix()
+                """On first text delta, switch consumer to HTML mode."""
+                if not _reasoning_sent[0] and _reasoning_buf and _stream_consumer is not None:
+                    _reasoning_sent[0] = True
+                    import html as _html
+                    _escaped = _html.escape("".join(_reasoning_buf))
+                    _prefix = (
+                        '<blockquote expandable>\U0001f4ad <b>Thinking</b>\n'
+                        + _escaped + '</blockquote>\n\n'
+                    )
+                    _stream_consumer.switch_to_html_mode(_prefix)
                 if _orig_stream_delta_cb:
                     _orig_stream_delta_cb(text)
 

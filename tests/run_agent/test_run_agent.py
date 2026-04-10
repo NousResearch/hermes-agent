@@ -19,6 +19,7 @@ import pytest
 
 import run_agent
 from run_agent import AIAgent
+from agent.error_classifier import FailoverReason
 from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
 
 
@@ -2236,6 +2237,29 @@ class TestCredentialPoolRecovery:
         recovered, retry_same = agent._recover_with_credential_pool(
             status_code=402,
             has_retried_429=False,
+        )
+
+        assert recovered is True
+        assert retry_same is False
+        agent._swap_credential.assert_called_once_with(next_entry)
+
+    def test_recover_with_pool_rotates_on_billing_reason_even_with_http_400(self, agent):
+        next_entry = SimpleNamespace(label="secondary")
+
+        class _Pool:
+            def mark_exhausted_and_rotate(self, *, status_code, error_context=None):
+                assert status_code == 400
+                assert error_context == {"reason": "out_of_extra_usage"}
+                return next_entry
+
+        agent._credential_pool = _Pool()
+        agent._swap_credential = MagicMock()
+
+        recovered, retry_same = agent._recover_with_credential_pool(
+            status_code=400,
+            has_retried_429=False,
+            classified_reason=FailoverReason.billing,
+            error_context={"reason": "out_of_extra_usage"},
         )
 
         assert recovered is True

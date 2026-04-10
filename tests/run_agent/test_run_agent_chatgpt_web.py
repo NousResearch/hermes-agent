@@ -21,11 +21,11 @@ def _patch_agent_bootstrap(monkeypatch):
     monkeypatch.setattr(run_agent, "check_toolset_requirements", lambda: {})
 
 
-def _build_agent(monkeypatch):
+def _build_agent(monkeypatch, *, model="gpt-5-thinking"):
     _patch_agent_bootstrap(monkeypatch)
 
     agent = run_agent.AIAgent(
-        model="gpt-5-thinking",
+        model=model,
         provider="chatgpt-web",
         api_mode="chatgpt_web",
         base_url=DEFAULT_WEB_BASE,
@@ -57,6 +57,26 @@ def test_build_api_kwargs_chatgpt_web_carries_thread_state(monkeypatch):
     assert kwargs["parent_message_id"] == "msg_existing"
     assert kwargs["messages"][-1]["content"] == "Hello from Hermes."
     assert "tools" not in kwargs
+
+
+def test_build_api_kwargs_chatgpt_web_uses_latest_user_turn_for_tool_selection(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    agent.tools = [
+        {"type": "function", "function": {"name": "terminal", "description": "Run shell commands", "parameters": {"type": "object"}}},
+        {"type": "function", "function": {"name": "execute_code", "description": "Run Python code", "parameters": {"type": "object"}}},
+    ]
+
+    kwargs = agent._build_api_kwargs([
+        {"role": "system", "content": "Be concise."},
+        {"role": "user", "content": "What time is it?"},
+        {"role": "assistant", "content": "I can check that."},
+        {"role": "user", "content": "Use Hermes tools to run Python that prints 6*7. Answer only the result."},
+    ])
+
+    rewritten_user = kwargs["messages"][-1]["content"]
+    assert 'The tool available for this turn is: execute_code.' in rewritten_user
+    assert '"name": "execute_code"' in rewritten_user
+    assert '"code": "print(6*7)"' in rewritten_user
 
 
 def test_select_chatgpt_web_tools_prefers_explicit_sequence(monkeypatch):
@@ -432,3 +452,135 @@ def test_interruptible_api_call_chatgpt_web_closes_request_client_on_interrupt(m
     time.sleep(0.05)
     assert agent._chatgpt_web_conversation_id is None
     assert agent._chatgpt_web_parent_message_id is None
+
+
+@pytest.mark.parametrize("model", ["gpt-5-thinking", "gpt-5-instant"])
+def test_run_conversation_chatgpt_web_repairs_path_only_answer_from_terminal_tool(monkeypatch, model):
+    agent = _build_agent(monkeypatch, model=model)
+    agent.tools = [{
+        "type": "function",
+        "function": {
+            "name": "terminal",
+            "description": "Run shell commands",
+            "parameters": {"type": "object", "properties": {"command": {"type": "string"}}},
+        },
+    }]
+    agent.valid_tool_names = {"terminal"}
+
+    responses = [
+        {
+            "content": "I can't access shell tools from here.",
+            "message_id": "msg_tool_terminal",
+            "model": model,
+            "finish_reason": "stop",
+        },
+        {
+            "content": "The current working directory is / data/data/com.termux/files/home/.hermes/hermes-agent.",
+            "message_id": "msg_final_terminal",
+            "model": model,
+            "finish_reason": "stop",
+        },
+    ]
+    monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: agent._wrap_chatgpt_web_response(responses.pop(0)))
+
+    def _fake_execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count=0):
+        for call in assistant_message.tool_calls:
+            messages.append({
+                "role": "tool",
+                "tool_call_id": call.id,
+                "content": '{"output": "/data/data/com.termux/files/home/.hermes/hermes-agent\\n", "exit_code": 0}',
+            })
+
+    monkeypatch.setattr(agent, "_execute_tool_calls", _fake_execute_tool_calls)
+
+    result = agent.run_conversation("Use Hermes tools to print the current working directory. Answer only the path.")
+
+    assert result["final_response"] == "/data/data/com.termux/files/home/.hermes/hermes-agent"
+
+
+@pytest.mark.parametrize("model", ["gpt-5-thinking", "gpt-5-instant"])
+def test_run_conversation_chatgpt_web_repairs_result_only_answer_from_execute_code(monkeypatch, model):
+    agent = _build_agent(monkeypatch, model=model)
+    agent.tools = [{
+        "type": "function",
+        "function": {
+            "name": "execute_code",
+            "description": "Run Python code",
+            "parameters": {"type": "object", "properties": {"code": {"type": "string"}}},
+        },
+    }]
+    agent.valid_tool_names = {"execute_code"}
+
+    responses = [
+        {
+            "content": "I can't run Python directly here.",
+            "message_id": "msg_tool_code",
+            "model": model,
+            "finish_reason": "stop",
+        },
+        {
+            "content": "The result is 42.",
+            "message_id": "msg_final_code",
+            "model": model,
+            "finish_reason": "stop",
+        },
+    ]
+    monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: agent._wrap_chatgpt_web_response(responses.pop(0)))
+
+    def _fake_execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count=0):
+        for call in assistant_message.tool_calls:
+            messages.append({
+                "role": "tool",
+                "tool_call_id": call.id,
+                "content": "42\\n",
+            })
+
+    monkeypatch.setattr(agent, "_execute_tool_calls", _fake_execute_tool_calls)
+
+    result = agent.run_conversation("Use Hermes tools to run Python that prints 6*7. Answer only the result.")
+
+    assert result["final_response"] == "42"
+
+
+@pytest.mark.parametrize("model", ["gpt-5-thinking", "gpt-5-instant"])
+def test_run_conversation_chatgpt_web_repairs_yes_no_path_answer_from_search(monkeypatch, model):
+    agent = _build_agent(monkeypatch, model=model)
+    agent.tools = [{
+        "type": "function",
+        "function": {
+            "name": "search_files",
+            "description": "Search files",
+            "parameters": {"type": "object", "properties": {"pattern": {"type": "string"}}},
+        },
+    }]
+    agent.valid_tool_names = {"search_files"}
+
+    responses = [
+        {
+            "content": "I can’t access the file-search tool right now.",
+            "message_id": "msg_tool_search",
+            "model": model,
+            "finish_reason": "stop",
+        },
+        {
+            "content": ', the matching path is "run_agent.py".',
+            "message_id": "msg_final_search",
+            "model": model,
+            "finish_reason": "stop",
+        },
+    ]
+    monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: agent._wrap_chatgpt_web_response(responses.pop(0)))
+
+    def _fake_execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count=0):
+        for call in assistant_message.tool_calls:
+            messages.append({
+                "role": "tool",
+                "tool_call_id": call.id,
+                "content": '{"total_count": 1, "matches": [{"path": "run_agent.py", "line": 2208, "content": "def _chatgpt_web_tool_args(...)"}]}',
+            })
+
+    monkeypatch.setattr(agent, "_execute_tool_calls", _fake_execute_tool_calls)
+
+    result = agent.run_conversation("Use Hermes tools to grep run_agent.py for _chatgpt_web_tool_args. Answer only yes/no and one matching path.")
+
+    assert result["final_response"] == "yes\nrun_agent.py"

@@ -888,11 +888,6 @@ class APIServerAdapter(BasePlatformAdapter):
             try:
                 from hermes_android.mobile_defaults import should_force_android_api_server_toolsets, resolved_android_api_server_toolsets
 
-                if should_force_android_api_server_toolsets(user_config):
-                    enabled_toolsets = resolved_android_api_server_toolsets(user_config)
-            except Exception as exc:
-                logger.debug("Android API-server toolset fallback unavailable: %s", exc)
-
         max_iterations = parse_iteration_limit(os.getenv("HERMES_MAX_ITERATIONS", "90"), default=90)
 
         # Load fallback provider chain so the API server platform has the

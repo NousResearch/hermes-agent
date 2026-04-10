@@ -41,6 +41,10 @@ def _default_device_id() -> str:
     return os.getenv("CHATGPT_WEB_DEVICE_ID", "").strip() or str(uuid.uuid4())
 
 
+def _chatgpt_web_debug_base() -> str:
+    return os.getenv("CHATGPT_WEB_DEBUG_BASE", "").strip()
+
+
 def _build_cookie_header(*, session_token: str = "", device_id: str = "") -> str:
     parts: list[str] = []
     if session_token:
@@ -54,6 +58,7 @@ def _build_chatgpt_web_headers(
     *,
     access_token: str,
     session_token: str = "",
+    cookie_header: str = "",
     user_agent: str = "",
     device_id: str = "",
     accept: str = "application/json",
@@ -70,12 +75,17 @@ def _build_chatgpt_web_headers(
         "Sec-Fetch-Mode": "cors",
         "Sec-Fetch-Dest": "empty",
     }
-    cookie_header = _build_cookie_header(
+    generated_cookie_header = _build_cookie_header(
         session_token=session_token,
         device_id=headers["Oai-Device-Id"],
     )
-    if cookie_header:
-        headers["Cookie"] = cookie_header
+    cookie_parts = [
+        part.strip()
+        for part in (cookie_header, generated_cookie_header)
+        if isinstance(part, str) and part.strip()
+    ]
+    if cookie_parts:
+        headers["Cookie"] = "; ".join(cookie_parts)
     return headers
 
 
@@ -474,6 +484,59 @@ def _apply_message_patch(message: dict[str, Any], patch_op: dict[str, Any]) -> b
     return False
 
 
+def _split_chatgpt_web_message_content(content: Any) -> tuple[str, list[str]]:
+    """Return best-effort text plus any attached image sources."""
+    if isinstance(content, str):
+        return content, []
+    if not isinstance(content, list):
+        if content is None:
+            return "", []
+        return str(content), []
+
+    text_parts: list[str] = []
+    image_sources: list[str] = []
+    for part in content:
+        if isinstance(part, str):
+            if part:
+                text_parts.append(part)
+            continue
+        if not isinstance(part, dict):
+            rendered = str(part or "")
+            if rendered:
+                text_parts.append(rendered)
+            continue
+        ptype = str(part.get("type") or "").strip().lower()
+        if ptype in {"text", "input_text"}:
+            rendered = str(part.get("text") or "")
+            if rendered:
+                text_parts.append(rendered)
+            continue
+        if ptype in {"image_url", "input_image"}:
+            image_value = part.get("image_url")
+            if isinstance(image_value, dict):
+                image_value = image_value.get("url")
+            if image_value is None:
+                image_value = part.get("url") or part.get("source") or part.get("path")
+            image_source = str(image_value or "").strip()
+            if image_source:
+                image_sources.append(image_source)
+            continue
+        rendered = str(part.get("content") or part.get("text") or "")
+        if rendered:
+            text_parts.append(rendered)
+    return "\n".join(part for part in text_parts if part).strip(), image_sources
+
+
+def _messages_include_chatgpt_web_images(messages: list[dict[str, Any]]) -> bool:
+    for item in messages or []:
+        if not isinstance(item, dict):
+            continue
+        _, image_sources = _split_chatgpt_web_message_content(item.get("content"))
+        if image_sources:
+            return True
+    return False
+
+
 def stream_chatgpt_web_completion(
     *,
     access_token: str,
@@ -483,6 +546,8 @@ def stream_chatgpt_web_completion(
     conversation_id: Optional[str] = None,
     parent_message_id: Optional[str] = None,
     session_token: str = "",
+    cookie_header: str = "",
+    browser_cookies: Any = None,
     on_delta: Optional[Callable[[str], None]] = None,
     timeout: float = 1800.0,
     history_and_training_disabled: bool = False,
@@ -509,6 +574,7 @@ def stream_chatgpt_web_completion(
     base_headers = _build_chatgpt_web_headers(
         access_token=token,
         session_token=session_token,
+        cookie_header=cookie_header,
         user_agent=ua,
         device_id=did,
     )

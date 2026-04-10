@@ -3541,6 +3541,10 @@ def extract_content_or_reasoning(response) -> str:
     """
     import re
 
+    # Guard against malformed responses (choices None, missing, or empty)
+    if not getattr(response, "choices", None):
+        return ""
+
     msg = response.choices[0].message
     content = (msg.content or "").strip()
 

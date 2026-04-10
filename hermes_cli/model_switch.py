@@ -274,6 +274,11 @@ def parse_model_flags(raw_args: str) -> tuple[str, str, bool]:
     is_global = False
     explicit_provider = ""
 
+    # Normalize Unicode dashes (Telegram/iOS auto-converts -- to em/en dash)
+    # A single Unicode dash before a flag keyword becomes "--"
+    import re as _re
+    raw_args = _re.sub(r'[\u2012\u2013\u2014\u2015](provider|global)', r'--\1', raw_args)
+
     # Extract --global
     if "--global" in raw_args:
         is_global = True

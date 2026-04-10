@@ -774,7 +774,11 @@ class AIAgent:
             self._anthropic_api_key = effective_key
             self._anthropic_base_url = base_url
             from agent.anthropic_adapter import _is_oauth_token as _is_oat
-            self._is_anthropic_oauth = _is_oat(effective_key)
+            # Only treat as OAuth when talking to native Anthropic endpoints.
+            # Third-party anthropic_messages providers (Kimi, MiniMax, etc.)
+            # use their own API keys that happen to fail the sk-ant-api prefix
+            # check, causing false OAuth detection and Claude Code identity injection.
+            self._is_anthropic_oauth = _is_oat(effective_key) and _is_native_anthropic
             self._anthropic_client = build_anthropic_client(effective_key, base_url)
             # No OpenAI client needed for Anthropic mode
             self.client = None
@@ -1369,7 +1373,8 @@ class AIAgent:
             self._anthropic_client = build_anthropic_client(
                 effective_key, self._anthropic_base_url,
             )
-            self._is_anthropic_oauth = _is_oauth_token(effective_key)
+            _is_native = new_provider == "anthropic"
+            self._is_anthropic_oauth = _is_oauth_token(effective_key) and _is_native
             self.client = None
             self._client_kwargs = {}
         else:
@@ -5519,7 +5524,7 @@ class AIAgent:
                 preserve_dots=self._anthropic_preserve_dots(),
                 context_length=ctx_len,
                 base_url=getattr(self, "_anthropic_base_url", None),
-                fast_mode=self.request_overrides.get("speed") == "fast",
+                fast_mode=(self.request_overrides or {}).get("speed") == "fast",
             )
 
         if self.api_mode == "codex_responses":
@@ -7623,6 +7628,7 @@ class AIAgent:
 
             finish_reason = "stop"
             response = None  # Guard against UnboundLocalError if all retries fail
+            api_kwargs = None  # Guard against UnboundLocalError if _build_api_kwargs fails
 
             while retry_count < max_retries:
                 try:

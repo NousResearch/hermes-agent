@@ -1291,7 +1291,7 @@ HERMES_CADUCEUS = """[#CD7F32]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣀⡀⠀⣀⣀�
 # Note: built dynamically by _build_compact_banner() to fit terminal width
 COMPACT_BANNER = """
 [bold #FFD700]╔══════════════════════════════════════════════════════════════╗[/]
-[bold #FFD700]║[/]  [#FFBF00]⚕ NOUS HERMES[/] [dim #B8860B]- AI Agent Framework[/]              [bold #FFD700]║[/]
+[bold #FFD700]║[/]  [#FFBF00]☤ NOUS HERMES[/] [dim #B8860B]- AI Agent Framework[/]              [bold #FFD700]║[/]
 [bold #FFD700]║[/]  [#CD7F32]Messenger of the Digital Gods[/]    [dim #B8860B]Nous Research[/]   [bold #FFD700]║[/]
 [bold #FFD700]╚══════════════════════════════════════════════════════════════╝[/]
 """
@@ -1311,8 +1311,8 @@ def _build_compact_banner() -> str:
     dim_color = _skin.get_color("banner_dim", "#B8860B") if _skin else "#B8860B"
 
     if skin_name == "default":
-        line1 = "⚕ NOUS HERMES - AI Agent Framework"
-        tiny_line = "⚕ NOUS HERMES"
+        line1 = "☤ NOUS HERMES - AI Agent Framework"
+        tiny_line = "☤ NOUS HERMES"
     else:
         agent_name = _skin.get_branding("agent_name", "Hermes Agent") if _skin else "Hermes Agent"
         line1 = f"{agent_name} - AI Agent Framework"
@@ -1942,10 +1942,10 @@ class HermesCLI:
             duration_label = snapshot["duration"]
 
             if width < 52:
-                text = f"⚕ {snapshot['model_short']} · {duration_label}"
+                text = f"☤ {snapshot['model_short']} · {duration_label}"
                 return self._trim_status_bar_text(text, width)
             if width < 76:
-                parts = [f"⚕ {snapshot['model_short']}", percent_label]
+                parts = [f"☤ {snapshot['model_short']}", percent_label]
                 parts.append(duration_label)
                 return self._trim_status_bar_text(" · ".join(parts), width)
 
@@ -1956,11 +1956,11 @@ class HermesCLI:
             else:
                 context_label = "ctx --"
 
-            parts = [f"⚕ {snapshot['model_short']}", context_label, percent_label]
+            parts = [f"☤ {snapshot['model_short']}", context_label, percent_label]
             parts.append(duration_label)
             return self._trim_status_bar_text(" │ ".join(parts), width)
         except Exception:
-            return f"⚕ {self.model if getattr(self, 'model', None) else 'Hermes'}"
+            return f"☤ {self.model if getattr(self, 'model', None) else 'Hermes'}"
 
     def _get_status_bar_fragments(self):
         if not self._status_bar_visible:
@@ -1977,7 +1977,7 @@ class HermesCLI:
 
             if width < 52:
                 frags = [
-                    ("class:status-bar", " ⚕ "),
+                    ("class:status-bar", " ☤ "),
                     ("class:status-bar-strong", snapshot["model_short"]),
                     ("class:status-bar-dim", " · "),
                     ("class:status-bar-dim", duration_label),
@@ -1988,7 +1988,7 @@ class HermesCLI:
                 percent_label = f"{percent}%" if percent is not None else "--"
                 if width < 76:
                     frags = [
-                        ("class:status-bar", " ⚕ "),
+                        ("class:status-bar", " ☤ "),
                         ("class:status-bar-strong", snapshot["model_short"]),
                         ("class:status-bar-dim", " · "),
                         (self._status_bar_context_style(percent), percent_label),
@@ -2006,7 +2006,7 @@ class HermesCLI:
 
                     bar_style = self._status_bar_context_style(percent)
                     frags = [
-                        ("class:status-bar", " ⚕ "),
+                        ("class:status-bar", " ☤ "),
                         ("class:status-bar-strong", snapshot["model_short"]),
                         ("class:status-bar-dim", " │ "),
                         ("class:status-bar-dim", context_label),
@@ -2436,10 +2436,10 @@ class HermesCLI:
             try:
                 from hermes_cli.skin_engine import get_active_skin
                 _skin = get_active_skin()
-                label = _skin.get_branding("response_label", "⚕ Hermes")
+                label = _skin.get_branding("response_label", "☤ Hermes")
                 _text_hex = _skin.get_color("banner_text", "#FFF8DC")
             except Exception:
-                label = "⚕ Hermes"
+                label = "☤ Hermes"
                 _text_hex = "#FFF8DC"
             # Build a true-color ANSI escape for the response text color
             # so streamed content matches the Rich Panel appearance.
@@ -5175,11 +5175,11 @@ class HermesCLI:
                     try:
                         from hermes_cli.skin_engine import get_active_skin
                         _skin = get_active_skin()
-                        label = _skin.get_branding("response_label", "⚕ Hermes")
+                        label = _skin.get_branding("response_label", "☤ Hermes")
                         _resp_color = _skin.get_color("response_border", "#CD7F32")
                         _resp_text = _skin.get_color("banner_text", "#FFF8DC")
                     except Exception:
-                        label = "⚕ Hermes"
+                        label = "☤ Hermes"
                         _resp_color = "#CD7F32"
                         _resp_text = "#FFF8DC"
 
@@ -5311,7 +5311,7 @@ class HermesCLI:
 
                     ChatConsole().print(Panel(
                         _rich_text_from_ansi(response),
-                        title=f"[{_resp_color} bold]⚕ /btw[/]",
+                        title=f"[{_resp_color} bold]☤ /btw[/]",
                         title_align="left",
                         border_style=_resp_color,
                         box=rich_box.HORIZONTALS,
@@ -6987,7 +6987,7 @@ class HermesCLI:
                     if not _streaming_box_opened:
                         _streaming_box_opened = True
                         w = self.console.width
-                        label = " ⚕ Hermes "
+                        label = " ☤ Hermes "
                         fill = w - 2 - len(label)
                         _cprint(f"\n{_GOLD}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}")
                     _cprint(sentence.rstrip())
@@ -7192,11 +7192,11 @@ class HermesCLI:
                 try:
                     from hermes_cli.skin_engine import get_active_skin
                     _skin = get_active_skin()
-                    label = _skin.get_branding("response_label", "⚕ Hermes")
+                    label = _skin.get_branding("response_label", "☤ Hermes")
                     _resp_color = _skin.get_color("response_border", "#CD7F32")
                     _resp_text = _skin.get_color("banner_text", "#FFF8DC")
                 except Exception:
-                    label = "⚕ Hermes"
+                    label = "☤ Hermes"
                     _resp_color = "#CD7F32"
                     _resp_text = "#FFF8DC"
 
@@ -7320,9 +7320,9 @@ class HermesCLI:
         else:
             try:
                 from hermes_cli.skin_engine import get_active_goodbye
-                goodbye = get_active_goodbye("Goodbye! ⚕")
+                goodbye = get_active_goodbye("Goodbye! ☤")
             except Exception:
-                goodbye = "Goodbye! ⚕"
+                goodbye = "Goodbye! ☤"
             print(goodbye)
 
     def _get_tui_prompt_symbols(self) -> tuple[str, str]:
@@ -7409,7 +7409,7 @@ class HermesCLI:
         if self._command_running:
             return _state_fragment("class:prompt-working", self._command_spinner_frame())
         if self._agent_running:
-            return _state_fragment("class:prompt-working", "⚕")
+            return _state_fragment("class:prompt-working", "☤")
         if self._voice_mode:
             return _state_fragment("class:voice-prompt", "🎤")
         return [("class:prompt", symbol)]

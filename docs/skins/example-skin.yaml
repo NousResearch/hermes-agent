@@ -74,8 +74,8 @@ spinner:
 branding:
   agent_name: "Hermes Agent"          # Banner title, about display
   welcome: "Welcome! Type your message or /help for commands."
-  goodbye: "Goodbye! ⚕"              # Exit message
-  response_label: " ⚕ Hermes "       # Response box header label
+  goodbye: "Goodbye! ☤"              # Exit message
+  response_label: " ☤ Hermes "       # Response box header label
   prompt_symbol: "❯ "                 # Input prompt symbol
   help_header: "(^_^)? Available Commands"  # /help header text
 

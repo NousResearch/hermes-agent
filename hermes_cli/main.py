@@ -677,7 +677,7 @@ def cmd_whatsapp(args):
     from hermes_cli.config import get_env_value, save_env_value
 
     print()
-    print("⚕ WhatsApp Setup")
+    print("☤ WhatsApp Setup")
     print("=" * 50)
 
     # ── Step 1: Choose mode ──────────────────────────────────────────────
@@ -841,14 +841,14 @@ def cmd_whatsapp(args):
             print("    2. Send a message to the bot's WhatsApp number")
             print("    3. The agent will reply automatically")
             print()
-            print("  Tip: Agent responses are prefixed with '⚕ Hermes Agent'")
+            print("  Tip: Agent responses are prefixed with '☤ Hermes Agent'")
         else:
             print("  Next steps:")
             print("    1. Start the gateway:  hermes gateway")
             print("    2. Open WhatsApp → Message Yourself")
             print("    3. Type a message — the agent will reply")
             print()
-            print("  Tip: Agent responses are prefixed with '⚕ Hermes Agent'")
+            print("  Tip: Agent responses are prefixed with '☤ Hermes Agent'")
             print("  so you can tell them apart from your own messages.")
         print()
         print("  Or install as a service: hermes gateway install")
@@ -3403,7 +3403,7 @@ def cmd_update(args):
     # In gateway mode, use file-based IPC for prompts instead of stdin
     gw_input_fn = (lambda prompt, default="": _gateway_prompt(prompt, default)) if gateway_mode else None
     
-    print("⚕ Updating Hermes Agent...")
+    print("☤ Updating Hermes Agent...")
     print()
     
     # Try git-based update first, fall back to ZIP download on Windows

@@ -725,10 +725,14 @@ def _classify_by_message(
         )
 
     # Auth patterns
+    # Auth errors should NOT be retried directly — the credential is invalid and
+    # retrying with the same key will always fail.  Set retryable=False so the
+    # caller triggers credential rotation (should_rotate_credential=True) or
+    # provider fallback rather than an immediate retry loop.
     if any(p in error_msg for p in _AUTH_PATTERNS):
         return result_fn(
             FailoverReason.auth,
-            retryable=True,
+            retryable=False,
             should_rotate_credential=True,
         )
 

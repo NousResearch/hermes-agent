@@ -1,3 +1,20 @@
+"""Focused tests for unauthorized DM behavior normalization."""
+
+from gateway.config import _normalize_unauthorized_dm_behavior
+
+
+class TestNormalizeUnauthorizedDmBehavior:
+    def test_accepts_pair(self):
+        assert _normalize_unauthorized_dm_behavior("pair") == "pair"
+
+    def test_accepts_ignore_case_insensitive(self):
+        assert _normalize_unauthorized_dm_behavior("  IGNORE  ") == "ignore"
+
+    def test_invalid_value_falls_back_to_default(self):
+        assert _normalize_unauthorized_dm_behavior("block", default="pair") == "pair"
+
+    def test_non_string_value_falls_back_to_default(self):
+        assert _normalize_unauthorized_dm_behavior(None, default="ignore") == "ignore"
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 

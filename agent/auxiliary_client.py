@@ -864,29 +864,36 @@ def _resolve_custom_runtime() -> Tuple[Optional[str], Optional[str]]:
     endpoints where the base URL lives in config.yaml instead of the live
     environment.
     """
+    custom_base: Optional[str] = None
+    custom_key: Optional[str] = None
     try:
         from hermes_cli.runtime_provider import resolve_runtime_provider
 
         runtime = resolve_runtime_provider(requested="custom")
+        custom_base = runtime.get("base_url")
+        custom_key = runtime.get("api_key")
     except Exception as exc:
         logger.debug("Auxiliary client: custom runtime resolution failed: %s", exc)
-        return None, None
-
-    custom_base = runtime.get("base_url")
-    custom_key = runtime.get("api_key")
+    # Env fallback keeps tests and local custom-endpoint setups working even
+    # when runtime provider doesn't expose custom values.
+    if not isinstance(custom_base, str) or not custom_base.strip():
+        custom_base = os.getenv("OPENAI_BASE_URL", "")
+    if not isinstance(custom_key, str) or not custom_key.strip():
+        custom_key = os.getenv("OPENAI_API_KEY", "")
     if not isinstance(custom_base, str) or not custom_base.strip():
         return None, None
 
     custom_base = custom_base.strip().rstrip("/")
     if "openrouter.ai" in custom_base.lower():
-        # requested='custom' falls back to OpenRouter when no custom endpoint is
-        # configured. Treat that as "no custom endpoint" for auxiliary routing.
-        return None, None
+        # runtime_provider may return OpenRouter fallback even when an explicit
+        # OPENAI_BASE_URL custom endpoint is set in env (common in tests/CI).
+        env_base = (os.getenv("OPENAI_BASE_URL", "") or "").strip().rstrip("/")
+        if env_base and "openrouter.ai" not in env_base.lower():
+            custom_base = env_base
+        else:
+            return None, None
 
-    # Local servers (Ollama, llama.cpp, vLLM, LM Studio) don't require auth.
-    # Use a placeholder key — the OpenAI SDK requires a non-empty string but
-    # local servers ignore the Authorization header.  Same fix as cli.py
-    # _ensure_runtime_credentials() (PR #2556).
+    # Local/custom OpenAI-compatible endpoints may not require auth.
     if not isinstance(custom_key, str) or not custom_key.strip():
         custom_key = "no-key-required"
 

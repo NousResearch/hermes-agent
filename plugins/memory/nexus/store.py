@@ -475,6 +475,7 @@ class MemoryStore:
 
 if __name__ == "__main__":
     import argparse
+    import json as jsonlib
 
     parser = argparse.ArgumentParser(description="Nexus Store CLI")
     parser.add_argument("--palace", default="~/.hermes/nexus", help="Palace path")
@@ -485,21 +486,68 @@ if __name__ == "__main__":
     add_p.add_argument("--wing", required=True)
     add_p.add_argument("--room", required=True)
     add_p.add_argument("--source", default="manual")
+    add_p.add_argument("--doc-id", default=None)
+
+    search_p = sub.add_parser("search")
+    search_p.add_argument("--query", required=True)
+    search_p.add_argument("--n", type=int, default=5)
+    search_p.add_argument("--wing", default=None)
+    search_p.add_argument("--room", default=None)
+
+    remove_p = sub.add_parser("remove")
+    remove_p.add_argument("--doc-id", required=True)
+
+    add_fact_p = sub.add_parser("add-fact")
+    add_fact_p.add_argument("--subject", required=True)
+    add_fact_p.add_argument("--predicate", required=True)
+    add_fact_p.add_argument("--obj", required=True)
+
+    query_facts_p = sub.add_parser("query-facts")
+    query_facts_p.add_argument("--subject", required=True)
 
     sub.add_parser("stats")
     sub.add_parser("list-wings")
 
-    args = parser.parse_args()
+    list_rooms_p = sub.add_parser("list-rooms")
+    list_rooms_p.add_argument("--wing", default=None)
 
+    args = parser.parse_args()
     store = MemoryStore(args.palace)
 
     if args.cmd == "add":
-        doc_id = store.add(args.text, args.wing, args.room, args.source)
+        doc_id = store.add(args.text, args.wing, args.room, args.source, args.doc_id)
         print(f"Added: {doc_id}")
+    elif args.cmd == "search":
+        results = store.search(args.query, n_results=args.n, wing=args.wing, room=args.room)
+        if not results:
+            print("No results found.")
+        else:
+            print(f"Top {len(results)} results:\n")
+            for r in results:
+                print(f"  [{r['doc_id']}] ({r['wing']}/{r['room']}) score={r['score']}")
+                print(f"    {r['text'][:120]}")
+                print(f"    bm25={r['bm25']} sem={r['semantic']} kw={r['keyword_overlap']}")
+                print()
+    elif args.cmd == "remove":
+        ok = store.remove(args.doc_id)
+        print("Deleted." if ok else "Not found.")
+    elif args.cmd == "add-fact":
+        fact_id = store.add_fact(args.subject, args.predicate, args.obj)
+        print(f"Added fact: {fact_id}")
+    elif args.cmd == "query-facts":
+        facts = store.query_facts(args.subject)
+        if not facts:
+            print(f"No facts about '{args.subject}'.")
+        else:
+            print(f"{len(facts)} facts about '{args.subject}':\n")
+            for f in facts:
+                print(f"  {f['subject']} --{f['predicate']}--> {f['object']}")
     elif args.cmd == "stats":
-        import json
-        print(json.dumps(store.stats(), indent=2))
+        print(jsonlib.dumps(store.stats(), indent=2))
     elif args.cmd == "list-wings":
         print(", ".join(store.list_wings()))
+    elif args.cmd == "list-rooms":
+        rooms = store.list_rooms(wing=args.wing)
+        print(", ".join(rooms) if rooms else "No rooms found.")
     else:
         parser.print_help()

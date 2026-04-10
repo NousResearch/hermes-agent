@@ -122,6 +122,61 @@ def test_select_chatgpt_web_tools_prefers_terminal_for_working_directory(monkeyp
 
 
 
+def test_select_chatgpt_web_tools_skips_plain_greeting(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    agent.tools = [
+        {"type": "function", "function": {"name": "search_files", "description": "Search files", "parameters": {"type": "object"}}},
+        {"type": "function", "function": {"name": "terminal", "description": "Run shell commands", "parameters": {"type": "object"}}},
+    ]
+
+    selected = agent._select_chatgpt_web_tools([
+        {"role": "user", "content": "hello welcome to termux"},
+    ])
+
+    assert selected == []
+
+
+
+def test_build_api_kwargs_chatgpt_web_skips_local_tool_loop_for_plain_greeting(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    agent._chatgpt_web_conversation_id = "conv_existing"
+    agent._chatgpt_web_parent_message_id = "msg_existing"
+    agent.tools = [
+        {"type": "function", "function": {"name": "search_files", "description": "Search files", "parameters": {"type": "object"}}},
+        {"type": "function", "function": {"name": "terminal", "description": "Run shell commands", "parameters": {"type": "object"}}},
+    ]
+
+    kwargs = agent._build_api_kwargs([
+        {"role": "system", "content": "Be concise."},
+        {"role": "user", "content": "hello welcome to termux"},
+    ])
+
+    assert kwargs["history_and_training_disabled"] is False
+    assert kwargs["conversation_id"] == "conv_existing"
+    assert kwargs["parent_message_id"] == "msg_existing"
+    assert kwargs["messages"][-1]["content"] == "hello welcome to termux"
+    assert "<tool_call>" not in kwargs["instructions"]
+
+
+
+def test_build_api_kwargs_chatgpt_web_prefers_terminal_for_platform_details(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    agent.tools = [
+        {"type": "function", "function": {"name": "terminal", "description": "Run shell commands", "parameters": {"type": "object"}}},
+    ]
+
+    kwargs = agent._build_api_kwargs([
+        {"role": "system", "content": "Be concise."},
+        {"role": "user", "content": "execute command to check platform details then tell me what system you are running on"},
+    ])
+
+    rewritten_user = kwargs["messages"][-1]["content"]
+    assert kwargs["history_and_training_disabled"] is True
+    assert 'The tool available for this turn is: terminal.' in rewritten_user
+    assert '"command": "uname -a"' in rewritten_user
+
+
+
 def test_build_api_kwargs_chatgpt_web_prefers_memory_for_remember_requests(monkeypatch):
     agent = _build_agent(monkeypatch)
     agent.tools = [
@@ -762,6 +817,55 @@ def test_run_conversation_chatgpt_web_repairs_path_only_answer_from_terminal_too
     result = agent.run_conversation("Use Hermes tools to print the current working directory. Answer only the path.")
 
     assert result["final_response"] == "/data/data/com.termux/files/home/.hermes/hermes-agent"
+
+
+@pytest.mark.parametrize("model", ["gpt-5-thinking", "gpt-5-instant"])
+def test_run_conversation_chatgpt_web_forces_terminal_for_platform_details_when_model_refuses(monkeypatch, model):
+    agent = _build_agent(monkeypatch, model=model)
+    agent.tools = [{
+        "type": "function",
+        "function": {
+            "name": "terminal",
+            "description": "Run shell commands",
+            "parameters": {"type": "object", "properties": {"command": {"type": "string"}}},
+        },
+    }]
+    agent.valid_tool_names = {"terminal"}
+
+    responses = [
+        {
+            "content": "I can't execute commands from here right now.",
+            "message_id": "msg_tool_platform",
+            "model": model,
+            "finish_reason": "stop",
+        },
+        {
+            "content": "You are running Linux on Android (aarch64) based on uname -a.",
+            "message_id": "msg_final_platform",
+            "model": model,
+            "finish_reason": "stop",
+        },
+    ]
+    monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: agent._wrap_chatgpt_web_response(responses.pop(0)))
+
+    seen_commands = []
+
+    def _fake_execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count=0):
+        for call in assistant_message.tool_calls:
+            seen_commands.append(call.function.arguments)
+            messages.append({
+                "role": "tool",
+                "tool_call_id": call.id,
+                "content": '{"output": "Linux localhost 6.6.56-android15-8-g38447e018c92-ab12829524-4k #1 SMP PREEMPT Thu Dec 19 17:58:46 UTC 2024 aarch64 Android\\n", "exit_code": 0}',
+            })
+
+    monkeypatch.setattr(agent, "_execute_tool_calls", _fake_execute_tool_calls)
+
+    result = agent.run_conversation("execute command to check platform details then tell me what system you are running on")
+
+    assert seen_commands == ['{"command": "uname -a"}']
+    assert "Linux" in result["final_response"]
+    assert "Android" in result["final_response"]
 
 
 @pytest.mark.parametrize("model", ["gpt-5-thinking", "gpt-5-instant"])

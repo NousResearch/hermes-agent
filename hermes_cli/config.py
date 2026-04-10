@@ -2783,6 +2783,10 @@ def set_config_value(key: str, value: str):
         "terminal.timeout": "TERMINAL_TIMEOUT",
         "terminal.sandbox_dir": "TERMINAL_SANDBOX_DIR",
         "terminal.persistent_shell": "TERMINAL_PERSISTENT_SHELL",
+        "terminal.container_cpu": "TERMINAL_CONTAINER_CPU",
+        "terminal.container_memory": "TERMINAL_CONTAINER_MEMORY",
+        "terminal.container_disk": "TERMINAL_CONTAINER_DISK",
+        "terminal.container_persistent": "TERMINAL_CONTAINER_PERSISTENT",
     }
     if key in _config_to_env_sync:
         save_env_value(_config_to_env_sync[key], str(value))

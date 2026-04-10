@@ -606,22 +606,35 @@ class DiscordAdapter(BasePlatformAdapter):
                         if not self._client.user or self._client.user not in message.mentions:
                             return
                     # "all" falls through to handle_message
-
-                # If the message @mentions other users but NOT the bot, the
-                # sender is talking to someone else — stay silent.  Only
-                # applies in server channels; in DMs the user is always
-                # talking to the bot (mentions are just references).
-                # Controlled by DISCORD_IGNORE_NO_MENTION (default: true).
-                _ignore_no_mention = os.getenv(
-                    "DISCORD_IGNORE_NO_MENTION", "true"
-                ).lower() in ("true", "1", "yes")
-                if _ignore_no_mention and message.mentions and not isinstance(message.channel, discord.DMChannel):
-                    _bot_mentioned = (
+                
+                # Multi-agent filtering: if the message mentions specific bots
+                # but NOT this bot, the sender is talking to another agent —
+                # stay silent.  Messages with no bot mentions (general chat)
+                # still fall through to _handle_message for the existing
+                # DISCORD_REQUIRE_MENTION check.
+                #
+                # This replaces the older DISCORD_IGNORE_NO_MENTION logic
+                # with bot-aware filtering that works correctly when multiple
+                # agents share a channel.
+                if not isinstance(message.channel, discord.DMChannel) and message.mentions:
+                    _self_mentioned = (
                         self._client.user is not None
                         and self._client.user in message.mentions
                     )
-                    if not _bot_mentioned:
-                        return  # Talking to someone else, don't interrupt
+                    _other_bots_mentioned = any(
+                        m.bot and m != self._client.user
+                        for m in message.mentions
+                    )
+                    # If other bots are mentioned but we're not → not for us
+                    if _other_bots_mentioned and not _self_mentioned:
+                        return
+                    # If humans are mentioned but we're not → not for us
+                    # (preserves old DISCORD_IGNORE_NO_MENTION=true behavior)
+                    _ignore_no_mention = os.getenv(
+                        "DISCORD_IGNORE_NO_MENTION", "true"
+                    ).lower() in ("true", "1", "yes")
+                    if _ignore_no_mention and not _self_mentioned and not _other_bots_mentioned:
+                        return
 
                 await self._handle_message(message)
 

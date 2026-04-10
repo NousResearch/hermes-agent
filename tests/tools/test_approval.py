@@ -110,6 +110,52 @@ class TestSafeCommand:
         assert desc is None
 
 
+def _clear_session(key):
+    """Replace for removed clear_session() — directly clear internal state."""
+    approval_module._session_approved.pop(key, None)
+    approval_module._pending.pop(key, None)
+
+
+class TestApproveAndCheckSession:
+    def test_session_approval(self):
+        key = "test_session_approve"
+        _clear_session(key)
+
+        assert is_approved(key, "rm") is False
+        approve_session(key, "rm")
+        assert is_approved(key, "rm") is True
+
+
+class TestSessionKeyContext:
+    def test_context_session_key_overrides_process_env(self):
+        token = approval_module.set_current_session_key("alice")
+        try:
+            with mock_patch.dict("os.environ", {"HERMES_SESSION_KEY": "bob"}, clear=False):
+                assert approval_module.get_current_session_key() == "alice"
+        finally:
+            approval_module.reset_current_session_key(token)
+
+    def test_gateway_runner_binds_session_key_to_context_before_agent_run(self):
+        run_py = Path(__file__).resolve().parents[2] / "gateway" / "run.py"
+        module = ast.parse(run_py.read_text(encoding="utf-8"))
+
+        run_sync = None
+        for node in ast.walk(module):
+            if isinstance(node, ast.FunctionDef) and node.name == "run_sync":
+                run_sync = node
+                break
+
+        assert run_sync is not None, "gateway.run.run_sync not found"
+
+        called_names = set()
+        for node in ast.walk(run_sync):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+                called_names.add(node.func.id)
+
+        assert "set_current_session_key" in called_names
+        assert "reset_current_session_key" in called_names
+
+
 class TestRmFalsePositiveFix:
     """Regression tests: filenames starting with 'r' must NOT trigger recursive delete."""
 
@@ -382,6 +428,19 @@ class TestPatternKeyUniqueness:
             f"find -exec rm and find -delete share key {key_exec!r} — "
             "approving one silently approves the other"
         )
+
+    def test_approving_find_exec_does_not_approve_find_delete(self):
+        """Session approval for find -exec rm must not carry over to find -delete."""
+        _, key_exec, _ = detect_dangerous_command("find . -exec rm {} \\;")
+        _, key_delete, _ = detect_dangerous_command("find . -name '*.tmp' -delete")
+        session = "test_find_collision"
+        _clear_session(session)
+        approve_session(session, key_exec)
+        assert is_approved(session, key_exec) is True
+        assert is_approved(session, key_delete) is False, (
+            "approving find -exec rm should not auto-approve find -delete"
+        )
+        _clear_session(session)
 
     def test_legacy_find_key_still_approves_find_exec(self):
         """Old allowlist entry 'find' should keep approving the matching command."""

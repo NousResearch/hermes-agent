@@ -13,6 +13,7 @@ from agent.auxiliary_client import (
     get_available_vision_backends,
     resolve_vision_provider_client,
     resolve_provider_client,
+    default_headers_for_base_url,
     auxiliary_max_tokens_param,
     call_llm,
     _read_codex_access_token,
@@ -76,6 +77,30 @@ class TestReadCodexAccessToken:
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
         result = _read_codex_access_token()
         assert result == "tok-123"
+
+
+class TestCustomEndpointHeaders:
+    def test_default_headers_for_base_url_uses_hermes_user_agent_for_generic_endpoint(self):
+        headers = default_headers_for_base_url("https://ai.acmi.run/v1")
+        assert headers["User-Agent"] == "Hermes-Agent/1.0"
+
+    def test_resolve_provider_client_custom_endpoint_overrides_openai_sdk_user_agent(self):
+        with (
+            patch(
+                "agent.auxiliary_client._resolve_custom_runtime",
+                return_value=("https://ai.acmi.run/v1", "custom-key"),
+            ),
+            patch("agent.auxiliary_client._read_main_model", return_value="gpt-5.4"),
+            patch("agent.auxiliary_client.OpenAI") as mock_openai,
+        ):
+            client, model = resolve_provider_client("custom")
+
+        assert client is not None
+        assert model == "gpt-5.4"
+        assert (
+            mock_openai.call_args.kwargs["default_headers"]["User-Agent"]
+            == "Hermes-Agent/1.0"
+        )
 
     def test_pool_without_selected_entry_falls_back_to_auth_store(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / "hermes"

@@ -2217,6 +2217,16 @@ class TestNousCredentialRefresh:
 
 
 class TestCredentialPoolRecovery:
+    def test_apply_client_headers_uses_generic_user_agent_for_custom_endpoint(self, agent):
+        agent._client_kwargs = {}
+
+        agent._apply_client_headers_for_base_url("https://ai.acmi.run/v1")
+
+        assert (
+            agent._client_kwargs["default_headers"]["User-Agent"]
+            == "Hermes-Agent/1.0"
+        )
+
     def test_recover_with_pool_rotates_on_402(self, agent):
         current = SimpleNamespace(label="primary")
         next_entry = SimpleNamespace(label="secondary")

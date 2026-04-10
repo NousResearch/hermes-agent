@@ -59,3 +59,50 @@ class TestExtractFromTextEdgeCases:
         facts = extract_from_text(text, source="tool_result")
         for f in facts:
             assert 0.0 <= f.confidence <= 1.0
+
+
+from plugins.memory.mnemoria.extract import extract_from_messages
+
+
+class TestExtractFromMessages:
+    def test_extracts_from_tool_role(self):
+        messages = [
+            {"role": "user", "content": "run the tests"},
+            {"role": "assistant", "content": "Running pytest..."},
+            {"role": "tool", "content": "FAILED tests/test_auth.py - Error in /src/auth.py"},
+        ]
+        facts, last_idx = extract_from_messages(messages)
+        assert last_idx == 3
+        assert any("?[error]" in f.content for f in facts)
+
+    def test_extracts_from_user_role(self):
+        messages = [{"role": "user", "content": "always use TypeScript for new code"}]
+        facts, last_idx = extract_from_messages(messages)
+        assert last_idx == 1
+        assert any("C[user.pref]" in f.content for f in facts)
+
+    def test_skips_assistant_role(self):
+        messages = [{"role": "assistant", "content": "Error: something went wrong"}]
+        facts, last_idx = extract_from_messages(messages)
+        assert len(facts) == 0
+        assert last_idx == 1
+
+    def test_respects_start_index(self):
+        messages = [
+            {"role": "tool", "content": "Error: first failure"},
+            {"role": "tool", "content": "Error: second failure"},
+        ]
+        facts, last_idx = extract_from_messages(messages, start_index=1)
+        assert last_idx == 2
+        assert len([f for f in facts if "?[error]" in f.content]) == 1
+
+    def test_empty_messages_returns_empty(self):
+        facts, last_idx = extract_from_messages([])
+        assert facts == []
+        assert last_idx == 0
+
+    def test_handles_non_string_content(self):
+        messages = [{"role": "tool", "content": None}, {"role": "tool", "content": 42}]
+        facts, last_idx = extract_from_messages(messages)
+        assert facts == []
+        assert last_idx == 2

@@ -1977,19 +1977,14 @@ class AIAgent:
             except Exception as e:
                 logger.debug("Background memory/skill review failed: %s", e)
             finally:
-                # Explicitly close the OpenAI/httpx client so GC doesn't
-                # try to clean it up on a dead asyncio event loop (which
-                # produces "Event loop is closed" errors in the terminal).
+                # Close all resources (httpx client, subprocesses, etc.) so
+                # GC doesn't try to clean them up on a dead asyncio event
+                # loop (which produces "Event loop is closed" errors).
                 if review_agent is not None:
-                    client = getattr(review_agent, "client", None)
-                    if client is not None:
-                        try:
-                            review_agent._close_openai_client(
-                                client, reason="bg_review_done", shared=True
-                            )
-                            review_agent.client = None
-                        except Exception:
-                            pass
+                    try:
+                        review_agent.close()
+                    except Exception:
+                        pass
 
         t = threading.Thread(target=_run_review, daemon=True, name="bg-review")
         t.start()
@@ -2729,6 +2724,64 @@ class AIAgent:
             except Exception:
                 pass
     
+    def close(self) -> None:
+        """Release all resources held by this agent instance.
+
+        Cleans up subprocess resources that would otherwise become orphans:
+        - Background processes tracked in ProcessRegistry
+        - Terminal sandbox environments
+        - Browser daemon sessions
+        - Active child agents (subagent delegation)
+        - OpenAI/httpx client connections
+
+        Safe to call multiple times (idempotent).  Each cleanup step is
+        independently guarded so a failure in one does not prevent the rest.
+        """
+        task_id = getattr(self, "session_id", None) or ""
+
+        # 1. Kill background processes for this task
+        try:
+            from tools.process_registry import process_registry
+            process_registry.kill_all(task_id=task_id)
+        except Exception:
+            pass
+
+        # 2. Clean terminal sandbox environments
+        try:
+            from tools.terminal_tool import cleanup_vm
+            cleanup_vm(task_id)
+        except Exception:
+            pass
+
+        # 3. Clean browser daemon sessions
+        try:
+            from tools.browser_tool import cleanup_browser
+            cleanup_browser(task_id)
+        except Exception:
+            pass
+
+        # 4. Close active child agents
+        try:
+            with self._active_children_lock:
+                children = list(self._active_children)
+                self._active_children.clear()
+            for child in children:
+                try:
+                    child.close()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        # 5. Close the OpenAI/httpx client
+        try:
+            client = getattr(self, "client", None)
+            if client is not None:
+                self._close_openai_client(client, reason="agent_close", shared=True)
+                self.client = None
+        except Exception:
+            pass
+
     def _hydrate_todo_store(self, history: List[Dict[str, Any]]) -> None:
         """
         Recover todo state from conversation history.

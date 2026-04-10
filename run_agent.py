@@ -7629,6 +7629,7 @@ class AIAgent:
                 is_first_turn=(not bool(conversation_history)),
                 model=self.model,
                 platform=getattr(self, "platform", None) or "",
+                sender_id=getattr(self, "_user_id", None) or "",
             )
             _ctx_parts: list[str] = []
             for r in _pre_results:

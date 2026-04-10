@@ -64,14 +64,20 @@ def _scan_cron_prompt(prompt: str) -> str:
 
 
 def _origin_from_env() -> Optional[Dict[str, str]]:
-    origin_platform = os.getenv("HERMES_SESSION_PLATFORM")
-    origin_chat_id = os.getenv("HERMES_SESSION_CHAT_ID")
+    try:
+        from gateway.session_context import get_session_env as _gse
+        origin_platform = _gse("HERMES_SESSION_PLATFORM")
+        origin_chat_id = _gse("HERMES_SESSION_CHAT_ID")
+    except ImportError:
+        origin_platform = os.getenv("HERMES_SESSION_PLATFORM", "")
+        origin_chat_id = os.getenv("HERMES_SESSION_CHAT_ID", "")
+        _gse = os.getenv  # type: ignore[assignment]
     if origin_platform and origin_chat_id:
         return {
             "platform": origin_platform,
             "chat_id": origin_chat_id,
-            "chat_name": os.getenv("HERMES_SESSION_CHAT_NAME"),
-            "thread_id": os.getenv("HERMES_SESSION_THREAD_ID"),
+            "chat_name": _gse("HERMES_SESSION_CHAT_NAME") or None,
+            "thread_id": _gse("HERMES_SESSION_THREAD_ID") or None,
         }
     return None
 

@@ -177,7 +177,11 @@ def _handle_send(args):
         if isinstance(result, dict) and result.get("success") and mirror_text:
             try:
                 from gateway.mirror import mirror_to_session
-                source_label = os.getenv("HERMES_SESSION_PLATFORM", "cli")
+                try:
+                    from gateway.session_context import get_session_env as _gse
+                    source_label = _gse("HERMES_SESSION_PLATFORM", "cli")
+                except ImportError:
+                    source_label = os.getenv("HERMES_SESSION_PLATFORM", "cli")
                 if mirror_to_session(platform_name, chat_id, mirror_text, source_label=source_label, thread_id=thread_id):
                     result["mirrored"] = True
             except Exception:
@@ -664,7 +668,11 @@ async def _send_sms(auth_token, chat_id, message):
 
 def _check_send_message():
     """Gate send_message on gateway running (always available on messaging platforms)."""
-    platform = os.getenv("HERMES_SESSION_PLATFORM", "")
+    try:
+        from gateway.session_context import get_session_env as _gse
+        platform = _gse("HERMES_SESSION_PLATFORM", "")
+    except ImportError:
+        platform = os.getenv("HERMES_SESSION_PLATFORM", "")
     if platform and platform != "local":
         return True
     try:

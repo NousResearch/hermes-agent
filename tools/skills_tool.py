@@ -348,7 +348,11 @@ def _capture_required_environment_variables(
 def _is_gateway_surface() -> bool:
     if os.getenv("HERMES_GATEWAY_SESSION"):
         return True
-    return bool(os.getenv("HERMES_SESSION_PLATFORM"))
+    try:
+        from gateway.session_context import get_session_env as _gse
+        return bool(_gse("HERMES_SESSION_PLATFORM"))
+    except ImportError:
+        return bool(os.getenv("HERMES_SESSION_PLATFORM"))
 
 
 def _get_terminal_backend_name() -> str:

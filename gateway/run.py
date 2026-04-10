@@ -1991,6 +1991,11 @@ class GatewayRunner:
                     return await self._handle_approve_command(event)
                 return await self._handle_deny_command(event)
 
+            # /background must bypass the running-agent guard — it starts a
+            # parallel task and must never interrupt the active conversation.
+            if _cmd_def_inner and _cmd_def_inner.name == "background":
+                return await self._handle_background_command(event)
+
             if event.message_type == MessageType.PHOTO:
                 logger.debug("PRIORITY photo follow-up for session %s — queueing without interrupt", _quick_key[:20])
                 adapter = self.adapters.get(source.platform)

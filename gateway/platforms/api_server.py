@@ -49,6 +49,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8642
 MAX_STORED_RESPONSES = 100
+MAX_PREVIOUS_RESPONSE_ID_LENGTH = 128
 MAX_REQUEST_BYTES = 1_000_000  # 1 MB default limit for POST bodies
 
 
@@ -830,6 +831,28 @@ class APIServerAdapter(BasePlatformAdapter):
         previous_response_id = body.get("previous_response_id")
         conversation = body.get("conversation")
         store = body.get("store", True)
+
+        # Basic hardening: ensure `previous_response_id` is a reasonable string.
+        # Prevents accidental type mismatches and extremely long IDs.
+        if previous_response_id is not None:
+            if not isinstance(previous_response_id, str):
+                return web.json_response(
+                    _openai_error("Invalid 'previous_response_id' type"),
+                    status=400,
+                )
+            if not previous_response_id:
+                return web.json_response(
+                    _openai_error("Invalid 'previous_response_id' value"),
+                    status=400,
+                )
+            if len(previous_response_id) > MAX_PREVIOUS_RESPONSE_ID_LENGTH:
+                return web.json_response(
+                    _openai_error(
+                        "previous_response_id is too long.",
+                        code="previous_response_id_too_long",
+                    ),
+                    status=400,
+                )
 
         # conversation and previous_response_id are mutually exclusive
         if conversation and previous_response_id:

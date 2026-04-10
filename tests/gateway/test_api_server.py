@@ -26,6 +26,7 @@ from gateway.platforms.api_server import (
     APIServerAdapter,
     ResponseStore,
     _CORS_HEADERS,
+    MAX_PREVIOUS_RESPONSE_ID_LENGTH,
     check_api_server_requirements,
     cors_middleware,
     security_headers_middleware,
@@ -824,6 +825,41 @@ class TestResponsesEndpoint:
                 },
             )
             assert resp.status == 404
+
+    @pytest.mark.asyncio
+    async def test_previous_response_id_invalid_type_returns_400(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/v1/responses",
+                json={
+                    "model": "hermes-agent",
+                    "input": "follow up",
+                    "previous_response_id": 123,
+                },
+            )
+
+            assert resp.status == 400
+            data = await resp.json()
+            assert "previous_response_id" in data["error"]["message"].lower()
+
+    @pytest.mark.asyncio
+    async def test_previous_response_id_too_long_returns_400(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            too_long_id = "x" * (MAX_PREVIOUS_RESPONSE_ID_LENGTH + 1)
+            resp = await cli.post(
+                "/v1/responses",
+                json={
+                    "model": "hermes-agent",
+                    "input": "follow up",
+                    "previous_response_id": too_long_id,
+                },
+            )
+
+            assert resp.status == 400
+            data = await resp.json()
+            assert "too long" in data["error"]["message"].lower()
 
     @pytest.mark.asyncio
     async def test_store_false_does_not_store(self, adapter):

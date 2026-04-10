@@ -3037,18 +3037,36 @@ class GatewayRunner:
             if agent_result.get("session_id") and agent_result["session_id"] != session_entry.session_id:
                 session_entry.session_id = agent_result["session_id"]
 
-            # Prepend reasoning/thinking if display is enabled
-            if getattr(self, "_show_reasoning", False) and response:
+            # Send reasoning as expandable blockquote (non-streaming fallback).
+            # In streaming mode, reasoning was already injected as the HTML
+            # prefix on the stream consumer's message.
+            if (getattr(self, "_show_reasoning", False) and response
+                    and not agent_result.get("_reasoning_already_sent")):
                 last_reasoning = agent_result.get("last_reasoning")
                 if last_reasoning:
-                    # Collapse long reasoning to keep messages readable
-                    lines = last_reasoning.strip().splitlines()
-                    if len(lines) > 15:
-                        display_reasoning = "\n".join(lines[:15])
-                        display_reasoning += f"\n_... ({len(lines) - 15} more lines)_"
+                    _tg_adapter = self.adapters.get(source.platform)
+                    if _tg_adapter and hasattr(_tg_adapter, '_bot'):
+                        import html as _html
+                        _escaped = _html.escape(last_reasoning.strip())
+                        _html_msg = (
+                            '<blockquote expandable>\U0001f4ad <b>Thinking</b>\n'
+                            + _escaped + '</blockquote>\n\n'
+                            + _html.escape(response)
+                        )
+                        try:
+                            _tid = getattr(source, "thread_id", None)
+                            await _tg_adapter._bot.send_message(
+                                chat_id=int(source.chat_id),
+                                text=_html_msg,
+                                parse_mode="HTML",
+                                message_thread_id=int(_tid) if _tid else None,
+                            )
+                            # Mark as sent so the normal send path skips
+                            response = None
+                        except Exception as _re:
+                            logger.warning("Failed to send reasoning: %s", _re)
                     else:
-                        display_reasoning = last_reasoning.strip()
-                    response = f"💭 **Reasoning:**\n```\n{display_reasoning}\n```\n\n{response}"
+                        response = f"💭 Reasoning:\n{last_reasoning.strip()}\n\n{response}"
 
             # Emit agent:end hook
             await self.hooks.emit("agent:end", {
@@ -6967,11 +6985,46 @@ class GatewayRunner:
             # turn and must not be baked into the cached agent constructor.
             agent.tool_progress_callback = progress_callback if tool_progress_enabled else None
             agent.step_callback = _step_callback_sync if _hooks_ref.loaded_hooks else None
-            agent.stream_delta_callback = _stream_delta_cb
             agent.status_callback = _status_callback_sync
             agent.reasoning_config = reasoning_config
             agent.service_tier = self._service_tier
             agent.request_overrides = turn_route.get("request_overrides")
+
+            # Reasoning streaming: collect thinking deltas and inject them
+            # as an HTML expandable blockquote prefix on the stream consumer
+            # so thinking + response appear in the same message.
+            _reasoning_buf = []
+            _reasoning_sent = [False]
+            _show_reasoning_live = getattr(self, "_show_reasoning", False)
+
+            def _reasoning_cb(text: str) -> None:
+                _reasoning_buf.append(text)
+
+            def _flush_reasoning_prefix():
+                if _reasoning_sent[0] or not _reasoning_buf:
+                    return
+                _reasoning_sent[0] = True
+                if _stream_consumer is not None:
+                    import html as _html
+                    _escaped = _html.escape("".join(_reasoning_buf))
+                    _stream_consumer._html_prefix = (
+                        '<blockquote expandable>\U0001f4ad <b>Thinking</b>\n'
+                        + _escaped + '</blockquote>\n\n'
+                    )
+
+            _orig_stream_delta_cb = _stream_delta_cb
+
+            def _wrapped_stream_delta_cb(text: str) -> None:
+                if not _reasoning_sent[0] and _reasoning_buf:
+                    _flush_reasoning_prefix()
+                if _orig_stream_delta_cb:
+                    _orig_stream_delta_cb(text)
+
+            if _show_reasoning_live and _stream_consumer is not None:
+                agent.stream_delta_callback = _wrapped_stream_delta_cb
+                agent.reasoning_callback = _reasoning_cb
+            else:
+                agent.stream_delta_callback = _stream_delta_cb
 
             # Background review delivery — send "💾 Memory updated" etc. to user
             def _bg_review_send(message: str) -> None:
@@ -7150,6 +7203,7 @@ class GatewayRunner:
                 unregister_gateway_notify(_approval_session_key)
                 reset_current_session_key(_approval_session_token)
             result_holder[0] = result
+            result["_reasoning_already_sent"] = _reasoning_sent[0]
 
             # Signal the stream consumer that the agent is done
             if _stream_consumer is not None:
@@ -7262,6 +7316,7 @@ class GatewayRunner:
             return {
                 "final_response": final_response,
                 "last_reasoning": result.get("last_reasoning"),
+                "_reasoning_already_sent": result.get("_reasoning_already_sent", False),
                 "messages": result_holder[0].get("messages", []) if result_holder[0] else [],
                 "api_calls": result_holder[0].get("api_calls", 0) if result_holder[0] else 0,
                 "tools": tools_holder[0] or [],

@@ -76,6 +76,9 @@ class GatewayStreamConsumer:
         self._last_sent_text = ""   # Track last-sent text to skip redundant edits
         self._fallback_final_send = False
         self._fallback_prefix = ""
+        # When set, send/edit uses HTML mode with this prefix prepended.
+        # Used for thinking/reasoning expandable blockquote on Telegram.
+        self._html_prefix: str = ""
 
     @property
     def already_sent(self) -> bool:
@@ -378,6 +381,14 @@ class GatewayStreamConsumer:
         text = self._clean_for_display(text)
         if not text.strip():
             return
+
+        # When an HTML prefix is set (thinking blockquote), bypass the
+        # adapter's MarkdownV2 path and use the Telegram bot API directly
+        # in HTML mode so the expandable blockquote renders correctly.
+        if self._html_prefix and hasattr(self.adapter, '_bot'):
+            await self._send_or_edit_html(text)
+            return
+
         try:
             if self._message_id is not None:
                 if self._edit_supported:
@@ -433,3 +444,53 @@ class GatewayStreamConsumer:
                     self._edit_supported = False
         except Exception as e:
             logger.error("Stream send/edit error: %s", e)
+
+    async def _send_or_edit_html(self, text: str) -> None:
+        """Send/edit using HTML mode with the thinking prefix prepended.
+
+        Used when _html_prefix is set (reasoning expandable blockquote).
+        Talks directly to the Telegram bot API to bypass MarkdownV2.
+        """
+        import html as _html_mod
+        escaped_body = _html_mod.escape(text)
+        full_html = self._html_prefix + escaped_body
+        try:
+            _tid_raw = (self.metadata or {}).get("thread_id")
+            _tid = int(_tid_raw) if _tid_raw else None
+            if self._message_id is not None and self._edit_supported:
+                if text == self._last_sent_text:
+                    return
+                try:
+                    await self.adapter._bot.edit_message_text(
+                        chat_id=int(self.chat_id),
+                        message_id=int(self._message_id),
+                        text=full_html,
+                        parse_mode="HTML",
+                    )
+                    self._already_sent = True
+                    self._last_sent_text = text
+                except Exception as _e:
+                    err_s = str(_e).lower()
+                    if "not modified" in err_s:
+                        pass
+                    elif "too many requests" in err_s or "flood" in err_s:
+                        self._edit_supported = False
+                        self._fallback_final_send = True
+                        self._already_sent = True
+                    else:
+                        logger.debug("HTML edit failed: %s", _e)
+                        self._edit_supported = False
+                        self._fallback_final_send = True
+                        self._already_sent = True
+            else:
+                msg = await self.adapter._bot.send_message(
+                    chat_id=int(self.chat_id),
+                    text=full_html,
+                    parse_mode="HTML",
+                    message_thread_id=_tid,
+                )
+                self._message_id = str(msg.message_id)
+                self._already_sent = True
+                self._last_sent_text = text
+        except Exception as e:
+            logger.error("HTML stream send/edit error: %s", e)

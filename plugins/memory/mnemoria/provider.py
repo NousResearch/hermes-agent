@@ -332,8 +332,37 @@ class MnemoriaMemoryProvider(MemoryProvider):
             logger.error("MnemoriaMemoryProvider init failed: %s", exc)
 
     def system_prompt_block(self) -> str:
-        """Return empty — injection is handled via prefetch()."""
-        return ""
+        """Return usage hint + identity facts (Constraints and Decisions)."""
+        header = (
+            "[MNEMORIA MEMORY]\n"
+            "Mnemoria is active. Use mnemoria_write to store facts (supports\n"
+            "MEMORY_SPEC notation: C[target]: constraints, D[target]: decisions,\n"
+            "V[target]: values). Use mnemoria_recall for semantic search,\n"
+            "mnemoria_explore for multi-hop discovery."
+        )
+
+        if not _UM_AVAILABLE:
+            return header
+
+        try:
+            s = _store()
+            rows = s.conn.execute(
+                "SELECT type, target, content FROM um_facts "
+                "WHERE type IN ('C', 'D') AND status = 'active' AND importance >= 0.7 "
+                "ORDER BY activation DESC LIMIT 10"
+            ).fetchall()
+
+            if not rows:
+                return header
+
+            identity_lines = ["\n\n[MNEMORIA IDENTITY]"]
+            for row in rows:
+                identity_lines.append(f"{row['type']}[{row['target']}]: {row['content']}")
+
+            return header + "\n".join(identity_lines)
+        except Exception as exc:
+            logger.debug("system_prompt_block identity query failed: %s", exc)
+            return header
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
         """Recall relevant memories and format as injection text."""

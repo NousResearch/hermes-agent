@@ -65,6 +65,14 @@ def test_initialize_not_read_only_for_primary_context():
     assert provider._read_only is False
 
 
+def test_system_prompt_block_includes_usage_hint():
+    provider = MnemoriaMemoryProvider()
+    block = provider.system_prompt_block()
+    assert "[MNEMORIA MEMORY]" in block
+    assert "mnemoria_write" in block
+    assert "mnemoria_recall" in block
+
+
 def test_initialize_stores_profile_and_user_id():
     provider = MnemoriaMemoryProvider()
     provider.initialize("test-session", agent_identity="coder", user_id="user-abc", platform="telegram", hermes_home="/tmp")

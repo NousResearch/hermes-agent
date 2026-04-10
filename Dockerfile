@@ -1,5 +1,7 @@
 FROM debian:13.4
 
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+
 # Disable Python stdout buffering to ensure logs are printed immediately
 ENV PYTHONUNBUFFERED=1
 
@@ -13,7 +15,7 @@ COPY . /opt/hermes
 WORKDIR /opt/hermes
 
 # Install Python and Node dependencies in one layer, no cache
-RUN pip install --no-cache-dir -e ".[all]" --break-system-packages && \
+RUN uv pip install --system --break-system-packages -e ".[all]" && \
     npm install --prefer-offline --no-audit && \
     npx playwright install --with-deps chromium --only-shell && \
     cd /opt/hermes/scripts/whatsapp-bridge && \

@@ -8682,6 +8682,57 @@ class AIAgent:
                     else:
                         assistant_message.content = str(raw)
 
+                # Fallback: parse Anthropic-style <invoke> XML emitted by some
+                # Ollama-served models (MiniMax M2.7, Kimi K2.5, etc.) that follow
+                # the Anthropic tool-calling spec instead of OpenAI structured
+                # tool_calls.  Three gates ensure we never touch native paths:
+                #   1. Structural: only runs in the `else` branch (not codex/anthropic)
+                #   2. Empty tool_calls: only if the model didn't emit structured calls
+                #   3. Substring: only if the text actually contains <invoke
+                if (
+                    self.api_mode not in ("codex_responses", "anthropic_messages")
+                    and not getattr(assistant_message, "tool_calls", None)
+                    and "<invoke" in (assistant_message.content or "")
+                ):
+                    import re as _re
+                    from types import SimpleNamespace as _SN
+                    _parsed_calls = []
+                    _invoke_pattern = _re.compile(
+                        r'<invoke\s+name=["\']([^"\']+)["\']>(.*?)</invoke>',
+                        _re.DOTALL,
+                    )
+                    _param_pattern = _re.compile(
+                        r'<parameter\s+name=["\']([^"\']+)["\']>(.*?)</parameter>',
+                        _re.DOTALL,
+                    )
+                    for _m in _invoke_pattern.finditer(assistant_message.content):
+                        _fn_name = _m.group(1).strip()
+                        _body = _m.group(2)
+                        _kwargs = {
+                            _p.group(1).strip(): _p.group(2).strip()
+                            for _p in _param_pattern.finditer(_body)
+                        }
+                        _call_id = f"invoke_{len(_parsed_calls)}_{_fn_name}"
+                        _parsed_calls.append(
+                            _SN(
+                                id=_call_id,
+                                call_id=_call_id,
+                                response_item_id=None,
+                                type="function",
+                                function=_SN(
+                                    name=_fn_name,
+                                    arguments=json.dumps(_kwargs),
+                                ),
+                            )
+                        )
+                    if _parsed_calls:
+                        assistant_message.tool_calls = _parsed_calls
+                        # Strip the raw XML from the visible content so it
+                        # doesn't appear as text in the conversation history.
+                        assistant_message.content = _invoke_pattern.sub(
+                            "", assistant_message.content
+                        ).strip() or None
+
                 try:
                     from hermes_cli.plugins import invoke_hook as _invoke_hook
                     _assistant_tool_calls = getattr(assistant_message, "tool_calls", None) or []

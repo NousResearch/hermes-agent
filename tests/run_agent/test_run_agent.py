@@ -2125,6 +2125,28 @@ class TestRetryExhaustion:
         assert "error" in result
         assert "rate limited" in result["error"]
 
+    def test_build_api_kwargs_error_no_unbound_local(self, agent):
+        """When _build_api_kwargs raises, except handler must not crash with UnboundLocalError.
+
+        Regression: _dump_api_request_debug(api_kwargs, ...) in the except block
+        referenced api_kwargs before it was assigned when _build_api_kwargs threw.
+        """
+        self._setup_agent(agent)
+        with (
+            patch.object(agent, "_build_api_kwargs", side_effect=ValueError("bad messages")),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch("run_agent.time", self._make_fast_time_mock()),
+        ):
+            result = agent.run_conversation("hello")
+        # Must surface the real error, not UnboundLocalError
+        assert result.get("completed") is False
+        assert result.get("failed") is True
+        assert "error" in result
+        assert "UnboundLocalError" not in result.get("error", "")
+        assert "bad messages" in result["error"]
+
 
 # ---------------------------------------------------------------------------
 # Flush sentinel leak

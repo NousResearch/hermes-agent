@@ -214,6 +214,8 @@ class ModelSwitchResult:
     capabilities: Optional[ModelCapabilities] = None
     model_info: Optional[ModelInfo] = None
     is_global: bool = False
+    fallback_chain: Optional[list[dict]] = None
+    fallback_message: str = ""
 
 
 @dataclass
@@ -370,6 +372,85 @@ def _resolve_alias_fallback(
     return None
 
 
+_SESSION_FALLBACK_MARKER = "__session_previous_runtime__"
+
+
+def _normalize_fallback_chain_entries(fallback_model, *, keep_session_marker: bool = True) -> list[dict]:
+    """Normalize fallback config into a validated list of provider/model dicts."""
+    if isinstance(fallback_model, list):
+        entries = fallback_model
+    elif isinstance(fallback_model, dict) and fallback_model.get("provider") and fallback_model.get("model"):
+        entries = [fallback_model]
+    else:
+        entries = []
+
+    normalized: list[dict] = []
+    for entry in entries:
+        if not isinstance(entry, dict) or not entry.get("provider") or not entry.get("model"):
+            continue
+        copied = dict(entry)
+        if not keep_session_marker:
+            copied.pop(_SESSION_FALLBACK_MARKER, None)
+        normalized.append(copied)
+    return normalized
+
+
+def _configured_fallback_chain(fallback_model) -> list[dict]:
+    """Return fallback entries excluding any prior session-only runtime fallback."""
+    return [
+        entry
+        for entry in _normalize_fallback_chain_entries(fallback_model)
+        if not entry.get(_SESSION_FALLBACK_MARKER)
+    ]
+
+
+def _build_session_fallback_chain(
+    *,
+    current_provider: str,
+    current_model: str,
+    current_base_url: str = "",
+    current_api_key: str = "",
+    target_provider: str,
+    target_model: str,
+    existing_fallback_model=None,
+) -> list[dict]:
+    """Prepend the current runtime as a session fallback for risky model switches."""
+    configured_chain = _configured_fallback_chain(existing_fallback_model)
+    if not current_provider or not current_model:
+        return configured_chain
+
+    if (
+        current_provider.strip().lower() == (target_provider or "").strip().lower()
+        and current_model.strip() == (target_model or "").strip()
+    ):
+        return configured_chain
+
+    primary = {
+        "provider": current_provider,
+        "model": current_model,
+        _SESSION_FALLBACK_MARKER: True,
+    }
+    if current_base_url:
+        primary["base_url"] = current_base_url
+    if current_api_key:
+        primary["api_key"] = current_api_key
+
+    chain: list[dict] = []
+    seen: set[tuple[str, str, str]] = set()
+    for entry in [primary, *configured_chain]:
+        key = (
+            str(entry.get("provider") or "").strip().lower(),
+            str(entry.get("model") or "").strip(),
+            str(entry.get("base_url") or "").strip(),
+        )
+        if not key[0] or not key[1] or key in seen:
+            continue
+        seen.add(key)
+        chain.append(entry)
+
+    return chain
+
+
 # ---------------------------------------------------------------------------
 # Core model-switching pipeline
 # ---------------------------------------------------------------------------
@@ -383,6 +464,7 @@ def switch_model(
     is_global: bool = False,
     explicit_provider: str = "",
     user_providers: dict = None,
+    current_fallback_model=None,
 ) -> ModelSwitchResult:
     """Core model-switching pipeline shared between CLI and gateway.
 
@@ -642,12 +724,15 @@ def switch_model(
             api_key=api_key,
             base_url=base_url,
         )
-    except Exception:
+    except Exception as exc:
         validation = {
             "accepted": True,
             "persist": True,
             "recognized": False,
-            "message": None,
+            "message": (
+                f"Model validation check failed for `{new_model}` ({target_provider}): {exc}. "
+                f"Hermes will allow the switch but treat it as unverified."
+            ),
         }
 
     if not validation.get("accepted"):
@@ -677,8 +762,27 @@ def switch_model(
 
     # --- Collect warnings ---
     warnings: list[str] = []
+    fallback_chain: list[dict] | None = _configured_fallback_chain(current_fallback_model)
+    fallback_message = ""
     if validation.get("message"):
         warnings.append(validation["message"])
+        if not validation.get("recognized"):
+            fallback_chain = _build_session_fallback_chain(
+                current_provider=current_provider,
+                current_model=current_model,
+                current_base_url=current_base_url,
+                current_api_key=current_api_key,
+                target_provider=target_provider,
+                target_model=new_model,
+                existing_fallback_model=current_fallback_model,
+            )
+            if fallback_chain:
+                previous = fallback_chain[0]
+                previous_label = get_label(previous.get("provider", ""))
+                fallback_message = (
+                    f"Session fallback armed: if `{new_model}` rejects requests, Hermes will retry on "
+                    f"`{previous.get('model', '')}` via {previous_label}."
+                )
     hermes_warn = _check_hermes_model_warning(new_model)
     if hermes_warn:
         warnings.append(hermes_warn)
@@ -698,6 +802,8 @@ def switch_model(
         capabilities=capabilities,
         model_info=model_info,
         is_global=is_global,
+        fallback_chain=fallback_chain,
+        fallback_message=fallback_message,
     )
 
 

@@ -3837,6 +3837,7 @@ class HermesCLI:
             current_api_key=self.api_key or "",
             is_global=persist_global,
             explicit_provider=explicit_provider,
+            current_fallback_model=self._fallback_model,
         )
 
         if not result.success:
@@ -3858,6 +3859,8 @@ class HermesCLI:
             self._explicit_base_url = result.base_url
         if result.api_mode:
             self.api_mode = result.api_mode
+        if result.fallback_chain is not None:
+            self._fallback_model = result.fallback_chain
 
         # Apply to running agent (in-place swap)
         if self.agent is not None:
@@ -3868,6 +3871,7 @@ class HermesCLI:
                     api_key=result.api_key,
                     base_url=result.base_url,
                     api_mode=result.api_mode,
+                    fallback_model=result.fallback_chain,
                 )
             except Exception as exc:
                 _cprint(f"  ⚠ Agent swap failed ({exc}); change applied to next session.")
@@ -3921,6 +3925,8 @@ class HermesCLI:
         # Warning from validation
         if result.warning_message:
             _cprint(f"    ⚠ {result.warning_message}")
+        if result.fallback_message:
+            _cprint(f"    🔁 {result.fallback_message}")
 
         # Persistence
         if persist_global:

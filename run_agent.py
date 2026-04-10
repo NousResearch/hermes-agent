@@ -867,26 +867,7 @@ class AIAgent:
         # when the primary is exhausted (rate-limit, overload, connection
         # failure).  Supports both legacy single-dict ``fallback_model`` and
         # new list ``fallback_providers`` format.
-        if isinstance(fallback_model, list):
-            self._fallback_chain = [
-                f for f in fallback_model
-                if isinstance(f, dict) and f.get("provider") and f.get("model")
-            ]
-        elif isinstance(fallback_model, dict) and fallback_model.get("provider") and fallback_model.get("model"):
-            self._fallback_chain = [fallback_model]
-        else:
-            self._fallback_chain = []
-        self._fallback_index = 0
-        self._fallback_activated = False
-        # Legacy attribute kept for backward compat (tests, external callers)
-        self._fallback_model = self._fallback_chain[0] if self._fallback_chain else None
-        if self._fallback_chain and not self.quiet_mode:
-            if len(self._fallback_chain) == 1:
-                fb = self._fallback_chain[0]
-                print(f"🔄 Fallback model: {fb['model']} ({fb['provider']})")
-            else:
-                print(f"🔄 Fallback chain ({len(self._fallback_chain)} providers): " +
-                      " → ".join(f"{f['model']} ({f['provider']})" for f in self._fallback_chain))
+        self._set_fallback_model(fallback_model)
 
         # Get available tools with filtering
         self.tools = get_tool_definitions(
@@ -1305,7 +1286,34 @@ class AIAgent:
             # Iterative summary from previous session must not bleed into new one (#2635)
             self.context_compressor._previous_summary = None
     
-    def switch_model(self, new_model, new_provider, api_key='', base_url='', api_mode=''):
+    def _set_fallback_model(self, fallback_model) -> None:
+        """Normalize fallback config and refresh runtime fallback state."""
+        if isinstance(fallback_model, list):
+            self._fallback_chain = [
+                dict(entry)
+                for entry in fallback_model
+                if isinstance(entry, dict) and entry.get("provider") and entry.get("model")
+            ]
+        elif isinstance(fallback_model, dict) and fallback_model.get("provider") and fallback_model.get("model"):
+            self._fallback_chain = [dict(fallback_model)]
+        else:
+            self._fallback_chain = []
+
+        self._fallback_index = 0
+        self._fallback_activated = False
+        self._fallback_model = self._fallback_chain[0] if self._fallback_chain else None
+
+        if self._fallback_chain and not self.quiet_mode:
+            if len(self._fallback_chain) == 1:
+                fb = self._fallback_chain[0]
+                print(f"🔄 Fallback model: {fb['model']} ({fb['provider']})")
+            else:
+                print(
+                    f"🔄 Fallback chain ({len(self._fallback_chain)} providers): "
+                    + " → ".join(f"{f['model']} ({f['provider']})" for f in self._fallback_chain)
+                )
+
+    def switch_model(self, new_model, new_provider, api_key='', base_url='', api_mode='', fallback_model=None):
         """Switch the model/provider in-place for a live agent.
 
         Called by the /model command handlers (CLI and gateway) after
@@ -1419,9 +1427,12 @@ class AIAgent:
                 "is_anthropic_oauth": self._is_anthropic_oauth,
             })
 
-        # ── Reset fallback state ──
-        self._fallback_activated = False
-        self._fallback_index = 0
+        # ── Refresh fallback state ──
+        if fallback_model is not None:
+            self._set_fallback_model(fallback_model)
+        else:
+            self._fallback_activated = False
+            self._fallback_index = 0
 
         logging.info(
             "Model switched in-place: %s (%s) -> %s (%s)",

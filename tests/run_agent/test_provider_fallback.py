@@ -154,3 +154,46 @@ class TestFallbackChainAdvancement:
             ]
             assert agent._try_activate_fallback() is True
             assert agent.model == "gpt-4o"
+
+
+class TestSwitchModelFallbackRefresh:
+    def test_switch_model_replaces_runtime_fallback_chain(self):
+        agent = _make_agent(fallback_model={"provider": "zai", "model": "glm-5"})
+        agent.context_compressor = None
+        agent._create_openai_client = MagicMock(return_value=_mock_client(
+            base_url="https://api.openai.com/v1",
+            api_key="new-key",
+        ))
+
+        new_chain = [{"provider": "anthropic", "model": "claude-sonnet-4-6"}]
+        agent.switch_model(
+            new_model="gpt-5.4",
+            new_provider="openai",
+            api_key="new-key",
+            base_url="https://api.openai.com/v1",
+            api_mode="chat_completions",
+            fallback_model=new_chain,
+        )
+
+        assert agent._fallback_chain == new_chain
+        assert agent._fallback_model == new_chain[0]
+
+    def test_switch_model_clears_runtime_fallback_chain_when_given_empty_list(self):
+        agent = _make_agent(fallback_model={"provider": "zai", "model": "glm-5"})
+        agent.context_compressor = None
+        agent._create_openai_client = MagicMock(return_value=_mock_client(
+            base_url="https://api.openai.com/v1",
+            api_key="new-key",
+        ))
+
+        agent.switch_model(
+            new_model="gpt-5.4",
+            new_provider="openai",
+            api_key="new-key",
+            base_url="https://api.openai.com/v1",
+            api_mode="chat_completions",
+            fallback_model=[],
+        )
+
+        assert agent._fallback_chain == []
+        assert agent._fallback_model is None

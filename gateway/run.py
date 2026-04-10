@@ -3564,11 +3564,13 @@ class GatewayRunner:
         source = event.source
         session_key = self._session_key_for_source(source)
         override = getattr(self, "_session_model_overrides", {}).get(session_key, {})
+        current_fallback_model = self._fallback_model
         if override:
             current_model = override.get("model", current_model)
             current_provider = override.get("provider", current_provider)
             current_base_url = override.get("base_url", current_base_url)
             current_api_key = override.get("api_key", current_api_key)
+            current_fallback_model = override.get("fallback_model", current_fallback_model)
 
         # No args: show interactive picker (Telegram/Discord) or text list
         if not model_input and not explicit_provider:
@@ -3611,6 +3613,7 @@ class GatewayRunner:
                             current_api_key=_cur_api_key,
                             is_global=False,
                             explicit_provider=provider_slug,
+                            current_fallback_model=current_fallback_model,
                         )
                         if not result.success:
                             return f"Error: {result.error_message}"
@@ -3630,6 +3633,7 @@ class GatewayRunner:
                                     api_key=result.api_key,
                                     base_url=result.base_url,
                                     api_mode=result.api_mode,
+                                    fallback_model=result.fallback_chain,
                                 )
                             except Exception as exc:
                                 logger.warning("Picker model switch failed for cached agent: %s", exc)
@@ -3650,6 +3654,7 @@ class GatewayRunner:
                             "api_key": result.api_key,
                             "base_url": result.base_url,
                             "api_mode": result.api_mode,
+                            "fallback_model": result.fallback_chain,
                         }
 
                         # Build confirmation text
@@ -3665,6 +3670,10 @@ class GatewayRunner:
                             if mi.has_cost_data():
                                 lines.append(f"Cost: {mi.format_cost()}")
                             lines.append(f"Capabilities: {mi.format_capabilities()}")
+                        if result.warning_message:
+                            lines.append(f"Warning: {result.warning_message}")
+                        if result.fallback_message:
+                            lines.append(result.fallback_message)
                         lines.append("_(session only — use `/model <name> --global` to persist)_")
                         return "\n".join(lines)
 
@@ -3718,6 +3727,7 @@ class GatewayRunner:
             current_api_key=current_api_key,
             is_global=persist_global,
             explicit_provider=explicit_provider,
+            current_fallback_model=current_fallback_model,
         )
 
         if not result.success:
@@ -3739,6 +3749,7 @@ class GatewayRunner:
                     api_key=result.api_key,
                     base_url=result.base_url,
                     api_mode=result.api_mode,
+                    fallback_model=result.fallback_chain,
                 )
             except Exception as exc:
                 logger.warning("In-place model switch failed for cached agent: %s", exc)
@@ -3762,6 +3773,7 @@ class GatewayRunner:
             "api_key": result.api_key,
             "base_url": result.base_url,
             "api_mode": result.api_mode,
+            "fallback_model": result.fallback_chain,
         }
 
         # Persist to config if --global
@@ -3820,6 +3832,8 @@ class GatewayRunner:
 
         if result.warning_message:
             lines.append(f"Warning: {result.warning_message}")
+        if result.fallback_message:
+            lines.append(result.fallback_message)
 
         if persist_global:
             lines.append("Saved to config.yaml (`--global`)")
@@ -6715,6 +6729,8 @@ class GatewayRunner:
 
             if agent is None:
                 # Config changed or first message — create fresh agent
+                session_override = getattr(self, "_session_model_overrides", {}).get(session_key, {})
+                session_fallback = session_override.get("fallback_model", self._fallback_model)
                 agent = AIAgent(
                     model=turn_route["model"],
                     **turn_route["runtime"],
@@ -6735,7 +6751,7 @@ class GatewayRunner:
                     platform=platform_key,
                     user_id=source.user_id,
                     session_db=self._session_db,
-                    fallback_model=self._fallback_model,
+                    fallback_model=session_fallback,
                 )
                 if _cache_lock and _cache is not None:
                     with _cache_lock:

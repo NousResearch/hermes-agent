@@ -1420,7 +1420,18 @@ class APIServerAdapter(BasePlatformAdapter):
                     "timestamp": ts,
                     "text": preview or "",
                 })
-            # _thinking and subagent_progress are intentionally not forwarded
+            elif event_type == "subagent_progress":
+                # Forward each child-agent tool call as a structured SSE event so
+                # API consumers (web UIs, integrations) can surface delegation
+                # activity in real time without polling or scraping log output.
+                _push({
+                    "event": "subagent.progress",
+                    "run_id": run_id,
+                    "timestamp": ts,
+                    "tool": tool_name or "",
+                    "preview": preview or tool_name or "",
+                })
+            # _thinking is intentionally not forwarded (too noisy for chat)
 
         return _callback
 

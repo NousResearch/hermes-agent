@@ -132,10 +132,6 @@ def _build_child_progress_callback(task_index: int, parent_agent, task_count: in
     # Show 1-indexed prefix only in batch mode (multiple tasks)
     prefix = f"[{task_index + 1}] " if task_count > 1 else ""
 
-    # Gateway: batch tool names, flush periodically
-    _BATCH_SIZE = 5
-    _batch: List[str] = []
-
     def _callback(event_type: str, tool_name: str = None, preview: str = None, args=None, **kwargs):
         # event_type is one of: "tool.started", "tool.completed",
         # "reasoning.available", "_thinking", "subagent_progress"
@@ -156,7 +152,7 @@ def _build_child_progress_callback(task_index: int, parent_agent, task_count: in
         if event_type == "tool.completed":
             return
 
-        # tool.started — display and batch for parent relay
+        # tool.started — display and relay to parent immediately
         if spinner:
             short = (preview[:35] + "...") if preview and len(preview) > 35 else (preview or "")
             from agent.display import get_tool_emoji
@@ -170,24 +166,18 @@ def _build_child_progress_callback(task_index: int, parent_agent, task_count: in
                 logger.debug("Spinner print_above failed: %s", e)
 
         if parent_cb:
-            _batch.append(tool_name or "")
-            if len(_batch) >= _BATCH_SIZE:
-                summary = ", ".join(_batch)
-                try:
-                    parent_cb("subagent_progress", f"🔀 {prefix}{summary}")
-                except Exception as e:
-                    logger.debug("Parent callback failed: %s", e)
-                _batch.clear()
+            # Relay immediately so gateway/SSE consumers see each tool call in
+            # real time rather than waiting for a batch of N to accumulate.
+            # Pass the raw tool_name (no prefix) so the SSE `tool` field stays
+            # machine-readable; preview carries the human-readable label.
+            try:
+                parent_cb("subagent_progress", tool_name or "", preview or "")
+            except Exception as e:
+                logger.debug("Parent callback failed: %s", e)
 
     def _flush():
-        """Flush remaining batched tool names to gateway on completion."""
-        if parent_cb and _batch:
-            summary = ", ".join(_batch)
-            try:
-                parent_cb("subagent_progress", f"🔀 {prefix}{summary}")
-            except Exception as e:
-                logger.debug("Parent callback flush failed: %s", e)
-            _batch.clear()
+        """No-op: each event is forwarded immediately, nothing is buffered."""
+        pass
 
     _callback._flush = _flush
     return _callback

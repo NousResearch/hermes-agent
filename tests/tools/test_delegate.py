@@ -24,6 +24,7 @@ from tools.delegate_tool import (
     check_delegate_requirements,
     delegate_task,
     _build_child_agent,
+    _build_child_progress_callback,
     _build_child_system_prompt,
     _strip_blocked_tools,
     _resolve_child_credential_pool,
@@ -1050,6 +1051,85 @@ class TestChildCredentialLeasing(unittest.TestCase):
 
         self.assertEqual(result["status"], "error")
         child._credential_pool.release_lease.assert_called_once_with("cred-a")
+
+
+class TestBuildChildProgressCallback(unittest.TestCase):
+    """_build_child_progress_callback relays tool events to the parent callback
+    immediately (no batching), and passes a clean tool name without any
+    display prefix."""
+
+    def _make_parent_with_cb(self):
+        parent = _make_mock_parent()
+        received = []
+        parent.tool_progress_callback = lambda *a, **kw: received.append((a, kw))
+        parent._delegate_spinner = None  # disable spinner path
+        return parent, received
+
+    def test_returns_none_when_no_display_mechanism(self):
+        parent = _make_mock_parent()
+        parent.tool_progress_callback = None
+        parent._delegate_spinner = None
+        assert _build_child_progress_callback(0, parent, task_count=1) is None
+
+    def test_tool_started_relayed_immediately(self):
+        parent, received = self._make_parent_with_cb()
+        cb = _build_child_progress_callback(0, parent, task_count=1)
+        cb("tool.started", tool_name="bash", preview="echo hi")
+        assert len(received) == 1
+        args, _ = received[0]
+        assert args[0] == "subagent_progress"
+        assert args[1] == "bash"      # clean name, no prefix
+        assert args[2] == "echo hi"
+
+    def test_tool_name_has_no_batch_prefix_single_task(self):
+        """Single-task mode: tool field must not start with '[1] '."""
+        parent, received = self._make_parent_with_cb()
+        cb = _build_child_progress_callback(0, parent, task_count=1)
+        cb("tool.started", tool_name="read_file", preview="reading main.py")
+        tool_arg = received[0][0][1]
+        assert not tool_arg.startswith("[")
+
+    def test_tool_name_has_no_batch_prefix_multi_task(self):
+        """Multi-task mode: SSE tool field is still the raw name, no '[N] ' prefix."""
+        parent, received = self._make_parent_with_cb()
+        cb = _build_child_progress_callback(1, parent, task_count=3)
+        cb("tool.started", tool_name="write_file", preview="saving output.txt")
+        tool_arg = received[0][0][1]
+        assert tool_arg == "write_file"
+
+    def test_each_event_relayed_without_batching(self):
+        """Five rapid tool.started events must each produce one relay call."""
+        parent, received = self._make_parent_with_cb()
+        cb = _build_child_progress_callback(0, parent, task_count=1)
+        for i in range(5):
+            cb("tool.started", tool_name=f"tool_{i}", preview=f"step {i}")
+        assert len(received) == 5
+
+    def test_tool_completed_not_relayed(self):
+        parent, received = self._make_parent_with_cb()
+        cb = _build_child_progress_callback(0, parent, task_count=1)
+        cb("tool.completed", tool_name="bash")
+        assert received == []
+
+    def test_thinking_not_relayed(self):
+        parent, received = self._make_parent_with_cb()
+        cb = _build_child_progress_callback(0, parent, task_count=1)
+        cb("_thinking", preview="some internal monologue")
+        assert received == []
+
+    def test_flush_is_noop(self):
+        parent, received = self._make_parent_with_cb()
+        cb = _build_child_progress_callback(0, parent, task_count=1)
+        cb._flush()  # must not raise and must not emit anything
+        assert received == []
+
+    def test_callback_error_is_swallowed(self):
+        parent = _make_mock_parent()
+        parent.tool_progress_callback = MagicMock(side_effect=RuntimeError("oops"))
+        parent._delegate_spinner = None
+        cb = _build_child_progress_callback(0, parent, task_count=1)
+        # Must not propagate exception to the child agent
+        cb("tool.started", tool_name="bash", preview="x")
 
 
 if __name__ == "__main__":

@@ -10,6 +10,7 @@ Tests cover:
 - /health endpoint
 - System prompt extraction
 - Error handling (invalid JSON, missing fields)
+- _make_run_event_callback SSE event dispatch (incl. subagent.progress)
 """
 
 import json
@@ -1717,3 +1718,85 @@ class TestSessionIdHeader:
             call_kwargs = mock_run.call_args.kwargs
             assert call_kwargs["conversation_history"] == []
             assert call_kwargs["session_id"] == "some-session"
+            assert call_kwargs["session_id"] == "some-session"
+
+
+# ---------------------------------------------------------------------------
+# _make_run_event_callback — SSE event dispatch
+# ---------------------------------------------------------------------------
+
+
+class TestMakeRunEventCallback:
+    """_make_run_event_callback pushes the correct structured event for each
+    event_type, including the new subagent.progress event added in
+    feat/subagent-progress-events-in-sse."""
+
+    def _make_callback(self, run_id="run_test"):
+        """Return (callback, captured_events) using a synchronous fake loop."""
+        adapter = _make_adapter()
+        captured = []
+
+        # Fake asyncio queue: put_nowait appends to `captured`
+        from unittest.mock import MagicMock
+        fake_q = MagicMock()
+        fake_q.put_nowait.side_effect = captured.append
+        adapter._run_streams = {run_id: fake_q}
+
+        # Fake loop: call_soon_threadsafe executes the callable immediately
+        fake_loop = MagicMock()
+        fake_loop.call_soon_threadsafe.side_effect = lambda fn, arg: fn(arg)
+
+        cb = adapter._make_run_event_callback(run_id, fake_loop)
+        return cb, captured
+
+    def test_tool_started_event(self):
+        cb, events = self._make_callback()
+        cb("tool.started", tool_name="read_file", preview="reading main.py")
+        assert len(events) == 1
+        ev = events[0]
+        assert ev["event"] == "tool.started"
+        assert ev["tool"] == "read_file"
+        assert ev["preview"] == "reading main.py"
+        assert "run_id" in ev and "timestamp" in ev
+
+    def test_tool_completed_event(self):
+        cb, events = self._make_callback()
+        cb("tool.completed", tool_name="read_file", duration=0.42, is_error=False)
+        assert len(events) == 1
+        ev = events[0]
+        assert ev["event"] == "tool.completed"
+        assert ev["tool"] == "read_file"
+        assert ev["duration"] == 0.42
+        assert ev["error"] is False
+
+    def test_subagent_progress_event(self):
+        """subagent.progress is emitted with clean tool name (no prefix)."""
+        cb, events = self._make_callback()
+        cb("subagent_progress", tool_name="bash", preview="running tests")
+        assert len(events) == 1
+        ev = events[0]
+        assert ev["event"] == "subagent.progress"
+        assert ev["tool"] == "bash"
+        assert ev["preview"] == "running tests"
+        assert "run_id" in ev and "timestamp" in ev
+
+    def test_subagent_progress_preview_falls_back_to_tool_name(self):
+        """preview falls back to tool_name when not provided."""
+        cb, events = self._make_callback()
+        cb("subagent_progress", tool_name="write_file", preview="")
+        assert events[0]["preview"] == "write_file"
+
+    def test_thinking_not_forwarded(self):
+        """_thinking events must not produce any SSE output."""
+        cb, events = self._make_callback()
+        cb("_thinking", preview="internal monologue")
+        assert events == []
+
+    def test_unknown_run_id_is_silent(self):
+        """Callback for an evicted run_id must not raise."""
+        adapter = _make_adapter()
+        adapter._run_streams = {}  # run already cleaned up
+        fake_loop = MagicMock()
+        cb = adapter._make_run_event_callback("run_gone", fake_loop)
+        cb("subagent_progress", tool_name="bash", preview="x")  # must not raise
+        fake_loop.call_soon_threadsafe.assert_not_called()

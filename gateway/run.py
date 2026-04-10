@@ -1512,6 +1512,10 @@ class GatewayRunner:
     async def stop(self) -> None:
         """Stop the gateway and disconnect all adapters."""
         logger.info("Stopping gateway...")
+        try:
+            await self.hooks.emit("gateway:shutdown", {"reason": getattr(self, "_exit_reason", "clean")})
+        except Exception as e:
+            logger.warning("gateway:shutdown hook emission failed: %s", e)
         self._running = False
 
         for session_key, agent in list(self._running_agents.items()):

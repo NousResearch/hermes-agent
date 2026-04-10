@@ -1,6 +1,6 @@
 # nix/python.nix — uv2nix virtual environment builder
 {
-  python311,
+  python,
   lib,
   callPackage,
   uv2nix,
@@ -37,28 +37,28 @@ let
 
   pythonPackageOverrides = final: _prev:
     if isAarch64Darwin then {
-      numpy = mkPrebuiltOverride final python311.pkgs.numpy { };
+      numpy = mkPrebuiltOverride final python.pkgs.numpy { };
 
-      av = mkPrebuiltOverride final python311.pkgs.av { };
+      av = mkPrebuiltOverride final python.pkgs.av { };
 
-      humanfriendly = mkPrebuiltOverride final python311.pkgs.humanfriendly { };
+      humanfriendly = mkPrebuiltOverride final python.pkgs.humanfriendly { };
 
-      coloredlogs = mkPrebuiltOverride final python311.pkgs.coloredlogs {
+      coloredlogs = mkPrebuiltOverride final python.pkgs.coloredlogs {
         humanfriendly = [ ];
       };
 
-      onnxruntime = mkPrebuiltOverride final python311.pkgs.onnxruntime {
+      onnxruntime = mkPrebuiltOverride final python.pkgs.onnxruntime {
         coloredlogs = [ ];
         numpy = [ ];
         packaging = [ ];
       };
 
-      ctranslate2 = mkPrebuiltOverride final python311.pkgs.ctranslate2 {
+      ctranslate2 = mkPrebuiltOverride final python.pkgs.ctranslate2 {
         numpy = [ ];
         pyyaml = [ ];
       };
 
-      faster-whisper = mkPrebuiltOverride final python311.pkgs.faster-whisper {
+      faster-whisper = mkPrebuiltOverride final python.pkgs.faster-whisper {
         av = [ ];
         ctranslate2 = [ ];
         huggingface-hub = [ ];
@@ -70,7 +70,7 @@ let
 
   pythonSet =
     (callPackage pyproject-nix.build.packages {
-      python = python311;
+      inherit python;
     }).overrideScope
       (lib.composeManyExtensions [
         pyproject-build-systems.overlays.default

@@ -25,6 +25,7 @@ from dataclasses import dataclass
 from typing import List, NamedTuple, Optional
 
 from hermes_cli.providers import (
+    custom_provider_slug,
     determine_api_mode,
     get_label,
     is_aggregator,
@@ -887,7 +888,7 @@ def list_authenticated_providers(
             if not display_name or not api_url:
                 continue
 
-            slug = "custom:" + display_name.lower().replace(" ", "-")
+            slug = custom_provider_slug(display_name)
             if slug in seen_slugs:
                 continue
 

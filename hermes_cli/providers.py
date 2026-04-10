@@ -452,6 +452,16 @@ def resolve_user_provider(name: str, user_config: Dict[str, Any]) -> Optional[Pr
     )
 
 
+def custom_provider_slug(display_name: str) -> str:
+    """Build a canonical slug for a custom_providers entry.
+
+    Matches the convention used by runtime_provider and credential_pool
+    (``custom:<normalized-name>``).  Centralised here so all call-sites
+    produce identical slugs.
+    """
+    return "custom:" + display_name.strip().lower().replace(" ", "-")
+
+
 def resolve_custom_provider(
     name: str,
     custom_providers: Optional[List[Dict[str, Any]]],
@@ -461,7 +471,6 @@ def resolve_custom_provider(
         return None
 
     requested = (name or "").strip().lower()
-    canonical = normalize_provider(name)
     if not requested:
         return None
 
@@ -479,8 +488,8 @@ def resolve_custom_provider(
         if not display_name or not api_url:
             continue
 
-        slug = "custom:" + display_name.lower().replace(" ", "-")
-        if requested not in {display_name.lower(), slug, canonical}:
+        slug = custom_provider_slug(display_name)
+        if requested not in {display_name.lower(), slug}:
             continue
 
         return ProviderDef(

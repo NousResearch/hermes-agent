@@ -1101,7 +1101,7 @@ class MatrixAdapter(BasePlatformAdapter):
         self._background_read_receipt(room.room_id, event.event_id)
 
         # Only batch plain text messages — commands dispatch immediately.
-        if msg_type == MessageType.TEXT:
+        if msg_type == MessageType.TEXT and self._text_batch_delay_seconds > 0:
             self._enqueue_text_event(msg_event)
         else:
             await self.handle_message(msg_event)

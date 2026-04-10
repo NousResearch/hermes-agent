@@ -9,6 +9,27 @@ import re
 from dataclasses import dataclass
 from typing import List
 
+_STOP_WORDS = frozenset({
+    "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
+    "have", "has", "had", "do", "does", "did", "will", "would", "could",
+    "should", "may", "might", "shall", "can", "to", "of", "in", "for",
+    "on", "with", "at", "by", "from", "as", "into", "about", "that",
+    "this", "it", "its", "and", "or", "but", "not", "no", "so",
+    "project", "dark", "mode", "setup",
+})
+
+
+def content_slug(text: str, max_words: int = 3) -> str:
+    """Generate a short slug from content for target discrimination."""
+    if not text:
+        return "general"
+    words = re.findall(r"[\w.]+", text.lower())
+    meaningful = [w for w in words if w not in _STOP_WORDS]
+    if not meaningful:
+        return "general"
+    return "-".join(meaningful[:max_words])
+
+
 @dataclass
 class ExtractedFact:
     content: str        # MEMORY_SPEC notation, e.g. "V[url]: https://..."

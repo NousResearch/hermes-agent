@@ -450,6 +450,7 @@ class APIServerAdapter(BasePlatformAdapter):
         session_id: Optional[str] = None,
         stream_delta_callback=None,
         tool_progress_callback=None,
+        user_id: Optional[str] = None,
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
@@ -486,6 +487,7 @@ class APIServerAdapter(BasePlatformAdapter):
             enabled_toolsets=enabled_toolsets,
             session_id=session_id,
             platform="api_server",
+            user_id=user_id,
             stream_delta_callback=stream_delta_callback,
             tool_progress_callback=tool_progress_callback,
             session_db=self._ensure_session_db(),

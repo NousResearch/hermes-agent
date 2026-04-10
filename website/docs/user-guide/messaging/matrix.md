@@ -16,7 +16,7 @@ Before setup, here's the part most people want to know: how Hermes behaves once 
 
 | Context | Behavior |
 |---------|----------|
-| **DMs** | Hermes responds to every message. No `@mention` needed. Each DM has its own session. |
+| **DMs** | Hermes responds to every message. No `@mention` needed. Each DM has its own session. Set `MATRIX_DM_MENTION_THREADS=true` to start a thread when the bot is `@mentioned` in a DM. |
 | **Rooms** | By default, Hermes requires an `@mention` to respond. Set `MATRIX_REQUIRE_MENTION=false` or add room IDs to `MATRIX_FREE_RESPONSE_ROOMS` for free-response rooms. Room invites are auto-accepted. |
 | **Threads** | Hermes supports Matrix threads (MSC3440). If you reply in a thread, Hermes keeps the thread context isolated from the main room timeline. Threads where the bot has already participated do not require a mention. |
 | **Auto-threading** | By default, Hermes auto-creates a thread for each message it responds to in a room. This keeps conversations isolated. Set `MATRIX_AUTO_THREAD=false` to disable. |
@@ -62,6 +62,7 @@ matrix:
   free_response_rooms:            # Rooms exempt from mention requirement
     - "!abc123:matrix.org"
   auto_thread: true               # Auto-create threads for responses (default: true)
+  dm_mention_threads: false       # Create thread when @mentioned in DM (default: false)
 ```
 
 Or via environment variables:
@@ -70,6 +71,7 @@ Or via environment variables:
 MATRIX_REQUIRE_MENTION=true
 MATRIX_FREE_RESPONSE_ROOMS=!abc123:matrix.org,!def456:matrix.org
 MATRIX_AUTO_THREAD=true
+MATRIX_DM_MENTION_THREADS=false
 ```
 
 :::note

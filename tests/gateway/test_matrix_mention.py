@@ -437,6 +437,95 @@ class TestThreadPersistence:
 
 
 # ---------------------------------------------------------------------------
+# DM mention-thread feature
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_dm_mention_thread_disabled_by_default(monkeypatch):
+    """Default (dm_mention_threads=false): DM with mention should NOT create a thread."""
+    monkeypatch.delenv("MATRIX_DM_MENTION_THREADS", raising=False)
+    monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
+
+    adapter = _make_adapter()
+    room = _make_room(member_count=2)
+    event = _make_event("@hermes:example.org help me", event_id="$dm1")
+
+    await adapter._on_room_message(room, event)
+    adapter.handle_message.assert_awaited_once()
+    msg = adapter.handle_message.await_args.args[0]
+    assert msg.source.thread_id is None
+
+
+@pytest.mark.asyncio
+async def test_dm_mention_thread_creates_thread(monkeypatch):
+    """MATRIX_DM_MENTION_THREADS=true: DM with @mention creates a thread."""
+    monkeypatch.setenv("MATRIX_DM_MENTION_THREADS", "true")
+    monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
+
+    adapter = _make_adapter()
+    room = _make_room(member_count=2)
+    event = _make_event("@hermes:example.org help me", event_id="$dm1")
+
+    with patch.object(adapter, "_save_participated_threads"):
+        await adapter._on_room_message(room, event)
+
+    adapter.handle_message.assert_awaited_once()
+    msg = adapter.handle_message.await_args.args[0]
+    assert msg.source.thread_id == "$dm1"
+    assert msg.text == "help me"
+
+
+@pytest.mark.asyncio
+async def test_dm_mention_thread_no_mention_no_thread(monkeypatch):
+    """MATRIX_DM_MENTION_THREADS=true: DM without mention does NOT create a thread."""
+    monkeypatch.setenv("MATRIX_DM_MENTION_THREADS", "true")
+    monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
+
+    adapter = _make_adapter()
+    room = _make_room(member_count=2)
+    event = _make_event("hello without mention", event_id="$dm1")
+
+    await adapter._on_room_message(room, event)
+    adapter.handle_message.assert_awaited_once()
+    msg = adapter.handle_message.await_args.args[0]
+    assert msg.source.thread_id is None
+
+
+@pytest.mark.asyncio
+async def test_dm_mention_thread_preserves_existing_thread(monkeypatch):
+    """MATRIX_DM_MENTION_THREADS=true: DM already in a thread keeps that thread_id."""
+    monkeypatch.setenv("MATRIX_DM_MENTION_THREADS", "true")
+    monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
+
+    adapter = _make_adapter()
+    adapter._bot_participated_threads.add("$existing_thread")
+    room = _make_room(member_count=2)
+    event = _make_event("@hermes:example.org help me", thread_id="$existing_thread")
+
+    await adapter._on_room_message(room, event)
+    adapter.handle_message.assert_awaited_once()
+    msg = adapter.handle_message.await_args.args[0]
+    assert msg.source.thread_id == "$existing_thread"
+
+
+@pytest.mark.asyncio
+async def test_dm_mention_thread_tracks_participation(monkeypatch):
+    """DM mention-thread tracks the thread in _bot_participated_threads."""
+    monkeypatch.setenv("MATRIX_DM_MENTION_THREADS", "true")
+    monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
+
+    adapter = _make_adapter()
+    room = _make_room(member_count=2)
+    event = _make_event("@hermes:example.org help", event_id="$dm1")
+
+    with patch.object(adapter, "_save_participated_threads"):
+        await adapter._on_room_message(room, event)
+
+    assert "$dm1" in adapter._bot_participated_threads
+
+
+# ---------------------------------------------------------------------------
 # YAML config bridge
 # ---------------------------------------------------------------------------
 
@@ -479,6 +568,25 @@ class TestMatrixConfigBridge:
         assert os.getenv("MATRIX_REQUIRE_MENTION") == "false"
         assert os.getenv("MATRIX_FREE_RESPONSE_ROOMS") == "!room1:example.org,!room2:example.org"
         assert os.getenv("MATRIX_AUTO_THREAD") == "false"
+
+    def test_yaml_bridge_sets_dm_mention_threads(self, monkeypatch, tmp_path):
+        """Matrix YAML dm_mention_threads should bridge to env var."""
+        monkeypatch.delenv("MATRIX_DM_MENTION_THREADS", raising=False)
+
+        import os
+        import yaml
+
+        yaml_content = {"matrix": {"dm_mention_threads": True}}
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(yaml.dump(yaml_content))
+
+        yaml_cfg = yaml.safe_load(config_file.read_text())
+        matrix_cfg = yaml_cfg.get("matrix", {})
+        if isinstance(matrix_cfg, dict):
+            if "dm_mention_threads" in matrix_cfg and not os.getenv("MATRIX_DM_MENTION_THREADS"):
+                monkeypatch.setenv("MATRIX_DM_MENTION_THREADS", str(matrix_cfg["dm_mention_threads"]).lower())
+
+        assert os.getenv("MATRIX_DM_MENTION_THREADS") == "true"
 
     def test_env_vars_take_precedence_over_yaml(self, monkeypatch):
         """Env vars should not be overwritten by YAML values."""

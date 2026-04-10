@@ -18,6 +18,7 @@ Environment variables:
     MATRIX_REQUIRE_MENTION      Require @mention in rooms (default: true)
     MATRIX_FREE_RESPONSE_ROOMS  Comma-separated room IDs exempt from mention requirement
     MATRIX_AUTO_THREAD          Auto-create threads for room messages (default: true)
+    MATRIX_DM_MENTION_THREADS   Create a thread when bot is @mentioned in a DM (default: false)
 """
 
 from __future__ import annotations
@@ -1043,6 +1044,13 @@ class MatrixAdapter(BasePlatformAdapter):
                 if not self._is_bot_mentioned(body, formatted_body):
                     return
 
+        # DM mention-thread: when enabled, @mentioning bot in a DM creates a thread.
+        if is_dm and not thread_id:
+            dm_mention_threads = os.getenv("MATRIX_DM_MENTION_THREADS", "false").lower() in ("true", "1", "yes")
+            if dm_mention_threads and self._is_bot_mentioned(body, source_content.get("formatted_body")):
+                thread_id = event.event_id
+                self._track_thread(thread_id)
+
         # Strip mention from body when present (including in DMs).
         if self._is_bot_mentioned(body, source_content.get("formatted_body")):
             body = self._strip_mention(body)
@@ -1359,6 +1367,13 @@ class MatrixAdapter(BasePlatformAdapter):
                 formatted_body = source_content.get("formatted_body")
                 if not self._is_bot_mentioned(body, formatted_body):
                     return
+
+        # DM mention-thread: when enabled, @mentioning bot in a DM creates a thread.
+        if is_dm and not thread_id:
+            dm_mention_threads = os.getenv("MATRIX_DM_MENTION_THREADS", "false").lower() in ("true", "1", "yes")
+            if dm_mention_threads and self._is_bot_mentioned(body, source_content.get("formatted_body")):
+                thread_id = event.event_id
+                self._track_thread(thread_id)
 
         # Strip mention from body when present (including in DMs).
         if self._is_bot_mentioned(body, source_content.get("formatted_body")):

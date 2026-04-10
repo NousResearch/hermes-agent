@@ -111,6 +111,7 @@ MVP default allowlist:
 - `web_search`
 - `web_extract`
 - `vision_analyze`
+- `image_generate`
 - `skills_list`
 - `skill_view`
 - `skill_manage`
@@ -136,7 +137,6 @@ MVP default denylist:
 Notes:
 - This is intentionally smaller than `hermes-api-server`.
 - Local workspace editing returns later as an explicit post-MVP phase.
-- Image generation is deferred from the Android MVP until Chaquopy can satisfy the FAL/msgpack dependency chain with Android wheels.
 - The app should seed `platform_toolsets.api_server` to `['hermes-android-app']` on first run.
 
 ## Stage 0 — Create the Android lane and prove packaging viability
@@ -153,13 +153,6 @@ Do:
   - CI emulator API level
   - Chaquopy + Python version pairing
   - artifact policy: universal debug APK on PRs; universal release APK + release AAB on GitHub releases; no ABI splits in MVP
-- lock the MVP matrix for this branch to:
-  - min SDK 24
-  - target SDK 35
-  - CI emulator API 35 on a single `x86_64` Google APIs image
-  - Chaquopy 17.0.0 + Python 3.11
-  - universal-only artifacts in MVP, with no ABI splits
-  - narrow ABI scope for MVP: `arm64-v8a` for devices and `x86_64` for emulator / CI coverage
 - keep the first public release narrow and explicit
 Verify:
 - `read_file android/README.md`

@@ -230,7 +230,7 @@ from hermes_constants import is_termux
 
 
 def supports_systemd_services() -> bool:
-    return is_linux() and not is_termux()
+    return is_linux() and not is_termux() and shutil.which("systemctl") is not None
 
 
 def is_macos() -> bool:
@@ -1871,7 +1871,7 @@ def _is_service_running() -> bool:
                 )
                 if result.stdout.strip() == "active":
                     return True
-            except subprocess.TimeoutExpired:
+            except (FileNotFoundError, subprocess.TimeoutExpired):
                 pass
 
         if system_unit_exists:
@@ -1882,7 +1882,7 @@ def _is_service_running() -> bool:
                 )
                 if result.stdout.strip() == "active":
                     return True
-            except subprocess.TimeoutExpired:
+            except (FileNotFoundError, subprocess.TimeoutExpired):
                 pass
 
         return False

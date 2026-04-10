@@ -311,6 +311,13 @@ class TestLaunchdServiceRecovery:
 
 
 class TestGatewayServiceDetection:
+    def test_supports_systemd_services_requires_systemctl_binary(self, monkeypatch):
+        monkeypatch.setattr(gateway_cli, "is_linux", lambda: True)
+        monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
+        monkeypatch.setattr(gateway_cli.shutil, "which", lambda name: None)
+
+        assert gateway_cli.supports_systemd_services() is False
+
     def test_is_service_running_checks_system_scope_when_user_scope_is_inactive(self, monkeypatch):
         user_unit = SimpleNamespace(exists=lambda: True)
         system_unit = SimpleNamespace(exists=lambda: True)
@@ -334,6 +341,23 @@ class TestGatewayServiceDetection:
         monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
 
         assert gateway_cli._is_service_running() is True
+
+    def test_is_service_running_returns_false_when_systemctl_missing(self, monkeypatch):
+        unit = SimpleNamespace(exists=lambda: True)
+
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: True)
+        monkeypatch.setattr(
+            gateway_cli,
+            "get_systemd_unit_path",
+            lambda system=False: unit,
+        )
+
+        def fake_run(*args, **kwargs):
+            raise FileNotFoundError("systemctl")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        assert gateway_cli._is_service_running() is False
 
 
 class TestGatewaySystemServiceRouting:

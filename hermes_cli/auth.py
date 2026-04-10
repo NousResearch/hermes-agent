@@ -1513,7 +1513,15 @@ def _resolve_verify(
     if effective_insecure:
         return False
     if effective_ca:
-        return str(effective_ca)
+        ca_path = str(effective_ca)
+        if not os.path.isfile(ca_path):
+            import logging
+            logging.getLogger("hermes.auth").warning(
+                "CA bundle path does not exist: %s — falling back to default certificates",
+                ca_path,
+            )
+            return True
+        return ca_path
     return True
 
 

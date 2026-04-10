@@ -20,7 +20,7 @@ from unittest.mock import MagicMock, patch
 from tools.delegate_tool import (
     DELEGATE_BLOCKED_TOOLS,
     DELEGATE_TASK_SCHEMA,
-    MAX_CONCURRENT_CHILDREN,
+    _get_max_concurrent_children,
     MAX_DEPTH,
     check_delegate_requirements,
     delegate_task,
@@ -168,10 +168,13 @@ class TestDelegateTask(unittest.TestCase):
             "summary": "Done", "api_calls": 1, "duration_seconds": 1.0
         }
         parent = _make_mock_parent()
-        tasks = [{"goal": f"Task {i}"} for i in range(5)]
+        limit = _get_max_concurrent_children()
+        tasks = [{"goal": f"Task {i}"} for i in range(limit + 2)]
         result = json.loads(delegate_task(tasks=tasks, parent_agent=parent))
-        # Should only run 3 tasks (MAX_CONCURRENT_CHILDREN)
-        self.assertEqual(mock_run.call_count, 3)
+        # Should return an error instead of silently truncating
+        self.assertIn("error", result)
+        self.assertIn("Too many tasks", result["error"])
+        mock_run.assert_not_called()
 
     @patch("tools.delegate_tool._run_single_child")
     def test_batch_ignores_toplevel_goal(self, mock_run):
@@ -562,7 +565,7 @@ class TestBlockedTools(unittest.TestCase):
             self.assertIn(tool, DELEGATE_BLOCKED_TOOLS)
 
     def test_constants(self):
-        self.assertEqual(MAX_CONCURRENT_CHILDREN, 3)
+        self.assertEqual(_get_max_concurrent_children(), 3)
         self.assertEqual(MAX_DEPTH, 2)
 
 

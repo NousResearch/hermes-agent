@@ -692,11 +692,13 @@ class CredentialPool:
                         )
                         self._replace_entry(synced, updated)
                         self._persist()
+                        self._sync_device_code_entry_to_auth_store(updated)
                         return updated
                     except Exception as retry_exc:
                         logger.debug("Codex retry refresh also failed: %s", retry_exc)
                 elif not self._entry_needs_refresh(synced):
                     logger.debug("Codex CLI has valid token, using without refresh")
+                    self._sync_device_code_entry_to_auth_store(synced)
                     return synced
             self._mark_exhausted(entry, None)
             return None

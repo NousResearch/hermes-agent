@@ -476,8 +476,100 @@ class MnemoriaMemoryProvider(MemoryProvider):
             logger.error("handle_tool_call(%s) failed: %s", tool_name, exc)
             return json.dumps({"error": str(exc)})
 
+    def on_memory_write(self, action: str, target: str, content: str) -> None:
+        """Mirror built-in memory writes as typed Mnemoria facts."""
+        if self._read_only:
+            return
+        if action not in ("add", "replace") or not content or not content.strip():
+            return
+        if not _UM_AVAILABLE:
+            return
+        from .extract import content_slug
+        slug = content_slug(content)
+        if target == "user":
+            spec = f"V[user.{slug}]: {content.strip()}"
+        else:
+            spec = f"V[memory.{slug}]: {content.strip()}"
+        def _run():
+            try:
+                _store().store(spec)
+            except Exception as exc:
+                logger.debug("on_memory_write failed: %s", exc)
+        if self._write_thread and self._write_thread.is_alive():
+            self._write_thread.join(timeout=2.0)
+        self._write_thread = threading.Thread(target=_run, daemon=True, name="mnemoria-memory-write")
+        self._write_thread.start()
+
+    def on_delegation(self, task: str, result: str, *, child_session_id: str = "", **kwargs) -> None:
+        """Store delegation outcomes and extract facts from subagent results."""
+        if self._read_only or not _UM_AVAILABLE:
+            return
+        try:
+            s = _store()
+            task_short = (task or "")[:200].strip()
+            result_short = (result or "")[:200].strip()
+            if task_short or result_short:
+                s.store(f"D[delegation]: {task_short} -> {result_short}")
+            if result:
+                from .extract import extract_from_text
+                facts = extract_from_text(result, source="tool_result")
+                scope = f"delegation:{child_session_id}" if child_session_id else "global"
+                for fact in facts:
+                    s.store(fact.content, scope=scope)
+        except Exception as exc:
+            logger.debug("on_delegation failed: %s", exc)
+
+    def on_pre_compress(self, messages) -> str:
+        """Extract facts from messages before context compression discards them."""
+        if self._read_only:
+            return ""
+        try:
+            from .extract import extract_from_messages
+            facts, new_index = extract_from_messages(messages, start_index=self._last_extracted_msg_index)
+            self._last_extracted_msg_index = new_index
+            if facts and _UM_AVAILABLE:
+                s = _store()
+                for fact in facts:
+                    try:
+                        s.store(fact.content)
+                    except Exception as exc:
+                        logger.debug("on_pre_compress store failed: %s", exc)
+                logger.info("on_pre_compress extracted %d facts", len(facts))
+        except Exception as exc:
+            self._last_extracted_msg_index = len(messages) if messages else 0
+            logger.debug("on_pre_compress failed: %s", exc)
+        return ""
+
+    def on_session_end(self, messages) -> None:
+        """Extract remaining facts and run consolidation at session end."""
+        if not _UM_AVAILABLE:
+            return
+        try:
+            s = _store()
+            if not self._read_only and messages:
+                from .extract import extract_from_messages
+                facts, new_index = extract_from_messages(messages, start_index=self._last_extracted_msg_index)
+                self._last_extracted_msg_index = new_index
+                for fact in facts:
+                    try:
+                        s.store(fact.content)
+                    except Exception:
+                        pass
+                if facts:
+                    logger.info("on_session_end extracted %d facts", len(facts))
+            try:
+                report = s.consolidate()
+                logger.info("on_session_end consolidation: promoted=%d demoted=%d pruned=%d",
+                    report.get("promoted", 0), report.get("demoted", 0), report.get("pruned", 0))
+            except Exception as exc:
+                logger.debug("on_session_end consolidation failed: %s", exc)
+        except Exception as exc:
+            logger.debug("on_session_end failed: %s", exc)
+
     def shutdown(self) -> None:
-        """Close the per-thread store connection."""
+        for t in (self._prefetch_thread, self._write_thread):
+            if t and t.is_alive():
+                t.join(timeout=5.0)
         try:
             store = getattr(_local, "store", None)
             if store is not None:

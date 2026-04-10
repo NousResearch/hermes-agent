@@ -120,3 +120,64 @@ def test_initialize_stores_profile_and_user_id():
     assert provider._profile == "coder"
     assert provider._user_id == "user-abc"
     assert provider._platform == "telegram"
+
+
+# Task 8: on_memory_write
+
+def test_on_memory_write_is_noop_when_read_only():
+    provider = MnemoriaMemoryProvider()
+    provider._read_only = True
+    provider.on_memory_write("add", "user", "some content")
+
+
+def test_on_memory_write_skips_remove_action():
+    provider = MnemoriaMemoryProvider()
+    provider._read_only = False
+    provider.on_memory_write("remove", "user", "some content")
+
+
+# Task 9: on_delegation
+
+def test_on_delegation_is_noop_when_read_only():
+    provider = MnemoriaMemoryProvider()
+    provider._read_only = True
+    provider.on_delegation("do research", "found nothing", child_session_id="child-1")
+
+
+def test_on_delegation_does_not_raise_without_store(monkeypatch):
+    monkeypatch.setattr(mnemoria_provider_module, "_UM_AVAILABLE", False)
+    provider = MnemoriaMemoryProvider()
+    provider._read_only = False
+    provider.on_delegation("do research", "found nothing", child_session_id="child-1")
+
+
+# Task 10: on_pre_compress
+
+def test_on_pre_compress_is_noop_when_read_only():
+    provider = MnemoriaMemoryProvider()
+    provider._read_only = True
+    result = provider.on_pre_compress([{"role": "tool", "content": "Error: broke"}])
+    assert result == ""
+
+
+def test_on_pre_compress_returns_empty_string():
+    provider = MnemoriaMemoryProvider()
+    provider._read_only = False
+    assert provider.on_pre_compress([]) == ""
+
+
+def test_on_pre_compress_advances_message_index():
+    provider = MnemoriaMemoryProvider()
+    provider._read_only = False
+    provider._last_extracted_msg_index = 0
+    provider.on_pre_compress([{"role": "user", "content": "hello"}, {"role": "tool", "content": "ok"}])
+    assert provider._last_extracted_msg_index == 2
+
+
+# Task 11: on_session_end
+
+def test_on_session_end_does_not_raise_without_store(monkeypatch):
+    monkeypatch.setattr(mnemoria_provider_module, "_UM_AVAILABLE", False)
+    provider = MnemoriaMemoryProvider()
+    provider._read_only = False
+    provider.on_session_end([{"role": "user", "content": "bye"}])

@@ -6,6 +6,7 @@ from unittest.mock import patch
 from tools.skills_sync import (
     _get_bundled_dir,
     _read_manifest,
+    _read_skill_name,
     _write_manifest,
     _discover_bundled_skills,
     _compute_relative_dest,
@@ -130,6 +131,37 @@ class TestDiscoverBundledSkills:
     def test_nonexistent_dir_returns_empty(self, tmp_path):
         skills = _discover_bundled_skills(tmp_path / "nonexistent")
         assert skills == []
+
+
+class TestReadSkillName:
+    def test_reads_name_from_frontmatter(self, tmp_path):
+        skill_md = tmp_path / "SKILL.md"
+        skill_md.write_text("---\nname: audiocraft-audio-generation\n---\n# Skill")
+        assert _read_skill_name(skill_md, "audiocraft") == "audiocraft-audio-generation"
+
+    def test_falls_back_to_dir_name_without_frontmatter(self, tmp_path):
+        skill_md = tmp_path / "SKILL.md"
+        skill_md.write_text("# Just a heading\nNo frontmatter here")
+        assert _read_skill_name(skill_md, "my-skill") == "my-skill"
+
+    def test_falls_back_when_name_field_empty(self, tmp_path):
+        skill_md = tmp_path / "SKILL.md"
+        skill_md.write_text("---\nname:\n---\n")
+        assert _read_skill_name(skill_md, "fallback") == "fallback"
+
+    def test_handles_quoted_name(self, tmp_path):
+        skill_md = tmp_path / "SKILL.md"
+        skill_md.write_text('---\nname: "serving-llms-vllm"\n---\n')
+        assert _read_skill_name(skill_md, "vllm") == "serving-llms-vllm"
+
+    def test_discover_uses_frontmatter_name(self, tmp_path):
+        skill_dir = tmp_path / "category" / "audiocraft"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: audiocraft-audio-generation\n---\n# Skill"
+        )
+        skills = _discover_bundled_skills(tmp_path)
+        assert skills[0][0] == "audiocraft-audio-generation"
 
 
 class TestComputeRelativeDest:

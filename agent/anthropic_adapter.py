@@ -60,6 +60,8 @@ _ANTHROPIC_OUTPUT_LIMITS = {
     "claude-3-opus":       4_096,
     "claude-3-sonnet":     4_096,
     "claude-3-haiku":      4_096,
+    # Third-party Anthropic-compatible providers
+    "minimax":            131_072,
 }
 
 # For any model not in the table, assume the highest current limit.
@@ -1313,9 +1315,10 @@ def build_anthropic_kwargs(
     # Map reasoning_config to Anthropic's thinking parameter.
     # Claude 4.6 models use adaptive thinking + output_config.effort.
     # Older models use manual thinking with budget_tokens.
-    # Haiku and MiniMax models do NOT support extended thinking — skip entirely.
+    # MiniMax Anthropic-compat endpoints support thinking (manual mode only,
+    # not adaptive).  Haiku does NOT support extended thinking — skip entirely.
     if reasoning_config and isinstance(reasoning_config, dict):
-        if reasoning_config.get("enabled") is not False and "haiku" not in model.lower() and "minimax" not in model.lower():
+        if reasoning_config.get("enabled") is not False and "haiku" not in model.lower():
             effort = str(reasoning_config.get("effort", "medium")).lower()
             budget = THINKING_BUDGET.get(effort, 8000)
             if _supports_adaptive_thinking(model):

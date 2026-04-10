@@ -3360,22 +3360,22 @@ class HermesCLI:
             pass  # Don't crash on import errors
     
     def _show_status(self):
-        """Show current status bar."""
+        """Show compact startup status line."""
         # Get tool count
         tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets, quiet_mode=True)
         tool_count = len(tools) if tools else 0
-        
+
         # Format model name (shorten if needed)
         model_short = self.model.split("/")[-1] if "/" in self.model else self.model
         if len(model_short) > 30:
             model_short = model_short[:27] + "..."
-        
+
         # Get API status indicator
         if self.api_key:
             api_indicator = "[green bold]●[/]"
         else:
             api_indicator = "[red bold]●[/]"
-        
+
         # Build status line with proper markup
         toolsets_info = ""
         if self.enabled_toolsets and "all" not in self.enabled_toolsets:
@@ -3390,6 +3390,59 @@ class HermesCLI:
             f"[dim #B8860B]·[/] [bold cyan]{tool_count} tools[/]"
             f"{toolsets_info}{provider_info}"
         )
+
+    def _show_session_status(self):
+        """Show gateway-style status for the current CLI session."""
+        session_meta = {}
+        if self._session_db:
+            try:
+                session_meta = self._session_db.get_session(self.session_id) or {}
+            except Exception:
+                session_meta = {}
+
+        title = (session_meta.get("title") or "").strip()
+
+        created_at = self.session_start
+        started_at = session_meta.get("started_at")
+        if started_at:
+            try:
+                created_at = datetime.fromtimestamp(float(started_at))
+            except Exception:
+                created_at = self.session_start
+
+        updated_at = created_at
+        for field in ("updated_at", "last_updated_at", "last_activity_at"):
+            value = session_meta.get(field)
+            if not value:
+                continue
+            try:
+                updated_at = datetime.fromtimestamp(float(value))
+                break
+            except Exception:
+                pass
+
+        agent = getattr(self, "agent", None)
+        total_tokens = getattr(agent, "session_total_tokens", 0) or 0
+        provider = getattr(self, "provider", None) or "unknown"
+        model = getattr(self, "model", None) or "(unknown)"
+        is_running = bool(getattr(self, "_agent_running", False))
+
+        lines = [
+            "Hermes CLI Status",
+            "",
+            f"Session ID: {self.session_id}",
+            f"Path: {display_hermes_home()}",
+        ]
+        if title:
+            lines.append(f"Title: {title}")
+        lines.extend([
+            f"Model: {model} ({provider})",
+            f"Created: {created_at.strftime('%Y-%m-%d %H:%M')}",
+            f"Last Activity: {updated_at.strftime('%Y-%m-%d %H:%M')}",
+            f"Tokens: {total_tokens:,}",
+            f"Agent Running: {'Yes' if is_running else 'No'}",
+        ])
+        self.console.print("\n".join(lines), highlight=False, markup=False)
     
     def _fast_command_available(self) -> bool:
         try:
@@ -4873,6 +4926,8 @@ class HermesCLI:
                 self._handle_skills_command(cmd_original)
         elif canonical == "platforms":
             self._show_gateway_status()
+        elif canonical == "status":
+            self._show_session_status()
         elif canonical == "statusbar":
             self._status_bar_visible = not self._status_bar_visible
             state = "visible" if self._status_bar_visible else "hidden"

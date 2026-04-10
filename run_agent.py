@@ -5610,20 +5610,20 @@ class AIAgent:
         if self.max_tokens is not None:
             if not self._is_qwen_portal():
                 api_kwargs.update(self._max_tokens_param(self.max_tokens))
-        elif self._is_openrouter_url() and "claude" in (self.model or "").lower():
-            # OpenRouter translates requests to Anthropic's Messages API,
-            # which requires max_tokens as a mandatory field.  When we omit
-            # it, OpenRouter picks a default that can be too low — the model
-            # spends its output budget on thinking and has almost nothing
-            # left for the actual response (especially large tool calls like
-            # write_file).  Sending the model's real output limit ensures
-            # full capacity.  Other providers handle the default fine.
+        elif (self._is_openrouter_url() or "nousresearch" in self._base_url_lower) and "claude" in (self.model or "").lower():
+            # OpenRouter and Nous Portal translate requests to Anthropic's
+            # Messages API, which requires max_tokens as a mandatory field.
+            # When we omit it, the proxy picks a default that can be too
+            # low — the model spends its output budget on thinking and has
+            # almost nothing left for the actual response (especially large
+            # tool calls like write_file).  Sending the model's real output
+            # limit ensures full capacity.
             try:
                 from agent.anthropic_adapter import _get_anthropic_max_output
                 _model_output_limit = _get_anthropic_max_output(self.model)
                 api_kwargs["max_tokens"] = _model_output_limit
             except Exception:
-                pass  # fail open — let OpenRouter pick its default
+                pass  # fail open — let the proxy pick its default
 
         extra_body = {}
 
@@ -9115,6 +9115,11 @@ class AIAgent:
                             pass
 
                     self._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
+
+                    # Reset per-turn retry counters after successful tool
+                    # execution so a single truncation doesn't poison the
+                    # entire conversation.
+                    truncated_tool_call_retries = 0
 
                     # Signal that a paragraph break is needed before the next
                     # streamed text.  We don't emit it immediately because

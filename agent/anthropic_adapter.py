@@ -74,8 +74,11 @@ def _get_anthropic_max_output(model: str) -> int:
     model IDs (claude-sonnet-4-5-20250929) and variant suffixes (:1m, :fast)
     resolve correctly.  Longest-prefix match wins to avoid e.g. "claude-3-5"
     matching before "claude-3-5-sonnet".
+
+    Normalizes dots to hyphens so that model names like
+    ``anthropic/claude-opus-4.6`` match the ``claude-opus-4-6`` table key.
     """
-    m = model.lower()
+    m = model.lower().replace(".", "-")
     best_key = ""
     best_val = _ANTHROPIC_DEFAULT_OUTPUT_LIMIT
     for key, val in _ANTHROPIC_OUTPUT_LIMITS.items():

@@ -21,6 +21,7 @@ from agent.auxiliary_client import (
     _get_provider_chain,
     _is_payment_error,
     _try_payment_fallback,
+    _try_configured_fallback,
     _resolve_forced_provider,
     _resolve_auto,
 )
@@ -1254,6 +1255,47 @@ class TestTryPaymentFallback:
         assert label == "openai-codex"
 
 
+class TestTryConfiguredFallback:
+    def test_skips_same_base_url_even_when_failed_provider_was_auto(self):
+        """If auto resolved to a concrete endpoint, don't retry that same base_url."""
+        backup_client = MagicMock()
+        config = {
+            "fallback_providers": [
+                {
+                    "provider": "custom",
+                    "model": "gpt-5.4",
+                    "base_url": "https://pay.kxaug.xyz/v1",
+                    "api_key": "primary-key",
+                },
+                {
+                    "provider": "custom",
+                    "model": "gpt-5.4",
+                    "base_url": "https://api.888933.xyz/v1",
+                    "api_key": "secondary-key",
+                },
+            ]
+        }
+
+        with (
+            patch("hermes_cli.config.load_config", return_value=config),
+            patch("agent.auxiliary_client.resolve_provider_client",
+                  return_value=(backup_client, "gpt-5.4")) as mock_resolve,
+        ):
+            client, model, label, base_url = _try_configured_fallback(
+                "auto",
+                failed_model="gpt-5.4",
+                failed_base_url="https://pay.kxaug.xyz/v1",
+                task="compression",
+            )
+
+        assert client is backup_client
+        assert model == "gpt-5.4"
+        assert label == "custom"
+        assert base_url == "https://api.888933.xyz/v1"
+        resolve_kwargs = mock_resolve.call_args.kwargs
+        assert resolve_kwargs["explicit_base_url"] == "https://api.888933.xyz/v1"
+
+
 class TestCallLlmPaymentFallback:
     """call_llm() retries with a different provider on 402 / payment errors."""
 
@@ -1390,6 +1432,54 @@ class TestCallLlmPaymentFallback:
         assert resolve_kwargs["explicit_api_key"] == "secondary-key"
         fb_kwargs = fallback_client.chat.completions.create.call_args.kwargs
         assert fb_kwargs["model"] == "gpt-5.4"
+
+    def test_max_tokens_retry_then_429_still_uses_fallbacks(self):
+        """Sync path must still fallback if the post-retry call is rate limited."""
+        primary_client = MagicMock()
+        primary_client.base_url = "https://pay.kxaug.xyz/v1"
+        unsupported = Exception("unsupported_parameter: max_tokens")
+        primary_client.chat.completions.create.side_effect = [
+            unsupported,
+            self._make_429_error(),
+        ]
+
+        fallback_client = MagicMock()
+        fallback_client.base_url = "https://api.888933.xyz/v1"
+        fallback_response = MagicMock()
+        fallback_client.chat.completions.create.return_value = fallback_response
+
+        config = {
+            "fallback_providers": [
+                {
+                    "provider": "custom",
+                    "model": "gpt-5.4",
+                    "base_url": "https://api.888933.xyz/v1",
+                    "api_key": "secondary-key",
+                },
+            ]
+        }
+
+        with (
+            patch("agent.auxiliary_client._get_cached_client",
+                  return_value=(primary_client, "gpt-5.4")),
+            patch("agent.auxiliary_client._resolve_task_provider_model",
+                  return_value=("custom", "gpt-5.4", "https://pay.kxaug.xyz/v1", "primary-key")),
+            patch("hermes_cli.config.load_config", return_value=config),
+            patch("agent.auxiliary_client.resolve_provider_client",
+                  return_value=(fallback_client, "gpt-5.4")),
+        ):
+            result = call_llm(
+                task="compression",
+                messages=[{"role": "user", "content": "hello"}],
+                max_tokens=512,
+            )
+
+        assert result is fallback_response
+        retry_kwargs = primary_client.chat.completions.create.call_args_list[1].kwargs
+        assert "max_tokens" not in retry_kwargs
+        assert retry_kwargs["max_completion_tokens"] == 512
+        fallback_kwargs = fallback_client.chat.completions.create.call_args.kwargs
+        assert fallback_kwargs["model"] == "gpt-5.4"
 
     @pytest.mark.asyncio
     async def test_async_429_uses_configured_fallbacks_in_order(self):

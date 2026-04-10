@@ -1118,7 +1118,7 @@ def _matches_failed_endpoint(
     failed_model_norm = str(failed_model or "").strip()
 
     if entry_base_url and failed_base_url_norm:
-        return entry_provider == failed_provider_norm and entry_base_url == failed_base_url_norm
+        return entry_base_url == failed_base_url_norm
 
     if entry_provider != failed_provider_norm:
         return False
@@ -2304,9 +2304,9 @@ def call_llm(
             try:
                 return client.chat.completions.create(**kwargs)
             except Exception as retry_err:
-                # If the max_tokens retry also hits a payment error,
-                # fall through to the payment fallback below.
-                if not _is_payment_error(retry_err):
+                # If the max_tokens retry also hits a payment error or a
+                # normal rate limit, fall through to the fallback path below.
+                if not (_is_payment_error(retry_err) or _is_rate_limit_error(retry_err)):
                     raise
                 first_err = retry_err
 

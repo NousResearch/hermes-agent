@@ -754,6 +754,54 @@ class TestAuxiliaryPoolAwareness:
         assert call_kwargs["base_url"] == "https://api.githubcopilot.com"
         assert call_kwargs["default_headers"]["Editor-Version"]
 
+    def test_copilot_responses_api_model_wrapped_in_codex_client(self, monkeypatch):
+        """Copilot GPT-5+ models (needing Responses API) are wrapped in CodexAuxiliaryClient."""
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+
+        with (
+            patch(
+                "hermes_cli.auth.resolve_api_key_provider_credentials",
+                return_value={
+                    "provider": "copilot",
+                    "api_key": "test-token",
+                    "base_url": "https://api.githubcopilot.com",
+                    "source": "gh auth token",
+                },
+            ),
+            patch("agent.auxiliary_client.OpenAI"),
+        ):
+            client, model = resolve_provider_client("copilot", model="gpt-5.4-mini")
+
+        from agent.auxiliary_client import CodexAuxiliaryClient
+        assert isinstance(client, CodexAuxiliaryClient)
+        assert model == "gpt-5.4-mini"
+
+    def test_copilot_chat_completions_model_not_wrapped(self, monkeypatch):
+        """Copilot models using Chat Completions are returned as plain OpenAI clients."""
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+
+        with (
+            patch(
+                "hermes_cli.auth.resolve_api_key_provider_credentials",
+                return_value={
+                    "provider": "copilot",
+                    "api_key": "test-token",
+                    "base_url": "https://api.githubcopilot.com",
+                    "source": "gh auth token",
+                },
+            ),
+            patch("agent.auxiliary_client.OpenAI") as mock_openai,
+        ):
+            client, model = resolve_provider_client("copilot", model="gpt-4.1-mini")
+
+        from agent.auxiliary_client import CodexAuxiliaryClient
+        assert not isinstance(client, CodexAuxiliaryClient)
+        assert model == "gpt-4.1-mini"
+        # Should be the raw mock OpenAI client
+        assert client is mock_openai.return_value
+
     def test_vision_auto_uses_active_provider_as_fallback(self, monkeypatch):
         """When no OpenRouter/Nous available, vision auto falls back to active provider."""
         monkeypatch.setenv("ANTHROPIC_API_KEY", "***")

@@ -1348,18 +1348,28 @@ class GatewayRunner:
                 for key, entry in _expired_entries:
                     try:
                         await self._async_flush_memories(entry.session_id)
-                        # Shut down memory provider on the cached agent
-                        cached_agent = self._running_agents.get(key)
-                        if cached_agent and cached_agent is not _AGENT_PENDING_SENTINEL:
+                        # Shut down memory provider and close tool resources
+                        # on the cached agent.  Idle agents live in
+                        # _agent_cache (not _running_agents), so look there.
+                        _cached_agent = None
+                        _cache_lock = getattr(self, "_agent_cache_lock", None)
+                        if _cache_lock is not None:
+                            with _cache_lock:
+                                _cached = self._agent_cache.get(key)
+                                _cached_agent = _cached[0] if isinstance(_cached, tuple) else _cached if _cached else None
+                        # Fall back to _running_agents in case the agent is
+                        # still mid-turn when the expiry fires.
+                        if _cached_agent is None:
+                            _cached_agent = self._running_agents.get(key)
+                        if _cached_agent and _cached_agent is not _AGENT_PENDING_SENTINEL:
                             try:
-                                if hasattr(cached_agent, 'shutdown_memory_provider'):
-                                    cached_agent.shutdown_memory_provider()
+                                if hasattr(_cached_agent, 'shutdown_memory_provider'):
+                                    _cached_agent.shutdown_memory_provider()
                             except Exception:
                                 pass
-                            # Close tool resources to prevent zombie processes
                             try:
-                                if hasattr(cached_agent, 'close'):
-                                    cached_agent.close()
+                                if hasattr(_cached_agent, 'close'):
+                                    _cached_agent.close()
                             except Exception:
                                 pass
                         # Mark as flushed and persist to disk so the flag
@@ -1575,6 +1585,11 @@ class GatewayRunner:
 
         # Global cleanup: kill any remaining tool subprocesses not tied
         # to a specific agent (catch-all for zombie prevention).
+        try:
+            from tools.process_registry import process_registry
+            process_registry.kill_all()
+        except Exception:
+            pass
         try:
             from tools.terminal_tool import cleanup_all_environments
             cleanup_all_environments()

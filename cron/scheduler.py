@@ -895,6 +895,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             resolve_runtime_provider,
             format_runtime_provider_error,
         )
+        from hermes_cli.auth import AuthError
         try:
             runtime_kwargs = {
                 "requested": job.get("provider") or os.getenv("HERMES_INFERENCE_PROVIDER"),
@@ -902,6 +903,28 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             if job.get("base_url"):
                 runtime_kwargs["explicit_base_url"] = job.get("base_url")
             runtime = resolve_runtime_provider(**runtime_kwargs)
+        except AuthError as auth_exc:
+            # Primary provider auth failed — try fallback chain before giving up.
+            logger.warning("Job '%s': primary auth failed (%s), trying fallback", job_id, auth_exc)
+            fb = _cfg.get("fallback_providers") or _cfg.get("fallback_model")
+            fb_list = (fb if isinstance(fb, list) else [fb]) if fb else []
+            runtime = None
+            for entry in fb_list:
+                if not isinstance(entry, dict):
+                    continue
+                try:
+                    fb_kwargs = {"requested": entry.get("provider")}
+                    if entry.get("base_url"):
+                        fb_kwargs["explicit_base_url"] = entry["base_url"]
+                    if entry.get("api_key"):
+                        fb_kwargs["explicit_api_key"] = entry["api_key"]
+                    runtime = resolve_runtime_provider(**fb_kwargs)
+                    logger.info("Job '%s': fallback resolved to %s", job_id, runtime.get("provider"))
+                    break
+                except Exception as fb_exc:
+                    logger.debug("Job '%s': fallback %s failed: %s", job_id, entry.get("provider"), fb_exc)
+            if runtime is None:
+                raise RuntimeError(format_runtime_provider_error(auth_exc)) from auth_exc
         except Exception as exc:
             message = format_runtime_provider_error(exc)
             raise RuntimeError(message) from exc

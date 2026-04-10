@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from agent.memory_provider import MemoryProvider
+from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +69,7 @@ def _resolve_session(kwargs: dict) -> str:
 
 _TOOL_SCHEMAS: List[Dict[str, Any]] = [
     {
-        "name": "mcp_umemory_write",
+        "name": "mnemoria_write",
         "description": (
             "Store a new fact/memory in the Mnemoria memory store.\n"
             "Accepts plain text OR MEMORY_SPEC notation: TYPE[target]: content\n"
@@ -104,7 +105,7 @@ _TOOL_SCHEMAS: List[Dict[str, Any]] = [
         },
     },
     {
-        "name": "mcp_umemory_recall",
+        "name": "mnemoria_recall",
         "description": (
             "Recall memories matching a query using semantic similarity and ACT-R activation scoring.\n"
             "Uses 4-signal fusion: embedding similarity + ACT-R activation + FTS5/BM25 + Q-value reranking.\n"
@@ -131,7 +132,7 @@ _TOOL_SCHEMAS: List[Dict[str, Any]] = [
         },
     },
     {
-        "name": "mcp_umemory_search",
+        "name": "mnemoria_search",
         "description": (
             "Fast FTS5 keyword search over facts (direct, no activation scoring).\n"
             "Use for exact keyword lookup or when recall is too slow."
@@ -157,7 +158,7 @@ _TOOL_SCHEMAS: List[Dict[str, Any]] = [
         },
     },
     {
-        "name": "mcp_umemory_reflect",
+        "name": "mnemoria_reflect",
         "description": (
             "Synthesize all facts related to a topic, grouped by type.\n"
             "Use before making a decision on a topic with long history. Read-only.\n"
@@ -180,7 +181,7 @@ _TOOL_SCHEMAS: List[Dict[str, Any]] = [
         },
     },
     {
-        "name": "mcp_umemory_reward",
+        "name": "mnemoria_reward",
         "description": (
             "Give feedback on whether a retrieved memory was useful (RL reward signal).\n"
             "Trains Q-value reranking: +1.0=cited  +0.5=referenced  -0.15=irrelevant."
@@ -201,7 +202,7 @@ _TOOL_SCHEMAS: List[Dict[str, Any]] = [
         },
     },
     {
-        "name": "mcp_umemory_explore",
+        "name": "mnemoria_explore",
         "description": (
             "Multi-hop memory exploration via Personalized PageRank (PPR).\n"
             "Follows link connections to discover related memories.\n"
@@ -228,7 +229,7 @@ _TOOL_SCHEMAS: List[Dict[str, Any]] = [
         },
     },
     {
-        "name": "mcp_umemory_stats",
+        "name": "mnemoria_stats",
         "description": (
             "Return store statistics: fact count, link count, scope count, and gauge percentage.\n"
             "Use for a quick health check or to decide whether to consolidate."
@@ -236,7 +237,7 @@ _TOOL_SCHEMAS: List[Dict[str, Any]] = [
         "parameters": {"type": "object", "properties": {}},
     },
     {
-        "name": "mcp_umemory_consolidate",
+        "name": "mnemoria_consolidate",
         "description": (
             "Run a consolidation cycle.\n"
             "Promotes frequently accessed working memories to core, demotes low-activation\n"
@@ -284,6 +285,15 @@ class MnemoriaMemoryProvider(MemoryProvider):
     def __init__(self):
         self._session_id: str = ""
         self._hermes_home: str = ""
+        self._read_only: bool = False
+        self._profile: str = ""
+        self._user_id: str = ""
+        self._platform: str = "cli"
+        self._last_extracted_msg_index: int = 0
+        self._prefetch_result = None
+        self._prefetch_lock = threading.Lock()
+        self._prefetch_thread: Optional[threading.Thread] = None
+        self._write_thread: Optional[threading.Thread] = None
 
     @property
     def name(self) -> str:
@@ -297,10 +307,27 @@ class MnemoriaMemoryProvider(MemoryProvider):
         self._session_id = session_id
         self._hermes_home = kwargs.get("hermes_home", os.path.expanduser("~/.hermes"))
 
-        # Warm up the per-thread store (create tables if needed)
+        agent_context = kwargs.get("agent_context", "primary")
+        self._read_only = agent_context in ("cron", "flush")
+
+        self._profile = kwargs.get("agent_identity", "")
+        self._user_id = kwargs.get("user_id", "")
+        self._platform = kwargs.get("platform", "cli")
+
+        global _DB_PATH
+        env_db = os.getenv("HERMES_MNEMORIA_DB")
+        if env_db:
+            _DB_PATH = env_db
+        elif self._profile:
+            _DB_PATH = str(Path(self._hermes_home) / f"mnemoria-{self._profile}.db")
+        else:
+            _DB_PATH = str(Path(self._hermes_home) / "mnemoria.db")
+
+        _local.store = None
+
         try:
             _store()
-            logger.info("MnemoriaMemoryProvider initialized (session=%s)", session_id)
+            logger.info("MnemoriaMemoryProvider initialized (session=%s, read_only=%s)", session_id, self._read_only)
         except Exception as exc:
             logger.error("MnemoriaMemoryProvider init failed: %s", exc)
 
@@ -355,19 +382,19 @@ class MnemoriaMemoryProvider(MemoryProvider):
         session_id = _resolve_session(kwargs)
 
         handlers = {
-            "mcp_umemory_write": _handle_write,
-            "mcp_umemory_recall": _handle_recall,
-            "mcp_umemory_search": _handle_search,
-            "mcp_umemory_reflect": _handle_reflect,
-            "mcp_umemory_reward": _handle_reward,
-            "mcp_umemory_explore": _handle_explore,
-            "mcp_umemory_stats": _handle_stats,
-            "mcp_umemory_consolidate": _handle_consolidate,
+            "mnemoria_write": _handle_write,
+            "mnemoria_recall": _handle_recall,
+            "mnemoria_search": _handle_search,
+            "mnemoria_reflect": _handle_reflect,
+            "mnemoria_reward": _handle_reward,
+            "mnemoria_explore": _handle_explore,
+            "mnemoria_stats": _handle_stats,
+            "mnemoria_consolidate": _handle_consolidate,
         }
 
         handler = handlers.get(tool_name)
         if not handler:
-            return json.dumps({"error": f"Unknown tool: {tool_name}"})
+            return tool_error(f"Unknown tool: {tool_name}")
 
         try:
             return handler(args, session_id=session_id)

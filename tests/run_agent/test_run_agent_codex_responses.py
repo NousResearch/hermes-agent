@@ -1,3 +1,4 @@
+import json
 import sys
 import types
 from types import SimpleNamespace
@@ -24,7 +25,15 @@ def _patch_agent_bootstrap(monkeypatch):
                     "description": "Run shell commands.",
                     "parameters": {"type": "object", "properties": {}},
                 },
-            }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "attach_image",
+                    "description": "Attach a local image for native multimodal inspection.",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            },
         ],
     )
     monkeypatch.setattr(run_agent, "check_toolset_requirements", lambda: {})
@@ -434,6 +443,73 @@ def test_run_conversation_codex_empty_output_no_output_text_retries(monkeypatch)
     assert calls["api"] >= 2
     assert result["completed"] is True
     assert result["final_response"] == "Recovered"
+
+
+def test_run_conversation_codex_multimodal_user_content(monkeypatch, tmp_path):
+    agent = _build_agent(monkeypatch)
+    image_path = tmp_path / "screenshot.png"
+    image_path.write_bytes(b"\x89PNG\r\n\x1a\n")
+    seen = {}
+
+    def _fake_api_call(api_kwargs):
+        seen["api_kwargs"] = api_kwargs
+        return _codex_message_response("looks good")
+
+    monkeypatch.setattr(agent, "_interruptible_api_call", _fake_api_call)
+
+    result = agent.run_conversation([
+        {"type": "text", "text": "What is in this screenshot?"},
+        {"type": "image_url", "image_url": {"url": str(image_path)}},
+    ])
+
+    assert result["completed"] is True
+    assert result["final_response"] == "looks good"
+    assert seen["api_kwargs"]["input"][0]["role"] == "user"
+    assert seen["api_kwargs"]["input"][0]["content"][0]["type"] == "input_text"
+    assert seen["api_kwargs"]["input"][0]["content"][1]["type"] == "input_image"
+    assert seen["api_kwargs"]["input"][0]["content"][1]["image_url"].startswith("data:image/png;base64,")
+
+
+def test_run_conversation_codex_attach_image_tool_queues_native_image_for_next_step(monkeypatch, tmp_path):
+    agent = _build_agent(monkeypatch)
+    image_path = tmp_path / "screenshot.png"
+    image_path.write_bytes(b"\x89PNG\r\n\x1a\n")
+    seen_calls = []
+
+    attach_response = SimpleNamespace(
+        output=[
+            SimpleNamespace(
+                type="function_call",
+                id="fc_attach_1",
+                call_id="call_attach_1",
+                name="attach_image",
+                arguments=json.dumps({"path": str(image_path), "note": "inspect this screenshot"}),
+            )
+        ],
+        usage=SimpleNamespace(input_tokens=12, output_tokens=4, total_tokens=16),
+        status="completed",
+        model="gpt-5-codex",
+    )
+
+    responses = [attach_response, _codex_message_response("looks good")]
+
+    def _fake_api_call(api_kwargs):
+        seen_calls.append(api_kwargs)
+        return responses[len(seen_calls) - 1]
+
+    monkeypatch.setattr(agent, "_interruptible_api_call", _fake_api_call)
+
+    result = agent.run_conversation("Inspect the screenshot you just created")
+
+    assert result["completed"] is True
+    assert result["final_response"] == "looks good"
+    assert len(seen_calls) == 2
+    second_input = seen_calls[1]["input"]
+    assert second_input[-1]["role"] == "user"
+    assert second_input[-1]["content"][0]["type"] == "input_text"
+    assert "inspect this screenshot" in second_input[-1]["content"][0]["text"]
+    assert second_input[-1]["content"][1]["type"] == "input_image"
+    assert second_input[-1]["content"][1]["image_url"].startswith("data:image/png;base64,")
 
 
 def test_run_conversation_codex_refreshes_after_401_and_retries(monkeypatch):

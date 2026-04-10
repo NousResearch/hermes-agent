@@ -556,6 +556,137 @@ class TestInit:
             )
 
 
+class TestNativeMultimodalToolFiltering:
+    @staticmethod
+    def _fake_tool_loader(**kwargs):
+        names = ["web_search", "vision_analyze", "attach_image"]
+        excluded = set(kwargs.get("excluded_tool_names") or set())
+        return _make_tool_defs(*[name for name in names if name not in excluded])
+
+    def test_codex_runtime_excludes_vision_tool_on_init(self):
+        with (
+            patch("run_agent.get_tool_definitions", side_effect=self._fake_tool_loader),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+        ):
+            agent = AIAgent(
+                api_key="test-key-1234567890",
+                provider="openai-codex",
+                api_mode="codex_responses",
+                base_url="https://chatgpt.com/backend-api/codex",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+        assert agent.valid_tool_names == {"web_search", "attach_image"}
+        assert "vision_analyze" not in agent.valid_tool_names
+
+    def test_switch_model_refreshes_runtime_filtered_tool_surface(self, agent):
+        with (
+            patch("run_agent.get_tool_definitions", side_effect=self._fake_tool_loader),
+            patch.object(agent, "_create_openai_client", return_value=MagicMock()),
+        ):
+            agent.refresh_tool_surface(invalidate_prompt=False)
+            assert agent.valid_tool_names == {"web_search", "vision_analyze"}
+
+            agent.switch_model(
+                new_model="gpt-5",
+                new_provider="openai-codex",
+                api_key="test-key-1234567890",
+                base_url="https://chatgpt.com/backend-api/codex",
+                api_mode="codex_responses",
+            )
+
+        assert agent.valid_tool_names == {"web_search", "attach_image"}
+
+    def test_fallback_restore_refreshes_runtime_filtered_tool_surface(self, agent):
+        with patch("run_agent.get_tool_definitions", side_effect=self._fake_tool_loader):
+            agent.refresh_tool_surface(invalidate_prompt=False)
+            assert agent.valid_tool_names == {"web_search", "vision_analyze"}
+
+        agent._fallback_activated = False
+        agent._fallback_chain = [{"provider": "openai-codex", "model": "gpt-5"}]
+        agent._fallback_index = 0
+
+        mock_client = MagicMock()
+        mock_client.base_url = "https://chatgpt.com/backend-api/codex"
+        mock_client.api_key = "test-key-1234567890"
+
+        with (
+            patch("run_agent.get_tool_definitions", side_effect=self._fake_tool_loader),
+            patch("agent.auxiliary_client.resolve_provider_client", return_value=(mock_client, None)),
+        ):
+            assert agent._try_activate_fallback() is True
+            assert agent.valid_tool_names == {"web_search", "attach_image"}
+            assert agent._restore_primary_runtime() is True
+
+        assert agent.valid_tool_names == {"web_search", "vision_analyze"}
+
+
+class TestNativeImageQueue:
+    def test_flush_pending_native_images_appends_internal_multimodal_user_message(self, agent, tmp_path):
+        img = tmp_path / "shot.png"
+        img.write_bytes(b"\x89PNG\r\n\x1a\n")
+        agent.provider = "openai-codex"
+        agent.api_mode = "codex_responses"
+        agent.base_url = "https://chatgpt.com/backend-api/codex"
+
+        result = agent._queue_native_image_attachment(str(img), note="inspect this screenshot")
+        assert result["success"] is True
+        assert result["queued"] == 1
+
+        messages = [{"role": "user", "content": "do the task"}]
+        assert agent._flush_pending_native_images(messages) is True
+        assert len(messages) == 2
+        queued_message = messages[-1]
+        assert queued_message["role"] == "user"
+        assert queued_message["_native_image_attachment"] is True
+        assert queued_message["content"][0]["type"] == "text"
+        assert "inspect this screenshot" in queued_message["content"][0]["text"]
+        assert queued_message["content"][1]["type"] == "image_url"
+        assert queued_message["content"][1]["image_url"]["url"].startswith("data:image/png;base64,")
+        assert agent._pending_native_images == []
+
+    def test_queue_native_image_attachment_rejects_text_only_runtime(self, agent, tmp_path):
+        img = tmp_path / "shot.png"
+        img.write_bytes(b"\x89PNG\r\n\x1a\n")
+        agent.provider = "openrouter"
+        agent.api_mode = "chat_completions"
+        agent.base_url = "https://openrouter.ai/api/v1"
+
+        result = agent._queue_native_image_attachment(str(img))
+        assert result["success"] is False
+        assert "does not support native image input" in result["error"]
+        assert agent._pending_native_images == []
+
+    def test_queue_native_image_attachment_rejects_svg(self, agent, tmp_path):
+        img = tmp_path / "vector.svg"
+        img.write_text("<svg xmlns='http://www.w3.org/2000/svg'></svg>", encoding="utf-8")
+        agent.provider = "openai-codex"
+        agent.api_mode = "codex_responses"
+        agent.base_url = "https://chatgpt.com/backend-api/codex"
+
+        result = agent._queue_native_image_attachment(str(img))
+        assert result["success"] is False
+        assert "SVG files are not supported" in result["error"]
+        assert agent._pending_native_images == []
+
+    def test_queue_native_image_attachment_rejects_oversized_file(self, agent, tmp_path):
+        img = tmp_path / "huge.png"
+        img.write_bytes(b"\x89PNG\r\n\x1a\n")
+        agent.provider = "openai-codex"
+        agent.api_mode = "codex_responses"
+        agent.base_url = "https://chatgpt.com/backend-api/codex"
+
+        with patch("pathlib.Path.stat", return_value=SimpleNamespace(st_size=21 * 1024 * 1024, st_mode=0o100644)):
+            result = agent._queue_native_image_attachment(str(img))
+
+        assert result["success"] is False
+        assert "too large for native attachment" in result["error"]
+        assert agent._pending_native_images == []
+
+
 class TestInterrupt:
     def test_interrupt_sets_flag(self, agent):
         with patch("run_agent._set_interrupt"):

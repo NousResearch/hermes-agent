@@ -2814,8 +2814,8 @@ class GatewayRunner:
         if _is_shared_thread and source.user_name:
             message_text = f"[{source.user_name}] {message_text}"
 
+        image_paths = []
         if event.media_urls:
-            image_paths = []
             for i, path in enumerate(event.media_urls):
                 # Check media_types if available; otherwise infer from message type
                 mtype = event.media_types[i] if i < len(event.media_types) else ""
@@ -2825,10 +2825,6 @@ class GatewayRunner:
                 )
                 if is_image:
                     image_paths.append(path)
-            if image_paths:
-                message_text = await self._enrich_message_with_vision(
-                    message_text, image_paths
-                )
         
         # -----------------------------------------------------------------
         # Auto-transcribe voice/audio messages sent by the user
@@ -2983,6 +2979,7 @@ class GatewayRunner:
                 session_id=session_entry.session_id,
                 session_key=session_key,
                 event_message_id=event.message_id,
+                image_paths=image_paths,
             )
 
             # Stop persistent typing indicator now that the agent is done
@@ -4061,29 +4058,33 @@ class GatewayRunner:
         return await self._handle_message(retry_event)
     
     async def _handle_undo_command(self, event: MessageEvent) -> str:
-        """Handle /undo command - remove the last user/assistant exchange."""
+        """Handle /undo command - remove the last visible user turn."""
         source = event.source
         session_entry = self.session_store.get_or_create_session(source)
         history = self.session_store.load_transcript(session_entry.session_id)
-        
-        # Find the last user message and remove everything from it onward
-        last_user_idx = None
-        for i in range(len(history) - 1, -1, -1):
-            if history[i].get("role") == "user":
-                last_user_idx = i
-                break
-        
-        if last_user_idx is None:
+
+        from run_agent import (
+            format_internal_transcript_message_count,
+            summarize_last_user_turn,
+        )
+
+        summary = summarize_last_user_turn(history, preview_limit=40)
+        if not summary:
             return "Nothing to undo."
-        
-        removed_msg = history[last_user_idx].get("content", "")
-        removed_count = len(history) - last_user_idx
-        self.session_store.rewrite_transcript(session_entry.session_id, history[:last_user_idx])
+
+        self.session_store.rewrite_transcript(
+            session_entry.session_id,
+            summary["truncated_history"],
+        )
         # Reset stored token count — transcript was truncated
         session_entry.last_prompt_tokens = 0
-        
-        preview = removed_msg[:40] + "..." if len(removed_msg) > 40 else removed_msg
-        return f"↩️ Undid {removed_count} message(s).\nRemoved: \"{preview}\""
+
+        removed_count = int(summary["removed_count"])
+        preview = summary["preview"]
+        return (
+            f"↩️ Undid 1 turn ({format_internal_transcript_message_count(removed_count)}).\n"
+            f"Removed your last message: \"{preview}\""
+        )
     
     async def _handle_set_home_command(self, event: MessageEvent) -> str:
         """Handle /sethome command -- set the current chat as the platform's home channel."""
@@ -6135,6 +6136,27 @@ class GatewayRunner:
             if var in os.environ:
                 del os.environ[var]
     
+    async def _prepare_user_message_with_images(
+        self,
+        user_text,
+        image_paths: List[str],
+        turn_route: dict,
+    ):
+        if not image_paths:
+            return user_text
+
+        from run_agent import build_native_multimodal_user_content, supports_native_multimodal_input
+
+        runtime = (turn_route or {}).get("runtime") or {}
+        if supports_native_multimodal_input(
+            provider=runtime.get("provider"),
+            api_mode=runtime.get("api_mode"),
+            base_url=runtime.get("base_url"),
+        ):
+            return build_native_multimodal_user_content(user_text or "", image_paths)
+
+        return await self._enrich_message_with_vision(user_text or "", image_paths)
+
     async def _enrich_message_with_vision(
         self,
         user_text: str,
@@ -6513,6 +6535,7 @@ class GatewayRunner:
         session_key: str = None,
         _interrupt_depth: int = 0,
         event_message_id: Optional[str] = None,
+        image_paths: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
@@ -6531,6 +6554,7 @@ class GatewayRunner:
         
         user_config = _load_gateway_config()
         platform_key = _platform_config_key(source.platform)
+        image_paths = list(image_paths or [])
 
         from hermes_cli.tools_config import _get_platform_tools
         enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
@@ -6912,6 +6936,8 @@ class GatewayRunner:
                     logger.debug("Could not set up stream consumer: %s", _sc_err)
 
             turn_route = self._resolve_turn_agent_config(message, model, runtime_kwargs)
+            if image_paths:
+                message = asyncio.run(self._prepare_user_message_with_images(message, image_paths, turn_route))
 
             # Check agent cache — reuse the AIAgent from the previous message
             # in this session to preserve the frozen system prompt and tool
@@ -7139,7 +7165,9 @@ class GatewayRunner:
             _pending_notes = getattr(self, '_pending_model_notes', {})
             _msn = _pending_notes.pop(session_key, None) if session_key else None
             if _msn:
-                message = _msn + "\n\n" + message
+                from run_agent import prepend_text_to_message_content
+
+                message = prepend_text_to_message_content(message, _msn)
 
             _approval_session_key = session_key or ""
             _approval_session_token = set_current_session_key(_approval_session_key)

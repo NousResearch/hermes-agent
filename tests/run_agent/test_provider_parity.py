@@ -496,6 +496,27 @@ class TestChatMessagesToResponsesInput:
         reasoning_items = [i for i in items if i.get("type") == "reasoning"]
         assert len(reasoning_items) == 0
 
+    def test_user_multimodal_content_becomes_responses_parts(self, monkeypatch):
+        agent = _make_agent(monkeypatch, "openai-codex", api_mode="codex_responses",
+                            base_url="https://chatgpt.com/backend-api/codex")
+        messages = [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "What is in this image?"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,QUFB"}},
+            ],
+        }]
+
+        items = agent._chat_messages_to_responses_input(messages)
+
+        assert items == [{
+            "role": "user",
+            "content": [
+                {"type": "input_text", "text": "What is in this image?"},
+                {"type": "input_image", "image_url": "data:image/png;base64,QUFB"},
+            ],
+        }]
+
 
 # ── Response normalization tests ─────────────────────────────────────────────
 
@@ -846,6 +867,23 @@ class TestCodexReasoningPreflight:
         reasoning_items = [i for i in items if isinstance(i, dict) and i.get("type") == "reasoning"]
         assert len(reasoning_items) == 1
         assert reasoning_items[0]["encrypted_content"] == "enc123"
+
+    def test_multimodal_content_list_passes_preflight(self, monkeypatch):
+        agent = _make_agent(monkeypatch, "openai-codex", api_mode="codex_responses",
+                            base_url="https://chatgpt.com/backend-api/codex")
+        raw_input = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": "Describe it"},
+                    {"type": "input_image", "image_url": "data:image/png;base64,AAAA"},
+                ],
+            }
+        ]
+
+        normalized = agent._preflight_codex_input_items(raw_input)
+
+        assert normalized == raw_input
 
 
 # ── Reasoning effort consistency tests ───────────────────────────────────────

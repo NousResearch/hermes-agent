@@ -4111,63 +4111,48 @@ class HermesCLI:
             print(f"(x_x) Failed to save: {e}")
     
     def retry_last(self):
-        """Retry the last user message by removing the last exchange and re-sending.
-        
-        Removes the last assistant response (and any tool-call messages) and
-        the last user message, then re-sends that user message to the agent.
-        Returns the message to re-send, or None if there's nothing to retry.
-        """
+        """Retry the last visible user message by removing its trailing turn."""
         if not self.conversation_history:
             print("(._.) No messages to retry.")
             return None
-        
-        # Walk backwards to find the last user message
-        last_user_idx = None
-        for i in range(len(self.conversation_history) - 1, -1, -1):
-            if self.conversation_history[i].get("role") == "user":
-                last_user_idx = i
-                break
-        
-        if last_user_idx is None:
+
+        from run_agent import message_content_to_text, summarize_last_user_turn
+
+        summary = summarize_last_user_turn(self.conversation_history, preview_limit=60)
+        if not summary:
             print("(._.) No user message found to retry.")
             return None
-        
-        # Extract the message text and remove everything from that point forward
-        last_message = self.conversation_history[last_user_idx].get("content", "")
-        self.conversation_history = self.conversation_history[:last_user_idx]
-        
-        print(f"(^_^)b Retrying: \"{last_message[:60]}{'...' if len(last_message) > 60 else ''}\"")
+
+        last_message = summary["original_content"]
+        self.conversation_history = summary["truncated_history"]
+        preview = message_content_to_text(last_message)
+        preview = " ".join(preview.split()) or "[empty message]"
+        print(f"(^_^)b Retrying: \"{preview[:60]}{'...' if len(preview) > 60 else ''}\"")
         return last_message
-    
+
     def undo_last(self):
-        """Remove the last user/assistant exchange from conversation history.
-        
-        Walks backwards and removes all messages from the last user message
-        onward (including assistant responses, tool calls, etc.).
-        """
+        """Remove the last visible user turn from conversation history."""
         if not self.conversation_history:
             print("(._.) No messages to undo.")
             return
-        
-        # Walk backwards to find the last user message
-        last_user_idx = None
-        for i in range(len(self.conversation_history) - 1, -1, -1):
-            if self.conversation_history[i].get("role") == "user":
-                last_user_idx = i
-                break
-        
-        if last_user_idx is None:
+
+        from run_agent import (
+            format_internal_transcript_message_count,
+            summarize_last_user_turn,
+        )
+
+        summary = summarize_last_user_turn(self.conversation_history, preview_limit=60)
+        if not summary:
             print("(._.) No user message found to undo.")
             return
-        
-        # Count how many messages we're removing
-        removed_count = len(self.conversation_history) - last_user_idx
-        removed_msg = self.conversation_history[last_user_idx].get("content", "")
-        
-        # Truncate history to before the last user message
-        self.conversation_history = self.conversation_history[:last_user_idx]
-        
-        print(f"(^_^)b Undid {removed_count} message(s). Removed: \"{removed_msg[:60]}{'...' if len(removed_msg) > 60 else ''}\"")
+
+        self.conversation_history = summary["truncated_history"]
+        removed_count = int(summary["removed_count"])
+        preview = summary["preview"]
+        print(
+            f"(^_^)b Undid 1 turn ({format_internal_transcript_message_count(removed_count)}). "
+            f"Removed your last message: \"{preview}\""
+        )
         remaining = len(self.conversation_history)
         print(f"  {remaining} message(s) remaining in history.")
     

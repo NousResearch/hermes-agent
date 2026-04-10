@@ -1,4 +1,4 @@
-"""Regression tests for CLI /retry history replacement semantics."""
+"""Regression tests for CLI /retry and /undo history replacement semantics."""
 
 from tests.cli.test_cli_init import _make_cli
 
@@ -47,3 +47,42 @@ def test_process_command_retry_requeues_original_message_not_retry_command():
 
     assert queued == ["retry me"]
     assert cli.conversation_history == []
+
+
+def test_undo_last_reports_one_turn_and_internal_transcript_count(capsys):
+    cli = _make_cli()
+    cli.conversation_history = [
+        {"role": "user", "content": "first"},
+        {"role": "assistant", "content": "one"},
+        {"role": "user", "content": "fix /undo"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"id": "call_1", "function": {"name": "search_files", "arguments": "{}"}}
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_1", "content": '{"success": true}'},
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "[Internal: inspect the attached image and continue.]"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+            ],
+            "_native_image_attachment": True,
+        },
+        {"role": "assistant", "content": "intermediate note"},
+        {"role": "assistant", "content": "final answer"},
+    ]
+
+    cli.undo_last()
+
+    out = capsys.readouterr().out
+    assert cli.conversation_history == [
+        {"role": "user", "content": "first"},
+        {"role": "assistant", "content": "one"},
+    ]
+    assert "Undid 1 turn" in out
+    assert "6 internal transcript messages" in out
+    assert 'Removed your last message: "fix /undo"' in out
+    assert "Undid 5 message(s)" not in out

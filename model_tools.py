@@ -140,6 +140,7 @@ def _discover_tools():
         "tools.terminal_tool",
         "tools.file_tools",
         "tools.vision_tools",
+        "tools.native_image_tool",
         "tools.mixture_of_agents_tool",
         "tools.image_generation_tool",
         "tools.skills_tool",
@@ -235,6 +236,7 @@ def get_tool_definitions(
     enabled_toolsets: List[str] = None,
     disabled_toolsets: List[str] = None,
     quiet_mode: bool = False,
+    excluded_tool_names: Optional[List[str] | set[str] | tuple[str, ...]] = None,
 ) -> List[Dict[str, Any]]:
     """
     Get tool definitions for model API calls with toolset-based filtering.
@@ -245,6 +247,10 @@ def get_tool_definitions(
         enabled_toolsets: Only include tools from these toolsets.
         disabled_toolsets: Exclude tools from these toolsets (if enabled_toolsets is None).
         quiet_mode: Suppress status prints.
+        excluded_tool_names: Tool names to remove after toolset resolution,
+            regardless of which toolsets are enabled. Useful for runtime-aware
+            capability filtering (for example, hiding vision_analyze when the
+            active model already accepts native image input).
 
     Returns:
         Filtered list of OpenAI-format tool definitions.
@@ -292,6 +298,10 @@ def get_tool_definitions(
         for ts_name in get_all_toolsets():
             tools_to_include.update(resolve_toolset(ts_name))
 
+    excluded_tool_names = {str(name) for name in (excluded_tool_names or []) if str(name)}
+    if excluded_tool_names:
+        tools_to_include.difference_update(excluded_tool_names)
+
     # Plugin-registered tools are now resolved through the normal toolset
     # path — validate_toolset() / resolve_toolset() / get_all_toolsets()
     # all check the tool registry for plugin-provided toolsets.  No bypass
@@ -300,6 +310,11 @@ def get_tool_definitions(
 
     # Ask the registry for schemas (only returns tools whose check_fn passes)
     filtered_tools = registry.get_definitions(tools_to_include, quiet=quiet_mode)
+    if excluded_tool_names:
+        filtered_tools = [
+            tool for tool in filtered_tools
+            if tool.get("function", {}).get("name") not in excluded_tool_names
+        ]
 
     # The set of tool names that actually passed check_fn filtering.
     # Use this (not tools_to_include) for any downstream schema that references
@@ -340,6 +355,20 @@ def get_tool_definitions(
                     }
                     break
 
+    if "read_file" in available_tool_names and "vision_analyze" not in available_tool_names:
+        for i, td in enumerate(filtered_tools):
+            if td.get("function", {}).get("name") == "read_file":
+                desc = td["function"].get("description", "")
+                desc = desc.replace(
+                    " NOTE: Cannot read images or binary files — use vision_analyze for images.",
+                    " NOTE: Cannot read images or binary files.",
+                )
+                filtered_tools[i] = {
+                    "type": "function",
+                    "function": {**td["function"], "description": desc},
+                }
+                break
+
     if not quiet_mode:
         if filtered_tools:
             tool_names = [t["function"]["name"] for t in filtered_tools]
@@ -361,7 +390,7 @@ def get_tool_definitions(
 # because they need agent-level state (TodoStore, MemoryStore, etc.).
 # The registry still holds their schemas; dispatch just returns a stub error
 # so if something slips through, the LLM sees a sensible message.
-_AGENT_LOOP_TOOLS = {"todo", "memory", "session_search", "delegate_task"}
+_AGENT_LOOP_TOOLS = {"todo", "memory", "session_search", "delegate_task", "attach_image"}
 _READ_SEARCH_TOOLS = {"read_file", "search_files"}
 
 

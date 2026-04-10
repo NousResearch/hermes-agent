@@ -27,7 +27,7 @@ import copy
 import hashlib
 import json
 import logging
-logger = logging.getLogger(__name__)
+import mimetypes
 import os
 import random
 import re
@@ -38,12 +38,173 @@ import threading
 from types import SimpleNamespace
 import uuid
 from typing import List, Dict, Any, Optional
-from openai import OpenAI
-import fire
 from datetime import datetime
 from pathlib import Path
+from openai import OpenAI
+import fire
+
+logger = logging.getLogger(__name__)
+
+
+def supports_native_multimodal_input(*, provider: Any = None, api_mode: Any = None, base_url: Any = None) -> bool:
+    """True when the active runtime should receive native image input.
+
+    Today this is intentionally narrow: Codex/OpenAI-style Responses routes,
+    excluding GitHub/Copilot's Responses endpoint.
+    """
+    normalized_mode = str(api_mode or "").strip().lower()
+    if normalized_mode != "codex_responses":
+        return False
+
+    provider_name = str(provider or "").strip().lower()
+    base = str(base_url or "").strip().lower()
+    if provider_name == "copilot":
+        return False
+    if "models.github.ai" in base or "api.githubcopilot.com" in base:
+        return False
+    return True
+
+
+def message_content_to_text(content: Any) -> str:
+    """Best-effort text rendering for logs, memory hooks, and previews."""
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return str(content)
+
+    parts: list[str] = []
+    for part in content:
+        if isinstance(part, str):
+            if part:
+                parts.append(part)
+            continue
+        if not isinstance(part, dict):
+            continue
+        ptype = str(part.get("type", "") or "")
+        if ptype in {"text", "input_text"}:
+            text = str(part.get("text", "") or "")
+            if text:
+                parts.append(text)
+        elif ptype in {"image_url", "input_image"}:
+            parts.append("[image]")
+
+    return " ".join(p for p in parts if p).strip()
+
+
+def summarize_last_user_turn(messages: List[Dict[str, Any]], *, preview_limit: int = 60) -> Optional[Dict[str, Any]]:
+    """Return metadata for the last visible user turn in a transcript/history.
+
+    Hermes stores full internal agent loops (assistant tool-call messages, tool
+    results, intermediate assistant messages) after each user turn.  Commands
+    like /undo operate on the whole trailing slice, but the UX should still talk
+    in terms of one visible user turn.
+    """
+    if not isinstance(messages, list) or not messages:
+        return None
+
+    last_user_idx = None
+    for i in range(len(messages) - 1, -1, -1):
+        msg = messages[i]
+        if not isinstance(msg, dict):
+            continue
+        if msg.get("role") != "user":
+            continue
+        if msg.get("_native_image_attachment"):
+            continue
+        last_user_idx = i
+        break
+
+    if last_user_idx is None:
+        return None
+
+    removed = messages[last_user_idx:]
+    preview_text = message_content_to_text(messages[last_user_idx].get("content", ""))
+    preview_text = " ".join(preview_text.split()) or "[empty message]"
+    if len(preview_text) > preview_limit:
+        preview_text = preview_text[:preview_limit] + "..."
+
+    return {
+        "start_idx": last_user_idx,
+        "removed_count": len(removed),
+        "removed_messages": removed,
+        "truncated_history": messages[:last_user_idx],
+        "preview": preview_text,
+        "original_content": messages[last_user_idx].get("content", ""),
+    }
+
+
+def format_internal_transcript_message_count(count: int) -> str:
+    noun = "message" if count == 1 else "messages"
+    return f"{count} internal transcript {noun}"
+
+
+def _content_text_part_type(content: Any) -> str:
+    if isinstance(content, list):
+        for part in content:
+            if isinstance(part, dict) and str(part.get("type", "")).startswith("input_"):
+                return "input_text"
+    return "text"
+
+
+def prepend_text_to_message_content(content: Any, text: str) -> Any:
+    text = str(text or "").strip()
+    if not text:
+        return content
+    if isinstance(content, list):
+        return [{"type": _content_text_part_type(content), "text": text}, *content]
+    base = message_content_to_text(content)
+    return f"{text}\n\n{base}" if base else text
+
+
+def append_text_to_message_content(content: Any, text: str) -> Any:
+    text = str(text or "").strip()
+    if not text:
+        return content
+    if isinstance(content, list):
+        return [*content, {"type": _content_text_part_type(content), "text": text}]
+    base = message_content_to_text(content)
+    return f"{base}\n\n{text}" if base else text
+
+
+def _coerce_image_reference_to_data_url(image_ref: Any) -> str:
+    raw = str(image_ref or "").strip()
+    if not raw or raw.startswith("data:") or re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*://", raw):
+        return raw
+
+    path = Path(os.path.expanduser(raw))
+    if not path.exists() or not path.is_file():
+        return raw
+
+    from tools.vision_tools import _image_to_base64_data_url
+
+    return _image_to_base64_data_url(path)
+
+
+def build_native_multimodal_user_content(text: str, image_paths: List[Any]) -> List[Dict[str, Any]]:
+    content: List[Dict[str, Any]] = []
+    if isinstance(text, str) and text:
+        content.append({"type": "text", "text": text})
+    for image_path in image_paths or []:
+        image_url = _coerce_image_reference_to_data_url(image_path)
+        if image_url:
+            content.append({"type": "image_url", "image_url": {"url": image_url}})
+    return content
+
+
+_NATIVE_IMAGE_EXTENSIONS = {
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff", ".tif", ".ico"
+}
+_MAX_NATIVE_IMAGE_BYTES = 20 * 1024 * 1024
+_NATIVE_IMAGE_ATTACH_PROMPT = (
+    "[Internal: Inspect the attached image and continue the current task. "
+    "Treat it as fresh visual context from a previous tool step.]"
+)
+
 
 from hermes_constants import get_hermes_home
+
 
 # Load .env from ~/.hermes/.env first, then project root as dev fallback.
 # User-managed env files should override stale shell exports on restart.
@@ -213,7 +374,7 @@ class IterationBudget:
 
 # Tools that must never run concurrently (interactive / user-facing).
 # When any of these appear in a batch, we fall back to sequential execution.
-_NEVER_PARALLEL_TOOLS = frozenset({"clarify"})
+_NEVER_PARALLEL_TOOLS = frozenset({"clarify", "attach_image"})
 
 # Read-only tools with no shared mutable session state.
 _PARALLEL_SAFE_TOOLS = frozenset({
@@ -988,16 +1149,13 @@ class AIAgent:
                       " → ".join(f"{f['model']} ({f['provider']})" for f in self._fallback_chain))
 
         # Get available tools with filtering
-        self.tools = get_tool_definitions(
-            enabled_toolsets=enabled_toolsets,
-            disabled_toolsets=disabled_toolsets,
-            quiet_mode=self.quiet_mode,
-        )
+        self.tools = []
+        self.valid_tool_names = set()
+        self._pending_native_images: list[dict[str, str]] = []
+        self.refresh_tool_surface(quiet_mode=self.quiet_mode, invalidate_prompt=False)
         
         # Show tool configuration and store valid tool names for validation
-        self.valid_tool_names = set()
         if self.tools:
-            self.valid_tool_names = {tool["function"]["name"] for tool in self.tools}
             tool_names = sorted(self.valid_tool_names)
             if not self.quiet_mode:
                 print(f"🛠️  Loaded {len(self.tools)} tools: {', '.join(tool_names)}")
@@ -1494,8 +1652,7 @@ class AIAgent:
                 new_context_length * self.context_compressor.threshold_percent
             )
 
-        # ── Invalidate cached system prompt so it rebuilds next turn ──
-        self._cached_system_prompt = None
+        self.refresh_tool_surface(quiet_mode=True, invalidate_prompt=True)
 
         # ── Update _primary_runtime so the change persists across turns ──
         _cc = self.context_compressor if hasattr(self, "context_compressor") and self.context_compressor else None
@@ -3094,6 +3251,128 @@ class AIAgent:
 
         return None
 
+    def _runtime_excluded_tool_names(self) -> set[str]:
+        """Tool names to hide for the current runtime's native capabilities."""
+        excluded: set[str] = set()
+        if supports_native_multimodal_input(
+            provider=self.provider,
+            api_mode=self.api_mode,
+            base_url=self.base_url,
+        ):
+            excluded.add("vision_analyze")
+        else:
+            excluded.add("attach_image")
+        return excluded
+
+    @staticmethod
+    def _native_image_attachment_prompt(entries: List[Dict[str, str]]) -> str:
+        notes = [str(entry.get("note") or "").strip() for entry in entries if str(entry.get("note") or "").strip()]
+        if not notes:
+            return _NATIVE_IMAGE_ATTACH_PROMPT
+        lines = [_NATIVE_IMAGE_ATTACH_PROMPT, "Notes:"]
+        lines.extend(f"- {note}" for note in notes[:6])
+        return "\n".join(lines)
+
+    def _queue_native_image_attachment(self, image_path: str, *, note: str | None = None) -> Dict[str, Any]:
+        if not supports_native_multimodal_input(
+            provider=self.provider,
+            api_mode=self.api_mode,
+            base_url=self.base_url,
+        ):
+            return {
+                "success": False,
+                "error": "Current runtime does not support native image input.",
+            }
+
+        raw_path = str(image_path or "").strip()
+        if not raw_path:
+            return {"success": False, "error": "Image path is required."}
+
+        resolved = Path(os.path.expanduser(raw_path))
+        if not resolved.exists() or not resolved.is_file():
+            return {"success": False, "error": f"Image file not found: {raw_path}"}
+
+        suffix = resolved.suffix.lower()
+        if suffix == ".svg":
+            return {
+                "success": False,
+                "error": "SVG files are not supported for native image attachments. Rasterize them first or use vision_analyze.",
+            }
+
+        mime_type, _ = mimetypes.guess_type(str(resolved))
+        is_image = bool(mime_type and mime_type.startswith("image/")) or suffix in _NATIVE_IMAGE_EXTENSIONS
+        if not is_image:
+            return {"success": False, "error": f"File is not a supported image: {resolved.name}"}
+
+        try:
+            file_size = resolved.stat().st_size
+        except OSError as exc:
+            return {"success": False, "error": f"Could not inspect image file: {exc}"}
+        if file_size > _MAX_NATIVE_IMAGE_BYTES:
+            limit_mb = _MAX_NATIVE_IMAGE_BYTES // (1024 * 1024)
+            return {
+                "success": False,
+                "error": f"Image file is too large for native attachment ({file_size} bytes > {limit_mb} MB limit).",
+            }
+
+        entry = {"path": str(resolved), "note": str(note or "").strip()}
+        self._pending_native_images.append(entry)
+        return {
+            "success": True,
+            "queued": len(self._pending_native_images),
+            "image_path": str(resolved),
+            "note": entry["note"] or None,
+        }
+
+    def _flush_pending_native_images(self, messages: List[Dict[str, Any]]) -> bool:
+        if not self._pending_native_images:
+            return False
+        if not supports_native_multimodal_input(
+            provider=self.provider,
+            api_mode=self.api_mode,
+            base_url=self.base_url,
+        ):
+            logger.debug("Pending native images exist but current runtime is not native-multimodal; leaving queue untouched")
+            return False
+
+        entries = list(self._pending_native_images)
+        self._pending_native_images.clear()
+        message = {
+            "role": "user",
+            "content": build_native_multimodal_user_content(
+                self._native_image_attachment_prompt(entries),
+                [entry["path"] for entry in entries],
+            ),
+            "_native_image_attachment": True,
+        }
+        messages.append(message)
+        return True
+
+    def refresh_tool_surface(
+        self,
+        *,
+        quiet_mode: Optional[bool] = None,
+        invalidate_prompt: bool = True,
+    ) -> List[Dict[str, Any]]:
+        """Rebuild the current tool surface, applying runtime-aware exclusions."""
+        quiet = getattr(self, "quiet_mode", False) if quiet_mode is None else quiet_mode
+        previous_names = set(getattr(self, "valid_tool_names", set()) or set())
+        tools = get_tool_definitions(
+            enabled_toolsets=getattr(self, "enabled_toolsets", None),
+            disabled_toolsets=getattr(self, "disabled_toolsets", None),
+            quiet_mode=quiet,
+            excluded_tool_names=self._runtime_excluded_tool_names(),
+        )
+        self.tools = tools
+        self.valid_tool_names = {
+            tool["function"]["name"] for tool in tools or []
+        }
+        if invalidate_prompt and previous_names != self.valid_tool_names:
+            invalidate = getattr(self, "_invalidate_system_prompt", None)
+            if callable(invalidate):
+                invalidate()
+        return self.tools
+
     def _invalidate_system_prompt(self):
         """
         Invalidate the cached system prompt, forcing a rebuild on the next turn.
@@ -3102,8 +3381,9 @@ class AIAgent:
         so the rebuilt prompt captures any writes from this session.
         """
         self._cached_system_prompt = None
-        if self._memory_store:
-            self._memory_store.load_from_disk()
+        memory_store = getattr(self, "_memory_store", None)
+        if memory_store:
+            memory_store.load_from_disk()
 
     def _responses_tools(self, tools: Optional[List[Dict[str, Any]]] = None) -> Optional[List[Dict[str, Any]]]:
         """Convert chat-completions tool schemas to Responses function-tool schemas."""
@@ -3198,7 +3478,8 @@ class AIAgent:
 
             if role in {"user", "assistant"}:
                 content = msg.get("content", "")
-                content_text = str(content) if content is not None else ""
+                normalized_content = self._normalize_codex_content(content)
+                content_text = message_content_to_text(normalized_content)
 
                 if role == "assistant":
                     # Replay encrypted reasoning items from previous turns
@@ -3211,8 +3492,8 @@ class AIAgent:
                                 items.append(ri)
                                 has_codex_reasoning = True
 
-                    if content_text.strip():
-                        items.append({"role": "assistant", "content": content_text})
+                    if (isinstance(normalized_content, list) and normalized_content) or content_text.strip():
+                        items.append({"role": "assistant", "content": normalized_content})
                     elif has_codex_reasoning:
                         # The Responses API requires a following item after each
                         # reasoning item (otherwise: missing_following_item error).
@@ -3264,7 +3545,7 @@ class AIAgent:
                             })
                     continue
 
-                items.append({"role": role, "content": content_text})
+                items.append({"role": role, "content": normalized_content})
                 continue
 
             if role == "tool":
@@ -3355,6 +3636,11 @@ class AIAgent:
             role = item.get("role")
             if role in {"user", "assistant"}:
                 content = item.get("content", "")
+                if isinstance(content, list):
+                    normalized_content = self._normalize_codex_content(content)
+                    normalized.append({"role": role, "content": normalized_content})
+                    continue
+
                 if content is None:
                     content = ""
                 if not isinstance(content, str):
@@ -5194,6 +5480,8 @@ class AIAgent:
                     fb_context_length * self.context_compressor.threshold_percent
                 )
 
+            self.refresh_tool_surface(quiet_mode=True, invalidate_prompt=True)
+
             self._emit_status(
                 f"🔄 Primary model failed — switching to fallback: "
                 f"{fb_model} via {fb_provider}"
@@ -5259,6 +5547,8 @@ class AIAgent:
             cc.provider = rt["compressor_provider"]
             cc.context_length = rt["compressor_context_length"]
             cc.threshold_tokens = rt["compressor_threshold_tokens"]
+
+            self.refresh_tool_surface(quiet_mode=True, invalidate_prompt=True)
 
             # ── Reset fallback chain for the new turn ──
             self._fallback_activated = False
@@ -5368,6 +5658,38 @@ class AIAgent:
             if isinstance(part, dict) and part.get("type") in {"image_url", "input_image"}:
                 return True
         return False
+
+    @staticmethod
+    def _normalize_codex_content(content: Any) -> Any:
+        from agent.auxiliary_client import _convert_content_for_responses
+
+        if isinstance(content, list):
+            normalized_parts: List[Dict[str, Any]] = []
+            for part in content:
+                if isinstance(part, str):
+                    if part:
+                        normalized_parts.append({"type": "text", "text": part})
+                    continue
+                if not isinstance(part, dict):
+                    continue
+                normalized_part = dict(part)
+                ptype = str(normalized_part.get("type", "") or "")
+                if ptype == "image_url":
+                    image_data = normalized_part.get("image_url", {})
+                    if isinstance(image_data, dict):
+                        url = _coerce_image_reference_to_data_url(image_data.get("url"))
+                        normalized_part["image_url"] = {**image_data, "url": url}
+                    else:
+                        normalized_part["image_url"] = {"url": _coerce_image_reference_to_data_url(image_data)}
+                elif ptype == "input_image":
+                    normalized_part["image_url"] = _coerce_image_reference_to_data_url(
+                        normalized_part.get("image_url")
+                    )
+                normalized_parts.append(normalized_part)
+
+            return _convert_content_for_responses(normalized_parts)
+
+        return content if isinstance(content, str) else (str(content) if content is not None else "")
 
     @staticmethod
     def _materialize_data_url_for_vision(image_url: str) -> tuple[str, Optional[Path]]:
@@ -6423,6 +6745,14 @@ class AIAgent:
                 max_iterations=function_args.get("max_iterations"),
                 parent_agent=self,
             )
+        elif function_name == "attach_image":
+            return json.dumps(
+                self._queue_native_image_attachment(
+                    function_args.get("path", ""),
+                    note=function_args.get("note"),
+                ),
+                ensure_ascii=False,
+            )
         else:
             return handle_function_call(
                 function_name, function_args, effective_task_id,
@@ -6655,6 +6985,8 @@ class AIAgent:
                 tier = "⚠️  WARNING" if remaining <= self.max_iterations * 0.1 else "💡 CAUTION"
                 print(f"{self.log_prefix}{tier}: {remaining} iterations remaining")
 
+        self._flush_pending_native_images(messages)
+
     def _execute_tool_calls_sequential(self, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
         """Execute tool calls sequentially (original behavior). Used for single calls or interactive tools."""
         for i, tool_call in enumerate(assistant_message.tool_calls, 1):
@@ -6823,6 +7155,17 @@ class AIAgent:
                         spinner.stop(cute_msg)
                     elif self._should_emit_quiet_tool_messages():
                         self._vprint(f"  {cute_msg}")
+            elif function_name == "attach_image":
+                function_result = json.dumps(
+                    self._queue_native_image_attachment(
+                        function_args.get("path", ""),
+                        note=function_args.get("note"),
+                    ),
+                    ensure_ascii=False,
+                )
+                tool_duration = time.time() - tool_start_time
+                if self.quiet_mode:
+                    self._vprint(f"  {_get_cute_tool_message_impl('attach_image', function_args, tool_duration, result=function_result)}")
             elif self._memory_manager and self._memory_manager.has_tool(function_name):
                 # Memory provider tools (hindsight_retain, honcho_search, etc.)
                 # These are not in the tool registry — route through MemoryManager.
@@ -6989,6 +7332,8 @@ class AIAgent:
                 remaining = self.max_iterations - api_call_count
                 tier = "⚠️  WARNING" if remaining <= self.max_iterations * 0.1 else "💡 CAUTION"
                 print(f"{self.log_prefix}{tier}: {remaining} iterations remaining")
+
+        self._flush_pending_native_images(messages)
 
     def _get_budget_warning(self, api_call_count: int) -> Optional[str]:
         """Return a budget pressure string, or None if not yet needed.
@@ -7287,7 +7632,8 @@ class AIAgent:
         self.iteration_budget = IterationBudget(self.max_iterations)
 
         # Log conversation turn start for debugging/observability
-        _msg_preview = (user_message[:80] + "...") if len(user_message) > 80 else user_message
+        _user_message_text = message_content_to_text(user_message)
+        _msg_preview = (_user_message_text[:80] + "...") if len(_user_message_text) > 80 else _user_message_text
         _msg_preview = _msg_preview.replace("\n", " ")
         logger.info(
             "conversation turn: session=%s model=%s provider=%s platform=%s history=%d msg=%r",
@@ -7323,6 +7669,7 @@ class AIAgent:
 
         # Preserve the original user message (no nudge injection).
         original_user_message = persist_user_message if persist_user_message is not None else user_message
+        original_user_message_text = message_content_to_text(original_user_message)
 
         # Track memory nudge trigger (turn-based, checked here).
         # Skill trigger is checked AFTER the agent loop completes, based on
@@ -7343,7 +7690,9 @@ class AIAgent:
         self._persist_user_message_idx = current_turn_user_idx
         
         if not self.quiet_mode:
-            self._safe_print(f"💬 Starting conversation: '{user_message[:60]}{'...' if len(user_message) > 60 else ''}'")
+            self._safe_print(
+                f"💬 Starting conversation: '{_user_message_text[:60]}{'...' if len(_user_message_text) > 60 else ''}'"
+            )
         
         # ── System prompt (cached per session for prefix caching) ──
         # Built once on first call, reused for all subsequent calls.
@@ -7512,8 +7861,7 @@ class AIAgent:
         _ext_prefetch_cache = ""
         if self._memory_manager:
             try:
-                _query = original_user_message if isinstance(original_user_message, str) else ""
-                _ext_prefetch_cache = self._memory_manager.prefetch_all(_query) or ""
+                _ext_prefetch_cache = self._memory_manager.prefetch_all(original_user_message_text) or ""
             except Exception:
                 pass
 
@@ -7595,8 +7943,10 @@ class AIAgent:
                         _injections.append(_plugin_user_context)
                     if _injections:
                         _base = api_msg.get("content", "")
-                        if isinstance(_base, str):
-                            api_msg["content"] = _base + "\n\n" + "\n\n".join(_injections)
+                        api_msg["content"] = append_text_to_message_content(
+                            _base,
+                            "\n\n".join(_injections),
+                        )
 
                 # For ALL assistant messages, pass reasoning back to the API
                 # This ensures multi-turn reasoning context is preserved
@@ -7613,8 +7963,9 @@ class AIAgent:
                 # Remove finish_reason - not accepted by strict APIs (e.g. Mistral)
                 if "finish_reason" in api_msg:
                     api_msg.pop("finish_reason")
-                # Strip internal thinking-prefill marker
+                # Strip internal-only markers
                 api_msg.pop("_thinking_prefill", None)
+                api_msg.pop("_native_image_attachment", None)
                 # Strip Codex Responses API fields (call_id, response_item_id) for
                 # strict providers like Mistral, Fireworks, etc. that reject unknown fields.
                 # Uses new dicts so the internal messages list retains the fields
@@ -9734,10 +10085,10 @@ class AIAgent:
         # External memory provider: sync the completed turn + queue next prefetch.
         # Use original_user_message (clean input) — user_message may contain
         # injected skill content that bloats / breaks provider queries.
-        if self._memory_manager and final_response and original_user_message:
+        if self._memory_manager and final_response and original_user_message_text:
             try:
-                self._memory_manager.sync_all(original_user_message, final_response)
-                self._memory_manager.queue_prefetch_all(original_user_message)
+                self._memory_manager.sync_all(original_user_message_text, final_response)
+                self._memory_manager.queue_prefetch_all(original_user_message_text)
             except Exception:
                 pass
 

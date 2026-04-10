@@ -8,6 +8,7 @@ import pytest
 from model_tools import (
     handle_function_call,
     get_all_tool_names,
+    get_tool_definitions,
     get_toolset_for_tool,
     _AGENT_LOOP_TOOLS,
     _LEGACY_TOOLSET_MAP,
@@ -137,3 +138,50 @@ class TestBackwardCompat:
     def test_tool_to_toolset_map(self):
         assert isinstance(TOOL_TO_TOOLSET_MAP, dict)
         assert len(TOOL_TO_TOOLSET_MAP) > 0
+
+    def test_attach_image_registered_in_vision_toolset(self):
+        assert get_toolset_for_tool("attach_image") == "vision"
+
+
+class TestGetToolDefinitionsRuntimeFiltering:
+    def test_excluded_tool_names_remove_tool_and_strip_stale_read_file_hint(self):
+        read_file_tool = {
+            "type": "function",
+            "function": {
+                "name": "read_file",
+                "description": (
+                    "Read a text file. NOTE: Cannot read images or binary files — "
+                    "use vision_analyze for images."
+                ),
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+        vision_tool = {
+            "type": "function",
+            "function": {
+                "name": "vision_analyze",
+                "description": "Analyze images using AI vision.",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+
+        def _resolve(toolset_name):
+            return {
+                "file": ["read_file"],
+                "vision": ["vision_analyze"],
+            }[toolset_name]
+
+        with (
+            patch("model_tools.validate_toolset", return_value=True),
+            patch("model_tools.resolve_toolset", side_effect=_resolve),
+            patch("model_tools.registry.get_definitions", return_value=[read_file_tool, vision_tool]),
+        ):
+            tools = get_tool_definitions(
+                enabled_toolsets=["file", "vision"],
+                quiet_mode=True,
+                excluded_tool_names={"vision_analyze"},
+            )
+
+        tool_names = [tool["function"]["name"] for tool in tools]
+        assert tool_names == ["read_file"]
+        assert "vision_analyze" not in tools[0]["function"]["description"]

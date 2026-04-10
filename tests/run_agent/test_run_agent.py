@@ -454,6 +454,54 @@ class TestInit:
             assert agent.api_mode == "anthropic_messages"
             mock_anthropic.Anthropic.assert_called_once()
 
+    def test_opencode_go_anthropic_mode_strips_trailing_v1(self):
+        """OpenCode Go Anthropic-mode URLs must be normalized for the SDK."""
+        with (
+            patch("run_agent.get_tool_definitions", return_value=[]),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("agent.anthropic_adapter.build_anthropic_client") as mock_build,
+        ):
+            mock_build.return_value = MagicMock()
+            agent = AIAgent(
+                api_key="test-opencode-go-key",
+                provider="opencode-go",
+                api_mode="anthropic_messages",
+                base_url="https://opencode.ai/zen/go/v1",
+                model="minimax-m2.7",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+            assert agent._anthropic_base_url == "https://opencode.ai/zen/go"
+            assert agent.base_url == "https://opencode.ai/zen/go/v1"
+            mock_build.assert_called_once_with(
+                "test-opencode-go-key", "https://opencode.ai/zen/go"
+            )
+
+    def test_third_party_anthropic_mode_does_not_set_oauth_flag(self):
+        """Third-party Anthropic-compatible providers must not enable Claude OAuth mode."""
+        with (
+            patch("run_agent.get_tool_definitions", return_value=[]),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch(
+                "agent.anthropic_adapter.build_anthropic_client",
+                return_value=MagicMock(),
+            ),
+        ):
+            agent = AIAgent(
+                api_key="sk-ant-oat01-fake-opencode-go-oauth-token",
+                provider="opencode-go",
+                api_mode="anthropic_messages",
+                base_url="https://opencode.ai/zen/go/v1",
+                model="minimax-m2.7",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+            assert agent._is_anthropic_oauth is False
+
     def test_prompt_caching_claude_openrouter(self):
         """Claude model via OpenRouter should enable prompt caching."""
         with (

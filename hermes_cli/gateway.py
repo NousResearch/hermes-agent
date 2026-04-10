@@ -1196,7 +1196,19 @@ def launchd_start():
 
 def launchd_stop():
     label = get_launchd_label()
-    subprocess.run(["launchctl", "kill", "SIGTERM", f"{_launchd_domain()}/{label}"], check=True, timeout=30)
+    target = f"{_launchd_domain()}/{label}"
+    # bootout unloads the service definition so KeepAlive doesn't respawn
+    # the process.  A plain `kill SIGTERM` only signals the process — launchd
+    # immediately restarts it because KeepAlive.SuccessfulExit = false.
+    # `hermes gateway start` re-bootstraps when it detects the job is unloaded.
+    try:
+        subprocess.run(["launchctl", "bootout", target], check=True, timeout=90)
+    except subprocess.CalledProcessError as e:
+        if e.returncode in (3, 113):
+            pass  # Already unloaded — nothing to stop.
+        else:
+            raise
+    _wait_for_gateway_exit(timeout=10.0, force_after=5.0)
     print("✓ Service stopped")
 
 def _wait_for_gateway_exit(timeout: float = 10.0, force_after: float = 5.0):

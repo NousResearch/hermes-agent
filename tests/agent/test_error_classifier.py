@@ -249,6 +249,22 @@ class TestClassifyApiError:
         assert result.reason == FailoverReason.rate_limit
         assert result.should_fallback is True
 
+    def test_alibaba_rate_increased_too_quickly(self):
+        """Alibaba/DashScope returns a unique throttling message.
+
+        Port from anomalyco/opencode#21355.
+        """
+        msg = (
+            "Upstream error from Alibaba: Request rate increased too quickly. "
+            "To ensure system stability, please adjust your client logic to "
+            "scale requests more smoothly over time."
+        )
+        e = MockAPIError(msg, status_code=400)
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.rate_limit
+        assert result.retryable is True
+        assert result.should_rotate_credential is True
+
     # ── Server errors ──
 
     def test_500_server_error(self):

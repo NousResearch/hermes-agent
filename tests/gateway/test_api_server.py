@@ -1634,7 +1634,7 @@ class TestSessionIdHeader:
             assert resp.headers.get("X-Hermes-Session-Id") is not None
 
     @pytest.mark.asyncio
-    async def test_provided_session_id_is_used_and_echoed(self, adapter):
+    async def test_provided_session_id_is_used_and_echoed(self, auth_adapter):
         """When X-Hermes-Session-Id is provided, it's passed to the agent and echoed in the response."""
         mock_result = {"final_response": "Continuing!", "messages": [], "api_calls": 1}
         mock_db = MagicMock()
@@ -1642,15 +1642,15 @@ class TestSessionIdHeader:
             {"role": "user", "content": "previous message"},
             {"role": "assistant", "content": "previous reply"},
         ]
-        adapter._session_db = mock_db
-        app = _create_app(adapter)
+        auth_adapter._session_db = mock_db
+        app = _create_app(auth_adapter)
         async with TestClient(TestServer(app)) as cli:
-            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+            with patch.object(auth_adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
                 mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
 
                 resp = await cli.post(
                     "/v1/chat/completions",
-                    headers={"X-Hermes-Session-Id": "my-session-123"},
+                    headers={"X-Hermes-Session-Id": "my-session-123", "Authorization": "Bearer sk-secret"},
                     json={"model": "hermes-agent", "messages": [{"role": "user", "content": "Continue"}]},
                 )
 
@@ -1660,7 +1660,7 @@ class TestSessionIdHeader:
             assert call_kwargs["session_id"] == "my-session-123"
 
     @pytest.mark.asyncio
-    async def test_provided_session_id_loads_history_from_db(self, adapter):
+    async def test_provided_session_id_loads_history_from_db(self, auth_adapter):
         """When X-Hermes-Session-Id is provided, history comes from SessionDB not request body."""
         mock_result = {"final_response": "OK", "messages": [], "api_calls": 1}
         db_history = [
@@ -1669,15 +1669,15 @@ class TestSessionIdHeader:
         ]
         mock_db = MagicMock()
         mock_db.get_messages_as_conversation.return_value = db_history
-        adapter._session_db = mock_db
-        app = _create_app(adapter)
+        auth_adapter._session_db = mock_db
+        app = _create_app(auth_adapter)
         async with TestClient(TestServer(app)) as cli:
-            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+            with patch.object(auth_adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
                 mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
 
                 resp = await cli.post(
                     "/v1/chat/completions",
-                    headers={"X-Hermes-Session-Id": "existing-session"},
+                    headers={"X-Hermes-Session-Id": "existing-session", "Authorization": "Bearer sk-secret"},
                     # Request body has different history — should be ignored
                     json={
                         "model": "hermes-agent",
@@ -1696,20 +1696,20 @@ class TestSessionIdHeader:
             assert call_kwargs["user_message"] == "new question"
 
     @pytest.mark.asyncio
-    async def test_db_failure_falls_back_to_empty_history(self, adapter):
+    async def test_db_failure_falls_back_to_empty_history(self, auth_adapter):
         """If SessionDB raises, history falls back to empty and request still succeeds."""
         mock_result = {"final_response": "OK", "messages": [], "api_calls": 1}
         # Simulate DB failure: _session_db is None and SessionDB() constructor raises
-        adapter._session_db = None
-        app = _create_app(adapter)
+        auth_adapter._session_db = None
+        app = _create_app(auth_adapter)
         async with TestClient(TestServer(app)) as cli:
-            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run, \
+            with patch.object(auth_adapter, "_run_agent", new_callable=AsyncMock) as mock_run, \
                  patch("hermes_state.SessionDB", side_effect=Exception("DB unavailable")):
                 mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
 
                 resp = await cli.post(
                     "/v1/chat/completions",
-                    headers={"X-Hermes-Session-Id": "some-session"},
+                    headers={"X-Hermes-Session-Id": "some-session", "Authorization": "Bearer sk-secret"},
                     json={"model": "hermes-agent", "messages": [{"role": "user", "content": "Hi"}]},
                 )
 

@@ -3214,7 +3214,6 @@ class HermesCLI:
         else:
             _cprint(f"  {_DIM}(._.) No image found in clipboard{_RST}")
 
-<<<<<<< HEAD
     def _write_osc52_clipboard(self, text: str) -> None:
         """Copy *text* to terminal clipboard via OSC 52."""
         payload = base64.b64encode(text.encode("utf-8")).decode("ascii")
@@ -3270,8 +3269,6 @@ class HermesCLI:
         except Exception as e:
             _cprint(f"  Clipboard copy failed: {e}")
 
-    def _preprocess_images_with_vision(self, text: str, images: list) -> str:
-=======
     def _handle_image_command(self, cmd_original: str):
         """Handle /image <path> — attach a local image file for the next prompt."""
         raw_args = (cmd_original.split(None, 1)[1].strip() if " " in cmd_original else "")
@@ -3297,7 +3294,6 @@ class HermesCLI:
             _cprint(f"  {_DIM}Tip: type your next message, or run hermes chat -q --image {_termux_example_image_path(image_path.name)} \"What do you see?\"{_RST}")
 
     def _preprocess_images_with_vision(self, text: str, images: list, *, announce: bool = True) -> str:
->>>>>>> main
         """Analyze attached images via the vision tool and return enriched text.
 
         Instead of embedding raw base64 ``image_url`` content parts in the

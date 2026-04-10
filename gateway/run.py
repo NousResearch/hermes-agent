@@ -477,6 +477,15 @@ class GatewayRunner:
     # Class-level defaults so partial construction in tests doesn't
     # blow up on attribute access.
     _running_agents_ts: Dict[str, float] = {}
+    _busy_input_mode: str = "interrupt"
+    _restart_drain_timeout: float = 60.0
+    _exit_code: Optional[int] = None
+    _draining: bool = False
+    _restart_requested: bool = False
+    _restart_task_started: bool = False
+    _restart_detached: bool = False
+    _restart_via_service: bool = False
+    _stop_task: Optional[asyncio.Task] = None
     
     def __init__(self, config: Optional[GatewayConfig] = None):
         self.config = config or load_gateway_config()
@@ -6819,7 +6828,7 @@ class GatewayRunner:
         subsequent messages.  Fields with ``None`` values are skipped so
         partial overrides don't clobber valid config defaults.
         """
-        override = self._session_model_overrides.get(session_key)
+        override = getattr(self, "_session_model_overrides", {}).get(session_key)
         if not override:
             return model, runtime_kwargs
         model = override.get("model", model)
@@ -6831,7 +6840,7 @@ class GatewayRunner:
 
     def _is_intentional_model_switch(self, session_key: str, agent_model: str) -> bool:
         """Return True if *agent_model* matches an active /model session override."""
-        override = self._session_model_overrides.get(session_key)
+        override = getattr(self, "_session_model_overrides", {}).get(session_key)
         return override is not None and override.get("model") == agent_model
 
     def _evict_cached_agent(self, session_key: str) -> None:

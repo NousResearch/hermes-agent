@@ -14,6 +14,7 @@ directories, matching ripgrep's default behavior.
 """
 
 import os
+import shutil
 import subprocess
 
 import pytest
@@ -98,7 +99,7 @@ class TestRipgrepAlreadyExcludesHidden:
     """Verify ripgrep's default behavior is to skip hidden directories."""
 
     @pytest.mark.skipif(
-        subprocess.run(["which", "rg"], capture_output=True).returncode != 0,
+        shutil.which("rg") is None,
         reason="ripgrep not installed",
     )
     def test_rg_skips_hub_by_default(self, searchable_tree):
@@ -111,7 +112,7 @@ class TestRipgrepAlreadyExcludesHidden:
         assert "catalog.json" not in result.stdout
 
     @pytest.mark.skipif(
-        subprocess.run(["which", "rg"], capture_output=True).returncode != 0,
+        shutil.which("rg") is None,
         reason="ripgrep not installed",
     )
     def test_rg_finds_visible_content(self, searchable_tree):

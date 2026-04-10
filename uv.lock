@@ -1616,7 +1616,7 @@ dependencies = [
     { name = "rich" },
     { name = "ruamel-yaml" },
     { name = "tenacity" },
-    { name = "tzdata", marker = "sys_platform == 'win32'" },
+    { name = "tzdata" },
     { name = "websockets" },
 ]
 

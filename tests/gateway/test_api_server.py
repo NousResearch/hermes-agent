@@ -462,8 +462,8 @@ class TestChatCompletionsEndpoint:
                 assert " about it..." in body
 
     @pytest.mark.asyncio
-    async def test_stream_includes_tool_progress(self, adapter):
-        """tool_progress_callback fires → progress appears in the SSE stream."""
+    async def test_stream_passes_no_tool_progress_callback(self, adapter):
+        """Streaming chat completions must not wire tool progress into content deltas."""
         import asyncio
 
         app = _create_app(adapter)
@@ -471,9 +471,8 @@ class TestChatCompletionsEndpoint:
             async def _mock_run_agent(**kwargs):
                 cb = kwargs.get("stream_delta_callback")
                 tp_cb = kwargs.get("tool_progress_callback")
-                # Simulate tool progress before streaming content
-                if tp_cb:
-                    tp_cb("tool.started", "terminal", "ls -la", {"command": "ls -la"})
+                # Regression guard: no tool progress callback should be passed.
+                assert tp_cb is None
                 if cb:
                     await asyncio.sleep(0.05)
                     cb("Here are the files.")
@@ -494,14 +493,12 @@ class TestChatCompletionsEndpoint:
                 assert resp.status == 200
                 body = await resp.text()
                 assert "[DONE]" in body
-                # Tool progress message must appear in the stream
-                assert "ls -la" in body
                 # Final content must also be present
                 assert "Here are the files." in body
 
     @pytest.mark.asyncio
-    async def test_stream_tool_progress_skips_internal_events(self, adapter):
-        """Internal events (name starting with _) are not streamed."""
+    async def test_stream_does_not_render_tool_progress_text(self, adapter):
+        """Even if tool events fire, SSE content should only contain assistant text."""
         import asyncio
 
         app = _create_app(adapter)
@@ -531,10 +528,9 @@ class TestChatCompletionsEndpoint:
                 )
                 assert resp.status == 200
                 body = await resp.text()
-                # Internal _thinking event should NOT appear
                 assert "some internal state" not in body
-                # Real tool progress should appear
-                assert "Python docs" in body
+                assert "Python docs" not in body
+                assert "Found it." in body
 
     @pytest.mark.asyncio
     async def test_no_user_message_returns_400(self, adapter):

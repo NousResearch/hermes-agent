@@ -587,17 +587,6 @@ class APIServerAdapter(BasePlatformAdapter):
                 if delta is not None:
                     _stream_q.put(delta)
 
-            def _on_tool_progress(event_type, name, preview, args, **kwargs):
-                """Inject tool progress into the SSE stream for Open WebUI."""
-                if event_type != "tool.started":
-                    return  # Only show tool start events in chat stream
-                if name.startswith("_"):
-                    return  # Skip internal events (_thinking)
-                from agent.display import get_tool_emoji
-                emoji = get_tool_emoji(name)
-                label = preview or name
-                _stream_q.put(f"\n`{emoji} {label}`\n")
-
             # Start agent in background.  agent_ref is a mutable container
             # so the SSE writer can interrupt the agent on client disconnect.
             agent_ref = [None]
@@ -607,7 +596,10 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
                 stream_delta_callback=_on_delta,
-                tool_progress_callback=_on_tool_progress,
+                # Do not inject tool progress markers into delta.content.
+                # OpenAI-compatible clients may persist streamed content as
+                # assistant text, which can corrupt subsequent model behavior.
+                tool_progress_callback=None,
                 agent_ref=agent_ref,
             ))
 

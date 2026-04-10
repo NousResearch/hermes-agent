@@ -103,6 +103,18 @@ DANGEROUS_PATTERNS = [
     (r'\b(cp|mv|install)\b.*\s/etc/', "copy/move file into /etc/"),
     (r'\bsed\s+-[^\s]*i.*\s/etc/', "in-place edit of system config"),
     (r'\bsed\s+--in-place\b.*\s/etc/', "in-place edit of system config (long flag)"),
+    # --- Heredoc script injection (bypass -e/-c flag detection) ---
+    # Matches: python3 << 'EOF', bash <<EOF, python3 <<-'SCRIPT', etc.
+    (r'\b(python[23]?|perl|ruby|node|bash|sh|zsh|ksh)\s+<<-?\s*[\'\"]?\w+', "script execution via heredoc"),
+    # --- Git destructive operations ---
+    (r'\bgit\s+reset\s+--hard\b', "git reset --hard (destroys uncommitted changes)"),
+    (r'\bgit\s+push\s+.*--force\b', "git force push (rewrites remote history)"),
+    (r'\bgit\s+push\s+-f\b', "git force push (rewrites remote history)"),
+    (r'\bgit\s+clean\s+-[^\s]*f', "git clean -f (deletes untracked files)"),
+    (r'\bgit\s+branch\s+-D\b', "git branch -D (force delete branch)"),
+    (r'\bgit\s+checkout\s+--\s+\.', "git checkout -- . (discards all changes)"),
+    # --- chmod+x then execute (two-step social engineering) ---
+    (r'\bchmod\s+\+x\b', "make file executable (verify script content first)"),
 ]
 
 

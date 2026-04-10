@@ -167,6 +167,54 @@ def redact_sensitive_text(text: str) -> str:
         return phone[:4] + "****" + phone[-4:]
     text = _SIGNAL_PHONE_RE.sub(_redact_phone, text)
 
+    # --- SECURITY FIX: Detect base64/hex encoded secrets ---
+    # Attackers can bypass pattern-based redaction by encoding API keys.
+    # Detect base64 strings that decode to known secret prefixes.
+    text = _redact_encoded_secrets(text)
+
+    return text
+
+
+# Base64-encoded secret detection
+_BASE64_CHUNK_RE = re.compile(r"[A-Za-z0-9+/]{20,}={0,2}")
+_HEX_CHUNK_RE = re.compile(r"(?:0x)?[0-9a-fA-F]{20,}")
+# Known prefixes that indicate a secret when found inside decoded data
+_DECODED_SECRET_MARKERS = (
+    b"sk-", b"ghp_", b"github_pat_", b"gho_", b"xoxb-", b"xoxp-",
+    b"AIza", b"AKIA", b"sk_live_", b"sk_test_", b"SG.", b"hf_",
+    b"Bearer ", b"token=", b"password=", b"api_key=", b"apiKey",
+)
+
+
+def _redact_encoded_secrets(text: str) -> str:
+    """Detect and redact base64/hex-encoded strings containing secret markers."""
+    import base64
+    import binascii
+
+    def _check_and_redact_b64(m):
+        chunk = m.group(0)
+        try:
+            decoded = base64.b64decode(chunk, validate=True)
+            if any(marker in decoded for marker in _DECODED_SECRET_MARKERS):
+                return "[REDACTED BASE64-ENCODED SECRET]"
+        except (binascii.Error, ValueError):
+            pass
+        return chunk
+
+    text = _BASE64_CHUNK_RE.sub(_check_and_redact_b64, text)
+
+    def _check_and_redact_hex(m):
+        chunk = m.group(0)
+        raw = chunk[2:] if chunk.startswith("0x") else chunk
+        try:
+            decoded = bytes.fromhex(raw)
+            if any(marker in decoded for marker in _DECODED_SECRET_MARKERS):
+                return "[REDACTED HEX-ENCODED SECRET]"
+        except (ValueError, binascii.Error):
+            pass
+        return chunk
+
+    text = _HEX_CHUNK_RE.sub(_check_and_redact_hex, text)
     return text
 
 

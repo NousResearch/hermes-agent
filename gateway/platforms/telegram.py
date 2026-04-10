@@ -640,8 +640,9 @@ class TelegramAdapter(BasePlatformAdapter):
                 from urllib.parse import urlparse
                 webhook_path = urlparse(webhook_url).path or "/telegram"
 
+                _webhook_listen = os.getenv("TELEGRAM_WEBHOOK_LISTEN", "127.0.0.1").strip()
                 await self._app.updater.start_webhook(
-                    listen="0.0.0.0",
+                    listen=_webhook_listen,
                     port=webhook_port,
                     url_path=webhook_path,
                     webhook_url=webhook_url,

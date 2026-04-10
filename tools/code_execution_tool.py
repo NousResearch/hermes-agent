@@ -1009,11 +1009,23 @@ def execute_code(
                 child_env[k] = v
         child_env["HERMES_RPC_SOCKET"] = sock_path
         child_env["PYTHONDONTWRITEBYTECODE"] = "1"
-        # Ensure the hermes-agent root is importable in the sandbox so
-        # repo-root modules are available to child scripts.
-        _hermes_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        _existing_pp = child_env.get("PYTHONPATH", "")
-        child_env["PYTHONPATH"] = _hermes_root + (os.pathsep + _existing_pp if _existing_pp else "")
+        # SECURITY FIX: Do NOT add hermes-agent root to PYTHONPATH.
+        # Exposing the project root allows sandbox scripts to import internal
+        # modules (hermes_state, hermes_constants, config parsers) which may
+        # contain or provide access to API keys and security rules.
+        # See: https://github.com/NousResearch/hermes-agent/issues/7071
+        if "PYTHONPATH" in child_env:
+            # Preserve any pre-existing PYTHONPATH entries that are NOT the
+            # hermes-agent project root.
+            _hermes_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            _filtered = os.pathsep.join(
+                p for p in child_env["PYTHONPATH"].split(os.pathsep)
+                if p and os.path.normpath(p) != os.path.normpath(_hermes_root)
+            )
+            if _filtered:
+                child_env["PYTHONPATH"] = _filtered
+            else:
+                del child_env["PYTHONPATH"]
         # Inject user's configured timezone so datetime.now() in sandboxed
         # code reflects the correct wall-clock time.
         _tz_name = os.getenv("HERMES_TIMEZONE", "").strip()

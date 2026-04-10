@@ -1231,3 +1231,43 @@ class TestRefreshLevelLock:
         t.join(timeout=1)
         assert not t.is_alive(), "Refresh thread did not stop"
         assert iterations > 0, "Refresh thread never ran"
+
+
+class TestEdgeTTSProsodyValidation:
+    """Tests for _validate_edge_prosody — Edge TTS rate/pitch/volume validation."""
+
+    def test_valid_rate(self):
+        from tools.tts_tool import _validate_edge_prosody, _EDGE_RATE_RE, _EDGE_RATE_RANGE, _EDGE_RATE_DEFAULT
+        assert _validate_edge_prosody("+20%", _EDGE_RATE_RE, _EDGE_RATE_RANGE, _EDGE_RATE_DEFAULT) == "+20%"
+        assert _validate_edge_prosody("-30%", _EDGE_RATE_RE, _EDGE_RATE_RANGE, _EDGE_RATE_DEFAULT) == "-30%"
+        assert _validate_edge_prosody("+0%", _EDGE_RATE_RE, _EDGE_RATE_RANGE, _EDGE_RATE_DEFAULT) == "+0%"
+
+    def test_valid_pitch(self):
+        from tools.tts_tool import _validate_edge_prosody, _EDGE_PITCH_RE, _EDGE_PITCH_RANGE, _EDGE_PITCH_DEFAULT
+        assert _validate_edge_prosody("+20Hz", _EDGE_PITCH_RE, _EDGE_PITCH_RANGE, _EDGE_PITCH_DEFAULT) == "+20Hz"
+        assert _validate_edge_prosody("-10Hz", _EDGE_PITCH_RE, _EDGE_PITCH_RANGE, _EDGE_PITCH_DEFAULT) == "-10Hz"
+
+    def test_clamp_rate_exceeds_max(self):
+        from tools.tts_tool import _validate_edge_prosody, _EDGE_RATE_RE, _EDGE_RATE_RANGE, _EDGE_RATE_DEFAULT
+        result = _validate_edge_prosody("+200%", _EDGE_RATE_RE, _EDGE_RATE_RANGE, _EDGE_RATE_DEFAULT)
+        assert result == "+100%"
+
+    def test_clamp_rate_exceeds_min(self):
+        from tools.tts_tool import _validate_edge_prosody, _EDGE_RATE_RE, _EDGE_RATE_RANGE, _EDGE_RATE_DEFAULT
+        result = _validate_edge_prosody("-150%", _EDGE_RATE_RE, _EDGE_RATE_RANGE, _EDGE_RATE_DEFAULT)
+        assert result == "-100%"
+
+    def test_clamp_pitch_exceeds_max(self):
+        from tools.tts_tool import _validate_edge_prosody, _EDGE_PITCH_RE, _EDGE_PITCH_RANGE, _EDGE_PITCH_DEFAULT
+        result = _validate_edge_prosody("+99Hz", _EDGE_PITCH_RE, _EDGE_PITCH_RANGE, _EDGE_PITCH_DEFAULT)
+        assert result == "+50Hz"
+
+    def test_invalid_value_falls_back_to_default(self):
+        from tools.tts_tool import _validate_edge_prosody, _EDGE_RATE_RE, _EDGE_RATE_RANGE, _EDGE_RATE_DEFAULT
+        assert _validate_edge_prosody("banana", _EDGE_RATE_RE, _EDGE_RATE_RANGE, _EDGE_RATE_DEFAULT) == _EDGE_RATE_DEFAULT
+        assert _validate_edge_prosody("", _EDGE_RATE_RE, _EDGE_RATE_RANGE, _EDGE_RATE_DEFAULT) == _EDGE_RATE_DEFAULT
+        assert _validate_edge_prosody("20", _EDGE_RATE_RE, _EDGE_RATE_RANGE, _EDGE_RATE_DEFAULT) == _EDGE_RATE_DEFAULT
+
+    def test_whitespace_trimmed(self):
+        from tools.tts_tool import _validate_edge_prosody, _EDGE_RATE_RE, _EDGE_RATE_RANGE, _EDGE_RATE_DEFAULT
+        assert _validate_edge_prosody("  +15%  ", _EDGE_RATE_RE, _EDGE_RATE_RANGE, _EDGE_RATE_DEFAULT) == "+15%"

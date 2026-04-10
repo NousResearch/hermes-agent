@@ -164,9 +164,58 @@ def _convert_to_opus(mp3_path: str) -> Optional[str]:
 # ===========================================================================
 # Provider: Edge TTS (free)
 # ===========================================================================
+
+# Edge TTS prosody parameter ranges (from Microsoft Edge TTS docs)
+_EDGE_RATE_RE = re.compile(r"^([+-]?\d+)%$")
+_EDGE_PITCH_RE = re.compile(r"^([+-]?\d+)Hz$")
+_EDGE_VOLUME_RE = re.compile(r"^([+-]?\d+)%$")
+
+_EDGE_RATE_RANGE = (-100, 100)
+_EDGE_PITCH_RANGE = (-50, 50)
+_EDGE_VOLUME_RANGE = (-100, 100)
+
+_EDGE_RATE_DEFAULT = "+0%"
+_EDGE_PITCH_DEFAULT = "+0Hz"
+_EDGE_VOLUME_DEFAULT = "+0%"
+
+
+def _validate_edge_prosody(value: str, pattern: "re.Pattern", value_range: tuple, default: str) -> str:
+    """Validate and clamp an Edge TTS prosody parameter.
+
+    Args:
+        value: Raw config value (e.g. "+20%", "-10Hz").
+        pattern: Compiled regex to extract the numeric part.
+        value_range: (min, max) tuple for clamping.
+        default: Fallback value if validation fails.
+
+    Returns:
+        Validated prosody string, or default on any error.
+    """
+    m = pattern.match(value.strip())
+    if not m:
+        logger.debug("Invalid Edge TTS prosody value %r, using default %s", value, default)
+        return default
+    num = int(m.group(1))
+    clamped = max(value_range[0], min(value_range[1], num))
+    suffix = value.strip()[-1]  # '%' or 'z' (Hz)
+    prefix = "Hz" if suffix == "z" else suffix
+    sign = "+" if clamped >= 0 else ""
+    return f"{sign}{clamped}{prefix}"
+
+
 async def _generate_edge_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
     """
     Generate audio using Edge TTS.
+
+    Optional prosody parameters can be set in config.yaml::
+
+        tts:
+          provider: edge
+          edge:
+            voice: de-DE-SeraphinaMultilingualNeural
+            rate: "+0%"      # -100% to +100%, default +0%
+            pitch: "+0Hz"    # -50Hz to +50Hz, default +0Hz
+            volume: "+0%"    # -100% to +100%, default +0%
 
     Args:
         text: Text to convert.
@@ -180,7 +229,20 @@ async def _generate_edge_tts(text: str, output_path: str, tts_config: Dict[str, 
     edge_config = tts_config.get("edge", {})
     voice = edge_config.get("voice", DEFAULT_EDGE_VOICE)
 
-    communicate = _edge_tts.Communicate(text, voice)
+    rate = _validate_edge_prosody(
+        edge_config.get("rate", _EDGE_RATE_DEFAULT),
+        _EDGE_RATE_RE, _EDGE_RATE_RANGE, _EDGE_RATE_DEFAULT,
+    )
+    pitch = _validate_edge_prosody(
+        edge_config.get("pitch", _EDGE_PITCH_DEFAULT),
+        _EDGE_PITCH_RE, _EDGE_PITCH_RANGE, _EDGE_PITCH_DEFAULT,
+    )
+    volume = _validate_edge_prosody(
+        edge_config.get("volume", _EDGE_VOLUME_DEFAULT),
+        _EDGE_VOLUME_RE, _EDGE_VOLUME_RANGE, _EDGE_VOLUME_DEFAULT,
+    )
+
+    communicate = _edge_tts.Communicate(text, voice, rate=rate, pitch=pitch, volume=volume)
     await communicate.save(output_path)
     return output_path
 

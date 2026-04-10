@@ -787,6 +787,9 @@ tts:
   provider: "edge"              # "edge" | "elevenlabs" | "openai" | "neutts"
   edge:
     voice: "en-US-AriaNeural"   # 322 voices, 74 languages
+    rate: "+0%"                 # Speech speed: -100% to +100%, default +0%
+    pitch: "+0Hz"               # Voice pitch: -50Hz to +50Hz, default +0Hz
+    volume: "+0%"               # Audio volume: -100% to +100%, default +0%
   elevenlabs:
     voice_id: "pNInz6obpgDQGcFmaJgB"
     model_id: "eleven_multilingual_v2"

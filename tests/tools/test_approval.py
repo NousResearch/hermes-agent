@@ -649,3 +649,172 @@ class TestNormalizationBypass:
         assert dangerous is False
 
 
+class TestHeredocScriptExecution:
+    """Script execution via heredoc bypasses the -e/-c flag patterns.
+
+    `python3 << 'EOF'` feeds arbitrary code through stdin without any
+    flag that the original patterns check for. See security audit Test 3.
+    """
+
+    def test_python3_heredoc_detected(self):
+        # The heredoc body also contains `rm -rf /` which fires the
+        # "delete in root path" pattern first (patterns are ordered).
+        # The heredoc pattern also matches — either detection is correct.
+        cmd = "python3 << 'EOF'\nimport os; os.system('rm -rf /')\nEOF"
+        dangerous, _, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+
+    def test_python_heredoc_detected(self):
+        cmd = 'python << "PYEOF"\nprint("pwned")\nPYEOF'
+        dangerous, _, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+
+    def test_perl_heredoc_detected(self):
+        cmd = "perl <<'END'\nsystem('whoami');\nEND"
+        dangerous, _, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+
+    def test_ruby_heredoc_detected(self):
+        cmd = "ruby <<RUBY\n`rm -rf /`\nRUBY"
+        dangerous, _, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+
+    def test_node_heredoc_detected(self):
+        cmd = "node << 'JS'\nrequire('child_process').execSync('whoami')\nJS"
+        dangerous, _, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+
+    def test_python3_dash_c_still_detected(self):
+        """Existing -c pattern must not regress."""
+        cmd = "python3 -c 'import os; os.system(\"rm -rf /\")'"
+        dangerous, _, _ = detect_dangerous_command(cmd)
+        assert dangerous is True
+
+    def test_safe_python_not_flagged(self):
+        """Plain 'python3 script.py' without heredoc or -c must stay safe."""
+        cmd = "python3 my_script.py"
+        dangerous, _, _ = detect_dangerous_command(cmd)
+        assert dangerous is False
+
+
+class TestPgrepKillExpansion:
+    """kill -9 $(pgrep hermes) bypasses the pkill/killall name-matching
+    pattern because the command substitution is opaque to regex.
+
+    See security audit Test 7.
+    """
+
+    def test_kill_dollar_pgrep_detected(self):
+        cmd = 'kill -9 $(pgrep -f "hermes.*gateway")'
+        dangerous, _, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+        assert "pgrep" in desc.lower()
+
+    def test_kill_backtick_pgrep_detected(self):
+        cmd = "kill -9 `pgrep hermes`"
+        dangerous, _, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+
+    def test_kill_dollar_pgrep_no_flags(self):
+        cmd = "kill $(pgrep gateway)"
+        dangerous, _, _ = detect_dangerous_command(cmd)
+        assert dangerous is True
+
+    def test_pkill_hermes_still_detected(self):
+        """Existing pkill pattern must not regress."""
+        cmd = "pkill -9 hermes"
+        dangerous, _, _ = detect_dangerous_command(cmd)
+        assert dangerous is True
+
+    def test_safe_kill_pid_not_flagged(self):
+        """A plain 'kill 12345' (literal PID, no expansion) must stay safe."""
+        cmd = "kill 12345"
+        dangerous, _, _ = detect_dangerous_command(cmd)
+        assert dangerous is False
+
+
+class TestGitDestructiveOps:
+    """git reset --hard, push --force, clean -f, branch -D can destroy
+    work and rewrite shared history. Not covered by rm/chmod patterns.
+
+    See security audit Test 6.
+    """
+
+    def test_git_reset_hard_detected(self):
+        cmd = "git reset --hard HEAD~3"
+        dangerous, _, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+        assert "reset" in desc.lower() or "hard" in desc.lower()
+
+    def test_git_push_force_detected(self):
+        cmd = "git push --force origin main"
+        dangerous, _, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+        assert "force" in desc.lower()
+
+    def test_git_push_dash_f_detected(self):
+        cmd = "git push -f origin main"
+        dangerous, _, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+
+    def test_git_clean_force_detected(self):
+        cmd = "git clean -fd"
+        dangerous, _, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+        assert "clean" in desc.lower()
+
+    def test_git_branch_force_delete_detected(self):
+        cmd = "git branch -D feature-branch"
+        dangerous, _, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+
+    def test_safe_git_status_not_flagged(self):
+        cmd = "git status"
+        dangerous, _, _ = detect_dangerous_command(cmd)
+        assert dangerous is False
+
+    def test_safe_git_push_not_flagged(self):
+        """Normal push without --force must not be flagged."""
+        cmd = "git push origin main"
+        dangerous, _, _ = detect_dangerous_command(cmd)
+        assert dangerous is False
+
+    def test_git_branch_lowercase_d_also_flagged(self):
+        """git branch -d triggers approval too — IGNORECASE is global.
+
+        This is intentional: -d is safer than -D but an approval prompt
+        for branch deletion is reasonable. The user can still approve.
+        """
+        cmd = "git branch -d feature-branch"
+        dangerous, _, _ = detect_dangerous_command(cmd)
+        assert dangerous is True
+
+
+class TestChmodExecuteCombo:
+    """chmod +x && ./ is the two-step social engineering pattern where a
+    script is first made executable then immediately run. The script
+    content may contain dangerous commands invisible to pattern matching.
+
+    See security audit Test 4.
+    """
+
+    def test_chmod_and_execute_detected(self):
+        cmd = "chmod +x /tmp/cleanup.sh && ./cleanup.sh"
+        dangerous, _, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+        assert "chmod" in desc.lower() or "execution" in desc.lower()
+
+    def test_chmod_semicolon_execute_detected(self):
+        cmd = "chmod +x script.sh; ./script.sh"
+        dangerous, _, _ = detect_dangerous_command(cmd)
+        # Semicolon variant — pattern uses && but full-string match
+        # on chmod +x should still trigger even without the && ./
+        assert dangerous is True
+
+    def test_safe_chmod_without_execute_not_flagged(self):
+        """chmod +x alone without immediate execution must not be flagged."""
+        cmd = "chmod +x script.sh"
+        dangerous, _, _ = detect_dangerous_command(cmd)
+        assert dangerous is False
+
+

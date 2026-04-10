@@ -99,10 +99,30 @@ DANGEROUS_PATTERNS = [
     (r'\bnohup\b.*gateway\s+run\b', "start gateway outside systemd (use 'systemctl --user restart hermes-gateway')"),
     # Self-termination protection: prevent agent from killing its own process
     (r'\b(pkill|killall)\b.*\b(hermes|gateway|cli\.py)\b', "kill hermes/gateway process (self-termination)"),
+    # Self-termination via kill + command substitution (pgrep/pidof).
+    # The name-based pattern above catches `pkill hermes` but not
+    # `kill -9 $(pgrep -f hermes)` because the substitution is opaque
+    # to regex at detection time. Catch the structural pattern instead.
+    (r'\bkill\b.*\$\(\s*pgrep\b', "kill process via pgrep expansion (self-termination)"),
+    (r'\bkill\b.*`\s*pgrep\b', "kill process via backtick pgrep expansion (self-termination)"),
     # File copy/move/edit into sensitive system paths
     (r'\b(cp|mv|install)\b.*\s/etc/', "copy/move file into /etc/"),
     (r'\bsed\s+-[^\s]*i.*\s/etc/', "in-place edit of system config"),
     (r'\bsed\s+--in-place\b.*\s/etc/', "in-place edit of system config (long flag)"),
+    # Script execution via heredoc — bypasses the -e/-c flag patterns above.
+    # `python3 << 'EOF'` feeds arbitrary code via stdin without -c/-e flags.
+    (r'\b(python[23]?|perl|ruby|node)\s+<<', "script execution via heredoc"),
+    # Git destructive operations that can lose uncommitted work or rewrite
+    # shared history. Not captured by rm/chmod/etc patterns.
+    (r'\bgit\s+reset\s+--hard\b', "git reset --hard (destroys uncommitted changes)"),
+    (r'\bgit\s+push\b.*--force\b', "git force push (rewrites remote history)"),
+    (r'\bgit\s+push\b.*-f\b', "git force push short flag (rewrites remote history)"),
+    (r'\bgit\s+clean\s+-[^\s]*f', "git clean with force (deletes untracked files)"),
+    (r'\bgit\s+branch\s+-D\b', "git branch force delete"),
+    # Script execution after chmod +x — catches the two-step pattern where
+    # a script is first made executable then immediately run. The script
+    # content may contain dangerous commands that individual patterns miss.
+    (r'\bchmod\s+\+x\b.*[;&|]+\s*\./', "chmod +x followed by immediate execution"),
 ]
 
 

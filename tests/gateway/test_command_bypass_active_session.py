@@ -160,6 +160,22 @@ class TestCommandBypassActiveSession:
         assert sk not in adapter._pending_messages
         assert any("handled:status" in r for r in adapter.sent_responses)
 
+    @pytest.mark.asyncio
+    async def test_background_bypasses_guard(self):
+        """/background must bypass so it spawns a parallel task, not an interrupt."""
+        adapter = _make_adapter()
+        sk = _session_key()
+        adapter._active_sessions[sk] = asyncio.Event()
+
+        await adapter.handle_message(_make_event("/background summarize HN"))
+
+        assert sk not in adapter._pending_messages, (
+            "/background was queued as a pending message instead of being dispatched"
+        )
+        assert any("handled:background" in r for r in adapter.sent_responses), (
+            "/background response was not sent back to the user"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Tests: non-bypass messages still get queued

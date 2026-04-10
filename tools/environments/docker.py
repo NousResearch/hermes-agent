@@ -516,13 +516,27 @@ class DockerEnvironment(BaseEnvironment):
             "sleep", "infinity",  # no fixed lifetime — idle reaper handles cleanup
         ]
         logger.debug(f"Starting container: {' '.join(run_cmd)}")
-        result = subprocess.run(
-            run_cmd,
-            capture_output=True,
-            text=True,
-            timeout=120,  # image pull may take a while
-            check=True,
-        )
+        try:
+            result = subprocess.run(
+                run_cmd,
+                capture_output=True,
+                text=True,
+                timeout=120,  # image pull may take a while
+                check=True,
+            )
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+            # Docker may create the container object before failing to start it
+            # (e.g. exit code 125 when the daemon isn't ready). Remove by name so
+            # it doesn't leak as a stale "Created" container.
+            logger.warning(
+                "docker run failed for %s, cleaning up orphaned container: %s",
+                container_name, e,
+            )
+            subprocess.run(
+                [self._docker_exe, "rm", "-f", container_name],
+                capture_output=True, timeout=10,
+            )
+            raise
         self._container_id = result.stdout.strip()
         logger.info(f"Started container {container_name} ({self._container_id[:12]})")
 

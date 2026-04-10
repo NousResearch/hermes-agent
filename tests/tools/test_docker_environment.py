@@ -346,6 +346,64 @@ def test_docker_env_and_forward_env_merge_in_init_args(monkeypatch):
 
 
 
+def test_failed_docker_run_cleans_up_orphaned_container(monkeypatch):
+    """When docker run fails (e.g. exit 125), the partially-created container must be removed."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+
+    cleanup_calls = []
+
+    def _run(cmd, **kwargs):
+        if isinstance(cmd, list) and len(cmd) >= 2:
+            if cmd[1] == "version":
+                return subprocess.CompletedProcess(cmd, 0, stdout="Docker version", stderr="")
+            if cmd[1] == "run":
+                raise subprocess.CalledProcessError(
+                    125, cmd, output="", stderr="docker: Error response from daemon"
+                )
+            if cmd[1] == "rm":
+                cleanup_calls.append(cmd)
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(docker_env.subprocess, "run", _run)
+
+    with pytest.raises(subprocess.CalledProcessError):
+        _make_dummy_env()
+
+    assert len(cleanup_calls) == 1, "docker rm should be called once for the orphaned container"
+    rm_cmd = cleanup_calls[0]
+    assert rm_cmd[1] == "rm" and rm_cmd[2] == "-f"
+    assert rm_cmd[3].startswith("hermes-"), "should remove the container by its generated name"
+
+
+def test_docker_run_timeout_cleans_up_orphaned_container(monkeypatch):
+    """When docker run times out, the partially-created container must be removed."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+
+    cleanup_calls = []
+
+    def _run(cmd, **kwargs):
+        if isinstance(cmd, list) and len(cmd) >= 2:
+            if cmd[1] == "version":
+                return subprocess.CompletedProcess(cmd, 0, stdout="Docker version", stderr="")
+            if cmd[1] == "run":
+                raise subprocess.TimeoutExpired(cmd, 120)
+            if cmd[1] == "rm":
+                cleanup_calls.append(cmd)
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(docker_env.subprocess, "run", _run)
+
+    with pytest.raises(subprocess.TimeoutExpired):
+        _make_dummy_env()
+
+    assert len(cleanup_calls) == 1, "docker rm should be called once for the orphaned container"
+    rm_cmd = cleanup_calls[0]
+    assert rm_cmd[1] == "rm" and rm_cmd[2] == "-f"
+    assert rm_cmd[3].startswith("hermes-"), "should remove the container by its generated name"
+
+
 def test_normalize_env_dict_filters_invalid_keys():
     """_normalize_env_dict should reject invalid variable names."""
     result = docker_env._normalize_env_dict({

@@ -578,6 +578,15 @@ def _run_single_child(
             except (ValueError, UnboundLocalError) as e:
                 logger.debug("Could not remove child from active_children: %s", e)
 
+        # Close tool resources (terminal sandboxes, browser daemons,
+        # background processes, httpx clients) so subagent subprocesses
+        # don't outlive the delegation.
+        try:
+            if hasattr(child, 'close'):
+                child.close()
+        except Exception:
+            logger.debug("Failed to close child agent after delegation")
+
 def delegate_task(
     goal: Optional[str] = None,
     context: Optional[str] = None,

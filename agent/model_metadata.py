@@ -47,7 +47,7 @@ def _resolve_requests_verify() -> bool | str:
 _PROVIDER_PREFIXES: frozenset[str] = frozenset({
     "openrouter", "nous", "openai-codex", "copilot", "copilot-acp",
     "gemini", "ollama-cloud", "zai", "kimi-coding", "kimi-coding-cn", "stepfun", "minimax", "minimax-oauth", "minimax-cn", "anthropic", "deepseek",
-    "opencode-zen", "opencode-go", "ai-gateway", "kilocode", "alibaba",
+    "opencode-zen", "opencode-go", "ai-gateway", "kilocode", "alibaba", "novita",
     "qwen-oauth",
     "xiaomi",
     "arcee",
@@ -66,7 +66,7 @@ _PROVIDER_PREFIXES: frozenset[str] = frozenset({
     "gmi-cloud", "gmicloud",
     "xai", "x-ai", "x.ai", "grok",
     "nvidia", "nim", "nvidia-nim", "nemotron",
-    "qwen-portal",
+    "qwen-portal", "novita-ai", "novitaai",
 })
 
 
@@ -104,6 +104,8 @@ def _strip_provider_prefix(model: str) -> str:
 
 _model_metadata_cache: Dict[str, Dict[str, Any]] = {}
 _model_metadata_cache_time: float = 0
+_novita_metadata_cache: Dict[str, Dict[str, Any]] = {}
+_novita_metadata_cache_time: float = 0
 _MODEL_CACHE_TTL = 3600
 _endpoint_model_metadata_cache: Dict[str, Dict[str, Dict[str, Any]]] = {}
 _endpoint_model_metadata_cache_time: Dict[str, float] = {}
@@ -285,6 +287,7 @@ def grok_supports_reasoning_effort(model: str) -> bool:
 _CONTEXT_LENGTH_KEYS = (
     "context_length",
     "context_window",
+    "context_size",
     "max_context_length",
     "max_position_embeddings",
     "max_model_len",
@@ -361,6 +364,7 @@ _URL_TO_PROVIDER: Dict[str, str] = {
     "api.xiaomimimo.com": "xiaomi",
     "xiaomimimo.com": "xiaomi",
     "api.gmi-serving.com": "gmi",
+    "api.novita.ai": "novita",
     "tokenhub.tencentmaas.com": "tencent-tokenhub",
     "ollama.com": "ollama-cloud",
 }
@@ -557,6 +561,16 @@ def _extract_max_completion_tokens(payload: Dict[str, Any]) -> Optional[int]:
 
 
 def _extract_pricing(payload: Dict[str, Any]) -> Dict[str, Any]:
+    novita_input = payload.get("input_token_price_per_m")
+    novita_output = payload.get("output_token_price_per_m")
+    if novita_input is not None or novita_output is not None:
+        pricing: Dict[str, Any] = {}
+        if novita_input is not None:
+            pricing["prompt"] = str(float(novita_input) / 10_000 / 1_000_000)
+        if novita_output is not None:
+            pricing["completion"] = str(float(novita_output) / 10_000 / 1_000_000)
+        return pricing
+
     alias_map = {
         "prompt": ("prompt", "input", "input_cost_per_token", "prompt_token_cost"),
         "completion": ("completion", "output", "output_cost_per_token", "completion_token_cost"),
@@ -1526,6 +1540,13 @@ def get_model_context_length(
             return get_bedrock_context_length(model)
         except ImportError:
             pass  # boto3 not installed — fall through to generic resolution
+
+    if provider == "novita" or (base_url and base_url_host_matches(base_url, "api.novita.ai")):
+        ctx = _resolve_endpoint_context_length(model, base_url or "https://api.novita.ai/openai/v1", api_key=api_key)
+        if ctx is not None:
+            if base_url:
+                save_context_length(model, base_url, ctx)
+            return ctx
 
     # 2. Active endpoint metadata for truly custom/unknown endpoints.
     # Known providers (Copilot, OpenAI, Anthropic, etc.) skip this — their

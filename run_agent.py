@@ -5015,6 +5015,9 @@ class AIAgent:
                     "base_url": fb_base_url,
                     **({"default_headers": dict(fb_headers)} if fb_headers else {}),
                 }
+                # Apply provider-specific headers (e.g. User-Agent for Kimi)
+                # so per-request clients inherit them from _client_kwargs.
+                self._apply_client_headers_for_base_url(fb_base_url)
 
             # Re-evaluate prompt caching for the new provider/model
             is_native_anthropic = fb_api_mode == "anthropic_messages"

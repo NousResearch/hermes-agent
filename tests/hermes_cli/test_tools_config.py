@@ -354,6 +354,14 @@ def test_first_install_nous_auto_configures_managed_defaults(monkeypatch):
         lambda *args, **kwargs: {"web", "image_gen", "tts", "browser"},
     )
     monkeypatch.setattr("hermes_cli.tools_config.save_config", lambda config: None)
+    # Prevent leaked platform tokens (e.g. DISCORD_BOT_TOKEN from gateway.run
+    # import) from adding extra platforms. The loop in tools_command runs
+    # apply_nous_managed_defaults per platform; a second iteration sees values
+    # set by the first as "explicit" and skips them.
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._get_enabled_platforms",
+        lambda: ["cli"],
+    )
     monkeypatch.setattr(
         "hermes_cli.nous_subscription.get_nous_auth_status",
         lambda: {"logged_in": True},

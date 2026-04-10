@@ -1112,6 +1112,21 @@ def _interpret_exit_code(command: str, exit_code: int) -> str | None:
     return None
 
 
+def _command_requires_pipe_stdin(command: str) -> bool:
+    """Return True when PTY mode would break stdin-driven commands.
+
+    Some CLIs change behavior when stdin is a TTY. In particular,
+    `gh auth login --with-token` expects the token to arrive via piped stdin and
+    waits for EOF; when we launch it under a PTY, `process.submit()` only sends a
+    newline, so the command appears to hang forever with no visible progress.
+    """
+    normalized = " ".join(command.lower().split())
+    return (
+        normalized.startswith("gh auth login")
+        and "--with-token" in normalized
+    )
+
+
 def terminal_tool(
     command: str,
     background: bool = False,
@@ -1332,6 +1347,17 @@ def terminal_tool(
                 }, ensure_ascii=False)
 
         # Prepare command for execution
+        pty_disabled_reason = None
+        effective_pty = pty
+        if pty and _command_requires_pipe_stdin(command):
+            effective_pty = False
+            pty_disabled_reason = (
+                "PTY disabled for this command because it expects piped stdin/EOF "
+                "(for example gh auth login --with-token). For local background "
+                "processes, call process(action='close') after writing so it receives "
+                "EOF."
+            )
+
         if background:
             # Spawn a tracked background process via the process registry.
             # For local backends: uses subprocess.Popen with output buffering.
@@ -1349,7 +1375,7 @@ def terminal_tool(
                         task_id=effective_task_id,
                         session_key=session_key,
                         env_vars=env.env if hasattr(env, 'env') else None,
-                        use_pty=pty,
+                        use_pty=effective_pty,
                     )
                 else:
                     proc_session = process_registry.spawn_via_env(
@@ -1369,6 +1395,8 @@ def terminal_tool(
                 }
                 if approval_note:
                     result_data["approval"] = approval_note
+                if pty_disabled_reason:
+                    result_data["pty_note"] = pty_disabled_reason
 
                 # Transparent timeout clamping note
                 max_timeout = effective_timeout

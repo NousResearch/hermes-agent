@@ -45,11 +45,9 @@ _SEED_FALLBACK_IPS: list[str] = ["149.154.167.220"]
 
 
 def _resolve_proxy_url() -> str | None:
-    for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy", "http_proxy", "all_proxy"):
-        value = (os.environ.get(key) or "").strip()
-        if value:
-            return value
-    return None
+    # Delegate to shared implementation (env vars + macOS system proxy detection)
+    from gateway.platforms.base import resolve_proxy_url
+    return resolve_proxy_url()
 
 
 class TelegramFallbackTransport(httpx.AsyncBaseTransport):

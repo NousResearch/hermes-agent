@@ -123,6 +123,86 @@ def test_kick_rejects_group_owner_before_executing(monkeypatch):
     )
 
 
+def test_mute_group_member_resolves_user_query_by_member_name(monkeypatch):
+    from tools.qq_group_moderation_tool import qq_group_moderation_tool
+
+    config, qq_cfg = _make_qq_napcat_config()
+    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "qq_napcat")
+    monkeypatch.setenv("HERMES_SESSION_CHAT_TYPE", "group")
+    monkeypatch.setenv("HERMES_SESSION_CHAT_ID", "987654321")
+
+    with patch("gateway.config.load_gateway_config", return_value=config), \
+         patch("tools.interrupt.is_interrupted", return_value=False), \
+         patch("model_tools._run_async", side_effect=_run_async_immediately), \
+         patch(
+             "tools.qq_group_moderation_tool.request_dangerous_action_approval",
+             return_value={"approved": True, "message": None},
+         ) as approval_mock, \
+         patch(
+             "tools.qq_group_moderation_tool._qq_napcat_call",
+             new=AsyncMock(side_effect=[
+                 ([{"user_id": 123456, "card": "小美", "nickname": "Alice"}], None),
+                 ({"user_id": 123456, "role": "member", "card": "小美", "nickname": "Alice"}, None),
+                 ({"user_id": 999001}, None),
+                 ({}, None),
+             ]),
+         ) as call_mock:
+        result = json.loads(
+            qq_group_moderation_tool(
+                {
+                    "action": "mute_user",
+                    "user_query": "小美",
+                    "duration_seconds": 600,
+                    "reason": "连续刷屏",
+                }
+            )
+        )
+
+    assert result["success"] is True
+    assert result["user_id"] == "123456"
+    approval_mock.assert_called_once()
+    assert call_mock.await_args_list[0].args == (
+        qq_cfg.extra,
+        "get_group_member_list",
+        {"group_id": 987654321},
+    )
+
+
+def test_user_query_rejects_ambiguous_member_name(monkeypatch):
+    from tools.qq_group_moderation_tool import qq_group_moderation_tool
+
+    config, qq_cfg = _make_qq_napcat_config()
+    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "qq_napcat")
+    monkeypatch.setenv("HERMES_SESSION_CHAT_TYPE", "group")
+    monkeypatch.setenv("HERMES_SESSION_CHAT_ID", "987654321")
+
+    with patch("gateway.config.load_gateway_config", return_value=config), \
+         patch("tools.interrupt.is_interrupted", return_value=False), \
+         patch("model_tools._run_async", side_effect=_run_async_immediately), \
+         patch(
+             "tools.qq_group_moderation_tool._qq_napcat_call",
+             new=AsyncMock(return_value=([
+                 {"user_id": 123456, "card": "小美", "nickname": "Alice"},
+                 {"user_id": 654321, "card": "小美", "nickname": "Alicia"},
+             ], None)),
+         ) as call_mock:
+        result = json.loads(
+            qq_group_moderation_tool(
+                {
+                    "action": "mute_user",
+                    "user_query": "小美",
+                    "duration_seconds": 600,
+                    "reason": "连续刷屏",
+                }
+            )
+        )
+
+    assert "多个" in result["error"]
+    assert "123456" in result["error"]
+    assert "654321" in result["error"]
+    assert call_mock.await_count == 1
+
+
 def test_requires_group_target_when_not_in_qq_group_session(monkeypatch):
     from tools.qq_group_moderation_tool import qq_group_moderation_tool
 

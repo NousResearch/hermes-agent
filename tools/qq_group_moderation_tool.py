@@ -42,6 +42,10 @@ QQ_GROUP_MODERATION_SCHEMA = {
                 "type": "string",
                 "description": "Numeric QQ user ID of the member to moderate.",
             },
+            "user_query": {
+                "type": "string",
+                "description": "QQ member selector. Accepts a numeric QQ user ID, group card, or nickname when the exact QQ user ID is not known.",
+            },
             "duration_seconds": {
                 "type": "integer",
                 "description": "Mute duration in seconds when action='mute_user'. Required for mute_user.",
@@ -51,7 +55,7 @@ QQ_GROUP_MODERATION_SCHEMA = {
                 "description": "Short moderator reason explaining why the action is needed. Required.",
             },
         },
-        "required": ["action", "user_id", "reason"],
+        "required": ["action", "reason"],
     },
 }
 
@@ -83,7 +87,10 @@ def qq_group_moderation_tool(args, **kw):
 
     try:
         group_id = _resolve_group_target(args.get("target"))
-        user_id = _normalize_user_id(args.get("user_id"), arg_name="user_id")
+        user_id, user_query = _normalize_user_selector(
+            args.get("user_id"),
+            args.get("user_query"),
+        )
         reason = _normalize_reason(args.get("reason"))
         duration_seconds = _normalize_duration_seconds(
             args.get("duration_seconds"),
@@ -102,6 +109,7 @@ def qq_group_moderation_tool(args, **kw):
                 extra=pconfig.extra,
                 group_id=group_id,
                 user_id=user_id,
+                user_query=user_query,
                 duration_seconds=duration_seconds,
                 reason=reason,
             )
@@ -137,6 +145,16 @@ def _normalize_user_id(value, *, arg_name: str) -> str:
     if not user_id.isdigit():
         raise ValueError(f"'{arg_name}' must be a numeric QQ user ID.")
     return user_id
+
+
+def _normalize_user_selector(user_id_value, user_query_value) -> tuple[str | None, str | None]:
+    user_id_text = str(user_id_value or "").strip()
+    user_query_text = str(user_query_value or "").strip()
+    if not user_id_text and not user_query_text:
+        raise ValueError("'user_id' or 'user_query' is required.")
+    user_id = _normalize_user_id(user_id_text, arg_name="user_id") if user_id_text else None
+    user_query = user_query_text[:100] if user_query_text else None
+    return user_id, user_query
 
 
 def _normalize_reason(value) -> str:
@@ -176,12 +194,24 @@ async def _dispatch_group_moderation_action(
     action: str,
     extra: dict,
     group_id: str,
-    user_id: str,
+    user_id: str | None,
+    user_query: str | None,
     duration_seconds: int | None,
     reason: str,
 ) -> dict:
     numeric_group_id = int(group_id)
-    numeric_user_id = int(user_id)
+    resolved_user_id, resolve_error = await _resolve_user_id(
+        extra=extra,
+        group_id=numeric_group_id,
+        user_id=user_id,
+        user_query=user_query,
+    )
+    if resolve_error:
+        return _error(resolve_error)
+    if not resolved_user_id:
+        return _error("Failed to resolve the QQ user to moderate.")
+
+    numeric_user_id = int(resolved_user_id)
 
     member_data, member_error = await _qq_napcat_call(
         extra,
@@ -193,7 +223,7 @@ async def _dispatch_group_moderation_action(
     if not isinstance(member_data, dict) or not member_data:
         return _error("QQ NapCat did not return member information for the requested user.")
 
-    protection_error = await _check_target_safety(extra, numeric_group_id, user_id, member_data)
+    protection_error = await _check_target_safety(extra, numeric_group_id, resolved_user_id, member_data)
     if protection_error:
         return _error(protection_error)
 
@@ -201,14 +231,14 @@ async def _dispatch_group_moderation_action(
         action_preview=_build_action_preview(
             action=action,
             group_id=group_id,
-            user_id=user_id,
+            user_id=resolved_user_id,
             duration_seconds=duration_seconds,
             reason=reason,
         ),
         description=_build_action_description(
             action=action,
             group_id=group_id,
-            user_id=user_id,
+            user_id=resolved_user_id,
             duration_seconds=duration_seconds,
             reason=reason,
         ),
@@ -231,7 +261,7 @@ async def _dispatch_group_moderation_action(
             "platform": "qq_napcat",
             "action": action,
             "group_id": group_id,
-            "user_id": user_id,
+            "user_id": resolved_user_id,
             "duration_seconds": int(duration_seconds or 0),
             "reason": reason,
             "member_role": str(member_data.get("role") or "member"),
@@ -251,12 +281,83 @@ async def _dispatch_group_moderation_action(
         "platform": "qq_napcat",
         "action": action,
         "group_id": group_id,
-        "user_id": user_id,
+        "user_id": resolved_user_id,
         "reason": reason,
         "member_role": str(member_data.get("role") or "member"),
         "member_name": _member_display_name(member_data),
         "raw_response": data or {},
     }
+
+
+async def _resolve_user_id(
+    *,
+    extra: dict,
+    group_id: int,
+    user_id: str | None,
+    user_query: str | None,
+) -> tuple[str | None, str | None]:
+    if user_id:
+        return user_id, None
+
+    query = str(user_query or "").strip()
+    if not query:
+        return None, "'user_id' or 'user_query' is required."
+    if query.isdigit():
+        return query, None
+
+    member_list, member_error = await _qq_napcat_call(
+        extra,
+        "get_group_member_list",
+        {"group_id": group_id},
+    )
+    if member_error:
+        return None, str(member_error.get("error") or "Failed to resolve QQ group member.")
+    if not isinstance(member_list, list):
+        return None, "QQ NapCat returned an invalid group member list."
+
+    matches = _match_group_members(member_list, query)
+    if not matches:
+        return None, f"没有在这个 QQ 群里精确找到“{query}”，请改用明确的 QQ 号。"
+    if len(matches) > 1:
+        candidates = "、".join(_member_candidate_label(member) for member in matches[:5])
+        return None, f"群里有多个成员匹配“{query}”：{candidates}。请改用明确的 QQ 号。"
+
+    resolved = str((matches[0] or {}).get("user_id") or "").strip()
+    if not resolved.isdigit():
+        return None, "QQ NapCat returned a matched member without a numeric QQ user ID."
+    return resolved, None
+
+
+def _match_group_members(member_list: list[dict], query: str) -> list[dict]:
+    normalized = _normalize_member_query(query)
+    matches: list[dict] = []
+    for member in member_list:
+        if not isinstance(member, dict):
+            continue
+        member_values = {
+            _normalize_member_query(member.get("user_id")),
+            _normalize_member_query(member.get("card")),
+            _normalize_member_query(member.get("nickname")),
+        }
+        member_values.discard("")
+        if normalized in member_values:
+            matches.append(member)
+    return matches
+
+
+def _normalize_member_query(value) -> str:
+    text = str(value or "").strip()
+    if text.startswith("@"):
+        text = text[1:].strip()
+    return text.casefold()
+
+
+def _member_candidate_label(member: dict) -> str:
+    name = _member_display_name(member)
+    user_id = str(member.get("user_id") or "").strip()
+    if name and user_id and name != user_id:
+        return f"{name}({user_id})"
+    return user_id or name or "unknown"
 
 
 async def _check_target_safety(extra: dict, group_id: int, user_id: str, member_data: dict) -> str | None:

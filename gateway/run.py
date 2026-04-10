@@ -350,6 +350,15 @@ def _dequeue_pending_text(adapter, session_key: str) -> str | None:
     return text
 
 
+def _empty_response_fallback(source: SessionSource) -> str:
+    """Return a user-facing fallback when the model yields no final text."""
+    if getattr(source, "chat_type", "") == "dm":
+        if getattr(source, "platform", None) == Platform.QQ_NAPCAT:
+            return "刚才接口抽了，没吐出正文。你再发一条，或者我继续接着刚才的话题说。"
+        return "I didn't get a usable response just now. Please send that again."
+    return ""
+
+
 def _check_unavailable_skill(command_name: str) -> str | None:
     """Check if a command matches a known-but-inactive skill.
 
@@ -3023,8 +3032,13 @@ class GatewayRunner:
             response = agent_result.get("final_response") or ""
             suppress_reply = bool(agent_result.get("suppress_reply"))
             if response.strip() == "(empty)":
-                suppress_reply = True
-                response = ""
+                fallback = _empty_response_fallback(source)
+                if fallback:
+                    response = fallback
+                    suppress_reply = False
+                else:
+                    suppress_reply = True
+                    response = ""
             if response.strip() == "[[NO_REPLY]]":
                 suppress_reply = True
                 response = ""
@@ -7126,8 +7140,12 @@ class GatewayRunner:
             _resolved_model = getattr(_agent, "model", None) if _agent else None
 
             if isinstance(final_response, str) and final_response.strip() == "(empty)":
-                _empty_placeholder = True
-                final_response = ""
+                fallback = _empty_response_fallback(source)
+                if fallback:
+                    final_response = fallback
+                else:
+                    _empty_placeholder = True
+                    final_response = ""
 
             if not final_response and not _empty_placeholder:
                 error_msg = f"⚠️ {result['error']}" if result.get("error") else "(No response generated)"

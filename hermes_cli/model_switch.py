@@ -710,22 +710,12 @@ def list_authenticated_providers(
     user_providers: dict = None,
     max_models: int = 8,
 ) -> List[dict]:
-    """Detect which providers have credentials and list their curated models.
+    """Detect which providers have credentials and list their best-known models.
 
-    Uses the curated model lists from hermes_cli/models.py (OPENROUTER_MODELS,
-    _PROVIDER_MODELS) — NOT the full models.dev catalog.  These are hand-picked
-    agentic models that work well as agent backends.
-
-    Returns a list of dicts, each with:
-      - slug: str — the --provider value to use
-      - name: str — display name
-      - is_current: bool
-      - is_user_defined: bool
-      - models: list[str] — curated model IDs (up to max_models)
-      - total_models: int — total curated count
-      - source: str — "built-in", "models.dev", "user-config"
-
-    Only includes providers that have API keys set or are user-defined endpoints.
+    The no-args `/model` picker should reflect the same provider catalogs Hermes
+    uses for actual switching, not a stale hand-maintained preview list. Use the
+    canonical `provider_model_ids()` lookup first, then fall back to curated
+    lists only when provider-specific discovery yields nothing.
     """
     import os
     from agent.models_dev import (
@@ -734,19 +724,28 @@ def list_authenticated_providers(
         get_provider_info as _mdev_pinfo,
     )
     from hermes_cli.auth import PROVIDER_REGISTRY
-    from hermes_cli.models import OPENROUTER_MODELS, _PROVIDER_MODELS
+    from hermes_cli.models import OPENROUTER_MODELS, _PROVIDER_MODELS, provider_model_ids
 
     results: List[dict] = []
     seen_slugs: set = set()
 
     data = fetch_models_dev()
 
-    # Build curated model lists keyed by hermes provider ID
+    # Build curated fallback lists keyed by hermes provider ID.
     curated: dict[str, list[str]] = dict(_PROVIDER_MODELS)
     curated["openrouter"] = [mid for mid, _ in OPENROUTER_MODELS]
-    # "nous" shares OpenRouter's curated list if not separately defined
     if "nous" not in curated:
         curated["nous"] = curated["openrouter"]
+
+    def _catalog_preview(provider_id: str) -> tuple[list[str], int]:
+        model_ids: list[str] = []
+        try:
+            model_ids = list(provider_model_ids(provider_id) or [])
+        except Exception as exc:
+            logger.debug("Provider model catalog lookup failed for %s: %s", provider_id, exc)
+        if not model_ids:
+            model_ids = list(curated.get(provider_id, []))
+        return model_ids[:max_models], len(model_ids)
 
     # --- 1. Check Hermes-mapped providers ---
     for hermes_id, mdev_id in PROVIDER_TO_MODELS_DEV.items():
@@ -765,16 +764,11 @@ def list_authenticated_providers(
             if not isinstance(env_vars, list):
                 continue
 
-        # Check if any env var is set
         has_creds = any(os.environ.get(ev) for ev in env_vars)
         if not has_creds:
             continue
 
-        # Use curated list, falling back to models.dev if no curated list
-        model_ids = curated.get(hermes_id, [])
-        total = len(model_ids)
-        top = model_ids[:max_models]
-
+        top, total = _catalog_preview(hermes_id)
         slug = hermes_id
         pinfo = _mdev_pinfo(mdev_id)
         display_name = pinfo.name if pinfo else mdev_id
@@ -795,12 +789,10 @@ def list_authenticated_providers(
     for pid, overlay in HERMES_OVERLAYS.items():
         if pid in seen_slugs:
             continue
-        # Check if credentials exist
         has_creds = False
         if overlay.extra_env_vars:
             has_creds = any(os.environ.get(ev) for ev in overlay.extra_env_vars)
         if overlay.auth_type in ("oauth_device_code", "oauth_external", "external_process"):
-            # These use auth stores, not env vars — check for auth.json entries
             try:
                 from hermes_cli.auth import _load_auth_store
                 store = _load_auth_store()
@@ -811,11 +803,7 @@ def list_authenticated_providers(
         if not has_creds:
             continue
 
-        # Use curated list
-        model_ids = curated.get(pid, [])
-        total = len(model_ids)
-        top = model_ids[:max_models]
-
+        top, total = _catalog_preview(pid)
         results.append({
             "slug": pid,
             "name": get_label(pid),
@@ -840,8 +828,6 @@ def list_authenticated_providers(
             if default_model:
                 models_list.append(default_model)
 
-            # Try to probe /v1/models if URL is set (but don't block on it)
-            # For now just show what we know from config
             results.append({
                 "slug": ep_name,
                 "name": display_name,
@@ -853,7 +839,6 @@ def list_authenticated_providers(
                 "api_url": api_url,
             })
 
-    # Sort: current provider first, then by model count descending
     results.sort(key=lambda r: (not r["is_current"], -r["total_models"]))
 
     return results

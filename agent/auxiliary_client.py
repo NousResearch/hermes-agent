@@ -35,11 +35,12 @@ Per-task direct endpoint overrides (e.g. AUXILIARY_VISION_BASE_URL,
 AUXILIARY_VISION_API_KEY) let callers route a specific auxiliary task to a
 custom OpenAI-compatible endpoint without touching the main model settings.
 
-Payment / credit exhaustion fallback:
-  When a resolved provider returns HTTP 402 or a credit-related error,
-  call_llm() automatically retries with the next available provider in the
-  auto-detection chain.  This handles the common case where a user depletes
-  their OpenRouter balance but has Codex OAuth or another provider available.
+Payment / rate-limit fallback:
+  When a resolved provider returns HTTP 402, a credit-related error, or a
+  normal HTTP 429 rate limit, call_llm() retries via the configured ordered
+  fallback providers first and then the auto-detection chain. This handles
+  the common case where a primary custom endpoint is temporarily saturated
+  but other configured endpoints remain available.
 """
 
 import json
@@ -1044,6 +1045,173 @@ def _is_payment_error(exc: Exception) -> bool:
                                            "payment required")):
             return True
     return False
+
+
+def _is_rate_limit_error(exc: Exception) -> bool:
+    """Detect ordinary rate-limit errors distinct from payment exhaustion."""
+    if _is_payment_error(exc):
+        return False
+
+    status = getattr(exc, "status_code", None)
+    if status == 429:
+        return True
+
+    err_lower = str(exc).lower()
+    return any(kw in err_lower for kw in (
+        "rate limit",
+        "too many requests",
+        "try again later",
+        "retry after",
+    ))
+
+
+def _normalize_base_url(value: Optional[str]) -> str:
+    return str(value or "").strip().rstrip("/").lower()
+
+
+def _load_ordered_fallback_providers() -> List[Dict[str, Any]]:
+    """Load the configured ordered fallback providers from config.yaml."""
+    try:
+        from hermes_cli.config import load_config
+        config = load_config()
+    except ImportError:
+        return []
+
+    if not isinstance(config, dict):
+        return []
+
+    configured = config.get("fallback_providers")
+    if isinstance(configured, list):
+        providers = configured
+    else:
+        legacy = config.get("fallback_model")
+        providers = [legacy] if isinstance(legacy, dict) else []
+
+    result: List[Dict[str, Any]] = []
+    for entry in providers:
+        if not isinstance(entry, dict):
+            continue
+        provider = str(entry.get("provider", "")).strip()
+        model = str(entry.get("model", "")).strip()
+        if not provider or not model:
+            continue
+        normalized = dict(entry)
+        normalized["provider"] = provider
+        normalized["model"] = model
+        result.append(normalized)
+    return result
+
+
+def _matches_failed_endpoint(
+    entry: Dict[str, Any],
+    *,
+    failed_provider: str,
+    failed_model: Optional[str],
+    failed_base_url: Optional[str],
+) -> bool:
+    """Return True when a fallback entry targets the already-failed endpoint."""
+    entry_provider = _normalize_aux_provider(entry.get("provider"))
+    entry_model = str(entry.get("model", "")).strip()
+    entry_base_url = _normalize_base_url(entry.get("base_url"))
+    failed_provider_norm = _normalize_aux_provider(failed_provider)
+    failed_base_url_norm = _normalize_base_url(failed_base_url)
+    failed_model_norm = str(failed_model or "").strip()
+
+    if entry_base_url and failed_base_url_norm:
+        return entry_provider == failed_provider_norm and entry_base_url == failed_base_url_norm
+
+    if entry_provider != failed_provider_norm:
+        return False
+
+    if failed_model_norm and entry_model:
+        return entry_model == failed_model_norm
+
+    return True
+
+
+def _try_configured_fallback(
+    failed_provider: str,
+    *,
+    failed_model: Optional[str] = None,
+    failed_base_url: Optional[str] = None,
+    task: Optional[str] = None,
+    async_mode: bool = False,
+) -> Tuple[Optional[Any], Optional[str], str, Optional[str]]:
+    """Try root-level ordered fallback_providers from config.yaml."""
+    tried: List[str] = []
+
+    for entry in _load_ordered_fallback_providers():
+        if _matches_failed_endpoint(
+            entry,
+            failed_provider=failed_provider,
+            failed_model=failed_model,
+            failed_base_url=failed_base_url,
+        ):
+            continue
+
+        entry_provider = _normalize_aux_provider(entry.get("provider"))
+        entry_model = str(entry.get("model", "")).strip() or None
+        entry_base_url = str(entry.get("base_url", "")).strip() or None
+        entry_api_key = str(entry.get("api_key", "")).strip() or None
+        entry_api_key_env = str(entry.get("api_key_env", "")).strip()
+        if entry_api_key is None and entry_api_key_env:
+            entry_api_key = os.getenv(entry_api_key_env, "").strip() or None
+
+        tried_label = entry_base_url or entry_provider
+        tried.append(tried_label)
+
+        client, resolved_model = resolve_provider_client(
+            provider=entry_provider,
+            model=entry_model,
+            async_mode=async_mode,
+            explicit_base_url=entry_base_url,
+            explicit_api_key=entry_api_key,
+        )
+        if client is None:
+            continue
+
+        final_model = entry_model or resolved_model
+        logger.info(
+            "Auxiliary %s: fallback from %s to configured %s (%s)%s",
+            task or "call",
+            failed_base_url or failed_provider,
+            entry_provider,
+            final_model or "default",
+            f" at {entry_base_url}" if entry_base_url else "",
+        )
+        return client, final_model, entry_provider, entry_base_url
+
+    if tried:
+        logger.warning(
+            "Auxiliary %s: configured fallbacks unavailable after %s (tried: %s)",
+            task or "call",
+            failed_base_url or failed_provider,
+            ", ".join(tried),
+        )
+    return None, None, "", None
+
+
+def _try_auxiliary_fallback(
+    failed_provider: str,
+    *,
+    failed_model: Optional[str] = None,
+    failed_base_url: Optional[str] = None,
+    task: Optional[str] = None,
+    async_mode: bool = False,
+) -> Tuple[Optional[Any], Optional[str], str, Optional[str]]:
+    """Try ordered config fallbacks first, then the generic auto chain."""
+    client, model, provider, base_url = _try_configured_fallback(
+        failed_provider,
+        failed_model=failed_model,
+        failed_base_url=failed_base_url,
+        task=task,
+        async_mode=async_mode,
+    )
+    if client is not None:
+        return client, model, provider, base_url
+
+    client, model, provider = _try_payment_fallback(failed_provider, task)
+    return client, model, provider, None
 
 
 def _try_payment_fallback(
@@ -2125,7 +2293,7 @@ def call_llm(
         tools=tools, timeout=effective_timeout, extra_body=extra_body,
         base_url=resolved_base_url)
 
-    # Handle max_tokens vs max_completion_tokens retry, then payment fallback.
+    # Handle max_tokens vs max_completion_tokens retry, then provider fallback.
     try:
         return client.chat.completions.create(**kwargs)
     except Exception as first_err:
@@ -2142,20 +2310,24 @@ def call_llm(
                     raise
                 first_err = retry_err
 
-        # ── Payment / credit exhaustion fallback ──────────────────────
-        # When the resolved provider returns 402 or a credit-related error,
-        # try alternative providers instead of giving up.  This handles the
-        # common case where a user runs out of OpenRouter credits but has
-        # Codex OAuth or another provider available.
-        if _is_payment_error(first_err):
-            fb_client, fb_model, fb_label = _try_payment_fallback(
-                resolved_provider, task)
+        # ── Payment / rate-limit fallback ─────────────────────────────
+        # Try the configured ordered chain first so custom endpoint arrays
+        # fail over deterministically. If that is exhausted, fall back to the
+        # generic auto chain for providers like Codex OAuth or API-key backends.
+        if _is_payment_error(first_err) or _is_rate_limit_error(first_err):
+            fb_client, fb_model, fb_label, fb_base_url = _try_auxiliary_fallback(
+                resolved_provider,
+                failed_model=final_model,
+                failed_base_url=str(getattr(client, "base_url", resolved_base_url) or ""),
+                task=task,
+                async_mode=False,
+            )
             if fb_client is not None:
                 fb_kwargs = _build_call_kwargs(
                     fb_label, fb_model, messages,
                     temperature=temperature, max_tokens=max_tokens,
                     tools=tools, timeout=effective_timeout,
-                    extra_body=extra_body)
+                    extra_body=extra_body, base_url=fb_base_url)
                 return fb_client.chat.completions.create(**fb_kwargs)
         raise
 
@@ -2303,5 +2475,26 @@ async def async_call_llm(
         if "max_tokens" in err_str or "unsupported_parameter" in err_str:
             kwargs.pop("max_tokens", None)
             kwargs["max_completion_tokens"] = max_tokens
-            return await client.chat.completions.create(**kwargs)
+            try:
+                return await client.chat.completions.create(**kwargs)
+            except Exception as retry_err:
+                if not (_is_payment_error(retry_err) or _is_rate_limit_error(retry_err)):
+                    raise
+                first_err = retry_err
+
+        if _is_payment_error(first_err) or _is_rate_limit_error(first_err):
+            fb_client, fb_model, fb_label, fb_base_url = _try_auxiliary_fallback(
+                resolved_provider,
+                failed_model=final_model,
+                failed_base_url=str(getattr(client, "base_url", resolved_base_url) or ""),
+                task=task,
+                async_mode=True,
+            )
+            if fb_client is not None:
+                fb_kwargs = _build_call_kwargs(
+                    fb_label, fb_model, messages,
+                    temperature=temperature, max_tokens=max_tokens,
+                    tools=tools, timeout=effective_timeout,
+                    extra_body=extra_body, base_url=fb_base_url)
+                return await fb_client.chat.completions.create(**fb_kwargs)
         raise

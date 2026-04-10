@@ -3,7 +3,7 @@
 import json
 import os
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, MagicMock, AsyncMock
 
 import pytest
 
@@ -15,6 +15,7 @@ from agent.auxiliary_client import (
     resolve_provider_client,
     auxiliary_max_tokens_param,
     call_llm,
+    async_call_llm,
     _read_codex_access_token,
     _get_auxiliary_provider,
     _get_provider_chain,
@@ -1261,6 +1262,11 @@ class TestCallLlmPaymentFallback:
         exc.status_code = 402
         return exc
 
+    def _make_429_error(self, msg="Rate limit exceeded, try again later"):
+        exc = Exception(msg)
+        exc.status_code = 429
+        return exc
+
     def test_402_triggers_fallback(self, monkeypatch):
         """When the primary provider returns 402, call_llm tries the next one."""
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
@@ -1326,3 +1332,115 @@ class TestCallLlmPaymentFallback:
                     task="compression",
                     messages=[{"role": "user", "content": "hello"}],
                 )
+
+    def test_429_uses_configured_fallbacks_in_order(self):
+        """429 on the primary auxiliary endpoint should honor ordered fallback_providers."""
+        primary_client = MagicMock()
+        primary_client.base_url = "https://pay.kxaug.xyz/v1"
+        primary_client.chat.completions.create.side_effect = self._make_429_error()
+
+        fallback_client = MagicMock()
+        fallback_client.base_url = "https://api.888933.xyz/v1"
+        fallback_response = MagicMock()
+        fallback_client.chat.completions.create.return_value = fallback_response
+
+        config = {
+            "fallback_providers": [
+                {
+                    "provider": "custom",
+                    "model": "gpt-5.4",
+                    "base_url": "https://pay.kxaug.xyz/v1",
+                    "api_key": "primary-key",
+                },
+                {
+                    "provider": "custom",
+                    "model": "gpt-5.4",
+                    "base_url": "https://api.888933.xyz/v1",
+                    "api_key": "secondary-key",
+                },
+                {
+                    "provider": "custom",
+                    "model": "gpt-5.4",
+                    "base_url": "https://www.codexapis.com/v1",
+                    "api_key": "tertiary-key",
+                },
+            ]
+        }
+
+        with (
+            patch("agent.auxiliary_client._get_cached_client",
+                  return_value=(primary_client, "gpt-5.4")),
+            patch("agent.auxiliary_client._resolve_task_provider_model",
+                  return_value=("custom", "gpt-5.4", "https://pay.kxaug.xyz/v1", "primary-key")),
+            patch("hermes_cli.config.load_config", return_value=config),
+            patch("agent.auxiliary_client.resolve_provider_client",
+                  return_value=(fallback_client, "gpt-5.4")) as mock_resolve,
+        ):
+            result = call_llm(
+                task="compression",
+                messages=[{"role": "user", "content": "hello"}],
+            )
+
+        assert result is fallback_response
+        assert mock_resolve.call_count == 1
+        resolve_kwargs = mock_resolve.call_args.kwargs
+        assert resolve_kwargs["provider"] == "custom"
+        assert resolve_kwargs["model"] == "gpt-5.4"
+        assert resolve_kwargs["explicit_base_url"] == "https://api.888933.xyz/v1"
+        assert resolve_kwargs["explicit_api_key"] == "secondary-key"
+        fb_kwargs = fallback_client.chat.completions.create.call_args.kwargs
+        assert fb_kwargs["model"] == "gpt-5.4"
+
+    @pytest.mark.asyncio
+    async def test_async_429_uses_configured_fallbacks_in_order(self):
+        """async_call_llm() should also honor ordered fallback_providers on 429."""
+        primary_client = MagicMock()
+        primary_client.base_url = "https://pay.kxaug.xyz/v1"
+        primary_client.chat.completions.create = AsyncMock(
+            side_effect=self._make_429_error()
+        )
+
+        fallback_client = MagicMock()
+        fallback_client.base_url = "https://api.888933.xyz/v1"
+        fallback_response = MagicMock()
+        fallback_client.chat.completions.create = AsyncMock(
+            return_value=fallback_response
+        )
+
+        config = {
+            "fallback_providers": [
+                {
+                    "provider": "custom",
+                    "model": "gpt-5.4",
+                    "base_url": "https://pay.kxaug.xyz/v1",
+                    "api_key": "primary-key",
+                },
+                {
+                    "provider": "custom",
+                    "model": "gpt-5.4",
+                    "base_url": "https://api.888933.xyz/v1",
+                    "api_key": "secondary-key",
+                },
+            ]
+        }
+
+        with (
+            patch("agent.auxiliary_client._get_cached_client",
+                  return_value=(primary_client, "gpt-5.4")),
+            patch("agent.auxiliary_client._resolve_task_provider_model",
+                  return_value=("custom", "gpt-5.4", "https://pay.kxaug.xyz/v1", "primary-key")),
+            patch("hermes_cli.config.load_config", return_value=config),
+            patch("agent.auxiliary_client.resolve_provider_client",
+                  return_value=(fallback_client, "gpt-5.4")) as mock_resolve,
+        ):
+            result = await async_call_llm(
+                task="compression",
+                messages=[{"role": "user", "content": "hello"}],
+            )
+
+        assert result is fallback_response
+        assert mock_resolve.call_count == 1
+        resolve_kwargs = mock_resolve.call_args.kwargs
+        assert resolve_kwargs["async_mode"] is True
+        assert resolve_kwargs["explicit_base_url"] == "https://api.888933.xyz/v1"
+        fallback_client.chat.completions.create.assert_awaited_once()

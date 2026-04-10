@@ -88,7 +88,7 @@ def _bar_chart(values: List[int], max_width: int = 20) -> List[str]:
     peak = max(values) if values else 1
     if peak == 0:
         return ["" for _ in values]
-    return ["█" * max(1, int(v / peak * max_width)) if v > 0 else "" for v in values]
+    return ["#" * max(1, int(v / peak * max_width)) if v > 0 else "" for v in values]
 
 
 class InsightsEngine:

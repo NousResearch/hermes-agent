@@ -157,11 +157,11 @@ def _fmt_seconds(seconds: float) -> str:
 
 
 def _bar(pct: float, width: int = 20) -> str:
-    """ASCII progress bar: [████████░░░░░░░░░░░░] 40%."""
+    """ASCII progress bar: [########............] 40%."""
     filled = int(pct / 100.0 * width)
     filled = max(0, min(width, filled))
     empty = width - filled
-    return f"[{'█' * filled}{'░' * empty}]"
+    return f"[{'#' * filled}{'.' * empty}]"
 
 
 def _bucket_line(label: str, bucket: RateLimitBucket, label_width: int = 14) -> str:

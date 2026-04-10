@@ -36,9 +36,10 @@ _NEW_SEGMENT = object()
 @dataclass
 class StreamConsumerConfig:
     """Runtime config for a single stream consumer instance."""
-    edit_interval: float = 0.3
-    buffer_threshold: int = 40
-    cursor: str = " ▉"
+    edit_interval: float = 0.8   # Seconds between edits — higher = less chatty
+    buffer_threshold: int = 80   # Chars before forcing an edit
+    cursor: str = " ▉"           # TTY cursor (block glyph — safe for terminal)
+    cursor_plain: str = "..."     # Safe cursor for Telegram/chat (ASCII, no blocks)
 
 
 class GatewayStreamConsumer:
@@ -74,6 +75,7 @@ class GatewayStreamConsumer:
         self._edit_supported = True  # Disabled on first edit failure (Signal/Email/HA)
         self._last_edit_time = 0.0
         self._last_sent_text = ""   # Track last-sent text to skip redundant edits
+        self._last_edit_had_cursor = False  # True when last edit appended the cursor
         self._fallback_final_send = False
         self._fallback_prefix = ""
 
@@ -103,7 +105,7 @@ class GatewayStreamConsumer:
         """Async task that drains the queue and edits the platform message."""
         # Platform message length limit — leave room for cursor + formatting
         _raw_limit = getattr(self.adapter, "MAX_MESSAGE_LENGTH", 4096)
-        _safe_limit = max(500, _raw_limit - len(self.cfg.cursor) - 100)
+        _safe_limit = max(500, _raw_limit - len(self.cfg.cursor_plain) - 100)
 
         try:
             while True:
@@ -186,16 +188,15 @@ class GatewayStreamConsumer:
 
                     display_text = self._accumulated
                     if not got_done and not got_segment_break:
-                        display_text += self.cfg.cursor
+                        display_text += self.cfg.cursor_plain
 
                     await self._send_or_edit(display_text)
                     self._last_edit_time = time.monotonic()
 
                 if got_done:
-                    # Final edit without cursor. If progressive editing failed
-                    # mid-stream, send a single continuation/fallback message
-                    # here instead of letting the base gateway path send the
-                    # full response again.
+                    # Final edit without cursor.  Always attempt to strip the cursor
+                    # even when _accumulated is empty — the cursor may be stuck on
+                    # the last progressive edit with no new text arrived since.
                     if self._accumulated:
                         if self._fallback_final_send:
                             await self._send_fallback_final(self._accumulated)
@@ -203,6 +204,18 @@ class GatewayStreamConsumer:
                             await self._send_or_edit(self._accumulated)
                         elif not self._already_sent:
                             await self._send_or_edit(self._accumulated)
+                    elif self._last_edit_had_cursor and self._message_id:
+                        # Cursor is stuck on the last message — strip it now.
+                        # _last_sent_text is the text as-sent (with cursor), so
+                        # strip the cursor suffix to get the clean content.
+                        cursor = self.cfg.cursor_plain
+                        clean = (
+                            self._last_sent_text[:-len(cursor)]
+                            if self._last_sent_text.endswith(cursor)
+                            else self._last_sent_text
+                        )
+                        if clean.strip():
+                            await self._send_or_edit(clean)
                     return
 
                 # Tool boundary: reset message state so the next text chunk
@@ -262,12 +275,73 @@ class GatewayStreamConsumer:
         # Strip trailing whitespace/newlines but preserve leading content
         return cleaned.rstrip()
 
+    # Unicode blocks used in terminal progress bars: █ ▓ ▒ ░ ▁ ▂ ▃ ▄ ▅ ▆ ▇
+    # Block Elements block: U+2581–U+2594 covers ▁–▉ + ▊–▔ + ░▒▓▔
+    # Also strip: box-drawing (━ ┃ ━ ┃ etc.), braille patterns (U+2800–U+28FF),
+    # zero-width chars (U+200B zero-width space, U+FEFF BOM), and control chars.
+    _TERMINAL_GLYPH_RE = re.compile(
+        '['
+        '\u2581-\u2594'      # Block elements: ▁▂▃▄▅▆▇█▉▊▋▌▍▎▏▐░▒▓▔ (U+2581–U+2594)
+        '\u2500-\u257F'      # Box-drawing and line-drawing chars: ─│┌┐└┘┼ etc.
+        '\u2800-\u28FF'      # Braille patterns (blind terminal output)
+        '\uFEFF'             # BOM / zero-width no-break space
+        '\u200B'             # Zero-width space
+        '\u200C\u200D'       # Zero-width joiner/non-joiner (有时从 LLM 泄漏)
+        '\u00A0'             # Non-breaking space (renders as junk on some clients)
+        ']'
+    )
+
+    # Compiled once — used in _sanitize_for_telegram fast path
+    _SUSPICIOUS_CHARS_RE = re.compile(
+        r'[\u2581-\u2594\u2500-\u257F\u2800-\u28FF\uFEFF\u200B\u200C\u200D\u00A0]'
+    )
+
+    @staticmethod
+    def _sanitize_for_telegram(text: str, cursor: str = "...") -> str:
+        """Strip terminal glyphs and replace block-cursor for Telegram-safe output.
+
+        Removes:
+        - Terminal progress glyphs: █▓▒░▁▂▃▄▅▆▇
+        - Box-drawing characters: ─│┌┐└┘┼ etc.
+        - Braille patterns: ⠀⠁⠂ etc.
+        - Zero-width chars: \\u200B \\uFEFF etc.
+        - Non-breaking space: \\u00A0 → replaced with regular space
+        - Replaces the ▉ block cursor with a plain ASCII alternative.
+
+        Safe to call for all platforms — only removes genuinely problematic chars.
+        """
+        if not text:
+            return text
+
+        # Fast path: text contains no suspicious characters → return unchanged.
+        # (Block-cursor replacement is skipped when text is already clean.)
+        if GatewayStreamConsumer._SUSPICIOUS_CHARS_RE.search(text) is None:
+            return text
+
+        # Replace the ▉ block cursor with a safe fallback (always runs when we
+        # reach this point — the caller passes cursor_plain so we know whether
+        # the stream was using a block cursor).
+        safe_cursor = cursor if cursor not in ("...", "▉", " ◉", " ▉") else "..."
+        cleaned = re.sub(r'▉', safe_cursor, text)
+
+        # Replace non-breaking space with a regular space (preserves word boundary)
+        cleaned = cleaned.replace('\u00A0', ' ')
+
+        # Strip all terminal/block glyphs, box-drawing, braille, zero-width
+        cleaned = GatewayStreamConsumer._TERMINAL_GLYPH_RE.sub('', cleaned)
+
+        # Collapse any double-spaces left by removed glyphs
+        cleaned = re.sub(r'  +', ' ', cleaned)
+
+        return cleaned
+
     async def _send_new_chunk(self, text: str, reply_to_id: Optional[str]) -> Optional[str]:
         """Send a new message chunk, optionally threaded to a previous message.
 
         Returns the message_id so callers can thread subsequent chunks.
         """
         text = self._clean_for_display(text)
+        text = self._sanitize_for_telegram(text, self.cfg.cursor_plain)
         if not text.strip():
             return reply_to_id
         try:
@@ -293,8 +367,10 @@ class GatewayStreamConsumer:
     def _visible_prefix(self) -> str:
         """Return the visible text already shown in the streamed message."""
         prefix = self._last_sent_text or ""
-        if self.cfg.cursor and prefix.endswith(self.cfg.cursor):
-            prefix = prefix[:-len(self.cfg.cursor)]
+        # Strip the cursor_plain that was appended before sending
+        cursor = self.cfg.cursor_plain
+        if cursor and prefix.endswith(cursor):
+            prefix = prefix[:-len(cursor)]
         return self._clean_for_display(prefix)
 
     def _continuation_text(self, final_text: str) -> str:
@@ -370,20 +446,30 @@ class GatewayStreamConsumer:
         self._last_sent_text = chunks[-1]
         self._fallback_prefix = ""
 
-    async def _send_or_edit(self, text: str) -> None:
-        """Send or edit the streaming message."""
+    async def _send_or_edit(self, text: str) -> bool:
+        """Send or edit the streaming message.
+
+        Returns True if the edit/send succeeded, False otherwise.
+        Sets self._last_edit_had_cursor to track whether the cursor was
+        appended so the final flush can remove it cleanly.
+        """
         # Strip MEDIA: directives so they don't appear as visible text.
         # Media files are delivered as native attachments after the stream
         # finishes (via _deliver_media_from_response in gateway/run.py).
         text = self._clean_for_display(text)
+        # Strip terminal glyphs and replace block cursor for Telegram-safe display.
+        # Safe for all platforms — only removes genuinely problematic characters.
+        text = self._sanitize_for_telegram(text, self.cfg.cursor_plain)
         if not text.strip():
-            return
+            return False
+        cursor = self.cfg.cursor_plain
+        had_cursor = text.endswith(cursor)
         try:
             if self._message_id is not None:
                 if self._edit_supported:
                     # Skip if text is identical to what we last sent
                     if text == self._last_sent_text:
-                        return
+                        return True
                     # Edit existing message
                     result = await self.adapter.edit_message(
                         chat_id=self.chat_id,
@@ -393,6 +479,8 @@ class GatewayStreamConsumer:
                     if result.success:
                         self._already_sent = True
                         self._last_sent_text = text
+                        self._last_edit_had_cursor = had_cursor
+                        return True
                     else:
                         # If an edit fails mid-stream (especially Telegram flood control),
                         # stop progressive edits and send only the missing tail once the
@@ -402,10 +490,11 @@ class GatewayStreamConsumer:
                         self._fallback_final_send = True
                         self._edit_supported = False
                         self._already_sent = True
+                        return False
                 else:
                     # Editing not supported — skip intermediate updates.
                     # The final response will be sent by the fallback path.
-                    pass
+                    return False
             else:
                 # First message — send new
                 result = await self.adapter.send(
@@ -417,6 +506,8 @@ class GatewayStreamConsumer:
                     self._message_id = result.message_id
                     self._already_sent = True
                     self._last_sent_text = text
+                    self._last_edit_had_cursor = had_cursor
+                    return True
                 elif result.success:
                     # Platform accepted the message but returned no message_id
                     # (e.g. Signal).  Can't edit without an ID — switch to
@@ -428,8 +519,12 @@ class GatewayStreamConsumer:
                     self._fallback_final_send = True
                     # Sentinel prevents re-entering this branch on every delta
                     self._message_id = "__no_edit__"
+                    return False
                 else:
                     # Initial send failed — disable streaming for this session
                     self._edit_supported = False
+                    return False
         except Exception as e:
             logger.error("Stream send/edit error: %s", e)
+            return False
+        return True

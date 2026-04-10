@@ -190,9 +190,10 @@ class StreamingConfig:
     """Configuration for real-time token streaming to messaging platforms."""
     enabled: bool = False
     transport: str = "edit"       # "edit" (progressive editMessageText) or "off"
-    edit_interval: float = 0.3    # Seconds between message edits
-    buffer_threshold: int = 40    # Chars before forcing an edit
-    cursor: str = " ▉"           # Cursor shown during streaming
+    edit_interval: float = 0.8    # Seconds between message edits — higher = less chatty
+    buffer_threshold: int = 80     # Chars before forcing an edit
+    cursor: str = " ▉"           # TTY cursor (block glyph — safe for terminal)
+    cursor_plain: str = "..."     # Safe cursor for Telegram/chat (ASCII, no blocks)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -201,6 +202,7 @@ class StreamingConfig:
             "edit_interval": self.edit_interval,
             "buffer_threshold": self.buffer_threshold,
             "cursor": self.cursor,
+            "cursor_plain": self.cursor_plain,
         }
 
     @classmethod
@@ -210,9 +212,10 @@ class StreamingConfig:
         return cls(
             enabled=data.get("enabled", False),
             transport=data.get("transport", "edit"),
-            edit_interval=float(data.get("edit_interval", 0.3)),
-            buffer_threshold=int(data.get("buffer_threshold", 40)),
+            edit_interval=float(data.get("edit_interval", 0.8)),
+            buffer_threshold=int(data.get("buffer_threshold", 80)),
             cursor=data.get("cursor", " ▉"),
+            cursor_plain=data.get("cursor_plain", "..."),
         )
 
 

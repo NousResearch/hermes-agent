@@ -359,8 +359,9 @@ def _sanitize_surrogates(text: str) -> str:
 def _sanitize_messages_surrogates(messages: list) -> bool:
     """Sanitize surrogate characters from all string content in a messages list.
 
-    Walks message dicts in-place.  Returns True if any surrogates were found
-    and replaced, False otherwise.
+    Walks message dicts in-place. Returns True if any surrogates were found
+    and replaced, False otherwise. Covers content/text, name, and tool call
+    metadata/arguments so retries don't fail on a non-content field.
     """
     found = False
     for msg in messages:
@@ -376,6 +377,29 @@ def _sanitize_messages_surrogates(messages: list) -> bool:
                     text = part.get("text")
                     if isinstance(text, str) and _SURROGATE_RE.search(text):
                         part["text"] = _SURROGATE_RE.sub('\ufffd', text)
+                        found = True
+        name = msg.get("name")
+        if isinstance(name, str) and _SURROGATE_RE.search(name):
+            msg["name"] = _SURROGATE_RE.sub('\ufffd', name)
+            found = True
+        tool_calls = msg.get("tool_calls")
+        if isinstance(tool_calls, list):
+            for tc in tool_calls:
+                if not isinstance(tc, dict):
+                    continue
+                tc_id = tc.get("id")
+                if isinstance(tc_id, str) and _SURROGATE_RE.search(tc_id):
+                    tc["id"] = _SURROGATE_RE.sub('\ufffd', tc_id)
+                    found = True
+                fn = tc.get("function")
+                if isinstance(fn, dict):
+                    fn_name = fn.get("name")
+                    if isinstance(fn_name, str) and _SURROGATE_RE.search(fn_name):
+                        fn["name"] = _SURROGATE_RE.sub('\ufffd', fn_name)
+                        found = True
+                    fn_args = fn.get("arguments")
+                    if isinstance(fn_args, str) and _SURROGATE_RE.search(fn_args):
+                        fn["arguments"] = _SURROGATE_RE.sub('\ufffd', fn_args)
                         found = True
     return found
 
@@ -7242,7 +7266,7 @@ class AIAgent:
         self._thinking_prefill_retries = 0
         self._last_content_with_tools = None
         self._mute_post_response = False
-        self._unicode_sanitized = False
+        self._unicode_sanitization_passes = 0
 
         # Pre-turn connection health check: detect and clean up dead TCP
         # connections left over from provider outages or dropped streams.
@@ -8233,14 +8257,16 @@ class AIAgent:
                     #   2. ASCII codec on systems with LANG=C or non-UTF-8 locale
                     #      (e.g. Chromebooks) — any non-ASCII character fails.
                     #      Detect via the error message mentioning 'ascii' codec.
-                    # We sanitize messages in-place and retry once.
+                    # We sanitize messages in-place and may retry twice:
+                    # first to strip surrogates, then once more for pure
+                    # ASCII-only locale sanitization if needed.
                     # -----------------------------------------------------------
-                    if isinstance(api_error, UnicodeEncodeError) and not getattr(self, '_unicode_sanitized', False):
-                        self._unicode_sanitized = True
+                    if isinstance(api_error, UnicodeEncodeError) and getattr(self, '_unicode_sanitization_passes', 0) < 2:
                         _err_str = str(api_error).lower()
                         _is_ascii_codec = "'ascii'" in _err_str or "ascii" in _err_str
                         _surrogates_found = _sanitize_messages_surrogates(messages)
                         if _surrogates_found:
+                            self._unicode_sanitization_passes += 1
                             self._vprint(
                                 f"{self.log_prefix}⚠️  Stripped invalid surrogate characters from messages. Retrying...",
                                 force=True,
@@ -8248,16 +8274,17 @@ class AIAgent:
                             continue
                         if _is_ascii_codec:
                             # ASCII codec: the system encoding can't handle
-                            # non-ASCII characters at all.  Sanitize all
+                            # non-ASCII characters at all. Sanitize all
                             # non-ASCII content from messages and retry.
                             if _sanitize_messages_non_ascii(messages):
+                                self._unicode_sanitization_passes += 1
                                 self._vprint(
                                     f"{self.log_prefix}⚠️  System encoding is ASCII — stripped non-ASCII characters from messages. Retrying...",
                                     force=True,
                                 )
                                 continue
                         # Nothing to sanitize in messages — might be in system
-                        # prompt or prefill.  Fall through to normal error path.
+                        # prompt or prefill. Fall through to normal error path.
 
                     status_code = getattr(api_error, "status_code", None)
                     error_context = self._extract_api_error_context(api_error)

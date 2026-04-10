@@ -107,6 +107,26 @@ class TestSurrogateVsAsciiSanitization:
         assert "\ud800" not in messages[0]["content"]
         assert "\ufffd" in messages[0]["content"]
 
+    def test_surrogates_in_name_and_tool_calls_are_sanitized(self):
+        messages = [{
+            "role": "assistant",
+            "name": "bad\ud800name",
+            "content": None,
+            "tool_calls": [{
+                "id": "call_\ud800",
+                "type": "function",
+                "function": {
+                    "name": "read\ud800_file",
+                    "arguments": '{"path": "bad\ud800.txt"}'
+                }
+            }],
+        }]
+        assert _sanitize_messages_surrogates(messages) is True
+        assert "\ud800" not in messages[0]["name"]
+        assert "\ud800" not in messages[0]["tool_calls"][0]["id"]
+        assert "\ud800" not in messages[0]["tool_calls"][0]["function"]["name"]
+        assert "\ud800" not in messages[0]["tool_calls"][0]["function"]["arguments"]
+
     def test_ascii_codec_strips_all_non_ascii(self):
         """ASCII codec case: all non-ASCII is stripped, not replaced."""
         messages = [{"role": "user", "content": "test ⚕🤖你好 end"}]

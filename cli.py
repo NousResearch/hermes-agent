@@ -7911,8 +7911,9 @@ class HermesCLI:
                         _stag = _uuid_mod.uuid4().hex
                         _steer_text = text if text else f"[{len(images)} image{'s' if len(images) != 1 else ''} attached]"
                         cli_ref._steering_queue.append({"id": _stag, "payload": payload, "text": _steer_text})
-                        # Never put directly into _pending_input — post-turn drain owns dispatch
-                        # so steering always takes priority over any queued follow-ups.
+                        # Steering interrupts the agent immediately via _pending_input,
+                        # so it's processed as soon as the agent checks.
+                        cli_ref._pending_input.put({"_steering_tag": _stag, "payload": payload})
                         _sdepth = len(cli_ref._steering_queue)
                         _spreview = _steer_text[:60] + ("..." if len(_steer_text) > 60 else "")
                         _cprint(f"  {_DIM}🎯 Steering queued #{_sdepth}: \"{_spreview}\"{_RST}")

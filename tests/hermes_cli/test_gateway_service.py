@@ -5,6 +5,10 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import hermes_cli.gateway as gateway_cli
+from gateway.restart import (
+    DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
+    GATEWAY_SERVICE_RESTART_EXIT_CODE,
+)
 
 
 class TestSystemdServiceRefresh:
@@ -85,7 +89,7 @@ class TestGeneratedSystemdUnits:
         assert "ExecStart=" in unit
         assert "ExecStop=" not in unit
         assert "ExecReload=/bin/kill -USR1 $MAINPID" in unit
-        assert "RestartForceExitStatus=75" in unit
+        assert f"RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}" in unit
         assert "TimeoutStopSec=60" in unit
 
     def test_user_unit_includes_resolved_node_directory_in_path(self, monkeypatch):
@@ -101,7 +105,7 @@ class TestGeneratedSystemdUnits:
         assert "ExecStart=" in unit
         assert "ExecStop=" not in unit
         assert "ExecReload=/bin/kill -USR1 $MAINPID" in unit
-        assert "RestartForceExitStatus=75" in unit
+        assert f"RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}" in unit
         assert "TimeoutStopSec=60" in unit
         assert "WantedBy=multi-user.target" in unit
 
@@ -161,6 +165,31 @@ class TestGatewayStopCleanup:
 
 
 class TestLaunchdServiceRecovery:
+    def test_get_restart_drain_timeout_prefers_env_then_config_then_default(self, monkeypatch):
+        monkeypatch.delenv("HERMES_RESTART_DRAIN_TIMEOUT", raising=False)
+        monkeypatch.setattr(gateway_cli, "read_raw_config", lambda: {})
+
+        assert (
+            gateway_cli._get_restart_drain_timeout()
+            == DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
+        )
+
+        monkeypatch.setattr(
+            gateway_cli,
+            "read_raw_config",
+            lambda: {"agent": {"restart_drain_timeout": 14}},
+        )
+        assert gateway_cli._get_restart_drain_timeout() == 14.0
+
+        monkeypatch.setenv("HERMES_RESTART_DRAIN_TIMEOUT", "9")
+        assert gateway_cli._get_restart_drain_timeout() == 9.0
+
+        monkeypatch.setenv("HERMES_RESTART_DRAIN_TIMEOUT", "invalid")
+        assert (
+            gateway_cli._get_restart_drain_timeout()
+            == DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
+        )
+
     def test_launchd_install_repairs_outdated_plist_without_force(self, tmp_path, monkeypatch):
         plist_path = tmp_path / "ai.hermes.gateway.plist"
         plist_path.write_text("<plist>old content</plist>", encoding="utf-8")

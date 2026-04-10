@@ -673,6 +673,32 @@ class SendResult:
     retryable: bool = False  # True for transient connection errors — base will retry automatically
 
 
+def merge_pending_message_event(
+    pending_messages: Dict[str, MessageEvent],
+    session_key: str,
+    event: MessageEvent,
+) -> None:
+    """Store or merge a pending event for a session.
+
+    Photo bursts/albums often arrive as multiple near-simultaneous PHOTO
+    events. Merge those into the existing queued event so the next turn sees
+    the whole burst, while non-photo follow-ups still replace the pending
+    event normally.
+    """
+    existing = pending_messages.get(session_key)
+    if (
+        existing
+        and getattr(existing, "message_type", None) == MessageType.PHOTO
+        and event.message_type == MessageType.PHOTO
+    ):
+        existing.media_urls.extend(event.media_urls)
+        existing.media_types.extend(event.media_types)
+        if event.text:
+            existing.text = BasePlatformAdapter._merge_caption(existing.text, event.text)
+        return
+    pending_messages[session_key] = event
+
+
 # Error substrings that indicate a transient *connection* failure worth retrying.
 # "timeout" / "timed out" / "readtimeout" / "writetimeout" are intentionally
 # excluded: a read/write timeout on a non-idempotent call (e.g. send_message)
@@ -1432,14 +1458,7 @@ class BasePlatformAdapter(ABC):
             # then process them immediately after the current task finishes.
             if event.message_type == MessageType.PHOTO:
                 logger.debug("[%s] Queuing photo follow-up for session %s without interrupt", self.name, session_key)
-                existing = self._pending_messages.get(session_key)
-                if existing and existing.message_type == MessageType.PHOTO:
-                    existing.media_urls.extend(event.media_urls)
-                    existing.media_types.extend(event.media_types)
-                    if event.text:
-                        existing.text = self._merge_caption(existing.text, event.text)
-                else:
-                    self._pending_messages[session_key] = event
+                merge_pending_message_event(self._pending_messages, session_key, event)
                 return  # Don't interrupt now - will run after current task completes
 
             # Default behavior for non-photo follow-ups: interrupt the running agent

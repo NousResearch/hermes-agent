@@ -2802,5 +2802,5 @@ class TelegramAdapter(BasePlatformAdapter):
             await self._set_reaction(
                 chat_id,
                 message_id,
-                "\u2705" if outcome == ProcessingOutcome.SUCCESS else "\u274c",
+                "\U0001f44d" if outcome == ProcessingOutcome.SUCCESS else "\U0001f44e",
             )

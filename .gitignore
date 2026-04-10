@@ -70,3 +70,11 @@ mini-swe-agent/
 result
 website/static/api/skills-index.json
 models-dev-upstream/
+
+# Android local build / signing state
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/keystore.properties
+android/release.keystore

@@ -1,3 +1,5 @@
+include constraints-termux.txt
+include constraints-android.txt
 graft skills
 graft optional-skills
 global-exclude __pycache__

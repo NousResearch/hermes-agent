@@ -1,0 +1,12 @@
+# Android APK / embedded-Python dependency constraints for Hermes Agent.
+#
+# Usage:
+#   python -m pip install -e '.[android]' -c constraints-android.txt
+#
+# Keep this lane separate from the broader Termux CLI install path. These
+# constraints currently mirror the explicit API-server runtime deps needed by
+# gateway/platforms/api_server.py.
+# Chaquopy's package index currently provides aiohttp wheels up to the 3.10 line.
+
+aiohttp>=3.10.10,<4
+croniter>=6.0.0,<7

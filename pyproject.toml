@@ -81,6 +81,13 @@ termux = [
   "hermes-agent[honcho]",
   "hermes-agent[acp]",
 ]
+android = [
+  # Dedicated APK / embedded-Python lane. Keep this separate from [termux]
+  # so the app only pulls the API-server runtime dependencies it needs.
+  # Chaquopy currently exposes aiohttp wheels only up to the 3.10 line.
+  "aiohttp>=3.10.10,<4",
+  "croniter>=6.0.0,<7",
+]
 dingtalk = ["dingtalk-stream>=0.20,<1", "alibabacloud-dingtalk>=2.0.0", "qrcode>=7.0,<8"]
 feishu = ["lark-oapi>=1.5.3,<2", "qrcode>=7.0,<8"]
 google = [

@@ -352,6 +352,17 @@ TOOLSETS = {
         ],
         "includes": []
     },
+
+    "hermes-android-app": {
+        "description": "Android app MVP toolset — mobile-safe defaults for the embedded API server",
+        "tools": [
+            "web_search", "web_extract",
+            "vision_analyze", "image_generate",
+            "skills_list", "skill_view", "skill_manage",
+            "todo", "memory", "session_search",
+        ],
+        "includes": []
+    },
     
     "hermes-cli": {
         "description": "Full interactive CLI toolset - all default tools plus cronjob management",

@@ -1233,7 +1233,9 @@ def generate_changelog(commits, tag_name, semver, repo_url="https://github.com/N
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Hermes Agent Release Tool")
+    parser = argparse.ArgumentParser(
+        description="Hermes Agent Release Tool (Python release orchestration; Android APK/AAB assets are attached later by GitHub Actions on release publish)"
+    )
     parser.add_argument("--bump", choices=["major", "minor", "patch"],
                         help="Which semver component to bump")
     parser.add_argument("--publish", action="store_true",
@@ -1288,6 +1290,7 @@ def main():
     print(f"  Commits:         {len(commits)}")
     print(f"  Unique authors:  {len(set(c['github_author'] for c in commits))}")
     print(f"  Mode:            {'PUBLISH' if args.publish else 'DRY RUN'}")
+    print(f"  Android assets:  built by .github/workflows/android-release.yml after the GitHub release is published")
     print(f"{'='*60}")
     print()
 
@@ -1379,6 +1382,7 @@ def main():
         if result and result.returncode == 0:
             changelog_file.unlink(missing_ok=True)
             print(f"  ✓ GitHub release created: {result.stdout.strip()}")
+            print("  ✓ Android GitHub Actions pipeline will attach APK/AAB artifacts and SHA256 files after release publication")
             print(f"\n  🎉 Release v{new_version} ({tag_name}) published!")
         else:
             if result is None:

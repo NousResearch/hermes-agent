@@ -38,6 +38,8 @@ Works on Linux, macOS, WSL2, and Android via Termux. The installer handles the p
 
 > **Android / Termux:** The tested manual path is documented in the [Termux guide](https://hermes-agent.nousresearch.com/docs/getting-started/termux). On Termux, Hermes installs a curated `.[termux]` extra because the full `.[all]` extra currently pulls Android-incompatible voice dependencies.
 >
+> **Android app:** Hermes also has an in-repo Android APK workstream under `android/`, with GitHub Actions workflows for debug and release artifact builds. This app path is separate from the Termux CLI path.
+>
 > **Windows:** Native Windows is not supported. Please install [WSL2](https://learn.microsoft.com/en-us/windows/wsl/install) and run the command above.
 
 After installation:

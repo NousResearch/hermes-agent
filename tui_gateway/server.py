@@ -903,31 +903,74 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 5015, str(e))
 
 
+_TUI_HIDDEN: frozenset[str] = frozenset({
+    "sethome", "set-home", "update", "commands", "status", "approve", "deny",
+})
+
+_TUI_EXTRA: list[tuple[str, str, str]] = [
+    ("/compact", "Toggle compact display mode", "TUI"),
+    ("/logs", "Show recent gateway log lines", "TUI"),
+]
+
+
 @method("commands.catalog")
 def _(rid, params: dict) -> dict:
-    """Registry-backed slash metadata (same surface as SlashCommandCompleter)."""
+    """Registry-backed slash metadata for the TUI — categorized, no aliases."""
     try:
-        from hermes_cli.commands import COMMAND_REGISTRY, COMMANDS, SUBCOMMANDS
+        from hermes_cli.commands import COMMAND_REGISTRY, SUBCOMMANDS, _build_description
 
-        pairs = sorted(COMMANDS.items(), key=lambda kv: kv[0])
-        sub = {k: v[:] for k, v in SUBCOMMANDS.items()}
+        all_pairs: list[list[str]] = []
         canon: dict[str, str] = {}
+        categories: list[dict] = []
+        cat_map: dict[str, list[list[str]]] = {}
+        cat_order: list[str] = []
+
         for cmd in COMMAND_REGISTRY:
-            if cmd.gateway_only:
-                continue
             c = f"/{cmd.name}"
             canon[c.lower()] = c
             for a in cmd.aliases:
                 canon[f"/{a}".lower()] = c
-        skills = []
+
+            if cmd.name in _TUI_HIDDEN:
+                continue
+
+            desc = _build_description(cmd)
+            all_pairs.append([c, desc])
+
+            cat = cmd.category
+            if cat not in cat_map:
+                cat_map[cat] = []
+                cat_order.append(cat)
+            cat_map[cat].append([c, desc])
+
+        for name, desc, cat in _TUI_EXTRA:
+            all_pairs.append([name, desc])
+            if cat not in cat_map:
+                cat_map[cat] = []
+                cat_order.append(cat)
+            cat_map[cat].append([name, desc])
+
+        skill_count = 0
         try:
             from agent.skill_commands import scan_skill_commands
-            for k, info in scan_skill_commands().items():
+            for k, info in sorted(scan_skill_commands().items()):
                 d = str(info.get("description", "Skill"))
-                skills.append([k, f"⚡ {d[:120]}{'…' if len(d) > 120 else ''}"])
+                all_pairs.append([k, d[:120] + ("…" if len(d) > 120 else "")])
+                skill_count += 1
         except Exception:
             pass
-        return _ok(rid, {"pairs": pairs + skills, "sub": sub, "canon": canon})
+
+        for cat in cat_order:
+            categories.append({"name": cat, "pairs": cat_map[cat]})
+
+        sub = {k: v[:] for k, v in SUBCOMMANDS.items()}
+        return _ok(rid, {
+            "pairs": all_pairs,
+            "sub": sub,
+            "canon": canon,
+            "categories": categories,
+            "skill_count": skill_count,
+        })
     except Exception as e:
         return _err(rid, 5020, str(e))
 
@@ -1416,8 +1459,8 @@ def _(rid, params: dict) -> dict:
             return _ok(rid, {"installed": True, "name": query})
         if action == "browse":
             from hermes_cli.skills_hub import browse_skills
-            return _ok(rid, {"results": [{"name": r.get("name", ""), "description": r.get("description", "")}
-                                         for r in (browse_skills(page=int(query) if query.isdigit() else 1) or [])]})
+            pg = int(params.get("page", 0) or 0) or (int(query) if query.isdigit() else 1)
+            return _ok(rid, browse_skills(page=pg, page_size=int(params.get("page_size", 20))))
         if action == "inspect":
             from hermes_cli.skills_hub import inspect_skill
             return _ok(rid, {"info": inspect_skill(query) or {}})

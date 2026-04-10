@@ -280,6 +280,7 @@ export function App({ gw }: { gw: GatewayClient }) {
   const [turnTrail, setTurnTrail] = useState<string[]>([])
   const [bgTasks, setBgTasks] = useState<Set<string>>(new Set())
   const [catalog, setCatalog] = useState<SlashCatalog | null>(null)
+  const [pager, setPager] = useState<{ lines: string[]; offset: number } | null>(null)
 
   // ── Refs ─────────────────────────────────────────────────────────
 
@@ -312,7 +313,7 @@ export function App({ gw }: { gw: GatewayClient }) {
   const { completions, compIdx, setCompIdx, compReplace } = useCompletion(input, blocked(), gw)
 
   function blocked() {
-    return !!(clarify || approval || pasteReview || picker || secret || sudo)
+    return !!(clarify || approval || pasteReview || picker || secret || sudo || pager)
   }
 
   const empty = !messages.length
@@ -348,6 +349,11 @@ export function App({ gw }: { gw: GatewayClient }) {
   }, [])
 
   const sys = useCallback((text: string) => appendMessage({ role: 'system' as const, text }), [appendMessage])
+
+  const page = useCallback((text: string) => {
+    const lines = text.split('\n')
+    setPager({ lines, offset: 0 })
+  }, [])
 
   const pushActivity = useCallback((text: string, tone: ActivityItem['tone'] = 'info', replaceLabel?: string) => {
     setActivity(prev => {
@@ -803,8 +809,26 @@ export function App({ gw }: { gw: GatewayClient }) {
 
   const ctrl = (key: { ctrl: boolean }, ch: string, target: string) => key.ctrl && ch.toLowerCase() === target
 
+  const pagerPageSize = Math.max(5, (stdout?.rows ?? 24) - 6)
+
   useInput((ch, key) => {
     if (isBlocked) {
+      if (pager) {
+        if (key.return || ch === ' ') {
+          const next = pager.offset + pagerPageSize
+
+          if (next >= pager.lines.length) {
+            setPager(null)
+          } else {
+            setPager({ ...pager, offset: next })
+          }
+        } else if (key.escape || ctrl(key, ch, 'c') || ch === 'q') {
+          setPager(null)
+        }
+
+        return
+      }
+
       if (pasteReview) {
         if (key.return) {
           setPasteReview(null)
@@ -970,7 +994,9 @@ export function App({ gw }: { gw: GatewayClient }) {
 
               setCatalog({
                 canon: (r.canon ?? {}) as Record<string, string>,
+                categories: (r.categories ?? []) as SlashCatalog['categories'],
                 pairs: r.pairs as [string, string][],
+                skillCount: (r.skill_count ?? 0) as number,
                 sub: (r.sub ?? {}) as Record<string, string[]>
               })
             })
@@ -1272,21 +1298,26 @@ export function App({ gw }: { gw: GatewayClient }) {
 
       switch (name) {
         case 'help': {
-          const rows = catalog?.pairs ?? []
-          const cap = 52
+          const cats = catalog?.categories ?? []
+          const skills = catalog?.skillCount ?? 0
+          const lines: string[] = []
 
-          sys(
-            [
-              '  Commands:',
-              ...rows.slice(0, cap).map(([c, d]) => `    ${c.padEnd(16)} ${d}`),
-              rows.length > cap ? `    … ${rows.length - cap} more` : '',
-              '',
-              '  Hotkeys:',
-              ...HOTKEYS.map(([k, d]) => `    ${k.padEnd(14)} ${d}`)
-            ]
-              .filter(Boolean)
-              .join('\n')
-          )
+          for (const { name: catName, pairs } of cats) {
+            if (lines.length) lines.push('')
+            lines.push(`  ${catName}:`)
+            for (const [c, d] of pairs) lines.push(`    ${c.padEnd(18)} ${d}`)
+          }
+
+          if (!lines.length) lines.push('  (no commands loaded)')
+
+          if (skills > 0) {
+            lines.push('', `  ${skills} skill commands available — /skills to browse`)
+          }
+
+          lines.push('', '  Hotkeys:')
+          for (const [k, d] of HOTKEYS) lines.push(`    ${k.padEnd(14)} ${d}`)
+
+          sys(lines.join('\n'))
 
           return true
         }
@@ -1527,6 +1558,13 @@ export function App({ gw }: { gw: GatewayClient }) {
 
           return true
 
+        case 'provider':
+          gw.request('slash.exec', { command: 'provider', session_id: sid })
+            .then((r: any) => page(r?.output || '(no output)'))
+            .catch(() => sys('provider command failed'))
+
+          return true
+
         case 'skin':
           if (arg) {
             rpc('config.set', { key: 'skin', value: arg }).then((r: any) => sys(`skin → ${r.value}`))
@@ -1714,6 +1752,56 @@ export function App({ gw }: { gw: GatewayClient }) {
 
           return true
 
+        case 'skills': {
+          const [sub, ...sArgs] = (arg || '').split(/\s+/).filter(Boolean)
+
+          if (!sub || sub === 'list') {
+            rpc('skills.manage', { action: 'list' }).then((r: any) => {
+              const sk = r.skills as Record<string, string[]> | undefined
+
+              if (!sk || !Object.keys(sk).length) return sys('no skills installed')
+
+              const lines: string[] = []
+
+              for (const [cat, names] of Object.entries(sk)) {
+                lines.push(`  ${cat}: ${(names as string[]).join(', ')}`)
+              }
+
+              sys(lines.join('\n'))
+            })
+
+            return true
+          }
+
+          if (sub === 'browse') {
+            const page = parseInt(sArgs[0] ?? '1', 10) || 1
+            rpc('skills.manage', { action: 'browse', page }).then((r: any) => {
+              if (!r.items?.length) return sys('no skills found in the hub')
+
+              const lines = [
+                `  Skills Hub (page ${r.page}/${r.total_pages}, ${r.total} total)`,
+                '',
+                ...r.items.map((s: any) =>
+                  `    ${(s.name ?? '').padEnd(28)} ${(s.description ?? '').slice(0, 60)}${s.description?.length > 60 ? '…' : ''}`
+                ),
+              ]
+
+              if (r.page < r.total_pages) lines.push('', `  /skills browse ${r.page + 1} → next page`)
+              if (r.page > 1) lines.push(`  /skills browse ${r.page - 1} → prev page`)
+
+              sys(lines.join('\n'))
+            })
+
+            return true
+          }
+
+          gw.request('slash.exec', { command: cmd.slice(1), session_id: sid })
+            .then((r: any) => sys(r?.output || '/skills: no output'))
+            .catch(() => sys(`skills: ${sub} failed`))
+
+          return true
+        }
+
         default:
           gw.request('slash.exec', { command: cmd.slice(1), session_id: sid })
             .then((r: any) => sys(r?.output || `/${name}: no output`))
@@ -1737,7 +1825,7 @@ export function App({ gw }: { gw: GatewayClient }) {
           return true
       }
     },
-    [catalog, compact, gw, lastUserMsg, messages, newSession, pastes, pushActivity, rpc, send, sid, statusBar, sys]
+    [catalog, compact, gw, lastUserMsg, messages, newSession, page, pastes, pushActivity, rpc, send, sid, statusBar, sys]
   )
 
   slashRef.current = slash
@@ -1972,6 +2060,20 @@ export function App({ gw }: { gw: GatewayClient }) {
             t={theme}
             usage={usage}
           />
+        )}
+
+        {pager && (
+          <Box flexDirection="column">
+            {pager.lines.slice(pager.offset, pager.offset + pagerPageSize).map((line, i) => (
+              <Text key={i}>{line}</Text>
+            ))}
+
+            <Text color={theme.color.dim}>
+              {pager.offset + pagerPageSize < pager.lines.length
+                ? `── Enter/Space for more · q to close (${Math.min(pager.offset + pagerPageSize, pager.lines.length)}/${pager.lines.length}) ──`
+                : `── end · q to close (${pager.lines.length} lines) ──`}
+            </Text>
+          </Box>
         )}
 
         {!isBlocked && (

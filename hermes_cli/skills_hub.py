@@ -496,8 +496,11 @@ def do_inspect(identifier: str, console: Optional[Console] = None) -> None:
     c.print()
 
 
-def browse_skills(page: int = 1, page_size: int = 20, source: str = "all") -> list[dict]:
-    """Paginated hub browse for programmatic callers (e.g. TUI gateway)."""
+def browse_skills(page: int = 1, page_size: int = 20, source: str = "all") -> dict:
+    """Paginated hub browse for programmatic callers (e.g. TUI gateway).
+
+    Returns ``{"items": [...], "page": int, "total_pages": int, "total": int}``.
+    """
     from tools.skills_hub import GitHubAuth, create_source_router
 
     page_size = max(1, min(page_size, 100))
@@ -517,7 +520,7 @@ def browse_skills(page: int = 1, page_size: int = 20, source: str = "all") -> li
         except Exception:
             continue
     if not all_results:
-        return []
+        return {"items": [], "page": 1, "total_pages": 1, "total": 0}
     seen: dict = {}
     for r in all_results:
         rank = _TRUST_RANK.get(r.trust_level, 0)
@@ -530,7 +533,13 @@ def browse_skills(page: int = 1, page_size: int = 20, source: str = "all") -> li
     page = max(1, min(page, total_pages))
     start = (page - 1) * page_size
     page_items = deduped[start : min(start + page_size, total)]
-    return [{"name": r.name, "description": r.description} for r in page_items]
+    return {
+        "items": [{"name": r.name, "description": r.description, "source": r.source,
+                    "trust": r.trust_level} for r in page_items],
+        "page": page,
+        "total_pages": total_pages,
+        "total": total,
+    }
 
 
 def inspect_skill(identifier: str) -> Optional[dict]:

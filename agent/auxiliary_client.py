@@ -1425,6 +1425,23 @@ def resolve_provider_client(
 
         client = OpenAI(api_key=api_key, base_url=base_url,
                         **({"default_headers": headers} if headers else {}))
+
+        # Copilot GPT-5+ models (except gpt-5-mini) require the Responses
+        # API — they are not accessible via /chat/completions.  Wrap the
+        # plain client in CodexAuxiliaryClient so call_llm() transparently
+        # routes through responses.stream().
+        if provider == "copilot" and final_model and not raw_codex:
+            try:
+                from hermes_cli.models import _should_use_copilot_responses_api
+                if _should_use_copilot_responses_api(final_model):
+                    logger.debug(
+                        "resolve_provider_client: copilot model %s needs "
+                        "Responses API — wrapping with CodexAuxiliaryClient",
+                        final_model)
+                    client = CodexAuxiliaryClient(client, final_model)
+            except ImportError:
+                pass
+
         logger.debug("resolve_provider_client: %s (%s)", provider, final_model)
         return (_to_async_client(client, final_model) if async_mode
                 else (client, final_model))

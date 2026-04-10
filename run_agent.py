@@ -947,6 +947,7 @@ class AIAgent:
                     client_kwargs["default_headers"] = headers
 
             self.api_key = client_kwargs.get("api_key", "")
+            self.base_url = client_kwargs.get("base_url", self.base_url)
             try:
                 self.client = self._create_openai_client(client_kwargs, reason="agent_init", shared=True)
                 if not self.quiet_mode:

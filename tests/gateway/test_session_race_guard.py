@@ -41,6 +41,15 @@ def _make_runner():
     runner._pending_approvals = {}
     runner._voice_mode = {}
     runner._background_tasks = set()
+    runner._draining = False
+    runner._restart_requested = False
+    runner._restart_task_started = False
+    runner._restart_detached = False
+    runner._restart_via_service = False
+    runner._restart_drain_timeout = 0.0
+    runner._stop_task = None
+    runner._exit_code = None
+    runner._update_runtime_status = MagicMock()
     runner._is_user_authorized = lambda _source: True
     runner.hooks = MagicMock()
     runner.hooks.emit = AsyncMock()

@@ -74,7 +74,7 @@ class TestSystemdServiceRefresh:
         assert unit_path.read_text(encoding="utf-8") == "new unit\n"
         assert calls[:2] == [
             ["systemctl", "--user", "daemon-reload"],
-            ["systemctl", "--user", "restart", gateway_cli.get_service_name()],
+            ["systemctl", "--user", "reload-or-restart", gateway_cli.get_service_name()],
         ]
 
 
@@ -84,6 +84,8 @@ class TestGeneratedSystemdUnits:
 
         assert "ExecStart=" in unit
         assert "ExecStop=" not in unit
+        assert "ExecReload=/bin/kill -USR1 $MAINPID" in unit
+        assert "RestartForceExitStatus=75" in unit
         assert "TimeoutStopSec=60" in unit
 
     def test_user_unit_includes_resolved_node_directory_in_path(self, monkeypatch):
@@ -98,6 +100,8 @@ class TestGeneratedSystemdUnits:
 
         assert "ExecStart=" in unit
         assert "ExecStop=" not in unit
+        assert "ExecReload=/bin/kill -USR1 $MAINPID" in unit
+        assert "RestartForceExitStatus=75" in unit
         assert "TimeoutStopSec=60" in unit
         assert "WantedBy=multi-user.target" in unit
 
@@ -232,6 +236,31 @@ class TestLaunchdServiceRecovery:
             ["launchctl", "kickstart", target],
             ["launchctl", "bootstrap", domain, str(plist_path)],
             ["launchctl", "kickstart", target],
+        ]
+
+    def test_launchd_restart_drains_running_gateway_before_kickstart(self, monkeypatch):
+        calls = []
+        target = f"{gateway_cli._launchd_domain()}/{gateway_cli.get_launchd_label()}"
+
+        monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 12.0)
+        monkeypatch.setattr(gateway_cli, "_wait_for_gateway_exit", lambda timeout, force_after=None: True)
+        monkeypatch.setattr(gateway_cli, "terminate_pid", lambda pid, force=False: calls.append(("term", pid, force)))
+        monkeypatch.setattr(
+            "gateway.status.get_running_pid",
+            lambda: 321,
+        )
+
+        def fake_run(cmd, check=False, **kwargs):
+            calls.append(cmd)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        gateway_cli.launchd_restart()
+
+        assert calls == [
+            ("term", 321, False),
+            ["launchctl", "kickstart", "-k", target],
         ]
 
     def test_launchd_stop_uses_bootout_not_kill(self, monkeypatch):

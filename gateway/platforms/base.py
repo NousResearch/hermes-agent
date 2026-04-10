@@ -613,6 +613,9 @@ class MessageEvent:
         raw = parts[0][1:].lower() if parts else None
         if raw and "@" in raw:
             raw = raw.split("@", 1)[0]
+        # Reject file paths: valid command names never contain /
+        if raw and "/" in raw:
+            return None
         return raw
     
     def get_command_args(self) -> str:

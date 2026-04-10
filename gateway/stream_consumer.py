@@ -252,23 +252,63 @@ class GatewayStreamConsumer:
     # gateway/platforms/base.py for post-processing.
     _MEDIA_RE = re.compile(r'''[`"']?MEDIA:\s*\S+[`"']?''')
 
+    # Block characters used in terminal progress bars and spinner animations.
+    # These render as black/grey rectangles in Telegram and other chat apps.
+    # Also includes the streaming cursor char (▉) and ANSI escape sequences.
+    _BLOCK_CHARS_RE = re.compile(
+        '['
+        '\u2588\u2589\u258A\u258B\u258C\u258D\u258E\u258F'  # Full/quarter blocks: █▉▊▋▌▍▎▏
+        '\u2591\u2592\u2593\u2594\u2595'                   # Light/shade: ░▒▓▔▕
+        '\u2500\u2501\u2502\u2503\u2504\u2505\u2506\u2507\u2508\u2509\u250A\u250B\u250C\u250D\u250E\u250F'  # Box-drawing
+        '\u2510\u2511\u2512\u2513\u2514\u2515\u2516\u2517\u2518\u2519\u251A\u251B\u251C\u251D\u251E\u251F\u2520'
+        '\u2521\u2522\u2523\u2524\u2525\u2526\u2527\u2528\u2529\u252A\u252B\u252C\u252D\u252E\u252F\u2530'
+        '\u2531\u2532\u2533\u2534\u2535\u2536\u2537\u2538\u2539\u253A\u253B\u253C\u253D\u253E\u253F'
+        '\u2540\u2541\u2542\u2543\u2544\u2545\u2546\u2547\u2548\u2549\u254A\u254B\u254C\u254D\u254E\u254F'
+        '\u2550\u2551\u2552\u2553\u2554\u2555\u2556\u2557\u2558\u2559\u255A\u255B\u255C\u255D\u255E\u255F'
+        '\u2560\u2561\u2562\u2563\u2564\u2565\u2566\u2567\u2568\u2569\u256A\u256B\u256C\u256D\u256E\u256F'
+        '\u2570\u2571\u2572\u2573\u2574\u2575\u2576\u2577\u2578\u2579\u257A\u257B\u257C\u257D\u257E\u257F'
+        '\u2580\u2581\u2582\u2583\u2584\u2585\u2586\u2587'  # More block forms
+        '\u01C0\u01C1\u01C2\u01C3\u0180\u01C4\u01C5\u01C6\u01C7\u01C8\u01C9\u01CA\u01CB\u01CC'  # Daggers, bullets
+        '\u2302\u2303\u2304\u2305\u2306\u2307'  # House, up-arrow-head, etc.
+        '\u25B6\u25B7\u25B8\u25B9\u25BA\u25BB\u25BC\u25BD\u25BE\u25BF'  # Play/triangle arrows ▶▷
+        '\u25C0\u25C1\u25C2\u25C3\u25C4\u25C5\u25C6\u25C7\u25C8\u25C9\u25CA\u25CB\u25CC\u25CD\u25CE\u25CF'  # Triangles
+        '\u2601\u2602\u2603\u2604\u2605\u2606\u2607\u2608\u2609\u260A\u260B\u260C\u260D\u260E\u260F'  # Stars, etc.
+        '\u2660\u2661\u2662\u2663\u2664\u2665\u2666\u2667\u2668\u2669\u266A\u266B\u266C\u266D\u266E\u266F'  # Card suits, music
+        '\u27F0\u27F1\u27F2\u27F3\u27F4\u27F5\u27F6\u27F7\u27F8\u27F9\u27FA\u27FB\u27FC\u27FD\u27FE\u27FF'  # Arrows
+        '\u2800-\u28FF'  # Braille patterns (block dots)
+        ']'
+    )
+
+    # ANSI escape sequences (color, cursor movement, clear screen, etc.)
+    _ANSI_ESCAPE_RE = re.compile(r'\x1b\[[0-9;]*[a-zA-Z]|\x1b[>=]|\x1b[^\x1b]*\x1b')
+
     @staticmethod
     def _clean_for_display(text: str) -> str:
-        """Strip MEDIA: directives and internal markers from text before display.
+        """Strip MEDIA: directives, terminal glyphs, and control chars.
 
         The streaming path delivers raw text chunks that may include
-        ``MEDIA:<path>`` tags and ``[[audio_as_voice]]`` directives meant for
-        the platform adapter's post-processing.  The actual media files are
-        delivered separately via ``_deliver_media_from_response()`` after the
-        stream finishes — we just need to hide the raw directives from the
-        user.
+        ``MEDIA:<path>`` tags, ``[[audio_as_voice]]`` directives, terminal
+        spinner/progress characters (e.g. ▍ ▉ █ ░), and ANSI escape sequences.
+        These are all stripped before the text reaches the chat platform.
         """
-        if "MEDIA:" not in text and "[[audio_as_voice]]" not in text:
-            return text
-        cleaned = text.replace("[[audio_as_voice]]", "")
-        cleaned = GatewayStreamConsumer._MEDIA_RE.sub("", cleaned)
-        # Collapse excessive blank lines left behind by removed tags
-        cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
+        cleaned = text
+
+        # Strip terminal block/progress/spinner characters
+        cleaned = GatewayStreamConsumer._BLOCK_CHARS_RE.sub('', cleaned)
+
+        # Strip ANSI escape sequences (colors, cursor moves, clears, etc.)
+        cleaned = GatewayStreamConsumer._ANSI_ESCAPE_RE.sub('', cleaned)
+
+        # Strip MEDIA: and [[audio_as_voice]] directives
+        if "MEDIA:" in cleaned or "[[audio_as_voice]]" in cleaned:
+            cleaned = cleaned.replace("[[audio_as_voice]]", "")
+            cleaned = GatewayStreamConsumer._MEDIA_RE.sub("", cleaned)
+            # Collapse excessive blank lines left behind by removed tags
+            cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
+
+        # Strip zero-width and other invisible junk characters
+        cleaned = re.sub(r'[\u200B\u200C\u200D\u200E\u200F\uFEFF\u180E\u00AD]', '', cleaned)
+
         # Strip trailing whitespace/newlines but preserve leading content
         return cleaned.rstrip()
 

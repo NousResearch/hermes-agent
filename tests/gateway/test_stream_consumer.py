@@ -381,7 +381,7 @@ class TestSegmentBreakOnToolBoundary:
         await task
 
         sent_texts = [call[1]["content"] for call in adapter.send.call_args_list]
-        assert sent_texts == ["Hello ▉", "Next segment"]
+        assert sent_texts == ["Hello", "Next segment"]
 
     @pytest.mark.asyncio
     async def test_no_message_id_enters_fallback_mode(self):

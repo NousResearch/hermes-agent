@@ -770,41 +770,6 @@ class SessionStore:
             except Exception as e:
                 print(f"[gateway] Warning: Failed to create SQLite session: {e}")
 
-        # Seed new DM thread sessions with parent DM session history.
-        # When a bot reply creates a Slack thread and the user responds in it,
-        # the thread gets a new session (keyed by thread_ts).  Without seeding,
-        # the thread session starts with zero context — the user's original
-        # question and the bot's answer are invisible.  Fix: copy the parent
-        # DM session's transcript into the new thread session so context carries
-        # over while still keeping threads isolated from each other.
-        if (
-            source.chat_type == "dm"
-            and source.thread_id
-            and entry.created_at == entry.updated_at  # brand-new session
-            and not was_auto_reset
-        ):
-            parent_source = SessionSource(
-                platform=source.platform,
-                chat_id=source.chat_id,
-                chat_type="dm",
-                user_id=source.user_id,
-                # no thread_id — this is the parent DM session
-            )
-            parent_key = self._generate_session_key(parent_source)
-            with self._lock:
-                parent_entry = self._entries.get(parent_key)
-            if parent_entry and parent_entry.session_id != entry.session_id:
-                try:
-                    parent_history = self.load_transcript(parent_entry.session_id)
-                    if parent_history:
-                        self.rewrite_transcript(entry.session_id, parent_history)
-                        logger.info(
-                            "[Session] Seeded DM thread session %s with %d messages from parent %s",
-                            entry.session_id, len(parent_history), parent_entry.session_id,
-                        )
-                except Exception as e:
-                    logger.warning("[Session] Failed to seed thread session: %s", e)
-
         return entry
 
     def update_session(

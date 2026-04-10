@@ -35,6 +35,7 @@ from hermes_cli.clipboard import (
     _windows_has_image,
     _convert_to_png,
 )
+from cli import _should_auto_attach_clipboard_image_on_paste
 
 FAKE_PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 100
 FAKE_BMP = b"BM" + b"\x00" * 100
@@ -917,6 +918,48 @@ class TestTryAttachClipboardImage:
         assert path.parent == Path(os.environ["HERMES_HOME"]) / "images"
         assert path.name.startswith("clip_")
         assert path.suffix == ".png"
+
+
+class TestAutoAttachClipboardImageOnPaste:
+    def test_skips_auto_attach_for_plain_text_paste(self):
+        assert _should_auto_attach_clipboard_image_on_paste("hello world") is False
+
+    def test_skips_auto_attach_for_whitespace_and_text_paste(self):
+        assert _should_auto_attach_clipboard_image_on_paste("  hello world  ") is False
+
+    def test_allows_auto_attach_for_empty_paste(self):
+        assert _should_auto_attach_clipboard_image_on_paste("") is True
+
+    def test_allows_auto_attach_for_whitespace_only_paste(self):
+        assert _should_auto_attach_clipboard_image_on_paste("   \n\t  ") is True
+
+
+class TestVoiceSubmission:
+    @pytest.fixture
+    def cli(self):
+        from cli import HermesCLI
+        cli_obj = HermesCLI.__new__(HermesCLI)
+        cli_obj._attached_images = [Path("/tmp/stale.png")]
+        cli_obj._pending_input = queue.Queue()
+        cli_obj._voice_lock = MagicMock()
+        cli_obj._voice_processing = True
+        cli_obj._voice_recording = True
+        cli_obj._voice_continuous = False
+        cli_obj._no_speech_count = 0
+        cli_obj._voice_recorder = MagicMock()
+        cli_obj._voice_recorder.stop.return_value = "/tmp/fake.wav"
+        cli_obj._app = None
+        return cli_obj
+
+    def test_voice_transcript_clears_stale_attached_images(self, cli):
+        with patch("tools.voice_mode.play_beep"):
+            with patch("tools.voice_mode.transcribe_recording", return_value={"success": True, "transcript": "hello"}):
+                with patch("os.path.isfile", return_value=False):
+                    with patch("cli._cprint"):
+                        cli._voice_stop_and_transcribe()
+
+        assert cli._attached_images == []
+        assert cli._pending_input.get_nowait() == "hello"
 
 
 # ═════════════════════════════════════════════════════════════════════════

@@ -668,6 +668,31 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
         path_entries.extend(_build_user_local_paths(Path(home_dir), path_entries))
         path_entries.extend(common_bin_paths)
         sane_path = ":".join(path_entries)
+
+        # Validate: target user must be able to access key paths
+        if username != "root":
+            inaccessible = []
+            for label, path in [("WorkingDirectory", working_dir),
+                                ("Python", python_path),
+                                ("HERMES_HOME", hermes_home)]:
+                try:
+                    test = subprocess.run(
+                        ["sudo", "-u", username, "test", "-r", path],
+                        capture_output=True, timeout=5,
+                    )
+                    if test.returncode != 0:
+                        inaccessible.append(f"  {label}: {path}")
+                except Exception:
+                    inaccessible.append(f"  {label}: {path}")
+            if inaccessible:
+                detail = "\n".join(inaccessible)
+                raise SystemExit(
+                    f"User '{username}' cannot access required paths:\n{detail}\n\n"
+                    f"Fix options:\n"
+                    f"  1. Install files under {home_dir}/ instead of /root/\n"
+                    f"  2. Run as root: hermes gateway install --system --run-as-user root"
+                )
+
         return f"""[Unit]
 Description={SERVICE_DESCRIPTION}
 After=network-online.target

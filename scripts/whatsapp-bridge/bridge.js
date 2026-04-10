@@ -64,7 +64,15 @@ function formatOutgoingMessage(message) {
 
 function normalizeWhatsAppId(value) {
   if (!value) return '';
-  return String(value).replace(':', '@');
+  const s = String(value);
+  // Strip device suffix: "number:3@domain" → "number@domain"
+  // The old replace(':', '@') produced "number@3@domain" — wrong.
+  const colonIdx = s.indexOf(':');
+  const atIdx = s.indexOf('@');
+  if (colonIdx !== -1 && atIdx !== -1 && colonIdx < atIdx) {
+    return s.substring(0, colonIdx) + s.substring(atIdx);
+  }
+  return s;
 }
 
 function getMessageContent(msg) {

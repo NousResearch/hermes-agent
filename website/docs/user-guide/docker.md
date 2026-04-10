@@ -64,6 +64,9 @@ The `/opt/data` volume is the single source of truth for all Hermes state. It ma
 | `hooks/` | Event hooks |
 | `logs/` | Runtime logs |
 | `skins/` | Custom CLI skins |
+| `plans/` | Saved plans |
+| `workspace/` | Agent working files |
+| `profiles/` | Named agent profiles |
 
 :::warning
 Never run two Hermes containers against the same data directory simultaneously — session files and memory stores are not designed for concurrent access.
@@ -110,6 +113,22 @@ services:
 ```
 
 Start with `docker compose up -d` and view logs with `docker compose logs -f hermes`.
+
+### Custom data directory
+
+By default the container stores data in `/opt/data`. Override this with `HERMES_HOME`:
+
+```yaml
+services:
+  hermes:
+    image: nousresearch/hermes-agent:latest
+    environment:
+      - HERMES_HOME=/opt/data
+    volumes:
+      - ~/.hermes:/opt/data
+```
+
+This is useful when running multiple containers with different configurations — point each to a separate host directory and `HERMES_HOME` path.
 
 ## Resource limits
 

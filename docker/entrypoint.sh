@@ -2,14 +2,14 @@
 # Docker entrypoint: bootstrap config files into the mounted volume, then run hermes.
 set -e
 
-HERMES_HOME="/opt/data"
+HERMES_HOME="${HERMES_HOME:-/opt/data}"
 INSTALL_DIR="/opt/hermes"
 
 # Create essential directory structure.  Cache and platform directories
 # (cache/images, cache/audio, platforms/whatsapp, etc.) are created on
 # demand by the application — don't pre-create them here so new installs
 # get the consolidated layout from get_hermes_dir().
-mkdir -p "$HERMES_HOME"/{cron,sessions,logs,hooks,memories,skills}
+mkdir -p "$HERMES_HOME"/{cron,sessions,logs,hooks,memories,skills,skins,plans,workspace,profiles}
 
 # .env
 if [ ! -f "$HERMES_HOME/.env" ]; then

@@ -116,6 +116,16 @@ def _codex_incomplete_message_response(text: str):
     )
 
 
+def _codex_output_text_only_response(text: str):
+    return SimpleNamespace(
+        output=[],
+        output_text=text,
+        usage=SimpleNamespace(input_tokens=4, output_tokens=2, total_tokens=6),
+        status="completed",
+        model="gpt-5-codex",
+    )
+
+
 def _codex_commentary_message_response(text: str):
     return SimpleNamespace(
         output=[
@@ -978,6 +988,20 @@ def test_run_conversation_codex_continues_after_reasoning_only_response(monkeypa
         and msg.get("codex_reasoning_items") is not None
         for msg in result["messages"]
     )
+
+
+def test_run_conversation_codex_accepts_output_text_without_output_items(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    monkeypatch.setattr(
+        agent,
+        "_interruptible_api_call",
+        lambda api_kwargs: _codex_output_text_only_response("Recovered from output_text."),
+    )
+
+    result = agent.run_conversation("what happened?")
+
+    assert result["completed"] is True
+    assert result["final_response"] == "Recovered from output_text."
 
 
 def test_run_conversation_codex_preserves_encrypted_reasoning_in_interim(monkeypatch):

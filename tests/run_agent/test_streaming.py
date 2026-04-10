@@ -783,6 +783,99 @@ class TestCodexStreamCallbacks:
         response = agent._run_codex_stream({}, client=mock_client)
         assert "Hello from Codex!" in deltas
 
+    def test_codex_empty_terminal_response_recovers_from_streamed_deltas(self):
+        from run_agent import AIAgent
+
+        agent = AIAgent(
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "codex_responses"
+        agent._interrupt_requested = False
+
+        mock_event_text = SimpleNamespace(
+            type="response.output_text.delta",
+            delta="OK",
+        )
+        mock_event_done = SimpleNamespace(
+            type="response.completed",
+            delta="",
+        )
+
+        mock_stream = MagicMock()
+        mock_stream.__enter__ = MagicMock(return_value=mock_stream)
+        mock_stream.__exit__ = MagicMock(return_value=False)
+        mock_stream.__iter__ = MagicMock(return_value=iter([mock_event_text, mock_event_done]))
+        mock_stream.get_final_response.return_value = SimpleNamespace(
+            output=[],
+            output_text="",
+            status="completed",
+            model="gpt-5.4",
+        )
+
+        mock_client = MagicMock()
+        mock_client.responses.stream.return_value = mock_stream
+
+        response = agent._run_codex_stream({}, client=mock_client)
+
+        assert getattr(response, "output_text", None) == "OK"
+        assert len(getattr(response, "output", []) or []) == 1
+
+    def test_codex_empty_terminal_response_recovers_tool_call_from_stream_events(self):
+        from run_agent import AIAgent
+
+        agent = AIAgent(
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "codex_responses"
+        agent._interrupt_requested = False
+
+        mock_event_add = SimpleNamespace(
+            type="response.output_item.added",
+            item=SimpleNamespace(
+                type="function_call",
+                id="fc_1",
+                call_id="call_1",
+                name="terminal",
+                arguments="",
+            ),
+        )
+        mock_event_delta = SimpleNamespace(
+            type="response.function_call_arguments.delta",
+            item_id="fc_1",
+            delta='{"command":"pwd"}',
+        )
+        mock_event_done = SimpleNamespace(
+            type="response.completed",
+            delta="",
+        )
+
+        mock_stream = MagicMock()
+        mock_stream.__enter__ = MagicMock(return_value=mock_stream)
+        mock_stream.__exit__ = MagicMock(return_value=False)
+        mock_stream.__iter__ = MagicMock(return_value=iter([mock_event_add, mock_event_delta, mock_event_done]))
+        mock_stream.get_final_response.return_value = SimpleNamespace(
+            output=[],
+            output_text="",
+            status="completed",
+            model="gpt-5.4",
+        )
+
+        mock_client = MagicMock()
+        mock_client.responses.stream.return_value = mock_stream
+
+        response = agent._run_codex_stream({}, client=mock_client)
+
+        assert len(getattr(response, "output", []) or []) == 1
+        assert getattr(response.output[0], "type", None) == "function_call"
+        assert getattr(response.output[0], "name", None) == "terminal"
+        assert getattr(response.output[0], "arguments", None) == '{"command":"pwd"}'
+
     def test_codex_remote_protocol_error_falls_back_to_create_stream(self):
         from run_agent import AIAgent
         import httpx

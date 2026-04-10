@@ -603,6 +603,28 @@ class TestBuildSystemPrompt:
         prompt = agent_with_memory_tool._build_system_prompt()
         assert MEMORY_GUIDANCE in prompt
 
+    def test_project_memory_guidance_when_tool_loaded(self):
+        from agent.prompt_builder import PROJECT_MEMORY_GUIDANCE
+
+        with (
+            patch(
+                "run_agent.get_tool_definitions",
+                return_value=_make_tool_defs("web_search", "project_memory"),
+            ),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+        ):
+            agent = AIAgent(
+                api_key="***",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+            agent.client = MagicMock()
+
+        prompt = agent._build_system_prompt()
+        assert PROJECT_MEMORY_GUIDANCE in prompt
+
     def test_no_memory_guidance_without_tool(self, agent):
         from agent.prompt_builder import MEMORY_GUIDANCE
 
@@ -787,6 +809,13 @@ class TestInvalidateSystemPrompt:
     def test_reloads_memory_store(self, agent):
         mock_store = MagicMock()
         agent._memory_store = mock_store
+        agent._cached_system_prompt = "cached"
+        agent._invalidate_system_prompt()
+        mock_store.load_from_disk.assert_called_once()
+
+    def test_reloads_project_memory_store(self, agent):
+        mock_store = MagicMock()
+        agent._project_memory_store = mock_store
         agent._cached_system_prompt = "cached"
         agent._invalidate_system_prompt()
         mock_store.load_from_disk.assert_called_once()
@@ -1423,6 +1452,12 @@ class TestConcurrentToolExecution:
             result = agent._invoke_tool("todo", {"todos": []}, "task-1")
             mock_todo.assert_called_once()
         assert "ok" in result
+
+    def test_invoke_tool_handles_project_memory(self, agent):
+        with patch("tools.project_memory_tool.project_memory_tool", return_value='{"success":true}') as mock_project_memory:
+            result = agent._invoke_tool("project_memory", {"action": "read"}, "task-1")
+            mock_project_memory.assert_called_once()
+        assert "success" in result
 
 
 class TestPathsOverlap:

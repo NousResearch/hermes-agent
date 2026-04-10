@@ -16,7 +16,7 @@ from tools.environments.base import (
     BaseEnvironment,
     _ThreadedProcessHandle,
 )
-from tools.environments.file_sync import FileSyncManager, iter_sync_files, quoted_rm_command
+from tools.environments.file_sync import BulkUploadFn, FileSyncManager, iter_sync_files, quoted_rm_command
 
 logger = logging.getLogger(__name__)
 
@@ -129,6 +129,7 @@ class DaytonaEnvironment(BaseEnvironment):
             get_files_fn=lambda: iter_sync_files(f"{self._remote_home}/.hermes"),
             upload_fn=self._daytona_upload,
             delete_fn=self._daytona_delete,
+            bulk_upload_fn=self._daytona_bulk_upload,
         )
         self._sync_manager.sync(force=True)
         self.init_session()
@@ -138,6 +139,30 @@ class DaytonaEnvironment(BaseEnvironment):
         parent = str(Path(remote_path).parent)
         self._sandbox.process.exec(f"mkdir -p {parent}")
         self._sandbox.fs.upload_file(host_path, remote_path)
+
+    def _daytona_bulk_upload(self, files: list[tuple[str, str]]) -> None:
+        """Upload many files in a single HTTP call via Daytona SDK.
+
+        Uses ``sandbox.fs.upload_files()`` which batches all files into one
+        multipart POST, avoiding per-file TLS/HTTP overhead (~580 files
+        goes from ~5 min to <2 s).
+        """
+        from daytona.common.filesystem import FileUpload
+
+        if not files:
+            return
+
+        # Pre-create all unique parent directories in one shell call
+        parents = sorted({str(Path(remote).parent) for _, remote in files})
+        if parents:
+            mkdir_cmd = "mkdir -p " + " ".join(shlex.quote(p) for p in parents)
+            self._sandbox.process.exec(mkdir_cmd)
+
+        uploads = [
+            FileUpload(source=host_path, destination=remote_path)
+            for host_path, remote_path in files
+        ]
+        self._sandbox.fs.upload_files(uploads)
 
     def _daytona_delete(self, remote_paths: list[str]) -> None:
         """Batch-delete remote files via SDK exec."""

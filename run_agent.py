@@ -2808,6 +2808,10 @@ class AIAgent:
             if context_files_prompt:
                 prompt_parts.append(context_files_prompt)
 
+        platform_key = (self.platform or "").lower().strip()
+        if platform_key in PLATFORM_HINTS:
+            prompt_parts.append(f"# Platform context\n{PLATFORM_HINTS[platform_key]}")
+
         from hermes_time import now as _hermes_now
         now = _hermes_now()
         timestamp_line = f"Conversation started: {now.strftime('%A, %B %d, %Y %I:%M %p')}"
@@ -2830,10 +2834,6 @@ class AIAgent:
                 f"When asked what model you are, always answer based on this information, "
                 f"not on any model name returned by the API."
             )
-
-        platform_key = (self.platform or "").lower().strip()
-        if platform_key in PLATFORM_HINTS:
-            prompt_parts.append(PLATFORM_HINTS[platform_key])
 
         return "\n\n".join(prompt_parts)
 

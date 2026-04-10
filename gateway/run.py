@@ -241,7 +241,17 @@ from gateway.session import (
     build_session_key,
 )
 from gateway.delivery import DeliveryRouter
-from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType
+from gateway.platforms.base import (
+    BasePlatformAdapter,
+    MessageEvent,
+    MessageType,
+    merge_pending_message_event,
+)
+from gateway.restart import (
+    DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
+    GATEWAY_SERVICE_RESTART_EXIT_CODE,
+    parse_restart_drain_timeout,
+)
 
 
 def _normalize_whatsapp_identifier(value: str) -> str:
@@ -478,7 +488,7 @@ class GatewayRunner:
     # blow up on attribute access.
     _running_agents_ts: Dict[str, float] = {}
     _busy_input_mode: str = "interrupt"
-    _restart_drain_timeout: float = 60.0
+    _restart_drain_timeout: float = DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
     _exit_code: Optional[int] = None
     _draining: bool = False
     _restart_requested: bool = False
@@ -486,6 +496,7 @@ class GatewayRunner:
     _restart_detached: bool = False
     _restart_via_service: bool = False
     _stop_task: Optional[asyncio.Task] = None
+    _session_model_overrides: Dict[str, Dict[str, str]] = {}
     
     def __init__(self, config: Optional[GatewayConfig] = None):
         self.config = config or load_gateway_config()
@@ -1076,12 +1087,17 @@ class GatewayRunner:
                     raw = str(cfg.get("agent", {}).get("restart_drain_timeout", "") or "").strip()
             except Exception:
                 pass
-        try:
-            value = float(raw) if raw else 60.0
-        except ValueError:
-            logger.warning("Invalid restart_drain_timeout '%s', using default 60s", raw)
-            return 60.0
-        return max(0.0, value)
+        value = parse_restart_drain_timeout(raw)
+        if raw and value == DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT:
+            try:
+                float(raw)
+            except (TypeError, ValueError):
+                logger.warning(
+                    "Invalid restart_drain_timeout '%s', using default %.0fs",
+                    raw,
+                    DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
+                )
+        return value
 
     @staticmethod
     def _load_background_notifications_mode() -> str:
@@ -1178,14 +1194,7 @@ class GatewayRunner:
         adapter = self.adapters.get(event.source.platform)
         if not adapter:
             return
-        existing = adapter._pending_messages.get(session_key)
-        if existing and getattr(existing, "message_type", None) == MessageType.PHOTO and event.message_type == MessageType.PHOTO:
-            existing.media_urls.extend(event.media_urls)
-            existing.media_types.extend(event.media_types)
-            if event.text:
-                existing.text = BasePlatformAdapter._merge_caption(existing.text, event.text)
-            return
-        adapter._pending_messages[session_key] = event
+        merge_pending_message_event(adapter._pending_messages, session_key, event)
 
     async def _handle_active_session_busy_message(self, event: MessageEvent, session_key: str) -> bool:
         if not self._draining:
@@ -1212,20 +1221,32 @@ class GatewayRunner:
 
     async def _drain_active_agents(self, timeout: float) -> tuple[Dict[str, Any], bool]:
         snapshot = self._snapshot_running_agents()
+        last_active_count = self._running_agent_count()
+        last_status_at = 0.0
+
+        def _maybe_update_status(force: bool = False) -> None:
+            nonlocal last_active_count, last_status_at
+            now = asyncio.get_running_loop().time()
+            active_count = self._running_agent_count()
+            if force or active_count != last_active_count or (now - last_status_at) >= 1.0:
+                self._update_runtime_status("draining")
+                last_active_count = active_count
+                last_status_at = now
+
         if not self._running_agents:
-            self._update_runtime_status("draining")
+            _maybe_update_status(force=True)
             return snapshot, False
 
-        self._update_runtime_status("draining")
+        _maybe_update_status(force=True)
         if timeout <= 0:
             return snapshot, True
 
         deadline = asyncio.get_running_loop().time() + timeout
         while self._running_agents and asyncio.get_running_loop().time() < deadline:
-            self._update_runtime_status("draining")
+            _maybe_update_status()
             await asyncio.sleep(0.1)
         timed_out = bool(self._running_agents)
-        self._update_runtime_status("draining")
+        _maybe_update_status(force=True)
         return snapshot, timed_out
 
     def _interrupt_running_agents(self, reason: str) -> None:
@@ -1841,7 +1862,7 @@ class GatewayRunner:
             remove_pid_file()
 
             if self._restart_requested and self._restart_via_service:
-                self._exit_code = 75
+                self._exit_code = GATEWAY_SERVICE_RESTART_EXIT_CODE
                 self._exit_reason = self._exit_reason or "Gateway restart requested"
 
             self._draining = False
@@ -2338,18 +2359,7 @@ class GatewayRunner:
                 logger.debug("PRIORITY photo follow-up for session %s — queueing without interrupt", _quick_key[:20])
                 adapter = self.adapters.get(source.platform)
                 if adapter:
-                    # Reuse adapter queue semantics so photo bursts merge cleanly.
-                    if _quick_key in adapter._pending_messages:
-                        existing = adapter._pending_messages[_quick_key]
-                        if getattr(existing, "message_type", None) == MessageType.PHOTO:
-                            existing.media_urls.extend(event.media_urls)
-                            existing.media_types.extend(event.media_types)
-                            if event.text:
-                                existing.text = BasePlatformAdapter._merge_caption(existing.text, event.text)
-                        else:
-                            adapter._pending_messages[_quick_key] = event
-                    else:
-                        adapter._pending_messages[_quick_key] = event
+                    merge_pending_message_event(adapter._pending_messages, _quick_key, event)
                 return None
 
             running_agent = self._running_agents.get(_quick_key)
@@ -3951,7 +3961,7 @@ class GatewayRunner:
         # Check for session override
         source = event.source
         session_key = self._session_key_for_source(source)
-        override = getattr(self, "_session_model_overrides", {}).get(session_key, {})
+        override = self._session_model_overrides.get(session_key, {})
         if override:
             current_model = override.get("model", current_model)
             current_provider = override.get("provider", current_provider)
@@ -4033,8 +4043,6 @@ class GatewayRunner:
                             f"via {result.provider_label or result.target_provider}. "
                             f"Adjust your self-identification accordingly.]"
                         )
-                        if not hasattr(_self, "_session_model_overrides"):
-                            _self._session_model_overrides = {}
                         _self._session_model_overrides[_session_key] = {
                             "model": result.new_model,
                             "provider": result.target_provider,
@@ -4148,8 +4156,6 @@ class GatewayRunner:
         )
 
         # Store session override so next agent creation uses the new model
-        if not hasattr(self, "_session_model_overrides"):
-            self._session_model_overrides = {}
         self._session_model_overrides[session_key] = {
             "model": result.new_model,
             "provider": result.target_provider,
@@ -6828,7 +6834,7 @@ class GatewayRunner:
         subsequent messages.  Fields with ``None`` values are skipped so
         partial overrides don't clobber valid config defaults.
         """
-        override = getattr(self, "_session_model_overrides", {}).get(session_key)
+        override = self._session_model_overrides.get(session_key)
         if not override:
             return model, runtime_kwargs
         model = override.get("model", model)
@@ -6840,7 +6846,7 @@ class GatewayRunner:
 
     def _is_intentional_model_switch(self, session_key: str, agent_model: str) -> bool:
         """Return True if *agent_model* matches an active /model session override."""
-        override = getattr(self, "_session_model_overrides", {}).get(session_key)
+        override = self._session_model_overrides.get(session_key)
         return override is not None and override.get("model") == agent_model
 
     def _evict_cached_agent(self, session_key: str) -> None:

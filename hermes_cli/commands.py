@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 import re
+from pathlib import Path
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
@@ -436,24 +437,68 @@ _clamp_telegram_names = _clamp_command_names
 
 
 # ---------------------------------------------------------------------------
-# Shared skill/plugin collection for gateway platforms
-# ---------------------------------------------------------------------------
+
+
+_DISCORD_SKILL_CATEGORY_PRIORITY: dict[str, int] = {
+    "autonomous-ai-agents": 10,
+    "devops": 10,
+    "email": 10,
+    "github": 10,
+    "mcp": 10,
+    "note-taking": 10,
+    "productivity": 10,
+    "research": 10,
+    "software-development": 10,
+    "apple": 20,
+    "creative": 20,
+    "data-science": 20,
+    "gaming": 20,
+    "leisure": 20,
+    "media": 20,
+    "mlops": 20,
+    "red-teaming": 20,
+    "smart-home": 20,
+    "social-media": 20,
+    "openclaw-imports": 40,
+}
+
+
+def _discord_skill_sort_key(skill_triple: tuple[str, str, str], skill_path: str) -> tuple[Any, ...]:
+    """Prioritize broad, reusable skills before long-tail catalog entries.
+
+    Discord only exposes a limited number of native slash commands. We prefer
+    stable, cross-domain categories first, then fall back to deterministic
+    alphabetical ordering within a category.
+    """
+    name, _desc, cmd_key = skill_triple
+    category = ""
+    try:
+        rel = Path(skill_path).parts
+        if rel:
+            category = rel[0]
+    except Exception:
+        category = ""
+    priority = _DISCORD_SKILL_CATEGORY_PRIORITY.get(category, 30)
+    return (priority, category, name, cmd_key)
+
 
 def _collect_gateway_skill_entries(
+    *,
     platform: str,
     max_slots: int,
     reserved_names: set[str],
-    desc_limit: int = 100,
-    sanitize_name: "Callable[[str], str] | None" = None,
+    desc_limit: int,
+    sanitize_name: Callable[[str], str] | None = None,
 ) -> tuple[list[tuple[str, str, str]], int]:
     """Collect plugin + skill entries for a gateway platform.
 
     Priority order:
       1. Plugin slash commands (take precedence over skills)
-      2. Built-in skill commands (fill remaining slots, alphabetical)
+      2. Built-in skill commands (fill remaining slots, alphabetical, unless a
+         platform-specific sort policy is applied before trimming)
 
     Only skills are trimmed when the cap is reached.
-    Hub-installed skills are excluded.  Per-platform disabled skills are
+    Hub-installed skills are excluded. Per-platform disabled skills are
     excluded.
 
     Args:
@@ -461,17 +506,17 @@ def _collect_gateway_skill_entries(
             (``"telegram"``, ``"discord"``, etc.).
         max_slots: Maximum number of entries to return (remaining slots after
             built-in/core commands).
-        reserved_names: Names already taken by built-in commands.  Mutated
+        reserved_names: Names already taken by built-in commands. Mutated
             in-place as new names are added.
         desc_limit: Max description length (40 for Telegram, 100 for Discord).
         sanitize_name: Optional name transform applied before clamping, e.g.
-            :func:`_sanitize_telegram_name` for Telegram.  May return an
-            empty string to signal "skip this entry".
+            :func:`_sanitize_telegram_name` for Telegram. May return an empty
+            string to signal "skip this entry".
 
     Returns:
         ``(entries, hidden_count)`` where *entries* is a list of
         ``(name, description, cmd_key)`` triples and *hidden_count* is the
-        number of skill entries dropped due to the cap.  ``cmd_key`` is the
+        number of skill entries dropped due to the cap. ``cmd_key`` is the
         original ``/skill-name`` key from :func:`get_skill_commands`.
     """
     all_entries: list[tuple[str, str, str]] = []
@@ -508,6 +553,7 @@ def _collect_gateway_skill_entries(
         pass
 
     skill_triples: list[tuple[str, str, str]] = []
+    skill_path_by_cmd: dict[str, str] = {}
     try:
         from agent.skill_commands import get_skill_commands
         from tools.skills_tool import SKILLS_DIR
@@ -532,8 +578,12 @@ def _collect_gateway_skill_entries(
             if len(desc) > desc_limit:
                 desc = desc[:desc_limit - 3] + "..."
             skill_triples.append((name, desc, cmd_key))
+            skill_path_by_cmd[cmd_key] = skill_path
     except Exception:
         pass
+
+    if platform == "discord":
+        skill_triples.sort(key=lambda triple: _discord_skill_sort_key(triple, skill_path_by_cmd.get(triple[2], "")))
 
     # Clamp names; _clamp_command_names works on (name, desc) pairs so we
     # need to zip/unzip.

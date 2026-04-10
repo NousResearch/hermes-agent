@@ -433,6 +433,61 @@ def _resolve_gateway_model(config: dict | None = None) -> str:
     return ""
 
 
+def _resolve_gateway_context_window() -> tuple[int, str, dict]:
+    """Resolve the active gateway model context window.
+
+    Returns (context_length, model, runtime_kwargs). Context length prefers the
+    same explicit config overrides used by the main agent, then falls back to
+    model metadata resolution against the active runtime.
+    """
+    from agent.model_metadata import (
+        get_model_context_length,
+        resolve_configured_context_length,
+    )
+
+    cfg = _load_gateway_config()
+    runtime = _resolve_runtime_agent_kwargs()
+    model = _resolve_gateway_model(cfg)
+    config_context_length = resolve_configured_context_length(
+        cfg,
+        model=model,
+        base_url=runtime.get("base_url") or "",
+    )
+    context_length = get_model_context_length(
+        model,
+        base_url=runtime.get("base_url") or "",
+        api_key=runtime.get("api_key") or "",
+        config_context_length=config_context_length,
+        provider=runtime.get("provider") or "",
+    )
+    return context_length, model, runtime
+
+
+def _is_gateway_context_overflow(
+    *,
+    error_text: str,
+    history: Optional[List[Dict[str, Any]]] = None,
+    stored_prompt_tokens: int = 0,
+) -> bool:
+    """Return True when an error is likely a real context-window overflow."""
+    lowered = (error_text or "").lower()
+    if any(p in lowered for p in (
+        "context", "token", "too large", "too long", "exceed", "payload",
+    )):
+        return True
+    if not any(code in lowered for code in ("400", "500")):
+        return False
+    try:
+        from agent.model_metadata import estimate_messages_tokens_rough
+        context_length, _model, _runtime = _resolve_gateway_context_window()
+        approx_tokens = stored_prompt_tokens or (
+            estimate_messages_tokens_rough(history) if history else 0
+        )
+        return context_length > 0 and approx_tokens >= int(context_length * 0.95)
+    except Exception:
+        return False
+
+
 def _resolve_hermes_bin() -> Optional[list[str]]:
     """Resolve the Hermes update command as argv parts.
 
@@ -3010,14 +3065,10 @@ class GatewayRunner:
                 error_str = str(error_detail).lower()
 
                 # Detect context-overflow failures and give specific guidance.
-                # Generic 400 "Error" from Anthropic with large sessions is the
-                # most common cause of this (#1630).
-                _is_ctx_fail = any(p in error_str for p in (
-                    "context", "token", "too large", "too long",
-                    "exceed", "payload",
-                )) or (
-                    "400" in error_str
-                    and len(history) > 50
+                _is_ctx_fail = _is_gateway_context_overflow(
+                    error_text=error_str,
+                    history=history,
+                    stored_prompt_tokens=getattr(session_entry, "last_prompt_tokens", 0) or 0,
                 )
 
                 if _is_ctx_fail:
@@ -3216,10 +3267,11 @@ class GatewayRunner:
             elif status_code == 529:
                 status_hint = " The API is temporarily overloaded. Please try again shortly."
             elif status_code in (400, 500):
-                # 400 with a large session is context overflow.
-                # 500 with a large session often means the payload is too large
-                # for the API to process — treat it the same way.
-                if _hist_len > 50:
+                _is_ctx_fail = _is_gateway_context_overflow(
+                    error_text=f"{status_code} {error_detail}",
+                    history=history if 'history' in locals() else None,
+                )
+                if _is_ctx_fail:
                     return (
                         "⚠️ Session too large for the model's context window.\n"
                         "Use /compact to compress the conversation, or "

@@ -57,32 +57,32 @@ Use the `ddgs` command via `terminal` when it exists. This is the preferred path
 
 ```bash
 # Text search
-ddgs text -k "python async programming" -m 5
+ddgs text -q "python async programming" -m 5
 
 # News search
-ddgs news -k "artificial intelligence" -m 5
+ddgs news -q "artificial intelligence" -m 5
 
 # Image search
-ddgs images -k "landscape photography" -m 10
+ddgs images -q "landscape photography" -m 10
 
 # Video search
-ddgs videos -k "python tutorial" -m 5
+ddgs videos -q "python tutorial" -m 5
 
 # With region filter
-ddgs text -k "best restaurants" -m 5 -r us-en
+ddgs text -q "best restaurants" -m 5 -r us-en
 
 # Recent results only (d=day, w=week, m=month, y=year)
-ddgs text -k "latest AI news" -m 5 -t w
+ddgs text -q "latest AI news" -m 5 -t w
 
 # JSON output for parsing
-ddgs text -k "fastapi tutorial" -m 5 -o json
+ddgs text -q "fastapi tutorial" -m 5 -o json
 ```
 
 ### CLI Flags
 
 | Flag | Description | Example |
 |------|-------------|---------|
-| `-k` | Keywords (query) — **required** | `-k "search terms"` |
+| `-q` | Query — **required** | `-q "search terms"` |
 | `-m` | Max results | `-m 5` |
 | `-r` | Region | `-r us-en` |
 | `-t` | Time limit | `-t w` (week) |
@@ -189,7 +189,7 @@ DuckDuckGo returns titles, URLs, and snippets — not full page content. To get 
 CLI example:
 
 ```bash
-ddgs text -k "fastapi deployment guide" -m 3 -o json
+ddgs text -q "fastapi deployment guide" -m 3 -o json
 ```
 
 Python example, only after verifying `ddgs` is installed in that runtime:
@@ -229,7 +229,7 @@ Then extract the best URL with `web_extract` or another content-retrieval tool.
 - **Do not assume the CLI exists**: Check `command -v ddgs` before using it.
 - **Do not assume `execute_code` can import `ddgs`**: `from ddgs import DDGS` may fail with `ModuleNotFoundError` unless that runtime was prepared separately.
 - **Package name**: The package is `ddgs` (previously `duckduckgo-search`). Install with `pip install ddgs`.
-- **Don't confuse `-k` and `-m`** (CLI): `-k` is for keywords, `-m` is for max results count.
+- **Don't confuse `-q` and `-m`** (CLI): `-q` is for the query, `-m` is for max results count.
 - **Empty results**: If `ddgs` returns nothing, it may be rate-limited. Wait a few seconds and retry.
 
 ## Validated With

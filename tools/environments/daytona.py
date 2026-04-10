@@ -9,7 +9,6 @@ import logging
 import math
 import shlex
 import threading
-import warnings
 from pathlib import Path
 
 from tools.environments.base import (
@@ -63,10 +62,9 @@ class DaytonaEnvironment(BaseEnvironment):
         memory_gib = max(1, math.ceil(memory / 1024))
         disk_gib = max(1, math.ceil(disk / 1024))
         if disk_gib > 10:
-            warnings.warn(
-                f"Daytona: requested disk ({disk_gib}GB) exceeds platform limit (10GB). "
-                f"Capping to 10GB.",
-                stacklevel=2,
+            logger.warning(
+                "Daytona: requested disk (%dGB) exceeds platform limit (10GB). "
+                "Capping to 10GB.", disk_gib,
             )
             disk_gib = 10
         resources = Resources(cpu=cpu, memory=memory_gib, disk=disk_gib)

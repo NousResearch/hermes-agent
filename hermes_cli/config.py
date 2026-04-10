@@ -158,16 +158,27 @@ def get_project_root() -> Path:
     return Path(__file__).parent.parent.resolve()
 
 def _secure_dir(path):
-    """Set directory to owner-only access (0700). No-op on Windows.
+    """Set directory to owner-only access (0700 by default). No-op on Windows.
 
     Skipped in managed mode — the NixOS module sets group-readable
     permissions (0750) so interactive users in the hermes group can
     share state with the gateway service.
+
+    The mode can be overridden via the HERMES_HOME_MODE environment variable
+    (e.g. HERMES_HOME_MODE=0701) for deployments where a web server (nginx,
+    caddy, etc.) needs to traverse HERMES_HOME to reach a served subdirectory.
+    The execute-only bit on a directory permits cd-through without exposing
+    directory listings.
     """
     if is_managed():
         return
     try:
-        os.chmod(path, 0o700)
+        mode_str = os.environ.get("HERMES_HOME_MODE", "").strip()
+        mode = int(mode_str, 8) if mode_str else 0o700
+    except ValueError:
+        mode = 0o700
+    try:
+        os.chmod(path, mode)
     except (OSError, NotImplementedError):
         pass
 

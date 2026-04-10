@@ -141,6 +141,10 @@ def show_status(args):
         display = redact_key(value) if not show_all else value
         print(f"  {name:<12}  {check_mark(has_key)} {display}")
 
+    searxng_value = get_env_value("SEARXNG_BASE_URL") or ""
+    searxng_display = searxng_value if searxng_value else ""
+    print(f"  {'SearXNG':<12}  {check_mark(bool(searxng_value))} {searxng_display}")
+
     anthropic_value = (
         get_env_value("ANTHROPIC_TOKEN")
         or get_env_value("ANTHROPIC_API_KEY")

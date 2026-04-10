@@ -304,6 +304,7 @@ class TestBackendSelection:
         "FIRECRAWL_API_KEY",
         "FIRECRAWL_API_URL",
         "FIRECRAWL_GATEWAY_URL",
+        "SEARXNG_BASE_URL",
         "TOOL_GATEWAY_DOMAIN",
         "TOOL_GATEWAY_SCHEME",
         "TOOL_GATEWAY_USER_TOKEN",
@@ -367,6 +368,13 @@ class TestBackendSelection:
         with patch("tools.web_tools._load_web_config", return_value={"backend": "Tavily"}):
             assert _get_backend() == "tavily"
 
+    def test_config_searxng(self):
+        """web.backend=searxng in config → 'searxng' regardless of other keys."""
+        from tools.web_tools import _get_backend
+        with patch("tools.web_tools._load_web_config", return_value={"backend": "searxng"}), \
+             patch.dict(os.environ, {"PARALLEL_API_KEY": "test-key"}):
+            assert _get_backend() == "searxng"
+
     # ── Fallback (no web.backend in config) ───────────────────────────
 
     def test_fallback_parallel_only_key(self):
@@ -396,6 +404,13 @@ class TestBackendSelection:
         with patch("tools.web_tools._load_web_config", return_value={}), \
              patch.dict(os.environ, {"TAVILY_API_KEY": "tvly-test"}):
             assert _get_backend() == "tavily"
+
+    def test_fallback_searxng_only_base_url(self):
+        """Only SEARXNG_BASE_URL set → 'searxng'."""
+        from tools.web_tools import _get_backend
+        with patch("tools.web_tools._load_web_config", return_value={}), \
+             patch.dict(os.environ, {"SEARXNG_BASE_URL": "http://127.0.0.1:8888"}):
+            assert _get_backend() == "searxng"
 
     def test_fallback_tavily_with_firecrawl_prefers_firecrawl(self):
         """Tavily + Firecrawl keys, no config → 'firecrawl' (backward compat)."""
@@ -529,6 +544,7 @@ class TestCheckWebApiKey:
         "FIRECRAWL_API_KEY",
         "FIRECRAWL_API_URL",
         "FIRECRAWL_GATEWAY_URL",
+        "SEARXNG_BASE_URL",
         "TOOL_GATEWAY_DOMAIN",
         "TOOL_GATEWAY_SCHEME",
         "TOOL_GATEWAY_USER_TOKEN",
@@ -567,6 +583,11 @@ class TestCheckWebApiKey:
 
     def test_tavily_key_only(self):
         with patch.dict(os.environ, {"TAVILY_API_KEY": "tvly-test"}):
+            from tools.web_tools import check_web_api_key
+            assert check_web_api_key() is True
+
+    def test_searxng_base_url_only(self):
+        with patch.dict(os.environ, {"SEARXNG_BASE_URL": "http://127.0.0.1:8888"}):
             from tools.web_tools import check_web_api_key
             assert check_web_api_key() is True
 

@@ -16,6 +16,7 @@ Backend compatibility:
 - Exa: https://exa.ai (search, extract)
 - Firecrawl: https://docs.firecrawl.dev/introduction (search, extract, crawl; direct or derived firecrawl-gateway.<domain> for Nous Subscribers)
 - Parallel: https://docs.parallel.ai (search, extract)
+- SearXNG: https://docs.searxng.org (self-hosted metasearch; search + direct page fetch extract)
 - Tavily: https://tavily.com (search, extract, crawl)
 
 LLM Processing:
@@ -45,7 +46,9 @@ import logging
 import os
 import re
 import asyncio
+import html
 from typing import List, Dict, Any, Optional
+from urllib.parse import urljoin
 import httpx
 from firecrawl import Firecrawl
 from agent.auxiliary_client import (
@@ -88,7 +91,7 @@ def _get_backend() -> str:
     keys manually without running setup.
     """
     configured = (_load_web_config().get("backend") or "").lower().strip()
-    if configured in ("parallel", "firecrawl", "tavily", "exa"):
+    if configured in ("parallel", "firecrawl", "tavily", "exa", "searxng"):
         return configured
 
     # Fallback for manual / legacy config — pick the highest-priority
@@ -98,6 +101,7 @@ def _get_backend() -> str:
         ("firecrawl", _has_env("FIRECRAWL_API_KEY") or _has_env("FIRECRAWL_API_URL") or _is_tool_gateway_ready()),
         ("parallel", _has_env("PARALLEL_API_KEY")),
         ("tavily", _has_env("TAVILY_API_KEY")),
+        ("searxng", _has_env("SEARXNG_BASE_URL")),
         ("exa", _has_env("EXA_API_KEY")),
     )
     for backend, available in backend_candidates:
@@ -117,7 +121,112 @@ def _is_backend_available(backend: str) -> bool:
         return check_firecrawl_api_key()
     if backend == "tavily":
         return _has_env("TAVILY_API_KEY")
+    if backend == "searxng":
+        return _has_env("SEARXNG_BASE_URL")
     return False
+
+
+# ─── SearXNG Client ──────────────────────────────────────────────────────────
+
+_SEARXNG_DEFAULT_TIMEOUT = 30.0
+
+
+def _get_searxng_base_url() -> str:
+    base_url = os.getenv("SEARXNG_BASE_URL", "").strip().rstrip("/")
+    if not base_url:
+        raise ValueError(
+            "SEARXNG_BASE_URL environment variable not set. "
+            "Point it at your SearXNG instance, e.g. http://127.0.0.1:8888"
+        )
+    return base_url
+
+
+def _searxng_request(query: str, limit: int = 5) -> dict:
+    response = httpx.get(
+        urljoin(_get_searxng_base_url() + "/", "search"),
+        params={"q": query, "format": "json"},
+        timeout=_SEARXNG_DEFAULT_TIMEOUT,
+        follow_redirects=True,
+    )
+    response.raise_for_status()
+    data = response.json()
+    results = data.get("results", [])
+    if isinstance(results, list) and limit > 0:
+        data["results"] = results[:limit]
+    return data
+
+
+def _normalize_searxng_search_results(response: dict) -> dict:
+    web_results = []
+    for i, result in enumerate(response.get("results", [])):
+        web_results.append({
+            "title": result.get("title", ""),
+            "url": result.get("url", ""),
+            "description": result.get("content", "") or result.get("snippet", ""),
+            "position": i + 1,
+        })
+    return {"success": True, "data": {"web": web_results}}
+
+
+def _extract_html_title(content: str) -> str:
+    match = re.search(r"<title[^>]*>(.*?)</title>", content, re.IGNORECASE | re.DOTALL)
+    if not match:
+        return ""
+    return html.unescape(re.sub(r"\s+", " ", match.group(1))).strip()
+
+
+def _html_to_text(content: str) -> str:
+    cleaned = re.sub(r"<script\b[^>]*>.*?</script>", " ", content, flags=re.IGNORECASE | re.DOTALL)
+    cleaned = re.sub(r"<style\b[^>]*>.*?</style>", " ", cleaned, flags=re.IGNORECASE | re.DOTALL)
+    cleaned = re.sub(r"<noscript\b[^>]*>.*?</noscript>", " ", cleaned, flags=re.IGNORECASE | re.DOTALL)
+    cleaned = re.sub(r"<svg\b[^>]*>.*?</svg>", " ", cleaned, flags=re.IGNORECASE | re.DOTALL)
+    cleaned = re.sub(r"<(br|/p|/div|/li|/section|/article|/h[1-6])\b[^>]*>", "\n", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"<[^>]+>", " ", cleaned)
+    cleaned = html.unescape(cleaned)
+    cleaned = re.sub(r"\r", "", cleaned)
+    cleaned = re.sub(r"\n\s*\n+", "\n\n", cleaned)
+    cleaned = re.sub(r"[ \t]+", " ", cleaned)
+    return cleaned.strip()
+
+
+async def _fetch_single_url(url: str, timeout: float = _SEARXNG_DEFAULT_TIMEOUT) -> Dict[str, Any]:
+    async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+        response = await client.get(url)
+        response.raise_for_status()
+        final_url = str(response.url)
+        content_type = response.headers.get("content-type", "").lower()
+        raw_text = response.text
+        title = _extract_html_title(raw_text) if "html" in content_type else ""
+        text_content = _html_to_text(raw_text) if "html" in content_type else raw_text
+        return {
+            "url": final_url,
+            "title": title,
+            "content": text_content,
+            "raw_content": text_content,
+            "metadata": {"sourceURL": final_url, "title": title},
+        }
+
+
+async def _searxng_extract(urls: List[str]) -> List[Dict[str, Any]]:
+    from tools.interrupt import is_interrupted
+
+    if is_interrupted():
+        return [{"url": u, "error": "Interrupted", "title": ""} for u in urls]
+
+    async def _fetch(url: str) -> Dict[str, Any]:
+        try:
+            return await _fetch_single_url(url)
+        except Exception as exc:
+            return {
+                "url": url,
+                "title": "",
+                "content": "",
+                "raw_content": "",
+                "error": str(exc),
+                "metadata": {"sourceURL": url},
+            }
+
+    return await asyncio.gather(*[_fetch(url) for url in urls])
 
 # ─── Firecrawl Client ────────────────────────────────────────────────────────
 
@@ -187,6 +296,7 @@ def _web_requires_env() -> list[str]:
         "EXA_API_KEY",
         "PARALLEL_API_KEY",
         "TAVILY_API_KEY",
+        "SEARXNG_BASE_URL",
         "FIRECRAWL_API_KEY",
         "FIRECRAWL_API_URL",
     ]
@@ -1117,6 +1227,17 @@ def web_search_tool(query: str, limit: int = 5) -> str:
             _debug.save()
             return result_json
 
+        if backend == "searxng":
+            logger.info("SearXNG search: '%s' (limit: %d)", query, limit)
+            raw = _searxng_request(query, limit)
+            response_data = _normalize_searxng_search_results(raw)
+            debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
+            result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
+            debug_call_data["final_response_size"] = len(result_json)
+            _debug.log_call("web_search_tool", debug_call_data)
+            _debug.save()
+            return result_json
+
         logger.info("Searching the web for: '%s' (limit: %d)", query, limit)
 
         response = _get_firecrawl_client().search(
@@ -1234,23 +1355,43 @@ async def web_extract_tool(
             else:
                 safe_urls.append(url)
 
-        # Dispatch only safe URLs to the configured backend
-        if not safe_urls:
+        # Website policy check — enforce before dispatch for every backend.
+        allowed_urls = []
+        policy_blocked: List[Dict[str, Any]] = []
+        for url in safe_urls:
+            blocked = check_website_access(url)
+            if blocked:
+                logger.info("Blocked web_extract for %s by rule %s", blocked["host"], blocked["rule"])
+                policy_blocked.append({
+                    "url": url,
+                    "title": "",
+                    "content": "",
+                    "error": blocked["message"],
+                    "blocked_by_policy": {"host": blocked["host"], "rule": blocked["rule"], "source": blocked["source"]},
+                })
+            else:
+                allowed_urls.append(url)
+
+        # Dispatch only allowed URLs to the configured backend
+        if not allowed_urls:
             results = []
         else:
             backend = _get_backend()
 
             if backend == "parallel":
-                results = await _parallel_extract(safe_urls)
+                results = await _parallel_extract(allowed_urls)
             elif backend == "exa":
-                results = _exa_extract(safe_urls)
+                results = _exa_extract(allowed_urls)
             elif backend == "tavily":
-                logger.info("Tavily extract: %d URL(s)", len(safe_urls))
+                logger.info("Tavily extract: %d URL(s)", len(allowed_urls))
                 raw = _tavily_request("extract", {
-                    "urls": safe_urls,
+                    "urls": allowed_urls,
                     "include_images": False,
                 })
-                results = _normalize_tavily_documents(raw, fallback_url=safe_urls[0] if safe_urls else "")
+                results = _normalize_tavily_documents(raw, fallback_url=allowed_urls[0] if allowed_urls else "")
+            elif backend == "searxng":
+                logger.info("SearXNG direct extract: %d URL(s)", len(allowed_urls))
+                results = await _searxng_extract(allowed_urls)
             else:
                 # ── Firecrawl extraction ──
                 # Determine requested formats for Firecrawl v2
@@ -1268,7 +1409,7 @@ async def web_extract_tool(
                 results: List[Dict[str, Any]] = []
 
                 from tools.interrupt import is_interrupted as _is_interrupted
-                for url in safe_urls:
+                for url in allowed_urls:
                     if _is_interrupted():
                         results.append({"url": url, "error": "Interrupted", "title": ""})
                         continue
@@ -1356,7 +1497,9 @@ async def web_extract_tool(
                             "error": str(scrape_err)
                         })
 
-        # Merge any SSRF-blocked results back in
+        # Merge any blocked results back in
+        if policy_blocked:
+            results = policy_blocked + results
         if ssrf_blocked:
             results = ssrf_blocked + results
 
@@ -1541,6 +1684,12 @@ async def web_crawl_tool(
         effective_model = model or _get_default_summarizer_model()
         auxiliary_available = check_auxiliary_model()
         backend = _get_backend()
+
+        if backend == "searxng":
+            return json.dumps({
+                "success": False,
+                "error": "The SearXNG backend does not support crawling. Use web_search + web_extract instead.",
+            }, ensure_ascii=False)
 
         # Tavily supports crawl via its /crawl endpoint
         if backend == "tavily":
@@ -1921,9 +2070,9 @@ def check_firecrawl_api_key() -> bool:
 def check_web_api_key() -> bool:
     """Check whether the configured web backend is available."""
     configured = _load_web_config().get("backend", "").lower().strip()
-    if configured in ("exa", "parallel", "firecrawl", "tavily"):
+    if configured in ("exa", "parallel", "firecrawl", "tavily", "searxng"):
         return _is_backend_available(configured)
-    return any(_is_backend_available(backend) for backend in ("exa", "parallel", "firecrawl", "tavily"))
+    return any(_is_backend_available(backend) for backend in ("exa", "parallel", "firecrawl", "tavily", "searxng"))
 
 
 def check_auxiliary_model() -> bool:
@@ -1961,6 +2110,8 @@ if __name__ == "__main__":
             print("   Using Parallel API (https://parallel.ai)")
         elif backend == "tavily":
             print("   Using Tavily API (https://tavily.com)")
+        elif backend == "searxng":
+            print(f"   Using self-hosted SearXNG: {_get_searxng_base_url()}")
         else:
             if firecrawl_url_available:
                 print(f"   Using self-hosted Firecrawl: {os.getenv('FIRECRAWL_API_URL').strip().rstrip('/')}")
@@ -1973,7 +2124,7 @@ if __name__ == "__main__":
     else:
         print("❌ No web search backend configured")
         print(
-            "Set EXA_API_KEY, PARALLEL_API_KEY, TAVILY_API_KEY, FIRECRAWL_API_KEY, FIRECRAWL_API_URL"
+            "Set EXA_API_KEY, PARALLEL_API_KEY, TAVILY_API_KEY, SEARXNG_BASE_URL, FIRECRAWL_API_KEY, FIRECRAWL_API_URL"
             f"{_firecrawl_backend_help_suffix()}"
         )
 

@@ -376,6 +376,34 @@ async def test_web_extract_short_circuits_blocked_url(monkeypatch):
     assert "Blocked by website policy" in result["results"][0]["error"]
 
 
+@pytest.mark.asyncio
+async def test_web_extract_searxng_short_circuits_blocked_url(monkeypatch):
+    from tools import web_tools
+
+    monkeypatch.setattr(web_tools, "_get_backend", lambda: "searxng")
+    monkeypatch.setattr(web_tools, "is_safe_url", lambda url: True)
+    monkeypatch.setattr(
+        web_tools,
+        "check_website_access",
+        lambda url: {
+            "host": "blocked.test",
+            "rule": "blocked.test",
+            "source": "config",
+            "message": "Blocked by website policy",
+        },
+    )
+    monkeypatch.setattr(
+        web_tools,
+        "_searxng_extract",
+        lambda urls: pytest.fail("searxng extract should not run for blocked URL"),
+    )
+
+    result = json.loads(await web_tools.web_extract_tool(["https://blocked.test"], use_llm_processing=False))
+
+    assert result["results"][0]["url"] == "https://blocked.test"
+    assert "Blocked by website policy" in result["results"][0]["error"]
+
+
 def test_check_website_access_fails_open_on_malformed_config(tmp_path, monkeypatch):
     """Malformed config with default path should fail open (return None), not crash."""
     config_path = tmp_path / "config.yaml"

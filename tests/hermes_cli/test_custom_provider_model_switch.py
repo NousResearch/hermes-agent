@@ -45,7 +45,8 @@ class TestCustomProviderModelSwitch:
             "model": "model-A",  # already saved
         }
 
-        with patch("hermes_cli.main.fetch_api_models", return_value=["model-A", "model-B"]) as mock_fetch, \
+        with patch("hermes_cli.models.fetch_api_models", return_value=["model-A", "model-B"]) as mock_fetch, \
+             patch.dict("sys.modules", {"simple_term_menu": None}), \
              patch("builtins.input", return_value="2"), \
              patch("builtins.print"):
             _model_flow_named_custom({}, provider_info)
@@ -65,7 +66,8 @@ class TestCustomProviderModelSwitch:
             "model": "model-A",
         }
 
-        with patch("hermes_cli.main.fetch_api_models", return_value=["model-A", "model-B"]), \
+        with patch("hermes_cli.models.fetch_api_models", return_value=["model-A", "model-B"]), \
+             patch.dict("sys.modules", {"simple_term_menu": None}), \
              patch("builtins.input", return_value="2"), \
              patch("builtins.print"):
             _model_flow_named_custom({}, provider_info)
@@ -88,7 +90,7 @@ class TestCustomProviderModelSwitch:
         }
 
         # fetch returns empty list (probe failed), user presses Enter (empty input)
-        with patch("hermes_cli.main.fetch_api_models", return_value=[]), \
+        with patch("hermes_cli.models.fetch_api_models", return_value=[]), \
              patch("builtins.input", return_value=""), \
              patch("builtins.print"):
             _model_flow_named_custom({}, provider_info)
@@ -110,7 +112,8 @@ class TestCustomProviderModelSwitch:
             # no "model" key
         }
 
-        with patch("hermes_cli.main.fetch_api_models", return_value=["model-X"]), \
+        with patch("hermes_cli.models.fetch_api_models", return_value=["model-X"]), \
+             patch.dict("sys.modules", {"simple_term_menu": None}), \
              patch("builtins.input", return_value="1"), \
              patch("builtins.print"):
             _model_flow_named_custom({}, provider_info)

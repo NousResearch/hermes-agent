@@ -6,10 +6,12 @@ and implement the required methods.
 """
 
 import asyncio
+import ipaddress
 import logging
 import os
 import random
 import re
+import socket as _socket
 import subprocess
 import sys
 import uuid
@@ -17,6 +19,41 @@ from abc import ABC, abstractmethod
 from urllib.parse import urlsplit
 
 logger = logging.getLogger(__name__)
+
+
+def is_network_accessible(host: str) -> bool:
+    """Return True if *host* would expose the server beyond loopback.
+
+    Loopback addresses (127.0.0.1, ::1, IPv4-mapped ::ffff:127.0.0.1)
+    are local-only.  Unspecified addresses (0.0.0.0, ::) bind all
+    interfaces.  Hostnames are resolved; DNS failure fails closed.
+    """
+    try:
+        addr = ipaddress.ip_address(host)
+        if addr.is_loopback:
+            return False
+        # ::ffff:127.0.0.1 — Python reports is_loopback=False for mapped
+        # addresses, so check the underlying IPv4 explicitly.
+        if getattr(addr, "ipv4_mapped", None) and addr.ipv4_mapped.is_loopback:
+            return False
+        return True
+    except ValueError:
+        # when host variable is a hostname, we should try to resolve below
+        pass
+
+    try:
+        resolved = _socket.getaddrinfo(
+            host, None, _socket.AF_UNSPEC, _socket.SOCK_STREAM,
+        )
+        # if the hostname resolves into at least one non-loopback address,
+        # then we consider it to be network accessible
+        for _family, _type, _proto, _canonname, sockaddr in resolved:
+            addr = ipaddress.ip_address(sockaddr[0])
+            if not addr.is_loopback:
+                return True
+        return False
+    except (_socket.gaierror, OSError):
+        return True
 
 
 def _detect_macos_system_proxy() -> str | None:

@@ -25,6 +25,7 @@ import hmac
 import json
 import logging
 import os
+import socket as _socket
 import re
 import sqlite3
 import time
@@ -42,6 +43,7 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     BasePlatformAdapter,
     SendResult,
+    is_network_accessible,
 )
 
 logger = logging.getLogger(__name__)
@@ -406,7 +408,8 @@ class APIServerAdapter(BasePlatformAdapter):
         Validate Bearer token from Authorization header.
 
         Returns None if auth is OK, or a 401 web.Response on failure.
-        If no API key is configured, all requests are allowed.
+        If no API key is configured, all requests are allowed (only when API
+        server is local).
         """
         if not self._api_key:
             return None  # No key configured — allow all (local-only use)
@@ -1713,8 +1716,16 @@ class APIServerAdapter(BasePlatformAdapter):
             if hasattr(sweep_task, "add_done_callback"):
                 sweep_task.add_done_callback(self._background_tasks.discard)
 
+            # Refuse to start network-accessible without authentication
+            if is_network_accessible(self._host) and not self._api_key:
+                logger.error(
+                    "[%s] Refusing to start: binding to %s requires API_SERVER_KEY. "
+                    "Set API_SERVER_KEY or use the default 127.0.0.1.",
+                    self.name, self._host,
+                )
+                return False
+
             # Port conflict detection — fail fast if port is already in use
-            import socket as _socket
             try:
                 with _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM) as _s:
                     _s.settimeout(1)

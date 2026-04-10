@@ -10,6 +10,7 @@ Shares credentials with the optional telephony skill — same env vars:
 
 Gateway-specific env vars:
   - SMS_WEBHOOK_PORT     (default 8080)
+  - SMS_WEBHOOK_URL      (public URL for signature validation, e.g. https://example.com/webhooks/twilio)
   - SMS_ALLOWED_USERS    (comma-separated E.164 phone numbers)
   - SMS_ALLOW_ALL_USERS  (true/false)
   - SMS_HOME_CHANNEL     (phone number for cron delivery)
@@ -77,6 +78,9 @@ class SmsAdapter(BasePlatformAdapter):
         self._webhook_port: int = int(
             os.getenv("SMS_WEBHOOK_PORT", str(DEFAULT_WEBHOOK_PORT))
         )
+        # Public webhook URL for signature validation (required behind reverse proxy)
+        # If not set, uses the actual request URL
+        self._webhook_url: Optional[str] = os.getenv("SMS_WEBHOOK_URL")
         self._runner = None
         self._http_session: Optional["aiohttp.ClientSession"] = None
 
@@ -207,6 +211,47 @@ class SmsAdapter(BasePlatformAdapter):
     # Twilio webhook handler
     # ------------------------------------------------------------------
 
+    def _validate_twilio_signature(self, request, form: Dict[str, list]) -> bool:
+        """Validate X-Twilio-Signature header for webhook authentication.
+
+        Twilio signs webhook requests with HMAC-SHA1 over:
+          AuthToken + URL + sorted POST parameters (key+value concatenated)
+
+        See: https://www.twilio.com/docs/usage/security#validating-signatures
+        
+        Note: If SMS_WEBHOOK_URL is configured, it is used instead of the
+        actual request URL. This is required when running behind a reverse
+        proxy where the public URL differs from the internal URL.
+        """
+        import hashlib
+        import hmac
+
+        signature = request.headers.get("X-Twilio-Signature", "")
+        if not signature:
+            return False
+
+        # Use configured webhook URL if set (for reverse proxy scenarios)
+        # Otherwise use the actual request URL
+        signed_data = self._webhook_url if self._webhook_url else str(request.url)
+        
+        for key in sorted(form.keys()):
+            values = form.get(key, [])
+            if not isinstance(values, list):
+                values = [values]
+            for value in values:
+                signed_data += f"{key}{value}"
+
+        # Compute expected signature
+        expected = base64.b64encode(
+            hmac.new(
+                self._auth_token.encode("utf-8"),
+                signed_data.encode("utf-8"),
+                hashlib.sha1,
+            ).digest()
+        ).decode("ascii")
+
+        return hmac.compare_digest(expected, signature)
+
     async def _handle_webhook(self, request) -> "aiohttp.web.Response":
         from aiohttp import web
 
@@ -220,6 +265,17 @@ class SmsAdapter(BasePlatformAdapter):
                 text='<?xml version="1.0" encoding="UTF-8"?><Response></Response>',
                 content_type="application/xml",
                 status=400,
+            )
+
+        # SECURITY: Validate Twilio signature before processing
+        if not self._validate_twilio_signature(request, form):
+            logger.warning(
+                "[sms] rejected webhook: invalid or missing X-Twilio-Signature"
+            )
+            return web.Response(
+                text='<?xml version="1.0" encoding="UTF-8"?><Response></Response>',
+                content_type="application/xml",
+                status=403,
             )
 
         # Extract fields (parse_qs returns lists)

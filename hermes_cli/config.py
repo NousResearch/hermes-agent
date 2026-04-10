@@ -212,7 +212,10 @@ def ensure_hermes_home():
             os.umask(old_umask)
     else:
         home.mkdir(parents=True, exist_ok=True)
-        _secure_dir(home)
+        try:
+            os.chmod(home, 0o701)
+        except (OSError, NotImplementedError):
+            pass
         for subdir in ("cron", "sessions", "logs", "memories"):
             d = home / subdir
             d.mkdir(parents=True, exist_ok=True)

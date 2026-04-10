@@ -58,6 +58,20 @@ class TestEnsureHermesHome:
             ensure_hermes_home()
             assert soul_path.read_text(encoding="utf-8") == "custom soul"
 
+    def test_permissions_home_701_and_subdirs_700(self, tmp_path):
+        if os.name == "nt":
+            return
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            ensure_hermes_home()
+
+            home_mode = os.stat(tmp_path).st_mode & 0o777
+            assert home_mode == 0o701
+
+            for subdir in ("cron", "sessions", "logs", "memories"):
+                subdir_mode = os.stat(tmp_path / subdir).st_mode & 0o777
+                assert subdir_mode == 0o700
+
 
 class TestLoadConfigDefaults:
     def test_returns_defaults_when_no_file(self, tmp_path):

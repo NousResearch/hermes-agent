@@ -13,6 +13,7 @@ import json
 import os
 import sys
 import threading
+import time
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -1050,6 +1051,160 @@ class TestChildCredentialLeasing(unittest.TestCase):
 
         self.assertEqual(result["status"], "error")
         child._credential_pool.release_lease.assert_called_once_with("cred-a")
+
+
+class TestDelegateHeartbeat(unittest.TestCase):
+    """Heartbeat propagates child activity to parent during delegation.
+
+    Without the heartbeat, the gateway inactivity timeout fires because the
+    parent's _last_activity_ts freezes when delegate_task starts.
+    """
+
+    def test_heartbeat_touches_parent_activity_during_child_run(self):
+        """Parent's _touch_activity is called while child.run_conversation blocks."""
+        from tools.delegate_tool import _run_single_child
+
+        parent = _make_mock_parent()
+        touch_calls = []
+        parent._touch_activity = lambda desc: touch_calls.append(desc)
+
+        child = MagicMock()
+        child.get_activity_summary.return_value = {
+            "current_tool": "terminal",
+            "api_call_count": 3,
+            "max_iterations": 50,
+            "last_activity_desc": "executing tool: terminal",
+        }
+
+        # Make run_conversation block long enough for heartbeats to fire
+        def slow_run(**kwargs):
+            time.sleep(0.25)
+            return {"final_response": "done", "completed": True, "api_calls": 3}
+
+        child.run_conversation.side_effect = slow_run
+
+        # Patch the heartbeat interval to fire quickly
+        with patch("tools.delegate_tool._HEARTBEAT_INTERVAL", 0.05):
+            _run_single_child(
+                task_index=0,
+                goal="Test heartbeat",
+                child=child,
+                parent_agent=parent,
+            )
+
+        # Heartbeat should have fired at least once during the 0.25s sleep
+        self.assertGreater(len(touch_calls), 0,
+                           "Heartbeat did not propagate activity to parent")
+        # Verify the description includes child's current tool detail
+        self.assertTrue(
+            any("terminal" in desc for desc in touch_calls),
+            f"Heartbeat descriptions should include child tool info: {touch_calls}")
+
+    def test_heartbeat_stops_after_child_completes(self):
+        """Heartbeat thread is cleaned up when the child finishes."""
+        from tools.delegate_tool import _run_single_child
+
+        parent = _make_mock_parent()
+        touch_calls = []
+        parent._touch_activity = lambda desc: touch_calls.append(desc)
+
+        child = MagicMock()
+        child.get_activity_summary.return_value = {
+            "current_tool": None,
+            "api_call_count": 1,
+            "max_iterations": 50,
+            "last_activity_desc": "done",
+        }
+        child.run_conversation.return_value = {
+            "final_response": "done", "completed": True, "api_calls": 1,
+        }
+
+        with patch("tools.delegate_tool._HEARTBEAT_INTERVAL", 0.05):
+            _run_single_child(
+                task_index=0,
+                goal="Test cleanup",
+                child=child,
+                parent_agent=parent,
+            )
+
+        # Record count after completion, wait, and verify no more calls
+        count_after = len(touch_calls)
+        time.sleep(0.15)
+        self.assertEqual(len(touch_calls), count_after,
+                         "Heartbeat continued firing after child completed")
+
+    def test_heartbeat_stops_after_child_error(self):
+        """Heartbeat thread is cleaned up even when the child raises."""
+        from tools.delegate_tool import _run_single_child
+
+        parent = _make_mock_parent()
+        touch_calls = []
+        parent._touch_activity = lambda desc: touch_calls.append(desc)
+
+        child = MagicMock()
+        child.get_activity_summary.return_value = {
+            "current_tool": "web_search",
+            "api_call_count": 2,
+            "max_iterations": 50,
+            "last_activity_desc": "executing tool: web_search",
+        }
+
+        def slow_fail(**kwargs):
+            time.sleep(0.15)
+            raise RuntimeError("network timeout")
+
+        child.run_conversation.side_effect = slow_fail
+
+        with patch("tools.delegate_tool._HEARTBEAT_INTERVAL", 0.05):
+            result = _run_single_child(
+                task_index=0,
+                goal="Test error cleanup",
+                child=child,
+                parent_agent=parent,
+            )
+
+        self.assertEqual(result["status"], "error")
+
+        # Verify heartbeat stopped
+        count_after = len(touch_calls)
+        time.sleep(0.15)
+        self.assertEqual(len(touch_calls), count_after,
+                         "Heartbeat continued firing after child error")
+
+    def test_heartbeat_includes_child_activity_desc_when_no_tool(self):
+        """When child has no current_tool, heartbeat uses last_activity_desc."""
+        from tools.delegate_tool import _run_single_child
+
+        parent = _make_mock_parent()
+        touch_calls = []
+        parent._touch_activity = lambda desc: touch_calls.append(desc)
+
+        child = MagicMock()
+        child.get_activity_summary.return_value = {
+            "current_tool": None,
+            "api_call_count": 5,
+            "max_iterations": 90,
+            "last_activity_desc": "API call #5 completed",
+        }
+
+        def slow_run(**kwargs):
+            time.sleep(0.15)
+            return {"final_response": "done", "completed": True, "api_calls": 5}
+
+        child.run_conversation.side_effect = slow_run
+
+        with patch("tools.delegate_tool._HEARTBEAT_INTERVAL", 0.05):
+            _run_single_child(
+                task_index=0,
+                goal="Test desc fallback",
+                child=child,
+                parent_agent=parent,
+            )
+
+        self.assertGreater(len(touch_calls), 0)
+        self.assertTrue(
+            any("API call #5 completed" in desc for desc in touch_calls),
+            f"Heartbeat should include last_activity_desc: {touch_calls}")
 
 
 if __name__ == "__main__":

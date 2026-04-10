@@ -1,0 +1,5 @@
+name: hermes-tiered-memory
+version: 0.1.0
+description: Hybrid FTS5 + sqlite-vec memory with RRF ranking
+pip_dependencies:
+  - sqlite-vec

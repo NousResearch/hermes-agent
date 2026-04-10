@@ -1547,6 +1547,10 @@ class DiscordAdapter(BasePlatformAdapter):
         the "thinking..." indicator is replaced with that text; otherwise it
         is deleted so the channel isn't cluttered.
         """
+        channel = await self._resolve_interaction_channel(interaction)
+        if channel is None or not self._is_allowed_discord_channel(channel):
+            await self._reject_disallowed_interaction(interaction)
+            return
         await interaction.response.defer(ephemeral=True)
         event = self._build_slash_event(interaction, command_text)
         await self.handle_message(event)
@@ -1794,6 +1798,10 @@ class DiscordAdapter(BasePlatformAdapter):
         auto_archive_duration: int = 1440,
     ) -> None:
         """Create a Discord thread from a slash command and start a session in it."""
+        channel = await self._resolve_interaction_channel(interaction)
+        if channel is None or not self._is_allowed_discord_channel(channel):
+            await self._reject_disallowed_interaction(interaction)
+            return
         result = await self._create_thread(
             interaction,
             name=name,
@@ -2114,6 +2122,41 @@ class DiscordAdapter(BasePlatformAdapter):
             return str(parent_id)
         return None
 
+    def _discord_allowed_channels(self) -> set[str]:
+        raw = os.getenv("DISCORD_ALLOWED_CHANNELS", "")
+        return {ch.strip() for ch in raw.split(",") if ch.strip()}
+
+    def _discord_allow_dms(self) -> bool:
+        return os.getenv("DISCORD_ALLOW_DMS", "true").lower() in ("true", "1", "yes")
+
+    def _channel_ids_for_access(self, channel: Any) -> set[str]:
+        ids: set[str] = set()
+        channel_id = getattr(channel, "id", None)
+        if channel_id is not None:
+            ids.add(str(channel_id))
+        parent_channel_id = self._get_parent_channel_id(channel)
+        if parent_channel_id:
+            ids.add(parent_channel_id)
+        return ids
+
+    def _is_allowed_discord_channel(self, channel: Any) -> bool:
+        if isinstance(channel, discord.DMChannel):
+            return self._discord_allow_dms() and not self._discord_allowed_channels()
+        allowed_channels = self._discord_allowed_channels()
+        if not allowed_channels:
+            return True
+        return bool(self._channel_ids_for_access(channel) & allowed_channels)
+
+    async def _reject_disallowed_interaction(self, interaction: discord.Interaction) -> None:
+        message = "Hermes는 #hermes 채널에서만 반응하도록 제한되어 있어요."
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(message, ephemeral=True)
+            else:
+                await interaction.response.send_message(message, ephemeral=True)
+        except Exception as e:
+            logger.debug("[%s] Failed to reject disallowed interaction: %s", self.name, e)
+
     def _is_forum_parent(self, channel: Any) -> bool:
         """Best-effort check for whether a Discord channel is a forum channel."""
         if channel is None:
@@ -2206,6 +2249,10 @@ class DiscordAdapter(BasePlatformAdapter):
         if is_thread:
             thread_id = str(message.channel.id)
             parent_channel_id = self._get_parent_channel_id(message.channel)
+
+        if not self._is_allowed_discord_channel(message.channel):
+            logger.debug("[%s] Ignoring message outside allowed Discord channels", self.name)
+            return
 
         if not isinstance(message.channel, discord.DMChannel):
             # Check ignored channels first - never respond even when mentioned

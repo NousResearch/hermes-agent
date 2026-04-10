@@ -547,6 +547,13 @@ def load_gateway_config() -> GatewayConfig:
             if isinstance(discord_cfg, dict):
                 if "require_mention" in discord_cfg and not os.getenv("DISCORD_REQUIRE_MENTION"):
                     os.environ["DISCORD_REQUIRE_MENTION"] = str(discord_cfg["require_mention"]).lower()
+                allowed = discord_cfg.get("allowed_channels")
+                if allowed is not None and not os.getenv("DISCORD_ALLOWED_CHANNELS"):
+                    if isinstance(allowed, list):
+                        allowed = ",".join(str(v) for v in allowed)
+                    os.environ["DISCORD_ALLOWED_CHANNELS"] = str(allowed)
+                if "allow_dms" in discord_cfg and not os.getenv("DISCORD_ALLOW_DMS"):
+                    os.environ["DISCORD_ALLOW_DMS"] = str(discord_cfg["allow_dms"]).lower()
                 frc = discord_cfg.get("free_response_channels")
                 if frc is not None and not os.getenv("DISCORD_FREE_RESPONSE_CHANNELS"):
                     if isinstance(frc, list):

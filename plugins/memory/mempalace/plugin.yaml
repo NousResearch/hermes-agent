@@ -1,0 +1,7 @@
+name: mempalace
+version: 0.1.0
+description: "MemPalace — local verbatim memory with ChromaDB semantic search, 4-layer retrieval stack, and temporal knowledge graph. 96.6% LongMemEval recall."
+hooks:
+  - on_session_end
+  - on_pre_compress
+  - on_memory_write

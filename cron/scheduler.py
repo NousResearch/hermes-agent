@@ -138,36 +138,36 @@ def _resolve_delivery_target(job: dict) -> Optional[dict]:
         }
 
     platform_name = deliver
-
     if platform_name.lower() not in _KNOWN_DELIVERY_PLATFORMS:
         return None
 
+    # Prefer the configured home channel over the origin chat.
+    # Before this fix, jobs created from a Discord DM with deliver='discord'
+    # would short-circuit here and route back to the origin DM instead of the
+    # home channel — making deliver='discord' behave identically to deliver='origin'.
     chat_id = os.getenv(f"{platform_name.upper()}_HOME_CHANNEL", "")
-    if not chat_id:
-        # Home channel not configured — fall back to origin if available, otherwise suppress.
-        if origin and origin.get("platform") == platform_name:
-            logger.warning(
-                "Job '%s': deliver='%s' but %s_HOME_CHANNEL is not set — "
-                "falling back to origin chat %s.",
-                job.get("id"), deliver, platform_name.upper(), origin["chat_id"],
-            )
-            return {
-                "platform": platform_name,
-                "chat_id": str(origin["chat_id"]),
-                "thread_id": origin.get("thread_id"),
-            }
-        logger.warning(
-            "Job '%s': deliver='%s' but %s_HOME_CHANNEL is not set and no origin available — "
-            "delivery suppressed.",
-            job.get("id"), deliver, platform_name.upper(),
-        )
-        return None
+    if chat_id:
+        return {
+            "platform": platform_name,
+            "chat_id": chat_id,
+            "thread_id": None,
+        }
 
-    return {
-        "platform": platform_name,
-        "chat_id": chat_id,
-        "thread_id": None,
-    }
+    # No home channel configured — fall back to origin to avoid silent drops.
+    if origin and origin.get("platform") == platform_name:
+        logger.warning(
+            "Job '%s': deliver='%s' but %s_HOME_CHANNEL not set; falling back to origin chat",
+            job.get("name", job.get("id", "?")),
+            platform_name,
+            platform_name.upper(),
+        )
+        return {
+            "platform": platform_name,
+            "chat_id": str(origin["chat_id"]),
+            "thread_id": origin.get("thread_id"),
+        }
+
+    return None
 
 
 # Media extension sets — keep in sync with gateway/platforms/base.py:_process_message_background

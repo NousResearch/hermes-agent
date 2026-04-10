@@ -173,6 +173,49 @@ class TestResolveDeliveryTarget:
             "thread_id": None,
         }
 
+    def test_bare_discord_same_origin_routes_to_home_channel_not_origin(self, monkeypatch):
+        """Regression test for PR #7222: deliver='discord' when origin is also discord
+        must route to the configured home channel, NOT back to the origin chat.
+        Before the fix, the short-circuit on line 141 would return origin['chat_id'],
+        making deliver='discord' behave identically to deliver='origin'."""
+        monkeypatch.setenv("DISCORD_HOME_CHANNEL", "1491576180317360148")
+        job = {
+            "deliver": "discord",
+            "origin": {
+                "platform": "discord",
+                "chat_id": "999999999999999999",  # a DM or different channel, NOT home
+            },
+        }
+        result = _resolve_delivery_target(job)
+        # Must resolve to home channel, not the origin chat
+        assert result == {
+            "platform": "discord",
+            "chat_id": "1491576180317360148",
+            "thread_id": None,
+        }
+        assert result["chat_id"] != "999999999999999999", (
+            "Delivery must NOT go back to origin — it should use the home channel"
+        )
+
+    def test_bare_discord_no_home_channel_falls_back_to_origin(self, monkeypatch):
+        """Fallback: deliver='discord' with same-platform origin but no home channel configured
+        must fall back to origin instead of dropping the delivery silently."""
+        monkeypatch.delenv("DISCORD_HOME_CHANNEL", raising=False)
+        job = {
+            "deliver": "discord",
+            "origin": {
+                "platform": "discord",
+                "chat_id": "999999999999999999",
+                "thread_id": None,
+            },
+        }
+        result = _resolve_delivery_target(job)
+        assert result == {
+            "platform": "discord",
+            "chat_id": "999999999999999999",
+            "thread_id": None,
+        }, "Without a home channel, delivery should fall back to origin to avoid silent drops"
+
     def test_explicit_discord_topic_target_with_thread_id(self):
         """deliver: 'discord:chat_id:thread_id' parses correctly."""
         job = {

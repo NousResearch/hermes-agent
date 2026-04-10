@@ -20,9 +20,6 @@ COPILOT_EDITOR_VERSION = "vscode/1.104.1"
 COPILOT_REASONING_EFFORTS_GPT5 = ["minimal", "low", "medium", "high"]
 COPILOT_REASONING_EFFORTS_O_SERIES = ["low", "medium", "high"]
 
-# Backward-compatible aliases for the earlier GitHub Models-backed Copilot work.
-GITHUB_MODELS_BASE_URL = COPILOT_BASE_URL
-GITHUB_MODELS_CATALOG_URL = COPILOT_MODELS_URL
 
 # Fallback OpenRouter snapshot used when the live catalog is unavailable.
 # (model_id, display description shown in menus)
@@ -419,12 +416,6 @@ _FREE_TIER_CACHE_TTL: int = 180  # seconds (3 minutes)
 _free_tier_cache: tuple[bool, float] | None = None  # (result, timestamp)
 
 
-def clear_nous_free_tier_cache() -> None:
-    """Invalidate the cached free-tier result (e.g. after login/logout)."""
-    global _free_tier_cache
-    _free_tier_cache = None
-
-
 def check_nous_free_tier() -> bool:
     """Check if the current Nous Portal user is on a free (unpaid) tier.
 
@@ -610,6 +601,7 @@ def menu_labels(*, force_refresh: bool = False) -> list[str]:
     return labels
 
 
+
 # ---------------------------------------------------------------------------
 # Pricing helpers — fetch live pricing from OpenRouter-compatible /v1/models
 # ---------------------------------------------------------------------------
@@ -640,31 +632,6 @@ def _format_price_per_mtok(per_token_str: str) -> str:
         return "free"
     per_m = val * 1_000_000
     return f"${per_m:.2f}"
-
-
-def format_pricing_label(pricing: dict[str, str] | None) -> str:
-    """Build a compact pricing label like 'in $3 · out $15 · cache $0.30/Mtok'.
-
-    Returns empty string when pricing is unavailable.
-    """
-    if not pricing:
-        return ""
-    prompt_price = pricing.get("prompt", "")
-    completion_price = pricing.get("completion", "")
-    if not prompt_price and not completion_price:
-        return ""
-    inp = _format_price_per_mtok(prompt_price)
-    out = _format_price_per_mtok(completion_price)
-    if inp == "free" and out == "free":
-        return "free"
-    cache_read = pricing.get("input_cache_read", "")
-    cache_str = _format_price_per_mtok(cache_read) if cache_read else ""
-    if inp == out and not cache_str:
-        return f"{inp}/Mtok"
-    parts = [f"in {inp}", f"out {out}"]
-    if cache_str and cache_str != "?" and cache_str != inp:
-        parts.append(f"cache {cache_str}")
-    return " · ".join(parts) + "/Mtok"
 
 
 def format_model_pricing_table(

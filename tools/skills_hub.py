@@ -1952,7 +1952,6 @@ class LobeHubSource(SkillSource):
     """
 
     INDEX_URL = "https://chat-agents.lobehub.com/index.json"
-    REPO = "lobehub/lobe-chat-agents"
 
     def source_id(self) -> str:
         return "lobehub"
@@ -2389,10 +2388,6 @@ class HubLockFile:
         for name, entry in data["installed"].items():
             result.append({"name": name, **entry})
         return result
-
-    def is_hub_installed(self, name: str) -> bool:
-        data = self.load()
-        return name in data["installed"]
 
 
 # ---------------------------------------------------------------------------

@@ -338,7 +338,6 @@ def test_setup_copilot_acp_skips_same_provider_pool_step(tmp_path, monkeypatch):
     monkeypatch.setattr("hermes_cli.setup.prompt_yes_no", fake_prompt_yes_no)
     monkeypatch.setattr("hermes_cli.setup.prompt", lambda *args, **kwargs: "")
     monkeypatch.setattr("hermes_cli.auth.get_active_provider", lambda: None)
-    monkeypatch.setattr("hermes_cli.auth.detect_external_credentials", lambda: [])
     monkeypatch.setattr("agent.auxiliary_client.get_available_vision_backends", lambda: [])
 
     setup_model_provider(config)

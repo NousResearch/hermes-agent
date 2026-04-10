@@ -1345,6 +1345,7 @@ class AIAgent:
             "base_url": self.base_url,
             "api_mode": self.api_mode,
             "api_key": getattr(self, "api_key", ""),
+            "max_tokens": self.max_tokens,
             "client_kwargs": dict(self._client_kwargs),
             "use_prompt_caching": self._use_prompt_caching,
             # Compressor state that _try_activate_fallback() overwrites
@@ -1407,7 +1408,16 @@ class AIAgent:
             # Iterative summary from previous session must not bleed into new one (#2635)
             self.context_compressor._previous_summary = None
     
-    def switch_model(self, new_model, new_provider, api_key='', base_url='', api_mode=''):
+    def switch_model(
+        self,
+        new_model,
+        new_provider,
+        api_key='',
+        base_url='',
+        api_mode='',
+        context_length=None,
+        max_tokens=None,
+    ):
         """Switch the model/provider in-place for a live agent.
 
         Called by the /model command handlers (CLI and gateway) after
@@ -1438,6 +1448,8 @@ class AIAgent:
         self.api_mode = api_mode
         if api_key:
             self.api_key = api_key
+        if max_tokens is not None:
+            self.max_tokens = max_tokens
 
         # ── Build new client ──
         if api_mode == "anthropic_messages":
@@ -1478,14 +1490,18 @@ class AIAgent:
 
         # ── Update context compressor ──
         if hasattr(self, "context_compressor") and self.context_compressor:
-            from agent.model_metadata import get_model_context_length
-            new_context_length = get_model_context_length(
-                self.model,
-                base_url=self.base_url,
-                api_key=self.api_key,
-                provider=self.provider,
-                config_context_length=getattr(self, "_config_context_length", None),
-            )
+            if context_length is None:
+                from agent.model_metadata import get_model_context_length
+
+                new_context_length = get_model_context_length(
+                    self.model,
+                    base_url=self.base_url,
+                    api_key=self.api_key,
+                    provider=self.provider,
+                    config_context_length=getattr(self, "_config_context_length", None),
+                )
+            else:
+                new_context_length = context_length
             self.context_compressor.model = self.model
             self.context_compressor.base_url = self.base_url
             self.context_compressor.api_key = self.api_key
@@ -1506,6 +1522,7 @@ class AIAgent:
             "base_url": self.base_url,
             "api_mode": self.api_mode,
             "api_key": getattr(self, "api_key", ""),
+            "max_tokens": self.max_tokens,
             "client_kwargs": dict(self._client_kwargs),
             "use_prompt_caching": self._use_prompt_caching,
             "compressor_model": _cc.model if _cc else self.model,
@@ -5286,6 +5303,7 @@ class AIAgent:
             self.base_url = rt["base_url"]           # setter updates _base_url_lower
             self.api_mode = rt["api_mode"]
             self.api_key = rt["api_key"]
+            self.max_tokens = rt.get("max_tokens")
             self._client_kwargs = dict(rt["client_kwargs"])
             self._use_prompt_caching = rt["use_prompt_caching"]
 

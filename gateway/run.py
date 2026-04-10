@@ -71,6 +71,47 @@ def _ensure_ssl_certs() -> None:
 
 _ensure_ssl_certs()
 
+
+def _append_model_switch_details(
+    lines: List[str],
+    result,
+    *,
+    current_base_url: str = "",
+    current_api_key: str = "",
+) -> None:
+    """Append context/output metadata for a /model switch confirmation."""
+    mi = result.model_info
+
+    context_tokens = result.context_length
+    if context_tokens is None and mi and mi.context_window:
+        context_tokens = mi.context_window
+    if context_tokens is None:
+        try:
+            from agent.model_metadata import get_model_context_length
+
+            context_tokens = get_model_context_length(
+                result.new_model,
+                base_url=result.base_url or current_base_url,
+                api_key=result.api_key or current_api_key,
+                provider=result.target_provider,
+            )
+        except Exception:
+            context_tokens = None
+    if context_tokens:
+        lines.append(f"Context: {context_tokens:,} tokens")
+
+    max_output_tokens = result.max_tokens
+    if max_output_tokens is None and mi and mi.max_output:
+        max_output_tokens = mi.max_output
+    if max_output_tokens:
+        lines.append(f"Max output: {max_output_tokens:,} tokens")
+
+    if mi:
+        if mi.has_cost_data():
+            lines.append(f"Cost: {mi.format_cost()}")
+        lines.append(f"Capabilities: {mi.format_capabilities()}")
+
+
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -517,7 +558,7 @@ class GatewayRunner:
 
         # Per-session model overrides from /model command.
         # Key: session_key, Value: dict with model/provider/api_key/base_url/api_mode
-        self._session_model_overrides: Dict[str, Dict[str, str]] = {}
+        self._session_model_overrides: Dict[str, Dict[str, Any]] = {}
         # Track pending exec approvals per session
         # Key: session_key, Value: {"command": str, "pattern_key": str, ...}
         self._pending_approvals: Dict[str, Dict[str, Any]] = {}
@@ -3749,6 +3790,8 @@ class GatewayRunner:
                                     api_key=result.api_key,
                                     base_url=result.base_url,
                                     api_mode=result.api_mode,
+                                    context_length=result.context_length,
+                                    max_tokens=result.max_tokens,
                                 )
                             except Exception as exc:
                                 logger.warning("Picker model switch failed for cached agent: %s", exc)
@@ -3769,21 +3812,20 @@ class GatewayRunner:
                             "api_key": result.api_key,
                             "base_url": result.base_url,
                             "api_mode": result.api_mode,
+                            "context_length": result.context_length,
+                            "max_tokens": result.max_tokens,
                         }
 
                         # Build confirmation text
                         plabel = result.provider_label or result.target_provider
                         lines = [f"Model switched to `{result.new_model}`"]
                         lines.append(f"Provider: {plabel}")
-                        mi = result.model_info
-                        if mi:
-                            if mi.context_window:
-                                lines.append(f"Context: {mi.context_window:,} tokens")
-                            if mi.max_output:
-                                lines.append(f"Max output: {mi.max_output:,} tokens")
-                            if mi.has_cost_data():
-                                lines.append(f"Cost: {mi.format_cost()}")
-                            lines.append(f"Capabilities: {mi.format_capabilities()}")
+                        _append_model_switch_details(
+                            lines,
+                            result,
+                            current_base_url=_cur_base_url,
+                            current_api_key=_cur_api_key,
+                        )
                         lines.append("_(session only — use `/model <name> --global` to persist)_")
                         return "\n".join(lines)
 
@@ -3861,6 +3903,8 @@ class GatewayRunner:
                     api_key=result.api_key,
                     base_url=result.base_url,
                     api_mode=result.api_mode,
+                    context_length=result.context_length,
+                    max_tokens=result.max_tokens,
                 )
             except Exception as exc:
                 logger.warning("In-place model switch failed for cached agent: %s", exc)
@@ -3884,6 +3928,8 @@ class GatewayRunner:
             "api_key": result.api_key,
             "base_url": result.base_url,
             "api_mode": result.api_mode,
+            "context_length": result.context_length,
+            "max_tokens": result.max_tokens,
         }
 
         # Persist to config if --global
@@ -3899,6 +3945,10 @@ class GatewayRunner:
                 model_cfg["provider"] = result.target_provider
                 if result.base_url:
                     model_cfg["base_url"] = result.base_url
+                if result.context_length is not None:
+                    model_cfg["context_length"] = result.context_length
+                if result.max_tokens is not None:
+                    model_cfg["max_tokens"] = result.max_tokens
                 from hermes_cli.config import save_config
                 save_config(cfg)
             except Exception as e:
@@ -3908,29 +3958,12 @@ class GatewayRunner:
         provider_label = result.provider_label or result.target_provider
         lines = [f"Model switched to `{result.new_model}`"]
         lines.append(f"Provider: {provider_label}")
-
-        # Rich metadata from models.dev
-        mi = result.model_info
-        if mi:
-            if mi.context_window:
-                lines.append(f"Context: {mi.context_window:,} tokens")
-            if mi.max_output:
-                lines.append(f"Max output: {mi.max_output:,} tokens")
-            if mi.has_cost_data():
-                lines.append(f"Cost: {mi.format_cost()}")
-            lines.append(f"Capabilities: {mi.format_capabilities()}")
-        else:
-            try:
-                from agent.model_metadata import get_model_context_length
-                ctx = get_model_context_length(
-                    result.new_model,
-                    base_url=result.base_url or current_base_url,
-                    api_key=result.api_key or current_api_key,
-                    provider=result.target_provider,
-                )
-                lines.append(f"Context: {ctx:,} tokens")
-            except Exception:
-                pass
+        _append_model_switch_details(
+            lines,
+            result,
+            current_base_url=current_base_url,
+            current_api_key=current_api_key,
+        )
 
         # Cache notice
         cache_enabled = (

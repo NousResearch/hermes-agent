@@ -140,7 +140,9 @@ class DirectAlias(NamedTuple):
     """Exact model mapping that bypasses catalog resolution."""
     model: str
     provider: str
-    base_url: str
+    base_url: str = ""
+    context_length: Optional[int] = None
+    max_tokens: Optional[int] = None
 
 
 # Built-in direct aliases (can be extended via config.yaml model_aliases:)
@@ -165,6 +167,15 @@ def _load_direct_aliases() -> dict[str, DirectAlias]:
             provider: custom
             base_url: "https://ollama.com/v1"
     """
+    def _optional_int(value: object) -> Optional[int]:
+        if value in (None, ""):
+            return None
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            return None
+        return parsed if parsed > 0 else None
+
     merged = dict(_BUILTIN_DIRECT_ALIASES)
     try:
         from hermes_cli.config import load_config
@@ -177,9 +188,15 @@ def _load_direct_aliases() -> dict[str, DirectAlias]:
                 model = entry.get("model", "")
                 provider = entry.get("provider", "custom")
                 base_url = entry.get("base_url", "")
+                context_length = _optional_int(entry.get("context_length"))
+                max_tokens = _optional_int(entry.get("max_tokens"))
                 if model:
                     merged[name.strip().lower()] = DirectAlias(
-                        model=model, provider=provider, base_url=base_url,
+                        model=model,
+                        provider=provider,
+                        base_url=base_url,
+                        context_length=context_length,
+                        max_tokens=max_tokens,
                     )
     except Exception:
         pass
@@ -214,6 +231,8 @@ class ModelSwitchResult:
     resolved_via_alias: str = ""
     capabilities: Optional[ModelCapabilities] = None
     model_info: Optional[ModelInfo] = None
+    context_length: Optional[int] = None
+    max_tokens: Optional[int] = None
     is_global: bool = False
 
 
@@ -435,6 +454,8 @@ def switch_model(
     resolved_alias = ""
     new_model = raw_input.strip()
     target_provider = current_provider
+    alias_context_length = None
+    alias_max_tokens = None
 
     # =================================================================
     # PATH A: Explicit --provider given
@@ -648,6 +669,9 @@ def switch_model(
             base_url = _da.base_url
             if not api_key:
                 api_key = "no-key-required"
+        if _da is not None:
+            alias_context_length = _da.context_length
+            alias_max_tokens = _da.max_tokens
 
     # --- Normalize model name for target provider ---
     new_model = normalize_model_for_provider(new_model, target_provider)
@@ -715,6 +739,8 @@ def switch_model(
         resolved_via_alias=resolved_alias,
         capabilities=capabilities,
         model_info=model_info,
+        context_length=alias_context_length,
+        max_tokens=alias_max_tokens,
         is_global=is_global,
     )
 

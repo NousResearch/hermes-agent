@@ -86,6 +86,8 @@ class TestDirectAliases:
                     "model": "custom-model:latest",
                     "provider": "custom",
                     "base_url": "https://example.com/v1",
+                    "context_length": 204800,
+                    "max_tokens": 131072,
                 }
             }
         }
@@ -101,6 +103,8 @@ class TestDirectAliases:
         assert aliases["mymodel"].model == "custom-model:latest"
         assert aliases["mymodel"].provider == "custom"
         assert aliases["mymodel"].base_url == "https://example.com/v1"
+        assert aliases["mymodel"].context_length == 204800
+        assert aliases["mymodel"].max_tokens == 131072
 
     def test_direct_alias_resolved_before_catalog(self, monkeypatch):
         """Direct aliases take priority over models.dev catalog lookup."""
@@ -555,6 +559,50 @@ class TestSwitchModelDirectAliasOverride:
         assert result.success
         assert result.api_key == "no-key-required"
         assert result.base_url == "http://localhost:11434/v1"
+
+    def test_switch_model_carries_alias_context_and_max_tokens(self, monkeypatch):
+        """Direct alias metadata is exposed on the switch result."""
+        from hermes_cli.model_switch import DirectAlias
+        import hermes_cli.model_switch as ms
+
+        test_aliases = {
+            "mymodel": DirectAlias(
+                "custom-model:latest",
+                "custom",
+                "https://example.com/v1",
+                204800,
+                131072,
+            ),
+        }
+        monkeypatch.setattr(ms, "DIRECT_ALIASES", test_aliases)
+        monkeypatch.setattr(
+            ms,
+            "resolve_alias",
+            lambda raw, prov: ("custom", "custom-model:latest", "mymodel"),
+        )
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            lambda requested: {
+                "api_key": "",
+                "base_url": "",
+                "api_mode": "openai_compat",
+                "provider": "custom",
+            },
+        )
+        monkeypatch.setattr(
+            "hermes_cli.models.validate_requested_model",
+            lambda *a, **kw: {"accepted": True, "persist": True, "recognized": True, "message": None},
+        )
+        monkeypatch.setattr(
+            "hermes_cli.models.opencode_model_api_mode",
+            lambda *a, **kw: "openai_compat",
+        )
+
+        result = ms.switch_model("mymodel", "openrouter", "old-model")
+
+        assert result.success
+        assert result.context_length == 204800
+        assert result.max_tokens == 131072
 
 
 # ---------------------------------------------------------------------------

@@ -51,7 +51,7 @@ from hermes_cli.env_loader import load_hermes_dotenv
 
 _hermes_home = get_hermes_home()
 _project_env = Path(__file__).parent / '.env'
-_loaded_env_paths = load_hermes_dotenv(hermes_home=_hermes_home, project_env=_project_env)
+_loaded_env_paths = load_hermes_dotenv(hermes_home=_hermes_home, project_env=_project_env, cwd_env=True)
 if _loaded_env_paths:
     for _env_path in _loaded_env_paths:
         logger.info("Loaded environment variables from %s", _env_path)

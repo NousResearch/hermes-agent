@@ -75,7 +75,7 @@ from hermes_cli.env_loader import load_hermes_dotenv
 
 _hermes_home = get_hermes_home()
 _project_env = Path(__file__).parent / '.env'
-load_hermes_dotenv(hermes_home=_hermes_home, project_env=_project_env)
+load_hermes_dotenv(hermes_home=_hermes_home, project_env=_project_env, cwd_env=True)
 
 
 # =============================================================================

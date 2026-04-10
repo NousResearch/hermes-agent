@@ -140,7 +140,7 @@ _apply_profile_override()
 # User-managed env files should override stale shell exports on restart.
 from hermes_cli.config import get_hermes_home
 from hermes_cli.env_loader import load_hermes_dotenv
-load_hermes_dotenv(project_env=PROJECT_ROOT / '.env')
+load_hermes_dotenv(project_env=PROJECT_ROOT / '.env', cwd_env=True)
 
 # Initialize centralized file logging early — all `hermes` subcommands
 # (chat, setup, gateway, config, etc.) write to agent.log + errors.log.

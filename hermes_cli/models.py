@@ -1017,58 +1017,45 @@ def provider_label(provider: Optional[str]) -> str:
     return _PROVIDER_LABELS.get(normalized, original or "OpenRouter")
 
 
-_FAST_MODE_BACKEND_CONFIG: dict[str, dict[str, Any]] = {
-    "gpt-5.4": {
-        "provider": "openai-codex",
-        "request_overrides": {"service_tier": "priority"},
-    },
-}
-
-
-def fast_mode_backend_config(model_id: Optional[str]) -> dict[str, Any] | None:
-    """Return backend config for models that expose Fast mode.
-
-    To expose Fast mode for a new model, add its normalized model slug to
-    ``_FAST_MODE_BACKEND_CONFIG`` along with the backend runtime selection and
-    backend-specific request overrides Hermes should apply.
-    """
-    raw = str(model_id or "").strip().lower()
-    if "/" in raw:
-        raw = raw.split("/", 1)[1]
-    config = _FAST_MODE_BACKEND_CONFIG.get(raw)
-    return dict(config) if config else None
+# Models that support OpenAI Priority Processing (service_tier="priority").
+# See https://openai.com/api-priority-processing/ for the canonical list.
+# Only the bare model slug is stored (no vendor prefix).
+_PRIORITY_PROCESSING_MODELS: frozenset[str] = frozenset({
+    "gpt-5.4",
+    "gpt-5.4-mini",
+    "gpt-5.2",
+    "gpt-5.1",
+    "gpt-5",
+    "gpt-5-mini",
+    "gpt-4.1",
+    "gpt-4.1-mini",
+    "gpt-4.1-nano",
+    "gpt-4o",
+    "gpt-4o-mini",
+    "o3",
+    "o4-mini",
+})
 
 
 def model_supports_fast_mode(model_id: Optional[str]) -> bool:
-    """Return whether Hermes should expose Fast mode for the active model."""
-    return fast_mode_backend_config(model_id) is not None
+    """Return whether Hermes should expose the /fast (Priority Processing) toggle."""
+    raw = str(model_id or "").strip().lower()
+    if "/" in raw:
+        raw = raw.split("/", 1)[1]
+    return raw in _PRIORITY_PROCESSING_MODELS
 
 
-def resolve_fast_mode_runtime(model_id: Optional[str]) -> dict[str, Any] | None:
-    """Resolve runtime selection and request overrides for a fast-mode model."""
-    cfg = fast_mode_backend_config(model_id)
-    if not cfg:
+def resolve_fast_mode_overrides(model_id: Optional[str]) -> dict[str, Any] | None:
+    """Return request_overrides for Priority Processing, or None if unsupported.
+
+    Unlike the previous ``resolve_fast_mode_runtime``, this does NOT force a
+    provider/backend switch.  The ``service_tier`` parameter is injected into
+    whatever API path the user is already on (Codex Responses, Chat Completions,
+    or OpenRouter passthrough).
+    """
+    if not model_supports_fast_mode(model_id):
         return None
-
-    from hermes_cli.runtime_provider import resolve_runtime_provider
-
-    runtime = resolve_runtime_provider(
-        requested=cfg.get("provider"),
-        explicit_base_url=cfg.get("base_url"),
-        explicit_api_key=cfg.get("api_key"),
-    )
-    return {
-        "runtime": {
-            "api_key": runtime.get("api_key"),
-            "base_url": runtime.get("base_url"),
-            "provider": runtime.get("provider"),
-            "api_mode": runtime.get("api_mode"),
-            "command": runtime.get("command"),
-            "args": list(runtime.get("args") or []),
-            "credential_pool": runtime.get("credential_pool"),
-        },
-        "request_overrides": dict(cfg.get("request_overrides") or {}),
-    }
+    return {"service_tier": "priority"}
 
 
 def _resolve_copilot_catalog_api_key() -> str:

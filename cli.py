@@ -2572,7 +2572,7 @@ class HermesCLI:
     def _resolve_turn_agent_config(self, user_message: str) -> dict:
         """Resolve model/runtime overrides for a single user turn."""
         from agent.smart_model_routing import resolve_turn_route
-        from hermes_cli.models import resolve_fast_mode_runtime
+        from hermes_cli.models import resolve_fast_mode_overrides
 
         route = resolve_turn_route(
             user_message,
@@ -2595,27 +2595,10 @@ class HermesCLI:
             return route
 
         try:
-            fast_runtime = resolve_fast_mode_runtime(route.get("model"))
+            overrides = resolve_fast_mode_overrides(route.get("model"))
         except Exception:
-            route["request_overrides"] = None
-            return route
-        if not fast_runtime:
-            route["request_overrides"] = None
-            return route
-
-        runtime = fast_runtime["runtime"]
-        route["runtime"] = runtime
-        route["request_overrides"] = fast_runtime["request_overrides"]
-        route["label"] = f"fast route → {route.get('model')} ({runtime.get('provider')})"
-        route["signature"] = (
-            route.get("model"),
-            runtime.get("provider"),
-            runtime.get("base_url"),
-            runtime.get("api_mode"),
-            runtime.get("command"),
-            tuple(runtime.get("args") or ()),
-            json.dumps(route["request_overrides"], sort_keys=True),
-        )
+            overrides = None
+        route["request_overrides"] = overrides
         return route
 
     def _init_agent(self, *, model_override: str = None, runtime_override: dict = None, route_label: str = None, request_overrides: dict | None = None) -> bool:
@@ -5662,15 +5645,15 @@ class HermesCLI:
             _cprint(f"  {_GOLD}✓ Reasoning effort set to '{arg}' (session only){_RST}")
 
     def _handle_fast_command(self, cmd: str):
-        """Handle /fast — choose the Codex Responses service tier."""
+        """Handle /fast — toggle OpenAI Priority Processing (service_tier)."""
         if not self._fast_command_available():
-            _cprint("  (._.) /fast is only available for models that explicitly expose a fast backend.")
+            _cprint("  (._.) /fast is only available for OpenAI models that support Priority Processing.")
             return
 
         parts = cmd.strip().split(maxsplit=1)
         if len(parts) < 2 or parts[1].strip().lower() == "status":
             status = "fast" if self.service_tier == "priority" else "normal"
-            _cprint(f"  {_GOLD}Codex inference tier: {status}{_RST}")
+            _cprint(f"  {_GOLD}Priority Processing: {status}{_RST}")
             _cprint(f"  {_DIM}Usage: /fast [normal|fast|status]{_RST}")
             return
 
@@ -5691,9 +5674,9 @@ class HermesCLI:
 
         self.agent = None  # Force agent re-init with new service-tier config
         if save_config_value("agent.service_tier", saved_value):
-            _cprint(f"  {_GOLD}✓ Codex inference tier set to {label} (saved to config){_RST}")
+            _cprint(f"  {_GOLD}✓ Priority Processing set to {label} (saved to config){_RST}")
         else:
-            _cprint(f"  {_GOLD}✓ Codex inference tier set to {label} (session only){_RST}")
+            _cprint(f"  {_GOLD}✓ Priority Processing set to {label} (session only){_RST}")
 
     def _on_reasoning(self, reasoning_text: str):
         """Callback for intermediate reasoning display during tool-call loops."""

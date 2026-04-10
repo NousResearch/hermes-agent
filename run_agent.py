@@ -5686,6 +5686,11 @@ class AIAgent:
         if "x.ai" in self._base_url_lower and hasattr(self, "session_id") and self.session_id:
             api_kwargs["extra_headers"] = {"x-grok-conv-id": self.session_id}
 
+        # Priority Processing / generic request overrides (e.g. service_tier).
+        # Applied last so overrides win over any defaults set above.
+        if self.request_overrides:
+            api_kwargs.update(self.request_overrides)
+
         return api_kwargs
 
     def _supports_reasoning_extra_body(self) -> bool:

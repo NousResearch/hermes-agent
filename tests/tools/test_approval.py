@@ -214,10 +214,11 @@ class TestSessionKeyContext:
 
         t1 = threading.Thread(target=worker_alice)
         t2 = threading.Thread(target=worker_bob)
-        t1.start()
-        t2.start()
-        t1.join()
-        t2.join()
+        with mock_patch.dict("os.environ", {"HERMES_GATEWAY_SESSION": "1"}, clear=False):
+            t1.start()
+            t2.start()
+            t1.join()
+            t2.join()
 
         assert pop_pending("alice") is not None
         assert pop_pending("bob") is None
@@ -714,5 +715,4 @@ class TestNormalizationBypass:
         cmd = "\uff4c\uff53 -\uff4c\uff41 /tmp"
         dangerous, key, desc = detect_dangerous_command(cmd)
         assert dangerous is False
-
 

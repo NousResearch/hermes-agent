@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from agent.display import get_tool_emoji
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.session import SessionSource
@@ -141,10 +142,11 @@ async def test_run_agent_progress_stays_in_originating_topic(monkeypatch, tmp_pa
     )
 
     assert result["final_response"] == "done"
+    terminal_prefix = get_tool_emoji("terminal", default="⚙️")
     assert adapter.sent == [
         {
             "chat_id": "-1001",
-            "content": '💻 terminal: "pwd"',
+            "content": f'{terminal_prefix} terminal: "pwd"',
             "reply_to": None,
             "metadata": {"thread_id": "17585"},
         }

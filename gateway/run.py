@@ -780,6 +780,67 @@ class GatewayRunner:
             thread_sessions_per_user=getattr(config, "thread_sessions_per_user", False),
         )
 
+    def _resolve_active_model_runtime(
+        self,
+        source: SessionSource,
+        *,
+        user_config: dict | None = None,
+        runtime_kwargs: dict | None = None,
+        session_key: str | None = None,
+    ) -> tuple[str, dict]:
+        """Resolve the active model/runtime, including any session-scoped override."""
+        model = _resolve_gateway_model(user_config)
+        runtime = dict(runtime_kwargs or {})
+        if not runtime:
+            runtime = dict(_resolve_runtime_agent_kwargs())
+
+        active_session_key = session_key or self._session_key_for_source(source)
+        override = getattr(self, "_session_model_overrides", {}).get(active_session_key, {})
+        if override:
+            if override.get("model"):
+                model = override["model"]
+            if override.get("provider"):
+                runtime["provider"] = override["provider"]
+            if "api_key" in override:
+                runtime["api_key"] = override.get("api_key", "")
+            if "base_url" in override:
+                runtime["base_url"] = override.get("base_url", "")
+            if "api_mode" in override:
+                runtime["api_mode"] = override.get("api_mode", "")
+
+        return model, runtime
+
+    def _persist_gateway_model_selection(
+        self,
+        *,
+        model: str,
+        provider: str,
+        base_url: str = "",
+    ) -> None:
+        """Persist the default gateway model selection to config.yaml."""
+        import yaml
+
+        config_path = _hermes_home / "config.yaml"
+        if config_path.exists():
+            with open(config_path, encoding="utf-8") as f:
+                cfg = yaml.safe_load(f) or {}
+        else:
+            cfg = {}
+
+        model_cfg = cfg.setdefault("model", {})
+        if not isinstance(model_cfg, dict):
+            model_cfg = {}
+            cfg["model"] = model_cfg
+
+        model_cfg["default"] = model
+        model_cfg["provider"] = provider
+        if base_url:
+            model_cfg["base_url"] = base_url
+        else:
+            model_cfg.pop("base_url", None)
+
+        atomic_yaml_write(config_path, cfg)
+
     def _resolve_turn_agent_config(self, user_message: str, model: str, runtime_kwargs: dict) -> dict:
         from agent.smart_model_routing import resolve_turn_route
 
@@ -3556,6 +3617,7 @@ class GatewayRunner:
                     current_model = model_cfg.get("default", "")
                     current_provider = model_cfg.get("provider", current_provider)
                     current_base_url = model_cfg.get("base_url", "")
+                    current_api_key = model_cfg.get("api_key", "")
                 user_provs = cfg.get("providers")
         except Exception:
             pass
@@ -3564,11 +3626,68 @@ class GatewayRunner:
         source = event.source
         session_key = self._session_key_for_source(source)
         override = getattr(self, "_session_model_overrides", {}).get(session_key, {})
+        picker_max_models = 5
         if override:
             current_model = override.get("model", current_model)
             current_provider = override.get("provider", current_provider)
             current_base_url = override.get("base_url", current_base_url)
             current_api_key = override.get("api_key", current_api_key)
+
+        def _inject_current_custom_provider(
+            providers: list[dict],
+            *,
+            max_models: int,
+        ) -> list[dict]:
+            """Ensure the active custom endpoint appears in `/model` provider lists."""
+            normalized_provider = str(current_provider or "").strip().lower()
+            is_custom = normalized_provider == "custom" or normalized_provider.startswith("custom:")
+            if not is_custom:
+                return providers
+
+            custom_slug = normalized_provider or "custom"
+            if any(str(p.get("slug", "")).strip().lower() == custom_slug for p in providers):
+                return providers
+
+            models_list: list[str] = []
+            try:
+                from hermes_cli.models import fetch_api_models
+
+                fetched = fetch_api_models(
+                    current_api_key or None,
+                    current_base_url or None,
+                    timeout=8.0,
+                )
+                if fetched:
+                    models_list = [str(model_id) for model_id in fetched if model_id]
+            except Exception:
+                models_list = []
+
+            deduped_models: list[str] = []
+            seen_models: set[str] = set()
+            for candidate in [current_model, *models_list]:
+                candidate = str(candidate or "").strip()
+                if not candidate or candidate in seen_models:
+                    continue
+                seen_models.add(candidate)
+                deduped_models.append(candidate)
+
+            custom_models = deduped_models[:max_models] if max_models > 0 else deduped_models
+            custom_entry = {
+                "slug": custom_slug,
+                "name": get_label(custom_slug),
+                "is_current": True,
+                "is_user_defined": True,
+                "models": custom_models,
+                "total_models": len(deduped_models),
+                "source": "current-config",
+            }
+            if current_base_url:
+                custom_entry["api_url"] = current_base_url
+
+            if source.platform == Platform.TELEGRAM:
+                return [custom_entry]
+
+            return [custom_entry, *providers]
 
         # No args: show interactive picker (Telegram/Discord) or text list
         if not model_input and not explicit_provider:
@@ -3584,7 +3703,11 @@ class GatewayRunner:
                     providers = list_authenticated_providers(
                         current_provider=current_provider,
                         user_providers=user_provs,
-                        max_models=50,
+                        max_models=picker_max_models,
+                    )
+                    providers = _inject_current_custom_provider(
+                        providers,
+                        max_models=picker_max_models,
                     )
                 except Exception:
                     providers = []
@@ -3598,6 +3721,7 @@ class GatewayRunner:
                     _cur_provider = current_provider
                     _cur_base_url = current_base_url
                     _cur_api_key = current_api_key
+                    _persist_picker_selection = True
 
                     async def _on_model_selected(
                         _chat_id: str, model_id: str, provider_slug: str
@@ -3609,7 +3733,7 @@ class GatewayRunner:
                             current_model=_cur_model,
                             current_base_url=_cur_base_url,
                             current_api_key=_cur_api_key,
-                            is_global=False,
+                            is_global=_persist_picker_selection,
                             explicit_provider=provider_slug,
                         )
                         if not result.success:
@@ -3652,6 +3776,18 @@ class GatewayRunner:
                             "api_mode": result.api_mode,
                         }
 
+                        persist_error = ""
+                        if _persist_picker_selection:
+                            try:
+                                _self._persist_gateway_model_selection(
+                                    model=result.new_model,
+                                    provider=result.target_provider,
+                                    base_url=result.base_url or "",
+                                )
+                            except Exception as exc:
+                                logger.warning("Picker model persist failed: %s", exc)
+                                persist_error = str(exc)
+
                         # Build confirmation text
                         plabel = result.provider_label or result.target_provider
                         lines = [f"Model switched to `{result.new_model}`"]
@@ -3665,7 +3801,13 @@ class GatewayRunner:
                             if mi.has_cost_data():
                                 lines.append(f"Cost: {mi.format_cost()}")
                             lines.append(f"Capabilities: {mi.format_capabilities()}")
-                        lines.append("_(session only — use `/model <name> --global` to persist)_")
+                        if persist_error:
+                            lines.append(f"Warning: failed to save default model: {persist_error}")
+                        elif _persist_picker_selection:
+                            lines.append("Saved to config.yaml (default updated)")
+                            lines.append("_(use `/model <name>` for a session-only temporary switch)_")
+                        else:
+                            lines.append("_(session only — use `/model <name> --global` to persist)_")
                         return "\n".join(lines)
 
                     metadata = {"thread_id": source.thread_id} if source.thread_id else None
@@ -3689,7 +3831,11 @@ class GatewayRunner:
                 providers = list_authenticated_providers(
                     current_provider=current_provider,
                     user_providers=user_provs,
-                    max_models=5,
+                    max_models=picker_max_models,
+                )
+                providers = _inject_current_custom_provider(
+                    providers,
+                    max_models=picker_max_models,
                 )
                 for p in providers:
                     tag = " (current)" if p["is_current"] else ""
@@ -3767,18 +3913,11 @@ class GatewayRunner:
         # Persist to config if --global
         if persist_global:
             try:
-                if config_path.exists():
-                    with open(config_path, encoding="utf-8") as f:
-                        cfg = yaml.safe_load(f) or {}
-                else:
-                    cfg = {}
-                model_cfg = cfg.setdefault("model", {})
-                model_cfg["default"] = result.new_model
-                model_cfg["provider"] = result.target_provider
-                if result.base_url:
-                    model_cfg["base_url"] = result.base_url
-                from hermes_cli.config import save_config
-                save_config(cfg)
+                self._persist_gateway_model_selection(
+                    model=result.new_model,
+                    provider=result.target_provider,
+                    base_url=result.base_url or "",
+                )
             except Exception as e:
                 logger.warning("Failed to persist model switch: %s", e)
 
@@ -4559,7 +4698,13 @@ class GatewayRunner:
         _thread_metadata = {"thread_id": source.thread_id} if source.thread_id else None
 
         try:
+            user_config = _load_gateway_config()
             runtime_kwargs = _resolve_runtime_agent_kwargs()
+            model, runtime_kwargs = self._resolve_active_model_runtime(
+                source,
+                user_config=user_config,
+                runtime_kwargs=runtime_kwargs,
+            )
             if not runtime_kwargs.get("api_key"):
                 await adapter.send(
                     source.chat_id,
@@ -4567,9 +4712,6 @@ class GatewayRunner:
                     metadata=_thread_metadata,
                 )
                 return
-
-            user_config = _load_gateway_config()
-            model = _resolve_gateway_model(user_config)
             platform_key = _platform_config_key(source.platform)
 
             from hermes_cli.tools_config import _get_platform_tools
@@ -4726,7 +4868,14 @@ class GatewayRunner:
         _thread_meta = {"thread_id": source.thread_id} if source.thread_id else None
 
         try:
+            user_config = _load_gateway_config()
             runtime_kwargs = _resolve_runtime_agent_kwargs()
+            model, runtime_kwargs = self._resolve_active_model_runtime(
+                source,
+                user_config=user_config,
+                runtime_kwargs=runtime_kwargs,
+                session_key=session_key,
+            )
             if not runtime_kwargs.get("api_key"):
                 await adapter.send(
                     source.chat_id,
@@ -4734,9 +4883,6 @@ class GatewayRunner:
                     metadata=_thread_meta,
                 )
                 return
-
-            user_config = _load_gateway_config()
-            model = _resolve_gateway_model(user_config)
             platform_key = _platform_config_key(source.platform)
             reasoning_config = self._load_reasoning_config()
             turn_route = self._resolve_turn_agent_config(question, model, runtime_kwargs)
@@ -5003,11 +5149,13 @@ class GatewayRunner:
             from agent.model_metadata import estimate_messages_tokens_rough
 
             runtime_kwargs = _resolve_runtime_agent_kwargs()
+            model, runtime_kwargs = self._resolve_active_model_runtime(
+                source,
+                runtime_kwargs=runtime_kwargs,
+                session_key=session_entry.session_key,
+            )
             if not runtime_kwargs.get("api_key"):
                 return "No provider configured -- cannot compress."
-
-            # Resolve model from config (same reason as memory flush above).
-            model = _resolve_gateway_model()
 
             msgs = [
                 {"role": m.get("role"), "content": m.get("content")}
@@ -6648,8 +6796,6 @@ class GatewayRunner:
             except Exception:
                 pass
 
-            model = _resolve_gateway_model(user_config)
-
             try:
                 runtime_kwargs = _resolve_runtime_agent_kwargs()
             except Exception as exc:
@@ -6659,6 +6805,12 @@ class GatewayRunner:
                     "api_calls": 0,
                     "tools": [],
                 }
+            model, runtime_kwargs = self._resolve_active_model_runtime(
+                source,
+                user_config=user_config,
+                runtime_kwargs=runtime_kwargs,
+                session_key=session_key,
+            )
 
             pr = self._provider_routing
             reasoning_config = self._load_reasoning_config()

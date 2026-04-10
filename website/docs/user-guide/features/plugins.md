@@ -110,6 +110,7 @@ Plugins can register callbacks for these lifecycle events. See the **[Event Hook
 | [`post_llm_call`](/docs/user-guide/features/hooks#post_llm_call) | Once per turn, after the LLM loop (successful turns only) |
 | [`on_session_start`](/docs/user-guide/features/hooks#on_session_start) | New session created (first turn only) |
 | [`on_session_end`](/docs/user-guide/features/hooks#on_session_end) | End of every `run_conversation` call + CLI exit handler |
+| [`on_task_complete`](/docs/user-guide/features/hooks#on_task_complete) | Agent marks a task as complete (after review) |
 
 ## Managing plugins
 

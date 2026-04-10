@@ -80,6 +80,7 @@ async def handle(event_type: str, context: dict):
 | `agent:start` | Agent begins processing a message | `platform`, `user_id`, `session_id`, `message` |
 | `agent:step` | Each iteration of the tool-calling loop | `platform`, `user_id`, `session_id`, `iteration`, `tool_names` |
 | `agent:end` | Agent finishes processing | `platform`, `user_id`, `session_id`, `message`, `response` |
+| `agent:task_complete` | A substantial task finished and produced a review payload | `platform`, `user_id`, `session_id`, `message`, `response`, `task_payload` |
 | `command:*` | Any slash command executed | `platform`, `user_id`, `command`, `args` |
 
 #### Wildcard Matching
@@ -242,7 +243,8 @@ def register(ctx):
 | [`pre_llm_call`](#pre_llm_call) | Once per turn, before the tool-calling loop | context injection |
 | [`post_llm_call`](#post_llm_call) | Once per turn, after the tool-calling loop | ignored |
 | [`on_session_start`](#on_session_start) | New session created (first turn only) | ignored |
-| [`on_session_end`](#on_session_end) | Session ends | ignored |
+| [`on_session_end`](#on_session_end) | End of every `run_conversation()` call + CLI exit handler | ignored |
+| [`on_task_complete`](#on_task_complete) | A substantial task finished and produced a review payload | ignored |
 
 ---
 
@@ -596,6 +598,55 @@ def on_end(session_id, completed, interrupted, **kwargs):
 def register(ctx):
     ctx.register_hook("on_session_start", on_start)
     ctx.register_hook("on_session_end", on_end)
+```
+
+---
+
+### `on_task_complete`
+
+Fires when the structured task-complete review path runs for a substantial task. This is the hook to use when you want post-task automation without competing with the generic background review nudges.
+
+**Callback signature:**
+
+```python
+def my_callback(session_id: str, task_payload: dict, completed: bool,
+                interrupted: bool, model: str, platform: str, **kwargs):
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `session_id` | `str` | Unique identifier for the session |
+| `task_payload` | `dict` | Structured payload from task-completion review (`original_user_message`, `final_response`, `tools_used`, `trigger_reasons`, etc.) |
+| `completed` | `bool` | `True` if the agent produced a final response |
+| `interrupted` | `bool` | `True` if the turn was interrupted |
+| `model` | `str` | The model identifier |
+| `platform` | `str` | Where the session is running |
+
+**Fires:** In `run_agent.py`, after the task-complete review path finishes and before `on_session_end`.
+
+**Return value:** Ignored.
+
+**Use cases:** post-task analytics, notifications, summarization, downstream sync, or auditing substantial completed work.
+
+**Example — compact task audit log:**
+
+```python
+import logging
+logger = logging.getLogger(__name__)
+
+def log_task_complete(session_id, task_payload, completed, interrupted, **kwargs):
+    logger.info(
+        "TASK_COMPLETE session=%s completed=%s interrupted=%s tools=%s reasons=%s",
+        session_id,
+        completed,
+        interrupted,
+        task_payload.get("tools_used", []),
+        task_payload.get("trigger_reasons", []),
+    )
+
+
+def register(ctx):
+    ctx.register_hook("on_task_complete", log_task_complete)
 ```
 
 ---

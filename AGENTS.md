@@ -29,7 +29,7 @@ Treat at least these areas as protected Hermes internals:
 - `model_tools.py`
 - `toolsets.py`
 - `cli.py`
-- `agent/**`
+- `agent/**` (includes `agent/task_review.py` — task completion review engine)
 - `hermes_cli/**`
 - `tools/**`
 - `gateway/**`

@@ -2616,6 +2616,8 @@ def _prompt_model_selection(
             title=effective_title,
         )
         idx = menu.show()
+        from hermes_cli.curses_ui import flush_stdin
+        flush_stdin()
         if idx is None:
             return None
         print()

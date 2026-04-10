@@ -451,16 +451,7 @@ class HermesACPAgent(acp.Agent):
             await conn.session_update(session_id, update)
 
         usage = None
-        usage_data = result.get("usage")
-        if usage_data and isinstance(usage_data, dict):
-            usage = Usage(
-                input_tokens=usage_data.get("prompt_tokens", 0),
-                output_tokens=usage_data.get("completion_tokens", 0),
-                total_tokens=usage_data.get("total_tokens", 0),
-                thought_tokens=usage_data.get("reasoning_tokens"),
-                cached_read_tokens=usage_data.get("cached_tokens"),
-            )
-        elif any(result.get(key) is not None for key in ("prompt_tokens", "completion_tokens", "total_tokens")):
+        if any(result.get(key) is not None for key in ("prompt_tokens", "completion_tokens", "total_tokens")):
             usage = Usage(
                 input_tokens=result.get("prompt_tokens", 0),
                 output_tokens=result.get("completion_tokens", 0),

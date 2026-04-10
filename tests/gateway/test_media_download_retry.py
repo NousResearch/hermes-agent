@@ -35,6 +35,45 @@ def _make_timeout_error() -> httpx.TimeoutException:
 
 
 # ---------------------------------------------------------------------------
+# cache_image_from_bytes (base.py)
+# ---------------------------------------------------------------------------
+
+
+class TestCacheImageFromBytes:
+    """Tests for gateway.platforms.base.cache_image_from_bytes"""
+
+    def test_caches_valid_jpeg(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("gateway.platforms.base.IMAGE_CACHE_DIR", tmp_path / "img")
+        from gateway.platforms.base import cache_image_from_bytes
+        path = cache_image_from_bytes(b"\xff\xd8\xff fake jpeg data", ".jpg")
+        assert path.endswith(".jpg")
+
+    def test_caches_valid_png(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("gateway.platforms.base.IMAGE_CACHE_DIR", tmp_path / "img")
+        from gateway.platforms.base import cache_image_from_bytes
+        path = cache_image_from_bytes(b"\x89PNG\r\n\x1a\n fake png data", ".png")
+        assert path.endswith(".png")
+
+    def test_rejects_html_content(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("gateway.platforms.base.IMAGE_CACHE_DIR", tmp_path / "img")
+        from gateway.platforms.base import cache_image_from_bytes
+        with pytest.raises(ValueError, match="non-image data"):
+            cache_image_from_bytes(b"<!DOCTYPE html><html><title>Slack</title></html>", ".png")
+
+    def test_rejects_empty_data(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("gateway.platforms.base.IMAGE_CACHE_DIR", tmp_path / "img")
+        from gateway.platforms.base import cache_image_from_bytes
+        with pytest.raises(ValueError, match="non-image data"):
+            cache_image_from_bytes(b"", ".jpg")
+
+    def test_rejects_plain_text(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("gateway.platforms.base.IMAGE_CACHE_DIR", tmp_path / "img")
+        from gateway.platforms.base import cache_image_from_bytes
+        with pytest.raises(ValueError, match="non-image data"):
+            cache_image_from_bytes(b"just some text, not an image", ".jpg")
+
+
+# ---------------------------------------------------------------------------
 # cache_image_from_url (base.py)
 # ---------------------------------------------------------------------------
 
@@ -71,7 +110,7 @@ class TestCacheImageFromUrl:
         monkeypatch.setattr("gateway.platforms.base.IMAGE_CACHE_DIR", tmp_path / "img")
 
         fake_response = MagicMock()
-        fake_response.content = b"image data"
+        fake_response.content = b"\xff\xd8\xff image data"
         fake_response.raise_for_status = MagicMock()
 
         mock_client = AsyncMock()
@@ -101,7 +140,7 @@ class TestCacheImageFromUrl:
         monkeypatch.setattr("gateway.platforms.base.IMAGE_CACHE_DIR", tmp_path / "img")
 
         ok_response = MagicMock()
-        ok_response.content = b"image data"
+        ok_response.content = b"\xff\xd8\xff image data"
         ok_response.raise_for_status = MagicMock()
 
         mock_client = AsyncMock()
@@ -395,8 +434,9 @@ class TestSlackDownloadSlackFile:
         adapter = _make_slack_adapter()
 
         fake_response = MagicMock()
-        fake_response.content = b"fake image bytes"
+        fake_response.content = b"\x89PNG\r\n\x1a\n fake png"
         fake_response.raise_for_status = MagicMock()
+        fake_response.headers = {"content-type": "image/png"}
 
         mock_client = AsyncMock()
         mock_client.get = AsyncMock(return_value=fake_response)
@@ -413,14 +453,44 @@ class TestSlackDownloadSlackFile:
         assert path.endswith(".jpg")
         mock_client.get.assert_called_once()
 
+    def test_rejects_html_response(self, tmp_path, monkeypatch):
+        """An HTML sign-in page from Slack is rejected, not cached as image."""
+        monkeypatch.setattr("gateway.platforms.base.IMAGE_CACHE_DIR", tmp_path / "img")
+        adapter = _make_slack_adapter()
+
+        fake_response = MagicMock()
+        fake_response.content = b"<!DOCTYPE html><html><title>Slack</title></html>"
+        fake_response.raise_for_status = MagicMock()
+        fake_response.headers = {"content-type": "text/html; charset=utf-8"}
+
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=fake_response)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        async def run():
+            with patch("httpx.AsyncClient", return_value=mock_client):
+                await adapter._download_slack_file(
+                    "https://files.slack.com/img.jpg", ext=".jpg"
+                )
+
+        with pytest.raises(ValueError, match="HTML instead of media"):
+            asyncio.run(run())
+
+        # Verify nothing was cached
+        img_dir = tmp_path / "img"
+        if img_dir.exists():
+            assert list(img_dir.iterdir()) == []
+
     def test_retries_on_timeout_then_succeeds(self, tmp_path, monkeypatch):
         """Timeout on first attempt triggers retry; success on second."""
         monkeypatch.setattr("gateway.platforms.base.IMAGE_CACHE_DIR", tmp_path / "img")
         adapter = _make_slack_adapter()
 
         fake_response = MagicMock()
-        fake_response.content = b"image bytes"
+        fake_response.content = b"\x89PNG\r\n\x1a\n image bytes"
         fake_response.raise_for_status = MagicMock()
+        fake_response.headers = {"content-type": "image/png"}
 
         mock_client = AsyncMock()
         mock_client.get = AsyncMock(

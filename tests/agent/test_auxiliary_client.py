@@ -1305,3 +1305,155 @@ class TestCallLlmPaymentFallback:
                     task="compression",
                     messages=[{"role": "user", "content": "hello"}],
                 )
+
+
+class TestCompressionOAuthProviderRouting:
+    """Regression tests for OAuth provider routing in compression task resolution.
+
+    Covers the bug where summary_provider=nous + summary_base_url caused
+    the code to route through the 'custom' handler instead of _try_nous(),
+    bypassing OAuth auth from auth.json and causing 401 errors.
+    """
+
+    def test_nous_with_summary_base_url_routes_to_nous_handler(
+        self, monkeypatch, tmp_path
+    ):
+        """compression.summary_provider=nous + summary_base_url must NOT
+        route to 'custom' handler — it must use the 'nous' handler which
+        reads OAuth tokens from auth.json."""
+        from agent.auxiliary_client import _resolve_task_provider_model
+
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            """compression:
+  summary_provider: nous
+  summary_model: xiaomi/mimo-v2-pro
+  summary_base_url: https://inference-api.nousresearch.com/v1
+"""
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        provider, model, base_url, api_key = _resolve_task_provider_model(
+            task="compression"
+        )
+        assert provider == "nous", (
+            f"Expected 'nous' handler (reads auth.json OAuth tokens), "
+            f"got '{provider}' which bypasses OAuth auth"
+        )
+        assert model == "xiaomi/mimo-v2-pro"
+
+    def test_openrouter_with_base_url_still_uses_custom(self, monkeypatch, tmp_path):
+        """Non-OAuth providers (openrouter) with base_url must still route
+        through 'custom' handler — only OAuth providers get the exception."""
+        from agent.auxiliary_client import _resolve_task_provider_model
+
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            """compression:
+  summary_provider: openrouter
+  summary_model: google/gemini-3-flash-preview
+  summary_base_url: https://openrouter.ai/api/v1
+"""
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        provider, model, base_url, api_key = _resolve_task_provider_model(
+            task="compression"
+        )
+        assert provider == "custom", (
+            f"Non-OAuth provider with base_url should use 'custom' handler, "
+            f"got '{provider}'"
+        )
+
+    def test_codex_with_base_url_routes_to_codex_handler(
+        self, monkeypatch, tmp_path
+    ):
+        """openai-codex provider with base_url must route through the
+        codex handler (OAuth), not 'custom'."""
+        from agent.auxiliary_client import _resolve_task_provider_model
+
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            """compression:
+  summary_provider: openai-codex
+  summary_base_url: https://chatgpt.com/backend-api/codex
+"""
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        provider, model, base_url, api_key = _resolve_task_provider_model(
+            task="compression"
+        )
+        assert provider == "openai-codex"
+
+    def test_nous_without_base_url_still_works(self, monkeypatch, tmp_path):
+        """nous provider without summary_base_url should still resolve
+        correctly (no backwards-compat block needed)."""
+        from agent.auxiliary_client import _resolve_task_provider_model
+
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            """auxiliary:
+  compression:
+    provider: nous
+"""
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        provider, model, base_url, api_key = _resolve_task_provider_model(
+            task="compression"
+        )
+        assert provider == "nous"
+        assert base_url is None
+
+    def test_cfg_api_key_passed_through_with_explicit_provider(
+        self, monkeypatch, tmp_path
+    ):
+        """When auxiliary.compression has provider + api_key set, the key
+        must be passed through (was previously dropped)."""
+        from agent.auxiliary_client import _resolve_task_provider_model
+
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            """auxiliary:
+  compression:
+    provider: openrouter
+    api_key: test-or-key-12345
+"""
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        provider, model, base_url, api_key = _resolve_task_provider_model(
+            task="compression"
+        )
+        assert provider == "openrouter"
+        assert api_key == "test-or-key-12345", (
+            "cfg_api_key was dropped — explicit provider path must pass it through"
+        )
+
+    def test_custom_provider_with_base_url_unchanged(self, monkeypatch, tmp_path):
+        """provider=custom with base_url must behave exactly as before."""
+        from agent.auxiliary_client import _resolve_task_provider_model
+
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            """compression:
+  summary_provider: custom
+  summary_model: my-local-model
+  summary_base_url: http://localhost:8080/v1
+"""
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        provider, model, base_url, api_key = _resolve_task_provider_model(
+            task="compression"
+        )
+        assert provider == "custom"
+        assert base_url == "http://localhost:8080/v1"
+        assert model == "my-local-model"

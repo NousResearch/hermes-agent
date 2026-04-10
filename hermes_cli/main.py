@@ -3022,33 +3022,19 @@ def _restore_stashed_changes(
         print("\nYour stashed changes are preserved — nothing is lost.")
         print(f"  Stash ref: {stash_ref}")
 
-        # Ask before resetting (if interactive)
-        do_reset = True
-        if prompt_user:
-            print("\nReset working tree to clean state so Hermes can run?")
-            print("  (You can re-apply your changes later with: git stash apply)")
-            print("[Y/n] ", end="", flush=True)
-            response = input().strip().lower()
-            if response not in ("", "y", "yes"):
-                do_reset = False
-
-        if do_reset:
-            subprocess.run(
-                git_cmd + ["reset", "--hard", "HEAD"],
-                cwd=cwd,
-                capture_output=True,
-            )
-            print("Working tree reset to clean state.")
-        else:
-            print("Working tree left as-is (may have conflict markers).")
-            print("Resolve conflicts manually, then run: git stash drop")
-
-        print(f"Restore your changes with: git stash apply {stash_ref}")
-        # In non-interactive mode (gateway /update), don't abort — the code
-        # update itself succeeded, only the stash restore had conflicts.
-        # Aborting would report the entire update as failed.
-        if prompt_user:
-            sys.exit(1)
+        # Always reset to clean state — leaving conflict markers in source
+        # files makes hermes completely unrunnable (SyntaxError on import).
+        # The user's changes are safe in the stash for manual recovery.
+        subprocess.run(
+            git_cmd + ["reset", "--hard", "HEAD"],
+            cwd=cwd,
+            capture_output=True,
+        )
+        print("Working tree reset to clean state.")
+        print(f"Restore your changes later with: git stash apply {stash_ref}")
+        # Don't sys.exit — the code update itself succeeded, only the stash
+        # restore had conflicts.  Let cmd_update continue with pip install,
+        # skill sync, and gateway restart.
         return False
 
     stash_selector = _resolve_stash_selector(git_cmd, cwd, stash_ref)

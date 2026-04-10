@@ -1596,6 +1596,18 @@ class SlackAdapter(BasePlatformAdapter):
                     )
                     response.raise_for_status()
 
+                    # Slack may return an HTML sign-in/redirect page
+                    # instead of actual media bytes (e.g. expired token,
+                    # restricted file access).  Detect this early so we
+                    # don't cache bogus data and confuse downstream tools.
+                    ct = response.headers.get("content-type", "")
+                    if "text/html" in ct:
+                        raise ValueError(
+                            "Slack returned HTML instead of media "
+                            f"(content-type: {ct}); "
+                            "check bot token scopes and file permissions"
+                        )
+
                     if audio:
                         from gateway.platforms.base import cache_audio_from_bytes
                         return cache_audio_from_bytes(response.content, ext)

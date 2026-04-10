@@ -769,6 +769,28 @@ class TestPromptBuilderConstants:
         assert "cron" in PLATFORM_HINTS
         assert "cli" in PLATFORM_HINTS
 
+    def test_platform_hints_mattermost(self):
+        hint = PLATFORM_HINTS["mattermost"]
+        assert "Mattermost" in hint
+        assert "MEDIA:" in hint
+        assert "Markdown" in hint
+
+    def test_platform_hints_matrix(self):
+        hint = PLATFORM_HINTS["matrix"]
+        assert "Matrix" in hint
+        assert "MEDIA:" in hint
+        assert "Markdown" in hint
+
+    def test_platform_hints_feishu(self):
+        hint = PLATFORM_HINTS["feishu"]
+        assert "Feishu" in hint
+        assert "MEDIA:" in hint
+
+    def test_platform_hints_wecom(self):
+        hint = PLATFORM_HINTS["wecom"]
+        assert "WeCom" in hint
+        assert "MEDIA:" in hint
+
 
 # =========================================================================
 # Conditional skill activation

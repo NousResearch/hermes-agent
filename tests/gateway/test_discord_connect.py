@@ -50,9 +50,19 @@ from gateway.platforms.discord import DiscordAdapter  # noqa: E402
 class FakeTree:
     def __init__(self):
         self.sync = AsyncMock(return_value=[])
+        self._commands = []
 
     def command(self, *args, **kwargs):
-        return lambda fn: fn
+        def _decorator(fn):
+            self._commands.append(fn)
+            return fn
+        return _decorator
+
+    def add_command(self, command):
+        self._commands.append(command)
+
+    def get_commands(self):
+        return list(self._commands)
 
 
 class FakeBot:
@@ -138,3 +148,49 @@ async def test_connect_releases_token_lock_on_timeout(monkeypatch):
     assert ok is False
     assert released == [("discord-bot-token", "test-token")]
     assert adapter._token_lock_identity is None
+
+
+@pytest.mark.asyncio
+async def test_connect_marks_ready_before_slash_sync_finishes(monkeypatch):
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+
+    monkeypatch.setattr("gateway.status.acquire_scoped_lock", lambda scope, identity, metadata=None: (True, None))
+    monkeypatch.setattr("gateway.status.release_scoped_lock", lambda scope, identity: None)
+
+    intents = SimpleNamespace(message_content=False, dm_messages=False, guild_messages=False, members=False, voice_states=False)
+    monkeypatch.setattr(discord_platform.Intents, "default", lambda: intents)
+
+    sync_started = asyncio.Event()
+    sync_should_finish = asyncio.Event()
+
+    class SlowTree(FakeTree):
+        def __init__(self):
+            super().__init__()
+
+            async def _slow_sync():
+                sync_started.set()
+                await sync_should_finish.wait()
+                return []
+
+            self.sync = _slow_sync
+
+    class SlowSyncBot(FakeBot):
+        def __init__(self, *, intents, proxy=None):
+            super().__init__(intents=intents, proxy=proxy)
+            self.tree = SlowTree()
+
+    monkeypatch.setattr(
+        discord_platform.commands,
+        "Bot",
+        lambda **kwargs: SlowSyncBot(intents=kwargs["intents"], proxy=kwargs.get("proxy")),
+    )
+    monkeypatch.setattr(adapter, "_resolve_allowed_usernames", AsyncMock())
+
+    ok = await adapter.connect()
+
+    assert ok is True
+    assert adapter._ready_event.is_set() is True
+    await asyncio.wait_for(sync_started.wait(), timeout=1)
+
+    sync_should_finish.set()
+    await adapter.disconnect()

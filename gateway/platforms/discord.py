@@ -432,6 +432,7 @@ class DiscordAdapter(BasePlatformAdapter):
         super().__init__(config, Platform.DISCORD)
         self._client: Optional[commands.Bot] = None
         self._ready_event = asyncio.Event()
+        self._slash_sync_task: Optional[asyncio.Task] = None
         self._allowed_user_ids: set = set()  # For button approval authorization
         # Voice channel state (per-guild)
         self._voice_clients: Dict[int, Any] = {}  # guild_id -> VoiceClient
@@ -502,6 +503,8 @@ class DiscordAdapter(BasePlatformAdapter):
             return False
 
         try:
+            self._ready_event.clear()
+
             # Acquire scoped lock to prevent duplicate bot token usage
             from gateway.status import acquire_scoped_lock
             self._token_lock_identity = self.config.token
@@ -555,16 +558,24 @@ class DiscordAdapter(BasePlatformAdapter):
             async def on_ready():
                 logger.info("[%s] Connected as %s", adapter_self.name, adapter_self._client.user)
 
+                # Consider the adapter ready as soon as the Discord gateway is live.
+                # Slash command sync may be slow or rate-limited and should not make
+                # connect() fail while normal messaging is already available.
+                adapter_self._ready_event.set()
+
                 # Resolve any usernames in the allowed list to numeric IDs
                 await adapter_self._resolve_allowed_usernames()
 
-                # Sync slash commands with Discord
-                try:
-                    synced = await adapter_self._client.tree.sync()
-                    logger.info("[%s] Synced %d slash command(s)", adapter_self.name, len(synced))
-                except Exception as e:  # pragma: no cover - defensive logging
-                    logger.warning("[%s] Slash command sync failed: %s", adapter_self.name, e, exc_info=True)
-                adapter_self._ready_event.set()
+                async def _sync_slash_commands() -> None:
+                    try:
+                        synced = await adapter_self._client.tree.sync()
+                        logger.info("[%s] Synced %d slash command(s)", adapter_self.name, len(synced))
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as e:  # pragma: no cover - defensive logging
+                        logger.warning("[%s] Slash command sync failed: %s", adapter_self.name, e, exc_info=True)
+
+                adapter_self._slash_sync_task = asyncio.create_task(_sync_slash_commands())
 
             @self._client.event
             async def on_message(message: DiscordMessage):
@@ -706,6 +717,14 @@ class DiscordAdapter(BasePlatformAdapter):
 
     async def disconnect(self) -> None:
         """Disconnect from Discord."""
+        if self._slash_sync_task:
+            self._slash_sync_task.cancel()
+            try:
+                await self._slash_sync_task
+            except asyncio.CancelledError:
+                pass
+            self._slash_sync_task = None
+
         # Clean up all active voice connections before closing the client
         for guild_id in list(self._voice_clients.keys()):
             try:

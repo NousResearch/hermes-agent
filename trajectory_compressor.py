@@ -443,16 +443,16 @@ class TrajectoryCompressor:
     def _find_protected_indices(self, trajectory: List[Dict[str, str]]) -> Tuple[set, int, int]:
         """
         Find indices of protected turns.
-        
+
         Returns:
             Tuple of (protected_set, compressible_start, compressible_end)
         """
         n = len(trajectory)
         protected = set()
-        
+
         # Track first occurrences
         first_system = first_human = first_gpt = first_tool = None
-        
+
         for i, turn in enumerate(trajectory):
             role = turn.get("from", "")
             if role == "system" and first_system is None:
@@ -463,29 +463,37 @@ class TrajectoryCompressor:
                 first_gpt = i
             elif role == "tool" and first_tool is None:
                 first_tool = i
-        
-        # Protect first turns
+
+        # Protect first turns — track them separately to compute compressible_start
+        head_protected: set = set()
         if self.config.protect_first_system and first_system is not None:
+            head_protected.add(first_system)
             protected.add(first_system)
         if self.config.protect_first_human and first_human is not None:
+            head_protected.add(first_human)
             protected.add(first_human)
         if self.config.protect_first_gpt and first_gpt is not None:
+            head_protected.add(first_gpt)
             protected.add(first_gpt)
         if self.config.protect_first_tool and first_tool is not None:
+            head_protected.add(first_tool)
             protected.add(first_tool)
-        
+
         # Protect last N turns
-        for i in range(max(0, n - self.config.protect_last_n_turns), n):
+        tail_start = max(0, n - self.config.protect_last_n_turns)
+        for i in range(tail_start, n):
             protected.add(i)
-        
-        # Determine compressible region
-        # Start after the last protected head turn
-        head_protected = [i for i in protected if i < n // 2]
-        tail_protected = [i for i in protected if i >= n // 2]
-        
-        compressible_start = max(head_protected) + 1 if head_protected else 0
-        compressible_end = min(tail_protected) if tail_protected else n
-        
+
+        # Determine compressible region boundaries directly from the explicit sets,
+        # trajectories (e.g. 8 turns with protect_last_n=5 made compressible_end <
+        # compressible_start, silently leaving over-budget trajectories untouched).
+        compressible_start = (max(head_protected) + 1) if head_protected else 0
+        compressible_end = tail_start
+
+        # Clamp: if regions overlap (very short trajectory), return an empty window
+        if compressible_end <= compressible_start:
+            compressible_end = compressible_start
+
         return protected, compressible_start, compressible_end
     
     def _extract_turn_content_for_summary(self, trajectory: List[Dict[str, str]], start: int, end: int) -> str:

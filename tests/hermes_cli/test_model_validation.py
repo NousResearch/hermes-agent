@@ -738,6 +738,46 @@ class TestValidateApiFallback:
         assert "http://localhost:8000/v1/models" in result["message"]
         assert "http://localhost:8000/v1" in result["message"]
 
+    def test_mistral_host_skips_models_probe(self):
+        # api.mistral.ai's /models endpoint is not reliably reachable, so a
+        # custom provider pointed at the real host is trusted without probing.
+        with patch("hermes_cli.models.probe_api_models") as probe:
+            result = validate_requested_model(
+                "mistral-large-latest",
+                "custom",
+                api_key="key",
+                base_url="https://api.mistral.ai/v1",
+            )
+        probe.assert_not_called()
+        assert result["accepted"] is True
+        assert result["persist"] is True
+        assert result["recognized"] is True
+
+    def test_mistral_lookalike_host_does_not_skip_probe(self):
+        # Substring occurrences (path segment, lookalike host) must NOT
+        # bypass probing — only a genuine api.mistral.ai host match does.
+        for lookalike in (
+            "https://evil.example/api.mistral.ai/v1",
+            "https://api.mistral.ai.evil.example/v1",
+        ):
+            with patch(
+                "hermes_cli.models.probe_api_models",
+                return_value={
+                    "models": ["some-model"],
+                    "probed_url": lookalike + "/models",
+                    "resolved_base_url": lookalike,
+                    "suggested_base_url": None,
+                    "used_fallback": False,
+                },
+            ) as probe:
+                validate_requested_model(
+                    "some-model",
+                    "custom",
+                    api_key="key",
+                    base_url=lookalike,
+                )
+            probe.assert_called_once()
+
     def test_fetch_lmstudio_models_filters_embedding_type(self):
         mock_resp = MagicMock()
         mock_resp.__enter__.return_value = mock_resp

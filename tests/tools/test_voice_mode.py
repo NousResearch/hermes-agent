@@ -517,6 +517,15 @@ class TestAudioRecorderCancel:
 
 
 class TestAudioRecorderProperties:
+    def test_is_recording_reflects_internal_state(self):
+        from tools.voice_mode import AudioRecorder
+
+        recorder = AudioRecorder()
+        assert recorder.is_recording is False
+
+        recorder._recording = True
+        assert recorder.is_recording is True
+
     def test_elapsed_seconds_when_not_recording(self):
         from tools.voice_mode import AudioRecorder
 

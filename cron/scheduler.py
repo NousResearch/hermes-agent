@@ -769,7 +769,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             _cron_pool.shutdown(wait=False, cancel_futures=True)
             raise
         finally:
-            _cron_pool.shutdown(wait=False)
+            _cron_pool.shutdown(wait=False, cancel_futures=True)
 
         if _inactivity_timeout:
             # Build diagnostic summary from the agent's activity tracker.

@@ -1420,10 +1420,11 @@ def terminal_tool(
                     # In gateway mode, auto-register a fast watcher so the
                     # gateway can detect completion and trigger a new agent
                     # turn.  CLI mode uses the completion_queue directly.
-                    _gw_platform = os.getenv("HERMES_SESSION_PLATFORM", "")
+                    from gateway.session_context import get_session_env as _gse
+                    _gw_platform = _gse("HERMES_SESSION_PLATFORM", "")
                     if _gw_platform and not check_interval:
-                        _gw_chat_id = os.getenv("HERMES_SESSION_CHAT_ID", "")
-                        _gw_thread_id = os.getenv("HERMES_SESSION_THREAD_ID", "")
+                        _gw_chat_id = _gse("HERMES_SESSION_CHAT_ID", "")
+                        _gw_thread_id = _gse("HERMES_SESSION_THREAD_ID", "")
                         proc_session.watcher_platform = _gw_platform
                         proc_session.watcher_chat_id = _gw_chat_id
                         proc_session.watcher_thread_id = _gw_thread_id
@@ -1445,9 +1446,10 @@ def terminal_tool(
                         result_data["check_interval_note"] = (
                             f"Requested {check_interval}s raised to minimum 30s"
                         )
-                    watcher_platform = os.getenv("HERMES_SESSION_PLATFORM", "")
-                    watcher_chat_id = os.getenv("HERMES_SESSION_CHAT_ID", "")
-                    watcher_thread_id = os.getenv("HERMES_SESSION_THREAD_ID", "")
+                    from gateway.session_context import get_session_env as _gse2
+                    watcher_platform = _gse2("HERMES_SESSION_PLATFORM", "")
+                    watcher_chat_id = _gse2("HERMES_SESSION_CHAT_ID", "")
+                    watcher_thread_id = _gse2("HERMES_SESSION_THREAD_ID", "")
 
                     # Store on session for checkpoint persistence
                     proc_session.watcher_platform = watcher_platform

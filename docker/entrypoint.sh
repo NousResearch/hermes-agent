@@ -9,7 +9,10 @@ INSTALL_DIR="/opt/hermes"
 # (cache/images, cache/audio, platforms/whatsapp, etc.) are created on
 # demand by the application — don't pre-create them here so new installs
 # get the consolidated layout from get_hermes_dir().
-mkdir -p "$HERMES_HOME"/{cron,sessions,logs,hooks,memories,skills}
+# The "home/" subdirectory is a per-profile HOME for subprocesses (git,
+# ssh, gh, npm …).  Without it those tools write to /root which is
+# ephemeral and shared across profiles.  See issue #4426.
+mkdir -p "$HERMES_HOME"/{cron,sessions,logs,hooks,memories,skills,home}
 
 # .env
 if [ ! -f "$HERMES_HOME/.env" ]; then

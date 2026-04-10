@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from cli import HermesCLI, _rich_text_from_ansi
+from cli import HermesCLI, _ansi_hex, _rich_text_from_ansi
 from hermes_cli.skin_engine import get_active_skin, set_active_skin
 
 
@@ -41,6 +41,12 @@ class TestCliSkinPromptIntegration:
 
         set_active_skin("ares")
         assert cli._get_tui_prompt_fragments() == [("class:prompt", "⚔ ❯ ")]
+
+    def test_aphrodite_prompt_fragments_use_skin_symbol(self):
+        cli = _make_cli_stub()
+
+        set_active_skin("aphrodite")
+        assert cli._get_tui_prompt_fragments() == [("class:prompt", "♥ ❯ ")]
 
     def test_secret_prompt_fragments_preserve_secret_state(self):
         cli = _make_cli_stub()
@@ -105,6 +111,24 @@ class TestCliSkinPromptIntegration:
         assert "Skin set to: ares (saved)" in output
         assert "Prompt + TUI colors updated." in output
         assert cli._app.style is not None
+
+    def test_flush_stream_uses_skin_response_border_color(self):
+        cli = _make_cli_stub()
+        cli._stream_box_opened = True
+        cli._stream_buf = ""
+        cli._stream_text_ansi = ""
+        cli._in_reasoning_block = False
+        cli._stream_prefilt = ""
+        cli._reasoning_box_opened = False
+
+        set_active_skin("aphrodite")
+        printed = []
+        with patch("cli._cprint", side_effect=printed.append), patch(
+            "cli.shutil.get_terminal_size", return_value=SimpleNamespace(columns=20)
+        ):
+            cli._flush_stream()
+
+        assert printed[-1] == f"{_ansi_hex('#7FD6E8', bold=True)}╰{'─' * 18}╯\033[0m"
 
 
 class TestAnsiRichTextHelper:

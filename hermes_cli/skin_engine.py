@@ -83,10 +83,14 @@ USAGE
 BUILT-IN SKINS
 ==============
 
-- ``default`` — Classic Hermes gold/kawaii (the current look)
-- ``ares``    — Crimson/bronze war-god theme with custom spinner wings
-- ``mono``    — Clean grayscale monochrome
-- ``slate``   — Cool blue developer-focused theme
+- ``default``   — Classic Hermes gold/kawaii (the current look)
+- ``ares``      — Crimson/bronze war-god theme with custom spinner wings
+- ``mono``      — Clean grayscale monochrome
+- ``slate``     — Cool blue developer-focused theme
+- ``poseidon``  — Ocean-god theme — deep blue and seafoam
+- ``sisyphus``  — Sisyphean grayscale persistence theme
+- ``charizard`` — Volcanic burnt-orange theme
+- ``aphrodite`` — Rose neon theme with cyan reply borders
 
 USER SKINS
 ==========
@@ -500,6 +504,36 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
 [#F29C38]⠀⠀⠀⠀⠀⠀⠀⠀⣰⡿⢿⣆⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
 [#F29C38]⠀⠀⠀⠀⠀⠀⠀⣼⡟⠀⠀⢻⣧⠀⠀⠀⠀⠀⠀⠀⠀[/]
 [dim #7A3511]⠀⠀⠀⠀⠀⠀⠀tail flame lit⠀⠀⠀⠀⠀⠀⠀⠀[/]""",
+    },
+    "aphrodite": {
+        "name": "aphrodite",
+        "description": "Rose neon theme — pink glass and cyan reply border",
+        "colors": {
+            "banner_border": "#C85A8A",
+            "banner_title": "#FF8FC7",
+            "banner_accent": "#FF6FAE",
+            "banner_dim": "#C85A8A",
+            "banner_text": "#FFF1F7",
+            "ui_accent": "#FF6FAE",
+            "ui_label": "#F3A6C8",
+            "ui_ok": "#FF6FAE",
+            "ui_error": "#FF6B81",
+            "ui_warn": "#FFB36B",
+            "prompt": "#FFF1F7",
+            "input_rule": "#C85A8A",
+            "response_border": "#7FD6E8",
+            "session_label": "#E07AA8",
+            "session_border": "#8E6A78",
+        },
+        "branding": {
+            "agent_name": "Aphrodite Agent",
+            "welcome": "Welcome to Aphrodite Agent! Type your message or /help for commands.",
+            "goodbye": "Goodbye! ♥",
+            "response_label": " ♥ Aphrodite ",
+            "prompt_symbol": "♥ ❯ ",
+            "help_header": "(♥) Available Commands",
+        },
+        "tool_prefix": "┊",
     },
 }
 

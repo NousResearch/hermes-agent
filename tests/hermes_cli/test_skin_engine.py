@@ -88,6 +88,14 @@ class TestBuiltinSkins:
         assert skin.name == "slate"
         assert skin.get_color("banner_title") == "#7eb8f6"
 
+    def test_aphrodite_skin_loads(self):
+        from hermes_cli.skin_engine import load_skin
+        skin = load_skin("aphrodite")
+        assert skin.name == "aphrodite"
+        assert skin.get_color("banner_title") == "#FF8FC7"
+        assert skin.get_color("response_border") == "#7FD6E8"
+        assert skin.get_branding("agent_name") == "Aphrodite Agent"
+
     def test_unknown_skin_falls_back_to_default(self):
         from hermes_cli.skin_engine import load_skin
         skin = load_skin("nonexistent_skin_xyz")
@@ -124,6 +132,7 @@ class TestSkinManagement:
         assert "ares" in names
         assert "mono" in names
         assert "slate" in names
+        assert "aphrodite" in names
         for s in skins:
             assert "source" in s
             assert s["source"] == "builtin"

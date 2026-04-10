@@ -47,6 +47,34 @@ def test_mnemoria_is_discoverable_in_memory_provider_list():
     assert isinstance(available, bool)
 
 
+def test_get_config_schema_returns_valid_fields():
+    provider = MnemoriaMemoryProvider()
+    schema = provider.get_config_schema()
+    assert isinstance(schema, list)
+    assert len(schema) >= 1
+    keys = {field["key"] for field in schema}
+    assert "db_path" in keys
+
+
+def test_save_config_writes_json(tmp_path):
+    provider = MnemoriaMemoryProvider()
+    provider.save_config({"db_path": "/custom/path.db"}, str(tmp_path))
+    config_path = tmp_path / "mnemoria.json"
+    assert config_path.exists()
+    data = json.loads(config_path.read_text())
+    assert data["db_path"] == "/custom/path.db"
+
+
+def test_save_config_merges_with_existing(tmp_path):
+    config_path = tmp_path / "mnemoria.json"
+    config_path.write_text(json.dumps({"existing_key": "value"}))
+    provider = MnemoriaMemoryProvider()
+    provider.save_config({"db_path": "/new/path.db"}, str(tmp_path))
+    data = json.loads(config_path.read_text())
+    assert data["existing_key"] == "value"
+    assert data["db_path"] == "/new/path.db"
+
+
 def test_initialize_sets_read_only_for_cron_context():
     provider = MnemoriaMemoryProvider()
     provider.initialize("test-session", agent_context="cron", hermes_home="/tmp")

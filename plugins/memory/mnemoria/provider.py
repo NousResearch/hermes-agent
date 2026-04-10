@@ -364,6 +364,25 @@ class MnemoriaMemoryProvider(MemoryProvider):
             logger.debug("system_prompt_block identity query failed: %s", exc)
             return header
 
+    def get_config_schema(self):
+        return [
+            {"key": "db_path", "description": "SQLite database path", "default": "~/.hermes/mnemoria.db"},
+            {"key": "profile", "description": "Memory profile", "default": "balanced", "choices": ["balanced"]},
+        ]
+
+    def save_config(self, values, hermes_home):
+        """Write config to $HERMES_HOME/mnemoria.json."""
+        import json as _json
+        config_path = Path(hermes_home) / "mnemoria.json"
+        existing = {}
+        if config_path.exists():
+            try:
+                existing = _json.loads(config_path.read_text())
+            except Exception:
+                pass
+        existing.update(values)
+        config_path.write_text(_json.dumps(existing, indent=2))
+
     def prefetch(self, query: str, *, session_id: str = "") -> str:
         """Recall relevant memories and format as injection text."""
         if not _UM_AVAILABLE:

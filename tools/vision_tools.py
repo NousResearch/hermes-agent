@@ -67,6 +67,10 @@ def _resolve_download_timeout() -> float:
 
 _VISION_DOWNLOAD_TIMEOUT = _resolve_download_timeout()
 
+# Hard cap on downloaded image file size (50 MB). Prevents OOM from
+# attacker-hosted multi-gigabyte files or decompression bombs.
+_VISION_MAX_DOWNLOAD_BYTES = 50 * 1024 * 1024
+
 
 def _validate_image_url(url: str) -> bool:
     """
@@ -181,13 +185,25 @@ async def _download_image(image_url: str, destination: Path, max_retries: int = 
                 )
                 response.raise_for_status()
 
+                # Reject overly large images early via Content-Length header.
+                cl = response.headers.get("content-length")
+                if cl and int(cl) > _VISION_MAX_DOWNLOAD_BYTES:
+                    raise ValueError(
+                        f"Image too large ({int(cl)} bytes, max {_VISION_MAX_DOWNLOAD_BYTES})"
+                    )
+
                 final_url = str(response.url)
                 blocked = check_website_access(final_url)
                 if blocked:
                     raise PermissionError(blocked["message"])
                 
-                # Save the image content
-                destination.write_bytes(response.content)
+                # Save the image content (double-check actual size)
+                body = response.content
+                if len(body) > _VISION_MAX_DOWNLOAD_BYTES:
+                    raise ValueError(
+                        f"Image too large ({len(body)} bytes, max {_VISION_MAX_DOWNLOAD_BYTES})"
+                    )
+                destination.write_bytes(body)
             
             return destination
         except Exception as e:

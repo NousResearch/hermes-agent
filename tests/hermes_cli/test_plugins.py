@@ -1,26 +1,17 @@
 """Tests for the Hermes plugin system (hermes_cli.plugins)."""
 
 import logging
-import os
 import sys
 import types
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import pytest
 import yaml
 
 from hermes_cli.plugins import (
     ENTRY_POINTS_GROUP,
     VALID_HOOKS,
-    LoadedPlugin,
-    PluginContext,
     PluginManager,
-    PluginManifest,
-    get_plugin_manager,
-    get_plugin_tool_names,
-    discover_plugins,
-    invoke_hook,
 )
 
 
@@ -188,6 +179,63 @@ class TestPluginLoading:
         mgr.discover_and_load()
 
         assert "hermes_plugins.ns_plugin" in sys.modules
+
+    def test_failed_commit_does_not_leave_partial_registrations(self, tmp_path, monkeypatch):
+        """A plugin that fails while publishing staged state stays fully inactive."""
+        from tools.registry import registry
+
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        _make_plugin_dir(
+            plugins_dir,
+            "broken_plugin",
+            register_body=(
+                "ctx.register_tool(\n"
+                '        name="safe_echo",\n'
+                '        toolset="plugin_broken_plugin",\n'
+                '        schema={"name": "safe_echo", "description": "Echo", "parameters": {"type": "object", "properties": {}}},\n'
+                '        handler=lambda args, **kw: "echo",\n'
+                "    )\n"
+                '    ctx.register_hook("pre_tool_call", lambda **kw: {"plugin": "broken"})\n'
+                '    ctx.register_cli_command("broken", "Broken command", lambda parser: None)\n'
+                "    ctx.register_tool(\n"
+                '        name="broken_echo",\n'
+                '        toolset="plugin_broken_plugin",\n'
+                '        schema={"name": "broken_echo", "description": "Echo", "parameters": {"type": "object", "properties": {}}},\n'
+                '        handler=lambda args, **kw: "echo",\n'
+                "    )"
+            ),
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        original_register = registry.register
+
+        def fail_on_second_tool(*args, **kwargs):
+            if kwargs.get("name") == "broken_echo":
+                raise RuntimeError("boom during staged tool publish")
+            return original_register(*args, **kwargs)
+
+        monkeypatch.setattr(registry, "register", fail_on_second_tool)
+
+        mgr = PluginManager()
+        try:
+            mgr.discover_and_load()
+
+            loaded = mgr._plugins["broken_plugin"]
+            assert not loaded.enabled
+            assert "boom during staged tool publish" in loaded.error
+            assert loaded.tools_registered == []
+            assert loaded.hooks_registered == []
+            assert "safe_echo" not in mgr._plugin_tool_names
+            assert "broken_echo" not in mgr._plugin_tool_names
+            assert "safe_echo" not in registry._tools
+            assert "broken_echo" not in registry._tools
+            assert "broken" not in mgr._cli_commands
+            assert mgr.invoke_hook(
+                "pre_tool_call", tool_name="test", args={}, task_id="t1"
+            ) == []
+        finally:
+            registry.deregister("safe_echo")
+            registry.deregister("broken_echo")
 
 
 # ── TestPluginHooks ────────────────────────────────────────────────────────

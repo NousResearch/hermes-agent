@@ -31,7 +31,6 @@ import importlib
 import importlib.metadata
 import importlib.util
 import logging
-import os
 import sys
 import types
 from dataclasses import dataclass, field
@@ -117,6 +116,21 @@ class LoadedPlugin:
     error: Optional[str] = None
 
 
+@dataclass
+class _PendingToolRegistration:
+    """A tool staged during plugin register() until the plugin commits."""
+
+    name: str
+    toolset: str
+    schema: dict
+    handler: Callable
+    check_fn: Callable | None = None
+    requires_env: list | None = None
+    is_async: bool = False
+    description: str = ""
+    emoji: str = ""
+
+
 # ---------------------------------------------------------------------------
 # PluginContext  – handed to each plugin's ``register()`` function
 # ---------------------------------------------------------------------------
@@ -127,6 +141,9 @@ class PluginContext:
     def __init__(self, manifest: PluginManifest, manager: "PluginManager"):
         self.manifest = manifest
         self._manager = manager
+        self._pending_tools: List[_PendingToolRegistration] = []
+        self._pending_hooks: List[tuple[str, Callable]] = []
+        self._pending_cli_commands: Dict[str, dict] = {}
 
     # -- tool registration --------------------------------------------------
 
@@ -142,22 +159,21 @@ class PluginContext:
         description: str = "",
         emoji: str = "",
     ) -> None:
-        """Register a tool in the global registry **and** track it as plugin-provided."""
-        from tools.registry import registry
-
-        registry.register(
-            name=name,
-            toolset=toolset,
-            schema=schema,
-            handler=handler,
-            check_fn=check_fn,
-            requires_env=requires_env,
-            is_async=is_async,
-            description=description,
-            emoji=emoji,
+        """Stage a tool registration until the plugin finishes register()."""
+        self._pending_tools.append(
+            _PendingToolRegistration(
+                name=name,
+                toolset=toolset,
+                schema=schema,
+                handler=handler,
+                check_fn=check_fn,
+                requires_env=requires_env,
+                is_async=is_async,
+                description=description,
+                emoji=emoji,
+            )
         )
-        self._manager._plugin_tool_names.add(name)
-        logger.debug("Plugin %s registered tool: %s", self.manifest.name, name)
+        logger.debug("Plugin %s staged tool: %s", self.manifest.name, name)
 
     # -- message injection --------------------------------------------------
 
@@ -203,7 +219,7 @@ class PluginContext:
         arguments/sub-subparsers.  If *handler_fn* is provided it is set
         as the default dispatch function via ``set_defaults(func=...)``.
         """
-        self._manager._cli_commands[name] = {
+        self._pending_cli_commands[name] = {
             "name": name,
             "help": help,
             "description": description,
@@ -211,7 +227,7 @@ class PluginContext:
             "handler_fn": handler_fn,
             "plugin": self.manifest.name,
         }
-        logger.debug("Plugin %s registered CLI command: %s", self.manifest.name, name)
+        logger.debug("Plugin %s staged CLI command: %s", self.manifest.name, name)
 
     # -- hook registration --------------------------------------------------
 
@@ -229,8 +245,43 @@ class PluginContext:
                 hook_name,
                 ", ".join(sorted(VALID_HOOKS)),
             )
-        self._manager._hooks.setdefault(hook_name, []).append(callback)
-        logger.debug("Plugin %s registered hook: %s", self.manifest.name, hook_name)
+        self._pending_hooks.append((hook_name, callback))
+        logger.debug("Plugin %s staged hook: %s", self.manifest.name, hook_name)
+
+    def commit(self) -> tuple[List[str], List[str]]:
+        """Apply staged registrations after plugin register() succeeds."""
+        from tools.registry import registry
+
+        applied_tool_names: List[str] = []
+        try:
+            for registration in self._pending_tools:
+                registry.register(
+                    name=registration.name,
+                    toolset=registration.toolset,
+                    schema=registration.schema,
+                    handler=registration.handler,
+                    check_fn=registration.check_fn,
+                    requires_env=registration.requires_env,
+                    is_async=registration.is_async,
+                    description=registration.description,
+                    emoji=registration.emoji,
+                )
+                self._manager._plugin_tool_names.add(registration.name)
+                applied_tool_names.append(registration.name)
+        except Exception:
+            for tool_name in reversed(applied_tool_names):
+                registry.deregister(tool_name)
+                self._manager._plugin_tool_names.discard(tool_name)
+            raise
+
+        for hook_name, callback in self._pending_hooks:
+            self._manager._hooks.setdefault(hook_name, []).append(callback)
+
+        self._manager._cli_commands.update(self._pending_cli_commands)
+        return (
+            [registration.name for registration in self._pending_tools],
+            list(dict.fromkeys(hook_name for hook_name, _ in self._pending_hooks)),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -385,26 +436,7 @@ class PluginManager:
             else:
                 ctx = PluginContext(manifest, self)
                 register_fn(ctx)
-                loaded.tools_registered = [
-                    t for t in self._plugin_tool_names
-                    if t not in {
-                        n
-                        for name, p in self._plugins.items()
-                        for n in p.tools_registered
-                    }
-                ]
-                loaded.hooks_registered = list(
-                    {
-                        h
-                        for h, cbs in self._hooks.items()
-                        if cbs  # non-empty
-                    }
-                    - {
-                        h
-                        for name, p in self._plugins.items()
-                        for h in p.hooks_registered
-                    }
-                )
+                loaded.tools_registered, loaded.hooks_registered = ctx.commit()
                 loaded.enabled = True
 
         except Exception as exc:

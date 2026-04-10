@@ -9,9 +9,7 @@ Covers:
 """
 
 import argparse
-import os
 import sys
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -44,6 +42,7 @@ class TestRegisterCliCommand:
             handler_fn=handler,
             description="Full description",
         )
+        ctx.commit()
         assert "mycmd" in mgr._cli_commands
         entry = mgr._cli_commands["mycmd"]
         assert entry["name"] == "mycmd"
@@ -56,11 +55,13 @@ class TestRegisterCliCommand:
         ctx, mgr = self._make_ctx()
         ctx.register_cli_command("x", "first", MagicMock())
         ctx.register_cli_command("x", "second", MagicMock())
+        ctx.commit()
         assert mgr._cli_commands["x"]["help"] == "second"
 
     def test_handler_optional(self):
         ctx, mgr = self._make_ctx()
         ctx.register_cli_command("nocb", "test", MagicMock())
+        ctx.commit()
         assert mgr._cli_commands["nocb"]["handler_fn"] is None
 
 

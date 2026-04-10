@@ -723,6 +723,59 @@ def switch_model(
 # Authenticated providers listing (for /model no-args display)
 # ---------------------------------------------------------------------------
 
+
+def _slice_provider_models(model_ids: list[str], max_models: int) -> tuple[list[str], int]:
+    """Return (display_models, total_models) with max_models<=0 meaning no limit."""
+    ordered = list(model_ids or [])
+    total = len(ordered)
+    if max_models <= 0:
+        return ordered, total
+    return ordered[:max_models], total
+
+
+def _get_display_models_for_provider(
+    provider_id: str,
+    curated: dict[str, list[str]],
+    max_models: int,
+) -> tuple[list[str], int]:
+    """Return display models for a provider, preferring live discovery when useful.
+
+    Today only OpenAI Codex needs provider-specific discovery so that Telegram /
+    model pickers can show the same dynamically discovered models as the CLI
+    `hermes model` flow. If discovery fails, fall back to the curated static
+    list instead of returning nothing.
+    """
+    fallback = list(curated.get(provider_id, []))
+
+    if provider_id == "openai-codex":
+        try:
+            from hermes_cli.auth import get_codex_auth_status, resolve_codex_runtime_credentials
+            from hermes_cli.codex_models import get_codex_model_ids
+
+            access_token = None
+            try:
+                status = get_codex_auth_status()
+                if status.get("logged_in"):
+                    access_token = status.get("api_key")
+            except Exception as exc:
+                logger.debug("Could not read Codex auth status for picker model list: %s", exc)
+
+            if not access_token:
+                try:
+                    creds = resolve_codex_runtime_credentials()
+                    access_token = creds.get("api_key")
+                except Exception as exc:
+                    logger.debug("Could not resolve Codex runtime credentials for picker model list: %s", exc)
+
+            discovered = get_codex_model_ids(access_token=access_token)
+            if discovered:
+                return _slice_provider_models(discovered, max_models)
+        except Exception as exc:
+            logger.debug("Could not dynamically discover Codex picker models: %s", exc)
+
+    return _slice_provider_models(fallback, max_models)
+
+
 def list_authenticated_providers(
     current_provider: str = "",
     user_providers: dict = None,
@@ -789,10 +842,9 @@ def list_authenticated_providers(
         if not has_creds:
             continue
 
-        # Use curated list, falling back to models.dev if no curated list
-        model_ids = curated.get(hermes_id, [])
-        total = len(model_ids)
-        top = model_ids[:max_models]
+        # Use curated list by default, with provider-specific discovery hooks
+        # for pickers that should mirror richer CLI model discovery.
+        top, total = _get_display_models_for_provider(hermes_id, curated, max_models)
 
         slug = hermes_id
         pinfo = _mdev_pinfo(mdev_id)
@@ -836,10 +888,9 @@ def list_authenticated_providers(
         if not has_creds:
             continue
 
-        # Use curated list
-        model_ids = curated.get(pid, [])
-        total = len(model_ids)
-        top = model_ids[:max_models]
+        # Use curated list by default, with provider-specific discovery hooks
+        # for pickers that should mirror richer CLI model discovery.
+        top, total = _get_display_models_for_provider(pid, curated, max_models)
 
         results.append({
             "slug": pid,

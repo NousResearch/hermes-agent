@@ -1,0 +1,5 @@
+name: nexus
+version: 0.1.0
+description: "Nexus — BM25 + semantic late fusion with ChromaDB. Benchmarked at 96.2% R@5 on LongMemEval."
+hooks:
+  - on_session_end

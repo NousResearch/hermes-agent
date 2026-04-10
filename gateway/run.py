@@ -6899,6 +6899,7 @@ class GatewayRunner:
                             edit_interval=_scfg.edit_interval,
                             buffer_threshold=_scfg.buffer_threshold,
                             cursor=_scfg.cursor,
+                            cursor_plain=getattr(_scfg, "cursor_plain", "..."),
                         )
                         _stream_consumer = GatewayStreamConsumer(
                             adapter=_adapter,

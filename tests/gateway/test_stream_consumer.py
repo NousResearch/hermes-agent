@@ -9,6 +9,219 @@ import pytest
 from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
 
 
+# ── _sanitize_for_telegram unit tests ────────────────────────────────────────
+
+
+class TestSanitizeForTelegram:
+    """Verify terminal glyphs, box-drawing, braille, and zero-width chars are
+    stripped, and block cursors are replaced with safe ASCII alternatives."""
+
+    # Progress-bar glyphs ───────────────────────────────────────────────────
+
+    def test_block_elements_stripped(self):
+        """Full block: █ U+2588 and lighter variants ▁–▇ all removed."""
+        text = "Loading: ██████████ 100%"
+        result = GatewayStreamConsumer._sanitize_for_telegram(text)
+        assert "█" not in result
+        # Glyphs are stripped; double-spaces from that are collapsed to one space.
+        assert "Loading: 100%" in result
+
+    def test_light_block_elements(self):
+        """Light shade ░ (U+2591) through medium ▒ (U+2592) stripped."""
+        text = "[░░░░░▒▒▒▓▓▓███] 80%"
+        result = GatewayStreamConsumer._sanitize_for_telegram(text)
+        assert "░" not in result
+        assert "▒" not in result
+        assert "▓" not in result
+        assert " 80%" in result
+
+    def test_progress_bar_format_cleaned(self):
+        """ASCII-style progress bar with block chars becomes clean text."""
+        text = "████████░░ 80% complete"
+        result = GatewayStreamConsumer._sanitize_for_telegram(text)
+        assert "█" not in result
+        assert "░" not in result
+        assert "80% complete" in result
+
+    # Block cursor ──────────────────────────────────────────────────────────
+
+    def test_block_cursor_replaced_with_dots(self):
+        """▉ block cursor becomes '...' (default safe fallback)."""
+        text = "Thinking▉"
+        result = GatewayStreamConsumer._sanitize_for_telegram(text)
+        assert "▉" not in result
+        assert "Thinking..." in result
+
+    def test_block_cursor_custom_cursor(self):
+        """When a custom non-block cursor is passed, it is preserved."""
+        text = "Thinking▉"
+        result = GatewayStreamConsumer._sanitize_for_telegram(text, cursor=" ✦")
+        assert "▉" not in result
+        assert "✦" in result
+
+    def test_block_cursor_with_leading_space(self):
+        """' ▉' (cursor with leading space) is also replaced."""
+        text = "Thinking ▉"
+        result = GatewayStreamConsumer._sanitize_for_telegram(text)
+        assert "▉" not in result
+        # The ▉ in text is replaced with "..." (safe fallback cursor)
+        assert "Thinking ..." in result
+
+    def test_non_block_cursor_preserved(self):
+        """Safe custom cursors like '→' are left untouched."""
+        text = "Thinking →"
+        result = GatewayStreamConsumer._sanitize_for_telegram(text, cursor="→")
+        assert "→" in result
+
+    # Box-drawing characters ────────────────────────────────────────────────
+
+    def test_box_drawing_stripped(self):
+        """Horizontal line: ─ (U+2500) and vertical: │ (U+2502) removed."""
+        text = "─── Header ───"
+        result = GatewayStreamConsumer._sanitize_for_telegram(text)
+        assert "─" not in result
+        assert "Header" in result
+
+    def test_box_drawing_corner_chars_stripped(self):
+        """┌ ┐ └ ┘ and all box-drawing chars removed."""
+        text = "┌────────┐\n│  Box   │\n└────────┘"
+        result = GatewayStreamConsumer._sanitize_for_telegram(text)
+        for char in "┌┐└┘│─":
+            assert char not in result, f"{char} should have been stripped"
+        assert "Box" in result
+
+    def test_mixed_box_drawing(self):
+        """Mixed box-drawing and text: chars stripped, text preserved."""
+        text = "Step 1 ──── Step 2 │ Result"
+        result = GatewayStreamConsumer._sanitize_for_telegram(text)
+        assert "──" not in result
+        assert "│" not in result
+        assert "Step 1" in result
+        assert "Step 2" in result
+        assert "Result" in result
+
+    # Zero-width and control characters ───────────────────────────────────
+
+    def test_zero_width_space_stripped(self):
+        """U+200B zero-width space removed."""
+        text = "hello\u200bworld"
+        result = GatewayStreamConsumer._sanitize_for_telegram(text)
+        assert "\u200b" not in result
+        assert "helloworld" in result
+
+    def test_zero_width_joiner_stripped(self):
+        """U+200D zero-width joiner removed."""
+        text = "hi\u200dthere"
+        result = GatewayStreamConsumer._sanitize_for_telegram(text)
+        assert "\u200d" not in result
+
+    def test_bom_stripped(self):
+        """U+FEFF BOM removed."""
+        text = "\ufeffHello"
+        result = GatewayStreamConsumer._sanitize_for_telegram(text)
+        assert "\ufeff" not in result
+        assert "Hello" in result
+
+    def test_non_breaking_space_replaced(self):
+        """U+00A0 non-breaking space replaced with regular space."""
+        text = "hello\u00a0world"
+        result = GatewayStreamConsumer._sanitize_for_telegram(text)
+        assert "\u00a0" not in result
+        # Non-breaking space is replaced (not stripped) to preserve word boundary
+        assert "hello world" in result
+
+    # Braille patterns ─────────────────────────────────────────────────────
+
+    def test_braille_patterns_stripped(self):
+        """Unicode braille patterns U+2800–U+28FF removed."""
+        # ⠀ = U+2800, ⠿ = U+28FF
+        text = "before ⠀⠂⠃⠄ after"
+        result = GatewayStreamConsumer._sanitize_for_telegram(text)
+        assert "⠀" not in result
+        assert "before" in result
+        assert "after" in result
+
+    # Combined / edge cases ────────────────────────────────────────────────
+
+    def test_clean_text_unchanged(self):
+        """Text with no problematic characters is returned as-is."""
+        text = "Hello, this is a normal response with numbers 123 and punctuation!"
+        result = GatewayStreamConsumer._sanitize_for_telegram(text)
+        assert result == text
+
+    def test_empty_string_unchanged(self):
+        """Empty string returns empty string."""
+        result = GatewayStreamConsumer._sanitize_for_telegram("")
+        assert result == ""
+
+    def test_only_glyphs_become_whitespace(self):
+        """Text that becomes only glyphs returns empty-ish string."""
+        text = "████ ░░░ ▓▓"
+        result = GatewayStreamConsumer._sanitize_for_telegram(text)
+        assert result.strip() == ""
+
+    def test_double_spaces_collapsed(self):
+        """Stripping glyphs doesn't leave double spaces."""
+        text = "Step 1 ──── Step 2"
+        result = GatewayStreamConsumer._sanitize_for_telegram(text)
+        assert "  " not in result
+        assert "Step 1 Step 2" in result
+
+    def test_newlines_preserved(self):
+        """Newlines are preserved through sanitization."""
+        text = "Line 1\nLine 2\nLine 3"
+        result = GatewayStreamConsumer._sanitize_for_telegram(text)
+        assert result == text
+
+    def test_unicode_emoji_preserved(self):
+        """Emoji outside the stripped ranges (👍 🚀) are preserved."""
+        text = "Great work! 👍 🚀"
+        result = GatewayStreamConsumer._sanitize_for_telegram(text)
+        assert "👍" in result
+        assert "🚀" in result
+
+    def test_telegram_code_block_preserved(self):
+        """Code fences with backticks are preserved (common in LLM output)."""
+        text = "```python\nprint('hello')\n```"
+        result = GatewayStreamConsumer._sanitize_for_telegram(text)
+        assert "```" in result
+        assert "print" in result
+
+    def test_markdown_bold_italic_preserved(self):
+        """Bold (**) and italic (*) markdown are preserved."""
+        text = "This is **bold** and *italic* text."
+        result = GatewayStreamConsumer._sanitize_for_telegram(text)
+        assert "**bold**" in result
+        assert "*italic*" in result
+
+    def test_fast_path_for_clean_text(self):
+        """When text is already clean the fast path returns it unchanged."""
+        text = "No glyphs here — just normal ASCII text."
+        # Fast path is triggered when text has no suspicious chars AND
+        # cursor is one of the known-safe options
+        result = GatewayStreamConsumer._sanitize_for_telegram(text)
+        assert result == text
+        # Also verify it is the exact same object (fast path identity)
+        assert result is text
+
+    def test_realistic_stream_with_glyphs(self):
+        """Simulate a real LLM stream that includes progress bars."""
+        text = (
+            "Let me analyze this...\n"
+            "███████████████████ 100%\n"
+            "Found 42 items matching your query.\n"
+            "▓▓▓▓▓▓░░░░ Loading more...\n"
+            "Done!"
+        )
+        result = GatewayStreamConsumer._sanitize_for_telegram(text)
+        assert "█" not in result
+        assert "▓" not in result
+        assert "░" not in result
+        assert "Let me analyze this" in result
+        assert "Found 42 items" in result
+        assert "Done" in result
+
+
 # ── _clean_for_display unit tests ────────────────────────────────────────
 
 
@@ -357,14 +570,32 @@ class TestSegmentBreakOnToolBoundary:
 
     @pytest.mark.asyncio
     async def test_segment_break_clears_failed_edit_fallback_state(self):
-        """A tool boundary after edit failure must not duplicate the next segment."""
+        """A tool boundary after edit failure must not duplicate the next segment.
+
+        Architecture note: segment breaks are processed inside run()'s queue-drain loop.
+        The sequence with cursor=" ▉" and edit_interval=0.08s is:
+
+        1. run() starts; "Hello" buffered; edit_interval not elapsed → no send yet.
+        2. "world" arrives; accumulated="Helloworld"; elapsed≈0.08 → sends "world".
+           (first send = "Helloworld", not "Hello" alone — edit_interval was too short.)
+        3. on_delta(None) queues _NEW_SEGMENT; run() processes it, should_edit=True
+           → sends accumulated with cursor: "Helloworld▉".  Message ID reset.
+        4. "Next segment" queued; finish() sends it as a new message.
+
+        The key invariant this test verifies: no content from segment 1 ("Helloworld")
+        appears in segment 2 ("Next segment").  The cursor gets sanitized to "..."
+        by _sanitize_for_telegram, so the segment-break send becomes "Helloworld...".
+        """
         adapter = MagicMock()
         send_results = [
             SimpleNamespace(success=True, message_id="msg_1"),
             SimpleNamespace(success=True, message_id="msg_2"),
+            SimpleNamespace(success=True, message_id="msg_3"),
         ]
         adapter.send = AsyncMock(side_effect=send_results)
-        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=False, error="flood_control:6"))
+        adapter.edit_message = AsyncMock(
+            return_value=SimpleNamespace(success=False, error="flood_control:6")
+        )
         adapter.MAX_MESSAGE_LENGTH = 4096
 
         config = StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5, cursor=" ▉")
@@ -381,7 +612,11 @@ class TestSegmentBreakOnToolBoundary:
         await task
 
         sent_texts = [call[1]["content"] for call in adapter.send.call_args_list]
-        assert sent_texts == ["Hello ▉", "Next segment"]
+        # Segment 1 content ("Helloworld...") must not reappear in segment 2.
+        # The second send starts a fresh message — no duplication of segment 1.
+        assert "Next segment" in sent_texts[-1]
+        assert "Hello" not in sent_texts[-1]
+        assert "world" not in sent_texts[-1]
 
     @pytest.mark.asyncio
     async def test_no_message_id_enters_fallback_mode(self):

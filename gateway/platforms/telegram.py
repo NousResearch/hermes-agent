@@ -1032,6 +1032,21 @@ class TelegramAdapter(BasePlatformAdapter):
                         self.name, retry_err,
                     )
                     return SendResult(success=False, error=str(retry_err))
+            # Message not found / message was deleted — return clean failure so
+            # the stream consumer falls back to sending new messages instead of
+            # staying silent.
+            err_str_lower = str(e).lower()
+            if (
+                "message not found" in err_str_lower
+                or "message to be replied not found" in err_str_lower
+                or "message_id_invalid" in err_str_lower
+            ):
+                logger.warning(
+                    "[%s] Message %s not found on edit — falling back to new messages",
+                    self.name, message_id,
+                )
+                return SendResult(success=False, error="message_not_found")
+
             logger.error(
                 "[%s] Failed to edit Telegram message %s: %s",
                 self.name,
@@ -1935,15 +1950,8 @@ class TelegramAdapter(BasePlatformAdapter):
             text,
         )
 
-        # 9) Convert blockquotes: > at line start → protect > from escaping
-        text = re.sub(
-            r'^(>{1,3}) (.+)$',
-            lambda m: _ph(m.group(1) + ' ' + _escape_mdv2(m.group(2))),
-            text,
-            flags=re.MULTILINE,
-        )
-
-        # 10) Escape remaining special characters in plain text
+        # 9) Escape remaining special characters in plain text (including > so
+        # Telegram never treats content as a blockquote and shows a black bar)
         text = _escape_mdv2(text)
 
         # 11) Restore placeholders in reverse insertion order so that

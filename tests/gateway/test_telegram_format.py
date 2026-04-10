@@ -376,35 +376,44 @@ class TestFormatMessageSpoiler:
 
 
 class TestFormatMessageBlockquote:
-    def test_blockquote_converted(self, adapter):
+    def test_blockquote_gt_escaped(self, adapter):
+        """Blockquote-style > at line start is escaped to prevent Telegram
+        black-bar rendering.  Content is still preserved (just escaped)."""
         result = adapter.format_message("> This is a quote")
-        assert "> This is a quote" in result
-        # > must NOT be escaped
-        assert "\\>" not in result
+        # > IS escaped (no more Telegram blockquote styling)
+        assert "\\>" in result
+        # But the text content is still present (escaped > is \>)
+        assert "This is a quote" in result
 
     def test_blockquote_with_special_chars(self, adapter):
         result = adapter.format_message("> Hello (world)!")
-        assert "> Hello \\(world\\)\\!" in result
-        assert "\\>" not in result
+        # > is escaped; special chars also escaped
+        assert "\\>" in result
+        assert "\\(world\\)\\" in result
 
     def test_blockquote_multiline(self, adapter):
         text = "> Line one\n> Line two"
         result = adapter.format_message(text)
-        assert "> Line one" in result
-        assert "> Line two" in result
-        assert "\\>" not in result
+        # Both > at line start are escaped
+        assert "\\>" in result
+        assert "Line one" in result
+        assert "Line two" in result
 
     def test_blockquote_in_code_not_converted(self, adapter):
+        """Content inside code fences is protected and > is not escaped."""
         result = adapter.format_message("```\n> not a quote\n```")
+        # Inside code fences, > is NOT escaped (code fences processed first)
         assert "> not a quote" in result
+        assert "\\>" not in result
 
     def test_nested_blockquote(self, adapter):
         result = adapter.format_message(">> Nested quote")
-        assert ">> Nested quote" in result
-        assert "\\>" not in result
+        # All > are escaped
+        assert "\\>" in result
+        assert "Nested quote" in result
 
     def test_gt_in_middle_of_line_still_escaped(self, adapter):
-        """Only > at line start is a blockquote; mid-line > should be escaped."""
+        """Mid-line > is escaped (same as before)."""
         result = adapter.format_message("5 > 3")
         assert "\\>" in result
 

@@ -36,9 +36,10 @@ _NEW_SEGMENT = object()
 @dataclass
 class StreamConsumerConfig:
     """Runtime config for a single stream consumer instance."""
-    edit_interval: float = 0.3
-    buffer_threshold: int = 40
-    cursor: str = " ▉"
+    edit_interval: float = 0.8   # Seconds between edits — higher = less chatty
+    buffer_threshold: int = 80   # Chars before forcing an edit
+    cursor: str = " ▉"           # TTY cursor (block glyph — safe for terminal)
+    cursor_plain: str = "..."     # Safe cursor for Telegram/chat (ASCII, no blocks)
 
 
 class GatewayStreamConsumer:
@@ -103,7 +104,7 @@ class GatewayStreamConsumer:
         """Async task that drains the queue and edits the platform message."""
         # Platform message length limit — leave room for cursor + formatting
         _raw_limit = getattr(self.adapter, "MAX_MESSAGE_LENGTH", 4096)
-        _safe_limit = max(500, _raw_limit - len(self.cfg.cursor) - 100)
+        _safe_limit = max(500, _raw_limit - len(self.cfg.cursor_plain) - 100)
 
         try:
             while True:
@@ -186,7 +187,7 @@ class GatewayStreamConsumer:
 
                     display_text = self._accumulated
                     if not got_done and not got_segment_break:
-                        display_text += self.cfg.cursor
+                        display_text += self.cfg.cursor_plain
 
                     await self._send_or_edit(display_text)
                     self._last_edit_time = time.monotonic()
@@ -262,12 +263,73 @@ class GatewayStreamConsumer:
         # Strip trailing whitespace/newlines but preserve leading content
         return cleaned.rstrip()
 
+    # Unicode blocks used in terminal progress bars: █ ▓ ▒ ░ ▁ ▂ ▃ ▄ ▅ ▆ ▇
+    # Block Elements block: U+2581–U+2594 covers ▁–▉ + ▊–▔ + ░▒▓▔
+    # Also strip: box-drawing (━ ┃ ━ ┃ etc.), braille patterns (U+2800–U+28FF),
+    # zero-width chars (U+200B zero-width space, U+FEFF BOM), and control chars.
+    _TERMINAL_GLYPH_RE = re.compile(
+        '['
+        '\u2581-\u2594'      # Block elements: ▁▂▃▄▅▆▇█▉▊▋▌▍▎▏▐░▒▓▔ (U+2581–U+2594)
+        '\u2500-\u257F'      # Box-drawing and line-drawing chars: ─│┌┐└┘┼ etc.
+        '\u2800-\u28FF'      # Braille patterns (blind terminal output)
+        '\uFEFF'             # BOM / zero-width no-break space
+        '\u200B'             # Zero-width space
+        '\u200C\u200D'       # Zero-width joiner/non-joiner (有时从 LLM 泄漏)
+        '\u00A0'             # Non-breaking space (renders as junk on some clients)
+        ']'
+    )
+
+    # Compiled once — used in _sanitize_for_telegram fast path
+    _SUSPICIOUS_CHARS_RE = re.compile(
+        r'[\u2581-\u2594\u2500-\u257F\u2800-\u28FF\uFEFF\u200B\u200C\u200D\u00A0]'
+    )
+
+    @staticmethod
+    def _sanitize_for_telegram(text: str, cursor: str = "...") -> str:
+        """Strip terminal glyphs and replace block-cursor for Telegram-safe output.
+
+        Removes:
+        - Terminal progress glyphs: █▓▒░▁▂▃▄▅▆▇
+        - Box-drawing characters: ─│┌┐└┘┼ etc.
+        - Braille patterns: ⠀⠁⠂ etc.
+        - Zero-width chars: \\u200B \\uFEFF etc.
+        - Non-breaking space: \\u00A0 → replaced with regular space
+        - Replaces the ▉ block cursor with a plain ASCII alternative.
+
+        Safe to call for all platforms — only removes genuinely problematic chars.
+        """
+        if not text:
+            return text
+
+        # Fast path: text contains no suspicious characters → return unchanged.
+        # (Block-cursor replacement is skipped when text is already clean.)
+        if GatewayStreamConsumer._SUSPICIOUS_CHARS_RE.search(text) is None:
+            return text
+
+        # Replace the ▉ block cursor with a safe fallback (always runs when we
+        # reach this point — the caller passes cursor_plain so we know whether
+        # the stream was using a block cursor).
+        safe_cursor = cursor if cursor not in ("...", "▉", " ◉", " ▉") else "..."
+        cleaned = re.sub(r'▉', safe_cursor, text)
+
+        # Replace non-breaking space with a regular space (preserves word boundary)
+        cleaned = cleaned.replace('\u00A0', ' ')
+
+        # Strip all terminal/block glyphs, box-drawing, braille, zero-width
+        cleaned = GatewayStreamConsumer._TERMINAL_GLYPH_RE.sub('', cleaned)
+
+        # Collapse any double-spaces left by removed glyphs
+        cleaned = re.sub(r'  +', ' ', cleaned)
+
+        return cleaned
+
     async def _send_new_chunk(self, text: str, reply_to_id: Optional[str]) -> Optional[str]:
         """Send a new message chunk, optionally threaded to a previous message.
 
         Returns the message_id so callers can thread subsequent chunks.
         """
         text = self._clean_for_display(text)
+        text = self._sanitize_for_telegram(text, self.cfg.cursor_plain)
         if not text.strip():
             return reply_to_id
         try:
@@ -293,8 +355,10 @@ class GatewayStreamConsumer:
     def _visible_prefix(self) -> str:
         """Return the visible text already shown in the streamed message."""
         prefix = self._last_sent_text or ""
-        if self.cfg.cursor and prefix.endswith(self.cfg.cursor):
-            prefix = prefix[:-len(self.cfg.cursor)]
+        # Strip the cursor_plain that was appended before sending
+        cursor = self.cfg.cursor_plain
+        if cursor and prefix.endswith(cursor):
+            prefix = prefix[:-len(cursor)]
         return self._clean_for_display(prefix)
 
     def _continuation_text(self, final_text: str) -> str:
@@ -376,6 +440,9 @@ class GatewayStreamConsumer:
         # Media files are delivered as native attachments after the stream
         # finishes (via _deliver_media_from_response in gateway/run.py).
         text = self._clean_for_display(text)
+        # Strip terminal glyphs and replace block cursor for Telegram-safe display.
+        # Safe for all platforms — only removes genuinely problematic characters.
+        text = self._sanitize_for_telegram(text, self.cfg.cursor_plain)
         if not text.strip():
             return
         try:

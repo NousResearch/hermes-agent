@@ -5,6 +5,12 @@ Linux container inside its own lightweight virtual machine via
 Virtualization.framework. Provides VM-level isolation (separate kernel per
 container) with sub-second startup on Apple Silicon.
 
+Security model: each container gets its own Linux kernel, so the VM boundary
+is the primary isolation mechanism (stronger than Docker's namespace-based
+isolation). Inside the container we additionally apply --read-only root
+filesystem and size-limited tmpfs mounts, matching Docker backend conventions
+where the CLI supports it.
+
 Requires: macOS 26+, Apple Silicon, `container` CLI (brew install container).
 """
 
@@ -12,11 +18,11 @@ import logging
 import os
 import shutil
 import subprocess
-import sys
 import uuid
+from pathlib import Path
 from typing import Optional
 
-from tools.environments.base import BaseEnvironment, _popen_bash
+from tools.environments.base import BaseEnvironment, _popen_bash, get_sandbox_dir
 
 logger = logging.getLogger(__name__)
 
@@ -26,10 +32,11 @@ _CONTAINER_SEARCH_PATHS = [
 ]
 
 _container_executable: Optional[str] = None
+_system_resources: Optional[dict] = None  # cached after first query
 
 
 def find_container_cli() -> Optional[str]:
-    """Locate the Apple `container` CLI binary.
+    """Locate the Apple ``container`` CLI binary.
 
     Checks PATH first, then probes Homebrew install locations.
     Returns the absolute path, or None if not found.
@@ -107,8 +114,13 @@ def _ensure_container_available() -> str:
 def query_system_resources() -> dict:
     """Query the host system for available CPU and memory.
 
+    Results are cached after the first call.
     Returns dict with 'total_cpus' and 'total_memory_mb' keys.
     """
+    global _system_resources
+    if _system_resources is not None:
+        return _system_resources
+
     info = {"total_cpus": os.cpu_count() or 4, "total_memory_mb": 8192}
     try:
         result = subprocess.run(
@@ -119,6 +131,8 @@ def query_system_resources() -> dict:
             info["total_memory_mb"] = int(result.stdout.strip()) // (1024 * 1024)
     except Exception:
         pass
+
+    _system_resources = info
     return info
 
 
@@ -136,24 +150,53 @@ def suggest_resources(total_cpus: int, total_memory_mb: int) -> dict:
     }
 
 
+# Sensitive host paths that should never be volume-mounted into a container.
+_SENSITIVE_MOUNT_SOURCES = {
+    "/.ssh", "/ssh", ".ssh",
+    "/.gnupg", "/gnupg", ".gnupg",
+    "/.aws", "/aws", ".aws",
+    "/.config/gcloud", "/gcloud",
+    "/.azure", "/azure",
+    "/.kube", "/kube",
+}
+
+
+def _warn_sensitive_volumes(volumes: list[str]) -> None:
+    """Log warnings for volume mounts that expose sensitive host directories."""
+    for vol in volumes:
+        src = vol.split(":")[0] if ":" in vol else vol
+        src_lower = src.lower()
+        for pattern in _SENSITIVE_MOUNT_SOURCES:
+            if src_lower.endswith(pattern) or f"{pattern}/" in src_lower:
+                logger.warning(
+                    "Volume mount '%s' exposes a sensitive host directory. "
+                    "This may leak credentials into the container.",
+                    vol,
+                )
+                break
+
+
 class AppleContainerEnvironment(BaseEnvironment):
     """Apple Container execution with VM-level isolation.
 
     Each container runs inside its own lightweight Linux VM via Apple's
-    Virtualization.framework. Provides stronger isolation than Docker
-    (separate kernel per container) with sub-second startup on Apple Silicon.
+    Virtualization.framework. Commands are executed via ``container exec``,
+    similar to Docker's ``docker exec``, with container lifecycle managed
+    by this class.
 
-    The container runs an SSH server for command execution, matching the
-    pattern used by SSHEnvironment but with container lifecycle management.
+    Security: the VM boundary provides kernel-level isolation. Additionally,
+    the root filesystem is mounted read-only with size-limited tmpfs for
+    scratch directories, and credential/skills files are mounted read-only.
     """
 
     def __init__(
         self,
         image: str = "python:3.11-slim-bookworm",
-        cwd: str = "/home/hermes/work",
+        cwd: str = "/root",
         timeout: int = 180,
         cpu: int = 0,
         memory: int = 0,
+        persistent_filesystem: bool = False,
         task_id: str = "default",
         volumes: list = None,
     ):
@@ -163,10 +206,12 @@ class AppleContainerEnvironment(BaseEnvironment):
 
         self._exe = _ensure_container_available()
         self._base_image = image
+        self._persistent = persistent_filesystem
         self._task_id = task_id
         self._container_name: Optional[str] = None
+        self._workspace_dir: Optional[str] = None
 
-        # Resolve resource limits
+        # Resolve resource limits (cached sysctl query)
         sys_info = query_system_resources()
         suggested = suggest_resources(sys_info["total_cpus"], sys_info["total_memory_mb"])
         self._cpus = cpu if cpu > 0 else suggested["cpus"]
@@ -188,9 +233,73 @@ class AppleContainerEnvironment(BaseEnvironment):
             "--detach",
             "--cpus", str(self._cpus),
             "--memory", f"{self._memory_mb}M",
+            # Read-only root for security; writable scratch via tmpfs
+            "--read-only",
+            "--tmpfs", "/tmp:rw,size=512m",
+            "--tmpfs", "/var/tmp:rw,size=256m",
+            "--tmpfs", "/run:rw,size=64m",
         ]
 
-        # Add volume mounts
+        # Persistent workspace via bind mount, or ephemeral tmpfs
+        if self._persistent:
+            sandbox = get_sandbox_dir() / "apple_container" / self._task_id
+            self._workspace_dir = str(sandbox / "workspace")
+            os.makedirs(self._workspace_dir, exist_ok=True)
+            run_cmd.extend(["--volume", f"{self._workspace_dir}:/workspace"])
+            run_cmd.extend(["--volume", f"{str(sandbox / 'root')}:/root"])
+            os.makedirs(str(sandbox / "root"), exist_ok=True)
+        else:
+            run_cmd.extend([
+                "--tmpfs", "/workspace:rw,size=10g",
+                "--tmpfs", "/root:rw,size=1g",
+                "--tmpfs", "/home:rw,size=1g",
+            ])
+
+        # Mount credential files, skills, and cache directories read-only
+        try:
+            from tools.credential_files import (
+                get_credential_file_mounts,
+                get_skills_directory_mount,
+                get_cache_directory_mounts,
+            )
+
+            for mount_entry in get_credential_file_mounts():
+                run_cmd.extend([
+                    "--volume",
+                    f"{mount_entry['host_path']}:{mount_entry['container_path']}",
+                ])
+                logger.info(
+                    "Apple Container: mounting credential %s -> %s",
+                    mount_entry["host_path"],
+                    mount_entry["container_path"],
+                )
+
+            for skills_mount in get_skills_directory_mount():
+                run_cmd.extend([
+                    "--volume",
+                    f"{skills_mount['host_path']}:{skills_mount['container_path']}",
+                ])
+                logger.info(
+                    "Apple Container: mounting skills dir %s -> %s",
+                    skills_mount["host_path"],
+                    skills_mount["container_path"],
+                )
+
+            for cache_mount in get_cache_directory_mounts():
+                run_cmd.extend([
+                    "--volume",
+                    f"{cache_mount['host_path']}:{cache_mount['container_path']}",
+                ])
+                logger.info(
+                    "Apple Container: mounting cache dir %s -> %s",
+                    cache_mount["host_path"],
+                    cache_mount["container_path"],
+                )
+        except Exception as e:
+            logger.debug("Apple Container: could not load credential file mounts: %s", e)
+
+        # User-supplied volume mounts
+        _warn_sensitive_volumes(volumes)
         for vol in volumes:
             if isinstance(vol, str) and vol.strip():
                 run_cmd.extend(["--volume", vol.strip()])
@@ -236,6 +345,8 @@ class AppleContainerEnvironment(BaseEnvironment):
         assert self._container_name, "Container not started"
 
         cmd = [self._exe, "exec"]
+        if stdin_data is not None:
+            cmd.append("-i")
         cmd.append(self._container_name)
 
         if login:
@@ -246,17 +357,42 @@ class AppleContainerEnvironment(BaseEnvironment):
         return _popen_bash(cmd, stdin_data)
 
     def cleanup(self):
-        """Stop and remove the container."""
-        if self._container_name:
+        """Stop and remove the container, waiting for graceful shutdown."""
+        if not self._container_name:
+            return
+
+        name = self._container_name
+        self._container_name = None  # prevent double-cleanup
+
+        try:
+            # Graceful stop with a timeout — waits for the process to exit
+            subprocess.run(
+                [self._exe, "stop", name],
+                capture_output=True, text=True, timeout=30,
+            )
+        except subprocess.TimeoutExpired:
+            logger.warning("Timed out stopping Apple Container '%s', force killing", name)
             try:
-                subprocess.Popen(
-                    f"({self._exe} stop {self._container_name} && "
-                    f"{self._exe} rm {self._container_name}) >/dev/null 2>&1 &",
-                    shell=True,
+                subprocess.run(
+                    [self._exe, "kill", name],
+                    capture_output=True, text=True, timeout=10,
                 )
-            except Exception as e:
-                logger.warning(
-                    "Failed to stop Apple Container '%s': %s",
-                    self._container_name, e,
-                )
-            self._container_name = None
+            except Exception:
+                pass
+        except Exception as e:
+            logger.warning("Failed to stop Apple Container '%s': %s", name, e)
+
+        # Remove the stopped container
+        try:
+            subprocess.run(
+                [self._exe, "rm", name],
+                capture_output=True, text=True, timeout=10,
+            )
+            logger.info("Removed Apple Container '%s'", name)
+        except Exception as e:
+            logger.debug("Failed to remove Apple Container '%s': %s", name, e)
+
+        # Clean up workspace if non-persistent
+        if not self._persistent and self._workspace_dir:
+            import shutil as _shutil
+            _shutil.rmtree(self._workspace_dir, ignore_errors=True)

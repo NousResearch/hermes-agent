@@ -1638,6 +1638,8 @@ def setup_terminal_backend(config: dict):
                 print_info("  Check your SSH key and host settings.")
 
     elif selected_backend == "apple_container":
+        import subprocess as _sp
+
         print_success("Terminal backend: Apple Container")
         print_info("VM-isolated Linux containers via Apple's Virtualization.framework.")
         print_info("Each container runs its own Linux kernel (stronger than Docker isolation).")
@@ -1658,7 +1660,6 @@ def setup_terminal_backend(config: dict):
             print_info(f"Container CLI found: {container_bin}")
 
             # Check system status
-            import subprocess as _sp
             status = _sp.run(
                 [container_bin, "system", "status"],
                 capture_output=True, text=True, timeout=10,
@@ -1674,8 +1675,7 @@ def setup_terminal_backend(config: dict):
                 )
 
         # Query system resources and suggest allocation
-        import os as _os
-        total_cpus = _os.cpu_count() or 4
+        total_cpus = os.cpu_count() or 4
         try:
             mem_result = _sp.run(
                 ["sysctl", "-n", "hw.memsize"],

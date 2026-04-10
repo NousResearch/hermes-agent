@@ -810,6 +810,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
         return _AppleContainerEnvironment(
             image=apple_container_image, cwd=cwd, timeout=timeout,
             cpu=int(cpu), memory=int(memory),
+            persistent_filesystem=persistent,
             task_id=task_id, volumes=apple_container_volumes,
         )
 
@@ -1652,10 +1653,14 @@ def check_terminal_requirements() -> bool:
                     "Apple Container CLI not found. Install: brew install container"
                 )
                 return False
-            result = subprocess.run(
-                [exe, "system", "status"],
-                capture_output=True, text=True, timeout=10,
-            )
+            try:
+                result = subprocess.run(
+                    [exe, "system", "status"],
+                    capture_output=True, text=True, timeout=10,
+                )
+            except subprocess.TimeoutExpired:
+                logger.error("Apple Container system status check timed out.")
+                return False
             if result.returncode != 0 or "running" not in result.stdout.lower():
                 logger.error(
                     "Apple Container system is not running. Start with: container system start"

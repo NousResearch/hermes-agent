@@ -973,7 +973,8 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
         return await original_connect(*args, **kwargs)
 
     def _configure_with_overrides(conf: Any) -> Any:
-        assert original_configure is not None
+        if original_configure is None:
+            raise RuntimeError("Feishu _configure_with_overrides called but original_configure is None")
         result = original_configure(conf)
         _apply_runtime_ws_overrides()
         return result

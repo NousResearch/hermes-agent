@@ -110,7 +110,8 @@ class TelegramFallbackTransport(httpx.AsyncBaseTransport):
                 logger.warning("[Telegram] Fallback IP %s failed: %s", ip, exc)
                 continue
 
-        assert last_error is not None
+        if last_error is None:
+            raise RuntimeError("All Telegram fallback IPs exhausted but no error was recorded")
         raise last_error
 
     async def aclose(self) -> None:

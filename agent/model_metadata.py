@@ -126,6 +126,21 @@ DEFAULT_CONTEXT_LENGTHS = {
     "minimax": 1048576,
     # GLM
     "glm": 202752,
+    # xAI Grok — xAI /v1/models does not return context_length metadata,
+    # so these hardcoded fallbacks prevent Hermes from probing-down to
+    # the default 128k when the user points at https://api.x.ai/v1
+    # via a custom provider. Values sourced from models.dev (2026-04).
+    # Keys use substring matching (longest-first), so e.g. "grok-4.20"
+    # matches "grok-4.20-0309-reasoning" / "-non-reasoning" / "-multi-agent-0309".
+    "grok-code-fast": 256000,   # grok-code-fast-1
+    "grok-4-1-fast": 2000000,   # grok-4-1-fast-(non-)reasoning
+    "grok-2-vision": 8192,      # grok-2-vision, -1212, -latest
+    "grok-4-fast": 2000000,     # grok-4-fast-(non-)reasoning
+    "grok-4.20": 2000000,       # grok-4.20-0309-(non-)reasoning, -multi-agent-0309
+    "grok-4": 256000,           # grok-4, grok-4-0709
+    "grok-3": 131072,           # grok-3, grok-3-mini, grok-3-fast, grok-3-mini-fast
+    "grok-2": 131072,           # grok-2, grok-2-1212, grok-2-latest
+    "grok": 131072,             # catch-all (grok-beta, unknown grok-*)
     # Kimi
     "kimi": 262144,
     # Arcee

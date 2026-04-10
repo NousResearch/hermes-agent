@@ -103,16 +103,22 @@ export function SessionPicker({
         const i = off + vi
 
         return (
-          <Text key={s.id}>
+          <Box key={s.id}>
             <Text color={sel === i ? t.color.label : t.color.dim}>{sel === i ? '▸ ' : '  '}</Text>
+            <Box width={30}>
+              <Text color={sel === i ? t.color.cornsilk : t.color.dim}>
+                {String(i + 1).padStart(2)}. [{s.id}]
+              </Text>
+            </Box>
+            <Box width={30}>
+              <Text color={t.color.dim}>
+                ({s.message_count} msgs, {age(s.started_at)}, {s.source || 'tui'})
+              </Text>
+            </Box>
             <Text color={sel === i ? t.color.cornsilk : t.color.dim}>
-              {i + 1}. {s.title || s.preview || s.id.slice(0, 8)}
+              {s.title || s.preview || '(untitled)'}
             </Text>
-            <Text color={t.color.dim}>
-              {' '}
-              ({s.message_count} msgs, {age(s.started_at)}{s.source && s.source !== 'tui' ? `, ${s.source}` : ''})
-            </Text>
-          </Text>
+          </Box>
         )
       })}
       {off + VISIBLE < items.length && <Text color={t.color.dim}> ↓ {items.length - off - VISIBLE} more</Text>}

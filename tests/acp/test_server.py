@@ -411,6 +411,37 @@ class TestPrompt:
         assert update.session_update == "agent_message_chunk"
 
     @pytest.mark.asyncio
+    async def test_prompt_populates_usage_from_top_level_run_conversation_fields(self, agent):
+        """ACP should map top-level token fields into PromptResponse.usage."""
+        new_resp = await agent.new_session(cwd=".")
+        state = agent.session_manager.get_session(new_resp.session_id)
+
+        state.agent.run_conversation = MagicMock(return_value={
+            "final_response": "usage attached",
+            "messages": [],
+            "prompt_tokens": 123,
+            "completion_tokens": 45,
+            "total_tokens": 168,
+            "reasoning_tokens": 7,
+            "cache_read_tokens": 11,
+        })
+
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        prompt = [TextContentBlock(type="text", text="show usage")]
+        resp = await agent.prompt(prompt=prompt, session_id=new_resp.session_id)
+
+        assert isinstance(resp, PromptResponse)
+        assert resp.usage is not None
+        assert resp.usage.input_tokens == 123
+        assert resp.usage.output_tokens == 45
+        assert resp.usage.total_tokens == 168
+        assert resp.usage.thought_tokens == 7
+        assert resp.usage.cached_read_tokens == 11
+
+    @pytest.mark.asyncio
     async def test_prompt_cancelled_returns_cancelled_stop_reason(self, agent):
         """If cancel is called during prompt, stop_reason should be 'cancelled'."""
         new_resp = await agent.new_session(cwd=".")

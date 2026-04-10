@@ -54,7 +54,7 @@ def _print_banner(title: str) -> None:
     """Print the magenta boxed banner shared by the claw subcommands."""
     print()
     rule = "─" * 57
-    for line in (f"┌{rule}┐", f"│          ⚕ Hermes — {title:<35s}│", f"└{rule}┘"):
+    for line in (f"┌{rule}┐", f"│          ☤ Hermes — {title:<35s}│", f"└{rule}┘"):
         print(color(line, Colors.MAGENTA))
 
 

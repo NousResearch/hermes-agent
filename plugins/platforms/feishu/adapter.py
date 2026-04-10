@@ -1703,7 +1703,7 @@ class FeishuAdapter(BasePlatformAdapter):
             return _card_button(label, btn_type, {"hermes_update_prompt_action": answer, "update_prompt_id": prompt_id})
 
         actions = [_btn("✓ Yes", "y", "primary"), _btn("✗ No", "n", "danger")]
-        return _card("⚕ Update Needs Your Input", "orange", f"{prompt}{default_hint}", actions=actions)
+        return _card("☤ Update Needs Your Input", "orange", f"{prompt}{default_hint}", actions=actions)
 
     async def send_update_prompt(
         self, chat_id: str, prompt: str, default: str = "", session_key: str = "",

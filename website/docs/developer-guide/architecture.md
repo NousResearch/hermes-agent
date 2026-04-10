@@ -118,7 +118,7 @@ hermes-agent/
 │   ├── builtin_hooks/        # Always-registered hooks
 │   └── platforms/            # 15 adapters: telegram, discord, slack, whatsapp,
 │                             #   signal, matrix, mattermost, email, sms,
-│                             #   dingtalk, feishu, wecom, bluebubbles, homeassistant, webhook
+│                             #   dingtalk, feishu, wecom, weixin, bluebubbles, homeassistant, webhook
 │
 ├── acp_adapter/              # ACP server (VS Code / Zed / JetBrains)
 ├── cron/                     # Scheduler (jobs.py, scheduler.py)

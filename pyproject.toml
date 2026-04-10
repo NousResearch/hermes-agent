@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hermes-agent"
-version = "0.7.0"
+version = "0.8.0"
 description = "The self-improving AI agent — creates skills from experience, improves them during use, and runs anywhere"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -62,6 +62,18 @@ mcp = ["mcp>=1.2.0,<2"]
 homeassistant = ["aiohttp>=3.9.0,<4"]
 sms = ["aiohttp>=3.9.0,<4"]
 acp = ["agent-client-protocol>=0.9.0,<1.0"]
+mistral = ["mistralai>=2.3.0,<3"]
+termux = [
+  # Tested Android / Termux path: keeps the core CLI feature-rich while
+  # avoiding extras that currently depend on non-Android wheels (notably
+  # faster-whisper -> ctranslate2 via the voice extra).
+  "hermes-agent[cron]",
+  "hermes-agent[cli]",
+  "hermes-agent[pty]",
+  "hermes-agent[mcp]",
+  "hermes-agent[honcho]",
+  "hermes-agent[acp]",
+]
 dingtalk = ["dingtalk-stream>=0.1.0,<1"]
 feishu = ["lark-oapi>=1.5.3,<2"]
 rl = [
@@ -94,6 +106,7 @@ all = [
   "hermes-agent[voice]",
   "hermes-agent[dingtalk]",
   "hermes-agent[feishu]",
+  "hermes-agent[mistral]",
 ]
 
 [project.scripts]

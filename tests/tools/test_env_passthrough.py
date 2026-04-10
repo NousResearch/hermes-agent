@@ -4,12 +4,12 @@ import os
 import pytest
 import yaml
 
+import tools.env_passthrough as _ep_mod
 from tools.env_passthrough import (
     clear_env_passthrough,
     get_all_passthrough,
     is_env_passthrough,
     register_env_passthrough,
-    reset_config_cache,
 )
 
 
@@ -17,10 +17,10 @@ from tools.env_passthrough import (
 def _clean_passthrough():
     """Ensure a clean passthrough state for every test."""
     clear_env_passthrough()
-    reset_config_cache()
+    _ep_mod._config_passthrough = None
     yield
     clear_env_passthrough()
-    reset_config_cache()
+    _ep_mod._config_passthrough = None
 
 
 class TestSkillScopedPassthrough:
@@ -63,7 +63,7 @@ class TestConfigPassthrough:
         config_path = tmp_path / "config.yaml"
         config_path.write_text(yaml.dump(config))
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        reset_config_cache()
+        _ep_mod._config_passthrough = None
 
         assert is_env_passthrough("MY_CUSTOM_KEY")
         assert is_env_passthrough("ANOTHER_TOKEN")
@@ -74,7 +74,7 @@ class TestConfigPassthrough:
         config_path = tmp_path / "config.yaml"
         config_path.write_text(yaml.dump(config))
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        reset_config_cache()
+        _ep_mod._config_passthrough = None
 
         assert not is_env_passthrough("ANYTHING")
 
@@ -83,13 +83,13 @@ class TestConfigPassthrough:
         config_path = tmp_path / "config.yaml"
         config_path.write_text(yaml.dump(config))
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        reset_config_cache()
+        _ep_mod._config_passthrough = None
 
         assert not is_env_passthrough("ANYTHING")
 
     def test_no_config_file(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        reset_config_cache()
+        _ep_mod._config_passthrough = None
 
         assert not is_env_passthrough("ANYTHING")
 
@@ -98,7 +98,7 @@ class TestConfigPassthrough:
         config_path = tmp_path / "config.yaml"
         config_path.write_text(yaml.dump(config))
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        reset_config_cache()
+        _ep_mod._config_passthrough = None
 
         register_env_passthrough(["SKILL_KEY"])
         all_pt = get_all_passthrough()

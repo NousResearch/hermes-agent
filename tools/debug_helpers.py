@@ -26,7 +26,6 @@ import json
 import logging
 import os
 import uuid
-from pathlib import Path
 from typing import Any, Dict
 
 from hermes_constants import get_hermes_home

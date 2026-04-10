@@ -49,6 +49,30 @@ def test_chat_subcommand_accepts_skills_flag(monkeypatch):
     }
 
 
+def test_chat_subcommand_accepts_image_flag(monkeypatch):
+    import hermes_cli.main as main_mod
+
+    captured = {}
+
+    def fake_cmd_chat(args):
+        captured["query"] = args.query
+        captured["image"] = args.image
+
+    monkeypatch.setattr(main_mod, "cmd_chat", fake_cmd_chat)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["hermes", "chat", "-q", "hello", "--image", "~/storage/shared/Pictures/cat.png"],
+    )
+
+    main_mod.main()
+
+    assert captured == {
+        "query": "hello",
+        "image": "~/storage/shared/Pictures/cat.png",
+    }
+
+
 def test_continue_worktree_and_skills_flags_work_together(monkeypatch):
     import hermes_cli.main as main_mod
 

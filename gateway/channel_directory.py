@@ -77,7 +77,7 @@ def build_channel_directory(adapters: Dict[Any, Any]) -> Dict[str, Any]:
             logger.warning("Channel directory: failed to build %s: %s", platform.value, e)
 
     # Telegram, WhatsApp & Signal can't enumerate chats -- pull from session history
-    for plat_name in ("telegram", "whatsapp", "signal", "email", "sms"):
+    for plat_name in ("telegram", "whatsapp", "signal", "weixin", "email", "sms", "bluebubbles"):
         if plat_name not in platforms:
             platforms[plat_name] = _build_from_sessions(plat_name)
 
@@ -124,7 +124,6 @@ def _build_discord(adapter) -> List[Dict[str, str]]:
 
 def _build_slack(adapter) -> List[Dict[str, str]]:
     """List Slack channels the bot has joined."""
-    channels = []
     # Slack adapter may expose a web client
     client = getattr(adapter, "_app", None) or getattr(adapter, "_client", None)
     if not client:

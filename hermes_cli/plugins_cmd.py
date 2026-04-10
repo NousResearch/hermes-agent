@@ -16,6 +16,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from hermes_constants import get_hermes_home
+
 logger = logging.getLogger(__name__)
 
 # Minimum manifest version this installer understands.
@@ -26,8 +28,7 @@ _SUPPORTED_MANIFEST_VERSION = 1
 
 def _plugins_dir() -> Path:
     """Return the user plugins directory, creating it if needed."""
-    hermes_home = os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes"))
-    plugins = Path(hermes_home) / "plugins"
+    plugins = get_hermes_home() / "plugins"
     plugins.mkdir(parents=True, exist_ok=True)
     return plugins
 
@@ -294,7 +295,7 @@ def cmd_install(identifier: str, force: bool = False) -> None:
         sys.exit(1)
 
     # Warn about insecure / local URL schemes
-    if git_url.startswith("http://") or git_url.startswith("file://"):
+    if git_url.startswith(("http://", "file://")):
         console.print(
             "[yellow]Warning:[/yellow] Using insecure/local URL scheme. "
             "Consider using https:// or git@ for production installs."

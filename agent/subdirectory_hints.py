@@ -15,7 +15,6 @@ Inspired by Block/goose's SubdirectoryHintTracker.
 
 import logging
 import os
-import re
 import shlex
 from pathlib import Path
 from typing import Dict, Any, Optional, Set
@@ -160,7 +159,10 @@ class SubdirectoryHintTracker:
 
     def _is_valid_subdir(self, path: Path) -> bool:
         """Check if path is a valid directory to scan for hints."""
-        if not path.is_dir():
+        try:
+            if not path.is_dir():
+                return False
+        except OSError:
             return False
         if path in self._loaded_dirs:
             return False
@@ -173,7 +175,10 @@ class SubdirectoryHintTracker:
         found_hints = []
         for filename in _HINT_FILENAMES:
             hint_path = directory / filename
-            if not hint_path.is_file():
+            try:
+                if not hint_path.is_file():
+                    continue
+            except OSError:
                 continue
             try:
                 content = hint_path.read_text(encoding="utf-8").strip()

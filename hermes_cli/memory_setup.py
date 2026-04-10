@@ -12,6 +12,8 @@ import os
 import sys
 from pathlib import Path
 
+from hermes_constants import get_hermes_home
+
 
 # ---------------------------------------------------------------------------
 # Curses-based interactive picker (same pattern as hermes tools)
@@ -275,7 +277,7 @@ def cmd_setup_provider(provider_name: str) -> None:
         config["memory"] = {}
 
     if hasattr(provider, "post_setup"):
-        hermes_home = str(Path(os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes"))))
+        hermes_home = str(get_hermes_home())
         provider.post_setup(hermes_home, config)
         return
 
@@ -326,7 +328,7 @@ def cmd_setup(args) -> None:
     # If the provider has a post_setup hook, delegate entirely to it.
     # The hook handles its own config, connection test, and activation.
     if hasattr(provider, "post_setup"):
-        hermes_home = str(Path(os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes"))))
+        hermes_home = str(get_hermes_home())
         provider.post_setup(hermes_home, config)
         return
 
@@ -336,7 +338,7 @@ def cmd_setup(args) -> None:
     if not isinstance(provider_config, dict):
         provider_config = {}
 
-    env_path = Path(os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes"))) / ".env"
+    env_path = get_hermes_home() / ".env"
     env_writes = {}
 
     if schema:
@@ -400,7 +402,7 @@ def cmd_setup(args) -> None:
     save_config(config)
 
     # Write non-secret config to provider's native location
-    hermes_home = str(Path(os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes"))))
+    hermes_home = str(get_hermes_home())
     if provider_config and hasattr(provider, "save_config"):
         try:
             provider.save_config(provider_config, hermes_home)

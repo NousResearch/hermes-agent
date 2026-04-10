@@ -120,6 +120,26 @@ class TestCompletionQueue:
         assert completion["exit_code"] == 1
         assert "FAILED" in completion["output"]
 
+    def test_move_to_finished_idempotent_no_duplicate(self, registry):
+        """Calling _move_to_finished twice must NOT enqueue two notifications.
+
+        Regression test: kill_process() and the reader thread can both call
+        _move_to_finished() for the same session, producing duplicate
+        [SYSTEM: Background process ...] messages.
+        """
+        s = _make_session(notify_on_complete=True, output="done", exit_code=-15)
+        s.exited = True
+        s.exit_code = -15
+        registry._running[s.id] = s
+        with patch.object(registry, "_write_checkpoint"):
+            registry._move_to_finished(s)  # first call — should enqueue
+            s.exit_code = 143  # reader thread updates exit code
+            registry._move_to_finished(s)  # second call — should be no-op
+
+        assert registry.completion_queue.qsize() == 1
+        completion = registry.completion_queue.get_nowait()
+        assert completion["exit_code"] == -15  # from the first (kill) call
+
     def test_output_truncated_to_2000(self, registry):
         """Long output is truncated to last 2000 chars."""
         long_output = "x" * 5000
@@ -196,6 +216,26 @@ class TestCheckpointNotify:
             assert recovered == 1
             s = registry.get("proc_live")
             assert s.notify_on_complete is True
+
+    def test_recover_requeues_notify_watchers(self, registry, tmp_path):
+        checkpoint = tmp_path / "procs.json"
+        checkpoint.write_text(json.dumps([{
+            "session_id": "proc_live",
+            "command": "sleep 999",
+            "pid": os.getpid(),
+            "task_id": "t1",
+            "session_key": "sk1",
+            "watcher_platform": "telegram",
+            "watcher_chat_id": "123",
+            "watcher_thread_id": "42",
+            "watcher_interval": 5,
+            "notify_on_complete": True,
+        }]))
+        with patch("tools.process_registry.CHECKPOINT_PATH", checkpoint):
+            recovered = registry.recover_from_checkpoint()
+            assert recovered == 1
+            assert len(registry.pending_watchers) == 1
+            assert registry.pending_watchers[0]["notify_on_complete"] is True
 
     def test_recover_defaults_false(self, registry, tmp_path):
         """Old checkpoint entries without the field default to False."""

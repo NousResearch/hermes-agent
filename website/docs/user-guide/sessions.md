@@ -44,6 +44,8 @@ Each session is tagged with its source platform:
 | `dingtalk` | DingTalk messenger |
 | `feishu` | Feishu/Lark messenger |
 | `wecom` | WeCom (WeChat Work) |
+| `weixin` | Weixin (personal WeChat) |
+| `bluebubbles` | Apple iMessage via BlueBubbles macOS server |
 | `homeassistant` | Home Assistant conversation |
 | `webhook` | Incoming webhooks |
 | `api-server` | API server requests |

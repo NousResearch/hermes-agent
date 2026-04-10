@@ -2,10 +2,52 @@
 import asyncio
 import json
 import re
+import sys
+import types
 import pytest
 from unittest.mock import MagicMock, patch, AsyncMock
 
 from gateway.config import Platform, PlatformConfig
+
+
+def _make_fake_nio():
+    """Create a lightweight fake ``nio`` module with real response classes.
+
+    Tests that call production methods doing ``import nio`` / ``isinstance(resp, nio.XxxResponse)``
+    need real classes (not MagicMock auto-attributes) to satisfy isinstance checks.
+    Use via ``patch.dict("sys.modules", {"nio": _make_fake_nio()})``.
+    """
+    mod = types.ModuleType("nio")
+
+    class RoomSendResponse:
+        def __init__(self, event_id="$fake"):
+            self.event_id = event_id
+
+    class RoomRedactResponse:
+        pass
+
+    class RoomCreateResponse:
+        def __init__(self, room_id="!fake:example.org"):
+            self.room_id = room_id
+
+    class RoomInviteResponse:
+        pass
+
+    class UploadResponse:
+        def __init__(self, content_uri="mxc://example.org/fake"):
+            self.content_uri = content_uri
+
+    # Minimal Api stub for code that checks nio.Api.RoomPreset
+    class _Api:
+        pass
+    mod.Api = _Api
+
+    mod.RoomSendResponse = RoomSendResponse
+    mod.RoomRedactResponse = RoomRedactResponse
+    mod.RoomCreateResponse = RoomCreateResponse
+    mod.RoomInviteResponse = RoomInviteResponse
+    mod.UploadResponse = UploadResponse
+    return mod
 
 
 # ---------------------------------------------------------------------------
@@ -1450,7 +1492,10 @@ class TestMatrixEncryptedMedia:
 
     @pytest.mark.asyncio
     async def test_on_room_message_media_decrypts_encrypted_image_and_passes_local_path(self):
-        from nio.crypto.attachments import encrypt_attachment
+        try:
+            from nio.crypto.attachments import encrypt_attachment
+        except (ImportError, ModuleNotFoundError):
+            pytest.skip("matrix-nio[e2e] required for encryption tests")
 
         adapter = _make_adapter()
         adapter._user_id = "@bot:example.org"
@@ -1518,7 +1563,10 @@ class TestMatrixEncryptedMedia:
 
     @pytest.mark.asyncio
     async def test_on_room_message_media_decrypts_encrypted_voice_and_caches_audio(self):
-        from nio.crypto.attachments import encrypt_attachment
+        try:
+            from nio.crypto.attachments import encrypt_attachment
+        except (ImportError, ModuleNotFoundError):
+            pytest.skip("matrix-nio[e2e] required for encryption tests")
 
         adapter = _make_adapter()
         adapter._user_id = "@bot:example.org"
@@ -1587,7 +1635,10 @@ class TestMatrixEncryptedMedia:
 
     @pytest.mark.asyncio
     async def test_on_room_message_media_decrypts_encrypted_file_and_caches_document(self):
-        from nio.crypto.attachments import encrypt_attachment
+        try:
+            from nio.crypto.attachments import encrypt_attachment
+        except (ImportError, ModuleNotFoundError):
+            pytest.skip("matrix-nio[e2e] required for encryption tests")
 
         adapter = _make_adapter()
         adapter._user_id = "@bot:example.org"
@@ -1883,15 +1934,16 @@ class TestMatrixReactions:
     @pytest.mark.asyncio
     async def test_send_reaction(self):
         """_send_reaction should call room_send with m.reaction."""
-        nio = pytest.importorskip("nio")
+        fake_nio = _make_fake_nio()
         mock_client = MagicMock()
         mock_client.room_send = AsyncMock(
-            return_value=MagicMock(spec=nio.RoomSendResponse)
+            return_value=fake_nio.RoomSendResponse("$reaction1")
         )
         self.adapter._client = mock_client
 
-        result = await self.adapter._send_reaction("!room:ex", "$event1", "👍")
-        assert result is True
+        with patch.dict("sys.modules", {"nio": fake_nio}):
+            result = await self.adapter._send_reaction("!room:ex", "$event1", "👍")
+        assert result == "$reaction1"
         mock_client.room_send.assert_called_once()
         args = mock_client.room_send.call_args
         assert args[0][1] == "m.reaction"
@@ -1902,8 +1954,9 @@ class TestMatrixReactions:
     @pytest.mark.asyncio
     async def test_send_reaction_no_client(self):
         self.adapter._client = None
-        result = await self.adapter._send_reaction("!room:ex", "$ev", "👍")
-        assert result is False
+        with patch.dict("sys.modules", {"nio": _make_fake_nio()}):
+            result = await self.adapter._send_reaction("!room:ex", "$ev", "👍")
+        assert result is None
 
     @pytest.mark.asyncio
     async def test_on_processing_start_sends_eyes(self):
@@ -1911,7 +1964,7 @@ class TestMatrixReactions:
         from gateway.platforms.base import MessageEvent, MessageType
 
         self.adapter._reactions_enabled = True
-        self.adapter._send_reaction = AsyncMock(return_value=True)
+        self.adapter._send_reaction = AsyncMock(return_value="$reaction_event_123")
 
         source = MagicMock()
         source.chat_id = "!room:ex"
@@ -1924,10 +1977,55 @@ class TestMatrixReactions:
         )
         await self.adapter.on_processing_start(event)
         self.adapter._send_reaction.assert_called_once_with("!room:ex", "$msg1", "👀")
+        assert self.adapter._pending_reactions == {("!room:ex", "$msg1"): "$reaction_event_123"}
 
     @pytest.mark.asyncio
     async def test_on_processing_complete_sends_check(self):
-        from gateway.platforms.base import MessageEvent, MessageType
+        from gateway.platforms.base import MessageEvent, MessageType, ProcessingOutcome
+
+        self.adapter._reactions_enabled = True
+        self.adapter._pending_reactions = {("!room:ex", "$msg1"): "$eyes_reaction_123"}
+        self.adapter._redact_reaction = AsyncMock(return_value=True)
+        self.adapter._send_reaction = AsyncMock(return_value="$check_reaction_456")
+
+        source = MagicMock()
+        source.chat_id = "!room:ex"
+        event = MessageEvent(
+            text="hello",
+            message_type=MessageType.TEXT,
+            source=source,
+            raw_message={},
+            message_id="$msg1",
+        )
+        await self.adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+        self.adapter._redact_reaction.assert_called_once_with("!room:ex", "$eyes_reaction_123")
+        self.adapter._send_reaction.assert_called_once_with("!room:ex", "$msg1", "✅")
+
+    @pytest.mark.asyncio
+    async def test_on_processing_complete_sends_cross_on_failure(self):
+        from gateway.platforms.base import MessageEvent, MessageType, ProcessingOutcome
+
+        self.adapter._reactions_enabled = True
+        self.adapter._pending_reactions = {("!room:ex", "$msg1"): "$eyes_reaction_123"}
+        self.adapter._redact_reaction = AsyncMock(return_value=True)
+        self.adapter._send_reaction = AsyncMock(return_value="$cross_reaction_456")
+
+        source = MagicMock()
+        source.chat_id = "!room:ex"
+        event = MessageEvent(
+            text="hello",
+            message_type=MessageType.TEXT,
+            source=source,
+            raw_message={},
+            message_id="$msg1",
+        )
+        await self.adapter.on_processing_complete(event, ProcessingOutcome.FAILURE)
+        self.adapter._redact_reaction.assert_called_once_with("!room:ex", "$eyes_reaction_123")
+        self.adapter._send_reaction.assert_called_once_with("!room:ex", "$msg1", "❌")
+
+    @pytest.mark.asyncio
+    async def test_on_processing_complete_cancelled_sends_no_terminal_reaction(self):
+        from gateway.platforms.base import MessageEvent, MessageType, ProcessingOutcome
 
         self.adapter._reactions_enabled = True
         self.adapter._send_reaction = AsyncMock(return_value=True)
@@ -1941,7 +2039,30 @@ class TestMatrixReactions:
             raw_message={},
             message_id="$msg1",
         )
-        await self.adapter.on_processing_complete(event, success=True)
+        await self.adapter.on_processing_complete(event, ProcessingOutcome.CANCELLED)
+        self.adapter._send_reaction.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_on_processing_complete_no_pending_reaction(self):
+        """on_processing_complete should skip redaction if no eyes reaction was tracked."""
+        from gateway.platforms.base import MessageEvent, MessageType, ProcessingOutcome
+
+        self.adapter._reactions_enabled = True
+        self.adapter._pending_reactions = {}
+        self.adapter._redact_reaction = AsyncMock()
+        self.adapter._send_reaction = AsyncMock(return_value="$check_reaction_789")
+
+        source = MagicMock()
+        source.chat_id = "!room:ex"
+        event = MessageEvent(
+            text="hello",
+            message_type=MessageType.TEXT,
+            source=source,
+            raw_message={},
+            message_id="$msg1",
+        )
+        await self.adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+        self.adapter._redact_reaction.assert_not_called()
         self.adapter._send_reaction.assert_called_once_with("!room:ex", "$msg1", "✅")
 
     @pytest.mark.asyncio
@@ -1999,21 +2120,23 @@ class TestMatrixRedaction:
 
     @pytest.mark.asyncio
     async def test_redact_message(self):
-        nio = pytest.importorskip("nio")
+        fake_nio = _make_fake_nio()
         mock_client = MagicMock()
         mock_client.room_redact = AsyncMock(
-            return_value=MagicMock(spec=nio.RoomRedactResponse)
+            return_value=fake_nio.RoomRedactResponse()
         )
         self.adapter._client = mock_client
 
-        result = await self.adapter.redact_message("!room:ex", "$ev1", "oops")
+        with patch.dict("sys.modules", {"nio": fake_nio}):
+            result = await self.adapter.redact_message("!room:ex", "$ev1", "oops")
         assert result is True
         mock_client.room_redact.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_redact_no_client(self):
         self.adapter._client = None
-        result = await self.adapter.redact_message("!room:ex", "$ev1")
+        with patch.dict("sys.modules", {"nio": _make_fake_nio()}):
+            result = await self.adapter.redact_message("!room:ex", "$ev1")
         assert result is False
 
 
@@ -2027,33 +2150,35 @@ class TestMatrixRoomManagement:
 
     @pytest.mark.asyncio
     async def test_create_room(self):
-        nio = pytest.importorskip("nio")
-        mock_resp = MagicMock(spec=nio.RoomCreateResponse)
-        mock_resp.room_id = "!new:example.org"
+        fake_nio = _make_fake_nio()
+        mock_resp = fake_nio.RoomCreateResponse(room_id="!new:example.org")
         mock_client = MagicMock()
         mock_client.room_create = AsyncMock(return_value=mock_resp)
         self.adapter._client = mock_client
 
-        room_id = await self.adapter.create_room(name="Test Room", topic="A test")
+        with patch.dict("sys.modules", {"nio": fake_nio}):
+            room_id = await self.adapter.create_room(name="Test Room", topic="A test")
         assert room_id == "!new:example.org"
         assert "!new:example.org" in self.adapter._joined_rooms
 
     @pytest.mark.asyncio
     async def test_invite_user(self):
-        nio = pytest.importorskip("nio")
+        fake_nio = _make_fake_nio()
         mock_client = MagicMock()
         mock_client.room_invite = AsyncMock(
-            return_value=MagicMock(spec=nio.RoomInviteResponse)
+            return_value=fake_nio.RoomInviteResponse()
         )
         self.adapter._client = mock_client
 
-        result = await self.adapter.invite_user("!room:ex", "@user:ex")
+        with patch.dict("sys.modules", {"nio": fake_nio}):
+            result = await self.adapter.invite_user("!room:ex", "@user:ex")
         assert result is True
 
     @pytest.mark.asyncio
     async def test_create_room_no_client(self):
         self.adapter._client = None
-        result = await self.adapter.create_room()
+        with patch.dict("sys.modules", {"nio": _make_fake_nio()}):
+            result = await self.adapter.create_room()
         assert result is None
 
 
@@ -2099,28 +2224,28 @@ class TestMatrixMessageTypes:
 
     @pytest.mark.asyncio
     async def test_send_emote(self):
-        nio = pytest.importorskip("nio")
+        fake_nio = _make_fake_nio()
         mock_client = MagicMock()
-        mock_resp = MagicMock(spec=nio.RoomSendResponse)
-        mock_resp.event_id = "$emote1"
+        mock_resp = fake_nio.RoomSendResponse(event_id="$emote1")
         mock_client.room_send = AsyncMock(return_value=mock_resp)
         self.adapter._client = mock_client
 
-        result = await self.adapter.send_emote("!room:ex", "waves hello")
+        with patch.dict("sys.modules", {"nio": fake_nio}):
+            result = await self.adapter.send_emote("!room:ex", "waves hello")
         assert result.success is True
         call_args = mock_client.room_send.call_args[0]
         assert call_args[2]["msgtype"] == "m.emote"
 
     @pytest.mark.asyncio
     async def test_send_notice(self):
-        nio = pytest.importorskip("nio")
+        fake_nio = _make_fake_nio()
         mock_client = MagicMock()
-        mock_resp = MagicMock(spec=nio.RoomSendResponse)
-        mock_resp.event_id = "$notice1"
+        mock_resp = fake_nio.RoomSendResponse(event_id="$notice1")
         mock_client.room_send = AsyncMock(return_value=mock_resp)
         self.adapter._client = mock_client
 
-        result = await self.adapter.send_notice("!room:ex", "System message")
+        with patch.dict("sys.modules", {"nio": fake_nio}):
+            result = await self.adapter.send_notice("!room:ex", "System message")
         assert result.success is True
         call_args = mock_client.room_send.call_args[0]
         assert call_args[2]["msgtype"] == "m.notice"
@@ -2128,5 +2253,6 @@ class TestMatrixMessageTypes:
     @pytest.mark.asyncio
     async def test_send_emote_empty_text(self):
         self.adapter._client = MagicMock()
-        result = await self.adapter.send_emote("!room:ex", "")
+        with patch.dict("sys.modules", {"nio": _make_fake_nio()}):
+            result = await self.adapter.send_emote("!room:ex", "")
         assert result.success is False

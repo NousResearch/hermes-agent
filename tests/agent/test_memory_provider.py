@@ -6,8 +6,6 @@ from unittest.mock import MagicMock, patch
 
 from agent.memory_provider import MemoryProvider
 from agent.memory_manager import MemoryManager
-from agent.builtin_memory_provider import BuiltinMemoryProvider
-
 
 # ---------------------------------------------------------------------------
 # Concrete test provider
@@ -118,7 +116,7 @@ class TestMemoryManager:
     def test_empty_manager(self):
         mgr = MemoryManager()
         assert mgr.providers == []
-        assert mgr.provider_names == []
+        assert [p.name for p in mgr.providers] == []
         assert mgr.get_all_tool_schemas() == []
         assert mgr.build_system_prompt() == ""
         assert mgr.prefetch_all("test") == ""
@@ -128,7 +126,7 @@ class TestMemoryManager:
         p = FakeMemoryProvider("test1")
         mgr.add_provider(p)
         assert len(mgr.providers) == 1
-        assert mgr.provider_names == ["test1"]
+        assert [p.name for p in mgr.providers] == ["test1"]
 
     def test_get_provider_by_name(self):
         mgr = MemoryManager()
@@ -143,7 +141,7 @@ class TestMemoryManager:
         p2 = FakeMemoryProvider("external")
         mgr.add_provider(p1)
         mgr.add_provider(p2)
-        assert mgr.provider_names == ["builtin", "external"]
+        assert [p.name for p in mgr.providers] == ["builtin", "external"]
 
     def test_second_external_rejected(self):
         """Only one non-builtin provider is allowed."""
@@ -154,7 +152,7 @@ class TestMemoryManager:
         mgr.add_provider(builtin)
         mgr.add_provider(ext1)
         mgr.add_provider(ext2)  # should be rejected
-        assert mgr.provider_names == ["builtin", "mem0"]
+        assert [p.name for p in mgr.providers] == ["builtin", "mem0"]
         assert len(mgr.providers) == 2
 
     def test_system_prompt_merges_blocks(self):
@@ -321,17 +319,6 @@ class TestMemoryManager:
         mgr.on_pre_compress([{"role": "user", "content": "old"}])
         assert p.pre_compress_called
 
-    def test_on_memory_write_skips_builtin(self):
-        """on_memory_write should skip the builtin provider."""
-        mgr = MemoryManager()
-        builtin = BuiltinMemoryProvider()
-        external = FakeMemoryProvider("external")
-        mgr.add_provider(builtin)
-        mgr.add_provider(external)
-
-        mgr.on_memory_write("add", "memory", "test fact")
-        assert external.memory_writes == [("add", "memory", "test fact")]
-
     def test_shutdown_all_reverse_order(self):
         mgr = MemoryManager()
         order = []
@@ -383,146 +370,6 @@ class TestMemoryManager:
 
         result = mgr.build_system_prompt()
         assert result == "works fine"
-
-
-# ---------------------------------------------------------------------------
-# BuiltinMemoryProvider tests
-# ---------------------------------------------------------------------------
-
-
-class TestBuiltinMemoryProvider:
-    def test_name(self):
-        p = BuiltinMemoryProvider()
-        assert p.name == "builtin"
-
-    def test_always_available(self):
-        p = BuiltinMemoryProvider()
-        assert p.is_available()
-
-    def test_no_tools(self):
-        """Builtin provider exposes no tools (memory tool is agent-level)."""
-        p = BuiltinMemoryProvider()
-        assert p.get_tool_schemas() == []
-
-    def test_system_prompt_with_store(self):
-        store = MagicMock()
-        store.format_for_system_prompt.side_effect = lambda t: f"BLOCK_{t}" if t == "memory" else f"BLOCK_{t}"
-
-        p = BuiltinMemoryProvider(
-            memory_store=store,
-            memory_enabled=True,
-            user_profile_enabled=True,
-        )
-        block = p.system_prompt_block()
-        assert "BLOCK_memory" in block
-        assert "BLOCK_user" in block
-
-    def test_system_prompt_memory_disabled(self):
-        store = MagicMock()
-        store.format_for_system_prompt.return_value = "content"
-
-        p = BuiltinMemoryProvider(
-            memory_store=store,
-            memory_enabled=False,
-            user_profile_enabled=False,
-        )
-        assert p.system_prompt_block() == ""
-
-    def test_system_prompt_no_store(self):
-        p = BuiltinMemoryProvider(memory_store=None, memory_enabled=True)
-        assert p.system_prompt_block() == ""
-
-    def test_prefetch_returns_empty(self):
-        p = BuiltinMemoryProvider()
-        assert p.prefetch("anything") == ""
-
-    def test_store_property(self):
-        store = MagicMock()
-        p = BuiltinMemoryProvider(memory_store=store)
-        assert p.store is store
-
-    def test_initialize_loads_from_disk(self):
-        store = MagicMock()
-        p = BuiltinMemoryProvider(memory_store=store)
-        p.initialize(session_id="test")
-        store.load_from_disk.assert_called_once()
-
-
-# ---------------------------------------------------------------------------
-# Plugin registration tests
-# ---------------------------------------------------------------------------
-
-
-class TestSingleProviderGating:
-    """Only the configured provider should activate."""
-
-    def test_no_provider_configured_means_builtin_only(self):
-        """When memory.provider is empty, no plugin providers activate."""
-        mgr = MemoryManager()
-        builtin = BuiltinMemoryProvider()
-        mgr.add_provider(builtin)
-
-        # Simulate what run_agent.py does when provider="" 
-        configured = ""
-        available_plugins = [
-            FakeMemoryProvider("holographic"),
-            FakeMemoryProvider("mem0"),
-        ]
-        # With empty config, no plugins should be added
-        if configured:
-            for p in available_plugins:
-                if p.name == configured and p.is_available():
-                    mgr.add_provider(p)
-
-        assert mgr.provider_names == ["builtin"]
-
-    def test_configured_provider_activates(self):
-        """Only the named provider should be added."""
-        mgr = MemoryManager()
-        builtin = BuiltinMemoryProvider()
-        mgr.add_provider(builtin)
-
-        configured = "holographic"
-        p1 = FakeMemoryProvider("holographic")
-        p2 = FakeMemoryProvider("mem0")
-        p3 = FakeMemoryProvider("hindsight")
-
-        for p in [p1, p2, p3]:
-            if p.name == configured and p.is_available():
-                mgr.add_provider(p)
-
-        assert mgr.provider_names == ["builtin", "holographic"]
-        assert p1.initialized is False  # not initialized by the gating logic itself
-
-    def test_unavailable_provider_skipped(self):
-        """If the configured provider is unavailable, it should be skipped."""
-        mgr = MemoryManager()
-        builtin = BuiltinMemoryProvider()
-        mgr.add_provider(builtin)
-
-        configured = "holographic"
-        p1 = FakeMemoryProvider("holographic", available=False)
-
-        for p in [p1]:
-            if p.name == configured and p.is_available():
-                mgr.add_provider(p)
-
-        assert mgr.provider_names == ["builtin"]
-
-    def test_nonexistent_provider_results_in_builtin_only(self):
-        """If the configured name doesn't match any plugin, only builtin remains."""
-        mgr = MemoryManager()
-        builtin = BuiltinMemoryProvider()
-        mgr.add_provider(builtin)
-
-        configured = "nonexistent"
-        plugins = [FakeMemoryProvider("holographic"), FakeMemoryProvider("mem0")]
-
-        for p in plugins:
-            if p.name == configured and p.is_available():
-                mgr.add_provider(p)
-
-        assert mgr.provider_names == ["builtin"]
 
 
 class TestPluginMemoryDiscovery:

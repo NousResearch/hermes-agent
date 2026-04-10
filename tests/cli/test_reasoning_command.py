@@ -619,17 +619,14 @@ class TestReasoningDeltasFiredFlag(unittest.TestCase):
         agent = AIAgent.__new__(AIAgent)
         agent.reasoning_callback = None
         agent.stream_delta_callback = None
-        agent._reasoning_deltas_fired = False
         agent.verbose_logging = False
         return agent
 
-    def test_fire_reasoning_delta_sets_flag(self):
+    def test_fire_reasoning_delta_calls_callback(self):
         agent = self._make_agent()
         captured = []
         agent.reasoning_callback = lambda t: captured.append(t)
-        self.assertFalse(agent._reasoning_deltas_fired)
         agent._fire_reasoning_delta("thinking...")
-        self.assertTrue(agent._reasoning_deltas_fired)
         self.assertEqual(captured, ["thinking..."])
 
     def test_build_assistant_message_skips_callback_when_already_streamed(self):
@@ -640,8 +637,7 @@ class TestReasoningDeltasFiredFlag(unittest.TestCase):
         agent.reasoning_callback = lambda t: captured.append(t)
         agent.stream_delta_callback = lambda t: None  # streaming is active
 
-        # Simulate streaming having fired reasoning
-        agent._reasoning_deltas_fired = True
+        # Simulate streaming having already fired reasoning
 
         msg = SimpleNamespace(
             content="I'll merge that.",
@@ -665,9 +661,8 @@ class TestReasoningDeltasFiredFlag(unittest.TestCase):
         agent.reasoning_callback = lambda t: captured.append(t)
         agent.stream_delta_callback = lambda t: None  # streaming active
 
-        # Even though _reasoning_deltas_fired is False (reasoning came through
-        # content tags, not reasoning_content deltas), callback should not fire
-        agent._reasoning_deltas_fired = False
+        # Reasoning came through content tags, not reasoning_content deltas.
+        # Callback should not fire since streaming is active.
 
         msg = SimpleNamespace(
             content="I'll merge that.",
@@ -689,7 +684,6 @@ class TestReasoningDeltasFiredFlag(unittest.TestCase):
         agent.reasoning_callback = lambda t: captured.append(t)
         # No streaming
         agent.stream_delta_callback = None
-        agent._reasoning_deltas_fired = False
 
         msg = SimpleNamespace(
             content="I'll merge that.",

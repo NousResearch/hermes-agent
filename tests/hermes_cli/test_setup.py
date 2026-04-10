@@ -362,3 +362,33 @@ def test_modal_setup_persists_direct_mode_when_user_chooses_their_own_account(tm
 
     assert config["terminal"]["backend"] == "modal"
     assert config["terminal"]["modal_mode"] == "direct"
+
+
+def test_ssh_setup_uses_windows_username_as_default(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("USER", raising=False)
+    monkeypatch.delenv("LOGNAME", raising=False)
+    monkeypatch.setenv("USERNAME", "WinUser")
+    config = load_config()
+
+    prompts = []
+    prompt_values = iter(["example.com", "", "22", "", ""])
+
+    def fake_prompt_choice(question, choices, default=0):
+        if question == "Select terminal backend:":
+            return 3
+        raise AssertionError(f"Unexpected prompt_choice call: {question}")
+
+    def fake_prompt(message, default="", **kwargs):
+        prompts.append((message, default))
+        return next(prompt_values)
+
+    monkeypatch.setattr("hermes_cli.setup.prompt_choice", fake_prompt_choice)
+    monkeypatch.setattr("hermes_cli.setup.prompt", fake_prompt)
+    monkeypatch.setattr("hermes_cli.setup.prompt_yes_no", lambda *args, **kwargs: False)
+
+    from hermes_cli.setup import setup_terminal_backend
+
+    setup_terminal_backend(config)
+
+    assert ("  SSH user", "WinUser") in prompts

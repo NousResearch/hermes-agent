@@ -1455,7 +1455,14 @@ def setup_terminal_backend(config: dict):
 
         # SSH user
         current_user = get_env_value("TERMINAL_SSH_USER") or ""
-        user = prompt("  SSH user", current_user or os.getenv("USER", ""))
+        default_user = (
+            current_user
+            or os.getenv("USER")
+            or os.getenv("USERNAME")
+            or os.getenv("LOGNAME")
+            or ""
+        )
+        user = prompt("  SSH user", default_user)
         if user:
             save_env_value("TERMINAL_SSH_USER", user)
 

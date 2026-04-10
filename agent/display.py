@@ -4,9 +4,11 @@ Pure display functions and classes with no AIAgent dependency.
 Used by AIAgent._execute_tool_calls for CLI feedback.
 """
 
+import base64
 import json
 import logging
 import os
+import re
 import sys
 import threading
 import time
@@ -986,3 +988,240 @@ def format_context_pressure_gateway(
         hint = "Auto-compaction is disabled — context may be truncated."
 
     return f"{icon} Context: {bar} {pct_int}% to compaction\n{hint}"
+
+
+# =========================================================================
+# Terminal image preview (iTerm2 inline images, fallback to text)
+# =========================================================================
+
+# Image file extensions that should be rendered inline
+_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff", ".tif", ".svg"}
+
+# Regex to find image file paths in tool result text
+# Matches: '/path/to/file.png', "/path/to/file.png", or bare /path/to/file.png
+_IMAGE_PATH_RE = re.compile(
+    r"(?:(?:Saved|saved|Screenshot|screenshot|Image|image)[^:]*:\s*)?"
+    r"[\"']?(?P<path>/[^\s\"']+\.(?:png|jpg|jpeg|gif|webp|bmp|tiff|tif|svg))[\"']?",
+    re.IGNORECASE,
+)
+
+_INLINE_IMAGE_RE = re.compile(
+    r"<inline-image:(?P<path>[^>]+)>",
+)
+
+# Maximum dimensions for terminal image preview (in pixels)
+_DEFAULT_MAX_WIDTH = 800
+_DEFAULT_MAX_HEIGHT = 600
+
+
+def _detect_image_paths(text: str) -> list[str]:
+    """Extract image file paths from tool result text.
+
+    Handles both JSON results (e.g. browser_vision's {"screenshot_path": "..."})
+    and plain text (e.g. "Screenshot saved to '/path.png'").
+
+    Returns a list of absolute paths to image files found in the text.
+    """
+    paths = []
+
+    # Try JSON parsing first (browser_vision, browser_screenshot etc.)
+    try:
+        data = json.loads(text) if isinstance(text, str) else None
+        if isinstance(data, dict):
+            for key in ("screenshot_path", "image_path", "screenshot", "path", "file_path"):
+                val = data.get(key)
+                if val and isinstance(val, str):
+                    if os.path.isfile(val):
+                        paths.append(val)
+            # Also check nested data dicts
+            inner = data.get("data")
+            if isinstance(inner, dict):
+                for key in ("path", "image_path", "screenshot_path"):
+                    val = inner.get(key)
+                    if val and isinstance(val, str):
+                        if os.path.isfile(val):
+                            paths.append(val)
+        elif isinstance(data, list):
+            for item in data:
+                if isinstance(item, dict):
+                    for key in ("path", "image_path", "screenshot_path"):
+                        val = item.get(key)
+                        if val and isinstance(val, str):
+                            if os.path.isfile(val):
+                                paths.append(val)
+    except (json.JSONDecodeError, TypeError):
+        pass
+
+    # Regex fallback for plain text results
+    for match in _IMAGE_PATH_RE.finditer(text):
+        path = match.group("path")
+        if os.path.isfile(path) and path not in paths:
+            paths.append(path)
+
+    # Detect MEDIA: prefixed paths
+    for match in re.finditer(r'MEDIA:(?P<path>[/\w\-_/.]+\.(?:png|jpg|jpeg|gif|webp|bmp|tiff|tif|svg))', text):
+        path = match.group("path")
+        if os.path.isfile(path) and path not in paths:
+            paths.append(path)
+
+    return paths
+
+
+def _encode_image_for_iterm2(path: str, max_width: int = _DEFAULT_MAX_WIDTH,
+                              max_height: int = _DEFAULT_MAX_HEIGHT) -> str:
+    """Encode an image file as an iTerm2 inline image escape sequence.
+
+    See https://iterm2.com/documentation-images.html
+
+    Returns the escape sequence string, or empty string on failure.
+    """
+    try:
+        from PIL import Image
+        img = Image.open(path)
+        # Scale down if larger than max dimensions
+        w, h = img.size
+        if w > max_width or h > max_height:
+            ratio = min(max_width / w, max_height / h)
+            img = img.resize((int(w * ratio), int(h * ratio)), Image.LANCZOS)
+
+        # Save to buffer as PNG
+        import io
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        image_data = buf.getvalue()
+    except (ImportError, Exception):
+        # Fallback: read raw file
+        try:
+            with open(path, "rb") as f:
+                image_data = f.read()
+        except (OSError, IOError):
+            return ""
+
+    if not image_data:
+        return ""
+
+    try:
+        b64 = base64.b64encode(image_data).decode("ascii")
+        # iTerm2 inline image protocol
+        # 1337;File=inline=1;size=N;name=PATH:BASE64_DATA^G
+        filename = os.path.basename(path)
+        return f"\033]1337;File=inline=1;size={len(image_data)};name={filename}:{b64}\a"
+    except Exception:
+        return ""
+
+
+def _try_render_image(path: str, max_width: int = _DEFAULT_MAX_WIDTH,
+                       print_fn=None) -> str:
+    """Try to render an image inline using the best available method.
+
+    Returns the escape sequence string for the renderer, or empty string
+    if the image couldn't be rendered.
+
+    Priority:
+    1. iTerm2 inline image protocol (TERM_PROGRAM == iTerm.app)
+    2. Kitty graphics protocol (KITTY_WINDOW_ID set)
+    3. Fallback: just return the path as text
+    """
+    term_program = os.environ.get("TERM_PROGRAM", "")
+    kitty_id = os.environ.get("KITTY_WINDOW_ID", "")
+
+    if term_program == "iTerm.app":
+        # iTerm2 native inline images — best quality
+        return _encode_image_for_iterm2(path, max_width)
+
+    if kitty_id:
+        # Kitty graphics protocol — use base64 inline
+        try:
+            with open(path, "rb") as f:
+                image_data = f.read()
+            b64 = base64.b64encode(image_data).decode("ascii")
+            # Kitty graphics protocol: \e_Gf=100,t=d,a=T;c=<base64>\e\\
+            return f"\033_Gf=100,t=d,a=T;\033\\{b64}\033\\"
+        except Exception:
+            return ""
+
+    # No supported terminal protocol — caller should use chafa or half-block
+    return ""
+
+
+def render_images_in_result(result: str | None, print_fn=None,
+                             max_width: int = _DEFAULT_MAX_WIDTH) -> str:
+    """Detect image references in tool result and render them inline.
+
+    If the result text contains image file paths that exist, emit terminal
+    escape sequences to display them inline. Works with:
+    - iTerm2 (macOS): native inline image protocol
+    - Kitty: kitty graphics protocol
+    - Fallback: returns the path as-is (user can open manually)
+
+    Returns the original result text (unmodified) — the image escape
+    sequences should be printed AFTER the text via print_fn.
+
+    Usage in run_agent.py:
+        image_str = render_images_in_result(result, print_fn=spinner._write, max_width=800)
+        if image_str:
+            print_fn(image_str)
+    """
+    if not result:
+        return ""
+
+    images = _detect_image_paths(result)
+    if not images:
+        return ""
+
+    rendered = []
+    for path in images:
+        seq = _try_render_image(path, max_width, print_fn)
+        if seq:
+            rendered.append(seq)
+        else:
+            # Fallback: chafa half-block rendering if available
+            try:
+                import subprocess
+                result = subprocess.run(
+                    ["chafa", "-s", f"{max_width}x{_DEFAULT_MAX_HEIGHT}", path],
+                    capture_output=True, timeout=5
+                )
+                if result.returncode == 0 and result.stdout:
+                    rendered.append(result.stdout.decode("utf-8", errors="replace"))
+            except (subprocess.TimeoutExpired, FileNotFoundError, Exception):
+                pass
+
+    return "\n".join(rendered)
+
+
+def _write_image_to_tty(image_output: str) -> None:
+    """Write image escape sequences directly to the TTY.
+    
+    Bypasses Python's sys.stdout (which is wrapped by prompt_toolkit's 
+    StdoutProxy in the CLI) and writes raw bytes to the controlling terminal
+    device. This ensures terminal image protocol escape sequences 
+    (iTerm2, Kitty) reach the terminal emulator intact.
+    
+    On macOS/Linux, uses os.ctermid() to get the controlling TTY path.
+    """
+    try:
+        tty_path = os.ctermid()
+        fd = os.open(tty_path, os.O_WRONLY | os.O_NOCTTY)
+        try:
+            # Write the escape sequence directly
+            if isinstance(image_output, str):
+                image_output = image_output.encode('utf-8')
+            os.write(fd, image_output)
+            # Ensure newline after image so cursor doesn't overlap
+            os.write(fd, b'\n')
+        finally:
+            os.close(fd)
+    except OSError:
+        # Fallback: try writing to /dev/tty directly
+        try:
+            fd = os.open('/dev/tty', os.O_WRONLY)
+            try:
+                if isinstance(image_output, str):
+                    image_output = image_output.encode('utf-8')
+                os.write(fd, image_output)
+                os.write(fd, b'\n')
+            finally:
+                os.close(fd)
+        except Exception:
+            pass

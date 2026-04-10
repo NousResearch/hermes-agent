@@ -221,8 +221,29 @@ def _get_cdp_override() -> str:
     When ``BROWSER_CDP_URL`` is set (e.g. via ``/browser connect``), we skip
     both Browserbase and the local headless launcher and connect directly to
     the supplied Chrome DevTools Protocol endpoint.
+
+    Also checks ``config["browser"]["cdp_url"]`` as a persistent fallback so
+    the user doesn't need to re-run ``/browser connect`` every session.
     """
-    return _resolve_cdp_override(os.environ.get("BROWSER_CDP_URL", ""))
+    env_val = os.environ.get("BROWSER_CDP_URL", "")
+    if env_val.strip():
+        return _resolve_cdp_override(env_val)
+    # Fallback: read cdp_url from config.yaml
+    try:
+        hermes_home = __import__("pathlib").Path(
+            os.environ.get("HERMES_HOME", __import__("pathlib").Path.home() / ".hermes")
+        )
+        config_path = hermes_home / "config.yaml"
+        if config_path.exists():
+            import yaml
+            with open(config_path) as _f:
+                _cfg = yaml.safe_load(_f) or {}
+            cfg_cdp = _cfg.get("browser", {}).get("cdp_url", "")
+            if cfg_cdp:
+                return _resolve_cdp_override(cfg_cdp)
+    except Exception:
+        pass
+    return ""
 
 
 # ============================================================================

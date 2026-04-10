@@ -100,6 +100,8 @@ from agent.display import (
     KawaiiSpinner, build_tool_preview as _build_tool_preview,
     get_cute_tool_message as _get_cute_tool_message_impl,
     _detect_tool_failure,
+    render_images_in_result as _render_images_in_result,
+    _write_image_to_tty,
     get_tool_emoji as _get_tool_emoji,
 )
 from agent.trajectory import (
@@ -6806,6 +6808,16 @@ class AIAgent:
 
             self._current_tool = None
             self._touch_activity(f"tool completed: {function_name} ({tool_duration:.1f}s)")
+
+            # Render any images found in tool result inline (iTerm2/Kitty/chafa)
+            # Bypass _print_fn because prompt_toolkit's StdoutProxy mangles
+            # terminal image protocol escape sequences.
+            try:
+                _img_output = _render_images_in_result(function_result)
+                if _img_output:
+                    _write_image_to_tty(_img_output)
+            except Exception:
+                pass  # Never let image rendering break tool execution
 
             if self.verbose_logging:
                 logging.debug(f"Tool {function_name} completed in {tool_duration:.2f}s")

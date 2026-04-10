@@ -1582,8 +1582,23 @@ class APIServerAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
 
     def _ws_find_repo(self, repo: str) -> "str | None":
-        """Find the workspace directory for a repo name."""
+        """Find the workspace directory for a repo name.
+        Searches /workspaces/{any_user}/{repo} first (preferred convention),
+        then legacy paths like /root/{repo}.
+        """
         import os
+        # Check /workspaces/<any_user>/<repo> — preferred convention
+        workspaces_root = "/workspaces"
+        if os.path.isdir(workspaces_root):
+            try:
+                for entry in sorted(os.scandir(workspaces_root), key=lambda e: e.name):
+                    if entry.is_dir():
+                        candidate = os.path.join(entry.path, repo)
+                        if os.path.isdir(candidate):
+                            return candidate
+            except PermissionError:
+                pass
+        # Legacy / fallback paths
         candidates = [
             f"/root/{repo}",
             f"/workspace/{repo}",
@@ -1626,8 +1641,16 @@ class APIServerAdapter(BasePlatformAdapter):
         else:
             if not url:
                 return web.json_response({"status": "error", "message": "Repo not found and no clone URL provided"}, status=404)
-            dest = f"/root/{repo}"
-            rc, out, err = await self._ws_run(["git", "clone", "--branch", branch, url, dest], "/root")
+            # Extract username from GitHub URL: https://github.com/{owner}/{repo}.git
+            owner = "user"
+            if "github.com/" in url:
+                parts = url.split("github.com/")[-1].split("/")
+                if len(parts) >= 1:
+                    owner = parts[0]
+            dest_dir = f"/workspaces/{owner}"
+            os.makedirs(dest_dir, exist_ok=True)
+            dest = f"{dest_dir}/{repo}"
+            rc, out, err = await self._ws_run(["git", "clone", "--branch", branch, url, dest], dest_dir)
             if rc == 0:
                 return web.json_response({"status": "ok", "action": "cloned", "path": dest})
             return web.json_response({"status": "error", "message": err.strip()}, status=500)

@@ -81,6 +81,12 @@ def _check_e2ee_deps() -> bool:
         return False
 
 
+def _resolve_proxy_url() -> str | None:
+    # Delegate to shared implementation (env vars + macOS system proxy detection)
+    from gateway.platforms.base import resolve_proxy_url
+    return resolve_proxy_url()
+
+
 def check_matrix_requirements() -> bool:
     """Return True if the Matrix adapter can be used."""
     token = os.getenv("MATRIX_ACCESS_TOKEN", "")
@@ -227,11 +233,13 @@ class MatrixAdapter(BasePlatformAdapter):
                 )
                 return False
             try:
+                proxy_url = _resolve_proxy_url()
                 client = nio.AsyncClient(
                     self._homeserver,
                     self._user_id or "",
                     device_id=ctor_device_id,
                     store_path=store_path,
+                    proxy=proxy_url,
                 )
                 logger.info(
                     "Matrix: E2EE enabled (store: %s%s)",
@@ -245,10 +253,12 @@ class MatrixAdapter(BasePlatformAdapter):
                 )
                 return False
         else:
+            proxy_url = _resolve_proxy_url()
             client = nio.AsyncClient(
                 self._homeserver,
                 self._user_id or "",
                 device_id=ctor_device_id,
+                proxy=proxy_url,
             )
 
         self._client = client
@@ -608,7 +618,8 @@ class MatrixAdapter(BasePlatformAdapter):
             try:
                 import aiohttp as _aiohttp
                 async with _aiohttp.ClientSession() as http:
-                    async with http.get(image_url, timeout=_aiohttp.ClientTimeout(total=30)) as resp:
+                    proxy_url = _resolve_proxy_url()
+                    async with http.get(image_url, timeout=_aiohttp.ClientTimeout(total=30), proxy=proxy_url) as resp:
                         resp.raise_for_status()
                         data = await resp.read()
                         ct = resp.content_type or "image/png"
@@ -616,7 +627,8 @@ class MatrixAdapter(BasePlatformAdapter):
             except ImportError:
                 import httpx
                 async with httpx.AsyncClient() as http:
-                    resp = await http.get(image_url, follow_redirects=True, timeout=30)
+                    proxy_url = _resolve_proxy_url()
+                    resp = await http.get(image_url, follow_redirects=True, timeout=30, proxy=proxy_url)
                     resp.raise_for_status()
                     data = resp.content
                     ct = resp.headers.get("content-type", "image/png")

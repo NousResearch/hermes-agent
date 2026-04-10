@@ -16,7 +16,7 @@ This page is the top-level map of Hermes Agent internals. Use it to orient yours
 │                                                                      │
 │  CLI (cli.py)    Gateway (gateway/run.py)    ACP (acp_adapter/)     │
 │  Batch Runner    API Server                  Python Library          │
-└──────────┬──────────────┬───────────────────────┬────────────────────┘
+└──────────┬──────────────┬───────────────────────┬───────────────────┘
            │              │                       │
            ▼              ▼                       ▼
 ┌─────────────────────────────────────────────────────────────────────┐

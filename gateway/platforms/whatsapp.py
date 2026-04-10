@@ -256,6 +256,10 @@ class WhatsAppAdapter(BasePlatformAdapter):
 
     def _should_process_message(self, data: Dict[str, Any]) -> bool:
         if not data.get("isGroup"):
+            # Allow profiles (e.g. family agents) to ignore DMs and only
+            # operate in group chats via free_response_chats.
+            if self.config and self.config.extra.get("respond_to_dms") is False:
+                return False
             return True
         chat_id = str(data.get("chatId") or "")
         if chat_id in self._whatsapp_free_response_chats():

@@ -2108,6 +2108,21 @@ class GatewayRunner:
         _cmd_def = _resolve_cmd(command) if command else None
         canonical = _cmd_def.name if _cmd_def else command
 
+        # Restrict slash commands in group chats to admin users when configured.
+        # Set COMMAND_ADMIN_USERS=id1,id2 to limit who can run commands.
+        if canonical and source.chat_type == "group":
+            _admin_raw = os.getenv("COMMAND_ADMIN_USERS", "")
+            if _admin_raw:
+                _admin_ids = {uid.strip() for uid in _admin_raw.split(",") if uid.strip()}
+                _user_ids = {source.user_id}
+                if "@" in source.user_id:
+                    _user_ids.add(source.user_id.split("@")[0])
+                if source.platform == Platform.WHATSAPP:
+                    _user_ids.update(_expand_whatsapp_auth_aliases(source.user_id))
+                if not (_user_ids & _admin_ids):
+                    canonical = None
+                    command = None
+
         if canonical == "new":
             return await self._handle_reset_command(event)
         
@@ -2799,19 +2814,25 @@ class GatewayRunner:
         message_text = event.text or ""
 
         # -----------------------------------------------------------------
-        # Sender attribution for shared thread sessions.
+        # Sender attribution for shared sessions (threads + groups).
         #
-        # When multiple users share a single thread session (the default for
-        # threads), prefix each message with [sender name] so the agent can
-        # tell participants apart.  Skip for DMs (single-user by nature) and
-        # when per-user thread isolation is explicitly enabled.
+        # When multiple users share a single session, prefix each message
+        # with [sender name] so the agent can tell participants apart.
+        # Applies to:
+        #   - Shared thread sessions (default for threads)
+        #   - Group chats with group_sessions_per_user=false
+        # Skip for DMs (single-user by nature).
         # -----------------------------------------------------------------
         _is_shared_thread = (
             source.chat_type != "dm"
             and source.thread_id
             and not getattr(self.config, "thread_sessions_per_user", False)
         )
-        if _is_shared_thread and source.user_name:
+        _is_shared_group = (
+            source.chat_type == "group"
+            and not getattr(self.config, "group_sessions_per_user", True)
+        )
+        if (_is_shared_thread or _is_shared_group) and source.user_name:
             message_text = f"[{source.user_name}] {message_text}"
 
         if event.media_urls:
@@ -6968,7 +6989,7 @@ class GatewayRunner:
             agent.tool_progress_callback = progress_callback if tool_progress_enabled else None
             agent.step_callback = _step_callback_sync if _hooks_ref.loaded_hooks else None
             agent.stream_delta_callback = _stream_delta_cb
-            agent.status_callback = _status_callback_sync
+            agent.status_callback = _status_callback_sync if tool_progress_enabled else None
             agent.reasoning_config = reasoning_config
             agent.service_tier = self._service_tier
             agent.request_overrides = turn_route.get("request_overrides")

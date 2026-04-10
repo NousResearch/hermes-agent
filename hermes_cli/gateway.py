@@ -100,6 +100,59 @@ def _get_service_pids() -> set:
     return pids
 
 
+def _get_parent_pid(pid: int) -> int | None:
+    """Return the parent PID for ``pid``, or ``None`` when unavailable."""
+    if pid <= 1:
+        return None
+    try:
+        result = subprocess.run(
+            ["ps", "-o", "ppid=", "-p", str(pid)],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    raw = result.stdout.strip()
+    if not raw:
+        return None
+    try:
+        parent_pid = int(raw.splitlines()[-1].strip())
+    except ValueError:
+        return None
+    return parent_pid if parent_pid > 0 else None
+
+
+def _is_pid_ancestor_of_current_process(target_pid: int) -> bool:
+    """Return True when ``target_pid`` is this process or one of its ancestors."""
+    if target_pid <= 0:
+        return False
+
+    pid = os.getpid()
+    seen: set[int] = set()
+    while pid and pid not in seen:
+        if pid == target_pid:
+            return True
+        seen.add(pid)
+        pid = _get_parent_pid(pid) or 0
+    return False
+
+
+def _request_gateway_self_restart(pid: int) -> bool:
+    """Ask a running gateway ancestor to restart itself asynchronously."""
+    if not hasattr(signal, "SIGUSR1"):
+        return False
+    if not _is_pid_ancestor_of_current_process(pid):
+        return False
+    try:
+        os.kill(pid, signal.SIGUSR1)
+    except (ProcessLookupError, PermissionError, OSError):
+        return False
+    return True
+
+
 def find_gateway_pids(exclude_pids: set | None = None) -> list:
     """Find PIDs of running gateway processes.
 
@@ -971,6 +1024,12 @@ def systemd_restart(system: bool = False):
     if system:
         _require_root_for_system_service("restart")
     refresh_systemd_unit_if_needed(system=system)
+    from gateway.status import get_running_pid
+
+    pid = get_running_pid()
+    if pid is not None and _request_gateway_self_restart(pid):
+        print(f"✓ {_service_scope_label(system).capitalize()} service restart requested")
+        return
     subprocess.run(_systemctl_cmd(system) + ["reload-or-restart", get_service_name()], check=True, timeout=90)
     print(f"✓ {_service_scope_label(system).capitalize()} service restarted")
 
@@ -1309,6 +1368,9 @@ def launchd_restart():
 
     try:
         pid = get_running_pid()
+        if pid is not None and _request_gateway_self_restart(pid):
+            print("✓ Service restart requested")
+            return
         if pid is not None:
             try:
                 terminate_pid(pid, force=False)

@@ -203,6 +203,12 @@ class GatewayStreamConsumer:
                             await self._send_or_edit(self._accumulated)
                         elif not self._already_sent:
                             await self._send_or_edit(self._accumulated)
+                    # Add completion reaction to the final message
+                    if self._message_id and hasattr(self.adapter, '_add_completion_reaction'):
+                        try:
+                            await self.adapter._add_completion_reaction(self._message_id)
+                        except Exception as e:
+                            logger.debug("Failed to add completion reaction: %s", e)
                     return
 
                 # Tool boundary: reset message state so the next text chunk

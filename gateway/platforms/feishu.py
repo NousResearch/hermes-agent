@@ -169,6 +169,7 @@ _FEISHU_CARD_ACTION_DEDUP_TTL_SECONDS = 15 * 60    # card action token dedup win
 _FEISHU_BOT_MSG_TRACK_SIZE = 512                   # LRU size for tracking sent message IDs
 _FEISHU_REPLY_FALLBACK_CODES = frozenset({230011, 231003})  # reply target withdrawn/missing → create fallback
 _FEISHU_ACK_EMOJI = "OK"
+_FEISHU_COMPLETION_EMOJI = "DONE"  # completion indicator on bot's reply
 # ---------------------------------------------------------------------------
 # Fallback display strings
 # ---------------------------------------------------------------------------
@@ -1371,7 +1372,11 @@ class FeishuAdapter(BasePlatformAdapter):
                     )
                 last_response = response
 
-            return self._finalize_send_result(last_response, "send failed")
+            result = self._finalize_send_result(last_response, "send failed")
+            # Add completion reaction (👍) only to final messages
+            if result.success and result.message_id and metadata and metadata.get("is_final"):
+                await self._add_completion_reaction(result.message_id)
+            return result
         except Exception as exc:
             logger.error("[Feishu] Send error: %s", exc, exc_info=True)
             return SendResult(success=False, error=str(exc))
@@ -2069,6 +2074,43 @@ class FeishuAdapter(BasePlatformAdapter):
             )
         except Exception:
             logger.warning("[Feishu] Failed to add ack reaction to %s", message_id, exc_info=True)
+        return None
+
+    async def _add_completion_reaction(self, message_id: str) -> Optional[str]:
+        """Add a completion emoji reaction (✅) to the bot's reply message."""
+        if not self._client or not message_id:
+            return None
+        try:
+            logger.info("[Feishu] Adding completion reaction (✅) to message %s", message_id)
+            from lark_oapi.api.im.v1 import (
+                CreateMessageReactionRequest,
+                CreateMessageReactionRequestBody,
+            )
+            body = (
+                CreateMessageReactionRequestBody.builder()
+                .reaction_type({"emoji_type": _FEISHU_COMPLETION_EMOJI})
+                .build()
+            )
+            request = (
+                CreateMessageReactionRequest.builder()
+                .message_id(message_id)
+                .request_body(body)
+                .build()
+            )
+            response = await asyncio.to_thread(self._client.im.v1.message_reaction.create, request)
+            if response and getattr(response, "success", lambda: False)():
+                data = getattr(response, "data", None)
+                reaction_id = getattr(data, "reaction_id", None)
+                logger.info("[Feishu] Successfully added completion reaction: %s", reaction_id)
+                return reaction_id
+            logger.warning(
+                "[Feishu] Failed to add completion reaction to %s: code=%s msg=%s",
+                message_id,
+                getattr(response, "code", None),
+                getattr(response, "msg", None),
+            )
+        except Exception:
+            logger.warning("[Feishu] Exception adding completion reaction to %s", message_id, exc_info=True)
         return None
 
     # =========================================================================

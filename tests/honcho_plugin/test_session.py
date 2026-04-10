@@ -283,7 +283,8 @@ class TestPeerLookupHelpers:
 class TestToolsModeInitBehavior:
     """Verify initOnSessionStart controls session init timing in tools mode."""
 
-    def _make_provider_with_config(self, recall_mode="tools", init_on_session_start=False):
+    def _make_provider_with_config(self, recall_mode="tools", init_on_session_start=False,
+                                    peer_name=None, user_id=None):
         """Create a HonchoMemoryProvider with mocked config and dependencies."""
         from plugins.memory.honcho.client import HonchoClientConfig
 
@@ -292,6 +293,7 @@ class TestToolsModeInitBehavior:
             enabled=True,
             recall_mode=recall_mode,
             init_on_session_start=init_on_session_start,
+            peer_name=peer_name,
         )
 
         provider = HonchoMemoryProvider()
@@ -304,17 +306,21 @@ class TestToolsModeInitBehavior:
         mock_session.messages = []
         mock_manager.get_or_create.return_value = mock_session
 
+        init_kwargs = {}
+        if user_id:
+            init_kwargs["user_id"] = user_id
+
         with patch("plugins.memory.honcho.client.HonchoClientConfig.from_global_config", return_value=cfg), \
              patch("plugins.memory.honcho.client.get_honcho_client", return_value=MagicMock()), \
              patch("plugins.memory.honcho.session.HonchoSessionManager", return_value=mock_manager), \
              patch("hermes_constants.get_hermes_home", return_value=MagicMock()):
-            provider.initialize(session_id="test-session-001")
+            provider.initialize(session_id="test-session-001", **init_kwargs)
 
-        return provider
+        return provider, cfg
 
     def test_tools_lazy_default(self):
         """tools + initOnSessionStart=false → session NOT initialized after initialize()."""
-        provider = self._make_provider_with_config(
+        provider, _ = self._make_provider_with_config(
             recall_mode="tools", init_on_session_start=False,
         )
         assert provider._session_initialized is False
@@ -323,7 +329,7 @@ class TestToolsModeInitBehavior:
 
     def test_tools_eager_init(self):
         """tools + initOnSessionStart=true → session IS initialized after initialize()."""
-        provider = self._make_provider_with_config(
+        provider, _ = self._make_provider_with_config(
             recall_mode="tools", init_on_session_start=True,
         )
         assert provider._session_initialized is True
@@ -331,17 +337,33 @@ class TestToolsModeInitBehavior:
 
     def test_tools_eager_prefetch_still_empty(self):
         """tools mode with eager init still returns empty from prefetch() (no auto-injection)."""
-        provider = self._make_provider_with_config(
+        provider, _ = self._make_provider_with_config(
             recall_mode="tools", init_on_session_start=True,
         )
         assert provider.prefetch("test query") == ""
 
     def test_tools_lazy_prefetch_empty(self):
         """tools mode with lazy init also returns empty from prefetch()."""
-        provider = self._make_provider_with_config(
+        provider, _ = self._make_provider_with_config(
             recall_mode="tools", init_on_session_start=False,
         )
         assert provider.prefetch("test query") == ""
+
+    def test_explicit_peer_name_not_overridden_by_user_id(self):
+        """Explicit peerName in config must not be replaced by gateway user_id."""
+        _, cfg = self._make_provider_with_config(
+            recall_mode="tools", init_on_session_start=True,
+            peer_name="Kathie", user_id="8439114563",
+        )
+        assert cfg.peer_name == "Kathie"
+
+    def test_user_id_used_when_no_peer_name(self):
+        """Gateway user_id is used as peer_name when no explicit peerName configured."""
+        _, cfg = self._make_provider_with_config(
+            recall_mode="tools", init_on_session_start=True,
+            peer_name=None, user_id="8439114563",
+        )
+        assert cfg.peer_name == "8439114563"
 
 
 class TestChunkMessage:

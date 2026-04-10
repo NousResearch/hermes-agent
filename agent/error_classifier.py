@@ -82,16 +82,6 @@ class ClassifiedError:
     def is_auth(self) -> bool:
         return self.reason in (FailoverReason.auth, FailoverReason.auth_permanent)
 
-    @property
-    def is_transient(self) -> bool:
-        """Error is expected to resolve on retry (with or without backoff)."""
-        return self.reason in (
-            FailoverReason.rate_limit,
-            FailoverReason.overloaded,
-            FailoverReason.server_error,
-            FailoverReason.timeout,
-            FailoverReason.unknown,
-        )
 
 
 # ── Provider-specific patterns ──────────────────────────────────────────
@@ -725,11 +715,16 @@ def _classify_by_message(
         )
 
     # Auth patterns
+    # Auth errors should NOT be retried directly — the credential is invalid and
+    # retrying with the same key will always fail.  Set retryable=False so the
+    # caller triggers credential rotation (should_rotate_credential=True) or
+    # provider fallback rather than an immediate retry loop.
     if any(p in error_msg for p in _AUTH_PATTERNS):
         return result_fn(
             FailoverReason.auth,
-            retryable=True,
+            retryable=False,
             should_rotate_credential=True,
+            should_fallback=True,
         )
 
     # Model not found patterns

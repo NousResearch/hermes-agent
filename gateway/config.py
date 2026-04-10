@@ -581,6 +581,12 @@ def load_gateway_config() -> GatewayConfig:
                     if isinstance(ic, list):
                         ic = ",".join(str(v) for v in ic)
                     os.environ["DISCORD_IGNORED_CHANNELS"] = str(ic)
+                # allowed_channels: if set, bot ONLY responds in these channels (whitelist)
+                ac = discord_cfg.get("allowed_channels")
+                if ac is not None and not os.getenv("DISCORD_ALLOWED_CHANNELS"):
+                    if isinstance(ac, list):
+                        ac = ",".join(str(v) for v in ac)
+                    os.environ["DISCORD_ALLOWED_CHANNELS"] = str(ac)
                 # no_thread_channels: channels where bot responds directly without creating thread
                 ntc = discord_cfg.get("no_thread_channels")
                 if ntc is not None and not os.getenv("DISCORD_NO_THREAD_CHANNELS"):

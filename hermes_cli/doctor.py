@@ -752,7 +752,7 @@ def run_doctor(args):
                 _url = (_base.rstrip("/") + "/models") if _base else _default_url
                 _headers = {"Authorization": f"Bearer {_key}"}
                 if "api.kimi.com" in _url.lower():
-                    _headers["User-Agent"] = "KimiCLI/1.0"
+                    _headers["User-Agent"] = "KimiCLI/1.30.0"
                 _resp = httpx.get(
                     _url,
                     headers=_headers,

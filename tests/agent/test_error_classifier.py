@@ -75,28 +75,6 @@ class TestClassifiedError:
         e3 = ClassifiedError(reason=FailoverReason.billing)
         assert e3.is_auth is False
 
-    def test_is_transient_property(self):
-        transient_reasons = [
-            FailoverReason.rate_limit,
-            FailoverReason.overloaded,
-            FailoverReason.server_error,
-            FailoverReason.timeout,
-            FailoverReason.unknown,
-        ]
-        for reason in transient_reasons:
-            e = ClassifiedError(reason=reason)
-            assert e.is_transient is True, f"{reason} should be transient"
-
-        non_transient = [
-            FailoverReason.auth,
-            FailoverReason.billing,
-            FailoverReason.model_not_found,
-            FailoverReason.format_error,
-        ]
-        for reason in non_transient:
-            e = ClassifiedError(reason=reason)
-            assert e.is_transient is False, f"{reason} should NOT be transient"
-
     def test_defaults(self):
         e = ClassifiedError(reason=FailoverReason.unknown)
         assert e.retryable is True

@@ -14,6 +14,7 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
+from gateway.status import terminate_pid
 from hermes_cli.config import get_env_value, get_hermes_home, save_env_value, is_managed, managed_error
 # display_hermes_home is imported lazily at call sites to avoid ImportError
 # when hermes_constants is cached from a pre-update version during `hermes update`.
@@ -162,7 +163,7 @@ def kill_gateway_processes(force: bool = False, exclude_pids: set | None = None)
     """Kill any running gateway processes. Returns count killed.
 
     Args:
-        force: Use SIGKILL instead of SIGTERM.
+        force: Use the platform's force-kill mechanism instead of graceful terminate.
         exclude_pids: PIDs to skip (e.g. service-managed PIDs that were just
             restarted and should not be killed).
     """
@@ -171,10 +172,7 @@ def kill_gateway_processes(force: bool = False, exclude_pids: set | None = None)
     
     for pid in pids:
         try:
-            if force and not is_windows():
-                os.kill(pid, signal.SIGKILL)
-            else:
-                os.kill(pid, signal.SIGTERM)
+            terminate_pid(pid, force=force)
             killed += 1
         except ProcessLookupError:
             # Process already gone
@@ -182,6 +180,8 @@ def kill_gateway_processes(force: bool = False, exclude_pids: set | None = None)
         except PermissionError:
             print(f"⚠ Permission denied to kill PID {pid}")
     
+        except OSError as exc:
+            print(f"Failed to kill PID {pid}: {exc}")
     return killed
 
 
@@ -315,8 +315,6 @@ def get_service_name() -> str:
         return _SERVICE_BASE
     return f"{_SERVICE_BASE}-{suffix}"
 
-
-SERVICE_NAME = _SERVICE_BASE  # backward-compat for external importers; prefer get_service_name()
 
 
 def get_systemd_unit_path(system: bool = False) -> Path:
@@ -591,17 +589,6 @@ def get_python_path() -> str:
             return str(venv_python)
     return sys.executable
 
-def get_hermes_cli_path() -> str:
-    """Get the path to the hermes CLI."""
-    # Check if installed via pip
-    import shutil
-    hermes_bin = shutil.which("hermes")
-    if hermes_bin:
-        return hermes_bin
-    
-    # Fallback to direct module execution
-    return f"{get_python_path()} -m hermes_cli.main"
-
 
 # =============================================================================
 # Systemd (Linux)
@@ -616,6 +603,24 @@ def _build_user_local_paths(home: Path, path_entries: list[str]) -> list[str]:
         str(home / ".npm-global" / "bin"),   # npm global packages
     ]
     return [p for p in candidates if p not in path_entries and Path(p).exists()]
+
+
+def _remap_path_for_user(path: str, target_home_dir: str) -> str:
+    """Remap *path* from the current user's home to *target_home_dir*.
+
+    If *path* lives under ``Path.home()`` the corresponding prefix is swapped
+    to *target_home_dir*; otherwise the path is returned unchanged.
+
+      /root/.hermes/hermes-agent  -> /home/alice/.hermes/hermes-agent
+      /opt/hermes                 -> /opt/hermes  (kept as-is)
+    """
+    current_home = Path.home().resolve()
+    resolved = Path(path).resolve()
+    try:
+        relative = resolved.relative_to(current_home)
+        return str(Path(target_home_dir) / relative)
+    except ValueError:
+        return str(resolved)
 
 
 def _hermes_home_for_target_user(target_home_dir: str) -> str:
@@ -665,6 +670,15 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
         username, group_name, home_dir = _system_service_identity(run_as_user)
         hermes_home = _hermes_home_for_target_user(home_dir)
         profile_arg = _profile_arg(hermes_home)
+        # Remap all paths that may resolve under the calling user's home
+        # (e.g. /root/) to the target user's home so the service can
+        # actually access them.
+        python_path = _remap_path_for_user(python_path, home_dir)
+        working_dir = _remap_path_for_user(working_dir, home_dir)
+        venv_dir = _remap_path_for_user(venv_dir, home_dir)
+        venv_bin = _remap_path_for_user(venv_bin, home_dir)
+        node_bin = _remap_path_for_user(node_bin, home_dir)
+        path_entries = [_remap_path_for_user(p, home_dir) for p in path_entries]
         path_entries.extend(_build_user_local_paths(Path(home_dir), path_entries))
         path_entries.extend(common_bin_paths)
         sane_path = ":".join(path_entries)
@@ -1182,7 +1196,19 @@ def launchd_start():
 
 def launchd_stop():
     label = get_launchd_label()
-    subprocess.run(["launchctl", "kill", "SIGTERM", f"{_launchd_domain()}/{label}"], check=True, timeout=30)
+    target = f"{_launchd_domain()}/{label}"
+    # bootout unloads the service definition so KeepAlive doesn't respawn
+    # the process.  A plain `kill SIGTERM` only signals the process — launchd
+    # immediately restarts it because KeepAlive.SuccessfulExit = false.
+    # `hermes gateway start` re-bootstraps when it detects the job is unloaded.
+    try:
+        subprocess.run(["launchctl", "bootout", target], check=True, timeout=90)
+    except subprocess.CalledProcessError as e:
+        if e.returncode in (3, 113):
+            pass  # Already unloaded — nothing to stop.
+        else:
+            raise
+    _wait_for_gateway_exit(timeout=10.0, force_after=5.0)
     print("✓ Service stopped")
 
 def _wait_for_gateway_exit(timeout: float = 10.0, force_after: float = 5.0):
@@ -1194,7 +1220,7 @@ def _wait_for_gateway_exit(timeout: float = 10.0, force_after: float = 5.0):
 
     Args:
         timeout: Total seconds to wait before giving up.
-        force_after: Seconds of graceful waiting before sending SIGKILL.
+        force_after: Seconds of graceful waiting before escalating to force-kill.
     """
     import time
     from gateway.status import get_running_pid
@@ -1211,15 +1237,15 @@ def _wait_for_gateway_exit(timeout: float = 10.0, force_after: float = 5.0):
         if not force_sent and time.monotonic() >= force_deadline:
             # Grace period expired — force-kill the specific PID.
             try:
-                os.kill(pid, signal.SIGKILL)
+                terminate_pid(pid, force=True)
                 print(f"⚠ Gateway PID {pid} did not exit gracefully; sent SIGKILL")
-            except (ProcessLookupError, PermissionError):
+            except (ProcessLookupError, PermissionError, OSError):
                 return  # Already gone or we can't touch it.
             force_sent = True
 
         time.sleep(0.3)
 
-    # Timed out even after SIGKILL.
+    # Timed out even after force-kill.
     remaining_pid = get_running_pid()
     if remaining_pid is not None:
         print(f"⚠ Gateway PID {remaining_pid} still running after {timeout}s — restart may fail")

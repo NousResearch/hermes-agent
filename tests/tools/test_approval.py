@@ -8,12 +8,9 @@ import tools.approval as approval_module
 from tools.approval import (
     _get_approval_mode,
     approve_session,
-    clear_session,
     detect_dangerous_command,
-    has_pending,
     is_approved,
     load_permanent,
-    pop_pending,
     prompt_dangerous_approval,
     submit_pending,
 )
@@ -113,41 +110,20 @@ class TestSafeCommand:
         assert desc is None
 
 
-class TestSubmitAndPopPending:
-    def test_submit_and_pop(self):
-        key = "test_session_pending"
-        clear_session(key)
-
-        submit_pending(key, {"command": "rm -rf /", "pattern_key": "rm"})
-        assert has_pending(key) is True
-
-        approval = pop_pending(key)
-        assert approval["command"] == "rm -rf /"
-        assert has_pending(key) is False
-
-    def test_pop_empty_returns_none(self):
-        key = "test_session_empty"
-        clear_session(key)
-        assert pop_pending(key) is None
-        assert has_pending(key) is False
+def _clear_session(key):
+    """Replace for removed clear_session() — directly clear internal state."""
+    approval_module._session_approved.pop(key, None)
+    approval_module._pending.pop(key, None)
 
 
 class TestApproveAndCheckSession:
     def test_session_approval(self):
         key = "test_session_approve"
-        clear_session(key)
+        _clear_session(key)
 
         assert is_approved(key, "rm") is False
         approve_session(key, "rm")
         assert is_approved(key, "rm") is True
-
-    def test_clear_session_removes_approvals(self):
-        key = "test_session_clear"
-        approve_session(key, "rm")
-        assert is_approved(key, "rm") is True
-        clear_session(key)
-        assert is_approved(key, "rm") is False
-        assert has_pending(key) is False
 
 
 class TestSessionKeyContext:
@@ -178,49 +154,6 @@ class TestSessionKeyContext:
 
         assert "set_current_session_key" in called_names
         assert "reset_current_session_key" in called_names
-
-    def test_context_keeps_pending_approval_attached_to_originating_session(self):
-        import os
-        import threading
-
-        clear_session("alice")
-        clear_session("bob")
-        pop_pending("alice")
-        pop_pending("bob")
-        approval_module._permanent_approved.clear()
-
-        alice_ready = threading.Event()
-        bob_ready = threading.Event()
-
-        def worker_alice():
-            token = approval_module.set_current_session_key("alice")
-            try:
-                os.environ["HERMES_EXEC_ASK"] = "1"
-                os.environ["HERMES_SESSION_KEY"] = "alice"
-                alice_ready.set()
-                bob_ready.wait()
-                approval_module.check_all_command_guards("rm -rf /tmp/alice-secret", "local")
-            finally:
-                approval_module.reset_current_session_key(token)
-
-        def worker_bob():
-            alice_ready.wait()
-            token = approval_module.set_current_session_key("bob")
-            try:
-                os.environ["HERMES_SESSION_KEY"] = "bob"
-                bob_ready.set()
-            finally:
-                approval_module.reset_current_session_key(token)
-
-        t1 = threading.Thread(target=worker_alice)
-        t2 = threading.Thread(target=worker_bob)
-        t1.start()
-        t2.start()
-        t1.join()
-        t2.join()
-
-        assert pop_pending("alice") is not None
-        assert pop_pending("bob") is None
 
 
 class TestRmFalsePositiveFix:
@@ -501,13 +434,13 @@ class TestPatternKeyUniqueness:
         _, key_exec, _ = detect_dangerous_command("find . -exec rm {} \\;")
         _, key_delete, _ = detect_dangerous_command("find . -name '*.tmp' -delete")
         session = "test_find_collision"
-        clear_session(session)
+        _clear_session(session)
         approve_session(session, key_exec)
         assert is_approved(session, key_exec) is True
         assert is_approved(session, key_delete) is False, (
             "approving find -exec rm should not auto-approve find -delete"
         )
-        clear_session(session)
+        _clear_session(session)
 
     def test_legacy_find_key_still_approves_find_exec(self):
         """Old allowlist entry 'find' should keep approving the matching command."""

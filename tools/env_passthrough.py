@@ -101,7 +101,3 @@ def clear_env_passthrough() -> None:
     _get_allowed().clear()
 
 
-def reset_config_cache() -> None:
-    """Force re-read of config on next access (for testing)."""
-    global _config_passthrough
-    _config_passthrough = None

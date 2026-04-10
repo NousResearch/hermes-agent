@@ -38,16 +38,6 @@ class TestShouldCompress:
         assert compressor.should_compress(prompt_tokens=50000) is False
 
 
-class TestShouldCompressPreflight:
-    def test_short_messages(self, compressor):
-        msgs = [{"role": "user", "content": "short"}]
-        assert compressor.should_compress_preflight(msgs) is False
-
-    def test_long_messages(self, compressor):
-        # Each message ~100k chars / 4 = 25k tokens, need >85k threshold
-        msgs = [{"role": "user", "content": "x" * 400000}]
-        assert compressor.should_compress_preflight(msgs) is True
-
 
 class TestUpdateFromResponse:
     def test_updates_fields(self, compressor):
@@ -58,26 +48,11 @@ class TestUpdateFromResponse:
         })
         assert compressor.last_prompt_tokens == 5000
         assert compressor.last_completion_tokens == 1000
-        assert compressor.last_total_tokens == 6000
 
     def test_missing_fields_default_zero(self, compressor):
         compressor.update_from_response({})
         assert compressor.last_prompt_tokens == 0
 
-
-class TestGetStatus:
-    def test_returns_expected_keys(self, compressor):
-        status = compressor.get_status()
-        assert "last_prompt_tokens" in status
-        assert "threshold_tokens" in status
-        assert "context_length" in status
-        assert "usage_percent" in status
-        assert "compression_count" in status
-
-    def test_usage_percent_calculation(self, compressor):
-        compressor.last_prompt_tokens = 50000
-        status = compressor.get_status()
-        assert status["usage_percent"] == 50.0
 
 
 class TestCompress:

@@ -247,6 +247,163 @@ class TestFastModeRouting(unittest.TestCase):
         assert route.get("request_overrides") is None
 
 
+class TestAnthropicFastMode(unittest.TestCase):
+    """Verify Anthropic Fast Mode model support and override resolution."""
+
+    def test_anthropic_opus_supported(self):
+        from hermes_cli.models import model_supports_fast_mode
+
+        # Native Anthropic format (hyphens)
+        assert model_supports_fast_mode("claude-opus-4-6") is True
+        # OpenRouter format (dots)
+        assert model_supports_fast_mode("claude-opus-4.6") is True
+        # With vendor prefix
+        assert model_supports_fast_mode("anthropic/claude-opus-4-6") is True
+        assert model_supports_fast_mode("anthropic/claude-opus-4.6") is True
+
+    def test_anthropic_non_opus_rejected(self):
+        from hermes_cli.models import model_supports_fast_mode
+
+        assert model_supports_fast_mode("claude-sonnet-4-6") is False
+        assert model_supports_fast_mode("claude-sonnet-4.6") is False
+        assert model_supports_fast_mode("claude-haiku-4-5") is False
+        assert model_supports_fast_mode("anthropic/claude-sonnet-4.6") is False
+
+    def test_anthropic_variant_tags_stripped(self):
+        from hermes_cli.models import model_supports_fast_mode
+
+        # OpenRouter variant tags after colon should be stripped
+        assert model_supports_fast_mode("claude-opus-4.6:fast") is True
+        assert model_supports_fast_mode("claude-opus-4.6:beta") is True
+
+    def test_resolve_overrides_returns_speed_for_anthropic(self):
+        from hermes_cli.models import resolve_fast_mode_overrides
+
+        result = resolve_fast_mode_overrides("claude-opus-4-6")
+        assert result == {"speed": "fast"}
+
+        result = resolve_fast_mode_overrides("anthropic/claude-opus-4.6")
+        assert result == {"speed": "fast"}
+
+    def test_resolve_overrides_returns_service_tier_for_openai(self):
+        """OpenAI models should still get service_tier, not speed."""
+        from hermes_cli.models import resolve_fast_mode_overrides
+
+        result = resolve_fast_mode_overrides("gpt-5.4")
+        assert result == {"service_tier": "priority"}
+
+    def test_is_anthropic_fast_model(self):
+        from hermes_cli.models import _is_anthropic_fast_model
+
+        assert _is_anthropic_fast_model("claude-opus-4-6") is True
+        assert _is_anthropic_fast_model("claude-opus-4.6") is True
+        assert _is_anthropic_fast_model("anthropic/claude-opus-4-6") is True
+        assert _is_anthropic_fast_model("gpt-5.4") is False
+        assert _is_anthropic_fast_model("claude-sonnet-4-6") is False
+
+    def test_fast_command_exposed_for_anthropic_model(self):
+        cli_mod = _import_cli()
+        stub = SimpleNamespace(
+            provider="anthropic", requested_provider="anthropic",
+            model="claude-opus-4-6", agent=None,
+        )
+        assert cli_mod.HermesCLI._fast_command_available(stub) is True
+
+    def test_fast_command_hidden_for_anthropic_sonnet(self):
+        cli_mod = _import_cli()
+        stub = SimpleNamespace(
+            provider="anthropic", requested_provider="anthropic",
+            model="claude-sonnet-4-6", agent=None,
+        )
+        assert cli_mod.HermesCLI._fast_command_available(stub) is False
+
+    def test_turn_route_injects_speed_for_anthropic(self):
+        """Anthropic models should get speed:'fast' override, not service_tier."""
+        cli_mod = _import_cli()
+        stub = SimpleNamespace(
+            model="claude-opus-4-6",
+            api_key="sk-ant-test",
+            base_url="https://api.anthropic.com",
+            provider="anthropic",
+            api_mode="anthropic_messages",
+            acp_command=None,
+            acp_args=[],
+            _credential_pool=None,
+            _smart_model_routing={},
+            service_tier="priority",
+        )
+
+        original_runtime = {
+            "api_key": "***",
+            "base_url": "https://api.anthropic.com",
+            "provider": "anthropic",
+            "api_mode": "anthropic_messages",
+            "command": None,
+            "args": [],
+            "credential_pool": None,
+        }
+
+        with patch("agent.smart_model_routing.resolve_turn_route", return_value={
+            "model": "claude-opus-4-6",
+            "runtime": dict(original_runtime),
+            "label": None,
+            "signature": ("claude-opus-4-6", "anthropic", "https://api.anthropic.com", "anthropic_messages", None, ()),
+        }):
+            route = cli_mod.HermesCLI._resolve_turn_agent_config(stub, "hi")
+
+        assert route["runtime"]["provider"] == "anthropic"
+        assert route["request_overrides"] == {"speed": "fast"}
+
+
+class TestAnthropicFastModeAdapter(unittest.TestCase):
+    """Verify build_anthropic_kwargs handles fast_mode parameter."""
+
+    def test_fast_mode_adds_speed_and_beta(self):
+        from agent.anthropic_adapter import build_anthropic_kwargs, _FAST_MODE_BETA
+
+        kwargs = build_anthropic_kwargs(
+            model="claude-opus-4-6",
+            messages=[{"role": "user", "content": [{"type": "text", "text": "hi"}]}],
+            tools=None,
+            max_tokens=None,
+            reasoning_config=None,
+            fast_mode=True,
+        )
+        assert kwargs.get("speed") == "fast"
+        assert "extra_headers" in kwargs
+        assert _FAST_MODE_BETA in kwargs["extra_headers"].get("anthropic-beta", "")
+
+    def test_fast_mode_off_no_speed(self):
+        from agent.anthropic_adapter import build_anthropic_kwargs
+
+        kwargs = build_anthropic_kwargs(
+            model="claude-opus-4-6",
+            messages=[{"role": "user", "content": [{"type": "text", "text": "hi"}]}],
+            tools=None,
+            max_tokens=None,
+            reasoning_config=None,
+            fast_mode=False,
+        )
+        assert "speed" not in kwargs
+        assert "extra_headers" not in kwargs
+
+    def test_fast_mode_skipped_for_third_party_endpoint(self):
+        from agent.anthropic_adapter import build_anthropic_kwargs
+
+        kwargs = build_anthropic_kwargs(
+            model="claude-opus-4-6",
+            messages=[{"role": "user", "content": [{"type": "text", "text": "hi"}]}],
+            tools=None,
+            max_tokens=None,
+            reasoning_config=None,
+            fast_mode=True,
+            base_url="https://api.minimax.io/anthropic/v1",
+        )
+        # Third-party endpoints should NOT get speed or fast-mode beta
+        assert "speed" not in kwargs
+        assert "extra_headers" not in kwargs
+
+
 class TestConfigDefault(unittest.TestCase):
     def test_default_config_has_service_tier(self):
         from hermes_cli.config import DEFAULT_CONFIG

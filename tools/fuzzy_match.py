@@ -81,7 +81,7 @@ def fuzzy_find_and_replace(content: str, old_string: str, new_string: str,
         ("context_aware", _strategy_context_aware),
     ]
     
-    for strategy_name, strategy_fn in strategies:
+    for _strategy_name, strategy_fn in strategies:
         matches = strategy_fn(content, old_string)
         
         if matches:

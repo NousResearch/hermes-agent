@@ -702,7 +702,7 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
             logger.debug("Auxiliary text client: %s (%s) via pool", pconfig.name, model)
             extra = {}
             if "api.kimi.com" in base_url.lower():
-                extra["default_headers"] = {"User-Agent": "KimiCLI/1.3"}
+                extra["default_headers"] = {"User-Agent": "KimiCLI/1.30.0"}
             elif "api.githubcopilot.com" in base_url.lower():
                 from hermes_cli.models import copilot_default_headers
 
@@ -721,7 +721,7 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
         logger.debug("Auxiliary text client: %s (%s)", pconfig.name, model)
         extra = {}
         if "api.kimi.com" in base_url.lower():
-            extra["default_headers"] = {"User-Agent": "KimiCLI/1.3"}
+            extra["default_headers"] = {"User-Agent": "KimiCLI/1.30.0"}
         elif "api.githubcopilot.com" in base_url.lower():
             from hermes_cli.models import copilot_default_headers
 
@@ -967,40 +967,6 @@ def _try_anthropic() -> Tuple[Optional[Any], Optional[str]]:
     return AnthropicAuxiliaryClient(real_client, model, token, base_url, is_oauth=is_oauth), model
 
 
-def _resolve_forced_provider(forced: str) -> Tuple[Optional[OpenAI], Optional[str]]:
-    """Resolve a specific forced provider.  Returns (None, None) if creds missing."""
-    if forced == "openrouter":
-        client, model = _try_openrouter()
-        if client is None:
-            logger.warning("auxiliary.provider=openrouter but OPENROUTER_API_KEY not set")
-        return client, model
-
-    if forced == "nous":
-        client, model = _try_nous()
-        if client is None:
-            logger.warning("auxiliary.provider=nous but Nous Portal not configured (run: hermes auth)")
-        return client, model
-
-    if forced == "codex":
-        client, model = _try_codex()
-        if client is None:
-            logger.warning("auxiliary.provider=codex but no Codex OAuth token found (run: hermes model)")
-        return client, model
-
-    if forced == "main":
-        # "main" = skip OpenRouter/Nous, use the main chat model's credentials.
-        for try_fn in (_try_custom_endpoint, _try_codex, _resolve_api_key_provider):
-            client, model = try_fn()
-            if client is not None:
-                return client, model
-        logger.warning("auxiliary.provider=main but no main endpoint credentials found")
-        return None, None
-
-    # Unknown provider name — fall through to auto
-    logger.warning("Unknown auxiliary.provider=%r, falling back to auto", forced)
-    return None, None
-
-
 _AUTO_PROVIDER_LABELS = {
     "_try_openrouter": "openrouter",
     "_try_nous": "nous",
@@ -1195,7 +1161,7 @@ def _to_async_client(sync_client, model: str):
 
         async_kwargs["default_headers"] = copilot_default_headers()
     elif "api.kimi.com" in base_lower:
-        async_kwargs["default_headers"] = {"User-Agent": "KimiCLI/1.3"}
+        async_kwargs["default_headers"] = {"User-Agent": "KimiCLI/1.30.0"}
     return AsyncOpenAI(**async_kwargs), model
 
 
@@ -1317,7 +1283,7 @@ def resolve_provider_client(
             final_model = model or _read_main_model() or "gpt-4o-mini"
             extra = {}
             if "api.kimi.com" in custom_base.lower():
-                extra["default_headers"] = {"User-Agent": "KimiCLI/1.3"}
+                extra["default_headers"] = {"User-Agent": "KimiCLI/1.30.0"}
             elif "api.githubcopilot.com" in custom_base.lower():
                 from hermes_cli.models import copilot_default_headers
                 extra["default_headers"] = copilot_default_headers()
@@ -1400,7 +1366,7 @@ def resolve_provider_client(
         # Provider-specific headers
         headers = {}
         if "api.kimi.com" in base_url.lower():
-            headers["User-Agent"] = "KimiCLI/1.3"
+            headers["User-Agent"] = "KimiCLI/1.30.0"
         elif "api.githubcopilot.com" in base_url.lower():
             from hermes_cli.models import copilot_default_headers
 
@@ -1493,22 +1459,6 @@ def _resolve_strict_vision_backend(provider: str) -> Tuple[Optional[Any], Option
 
 def _strict_vision_backend_available(provider: str) -> bool:
     return _resolve_strict_vision_backend(provider)[0] is not None
-
-
-def _preferred_main_vision_provider() -> Optional[str]:
-    """Return the selected main provider when it is also a supported vision backend."""
-    try:
-        from hermes_cli.config import load_config
-
-        config = load_config()
-        model_cfg = config.get("model", {})
-        if isinstance(model_cfg, dict):
-            provider = _normalize_vision_provider(model_cfg.get("provider", ""))
-            if provider in _VISION_AUTO_PROVIDER_ORDER:
-                return provider
-    except Exception:
-        pass
-    return None
 
 
 def get_available_vision_backends() -> List[str]:
@@ -1622,18 +1572,6 @@ def resolve_vision_provider_client(
     if client is None:
         return requested, None, None
     return requested, client, final_model
-
-
-def get_vision_auxiliary_client() -> Tuple[Optional[OpenAI], Optional[str]]:
-    """Return (client, default_model_slug) for vision/multimodal auxiliary tasks."""
-    _, client, final_model = resolve_vision_provider_client(async_mode=False)
-    return client, final_model
-
-
-def get_async_vision_auxiliary_client():
-    """Return (async_client, model_slug) for async vision consumers."""
-    _, client, final_model = resolve_vision_provider_client(async_mode=True)
-    return client, final_model
 
 
 def get_auxiliary_extra_body() -> dict:

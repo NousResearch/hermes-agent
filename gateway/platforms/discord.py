@@ -49,6 +49,7 @@ from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
     MessageType,
+    ProcessingOutcome,
     SendResult,
     cache_image_from_url,
     cache_audio_from_url,
@@ -754,14 +755,17 @@ class DiscordAdapter(BasePlatformAdapter):
         if hasattr(message, "add_reaction"):
             await self._add_reaction(message, "👀")
 
-    async def on_processing_complete(self, event: MessageEvent, success: bool) -> None:
+    async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
         """Swap the in-progress reaction for a final success/failure reaction."""
         if not self._reactions_enabled():
             return
         message = event.raw_message
         if hasattr(message, "add_reaction"):
             await self._remove_reaction(message, "👀")
-            await self._add_reaction(message, "✅" if success else "❌")
+            if outcome == ProcessingOutcome.SUCCESS:
+                await self._add_reaction(message, "✅")
+            elif outcome == ProcessingOutcome.FAILURE:
+                await self._add_reaction(message, "❌")
 
     async def send(
         self,
@@ -770,18 +774,34 @@ class DiscordAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None
     ) -> SendResult:
-        """Send a message to a Discord channel."""
+        """Send a message to a Discord channel or thread.
+
+        When metadata contains a thread_id, the message is sent to that
+        thread instead of the parent channel identified by chat_id.
+        """
         if not self._client:
             return SendResult(success=False, error="Not connected")
 
         try:
-            # Get the channel
-            channel = self._client.get_channel(int(chat_id))
-            if not channel:
-                channel = await self._client.fetch_channel(int(chat_id))
+            # Determine target channel: thread_id in metadata takes precedence.
+            thread_id = None
+            if metadata and metadata.get("thread_id"):
+                thread_id = metadata["thread_id"]
 
-            if not channel:
-                return SendResult(success=False, error=f"Channel {chat_id} not found")
+            if thread_id:
+                # Fetch the thread directly — threads are addressed by their own ID.
+                channel = self._client.get_channel(int(thread_id))
+                if not channel:
+                    channel = await self._client.fetch_channel(int(thread_id))
+                if not channel:
+                    return SendResult(success=False, error=f"Thread {thread_id} not found")
+            else:
+                # Get the parent channel
+                channel = self._client.get_channel(int(chat_id))
+                if not channel:
+                    channel = await self._client.fetch_channel(int(chat_id))
+                if not channel:
+                    return SendResult(success=False, error=f"Channel {chat_id} not found")
 
             # Format and split message if needed
             formatted = self.format_message(content)
@@ -1244,9 +1264,8 @@ class DiscordAdapter(BasePlatformAdapter):
         try:
             await asyncio.to_thread(VoiceReceiver.pcm_to_wav, pcm_data, wav_path)
 
-            from tools.transcription_tools import transcribe_audio, get_stt_model_from_config
-            stt_model = get_stt_model_from_config()
-            result = await asyncio.to_thread(transcribe_audio, wav_path, model=stt_model)
+            from tools.transcription_tools import transcribe_audio
+            result = await asyncio.to_thread(transcribe_audio, wav_path)
 
             if not result.get("success"):
                 return
@@ -2234,6 +2253,7 @@ class DiscordAdapter(BasePlatformAdapter):
         #   discord.require_mention: Require @mention in server channels (default: true)
         #   discord.free_response_channels: Channel IDs where bot responds without mention
         #   discord.ignored_channels: Channel IDs where bot NEVER responds (even when mentioned)
+        #   discord.allowed_channels: If set, bot ONLY responds in these channels (whitelist)
         #   discord.no_thread_channels: Channel IDs where bot responds directly without creating thread
         #   discord.auto_thread: Auto-create thread on @mention in channels (default: true)
 
@@ -2245,12 +2265,21 @@ class DiscordAdapter(BasePlatformAdapter):
             parent_channel_id = self._get_parent_channel_id(message.channel)
 
         if not isinstance(message.channel, discord.DMChannel):
-            # Check ignored channels first - never respond even when mentioned
-            ignored_channels_raw = os.getenv("DISCORD_IGNORED_CHANNELS", "")
-            ignored_channels = {ch.strip() for ch in ignored_channels_raw.split(",") if ch.strip()}
             channel_ids = {str(message.channel.id)}
             if parent_channel_id:
                 channel_ids.add(parent_channel_id)
+
+            # Check allowed channels - if set, only respond in these channels
+            allowed_channels_raw = os.getenv("DISCORD_ALLOWED_CHANNELS", "")
+            if allowed_channels_raw:
+                allowed_channels = {ch.strip() for ch in allowed_channels_raw.split(",") if ch.strip()}
+                if not (channel_ids & allowed_channels):
+                    logger.debug("[%s] Ignoring message in non-allowed channel: %s", self.name, channel_ids)
+                    return
+
+            # Check ignored channels - never respond even when mentioned
+            ignored_channels_raw = os.getenv("DISCORD_IGNORED_CHANNELS", "")
+            ignored_channels = {ch.strip() for ch in ignored_channels_raw.split(",") if ch.strip()}
             if channel_ids & ignored_channels:
                 logger.debug("[%s] Ignoring message in ignored channel: %s", self.name, channel_ids)
                 return

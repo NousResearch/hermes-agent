@@ -666,7 +666,7 @@ class DiscordAdapter(BasePlatformAdapter):
             # Wait for ready
             await asyncio.wait_for(self._ready_event.wait(), timeout=30)
 
-            self._running = True
+            self._mark_connected()
             return True
 
         except asyncio.TimeoutError:
@@ -705,7 +705,7 @@ class DiscordAdapter(BasePlatformAdapter):
             except Exception as e:  # pragma: no cover - defensive logging
                 logger.warning("[%s] Error during disconnect: %s", self.name, e, exc_info=True)
 
-        self._running = False
+        self._mark_disconnected()
         self._client = None
         self._ready_event.clear()
 

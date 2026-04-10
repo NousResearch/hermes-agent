@@ -103,6 +103,56 @@ class TestGatewayRuntimeStatus:
         assert payload["platforms"]["telegram"]["error_code"] == "telegram_polling_conflict"
         assert payload["platforms"]["telegram"]["error_message"] == "another poller is active"
 
+    def test_write_runtime_status_clears_gateway_and_platform_errors(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        status.write_runtime_status(
+            gateway_state="startup_failed",
+            exit_reason="discord conflict",
+            platform="discord",
+            platform_state="fatal",
+            error_code="discord_token_lock",
+            error_message="Discord bot token already in use.",
+        )
+
+        status.write_runtime_status(
+            gateway_state="running",
+            exit_reason=None,
+            platform="discord",
+            platform_state="connected",
+            error_code=None,
+            error_message=None,
+        )
+
+        payload = status.read_runtime_status()
+        assert payload["gateway_state"] == "running"
+        assert payload["exit_reason"] is None
+        assert payload["platforms"]["discord"]["state"] == "connected"
+        assert payload["platforms"]["discord"]["error_code"] is None
+        assert payload["platforms"]["discord"]["error_message"] is None
+
+    def test_write_runtime_status_can_reset_stale_platforms_for_new_run(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        status.write_runtime_status(
+            gateway_state="running",
+            platform="feishu",
+            platform_state="connected",
+            error_code=None,
+            error_message=None,
+        )
+
+        status.write_runtime_status(
+            gateway_state="starting",
+            exit_reason=None,
+            reset_platforms=True,
+        )
+
+        payload = status.read_runtime_status()
+        assert payload["gateway_state"] == "starting"
+        assert payload["exit_reason"] is None
+        assert payload["platforms"] == {}
+
 
 class TestScopedLocks:
     def test_acquire_scoped_lock_rejects_live_other_process(self, tmp_path, monkeypatch):

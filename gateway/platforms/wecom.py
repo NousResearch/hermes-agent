@@ -696,7 +696,11 @@ class WeComAdapter(BasePlatformAdapter):
 
             if kind == "image":
                 ext = self._detect_image_ext(raw)
-                return cache_image_from_bytes(raw, ext), self._mime_for_ext(ext, fallback="image/jpeg")
+                try:
+                    return cache_image_from_bytes(raw, ext), self._mime_for_ext(ext, fallback="image/jpeg")
+                except ValueError as exc:
+                    logger.warning("[%s] Rejected non-image bytes: %s", self.name, exc)
+                    return None
 
             filename = str(media.get("filename") or media.get("name") or "wecom_file")
             return cache_document_from_bytes(raw, filename), mimetypes.guess_type(filename)[0] or "application/octet-stream"
@@ -722,7 +726,11 @@ class WeComAdapter(BasePlatformAdapter):
         content_type = str(headers.get("content-type") or "").split(";", 1)[0].strip() or "application/octet-stream"
         if kind == "image":
             ext = self._guess_extension(url, content_type, fallback=self._detect_image_ext(raw))
-            return cache_image_from_bytes(raw, ext), content_type or self._mime_for_ext(ext, fallback="image/jpeg")
+            try:
+                return cache_image_from_bytes(raw, ext), content_type or self._mime_for_ext(ext, fallback="image/jpeg")
+            except ValueError as exc:
+                logger.warning("[%s] Rejected non-image bytes from %s: %s", self.name, url, exc)
+                return None
 
         filename = self._guess_filename(url, headers.get("content-disposition"), content_type)
         return cache_document_from_bytes(raw, filename), content_type

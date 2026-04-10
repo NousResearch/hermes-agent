@@ -4927,14 +4927,21 @@ class GatewayRunner:
             return f"🧠 ✓ Reasoning effort set to `{effort}` (this session only)"
 
     async def _handle_yolo_command(self, event: MessageEvent) -> str:
-        """Handle /yolo — toggle dangerous command approval bypass."""
-        current = bool(os.environ.get("HERMES_YOLO_MODE"))
+        """Handle /yolo — toggle dangerous command approval bypass for this session only."""
+        from tools.approval import (
+            disable_session_yolo,
+            enable_session_yolo,
+            is_session_yolo_enabled,
+        )
+
+        session_key = self._session_key_for_source(event.source)
+        current = is_session_yolo_enabled(session_key)
         if current:
-            os.environ.pop("HERMES_YOLO_MODE", None)
-            return "⚠️ YOLO mode **OFF** — dangerous commands will require approval."
+            disable_session_yolo(session_key)
+            return "⚠️ YOLO mode **OFF** for this session — dangerous commands will require approval."
         else:
-            os.environ["HERMES_YOLO_MODE"] = "1"
-            return "⚡ YOLO mode **ON** — all commands auto-approved. Use with caution."
+            enable_session_yolo(session_key)
+            return "⚡ YOLO mode **ON** for this session — all commands auto-approved. Use with caution."
 
     async def _handle_verbose_command(self, event: MessageEvent) -> str:
         """Handle /verbose command — cycle tool progress display mode.

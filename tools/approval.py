@@ -172,6 +172,7 @@ def detect_dangerous_command(command: str) -> tuple:
 _lock = threading.Lock()
 _pending: dict[str, dict] = {}
 _session_approved: dict[str, set] = {}
+_session_yolo: set[str] = set()
 _permanent_approved: set = set()
 
 # =========================================================================
@@ -287,6 +288,35 @@ def approve_session(session_key: str, pattern_key: str):
         _session_approved.setdefault(session_key, set()).add(pattern_key)
 
 
+def enable_session_yolo(session_key: str) -> None:
+    """Enable YOLO bypass for a single session key."""
+    if not session_key:
+        return
+    with _lock:
+        _session_yolo.add(session_key)
+
+
+def disable_session_yolo(session_key: str) -> None:
+    """Disable YOLO bypass for a single session key."""
+    if not session_key:
+        return
+    with _lock:
+        _session_yolo.discard(session_key)
+
+
+def is_session_yolo_enabled(session_key: str) -> bool:
+    """Return True when YOLO bypass is enabled for a specific session."""
+    if not session_key:
+        return False
+    with _lock:
+        return session_key in _session_yolo
+
+
+def is_current_session_yolo_enabled() -> bool:
+    """Return True when the active approval session has YOLO bypass enabled."""
+    return is_session_yolo_enabled(get_current_session_key(default=""))
+
+
 def is_approved(session_key: str, pattern_key: str) -> bool:
     """Check if a pattern is approved (session-scoped or permanent).
 
@@ -317,6 +347,7 @@ def clear_session(session_key: str):
     """Clear all approvals and pending requests for a session."""
     with _lock:
         _session_approved.pop(session_key, None)
+        _session_yolo.discard(session_key)
         _pending.pop(session_key, None)
         _gateway_notify_cbs.pop(session_key, None)
         # Signal ALL blocked threads so they don't hang forever
@@ -557,8 +588,9 @@ def check_dangerous_command(command: str, env_type: str,
     if env_type in ("docker", "singularity", "modal", "daytona"):
         return {"approved": True, "message": None}
 
-    # --yolo: bypass all approval prompts
-    if os.getenv("HERMES_YOLO_MODE"):
+    # --yolo: bypass all approval prompts. Gateway /yolo is session-scoped;
+    # CLI --yolo remains process-scoped via the env var for local use.
+    if os.getenv("HERMES_YOLO_MODE") or is_current_session_yolo_enabled():
         return {"approved": True, "message": None}
 
     is_dangerous, pattern_key, description = detect_dangerous_command(command)
@@ -658,9 +690,10 @@ def check_all_command_guards(command: str, env_type: str,
     if env_type in ("docker", "singularity", "modal", "daytona"):
         return {"approved": True, "message": None}
 
-    # --yolo or approvals.mode=off: bypass all approval prompts
+    # --yolo or approvals.mode=off: bypass all approval prompts.
+    # Gateway /yolo is session-scoped; CLI --yolo remains process-scoped.
     approval_mode = _get_approval_mode()
-    if os.getenv("HERMES_YOLO_MODE") or approval_mode == "off":
+    if os.getenv("HERMES_YOLO_MODE") or is_current_session_yolo_enabled() or approval_mode == "off":
         return {"approved": True, "message": None}
 
     is_cli = os.getenv("HERMES_INTERACTIVE")

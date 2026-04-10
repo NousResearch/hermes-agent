@@ -966,6 +966,8 @@ def select_provider_and_model(args=None):
         ("opencode-go", "OpenCode Go (open models, $10/month subscription)"),
         ("ai-gateway", "AI Gateway (Vercel — 200+ models, pay-per-use)"),
         ("alibaba", "Alibaba Cloud / DashScope Coding (Qwen + multi-provider)"),
+        ("astraflow", "Astraflow (200+ curated models, pay-as-you-go)"),
+        ("astraflow-cn", "Astraflow China (100+ curated models, domestic direct API)"),
     ]
 
     # Add user-defined custom providers from config.yaml
@@ -1062,7 +1064,7 @@ def select_provider_and_model(args=None):
         _model_flow_anthropic(config, current_model)
     elif selected_provider == "kimi-coding":
         _model_flow_kimi(config, current_model)
-    elif selected_provider in ("gemini", "zai", "minimax", "minimax-cn", "kilocode", "opencode-zen", "opencode-go", "ai-gateway", "alibaba", "huggingface"):
+    elif selected_provider in ("gemini", "zai", "minimax", "minimax-cn", "kilocode", "opencode-zen", "opencode-go", "ai-gateway", "alibaba", "huggingface", "astraflow", "astraflow-cn"):
         _model_flow_api_key_provider(config, selected_provider, current_model)
 
 
@@ -2287,6 +2289,9 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
 
     if not existing_key:
         print(f"No {pconfig.name} API key configured.")
+        if getattr(pconfig, "key_url", ""):
+            print(f"Get one at: {pconfig.key_url}")
+            print()
         if key_env:
             try:
                 import getpass
@@ -4312,7 +4317,7 @@ For more help on a command:
     )
     chat_parser.add_argument(
         "--provider",
-        choices=["auto", "openrouter", "nous", "openai-codex", "copilot-acp", "copilot", "anthropic", "gemini", "huggingface", "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode"],
+        choices=["auto", "openrouter", "nous", "openai-codex", "copilot-acp", "copilot", "anthropic", "gemini", "huggingface", "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode", "astraflow", "astraflow-cn"],
         default=None,
         help="Inference provider (default: auto)"
     )

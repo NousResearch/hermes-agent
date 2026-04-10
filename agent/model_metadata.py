@@ -26,7 +26,7 @@ _PROVIDER_PREFIXES: frozenset[str] = frozenset({
     "openrouter", "nous", "openai-codex", "copilot", "copilot-acp",
     "gemini", "zai", "kimi-coding", "minimax", "minimax-cn", "anthropic", "deepseek",
     "opencode-zen", "opencode-go", "ai-gateway", "kilocode", "alibaba",
-    "qwen-oauth",
+    "qwen-oauth", "astraflow", "astraflow-cn",
     "custom", "local",
     # Common aliases
     "google", "google-gemini", "google-ai-studio",
@@ -34,6 +34,7 @@ _PROVIDER_PREFIXES: frozenset[str] = frozenset({
     "github-models", "kimi", "moonshot", "claude", "deep-seek",
     "opencode", "zen", "go", "vercel", "kilo", "dashscope", "aliyun", "qwen",
     "qwen-portal",
+    "astra-flow", "astra_flow", "modelverse", "astraflow-china", "astraflow_cn",
 })
 
 

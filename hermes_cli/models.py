@@ -485,6 +485,8 @@ _PROVIDER_LABELS = {
     "alibaba": "Alibaba Cloud (DashScope)",
     "qwen-oauth": "Qwen OAuth (Portal)",
     "huggingface": "Hugging Face",
+    "astraflow": "Astraflow",
+    "astraflow-cn": "Astraflow (China)",
     "custom": "Custom endpoint",
 }
 
@@ -527,6 +529,11 @@ _PROVIDER_ALIASES = {
     "hf": "huggingface",
     "hugging-face": "huggingface",
     "huggingface-hub": "huggingface",
+    "astra-flow": "astraflow",
+    "astra_flow": "astraflow",
+    "modelverse": "astraflow",
+    "astraflow-china": "astraflow-cn",
+    "astraflow_cn": "astraflow-cn",
 }
 
 

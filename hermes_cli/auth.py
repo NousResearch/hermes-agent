@@ -98,6 +98,8 @@ class ProviderConfig:
     api_key_env_vars: tuple = ()
     # Optional env var for base URL override
     base_url_env_var: str = ""
+    # Optional URL where users can get an API key
+    key_url: str = ""
 
 
 PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
@@ -242,6 +244,24 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         inference_base_url="https://router.huggingface.co/v1",
         api_key_env_vars=("HF_TOKEN",),
         base_url_env_var="HF_BASE_URL",
+    ),
+    "astraflow": ProviderConfig(
+        id="astraflow",
+        name="Astraflow",
+        auth_type="api_key",
+        inference_base_url="https://api-us-ca.umodelverse.ai/v1",
+        api_key_env_vars=("ASTRAFLOW_API_KEY",),
+        base_url_env_var="ASTRAFLOW_BASE_URL",
+        key_url="https://astraflow.ucloud-global.com/en-us/modelverse/api-keys",
+    ),
+    "astraflow-cn": ProviderConfig(
+        id="astraflow-cn",
+        name="Astraflow (China)",
+        auth_type="api_key",
+        inference_base_url="https://api.modelverse.cn/v1",
+        api_key_env_vars=("ASTRAFLOW_CN_API_KEY",),
+        base_url_env_var="ASTRAFLOW_CN_BASE_URL",
+        key_url="https://astraflow.ucloud.cn/modelverse/api-keys",
     ),
 }
 

@@ -127,6 +127,16 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         is_aggregator=True,
         base_url_env_var="HF_BASE_URL",
     ),
+    "astraflow": HermesOverlay(
+        transport="openai_chat",
+        base_url_override="https://api-us-ca.umodelverse.ai/v1",
+        base_url_env_var="ASTRAFLOW_BASE_URL",
+    ),
+    "astraflow-cn": HermesOverlay(
+        transport="openai_chat",
+        base_url_override="https://api.modelverse.cn/v1",
+        base_url_env_var="ASTRAFLOW_CN_BASE_URL",
+    ),
 }
 
 
@@ -216,6 +226,15 @@ ALIASES: Dict[str, str] = {
     "hf": "huggingface",
     "hugging-face": "huggingface",
     "huggingface-hub": "huggingface",
+
+    # astraflow
+    "astra-flow": "astraflow",
+    "astra_flow": "astraflow",
+    "modelverse": "astraflow",
+
+    # astraflow-cn
+    "astraflow-china": "astraflow-cn",
+    "astraflow_cn": "astraflow-cn",
 
     # Local server aliases → virtual "local" concept (resolved via user config)
     "lmstudio": "lmstudio",
@@ -371,6 +390,8 @@ LABELS: Dict[str, str] = {
     "opencode-go": "OpenCode Go",
     "kilo": "Kilo Gateway",
     "huggingface": "Hugging Face",
+    "astraflow": "Astraflow",
+    "astraflow-cn": "Astraflow (China)",
     "local": "Local endpoint",
     "custom": "Custom endpoint",
     # Legacy Hermes IDs (point to same providers)

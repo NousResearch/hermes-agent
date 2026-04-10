@@ -73,6 +73,11 @@ _PROVIDER_ALIASES = {
     "minimax_cn": "minimax-cn",
     "claude": "anthropic",
     "claude-code": "anthropic",
+    "astra-flow": "astraflow",
+    "astra_flow": "astraflow",
+    "modelverse": "astraflow",
+    "astraflow-china": "astraflow-cn",
+    "astraflow_cn": "astraflow-cn",
 }
 
 
@@ -106,6 +111,8 @@ _API_KEY_PROVIDER_AUX_MODELS: Dict[str, str] = {
     "opencode-zen": "gemini-3-flash",
     "opencode-go": "glm-5",
     "kilocode": "google/gemini-3-flash-preview",
+    "astraflow": "claude-haiku-4-5-20251001",
+    "astraflow-cn": "deepseek-ai/DeepSeek-V3.2",
 }
 
 # OpenRouter app attribution headers

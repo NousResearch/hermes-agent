@@ -5020,7 +5020,7 @@ class AIAgent:
             # when no explicit key is in the fallback config.
             if fb_base_url_hint and "ollama.com" in fb_base_url_hint.lower() and not fb_api_key_hint:
                 fb_api_key_hint = os.getenv("OLLAMA_API_KEY") or None
-            fb_client, _ = resolve_provider_client(
+            fb_client, resolved_fb_model = resolve_provider_client(
                 fb_provider, model=fb_model, raw_codex=True,
                 explicit_base_url=fb_base_url_hint,
                 explicit_api_key=fb_api_key_hint)
@@ -5029,6 +5029,7 @@ class AIAgent:
                     "Fallback to %s failed: provider not configured",
                     fb_provider)
                 return self._try_activate_fallback()  # try next in chain
+            fb_model = resolved_fb_model or fb_model
 
             # Determine api_mode from provider / base URL
             fb_api_mode = "chat_completions"

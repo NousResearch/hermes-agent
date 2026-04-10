@@ -1174,6 +1174,18 @@ def _to_async_client(sync_client, model: str):
     return AsyncOpenAI(**async_kwargs), model
 
 
+def _normalize_resolved_model(model_name: Optional[str], provider: str) -> Optional[str]:
+    """Normalize a resolved model for the provider that will receive it."""
+    if not model_name:
+        return model_name
+    try:
+        from hermes_cli.model_normalize import normalize_model_for_provider
+
+        return normalize_model_for_provider(model_name, provider)
+    except Exception:
+        return model_name
+
+
 def resolve_provider_client(
     provider: str,
     model: str = None,
@@ -1236,7 +1248,7 @@ def resolve_provider_client(
             logger.warning("resolve_provider_client: openrouter requested "
                            "but OPENROUTER_API_KEY not set")
             return None, None
-        final_model = model or default
+        final_model = _normalize_resolved_model(model or default, provider)
         return (_to_async_client(client, final_model) if async_mode
                 else (client, final_model))
 
@@ -1247,7 +1259,7 @@ def resolve_provider_client(
             logger.warning("resolve_provider_client: nous requested "
                            "but Nous Portal not configured (run: hermes auth)")
             return None, None
-        final_model = model or default
+        final_model = _normalize_resolved_model(model or default, provider)
         return (_to_async_client(client, final_model) if async_mode
                 else (client, final_model))
 
@@ -1261,7 +1273,7 @@ def resolve_provider_client(
                 logger.warning("resolve_provider_client: openai-codex requested "
                                "but no Codex OAuth token found (run: hermes model)")
                 return None, None
-            final_model = model or _CODEX_AUX_MODEL
+            final_model = _normalize_resolved_model(model or _CODEX_AUX_MODEL, provider)
             raw_client = OpenAI(api_key=codex_token, base_url=_CODEX_AUX_BASE_URL)
             return (raw_client, final_model)
         # Standard path: wrap in CodexAuxiliaryClient adapter
@@ -1270,7 +1282,7 @@ def resolve_provider_client(
             logger.warning("resolve_provider_client: openai-codex requested "
                            "but no Codex OAuth token found (run: hermes model)")
             return None, None
-        final_model = model or default
+        final_model = _normalize_resolved_model(model or default, provider)
         return (_to_async_client(client, final_model) if async_mode
                 else (client, final_model))
 
@@ -1289,7 +1301,10 @@ def resolve_provider_client(
                     "but base_url is empty"
                 )
                 return None, None
-            final_model = model or _read_main_model() or "gpt-4o-mini"
+            final_model = _normalize_resolved_model(
+                model or _read_main_model() or "gpt-4o-mini",
+                provider,
+            )
             extra = {}
             if "api.kimi.com" in custom_base.lower():
                 extra["default_headers"] = {"User-Agent": "KimiCLI/1.30.0"}
@@ -1304,7 +1319,7 @@ def resolve_provider_client(
                        _resolve_api_key_provider):
             client, default = try_fn()
             if client is not None:
-                final_model = model or default
+                final_model = _normalize_resolved_model(model or default, provider)
                 return (_to_async_client(client, final_model) if async_mode
                         else (client, final_model))
         logger.warning("resolve_provider_client: custom/main requested "
@@ -1319,7 +1334,10 @@ def resolve_provider_client(
             custom_base = custom_entry.get("base_url", "").strip()
             custom_key = custom_entry.get("api_key", "").strip() or "no-key-required"
             if custom_base:
-                final_model = model or _read_main_model() or "gpt-4o-mini"
+                final_model = _normalize_resolved_model(
+                    model or _read_main_model() or "gpt-4o-mini",
+                    provider,
+                )
                 client = OpenAI(api_key=custom_key, base_url=custom_base)
                 logger.debug(
                     "resolve_provider_client: named custom provider %r (%s)",
@@ -1351,7 +1369,7 @@ def resolve_provider_client(
             if client is None:
                 logger.warning("resolve_provider_client: anthropic requested but no Anthropic credentials found")
                 return None, None
-            final_model = model or default_model
+            final_model = _normalize_resolved_model(model or default_model, provider)
             return (_to_async_client(client, final_model) if async_mode else (client, final_model))
 
         creds = resolve_api_key_provider_credentials(provider)
@@ -1370,7 +1388,7 @@ def resolve_provider_client(
         )
 
         default_model = _API_KEY_PROVIDER_AUX_MODELS.get(provider, "")
-        final_model = model or default_model
+        final_model = _normalize_resolved_model(model or default_model, provider)
 
         # Provider-specific headers
         headers = {}

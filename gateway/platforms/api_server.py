@@ -22,7 +22,7 @@ Exposes an HTTP server with endpoints:
 - GET  /health                     — health check
 - GET  /health/detailed            — rich status for cross-container dashboard probing
 
-Any OpenAI-compatible frontend (Open WebUI, LobeChat, LibreChat,
+Any OpenAI-compatible frontend (Open WebUI, LobeHub, LibreChat,
 AnythingLLM, NextChat, ChatBox, etc.) can connect to hermes-agent
 through this adapter by pointing at http://localhost:8642/v1 and
 authenticating with API_SERVER_KEY.
@@ -140,7 +140,7 @@ def _normalize_chat_content(
 ) -> str:
     """Normalize OpenAI chat message content into a plain text string.
 
-    Some clients (Open WebUI, LobeChat, etc.) send content as an array of
+    Some clients (Open WebUI, LobeHub, etc.) send content as an array of
     typed parts instead of a plain string::
 
         [{"type": "text", "text": "hello"}, {"type": "input_text", "text": "..."}]

@@ -156,7 +156,7 @@ OPENAI_API_KEY=any-non-empty-string
 INFERENCE_TEXT_MODEL=Hermes-4-70B
 ```
 
-Same pattern works for Open WebUI, LobeChat, NextChat, or any other
+Same pattern works for Open WebUI, LobeHub, NextChat, or any other
 OpenAI-compatible client.
 
 ## Exposing on LAN

@@ -4364,7 +4364,7 @@ OPTIONAL_ENV_VARS = {
         "advanced": True,
     },
     "API_SERVER_ENABLED": {
-        "description": "Enable the OpenAI-compatible API server (true/false). Allows frontends like Open WebUI, LobeChat, etc. to connect.",
+        "description": "Enable the OpenAI-compatible API server (true/false). Allows frontends like Open WebUI, LobeHub, etc. to connect.",
         "prompt": "Enable API server (true/false)",
         "url": None,
         "password": False,

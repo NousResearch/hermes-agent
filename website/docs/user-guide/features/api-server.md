@@ -6,12 +6,12 @@ description: "Expose hermes-agent as an OpenAI-compatible API for any frontend"
 
 # API Server
 
-The API server exposes hermes-agent as an OpenAI-compatible HTTP endpoint. Any frontend that speaks the OpenAI format — Open WebUI, LobeChat, LibreChat, NextChat, ChatBox, and hundreds more — can connect to hermes-agent and use it as a backend.
+The API server exposes hermes-agent as an OpenAI-compatible HTTP endpoint. Any frontend that speaks the OpenAI format — Open WebUI, LobeHub, LibreChat, NextChat, ChatBox, and hundreds more — can connect to hermes-agent and use it as a backend.
 
 Your agent handles requests with its full toolset (terminal, file operations, web search, memory, skills) and returns the final response. When streaming, tool progress indicators appear inline so frontends can show what the agent is doing.
 
 :::tip One backend covers models + tools
-Hermes itself needs a configured provider and tool backends for the API server to be useful. A [Nous Portal](/user-guide/features/tool-gateway) subscription handles both — 300+ models plus web/image/TTS/browser via the Tool Gateway. Run `hermes setup --portal` once before starting the API server and frontends like Open WebUI or LobeChat get a fully tool-equipped backend.
+Hermes itself needs a configured provider and tool backends for the API server to be useful. A [Nous Portal](/user-guide/features/tool-gateway) subscription handles both — 300+ models plus web/image/TTS/browser via the Tool Gateway. Run `hermes setup --portal` once before starting the API server and frontends like Open WebUI or LobeHub get a fully tool-equipped backend.
 :::
 
 ## Quick Start
@@ -51,7 +51,7 @@ curl http://localhost:8642/v1/chat/completions \
   -d '{"model": "hermes-agent", "messages": [{"role": "user", "content": "Hello!"}]}'
 ```
 
-Or connect Open WebUI, LobeChat, or any other frontend — see the [Open WebUI integration guide](/user-guide/messaging/open-webui) for step-by-step instructions.
+Or connect Open WebUI, LobeHub, or any other frontend — see the [Open WebUI integration guide](/user-guide/messaging/open-webui) for step-by-step instructions.
 
 ## Endpoints
 
@@ -461,7 +461,7 @@ Any frontend that supports the OpenAI API format works. Tested/documented integr
 | Frontend | Stars | Connection |
 |----------|-------|------------|
 | [Open WebUI](/user-guide/messaging/open-webui) | 126k | Full guide available |
-| LobeChat | 73k | Custom provider endpoint |
+| LobeHub | 73k | Custom provider endpoint |
 | LibreChat | 34k | Custom endpoint in librechat.yaml |
 | AnythingLLM | 56k | Generic OpenAI provider |
 | NextChat | 87k | BASE_URL env var |

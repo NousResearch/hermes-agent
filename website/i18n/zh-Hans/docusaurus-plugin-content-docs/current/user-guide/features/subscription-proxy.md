@@ -131,7 +131,7 @@ OPENAI_API_KEY=any-non-empty-string
 INFERENCE_TEXT_MODEL=Hermes-4-70B
 ```
 
-同样的方式适用于 Open WebUI、LobeChat、NextChat 或任何其他 OpenAI 兼容客户端。
+同样的方式适用于 Open WebUI、LobeHub、NextChat 或任何其他 OpenAI 兼容客户端。
 
 ## 在局域网上暴露
 

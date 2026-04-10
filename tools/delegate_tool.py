@@ -29,6 +29,7 @@ from typing import Any, Dict, List, Optional
 # Tools that children must never have access to
 DELEGATE_BLOCKED_TOOLS = frozenset([
     "delegate_task",   # no recursive delegation
+    "claude_code",     # no nested agentic calls from subagents
     "clarify",         # no user interaction
     "memory",          # no writes to shared MEMORY.md
     "send_message",    # no cross-platform side effects

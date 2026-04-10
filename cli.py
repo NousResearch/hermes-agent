@@ -5001,6 +5001,8 @@ class HermesCLI:
             self._handle_rollback_command(cmd_original)
         elif canonical == "stop":
             self._handle_stop_command()
+        elif canonical == "claude":
+            self._handle_claude_command(cmd_original)
         elif canonical == "background":
             self._handle_background_command(cmd_original)
         elif canonical == "btw":
@@ -5152,6 +5154,50 @@ class HermesCLI:
         else:
             ChatConsole().print("[bold red]Plan mode unavailable: input queue not initialized[/]")
     
+    def _handle_claude_command(self, cmd: str):
+        """Handle /claude <prompt> -- send a task directly to Claude Code CLI with streaming."""
+        parts = cmd.strip().split(maxsplit=1)
+        if len(parts) < 2 or not parts[1].strip():
+            _cprint("  Usage: /claude <prompt>")
+            _cprint("  Example: /claude analyze src/main.py and suggest improvements")
+            _cprint("  Sends the prompt to Claude Code CLI using your subscription.")
+            _cprint("  Session is preserved -- Claude remembers previous /claude calls.")
+            return
+
+        prompt = parts[1].strip()
+        preview = prompt[:60] + ("..." if len(prompt) > 60 else "")
+        _cprint(f'  Claude Code: "{preview}"')
+
+        from tools.claude_code_tool import claude_code_streaming
+
+        session_key = getattr(self, "session_id", None) or "cli_default"
+
+        def on_text(chunk: str):
+            self.console.print(chunk, end="")
+
+        result = claude_code_streaming(
+            prompt=prompt,
+            on_text=on_text,
+            timeout=300,
+            session_key=session_key,
+        )
+
+        self.console.print()  # newline after streaming
+
+        if result.get("success"):
+            cost = result.get("cost_usd")
+            duration = result.get("duration_ms")
+            meta_parts = []
+            if cost is not None:
+                meta_parts.append(f"${cost:.4f}")
+            if duration is not None:
+                meta_parts.append(f"{duration/1000:.1f}s")
+            if meta_parts:
+                _cprint(f"  [{' | '.join(meta_parts)}]")
+        else:
+            error = result.get("error", "Unknown error")
+            _cprint(f"  Claude Code failed: {error}")
+
     def _handle_background_command(self, cmd: str):
         """Handle /background <prompt> — run a prompt in a separate background session.
 

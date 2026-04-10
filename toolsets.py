@@ -54,6 +54,8 @@ _HERMES_CORE_TOOLS = [
     "clarify",
     # Code execution + delegation
     "execute_code", "delegate_task",
+    # Claude Code CLI delegation
+    "claude_code",
     # Cronjob management
     "cronjob",
     # Cross-platform messaging (gated on gateway running via check_fn)
@@ -189,6 +191,12 @@ TOOLSETS = {
     "delegation": {
         "description": "Spawn subagents with isolated context for complex subtasks",
         "tools": ["delegate_task"],
+        "includes": []
+    },
+
+    "claude_code": {
+        "description": "Delegate complex tasks to Claude Code CLI (uses existing subscription)",
+        "tools": ["claude_code"],
         "includes": []
     },
 

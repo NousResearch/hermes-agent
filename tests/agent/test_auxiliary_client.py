@@ -11,6 +11,7 @@ from agent.auxiliary_client import (
     get_text_auxiliary_client,
     get_vision_auxiliary_client,
     get_available_vision_backends,
+    override_main_runtime,
     resolve_vision_provider_client,
     resolve_provider_client,
     auxiliary_max_tokens_param,
@@ -19,6 +20,8 @@ from agent.auxiliary_client import (
     _get_auxiliary_provider,
     _get_provider_chain,
     _is_payment_error,
+    _read_main_model,
+    _read_main_provider,
     _try_payment_fallback,
     _resolve_forced_provider,
     _resolve_auto,
@@ -212,6 +215,35 @@ class TestAnthropicOAuthFlag:
             # The adapter inside should have is_oauth=True
             adapter = client.chat.completions
             assert adapter._is_oauth is True
+
+
+class TestMainRuntimeOverride:
+    def test_override_main_runtime_beats_config_for_provider_and_model(self, monkeypatch):
+        mock_config = {
+            "model": {
+                "default": "MiniMax-M2.7",
+                "provider": "minimax",
+            }
+        }
+
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: mock_config)
+
+        assert _read_main_provider() == "minimax"
+        assert _read_main_model() == "MiniMax-M2.7"
+
+        with override_main_runtime(
+            model="gpt-5.4",
+            runtime={
+                "provider": "openai-codex",
+                "base_url": "https://chatgpt.com/backend-api/codex",
+                "api_key": "codex-key",
+            },
+        ):
+            assert _read_main_provider() == "openai-codex"
+            assert _read_main_model() == "gpt-5.4"
+
+        assert _read_main_provider() == "minimax"
+        assert _read_main_model() == "MiniMax-M2.7"
 
     def test_api_key_no_oauth_flag(self, monkeypatch):
         """Regular API keys (sk-ant-api-*) should create client with is_oauth=False."""

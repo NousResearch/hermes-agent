@@ -47,6 +47,8 @@ import logging
 import os
 import threading
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path  # noqa: F401 — used by test mocks
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Tuple
@@ -58,6 +60,11 @@ from hermes_cli.config import get_hermes_home
 from hermes_constants import OPENROUTER_BASE_URL
 
 logger = logging.getLogger(__name__)
+
+_MAIN_RUNTIME_OVERRIDE: ContextVar[Optional[Dict[str, Any]]] = ContextVar(
+    "auxiliary_main_runtime_override",
+    default=None,
+)
 
 _PROVIDER_ALIASES = {
     "google": "gemini",
@@ -93,6 +100,36 @@ def _normalize_aux_provider(provider: Optional[str], *, for_vision: bool = False
             return main_prov
         return "custom"
     return _PROVIDER_ALIASES.get(normalized, normalized)
+
+
+def _get_main_runtime_override() -> Dict[str, Any]:
+    override = _MAIN_RUNTIME_OVERRIDE.get()
+    if isinstance(override, dict):
+        return dict(override)
+    return {}
+
+
+@contextmanager
+def override_main_runtime(
+    *,
+    model: Optional[str] = None,
+    runtime: Optional[Dict[str, Any]] = None,
+):
+    """Temporarily override the active main model/runtime for auxiliary routing."""
+
+    override = _get_main_runtime_override()
+    if isinstance(runtime, dict):
+        for key in ("provider", "base_url", "api_key", "api_mode", "credential_pool"):
+            value = runtime.get(key)
+            if value not in (None, ""):
+                override[key] = value
+    if isinstance(model, str) and model.strip():
+        override["model"] = model.strip()
+    token = _MAIN_RUNTIME_OVERRIDE.set(override)
+    try:
+        yield
+    finally:
+        _MAIN_RUNTIME_OVERRIDE.reset(token)
 
 # Default auxiliary models for direct API-key providers (cheap/fast for side tasks)
 _API_KEY_PROVIDER_AUX_MODELS: Dict[str, str] = {
@@ -814,6 +851,10 @@ def _read_main_model() -> str:
     config.yaml model.default is the single source of truth for the active
     model. Environment variables are no longer consulted.
     """
+    override = _get_main_runtime_override()
+    override_model = override.get("model")
+    if isinstance(override_model, str) and override_model.strip():
+        return override_model.strip()
     try:
         from hermes_cli.config import load_config
         cfg = load_config()
@@ -835,6 +876,10 @@ def _read_main_provider() -> str:
     Returns the lowercase provider id (e.g. "alibaba", "openrouter") or ""
     if not configured.
     """
+    override = _get_main_runtime_override()
+    override_provider = override.get("provider")
+    if isinstance(override_provider, str) and override_provider.strip():
+        return override_provider.strip().lower()
     try:
         from hermes_cli.config import load_config
         cfg = load_config()
@@ -855,6 +900,16 @@ def _resolve_custom_runtime() -> Tuple[Optional[str], Optional[str]]:
     endpoints where the base URL lives in config.yaml instead of the live
     environment.
     """
+    override = _get_main_runtime_override()
+    override_provider = str(override.get("provider") or "").strip().lower()
+    override_base = str(override.get("base_url") or "").strip().rstrip("/")
+    if override_base and (
+        override_provider in {"custom", "local"}
+        or override_provider.startswith("custom:")
+    ):
+        override_key = str(override.get("api_key") or "").strip() or "no-key-required"
+        return override_base, override_key
+
     try:
         from hermes_cli.runtime_provider import resolve_runtime_provider
 
@@ -1497,17 +1552,9 @@ def _strict_vision_backend_available(provider: str) -> bool:
 
 def _preferred_main_vision_provider() -> Optional[str]:
     """Return the selected main provider when it is also a supported vision backend."""
-    try:
-        from hermes_cli.config import load_config
-
-        config = load_config()
-        model_cfg = config.get("model", {})
-        if isinstance(model_cfg, dict):
-            provider = _normalize_vision_provider(model_cfg.get("provider", ""))
-            if provider in _VISION_AUTO_PROVIDER_ORDER:
-                return provider
-    except Exception:
-        pass
+    provider = _normalize_vision_provider(_read_main_provider())
+    if provider in _VISION_AUTO_PROVIDER_ORDER:
+        return provider
     return None
 
 

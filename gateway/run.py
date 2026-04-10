@@ -314,6 +314,51 @@ def _resolve_runtime_agent_kwargs() -> dict:
     }
 
 
+def _resolve_runtime_agent_kwargs_for_override(session_override: dict | None = None) -> dict:
+    """Resolve runtime credentials, honoring a session-scoped /model override."""
+    override = session_override or {}
+    override_provider = str(override.get("provider") or "").strip()
+    override_api_key = str(override.get("api_key") or "").strip() or None
+    override_base_url = str(override.get("base_url") or "").strip() or None
+
+    if not (override_provider or override_api_key or override_base_url):
+        return _resolve_runtime_agent_kwargs()
+
+    from hermes_cli.runtime_provider import (
+        resolve_runtime_provider,
+        format_runtime_provider_error,
+    )
+
+    try:
+        runtime = resolve_runtime_provider(
+            requested=override_provider or os.getenv("HERMES_INFERENCE_PROVIDER"),
+            explicit_api_key=override_api_key,
+            explicit_base_url=override_base_url,
+        )
+    except Exception as exc:
+        raise RuntimeError(format_runtime_provider_error(exc)) from exc
+
+    resolved = {
+        "api_key": runtime.get("api_key"),
+        "base_url": runtime.get("base_url"),
+        "provider": runtime.get("provider"),
+        "api_mode": runtime.get("api_mode"),
+        "command": runtime.get("command"),
+        "args": list(runtime.get("args") or []),
+        "credential_pool": runtime.get("credential_pool"),
+    }
+    if override_provider:
+        resolved["provider"] = override_provider
+    if override_api_key:
+        resolved["api_key"] = override_api_key
+    if override_base_url:
+        resolved["base_url"] = override_base_url
+    override_api_mode = str(override.get("api_mode") or "").strip()
+    if override_api_mode:
+        resolved["api_mode"] = override_api_mode
+    return resolved
+
+
 def _build_media_placeholder(event) -> str:
     """Build a text placeholder for media-only events so they aren't dropped.
 
@@ -6318,9 +6363,9 @@ class GatewayRunner:
         
         user_config = _load_gateway_config()
         platform_key = _platform_config_key(source.platform)
-
-        from hermes_cli.tools_config import _get_platform_tools
-        enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
+        session_override = {}
+        if session_key:
+            session_override = getattr(self, "_session_model_overrides", {}).get(session_key, {}) or {}
 
         # Apply tool preview length config (0 = no limit)
         try:
@@ -6648,10 +6693,10 @@ class GatewayRunner:
             except Exception:
                 pass
 
-            model = _resolve_gateway_model(user_config)
+            model = str(session_override.get("model") or "").strip() or _resolve_gateway_model(user_config)
 
             try:
-                runtime_kwargs = _resolve_runtime_agent_kwargs()
+                runtime_kwargs = _resolve_runtime_agent_kwargs_for_override(session_override)
             except Exception as exc:
                 return {
                     "final_response": f"⚠️ Provider authentication failed: {exc}",
@@ -6659,6 +6704,11 @@ class GatewayRunner:
                     "api_calls": 0,
                     "tools": [],
                 }
+
+            from agent.auxiliary_client import override_main_runtime as _override_main_runtime
+            with _override_main_runtime(model=model, runtime=runtime_kwargs):
+                from hermes_cli.tools_config import _get_platform_tools
+                enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
 
             pr = self._provider_routing
             reasoning_config = self._load_reasoning_config()

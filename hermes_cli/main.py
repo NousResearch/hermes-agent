@@ -663,7 +663,7 @@ def _launch_tui(resume_session_id: Optional[str] = None):
     tui_dir = PROJECT_ROOT / "ui-tui"
 
     env = os.environ.copy()
-    env["HERMES_ROOT"] = os.environ.get("HERMES_ROOT", os.getcwd())
+    env["HERMES_ROOT"] = os.environ.get("HERMES_ROOT", str(PROJECT_ROOT))
     if resume_session_id:
         env["HERMES_TUI_RESUME"] = resume_session_id
 

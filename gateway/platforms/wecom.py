@@ -143,6 +143,7 @@ class WeComAdapter(BasePlatformAdapter):
     """WeCom AI Bot adapter backed by a persistent WebSocket connection."""
 
     MAX_MESSAGE_LENGTH = MAX_MESSAGE_LENGTH
+    _SPLIT_THRESHOLD = 3900
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.WECOM)
@@ -171,6 +172,14 @@ class WeComAdapter(BasePlatformAdapter):
         self._pending_responses: Dict[str, asyncio.Future] = {}
         self._seen_messages: Dict[str, float] = {}
         self._reply_req_ids: Dict[str, str] = {}
+        self._text_batch_delay_seconds = float(
+            os.getenv("HERMES_WECOM_TEXT_BATCH_DELAY_SECONDS", "0.6")
+        )
+        self._text_batch_split_delay_seconds = float(
+            os.getenv("HERMES_WECOM_TEXT_BATCH_SPLIT_DELAY_SECONDS", "2.0")
+        )
+        self._pending_text_batches: Dict[str, MessageEvent] = {}
+        self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
 
     # ------------------------------------------------------------------
     # Connection lifecycle
@@ -239,6 +248,13 @@ class WeComAdapter(BasePlatformAdapter):
         if self._http_client:
             await self._http_client.aclose()
             self._http_client = None
+
+        if self._pending_text_batch_tasks:
+            for task in self._pending_text_batch_tasks.values():
+                task.cancel()
+            await asyncio.gather(*self._pending_text_batch_tasks.values(), return_exceptions=True)
+            self._pending_text_batch_tasks.clear()
+            self._pending_text_batches.clear()
 
         self._seen_messages.clear()
         logger.info("[%s] Disconnected", self.name)
@@ -519,7 +535,82 @@ class WeComAdapter(BasePlatformAdapter):
             timestamp=datetime.now(tz=timezone.utc),
         )
 
+        if self._should_batch_text_event(event):
+            await self._handle_text_event(event)
+            return
+
         await self.handle_message(event)
+
+    def _should_batch_text_event(self, event: MessageEvent) -> bool:
+        """Return True when a WeCom text event is eligible for split batching."""
+        return (
+            event.message_type == MessageType.TEXT
+            and not event.is_command()
+            and not event.media_urls
+        )
+
+    def _text_batch_key(self, event: MessageEvent) -> str:
+        """Return the session-scoped key used for WeCom text aggregation."""
+        from gateway.session import build_session_key
+
+        session_key = build_session_key(
+            event.source,
+            group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
+            thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
+        )
+        return f"{session_key}:reply:{event.reply_to_message_id or ''}"
+
+    async def _handle_text_event(self, event: MessageEvent) -> None:
+        """Dispatch short WeCom text immediately and batch likely split chunks."""
+        key = self._text_batch_key(event)
+        if key in self._pending_text_batches or len(event.text or "") >= self._SPLIT_THRESHOLD:
+            self._enqueue_text_event(event, key=key)
+            return
+        await self.handle_message(event)
+
+    def _enqueue_text_event(self, event: MessageEvent, *, key: Optional[str] = None) -> None:
+        """Buffer a text event and reset the flush timer."""
+        batch_key = key or self._text_batch_key(event)
+        existing = self._pending_text_batches.get(batch_key)
+        chunk_len = len(event.text or "")
+        if existing is None:
+            event._last_chunk_len = chunk_len  # type: ignore[attr-defined]
+            self._pending_text_batches[batch_key] = event
+        else:
+            if event.text:
+                existing.text = f"{existing.text}\n{event.text}" if existing.text else event.text
+            existing._last_chunk_len = chunk_len  # type: ignore[attr-defined]
+            existing.timestamp = event.timestamp
+            if event.message_id:
+                existing.message_id = event.message_id
+
+        prior_task = self._pending_text_batch_tasks.get(batch_key)
+        if prior_task and not prior_task.done():
+            prior_task.cancel()
+        self._pending_text_batch_tasks[batch_key] = asyncio.create_task(
+            self._flush_text_batch(batch_key)
+        )
+
+    async def _flush_text_batch(self, key: str) -> None:
+        """Wait for the quiet period then dispatch the aggregated text."""
+        current_task = asyncio.current_task()
+        try:
+            pending = self._pending_text_batches.get(key)
+            last_len = getattr(pending, "_last_chunk_len", 0) if pending else 0
+            delay = (
+                self._text_batch_split_delay_seconds
+                if last_len >= self._SPLIT_THRESHOLD
+                else self._text_batch_delay_seconds
+            )
+            await asyncio.sleep(delay)
+            event = self._pending_text_batches.pop(key, None)
+            if not event:
+                return
+            logger.info("[%s] Flushing text batch %s (%d chars)", self.name, key, len(event.text or ""))
+            await self.handle_message(event)
+        finally:
+            if self._pending_text_batch_tasks.get(key) is current_task:
+                self._pending_text_batch_tasks.pop(key, None)
 
     @staticmethod
     def _extract_text(body: Dict[str, Any]) -> Tuple[str, Optional[str]]:

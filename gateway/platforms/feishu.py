@@ -145,9 +145,11 @@ _FEISHU_CONNECT_ATTEMPTS = 3
 _FEISHU_SEND_ATTEMPTS = 3
 _FEISHU_APP_LOCK_SCOPE = "feishu-app-id"
 _DEFAULT_TEXT_BATCH_DELAY_SECONDS = 0.6
+_DEFAULT_TEXT_BATCH_SPLIT_DELAY_SECONDS = 2.0
 _DEFAULT_TEXT_BATCH_MAX_MESSAGES = 8
 _DEFAULT_TEXT_BATCH_MAX_CHARS = 4000
 _DEFAULT_MEDIA_BATCH_DELAY_SECONDS = 0.8
+_TEXT_BATCH_SPLIT_THRESHOLD = 3900
 _DEFAULT_DEDUP_CACHE_SIZE = 2048
 _DEFAULT_WEBHOOK_HOST = "127.0.0.1"
 _DEFAULT_WEBHOOK_PORT = 8765
@@ -264,6 +266,7 @@ class FeishuAdapterSettings:
     bot_name: str
     dedup_cache_size: int
     text_batch_delay_seconds: float
+    text_batch_split_delay_seconds: float
     text_batch_max_messages: int
     text_batch_max_chars: int
     media_batch_delay_seconds: float
@@ -1105,6 +1108,12 @@ class FeishuAdapter(BasePlatformAdapter):
             text_batch_delay_seconds=float(
                 os.getenv("HERMES_FEISHU_TEXT_BATCH_DELAY_SECONDS", str(_DEFAULT_TEXT_BATCH_DELAY_SECONDS))
             ),
+            text_batch_split_delay_seconds=float(
+                os.getenv(
+                    "HERMES_FEISHU_TEXT_BATCH_SPLIT_DELAY_SECONDS",
+                    str(_DEFAULT_TEXT_BATCH_SPLIT_DELAY_SECONDS),
+                )
+            ),
             text_batch_max_messages=max(
                 1,
                 int(os.getenv("HERMES_FEISHU_TEXT_BATCH_MAX_MESSAGES", str(_DEFAULT_TEXT_BATCH_MAX_MESSAGES))),
@@ -1152,6 +1161,7 @@ class FeishuAdapter(BasePlatformAdapter):
         self._bot_name = settings.bot_name
         self._dedup_cache_size = settings.dedup_cache_size
         self._text_batch_delay_seconds = settings.text_batch_delay_seconds
+        self._text_batch_split_delay_seconds = settings.text_batch_split_delay_seconds
         self._text_batch_max_messages = settings.text_batch_max_messages
         self._text_batch_max_chars = settings.text_batch_max_chars
         self._media_batch_delay_seconds = settings.media_batch_delay_seconds
@@ -2479,7 +2489,9 @@ class FeishuAdapter(BasePlatformAdapter):
         """Debounce rapid Feishu text bursts into a single MessageEvent."""
         key = self._text_batch_key(event)
         existing = self._pending_text_batches.get(key)
+        chunk_len = len(event.text or "")
         if existing is None:
+            event._last_chunk_len = chunk_len  # type: ignore[attr-defined]
             self._pending_text_batches[key] = event
             self._pending_text_batch_counts[key] = 1
             self._schedule_text_batch_flush(key)
@@ -2504,6 +2516,7 @@ class FeishuAdapter(BasePlatformAdapter):
             return
 
         existing.text = next_text
+        existing._last_chunk_len = chunk_len  # type: ignore[attr-defined]
         existing.timestamp = event.timestamp
         if event.message_id:
             existing.message_id = event.message_id
@@ -2533,7 +2546,14 @@ class FeishuAdapter(BasePlatformAdapter):
         """Flush a pending text batch after the quiet period."""
         current_task = asyncio.current_task()
         try:
-            await asyncio.sleep(self._text_batch_delay_seconds)
+            pending = self._pending_text_batches.get(key)
+            last_len = getattr(pending, "_last_chunk_len", 0) if pending else 0
+            delay = (
+                self._text_batch_split_delay_seconds
+                if last_len >= _TEXT_BATCH_SPLIT_THRESHOLD
+                else self._text_batch_delay_seconds
+            )
+            await asyncio.sleep(delay)
             await self._flush_text_batch_now(key)
         finally:
             if self._pending_text_batch_tasks.get(key) is current_task:

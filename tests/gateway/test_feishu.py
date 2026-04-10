@@ -1699,6 +1699,78 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertEqual(second.text, "C")
 
     @patch.dict(os.environ, {}, clear=True)
+    def test_text_batch_uses_split_delay_for_near_limit_chunk(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.base import MessageEvent, MessageType
+        from gateway.platforms.feishu import FeishuAdapter
+        from gateway.session import SessionSource
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter.handle_message = AsyncMock()
+        source = SessionSource(
+            platform=adapter.platform,
+            chat_id="oc_chat",
+            chat_name="Feishu DM",
+            chat_type="dm",
+            user_id="ou_user",
+            user_name="张三",
+        )
+        event = MessageEvent(text="x" * 3950, message_type=MessageType.TEXT, source=source, message_id="om_1")
+        event._last_chunk_len = len(event.text)  # type: ignore[attr-defined]
+        key = adapter._text_batch_key(event)
+        adapter._pending_text_batches[key] = event
+        observed_delays = []
+
+        async def _sleep(delay):
+            observed_delays.append(delay)
+            return None
+
+        async def _run() -> None:
+            with patch("gateway.platforms.feishu.asyncio.sleep", side_effect=_sleep):
+                await adapter._flush_text_batch(key)
+
+        asyncio.run(_run())
+
+        self.assertEqual(observed_delays, [adapter._text_batch_split_delay_seconds])
+        adapter.handle_message.assert_awaited_once()
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_text_batch_uses_normal_delay_for_short_tail_chunk(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.base import MessageEvent, MessageType
+        from gateway.platforms.feishu import FeishuAdapter
+        from gateway.session import SessionSource
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter.handle_message = AsyncMock()
+        source = SessionSource(
+            platform=adapter.platform,
+            chat_id="oc_chat",
+            chat_name="Feishu DM",
+            chat_type="dm",
+            user_id="ou_user",
+            user_name="张三",
+        )
+        event = MessageEvent(text="tail", message_type=MessageType.TEXT, source=source, message_id="om_2")
+        event._last_chunk_len = len(event.text)  # type: ignore[attr-defined]
+        key = adapter._text_batch_key(event)
+        adapter._pending_text_batches[key] = event
+        observed_delays = []
+
+        async def _sleep(delay):
+            observed_delays.append(delay)
+            return None
+
+        async def _run() -> None:
+            with patch("gateway.platforms.feishu.asyncio.sleep", side_effect=_sleep):
+                await adapter._flush_text_batch(key)
+
+        asyncio.run(_run())
+
+        self.assertEqual(observed_delays, [adapter._text_batch_delay_seconds])
+        adapter.handle_message.assert_awaited_once()
+
+    @patch.dict(os.environ, {}, clear=True)
     def test_media_batch_merges_rapid_photo_messages(self):
         from gateway.config import PlatformConfig
         from gateway.platforms.base import MessageEvent, MessageType

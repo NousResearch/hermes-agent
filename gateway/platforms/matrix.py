@@ -120,6 +120,8 @@ def check_matrix_requirements() -> bool:
 class MatrixAdapter(BasePlatformAdapter):
     """Gateway adapter for Matrix (any homeserver)."""
 
+    _SPLIT_THRESHOLD = 3900
+
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.MATRIX)
 
@@ -171,6 +173,14 @@ class MatrixAdapter(BasePlatformAdapter):
         self._reactions_enabled: bool = os.getenv(
             "MATRIX_REACTIONS", "true"
         ).lower() not in ("false", "0", "no")
+        self._text_batch_delay_seconds = float(
+            os.getenv("HERMES_MATRIX_TEXT_BATCH_DELAY_SECONDS", "0.6")
+        )
+        self._text_batch_split_delay_seconds = float(
+            os.getenv("HERMES_MATRIX_TEXT_BATCH_SPLIT_DELAY_SECONDS", "2.0")
+        )
+        self._pending_text_batches: Dict[str, MessageEvent] = {}
+        self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
 
     def _is_duplicate_event(self, event_id) -> bool:
         """Return True if this event was already processed. Tracks the ID otherwise."""
@@ -416,6 +426,13 @@ class MatrixAdapter(BasePlatformAdapter):
         if self._client:
             await self._client.close()
             self._client = None
+
+        if self._pending_text_batch_tasks:
+            for task in self._pending_text_batch_tasks.values():
+                task.cancel()
+            await asyncio.gather(*self._pending_text_batch_tasks.values(), return_exceptions=True)
+            self._pending_text_batch_tasks.clear()
+            self._pending_text_batches.clear()
 
         logger.info("Matrix: disconnected")
 
@@ -1088,7 +1105,78 @@ class MatrixAdapter(BasePlatformAdapter):
         # Acknowledge receipt so the room shows as read (fire-and-forget).
         self._background_read_receipt(room.room_id, event.event_id)
 
+        if self._should_batch_text_event(msg_event):
+            await self._handle_text_event(msg_event)
+            return
+
         await self.handle_message(msg_event)
+
+    def _should_batch_text_event(self, event: MessageEvent) -> bool:
+        """Return True when a Matrix text event is eligible for split batching."""
+        return event.message_type == MessageType.TEXT and not event.is_command()
+
+    def _text_batch_key(self, event: MessageEvent) -> str:
+        """Return the session-scoped key used for Matrix text aggregation."""
+        from gateway.session import build_session_key
+
+        session_key = build_session_key(
+            event.source,
+            group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
+            thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
+        )
+        return f"{session_key}:reply:{event.reply_to_message_id or ''}"
+
+    async def _handle_text_event(self, event: MessageEvent) -> None:
+        """Dispatch short Matrix text immediately and batch likely split chunks."""
+        key = self._text_batch_key(event)
+        if key in self._pending_text_batches or len(event.text or "") >= self._SPLIT_THRESHOLD:
+            self._enqueue_text_event(event, key=key)
+            return
+        await self.handle_message(event)
+
+    def _enqueue_text_event(self, event: MessageEvent, *, key: Optional[str] = None) -> None:
+        """Buffer a text event and reset the flush timer."""
+        batch_key = key or self._text_batch_key(event)
+        existing = self._pending_text_batches.get(batch_key)
+        chunk_len = len(event.text or "")
+        if existing is None:
+            event._last_chunk_len = chunk_len  # type: ignore[attr-defined]
+            self._pending_text_batches[batch_key] = event
+        else:
+            if event.text:
+                existing.text = f"{existing.text}\n{event.text}" if existing.text else event.text
+            existing._last_chunk_len = chunk_len  # type: ignore[attr-defined]
+            existing.timestamp = event.timestamp
+            if event.message_id:
+                existing.message_id = event.message_id
+
+        prior_task = self._pending_text_batch_tasks.get(batch_key)
+        if prior_task and not prior_task.done():
+            prior_task.cancel()
+        self._pending_text_batch_tasks[batch_key] = asyncio.create_task(
+            self._flush_text_batch(batch_key)
+        )
+
+    async def _flush_text_batch(self, key: str) -> None:
+        """Wait for the quiet period then dispatch the aggregated text."""
+        current_task = asyncio.current_task()
+        try:
+            pending = self._pending_text_batches.get(key)
+            last_len = getattr(pending, "_last_chunk_len", 0) if pending else 0
+            delay = (
+                self._text_batch_split_delay_seconds
+                if last_len >= self._SPLIT_THRESHOLD
+                else self._text_batch_delay_seconds
+            )
+            await asyncio.sleep(delay)
+            event = self._pending_text_batches.pop(key, None)
+            if not event:
+                return
+            logger.info("Matrix: flushing text batch %s (%d chars)", key, len(event.text or ""))
+            await self.handle_message(event)
+        finally:
+            if self._pending_text_batch_tasks.get(key) is current_task:
+                self._pending_text_batch_tasks.pop(key, None)
 
     async def _on_room_message_media(self, room: Any, event: Any) -> None:
         """Handle incoming media messages (images, audio, video, files)."""

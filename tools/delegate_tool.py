@@ -2753,8 +2753,8 @@ def delegate_task(
                     child_status=entry.get("status"),
                     duration_ms=int((entry.get("duration_seconds") or 0) * 1000),
                 )
-            except Exception:
-                logger.debug("subagent_stop hook invocation failed", exc_info=True)
+            except Exception as e:
+                logger.debug("on_delegation notification failed for task %d: %s", entry.get("task_index", -1), e)
 
         # Fold the aggregated child cost into the parent's session total.  This is
         # additive — each delegate_task call contributes its own children — so

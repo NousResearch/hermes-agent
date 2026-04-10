@@ -728,7 +728,8 @@ def run_doctor(args):
         ("AI Gateway",       ("AI_GATEWAY_API_KEY",),                          "https://ai-gateway.vercel.sh/v1/models", "AI_GATEWAY_BASE_URL", True),
         ("Kilo Code",        ("KILOCODE_API_KEY",),                            "https://api.kilo.ai/api/gateway/models",  "KILOCODE_BASE_URL", True),
         ("OpenCode Zen",     ("OPENCODE_ZEN_API_KEY",),                        "https://opencode.ai/zen/v1/models",  "OPENCODE_ZEN_BASE_URL", True),
-        ("OpenCode Go",      ("OPENCODE_GO_API_KEY",),                         "https://opencode.ai/zen/go/v1/models", "OPENCODE_GO_BASE_URL", True),
+        # OpenCode Go docs expose inference endpoints, but not a documented provider-wide /models listing endpoint.
+        ("OpenCode Go",      ("OPENCODE_GO_API_KEY",),                         None,                                  "OPENCODE_GO_BASE_URL", False),
     ]
     for _pname, _env_vars, _default_url, _base_env, _supports_health_check in _apikey_providers:
         _key = ""

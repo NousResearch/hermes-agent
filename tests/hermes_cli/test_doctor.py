@@ -14,6 +14,43 @@ from hermes_cli import doctor as doctor_mod
 from hermes_cli.doctor import _has_provider_env_config
 
 
+DOCTOR_PROVIDER_BASE_ENVS = (
+    "GLM_BASE_URL",
+    "KIMI_BASE_URL",
+    "DEEPSEEK_BASE_URL",
+    "HF_BASE_URL",
+    "DASHSCOPE_BASE_URL",
+    "MINIMAX_BASE_URL",
+    "MINIMAX_CN_BASE_URL",
+    "AI_GATEWAY_BASE_URL",
+    "KILOCODE_BASE_URL",
+    "OPENCODE_ZEN_BASE_URL",
+    "OPENCODE_GO_BASE_URL",
+)
+
+
+def _run_doctor_with_fake_httpx(monkeypatch, tmp_path, env):
+    helper = TestDoctorMemoryProviderSection()
+    for key in doctor_mod._PROVIDER_ENV_HINTS:
+        monkeypatch.delenv(key, raising=False)
+    for key in DOCTOR_PROVIDER_BASE_ENVS:
+        monkeypatch.delenv(key, raising=False)
+
+    calls = []
+
+    def fake_get(url, **kwargs):
+        calls.append((url, kwargs))
+        return types.SimpleNamespace(status_code=200)
+
+    monkeypatch.setitem(sys.modules, "httpx", types.SimpleNamespace(get=fake_get))
+
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+
+    out = helper._run_doctor_and_capture(monkeypatch, tmp_path, provider="")
+    return out, calls
+
+
 class TestDoctorPlatformHints:
     def test_termux_package_hint(self, monkeypatch):
         monkeypatch.setenv("TERMUX_VERSION", "0.118.3")
@@ -292,3 +329,35 @@ def test_run_doctor_termux_does_not_mark_browser_available_without_agent_browser
     assert "system dependency not met" in out
     assert "agent-browser is not installed (expected in the tested Termux path)" in out
     assert "npm install -g agent-browser && agent-browser install" in out
+
+
+def test_run_doctor_opencode_go_skips_models_probe(monkeypatch, tmp_path):
+    out, calls = _run_doctor_with_fake_httpx(
+        monkeypatch,
+        tmp_path,
+        {
+            "OPENCODE_GO_API_KEY": "test-opencode-go-key",
+            "OPENCODE_GO_BASE_URL": "https://example.invalid/zen/go/v1",
+        },
+    )
+
+    assert "OpenCode Go" in out
+    assert "(key configured)" in out
+    assert "Checking OpenCode Go API..." not in out
+    assert calls == []
+
+
+def test_run_doctor_opencode_zen_still_probes_models_endpoint(monkeypatch, tmp_path):
+    out, calls = _run_doctor_with_fake_httpx(
+        monkeypatch,
+        tmp_path,
+        {
+            "OPENCODE_ZEN_API_KEY": "test-opencode-zen-key",
+            "OPENCODE_ZEN_BASE_URL": "https://example.invalid/zen/v1",
+        },
+    )
+
+    assert "OpenCode Zen" in out
+    assert "Checking OpenCode Zen API..." in out
+    assert len(calls) == 1
+    assert calls[0][0] == "https://example.invalid/zen/v1/models"

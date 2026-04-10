@@ -5466,6 +5466,7 @@ class AIAgent:
                 preserve_dots=self._anthropic_preserve_dots(),
                 context_length=ctx_len,
                 base_url=getattr(self, "_anthropic_base_url", None),
+                fast_mode=self.request_overrides.get("speed") == "fast",
             )
 
         if self.api_mode == "codex_responses":

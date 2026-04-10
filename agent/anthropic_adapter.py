@@ -103,6 +103,11 @@ _COMMON_BETAS = [
 # fall back to the provider's default response path.
 _TOOL_STREAMING_BETA = "fine-grained-tool-streaming-2025-05-14"
 
+# Fast mode beta — enables the ``speed: "fast"`` request parameter for
+# significantly higher output token throughput on Opus 4.6 (~2.5x).
+# See https://platform.claude.com/docs/en/build-with-claude/fast-mode
+_FAST_MODE_BETA = "fast-mode-2026-02-01"
+
 # Additional beta headers required for OAuth/subscription auth.
 # Matches what Claude Code (and pi-ai / OpenCode) send.
 _OAUTH_ONLY_BETAS = [
@@ -1256,6 +1261,7 @@ def build_anthropic_kwargs(
     preserve_dots: bool = False,
     context_length: Optional[int] = None,
     base_url: str | None = None,
+    fast_mode: bool = False,
 ) -> Dict[str, Any]:
     """Build kwargs for anthropic.messages.create().
 
@@ -1289,6 +1295,10 @@ def build_anthropic_kwargs(
 
     When *base_url* points to a third-party Anthropic-compatible endpoint,
     thinking block signatures are stripped (they are Anthropic-proprietary).
+
+    When *fast_mode* is True, adds ``speed: "fast"`` and the fast-mode beta
+    header for ~2.5x faster output throughput on Opus 4.6.  Currently only
+    supported on native Anthropic endpoints (not third-party compatible ones).
     """
     system, anthropic_messages = convert_messages_to_anthropic(messages, base_url=base_url)
     anthropic_tools = convert_tools_to_anthropic(tools) if tools else []
@@ -1386,6 +1396,20 @@ def build_anthropic_kwargs(
                 # Anthropic requires temperature=1 when thinking is enabled on older models
                 kwargs["temperature"] = 1
                 kwargs["max_tokens"] = max(effective_max_tokens, budget + 4096)
+
+    # ── Fast mode (Opus 4.6 only) ────────────────────────────────────
+    # Adds speed:"fast" + the fast-mode beta header for ~2.5x output speed.
+    # Only for native Anthropic endpoints — third-party providers would
+    # reject the unknown beta header and speed parameter.
+    if fast_mode and not _is_third_party_anthropic_endpoint(base_url):
+        kwargs["speed"] = "fast"
+        # Build extra_headers with ALL applicable betas (the per-request
+        # extra_headers override the client-level anthropic-beta header).
+        betas = list(_common_betas_for_base_url(base_url))
+        if is_oauth:
+            betas.extend(_OAUTH_ONLY_BETAS)
+        betas.append(_FAST_MODE_BETA)
+        kwargs["extra_headers"] = {"anthropic-beta": ",".join(betas)}
 
     return kwargs
 

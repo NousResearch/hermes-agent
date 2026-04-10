@@ -1036,25 +1036,57 @@ _PRIORITY_PROCESSING_MODELS: frozenset[str] = frozenset({
     "o4-mini",
 })
 
+# Models that support Anthropic Fast Mode (speed="fast").
+# See https://platform.claude.com/docs/en/build-with-claude/fast-mode
+# Currently only Claude Opus 4.6.  Both hyphen and dot variants are stored
+# to handle native Anthropic (claude-opus-4-6) and OpenRouter (claude-opus-4.6).
+_ANTHROPIC_FAST_MODE_MODELS: frozenset[str] = frozenset({
+    "claude-opus-4-6",
+    "claude-opus-4.6",
+})
 
-def model_supports_fast_mode(model_id: Optional[str]) -> bool:
-    """Return whether Hermes should expose the /fast (Priority Processing) toggle."""
+
+def _strip_vendor_prefix(model_id: str) -> str:
+    """Strip vendor/ prefix from a model ID (e.g. 'anthropic/claude-opus-4-6' -> 'claude-opus-4-6')."""
     raw = str(model_id or "").strip().lower()
     if "/" in raw:
         raw = raw.split("/", 1)[1]
-    return raw in _PRIORITY_PROCESSING_MODELS
+    return raw
+
+
+def model_supports_fast_mode(model_id: Optional[str]) -> bool:
+    """Return whether Hermes should expose the /fast toggle for this model."""
+    raw = _strip_vendor_prefix(str(model_id or ""))
+    if raw in _PRIORITY_PROCESSING_MODELS:
+        return True
+    # Anthropic fast mode — strip date suffixes (e.g. claude-opus-4-6-20260401)
+    # and OpenRouter variant tags (:fast, :beta) for matching.
+    base = raw.split(":")[0]
+    return base in _ANTHROPIC_FAST_MODE_MODELS
+
+
+def _is_anthropic_fast_model(model_id: Optional[str]) -> bool:
+    """Return True if the model supports Anthropic's fast mode (speed='fast')."""
+    raw = _strip_vendor_prefix(str(model_id or ""))
+    base = raw.split(":")[0]
+    return base in _ANTHROPIC_FAST_MODE_MODELS
 
 
 def resolve_fast_mode_overrides(model_id: Optional[str]) -> dict[str, Any] | None:
-    """Return request_overrides for Priority Processing, or None if unsupported.
+    """Return request_overrides for fast/priority mode, or None if unsupported.
 
-    Unlike the previous ``resolve_fast_mode_runtime``, this does NOT force a
-    provider/backend switch.  The ``service_tier`` parameter is injected into
-    whatever API path the user is already on (Codex Responses, Chat Completions,
-    or OpenRouter passthrough).
+    Returns provider-appropriate overrides:
+    - OpenAI models: ``{"service_tier": "priority"}`` (Priority Processing)
+    - Anthropic models: ``{"speed": "fast"}`` (Anthropic Fast Mode beta)
+
+    The overrides are injected into the API request kwargs by
+    ``_build_api_kwargs`` in run_agent.py — each API path handles its own
+    keys (service_tier for OpenAI/Codex, speed for Anthropic Messages).
     """
     if not model_supports_fast_mode(model_id):
         return None
+    if _is_anthropic_fast_model(model_id):
+        return {"speed": "fast"}
     return {"service_tier": "priority"}
 
 

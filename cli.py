@@ -5697,15 +5697,24 @@ class HermesCLI:
             _cprint(f"  {_GOLD}✓ Reasoning effort set to '{arg}' (session only){_RST}")
 
     def _handle_fast_command(self, cmd: str):
-        """Handle /fast — toggle OpenAI Priority Processing (service_tier)."""
+        """Handle /fast — toggle fast mode (OpenAI Priority Processing / Anthropic Fast Mode)."""
         if not self._fast_command_available():
-            _cprint("  (._.) /fast is only available for OpenAI models that support Priority Processing.")
+            _cprint("  (._.) /fast is only available for models that support fast mode (OpenAI Priority Processing or Anthropic Fast Mode).")
             return
+
+        # Determine the branding for the current model
+        try:
+            from hermes_cli.models import _is_anthropic_fast_model
+            agent = getattr(self, "agent", None)
+            model = getattr(agent, "model", None) or getattr(self, "model", None)
+            feature_name = "Anthropic Fast Mode" if _is_anthropic_fast_model(model) else "Priority Processing"
+        except Exception:
+            feature_name = "Fast mode"
 
         parts = cmd.strip().split(maxsplit=1)
         if len(parts) < 2 or parts[1].strip().lower() == "status":
             status = "fast" if self.service_tier == "priority" else "normal"
-            _cprint(f"  {_GOLD}Priority Processing: {status}{_RST}")
+            _cprint(f"  {_GOLD}{feature_name}: {status}{_RST}")
             _cprint(f"  {_DIM}Usage: /fast [normal|fast|status]{_RST}")
             return
 
@@ -5726,9 +5735,9 @@ class HermesCLI:
 
         self.agent = None  # Force agent re-init with new service-tier config
         if save_config_value("agent.service_tier", saved_value):
-            _cprint(f"  {_GOLD}✓ Priority Processing set to {label} (saved to config){_RST}")
+            _cprint(f"  {_GOLD}✓ {feature_name} set to {label} (saved to config){_RST}")
         else:
-            _cprint(f"  {_GOLD}✓ Priority Processing set to {label} (session only){_RST}")
+            _cprint(f"  {_GOLD}✓ {feature_name} set to {label} (session only){_RST}")
 
     def _on_reasoning(self, reasoning_text: str):
         """Callback for intermediate reasoning display during tool-call loops."""

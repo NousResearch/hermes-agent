@@ -4867,6 +4867,12 @@ _PLATFORMS = [
     # discovered dynamically via the platform registry entries registered by
     # plugins/platforms/{email,sms}/adapter.py::register(). #41112.
     {
+        "key": "session",
+        "label": "Session",
+        "emoji": "🔒️",
+        "token_var": "SESSION_BOT_ID",
+    },
+    {
         "key": "weixin",
         "label": "Weixin / WeChat",
         "emoji": "💬",
@@ -5859,6 +5865,203 @@ def _setup_signal():
     )
 
 
+def _setup_session():
+    """Interactive setup for Session Protocol."""
+    import subprocess
+    import json
+    import shutil
+
+    print()
+    print(color("  ─── 🔒️ Session Setup ───", Colors.CYAN))
+
+    existing_bot_id = get_env_value("SESSION_BOT_ID")
+    if existing_bot_id:
+        print()
+        print_warning("Session is already configured.")
+        if not prompt_yes_no("  Reconfigure Session?", False):
+            return
+
+    node = shutil.which("node")
+    if not node:
+        print_error("✗ Node.js not found. Install Node.js >= 24.12.0 first.")
+        return
+
+    bridge_dir = Path(__file__).resolve().parents[1] / "scripts" / "session-bridge"
+    bridge_script = bridge_dir / "session-bridge.mjs"
+    if not bridge_script.exists():
+        print_error(f"✗ Bridge script not found at {bridge_script}")
+        print_info("  Ensure the session bridge is installed in scripts/session-bridge/")
+        return
+
+    print()
+    print_info("→ Installing Session bridge dependencies (few mins)...")
+    npm_result = subprocess.run(
+        ["npm", "install"],
+        cwd=str(bridge_dir),
+        capture_output=True,
+        text=True,
+        timeout=500,
+        shell=sys.platform == "win32", # Only enable shell on windows
+    )
+    if npm_result.returncode != 0:
+        print_error(f" ✗ npm install failed: {npm_result.stderr.strip()}")
+        print_info("   For help with dependencies see https://github.com/BonesGit/session-desktop-library/blob/dev-library/CONTRIBUTING.md")
+        return
+    print_success("  Session bridge dependencies installed")
+
+    data_path = get_env_value("SESSION_DATA_PATH") or str(get_hermes_home() / "session-data")
+
+    # Probe the SQLite DB to check if an account is already registered.
+    # Only runs if the data directory exists (guard against accidental account creation).
+    # Uses --check which never creates an account, unlike --setup.
+    db_bot_id = None
+    if Path(data_path).exists():
+        try:
+            probe_env = {**os.environ, "SESSION_DATA_PATH": data_path}
+            probe_result = subprocess.run(
+                [node, str(bridge_script), "--check"],
+                env=probe_env, capture_output=True, text=True, timeout=30,
+            )
+            for line in probe_result.stdout.splitlines():
+                line = line.strip()
+                if line.startswith("{") and "sessionId" in line:
+                    try:
+                        data = json.loads(line)
+                        if data.get("status") == "existing":
+                            db_bot_id = data.get("sessionId")
+                    except Exception:
+                        pass
+                    break
+        except Exception:
+            pass  # Probe failure is non-fatal — setup continues normally
+
+    if db_bot_id:
+        print()
+        print_warning(f"  An account is already registered in the session data directory (bot ID: {db_bot_id}).")
+        env_bot_id = get_env_value("SESSION_BOT_ID")
+        if env_bot_id and env_bot_id != db_bot_id:
+            print_warning(f"  Mismatch: SESSION_BOT_ID in .env is {env_bot_id}.")
+            print_warning("    The .env value will be updated to match the registered account.")
+        if not prompt_yes_no("  Reconfigure anyway?", False):
+            if env_bot_id != db_bot_id:
+                save_env_value("SESSION_BOT_ID", db_bot_id)
+                print_success(f"  SESSION_BOT_ID corrected to {db_bot_id}.")
+            return
+
+    # Step 1: mnemonic
+    print()
+    has_mnemonic = prompt_yes_no("  Do you have an existing Session mnemonic to restore?", False)
+
+    mnemonic = None
+    if has_mnemonic:
+        print()
+        print_info("  Enter your 13-word Session mnemonic (input hidden):")
+        mnemonic = prompt("  Mnemonic", password=True)
+        if not mnemonic or len(mnemonic.split()) != 13:
+            print_error("  ✗ Invalid mnemonic - must be exactly 13 words.")
+            return
+        if db_bot_id:
+            print()
+            print_warning(f"  The data directory already has account {db_bot_id} registered.")
+            print_warning("    If restoring a different account, you must wipe the existing data directory first:")
+            if sys.platform == "win32":
+                print_warning(f"      rmdir /s /q \"{data_path}\"")
+            else:
+                print_warning(f"      rm -rf {data_path}")
+            print_warning("    The gateway will fail to start if the data dir has a different account registered.")
+            if not prompt_yes_no("  Continue anyway?", False):
+                return
+
+    # Step 2: bot display name 
+    bot_name = prompt("  Bot display name", default=get_env_value("SESSION_BOT_NAME") or "Hermes")
+
+    # Step 3: authorized user's Session ID
+    print()
+    print_info("  Enter YOUR Session ID (find it in the Session app under Settings).")
+    print_info("  This is who the bot will DM and who is allowed to message it.")
+    existing_recipient = get_env_value("SESSION_HOME_CHANNEL") or ""
+    recipient_id = prompt("  Your Session ID", default=existing_recipient or None)
+    if not recipient_id:
+        print_error("  ✗ Session ID is required.")
+        return
+
+    # Step 4: run bridge --setup
+    print()
+    env = {**os.environ, "SESSION_DATA_PATH": data_path, "SESSION_BOT_NAME": bot_name}
+    if has_mnemonic:
+        env["SESSION_MNEMONIC"] = mnemonic
+        print_info("→ Restoring account and fetching Session ID...")
+    else:
+        print_info("→ Creating new Session account...")
+
+    try:
+        result = subprocess.run(
+            [node, str(bridge_script), "--setup"],
+            env=env, capture_output=True, text=True, timeout=90,
+        )
+    except subprocess.TimeoutExpired:
+        action = "restore" if has_mnemonic else "creation"
+        print_error(f" ✗ Account {action} timed out. Check Node.js and try again.")
+        return
+
+    if result.returncode != 0:
+        print_error(f" ✗ Bridge setup failed: {result.stderr.strip()}")
+        return
+
+    # The bridge outputs JSON on one line among other library log output.
+    data = None
+    for line in result.stdout.splitlines():
+        line = line.strip()
+        if line.startswith("{") and "sessionId" in line:
+            try:
+                data = json.loads(line)
+                break
+            except Exception:
+                continue
+
+    if not data:
+        print_error(" ✗ Could not parse bridge output.")
+        return
+
+    bot_session_id = data.get("sessionId", "")
+    status = data.get("status", "")
+
+    if not bot_session_id:
+        print_error(" ✗ Bridge returned incomplete data (no Session ID).")
+        return
+
+    if status == "created":
+        mnemonic = data.get("mnemonic", "")
+        if not mnemonic:
+            print_error(" ✗ Bridge returned incomplete data (no mnemonic).")
+            return
+
+    #  Save all env values
+    if mnemonic:
+        save_env_value("SESSION_MNEMONIC", mnemonic)
+    save_env_value("SESSION_BOT_ID", bot_session_id)
+    save_env_value("SESSION_BOT_NAME", bot_name)
+    save_env_value("SESSION_DATA_PATH", data_path)
+    save_env_value("SESSION_HOME_CHANNEL", recipient_id)
+    save_env_value("SESSION_ALLOWED_USERS", recipient_id)
+
+    # Final status messages
+    if status == "restored":
+        print_success(f"  Account restored! Bot Session ID: {bot_session_id}")
+    elif status == "existing":
+        print_success(f"  Existing account found! Bot Session ID: {bot_session_id}")
+    else:
+        print_success(f"  Account created! Bot Session ID: {bot_session_id}")
+    print_info("  Share this Session ID with contacts.")
+    if mnemonic:
+        print_info("  Your mnemonic has been saved to the .env file — back it up somewhere safe.")
+        print_info("  The gateway does not need it to run and you may delete it from .env if you choose.")
+
+    print()
+    print_success("🔒️ Session configured!")
+    print_info("  Run: hermes gateway start")
+
+
 def _builtin_setup_fn(key: str):
     """Resolve the interactive setup function for a built-in platform key.
 
@@ -5888,6 +6091,7 @@ def _builtin_setup_fn(key: str):
         # whatsapp + dingtalk moved into plugins: setup_fn registered by
         # plugins/platforms/{whatsapp,dingtalk}/adapter.py::register() and
         # dispatched via the plugin path in _configure_platform(). #41112.
+        "session": _setup_session,
         "weixin": _setup_weixin,
         # feishu moved into the plugin: setup_fn registered by
         # plugins/platforms/feishu/adapter.py::register(). #41112.

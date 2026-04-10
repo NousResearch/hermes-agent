@@ -739,6 +739,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         return await _send_weixin(pconfig, chat_id, message, media_files=media_files)
 
     from gateway.platforms.base import BasePlatformAdapter, utf16_len
+    from gateway.platforms.session import SessionAdapter
 
     # Telegram adapter import is optional (requires python-telegram-bot)
     try:
@@ -762,6 +763,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     # migrated to plugins in #41112).
     _MAX_LENGTHS = {
         Platform.TELEGRAM: TelegramAdapter.MAX_MESSAGE_LENGTH if _telegram_available else 4096,
+        Platform.SESSION: SessionAdapter.MAX_MESSAGE_LENGTH,
     }
 
     # Check plugin registry for max_message_length
@@ -981,6 +983,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             result = await _send_qqbot(pconfig, chat_id, chunk)
         elif platform == Platform.YUANBAO:
             result = await _send_yuanbao(chat_id, chunk)
+        elif platform == Platform.SESSION:
+            result = await _send_session(pconfig.extra, chat_id, chunk)
         else:
             # Plugin platform: route through the gateway's live adapter if
             # available, otherwise the plugin's standalone_sender_fn.
@@ -1651,6 +1655,20 @@ async def _send_bluebubbles(extra, chat_id, message):
 # _send_feishu moved to plugins/platforms/feishu/adapter.py::_standalone_send,
 # wired via standalone_sender_fn and reached through _registry_standalone_send
 # (and the feishu media branch above). #41112.
+
+
+async def _send_session(extra: dict, chat_id: str, message: str) -> dict:
+    """Send a Session message via the local bridge HTTP endpoint."""
+    import httpx
+    port = extra.get("bridge_port", "8095")
+    url = f"http://127.0.0.1:{port}/send"
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(url, json={"to": chat_id, "body": message})
+            resp.raise_for_status()
+            return {"success": True, "platform": "session", "chat_id": chat_id}
+    except Exception as e:
+        return {"error": f"Session send failed: {e}"}
 
 
 def _check_send_message():

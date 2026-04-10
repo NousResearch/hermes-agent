@@ -1,0 +1,12 @@
+{
+  "name": "session-bridge",
+  "version": "1.0.0",
+  "type": "module",
+  "private": true,
+  "dependencies": {
+    "@bonesgit/session-desktop-library": "^0.1.16"
+  },
+  "overrides": {
+    "cmake-js": "^8.0.0"
+  }
+}

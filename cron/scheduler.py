@@ -202,7 +202,7 @@ def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str] | None:
 # Valid delivery platforms — used to validate user-supplied platform names
 # in cron delivery targets, preventing env var enumeration via crafted names.
 _KNOWN_DELIVERY_PLATFORMS = frozenset({
-    "telegram", "discord", "slack", "whatsapp", "signal",
+    "telegram", "discord", "slack", "whatsapp", "signal", "session",
     "matrix", "mattermost", "homeassistant", "dingtalk", "feishu",
     "wecom", "wecom_callback", "weixin", "sms", "email", "webhook", "bluebubbles",
     "qqbot", "yuanbao",
@@ -216,6 +216,7 @@ _HOME_TARGET_ENV_VARS = {
     "discord": "DISCORD_HOME_CHANNEL",
     "slack": "SLACK_HOME_CHANNEL",
     "signal": "SIGNAL_HOME_CHANNEL",
+    "session": "SESSION_HOME_CHANNEL",
     "mattermost": "MATTERMOST_HOME_CHANNEL",
     "sms": "SMS_HOME_CHANNEL",
     "email": "EMAIL_HOME_ADDRESS",

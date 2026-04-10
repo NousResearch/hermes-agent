@@ -701,6 +701,14 @@ PLATFORM_HINTS = {
         "files arrive as downloadable documents. You can also include image "
         "URLs in markdown format ![alt](url) and they will be sent as photos."
     ),
+    "session": (
+        "You are on Session, a decentralized encrypted messaging platform. "
+        "Session does not render markdown — use plain text only. "
+        "Session supports DMs and group chats. Groups are identified by IDs starting with '03', "
+        "DMs by IDs starting with '05'. "
+        "The platform supports attachments, voice messages, images, and disappearing messages."
+        "You can react with emojis to other's messages."
+    ),
     "email": (
         "You are communicating via email. Write clear, well-structured responses "
         "suitable for email. Use plain text formatting (no markdown). "

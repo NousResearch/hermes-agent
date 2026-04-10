@@ -78,6 +78,7 @@ Each session is tagged with its source platform:
 | `slack` | Slack workspace |
 | `whatsapp` | WhatsApp messenger |
 | `signal` | Signal messenger |
+| `session` | Session messenger |
 | `matrix` | Matrix rooms and DMs |
 | `mattermost` | Mattermost channels |
 | `email` | Email (IMAP/SMTP) |

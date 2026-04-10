@@ -1913,6 +1913,14 @@ def _setup_qqbot():
     from hermes_cli.gateway import _setup_qqbot as _gateway_setup_qqbot
     _gateway_setup_qqbot()
 
+    
+def _setup_session():
+    """Configure Session messenger."""
+    print_header("Session")
+    if prompt_yes_no("Set up Session (decentralized messenger)?", False):
+        from hermes_cli.gateway import _setup_session
+        _setup_session()
+
 
 def _setup_webhooks():
     """Configure webhook integration."""
@@ -2028,6 +2036,8 @@ def setup_gateway(config: dict):
             get_env_value("QQBOT_HOME_CHANNEL") or get_env_value("QQ_HOME_CHANNEL")
         ):
             missing_home.append("QQBot")
+        if get_env_value("SESSION_BOT_ID") and not get_env_value("SESSION_HOME_CHANNEL"):
+            missing_home.append("Session")
 
         if missing_home:
             print()
@@ -3358,6 +3368,8 @@ def _run_quick_setup(config: dict, hermes_home):
                 plat = "Discord"
             elif "SLACK" in name:
                 plat = "Slack"
+            elif "SESSION" in name:
+                plat = "Session"
             else:
                 continue
             if plat not in platforms:
@@ -3369,6 +3381,7 @@ def _run_quick_setup(config: dict, hermes_home):
                 "Telegram": "📱 Telegram",
                 "Discord": "💬 Discord",
                 "Slack": "💼 Slack",
+                "Session": "🔒 Session",
             }.get(p, p)
             for p in platform_order
         ]
@@ -3381,7 +3394,7 @@ def _run_quick_setup(config: dict, hermes_home):
         for idx in selected_indices:
             plat = platform_order[idx]
             vars_list = platforms[plat]
-            emoji = {"Telegram": "📱", "Discord": "💬", "Slack": "💼"}.get(plat, "")
+            emoji = {"Telegram": "📱", "Discord": "💬", "Slack": "💼", "Session": "🔒"}.get(plat, "")
             print()
             print(color(f"  ─── {emoji} {plat} ───", Colors.CYAN))
             print()

@@ -295,6 +295,7 @@ _EXTRA_ENV_KEYS = frozenset({
     "LANGFUSE_PUBLIC_KEY",
     "LANGFUSE_SECRET_KEY",
     "LANGFUSE_BASE_URL",
+    "SESSION_MNEMONIC", "SESSION_BOT_ID", "SESSION_BOT_NAME", "SESSION_DATA_PATH", "SESSION_HOME_CHANNEL", "SESSION_ALLOWED_USERS", "SESSION_GROUP_ALLOWED_USERS", "SESSION_GROUP_ALLOWED_CHATS",
 })
 import yaml
 
@@ -4160,6 +4161,52 @@ OPTIONAL_ENV_VARS = {
         "password": True,
         "category": "messaging",
         "advanced": True,
+    },
+    "SESSION_BOT_ID": {
+        "description": "Session bot public key (set automatically by hermes setup)",
+        "prompt": "Session bot ID",
+        "url": "https://getsession.org",
+        "password": False,
+        "category": "messaging",
+        "advanced": True,
+    },
+    "SESSION_MNEMONIC": {
+        "description": "Session bot mnemonic seed phrase (13 words)",
+        "prompt": "Session mnemonic (13 words)",
+        "url": "https://getsession.org",
+        "password": True,
+        "category": "messaging",
+    },
+    "SESSION_ALLOWED_USERS": {
+        "description": "Comma-separated Session account IDs allowed to use the bot",
+        "prompt": "Allowed Session IDs (comma-separated, leave empty for open access)",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+    },
+    "SESSION_GROUP_ALLOWED_USERS": {
+        "description": "Comma-separated Session IDs (users) allowed to interact with the bot in groups",
+        "prompt": "Session Group Allowed Users",
+        "category": "messaging",
+    },
+    "SESSION_GROUP_ALLOWED_CHATS": {
+        "description": "Comma-separated Session group IDs (03...) the bot is allowed to respond in",
+        "prompt": "Session Group Allowed Chats",
+        "category": "messaging",
+    },
+    "SESSION_HOME_CHANNEL": {
+        "description": "Session account ID where Hermes delivers cron results and notifications",
+        "prompt": "Home Session ID (leave empty to set later with /set-home)",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+    },
+    "SESSION_BOT_NAME": {
+        "description": "Display name shown in Session (default: Hermes)",
+        "prompt": "Bot display name (leave empty for default 'Hermes')",
+        "url": None,
+        "password": False,
+        "category": "messaging",
     },
     "GATEWAY_ALLOW_ALL_USERS": {
         "description": "Allow all users to interact with messaging bots (true/false). Default: false.",

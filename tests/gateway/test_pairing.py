@@ -25,6 +25,12 @@ def _make_store(tmp_path):
         return PairingStore()
 
 
+def test_pairing_store_resolves_live_hermes_home(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profile-home"))
+    store = PairingStore()
+    assert store._rate_limit_path().parent == tmp_path / "profile-home" / "platforms" / "pairing"
+
+
 # ---------------------------------------------------------------------------
 # _secure_write
 # ---------------------------------------------------------------------------

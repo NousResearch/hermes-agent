@@ -1,8 +1,11 @@
 """Tests for terminal/file tool availability in local dev environments."""
 
 import importlib
+import sys
+import types
 
 from model_tools import get_tool_definitions
+from tools.registry import registry
 
 terminal_tool_module = importlib.import_module("tools.terminal_tool")
 
@@ -114,3 +117,13 @@ class TestTerminalRequirements:
 
         assert "terminal" not in names
         assert "execute_code" not in names
+
+    def test_terminal_tool_recovers_after_stubbed_import(self, monkeypatch):
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        monkeypatch.setitem(sys.modules, "tools.terminal_tool", types.ModuleType("tools.terminal_tool"))
+        registry.deregister("terminal")
+
+        tools = get_tool_definitions(enabled_toolsets=["terminal", "file"], quiet_mode=True)
+        names = {tool["function"]["name"] for tool in tools}
+
+        assert "terminal" in names

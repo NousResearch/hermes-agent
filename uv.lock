@@ -1976,6 +1976,7 @@ dependencies = [
     { name = "requests" },
     { name = "rich" },
     { name = "tenacity" },
+    { name = "tzdata" },
     { name = "websockets" },
 ]
 

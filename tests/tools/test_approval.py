@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch as mock_patch
 
+import pytest
 import tools.approval as approval_module
 from tools.approval import (
     _get_approval_mode,
@@ -16,6 +17,18 @@ from tools.approval import (
     prompt_dangerous_approval,
     submit_pending,
 )
+
+
+@pytest.fixture(autouse=True)
+def _clean_approval_env(monkeypatch):
+    for key in (
+        "HERMES_INTERACTIVE",
+        "HERMES_GATEWAY_SESSION",
+        "HERMES_EXEC_ASK",
+        "HERMES_YOLO_MODE",
+        "HERMES_SESSION_KEY",
+    ):
+        monkeypatch.delenv(key, raising=False)
 
 
 class TestApprovalModeParsing:
@@ -172,6 +185,49 @@ class TestSessionKeyContext:
         assert "set_current_session_key" in called_names
         assert "reset_current_session_key" in called_names
 
+    def test_context_keeps_pending_approval_attached_to_originating_session(self):
+        import os
+        import threading
+
+        clear_session("alice")
+        clear_session("bob")
+        pop_pending("alice")
+        pop_pending("bob")
+        approval_module._permanent_approved.clear()
+
+        alice_ready = threading.Event()
+        bob_ready = threading.Event()
+
+        def worker_alice():
+            token = approval_module.set_current_session_key("alice")
+            try:
+                os.environ["HERMES_EXEC_ASK"] = "1"
+                os.environ["HERMES_SESSION_KEY"] = "alice"
+                alice_ready.set()
+                bob_ready.wait()
+                approval_module.check_all_command_guards("rm -rf /tmp/alice-secret", "local")
+            finally:
+                approval_module.reset_current_session_key(token)
+
+        def worker_bob():
+            alice_ready.wait()
+            token = approval_module.set_current_session_key("bob")
+            try:
+                os.environ["HERMES_SESSION_KEY"] = "bob"
+                bob_ready.set()
+            finally:
+                approval_module.reset_current_session_key(token)
+
+        with mock_patch("tools.approval._get_approval_mode", return_value="manual"):
+            t1 = threading.Thread(target=worker_alice)
+            t2 = threading.Thread(target=worker_bob)
+            t1.start()
+            t2.start()
+            t1.join()
+            t2.join()
+
+        assert pop_pending("alice") is not None
+        assert pop_pending("bob") is None
 
 
 

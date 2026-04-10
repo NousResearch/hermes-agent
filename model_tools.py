@@ -22,7 +22,9 @@ Public API (signatures preserved from the original 2,400-line version):
 
 import json
 import asyncio
+import importlib
 import logging
+import sys
 import threading
 import time
 from typing import Dict, Any, List, Optional, Tuple
@@ -177,7 +179,84 @@ def _run_async(coro):
 # Tool Discovery  (importing each module triggers its registry.register calls)
 # =============================================================================
 
-discover_builtin_tools()
+_TOOL_RECOVERY_IMPORTS = {
+    "web_search": "tools.web_tools",
+    "web_extract": "tools.web_tools",
+    "terminal": "tools.terminal_tool",
+    "read_file": "tools.file_tools",
+    "write_file": "tools.file_tools",
+    "patch": "tools.file_tools",
+    "search_files": "tools.file_tools",
+    "vision_analyze": "tools.vision_tools",
+    "skills_list": "tools.skills_tool",
+    "skill_view": "tools.skills_tool",
+    "skill_manage": "tools.skill_manager_tool",
+    "browser_navigate": "tools.browser_tool",
+    "browser_snapshot": "tools.browser_tool",
+    "browser_click": "tools.browser_tool",
+    "browser_type": "tools.browser_tool",
+    "browser_scroll": "tools.browser_tool",
+    "browser_back": "tools.browser_tool",
+    "browser_press": "tools.browser_tool",
+    "browser_get_images": "tools.browser_tool",
+    "browser_vision": "tools.browser_tool",
+    "browser_console": "tools.browser_tool",
+    "cronjob": "tools.cronjob_tools",
+    "text_to_speech": "tools.tts_tool",
+    "clarify": "tools.clarify_tool",
+    "execute_code": "tools.code_execution_tool",
+    "delegate_task": "tools.delegate_tool",
+    "process": "tools.process_registry",
+    "send_message": "tools.send_message_tool",
+}
+
+
+def _refresh_tool_compat_maps() -> None:
+    global TOOL_TO_TOOLSET_MAP, TOOLSET_REQUIREMENTS
+    TOOL_TO_TOOLSET_MAP = registry.get_tool_to_toolset_map()
+    TOOLSET_REQUIREMENTS = registry.get_toolset_requirements()
+
+
+def _discover_tools():
+    """Import built-in self-registering tool modules."""
+    discover_builtin_tools()
+
+def _recover_missing_requested_tools(requested_tool_names: set[str]) -> None:
+    """Re-import modules when requested tools are missing from the registry.
+
+    Some tests temporarily stub tool modules in ``sys.modules`` before importing
+    model_tools. If discovery happens during that window, the registry can miss a
+    real tool (most notably ``terminal``) for the rest of the process. When a
+    caller later requests one of those tools, force a clean re-import of the
+    owning module to re-run its ``registry.register(...)`` calls.
+    """
+    registered = set(registry.get_all_tool_names())
+    missing = requested_tool_names - registered
+    if not missing:
+        return
+
+    modules_to_reimport = {
+        _TOOL_RECOVERY_IMPORTS[name]
+        for name in missing
+        if name in _TOOL_RECOVERY_IMPORTS
+    }
+    if not modules_to_reimport:
+        return
+
+    recovered_any = False
+    for mod_name in sorted(modules_to_reimport):
+        try:
+            sys.modules.pop(mod_name, None)
+            importlib.import_module(mod_name)
+            recovered_any = True
+        except Exception as e:
+            logger.warning("Could not recover tool module %s: %s", mod_name, e)
+
+    if recovered_any:
+        _refresh_tool_compat_maps()
+
+
+_discover_tools()
 
 # MCP tool discovery (external MCP servers from config) used to run here as
 # a module-level side effect.  It was removed because discover_mcp_tools()
@@ -387,6 +466,8 @@ def _compute_tool_definitions(
     # all check the tool registry for plugin-provided toolsets.  No bypass
     # needed; plugins respect enabled_toolsets / disabled_toolsets like any
     # other toolset.
+
+    _recover_missing_requested_tools(tools_to_include)
 
     # Ask the registry for schemas (only returns tools whose check_fn passes)
     filtered_tools = registry.get_definitions(tools_to_include, quiet=quiet_mode)

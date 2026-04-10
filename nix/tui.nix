@@ -4,7 +4,7 @@ let
   src = ../ui-tui;
   npmDeps = pkgs.fetchNpmDeps {
     inherit src;
-    hash = "sha256-tlQ43Dv5S2p5Aw6ChSTvPXcI5/kkXHoeZsTlSLm75eM=";
+    hash = "sha256-zFGNrlB07I5MwF+Fo4Jf/MZnKIFzkfD+MoL+svt6Fr0=";
   };
 
   packageJson = builtins.fromJSON (builtins.readFile (src + "/package.json"));
@@ -44,15 +44,18 @@ pkgs.buildNpmPackage {
       # cd into ui-tui and reinstall
       cd "$REPO_ROOT/ui-tui"
       rm -rf node_modules/
+      npm cache clean --force
       npm install
       ${pkgs.lib.getExe' npm-lockfile-fix "npm-lockfile-fix"} ./package-lock.json
 
+      NIX_FILE="$REPO_ROOT/nix/tui.nix"
       # compute the new hash
-      sed -i "s/hash = \"[^\"]*\";/hash = \"\";/" "$REPO_ROOT/nix/tui.nix"
+      sed -i "s/hash = \"[^\"]*\";/hash = \"\";/" $NIX_FILE
       NIX_OUTPUT=$(nix build .#tui 2>&1 || true)
       NEW_HASH=$(echo "$NIX_OUTPUT" | grep 'got:' | awk '{print $2}') 
       echo got new hash $NEW_HASH
-      sed -i "s|hash = \"[^\"]*\";|hash = \"$NEW_HASH\";|" "$REPO_ROOT/nix/tui.nix"
+      sed -i "s|hash = \"[^\"]*\";|hash = \"$NEW_HASH\";|" $NIX_FILE
+      nix build .#tui
       echo "Updated npm hash in $NIX_FILE to $NEW_HASH"
     '')
   ];

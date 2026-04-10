@@ -37,6 +37,32 @@ def _source(chat_id="123456", chat_type="dm"):
     )
 
 
+class _FakeProcessRegistry:
+    def __init__(self, watchers=None):
+        self.pending_watchers = list(watchers or [])
+
+    def recover_from_checkpoint(self):
+        return 0
+
+
+@pytest.mark.asyncio
+async def test_track_background_task_releases_completed_tasks():
+    runner = object.__new__(GatewayRunner)
+    runner._background_tasks = set()
+
+    async def complete_soon():
+        await asyncio.sleep(0)
+
+    task = runner._track_background_task(asyncio.create_task(complete_soon()))
+
+    assert task in runner._background_tasks
+
+    await task
+    await asyncio.sleep(0)
+
+    assert runner._background_tasks == set()
+
+
 @pytest.mark.asyncio
 async def test_cancel_background_tasks_cancels_inflight_message_processing():
     adapter = StubAdapter()
@@ -105,3 +131,41 @@ async def test_gateway_stop_interrupts_running_agents_and_cancels_adapter_tasks(
     assert runner._pending_messages == {}
     assert runner._pending_approvals == {}
     assert runner._shutdown_event.is_set() is True
+
+
+@pytest.mark.asyncio
+async def test_runner_start_tracks_startup_watchers(monkeypatch, tmp_path):
+    config = GatewayConfig(
+        platforms={Platform.TELEGRAM: PlatformConfig(enabled=False, token="***")},
+        sessions_dir=tmp_path / "sessions",
+    )
+    runner = GatewayRunner(config)
+
+    blocker = asyncio.Event()
+
+    async def hold(*_args, **_kwargs):
+        await blocker.wait()
+
+    runner._send_update_notification = AsyncMock(return_value=False)
+    runner._run_process_watcher = AsyncMock(side_effect=hold)
+    runner._session_expiry_watcher = AsyncMock(side_effect=hold)
+    runner._platform_reconnect_watcher = AsyncMock(side_effect=hold)
+
+    import tools.process_registry as pr_module
+
+    monkeypatch.setattr(
+        pr_module,
+        "process_registry",
+        _FakeProcessRegistry([{"session_id": "proc_1"}]),
+    )
+
+    ok = await runner.start()
+
+    assert ok is True
+    assert len(runner._background_tasks) == 3
+
+    with patch("gateway.status.remove_pid_file"), patch("gateway.status.write_runtime_status"):
+        await runner.stop()
+
+    await asyncio.sleep(0)
+    assert runner._background_tasks == set()

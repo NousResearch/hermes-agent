@@ -565,6 +565,12 @@ class GatewayRunner:
         # Track background tasks to prevent garbage collection mid-execution
         self._background_tasks: set = set()
 
+    def _track_background_task(self, task: asyncio.Task) -> asyncio.Task:
+        """Retain a strong reference to a fire-and-forget task until completion."""
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+        return task
+
 
 
 
@@ -1283,13 +1289,17 @@ class GatewayRunner:
             from tools.process_registry import process_registry
             while process_registry.pending_watchers:
                 watcher = process_registry.pending_watchers.pop(0)
-                asyncio.create_task(self._run_process_watcher(watcher))
+                self._track_background_task(
+                    asyncio.create_task(self._run_process_watcher(watcher))
+                )
                 logger.info("Resumed watcher for recovered process %s", watcher.get("session_id"))
         except Exception as e:
             logger.error("Recovered watcher setup error: %s", e)
 
         # Start background session expiry watcher for proactive memory flushing
-        asyncio.create_task(self._session_expiry_watcher())
+        self._track_background_task(
+            asyncio.create_task(self._session_expiry_watcher())
+        )
 
         # Start background reconnection watcher for platforms that failed at startup
         if self._failed_platforms:
@@ -1298,7 +1308,9 @@ class GatewayRunner:
                 len(self._failed_platforms),
                 ", ".join(p.value for p in self._failed_platforms),
             )
-        asyncio.create_task(self._platform_reconnect_watcher())
+        self._track_background_task(
+            asyncio.create_task(self._platform_reconnect_watcher())
+        )
 
         logger.info("Press Ctrl+C to stop")
         
@@ -3061,7 +3073,9 @@ class GatewayRunner:
                 from tools.process_registry import process_registry
                 while process_registry.pending_watchers:
                     watcher = process_registry.pending_watchers.pop(0)
-                    asyncio.create_task(self._run_process_watcher(watcher))
+                    self._track_background_task(
+                        asyncio.create_task(self._run_process_watcher(watcher))
+                    )
             except Exception as e:
                 logger.error("Process watcher setup error: %s", e)
 

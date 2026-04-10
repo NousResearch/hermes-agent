@@ -8233,7 +8233,33 @@ class AIAgent:
                         if _err_body_str:
                             self._vprint(f"{self.log_prefix}   📋 Details: {_err_body_str}", force=True)
                     self._vprint(f"{self.log_prefix}   ⏱️  Elapsed: {elapsed_time:.2f}s  Context: {len(api_messages)} msgs, ~{approx_tokens:,} tokens")
-                    
+
+                    # Actionable hint for OpenRouter "no tool endpoints" error.
+                    # This fires regardless of whether fallback succeeds — the
+                    # user needs to know WHY their model failed so they can fix
+                    # their provider routing, not just silently fall back.
+                    if (
+                        self._is_openrouter_url()
+                        and "support tool use" in error_msg
+                    ):
+                        self._vprint(
+                            f"{self.log_prefix}   💡 No OpenRouter providers for {_model} support tool calling with your current settings.",
+                            force=True,
+                        )
+                        if self.providers_allowed:
+                            self._vprint(
+                                f"{self.log_prefix}      Your provider_routing.only restriction is filtering out tool-capable providers.",
+                                force=True,
+                            )
+                            self._vprint(
+                                f"{self.log_prefix}      Try removing the restriction or adding providers that support tools for this model.",
+                                force=True,
+                            )
+                        self._vprint(
+                            f"{self.log_prefix}      Check which providers support tools: https://openrouter.ai/models/{_model}",
+                            force=True,
+                        )
+
                     # Check for interrupt before deciding to retry
                     if self._interrupt_requested:
                         self._vprint(f"{self.log_prefix}⚡ Interrupt detected during error handling, aborting retries.", force=True)

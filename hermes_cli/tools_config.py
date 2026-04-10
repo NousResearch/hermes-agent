@@ -720,6 +720,8 @@ def _prompt_choice(question: str, choices: list, default: int = 0) -> int:
                     return
 
         curses.wrapper(_curses_menu)
+        from hermes_cli.curses_ui import flush_stdin
+        flush_stdin()
         return result_holder[0]
 
     except Exception:

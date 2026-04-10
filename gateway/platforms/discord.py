@@ -770,18 +770,34 @@ class DiscordAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None
     ) -> SendResult:
-        """Send a message to a Discord channel."""
+        """Send a message to a Discord channel or thread.
+
+        When metadata contains a thread_id, the message is sent to that
+        thread instead of the parent channel identified by chat_id.
+        """
         if not self._client:
             return SendResult(success=False, error="Not connected")
 
         try:
-            # Get the channel
-            channel = self._client.get_channel(int(chat_id))
-            if not channel:
-                channel = await self._client.fetch_channel(int(chat_id))
+            # Determine target channel: thread_id in metadata takes precedence.
+            thread_id = None
+            if metadata and metadata.get("thread_id"):
+                thread_id = metadata["thread_id"]
 
-            if not channel:
-                return SendResult(success=False, error=f"Channel {chat_id} not found")
+            if thread_id:
+                # Fetch the thread directly — threads are addressed by their own ID.
+                channel = self._client.get_channel(int(thread_id))
+                if not channel:
+                    channel = await self._client.fetch_channel(int(thread_id))
+                if not channel:
+                    return SendResult(success=False, error=f"Thread {thread_id} not found")
+            else:
+                # Get the parent channel
+                channel = self._client.get_channel(int(chat_id))
+                if not channel:
+                    channel = await self._client.fetch_channel(int(chat_id))
+                if not channel:
+                    return SendResult(success=False, error=f"Channel {chat_id} not found")
 
             # Format and split message if needed
             formatted = self.format_message(content)

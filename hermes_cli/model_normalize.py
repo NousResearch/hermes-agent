@@ -76,17 +76,22 @@ _STRIP_VENDOR_ONLY_PROVIDERS: frozenset[str] = frozenset({
     "copilot-acp",
 })
 
-# Providers whose own naming is authoritative -- pass through unchanged.
-_PASSTHROUGH_PROVIDERS: frozenset[str] = frozenset({
+# Providers whose native naming is authoritative -- pass through unchanged.
+_AUTHORITATIVE_NATIVE_PROVIDERS: frozenset[str] = frozenset({
     "gemini",
+    "huggingface",
+    "openai-codex",
+})
+
+# Direct providers that accept bare native names but should repair a matching
+# provider/ prefix when users copy the aggregator form into config.yaml.
+_MATCHING_PREFIX_STRIP_PROVIDERS: frozenset[str] = frozenset({
     "zai",
     "kimi-coding",
     "minimax",
     "minimax-cn",
     "alibaba",
     "qwen-oauth",
-    "huggingface",
-    "openai-codex",
     "custom",
 })
 
@@ -363,9 +368,13 @@ def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
             return bare
         return _normalize_for_deepseek(bare)
 
-    # --- Native passthrough providers: strip only matching provider prefixes ---
-    if provider in _PASSTHROUGH_PROVIDERS - {"custom", "huggingface", "openai-codex"}:
+    # --- Direct providers: repair matching provider prefixes only ---
+    if provider in _MATCHING_PREFIX_STRIP_PROVIDERS:
         return _strip_matching_provider_prefix(name, provider)
+
+    # --- Authoritative native providers: preserve user-facing slugs as-is ---
+    if provider in _AUTHORITATIVE_NATIVE_PROVIDERS:
+        return name
 
     # --- Custom & all others: pass through as-is ---
     return name

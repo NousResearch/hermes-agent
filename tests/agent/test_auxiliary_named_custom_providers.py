@@ -12,6 +12,17 @@ def _isolate(tmp_path, monkeypatch):
     hermes_home = tmp_path / ".hermes"
     hermes_home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    for env_var in (
+        "AUXILIARY_VISION_PROVIDER",
+        "AUXILIARY_VISION_MODEL",
+        "AUXILIARY_VISION_BASE_URL",
+        "AUXILIARY_VISION_API_KEY",
+        "CONTEXT_VISION_PROVIDER",
+        "CONTEXT_VISION_MODEL",
+        "CONTEXT_VISION_BASE_URL",
+        "CONTEXT_VISION_API_KEY",
+    ):
+        monkeypatch.delenv(env_var, raising=False)
     # Write a minimal config so load_config doesn't fail
     (hermes_home / "config.yaml").write_text("model:\n  default: test-model\n")
 

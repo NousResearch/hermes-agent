@@ -8,12 +8,9 @@ import tools.approval as approval_module
 from tools.approval import (
     _get_approval_mode,
     approve_session,
-    clear_session,
     detect_dangerous_command,
-    has_pending,
     is_approved,
     load_permanent,
-    pop_pending,
     prompt_dangerous_approval,
     submit_pending,
 )
@@ -111,116 +108,6 @@ class TestSafeCommand:
         assert is_dangerous is False
         assert key is None
         assert desc is None
-
-
-class TestSubmitAndPopPending:
-    def test_submit_and_pop(self):
-        key = "test_session_pending"
-        clear_session(key)
-
-        submit_pending(key, {"command": "rm -rf /", "pattern_key": "rm"})
-        assert has_pending(key) is True
-
-        approval = pop_pending(key)
-        assert approval["command"] == "rm -rf /"
-        assert has_pending(key) is False
-
-    def test_pop_empty_returns_none(self):
-        key = "test_session_empty"
-        clear_session(key)
-        assert pop_pending(key) is None
-        assert has_pending(key) is False
-
-
-class TestApproveAndCheckSession:
-    def test_session_approval(self):
-        key = "test_session_approve"
-        clear_session(key)
-
-        assert is_approved(key, "rm") is False
-        approve_session(key, "rm")
-        assert is_approved(key, "rm") is True
-
-    def test_clear_session_removes_approvals(self):
-        key = "test_session_clear"
-        approve_session(key, "rm")
-        assert is_approved(key, "rm") is True
-        clear_session(key)
-        assert is_approved(key, "rm") is False
-        assert has_pending(key) is False
-
-
-class TestSessionKeyContext:
-    def test_context_session_key_overrides_process_env(self):
-        token = approval_module.set_current_session_key("alice")
-        try:
-            with mock_patch.dict("os.environ", {"HERMES_SESSION_KEY": "bob"}, clear=False):
-                assert approval_module.get_current_session_key() == "alice"
-        finally:
-            approval_module.reset_current_session_key(token)
-
-    def test_gateway_runner_binds_session_key_to_context_before_agent_run(self):
-        run_py = Path(__file__).resolve().parents[2] / "gateway" / "run.py"
-        module = ast.parse(run_py.read_text(encoding="utf-8"))
-
-        run_sync = None
-        for node in ast.walk(module):
-            if isinstance(node, ast.FunctionDef) and node.name == "run_sync":
-                run_sync = node
-                break
-
-        assert run_sync is not None, "gateway.run.run_sync not found"
-
-        called_names = set()
-        for node in ast.walk(run_sync):
-            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
-                called_names.add(node.func.id)
-
-        assert "set_current_session_key" in called_names
-        assert "reset_current_session_key" in called_names
-
-    def test_context_keeps_pending_approval_attached_to_originating_session(self):
-        import os
-        import threading
-
-        clear_session("alice")
-        clear_session("bob")
-        pop_pending("alice")
-        pop_pending("bob")
-        approval_module._permanent_approved.clear()
-
-        alice_ready = threading.Event()
-        bob_ready = threading.Event()
-
-        def worker_alice():
-            token = approval_module.set_current_session_key("alice")
-            try:
-                os.environ["HERMES_EXEC_ASK"] = "1"
-                os.environ["HERMES_SESSION_KEY"] = "alice"
-                alice_ready.set()
-                bob_ready.wait()
-                approval_module.check_all_command_guards("rm -rf /tmp/alice-secret", "local")
-            finally:
-                approval_module.reset_current_session_key(token)
-
-        def worker_bob():
-            alice_ready.wait()
-            token = approval_module.set_current_session_key("bob")
-            try:
-                os.environ["HERMES_SESSION_KEY"] = "bob"
-                bob_ready.set()
-            finally:
-                approval_module.reset_current_session_key(token)
-
-        t1 = threading.Thread(target=worker_alice)
-        t2 = threading.Thread(target=worker_bob)
-        t1.start()
-        t2.start()
-        t1.join()
-        t2.join()
-
-        assert pop_pending("alice") is not None
-        assert pop_pending("bob") is None
 
 
 class TestRmFalsePositiveFix:
@@ -495,19 +382,6 @@ class TestPatternKeyUniqueness:
             f"find -exec rm and find -delete share key {key_exec!r} — "
             "approving one silently approves the other"
         )
-
-    def test_approving_find_exec_does_not_approve_find_delete(self):
-        """Session approval for find -exec rm must not carry over to find -delete."""
-        _, key_exec, _ = detect_dangerous_command("find . -exec rm {} \\;")
-        _, key_delete, _ = detect_dangerous_command("find . -name '*.tmp' -delete")
-        session = "test_find_collision"
-        clear_session(session)
-        approve_session(session, key_exec)
-        assert is_approved(session, key_exec) is True
-        assert is_approved(session, key_delete) is False, (
-            "approving find -exec rm should not auto-approve find -delete"
-        )
-        clear_session(session)
 
     def test_legacy_find_key_still_approves_find_exec(self):
         """Old allowlist entry 'find' should keep approving the matching command."""

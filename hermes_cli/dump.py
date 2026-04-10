@@ -32,11 +32,6 @@ def _get_git_commit(project_root: Path) -> str:
     return "(unknown)"
 
 
-def _key_present(name: str) -> str:
-    """Return 'set' or 'not set' for an env var."""
-    return "set" if os.getenv(name) else "not set"
-
-
 def _redact(value: str) -> str:
     """Redact all but first 4 and last 4 chars."""
     if not value:

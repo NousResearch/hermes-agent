@@ -82,16 +82,6 @@ class ClassifiedError:
     def is_auth(self) -> bool:
         return self.reason in (FailoverReason.auth, FailoverReason.auth_permanent)
 
-    @property
-    def is_transient(self) -> bool:
-        """Error is expected to resolve on retry (with or without backoff)."""
-        return self.reason in (
-            FailoverReason.rate_limit,
-            FailoverReason.overloaded,
-            FailoverReason.server_error,
-            FailoverReason.timeout,
-            FailoverReason.unknown,
-        )
 
 
 # ── Provider-specific patterns ──────────────────────────────────────────

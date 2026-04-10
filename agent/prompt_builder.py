@@ -491,17 +491,6 @@ def _parse_skill_file(skill_file: Path) -> tuple[bool, dict, str]:
         return True, {}, ""
 
 
-def _read_skill_conditions(skill_file: Path) -> dict:
-    """Extract conditional activation fields from SKILL.md frontmatter."""
-    try:
-        raw = skill_file.read_text(encoding="utf-8")[:2000]
-        frontmatter, _ = parse_frontmatter(raw)
-        return extract_skill_conditions(frontmatter)
-    except Exception as e:
-        logger.debug("Failed to read skill conditions from %s: %s", skill_file, e)
-        return {}
-
-
 def _skill_should_show(
     conditions: dict,
     available_tools: "set[str] | None",

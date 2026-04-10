@@ -56,7 +56,6 @@ class DaytonaEnvironment(BaseEnvironment):
         self._persistent = persistent_filesystem
         self._task_id = task_id
         self._SandboxState = SandboxState
-        self._DaytonaError = DaytonaError
         self._daytona = Daytona()
         self._sandbox = None
         self._lock = threading.Lock()

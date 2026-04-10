@@ -158,7 +158,6 @@ class ModalEnvironment(BaseEnvironment):
 
         self._persistent = persistent_filesystem
         self._task_id = task_id
-        self._base_image = image
         self._sandbox = None
         self._app = None
         self._worker = _AsyncWorker()

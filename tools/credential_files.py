@@ -407,7 +407,3 @@ def clear_credential_files() -> None:
     _get_registered().clear()
 
 
-def reset_config_cache() -> None:
-    """Force re-read of config on next access (for testing)."""
-    global _config_files
-    _config_files = None

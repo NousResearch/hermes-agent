@@ -70,7 +70,6 @@ DEFAULT_CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex"
 DEFAULT_QWEN_BASE_URL = "https://portal.qwen.ai/v1"
 DEFAULT_GITHUB_MODELS_BASE_URL = "https://api.githubcopilot.com"
 DEFAULT_COPILOT_ACP_BASE_URL = "acp://copilot"
-DEFAULT_GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai"
 CODEX_OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 CODEX_OAUTH_TOKEN_URL = "https://auth.openai.com/oauth/token"
 CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120
@@ -2340,33 +2339,6 @@ def resolve_external_process_provider_credentials(provider_id: str) -> Dict[str,
         "args": args,
         "source": "process",
     }
-
-
-# =============================================================================
-# External credential detection
-# =============================================================================
-
-def detect_external_credentials() -> List[Dict[str, Any]]:
-    """Scan for credentials from other CLI tools that Hermes can reuse.
-
-    Returns a list of dicts, each with:
-      - provider: str   -- Hermes provider id (e.g. "openai-codex")
-      - path: str       -- filesystem path where creds were found
-      - label: str      -- human-friendly description for the setup UI
-    """
-    found: List[Dict[str, Any]] = []
-
-    # Codex CLI: ~/.codex/auth.json (importable, not shared)
-    cli_tokens = _import_codex_cli_tokens()
-    if cli_tokens:
-        codex_path = Path.home() / ".codex" / "auth.json"
-        found.append({
-            "provider": "openai-codex",
-            "path": str(codex_path),
-            "label": f"Codex CLI credentials found ({codex_path}) — run `hermes auth` to create a separate session",
-        })
-
-    return found
 
 
 # =============================================================================

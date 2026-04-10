@@ -316,8 +316,6 @@ def get_service_name() -> str:
     return f"{_SERVICE_BASE}-{suffix}"
 
 
-SERVICE_NAME = _SERVICE_BASE  # backward-compat for external importers; prefer get_service_name()
-
 
 def get_systemd_unit_path(system: bool = False) -> Path:
     name = get_service_name()
@@ -590,17 +588,6 @@ def get_python_path() -> str:
         if venv_python.exists():
             return str(venv_python)
     return sys.executable
-
-def get_hermes_cli_path() -> str:
-    """Get the path to the hermes CLI."""
-    # Check if installed via pip
-    import shutil
-    hermes_bin = shutil.which("hermes")
-    if hermes_bin:
-        return hermes_bin
-    
-    # Fallback to direct module execution
-    return f"{get_python_path()} -m hermes_cli.main"
 
 
 # =============================================================================

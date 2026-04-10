@@ -547,9 +547,3 @@ class BaseEnvironment(ABC):
 
         return _transform_sudo_command(command)
 
-    def _timeout_result(self, timeout: int | None) -> dict:
-        """Standard return dict when a command times out."""
-        return {
-            "output": f"Command timed out after {timeout or self.timeout}s",
-            "returncode": 124,
-        }

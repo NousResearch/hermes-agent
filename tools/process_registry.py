@@ -396,15 +396,15 @@ class ProcessRegistry:
                         session.output_buffer = session.output_buffer[-session.max_output_chars:]
         except Exception as e:
             logger.debug("Process stdout reader ended: %s", e)
-
-        # Process exited
-        try:
-            session.process.wait(timeout=5)
-        except Exception as e:
-            logger.debug("Process wait timed out or failed: %s", e)
-        session.exited = True
-        session.exit_code = session.process.returncode
-        self._move_to_finished(session)
+        finally:
+            # Always reap the child to prevent zombie processes.
+            try:
+                session.process.wait(timeout=5)
+            except Exception as e:
+                logger.debug("Process wait timed out or failed: %s", e)
+            session.exited = True
+            session.exit_code = session.process.returncode
+            self._move_to_finished(session)
 
     def _env_poller_loop(
         self, session: ProcessSession, env: Any, log_path: str, pid_path: str, exit_path: str

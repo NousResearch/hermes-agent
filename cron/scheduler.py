@@ -442,6 +442,14 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
         stdout = (result.stdout or "").strip()
         stderr = (result.stderr or "").strip()
 
+        # Redact secrets from both stdout and stderr before any return path.
+        try:
+            from agent.redact import redact_sensitive_text
+            stdout = redact_sensitive_text(stdout)
+            stderr = redact_sensitive_text(stderr)
+        except Exception:
+            pass
+
         if result.returncode != 0:
             parts = [f"Script exited with code {result.returncode}"]
             if stderr:
@@ -450,13 +458,6 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
                 parts.append(f"stdout:\n{stdout}")
             return False, "\n".join(parts)
 
-        # Redact any secrets that may appear in script output before
-        # they are injected into the LLM prompt context.
-        try:
-            from agent.redact import redact_sensitive_text
-            stdout = redact_sensitive_text(stdout)
-        except Exception:
-            pass
         return True, stdout
 
     except subprocess.TimeoutExpired:

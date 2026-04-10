@@ -1048,7 +1048,7 @@ def _termux_example_image_path(filename: str = "cat.png") -> str:
 
 
 def _split_path_input(raw: str) -> tuple[str, str]:
-    """Split a leading file path token from trailing free-form text.
+    r"""Split a leading file path token from trailing free-form text.
 
     Supports quoted paths and backslash-escaped spaces so callers can accept
     inputs like:

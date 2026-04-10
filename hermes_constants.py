@@ -72,13 +72,13 @@ def display_hermes_home() -> str:
         return str(home)
 
 
-VALID_REASONING_EFFORTS = ("xhigh", "high", "medium", "low", "minimal")
+VALID_REASONING_EFFORTS = ("minimal", "low", "medium", "high", "xhigh")
 
 
 def parse_reasoning_effort(effort: str) -> dict | None:
     """Parse a reasoning effort level into a config dict.
 
-    Valid levels: "xhigh", "high", "medium", "low", "minimal", "none".
+    Valid levels: "none", "minimal", "low", "medium", "high", "xhigh".
     Returns None when the input is empty or unrecognized (caller uses default).
     Returns {"enabled": False} for "none".
     Returns {"enabled": True, "effort": <level>} for valid effort levels.
@@ -91,6 +91,16 @@ def parse_reasoning_effort(effort: str) -> dict | None:
     if effort in VALID_REASONING_EFFORTS:
         return {"enabled": True, "effort": effort}
     return None
+
+
+def is_termux() -> bool:
+    """Return True when running inside a Termux (Android) environment.
+
+    Checks ``TERMUX_VERSION`` (set by Termux) or the Termux-specific
+    ``PREFIX`` path.  Import-safe — no heavy deps.
+    """
+    prefix = os.getenv("PREFIX", "")
+    return bool(os.getenv("TERMUX_VERSION") or "com.termux/files/usr" in prefix)
 
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"

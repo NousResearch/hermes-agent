@@ -48,6 +48,25 @@ model:
   # api_key: "your-key-here"  # Uncomment to set here instead of .env
   base_url: "https://openrouter.ai/api/v1"
 
+  # ── Token limits — two settings, easy to confuse ──────────────────────────
+  #
+  # context_length: TOTAL context window (input + output tokens combined).
+  #   Controls when Hermes compresses history and validates requests.
+  #   Leave unset — Hermes auto-detects the correct value from the provider.
+  #   Set manually only when auto-detection is wrong (e.g. a local server with
+  #   a custom num_ctx, or a proxy that doesn't expose /v1/models).
+  #
+  # context_length: 131072
+  #
+  # max_tokens: OUTPUT cap — maximum tokens the model may generate per response.
+  #   Unrelated to how long your conversation history can be.
+  #   The OpenAI-standard name "max_tokens" is a misnomer; Anthropic's native
+  #   API has since renamed it "max_output_tokens" for clarity.
+  #   Leave unset to use the model's native output ceiling (recommended).
+  #   Set only if you want to deliberately limit individual response length.
+  #
+  # max_tokens: 8192
+
 # =============================================================================
 # OpenRouter Provider Routing (only applies when using OpenRouter)
 # =============================================================================

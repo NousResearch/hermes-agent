@@ -258,28 +258,30 @@ def _make_execute_only_env(forward_env=None):
 
 def test_init_env_args_uses_hermes_dotenv_for_allowlisted_env(monkeypatch):
     """_build_init_env_args picks up forwarded env vars from .env file at init time."""
-    env = _make_execute_only_env(["GITHUB_TOKEN"])
+    # Use a var that is NOT in _HERMES_PROVIDER_ENV_BLOCKLIST (GITHUB_TOKEN
+    # is in the copilot provider's api_key_env_vars and gets stripped).
+    env = _make_execute_only_env(["DATABASE_URL"])
 
-    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
-    monkeypatch.setattr(docker_env, "_load_hermes_env_vars", lambda: {"GITHUB_TOKEN": "value_from_dotenv"})
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setattr(docker_env, "_load_hermes_env_vars", lambda: {"DATABASE_URL": "value_from_dotenv"})
 
     args = env._build_init_env_args()
     args_str = " ".join(args)
 
-    assert "GITHUB_TOKEN=value_from_dotenv" in args_str
+    assert "DATABASE_URL=value_from_dotenv" in args_str
 
 
 def test_init_env_args_prefers_shell_env_over_hermes_dotenv(monkeypatch):
     """Shell env vars take priority over .env file values in init env args."""
-    env = _make_execute_only_env(["GITHUB_TOKEN"])
+    env = _make_execute_only_env(["DATABASE_URL"])
 
-    monkeypatch.setenv("GITHUB_TOKEN", "value_from_shell")
-    monkeypatch.setattr(docker_env, "_load_hermes_env_vars", lambda: {"GITHUB_TOKEN": "value_from_dotenv"})
+    monkeypatch.setenv("DATABASE_URL", "value_from_shell")
+    monkeypatch.setattr(docker_env, "_load_hermes_env_vars", lambda: {"DATABASE_URL": "value_from_dotenv"})
 
     args = env._build_init_env_args()
     args_str = " ".join(args)
 
-    assert "GITHUB_TOKEN=value_from_shell" in args_str
+    assert "DATABASE_URL=value_from_shell" in args_str
     assert "value_from_dotenv" not in args_str
 
 

@@ -480,6 +480,39 @@ class TestClassifyApiError:
         result = classify_api_error(e)
         assert result.reason == FailoverReason.context_overflow
 
+    # ── Message-only usage limit disambiguation (no status code) ──
+
+    def test_message_usage_limit_transient_is_rate_limit(self):
+        """'usage limit' + 'try again' with no status code → rate_limit, not billing."""
+        e = Exception("usage limit exceeded, try again in 5 minutes")
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.rate_limit
+        assert result.retryable is True
+        assert result.should_rotate_credential is True
+        assert result.should_fallback is True
+
+    def test_message_usage_limit_no_retry_signal_is_billing(self):
+        """'usage limit' with no transient signal and no status code → billing."""
+        e = Exception("usage limit reached")
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.billing
+        assert result.retryable is False
+        assert result.should_rotate_credential is True
+
+    def test_message_quota_with_reset_window_is_rate_limit(self):
+        """'quota' + 'resets at' with no status code → rate_limit."""
+        e = Exception("quota exceeded, resets at midnight UTC")
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.rate_limit
+        assert result.retryable is True
+
+    def test_message_limit_exceeded_with_wait_is_rate_limit(self):
+        """'limit exceeded' + 'wait' with no status code → rate_limit."""
+        e = Exception("key limit exceeded, please wait before retrying")
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.rate_limit
+        assert result.retryable is True
+
     # ── Unknown / fallback ──
 
     def test_generic_exception_is_unknown(self):
@@ -506,6 +539,38 @@ class TestClassifyApiError:
         result = classify_api_error(e)
         assert result.reason == FailoverReason.format_error
         assert result.retryable is False
+
+    def test_400_flat_body_descriptive_not_context_overflow(self):
+        """Responses API flat body with descriptive error + large session → format error.
+
+        The Codex Responses API returns errors in flat body format:
+        {"message": "...", "type": "..."} without an "error" wrapper.
+        A descriptive 400 must NOT be misclassified as context overflow
+        just because the session is large.
+        """
+        e = MockAPIError(
+            "Invalid 'input[index].name': string does not match pattern.",
+            status_code=400,
+            body={"message": "Invalid 'input[index].name': string does not match pattern.",
+                  "type": "invalid_request_error"},
+        )
+        result = classify_api_error(e, approx_tokens=200000, context_length=400000, num_messages=500)
+        assert result.reason == FailoverReason.format_error
+        assert result.retryable is False
+
+    def test_400_flat_body_generic_large_session_still_context_overflow(self):
+        """Flat body with generic 'Error' message + large session → context overflow.
+
+        Regression: the flat-body fallback must not break the existing heuristic
+        for genuinely generic errors from providers that use flat bodies.
+        """
+        e = MockAPIError(
+            "Error",
+            status_code=400,
+            body={"message": "Error"},
+        )
+        result = classify_api_error(e, approx_tokens=100000, context_length=200000)
+        assert result.reason == FailoverReason.context_overflow
 
     # ── Peer closed + large session ──
 

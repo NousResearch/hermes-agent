@@ -619,6 +619,18 @@ class TestFormatMessage:
         result = adapter.format_message("[click here](https://example.com)")
         assert result == "<https://example.com|click here>"
 
+    def test_link_conversion_strips_markdown_angle_brackets(self, adapter):
+        result = adapter.format_message("[click here](<https://example.com>)")
+        assert result == "<https://example.com|click here>"
+
+    def test_escapes_control_characters(self, adapter):
+        result = adapter.format_message("AT&T < 5 > 3")
+        assert result == "AT&amp;T &lt; 5 &gt; 3"
+
+    def test_preserves_existing_slack_entities(self, adapter):
+        text = "Hey <@U123>, see <https://example.com|example> and <!here>"
+        assert adapter.format_message(text) == text
+
     def test_strikethrough(self, adapter):
         assert adapter.format_message("~~deleted~~") == "~deleted~"
 
@@ -642,6 +654,325 @@ class TestFormatMessage:
 
     def test_none_passthrough(self, adapter):
         assert adapter.format_message(None) is None
+
+    def test_blockquote_preserved(self, adapter):
+        """Single-line blockquote > marker is preserved."""
+        assert adapter.format_message("> quoted text") == "> quoted text"
+
+    def test_multiline_blockquote(self, adapter):
+        """Multi-line blockquote preserves > on each line."""
+        text = "> line one\n> line two"
+        assert adapter.format_message(text) == "> line one\n> line two"
+
+    def test_blockquote_with_formatting(self, adapter):
+        """Blockquote containing bold text."""
+        assert adapter.format_message("> **bold quote**") == "> *bold quote*"
+
+    def test_nested_blockquote(self, adapter):
+        """Multiple > characters for nested quotes."""
+        assert adapter.format_message(">> deeply quoted") == ">> deeply quoted"
+
+    def test_blockquote_mixed_with_plain(self, adapter):
+        """Blockquote lines interleaved with plain text."""
+        text = "normal\n> quoted\nnormal again"
+        result = adapter.format_message(text)
+        assert "> quoted" in result
+        assert "normal" in result
+
+    def test_non_prefix_gt_still_escaped(self, adapter):
+        """Greater-than in mid-line is still escaped."""
+        assert adapter.format_message("5 > 3") == "5 &gt; 3"
+
+    def test_blockquote_with_code(self, adapter):
+        """Blockquote containing inline code."""
+        result = adapter.format_message("> use `fmt.Println`")
+        assert result.startswith(">")
+        assert "`fmt.Println`" in result
+
+    def test_bold_italic_combined(self, adapter):
+        """Triple-star ***text*** converts to Slack bold+italic *_text_*."""
+        assert adapter.format_message("***hello***") == "*_hello_*"
+
+    def test_bold_italic_with_surrounding_text(self, adapter):
+        """Bold+italic in a sentence."""
+        result = adapter.format_message("This is ***important*** stuff")
+        assert "*_important_*" in result
+
+    def test_bold_italic_does_not_break_plain_bold(self, adapter):
+        """**bold** still works after adding ***bold italic*** support."""
+        assert adapter.format_message("**bold**") == "*bold*"
+
+    def test_bold_italic_does_not_break_plain_italic(self, adapter):
+        """*italic* still works after adding ***bold italic*** support."""
+        assert adapter.format_message("*italic*") == "_italic_"
+
+    def test_bold_italic_mixed_with_bold(self, adapter):
+        """Both ***bold italic*** and **bold** in the same message."""
+        result = adapter.format_message("***important*** and **bold**")
+        assert "*_important_*" in result
+        assert "*bold*" in result
+
+    def test_pre_escaped_ampersand_not_double_escaped(self, adapter):
+        """Already-escaped &amp; must not become &amp;amp;."""
+        assert adapter.format_message("&amp;") == "&amp;"
+
+    def test_pre_escaped_lt_not_double_escaped(self, adapter):
+        """Already-escaped &lt; must not become &amp;lt;."""
+        assert adapter.format_message("&lt;") == "&lt;"
+
+    def test_pre_escaped_gt_not_double_escaped(self, adapter):
+        """Already-escaped &gt; in plain text must not become &amp;gt;."""
+        assert adapter.format_message("5 &gt; 3") == "5 &gt; 3"
+
+    def test_mixed_raw_and_escaped_entities(self, adapter):
+        """Raw & and pre-escaped &amp; coexist correctly."""
+        result = adapter.format_message("AT&T and &amp; entity")
+        assert result == "AT&amp;T and &amp; entity"
+
+    def test_link_with_parentheses_in_url(self, adapter):
+        """Wikipedia-style URL with balanced parens is not truncated."""
+        result = adapter.format_message("[Foo](https://en.wikipedia.org/wiki/Foo_(bar))")
+        assert result == "<https://en.wikipedia.org/wiki/Foo_(bar)|Foo>"
+
+    def test_link_with_multiple_paren_pairs(self, adapter):
+        """URL with multiple balanced paren pairs."""
+        result = adapter.format_message("[text](https://example.com/a_(b)_c_(d))")
+        assert result == "<https://example.com/a_(b)_c_(d)|text>"
+
+    def test_link_without_parens_still_works(self, adapter):
+        """Normal URL without parens is unaffected by regex change."""
+        result = adapter.format_message("[click](https://example.com/path?q=1)")
+        assert result == "<https://example.com/path?q=1|click>"
+
+    def test_link_with_angle_brackets_and_parens(self, adapter):
+        """Angle-bracket URL with parens (CommonMark syntax)."""
+        result = adapter.format_message("[Foo](<https://en.wikipedia.org/wiki/Foo_(bar)>)")
+        assert result == "<https://en.wikipedia.org/wiki/Foo_(bar)|Foo>"
+
+    def test_escaping_is_idempotent(self, adapter):
+        """Formatting already-formatted text produces the same result."""
+        original = "AT&T < 5 > 3"
+        once = adapter.format_message(original)
+        twice = adapter.format_message(once)
+        assert once == twice
+
+    # --- Entity preservation (spec-compliance) ---
+
+    def test_channel_mention_preserved(self, adapter):
+        """<!channel> special mention passes through unchanged."""
+        assert adapter.format_message("Attention <!channel>") == "Attention <!channel>"
+
+    def test_everyone_mention_preserved(self, adapter):
+        """<!everyone> special mention passes through unchanged."""
+        assert adapter.format_message("Hey <!everyone>") == "Hey <!everyone>"
+
+    def test_subteam_mention_preserved(self, adapter):
+        """<!subteam^ID> user group mention passes through unchanged."""
+        assert adapter.format_message("Paging <!subteam^S12345>") == "Paging <!subteam^S12345>"
+
+    def test_date_formatting_preserved(self, adapter):
+        """<!date^...> formatting token passes through unchanged."""
+        text = "Posted <!date^1392734382^{date_pretty}|Feb 18, 2014>"
+        assert adapter.format_message(text) == text
+
+    def test_channel_link_preserved(self, adapter):
+        """<#CHANNEL_ID> channel link passes through unchanged."""
+        assert adapter.format_message("Join <#C12345>") == "Join <#C12345>"
+
+    # --- Additional edge cases ---
+
+    def test_message_only_code_block(self, adapter):
+        """Entire message is a fenced code block — no conversion."""
+        code = "```python\nx = 1\n```"
+        assert adapter.format_message(code) == code
+
+    def test_multiline_mixed_formatting(self, adapter):
+        """Multi-line message with headers, bold, links, code, and blockquotes."""
+        text = "## Title\n**bold** and [link](https://x.com)\n> quote\n`code`"
+        result = adapter.format_message(text)
+        assert result.startswith("*Title*")
+        assert "*bold*" in result
+        assert "<https://x.com|link>" in result
+        assert "> quote" in result
+        assert "`code`" in result
+
+    def test_markdown_unordered_list_with_asterisk(self, adapter):
+        """Asterisk list items must not trigger italic conversion."""
+        text = "* item one\n* item two"
+        result = adapter.format_message(text)
+        assert "item one" in result
+        assert "item two" in result
+
+    def test_nested_bold_in_link(self, adapter):
+        """Bold inside link label — label is stashed before bold pass."""
+        result = adapter.format_message("[**bold**](https://example.com)")
+        assert "https://example.com" in result
+        assert "bold" in result
+
+    def test_url_with_query_string_and_ampersand(self, adapter):
+        """Ampersand in URL query string must not be escaped."""
+        result = adapter.format_message("[link](https://x.com?a=1&b=2)")
+        assert result == "<https://x.com?a=1&b=2|link>"
+
+    def test_emoji_shortcodes_passthrough(self, adapter):
+        """Emoji shortcodes like :smile: pass through unchanged."""
+        assert adapter.format_message(":smile: hello :wave:") == ":smile: hello :wave:"
+
+
+# ---------------------------------------------------------------------------
+# TestEditMessage
+# ---------------------------------------------------------------------------
+
+
+class TestEditMessage:
+    """Verify that edit_message() applies mrkdwn formatting before sending."""
+
+    @pytest.mark.asyncio
+    async def test_edit_message_formats_bold(self, adapter):
+        """edit_message converts **bold** to Slack *bold*."""
+        adapter._app.client.chat_update = AsyncMock(return_value={"ok": True})
+        await adapter.edit_message("C123", "1234.5678", "**hello world**")
+        kwargs = adapter._app.client.chat_update.call_args.kwargs
+        assert kwargs["text"] == "*hello world*"
+
+    @pytest.mark.asyncio
+    async def test_edit_message_formats_links(self, adapter):
+        """edit_message converts markdown links to Slack format."""
+        adapter._app.client.chat_update = AsyncMock(return_value={"ok": True})
+        await adapter.edit_message("C123", "1234.5678", "[click](https://example.com)")
+        kwargs = adapter._app.client.chat_update.call_args.kwargs
+        assert kwargs["text"] == "<https://example.com|click>"
+
+    @pytest.mark.asyncio
+    async def test_edit_message_preserves_blockquotes(self, adapter):
+        """edit_message preserves blockquote > markers."""
+        adapter._app.client.chat_update = AsyncMock(return_value={"ok": True})
+        await adapter.edit_message("C123", "1234.5678", "> quoted text")
+        kwargs = adapter._app.client.chat_update.call_args.kwargs
+        assert kwargs["text"] == "> quoted text"
+
+    @pytest.mark.asyncio
+    async def test_edit_message_escapes_control_chars(self, adapter):
+        """edit_message escapes & < > in plain text."""
+        adapter._app.client.chat_update = AsyncMock(return_value={"ok": True})
+        await adapter.edit_message("C123", "1234.5678", "AT&T < 5 > 3")
+        kwargs = adapter._app.client.chat_update.call_args.kwargs
+        assert kwargs["text"] == "AT&amp;T &lt; 5 &gt; 3"
+
+
+# ---------------------------------------------------------------------------
+# TestEditMessageStreamingPipeline
+# ---------------------------------------------------------------------------
+
+
+class TestEditMessageStreamingPipeline:
+    """E2E: verify that sequential streaming edits all go through format_message.
+
+    Simulates the GatewayStreamConsumer pattern where edit_message is called
+    repeatedly with progressively longer accumulated text.  Every call must
+    produce properly formatted mrkdwn in the chat_update payload.
+    """
+
+    @pytest.mark.asyncio
+    async def test_edit_message_formats_streaming_updates(self, adapter):
+        """Simulates streaming: multiple edits, each should be formatted."""
+        adapter._app.client.chat_update = AsyncMock(return_value={"ok": True})
+
+        # First streaming update — bold
+        result1 = await adapter.edit_message("C123", "ts1", "**Processing**...")
+        assert result1.success is True
+        kwargs1 = adapter._app.client.chat_update.call_args.kwargs
+        assert kwargs1["text"] == "*Processing*..."
+
+        # Second streaming update — bold + link
+        result2 = await adapter.edit_message(
+            "C123", "ts1", "**Done!** See [results](https://example.com)"
+        )
+        assert result2.success is True
+        kwargs2 = adapter._app.client.chat_update.call_args.kwargs
+        assert kwargs2["text"] == "*Done!* See <https://example.com|results>"
+
+    @pytest.mark.asyncio
+    async def test_edit_message_formats_code_and_bold(self, adapter):
+        """Streaming update with code block and bold — code must be preserved."""
+        adapter._app.client.chat_update = AsyncMock(return_value={"ok": True})
+
+        content = "**Result:**\n```python\nprint('hello')\n```"
+        result = await adapter.edit_message("C123", "ts1", content)
+        assert result.success is True
+        kwargs = adapter._app.client.chat_update.call_args.kwargs
+        assert kwargs["text"].startswith("*Result:*")
+        assert "```python\nprint('hello')\n```" in kwargs["text"]
+
+    @pytest.mark.asyncio
+    async def test_edit_message_formats_blockquote_in_stream(self, adapter):
+        """Streaming update with blockquote — '>' marker must survive."""
+        adapter._app.client.chat_update = AsyncMock(return_value={"ok": True})
+
+        content = "> **Important:** do this\nnormal line"
+        result = await adapter.edit_message("C123", "ts1", content)
+        assert result.success is True
+        kwargs = adapter._app.client.chat_update.call_args.kwargs
+        assert kwargs["text"].startswith("> *Important:*")
+        assert "normal line" in kwargs["text"]
+
+    @pytest.mark.asyncio
+    async def test_edit_message_formats_progressive_accumulation(self, adapter):
+        """Simulate real streaming: text grows with each edit, all formatted."""
+        adapter._app.client.chat_update = AsyncMock(return_value={"ok": True})
+
+        updates = [
+            ("**Step 1**", "*Step 1*"),
+            ("**Step 1**\n**Step 2**", "*Step 1*\n*Step 2*"),
+            (
+                "**Step 1**\n**Step 2**\nSee [docs](https://docs.example.com)",
+                "*Step 1*\n*Step 2*\nSee <https://docs.example.com|docs>",
+            ),
+        ]
+
+        for raw, expected in updates:
+            result = await adapter.edit_message("C123", "ts1", raw)
+            assert result.success is True
+            kwargs = adapter._app.client.chat_update.call_args.kwargs
+            assert kwargs["text"] == expected, f"Failed for input: {raw!r}"
+
+        # Total edit count should match number of updates
+        assert adapter._app.client.chat_update.call_count == len(updates)
+
+    @pytest.mark.asyncio
+    async def test_edit_message_formats_bold_italic(self, adapter):
+        """Bold+italic ***text*** is formatted as *_text_* in edited messages."""
+        adapter._app.client.chat_update = AsyncMock(return_value={"ok": True})
+        await adapter.edit_message("C123", "ts1", "***important*** update")
+        kwargs = adapter._app.client.chat_update.call_args.kwargs
+        assert "*_important_*" in kwargs["text"]
+
+    @pytest.mark.asyncio
+    async def test_edit_message_does_not_double_escape(self, adapter):
+        """Pre-escaped entities in edited messages must not get double-escaped."""
+        adapter._app.client.chat_update = AsyncMock(return_value={"ok": True})
+        await adapter.edit_message("C123", "ts1", "5 &gt; 3 and &amp; entity")
+        kwargs = adapter._app.client.chat_update.call_args.kwargs
+        assert "&amp;gt;" not in kwargs["text"]
+        assert "&amp;amp;" not in kwargs["text"]
+        assert "&gt;" in kwargs["text"]
+        assert "&amp;" in kwargs["text"]
+
+    @pytest.mark.asyncio
+    async def test_edit_message_formats_url_with_parens(self, adapter):
+        """Wikipedia-style URL with parens survives edit pipeline."""
+        adapter._app.client.chat_update = AsyncMock(return_value={"ok": True})
+        await adapter.edit_message("C123", "ts1", "See [Foo](https://en.wikipedia.org/wiki/Foo_(bar))")
+        kwargs = adapter._app.client.chat_update.call_args.kwargs
+        assert "<https://en.wikipedia.org/wiki/Foo_(bar)|Foo>" in kwargs["text"]
+
+    @pytest.mark.asyncio
+    async def test_edit_message_not_connected(self, adapter):
+        """edit_message returns failure when adapter is not connected."""
+        adapter._app = None
+        result = await adapter.edit_message("C123", "ts1", "**hello**")
+        assert result.success is False
+        assert "Not connected" in result.error
 
 
 # ---------------------------------------------------------------------------
@@ -1084,6 +1415,48 @@ class TestMessageSplitting:
         )
         await adapter.send("C123", "hello world")
         assert adapter._app.client.chat_postMessage.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_send_preserves_blockquote_formatting(self, adapter):
+        """Blockquote '>' markers must survive format → chunk → send pipeline."""
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "ts1"})
+        await adapter.send("C123", "> quoted text\nnormal text")
+        kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
+        sent_text = kwargs["text"]
+        assert sent_text.startswith("> quoted text")
+        assert "normal text" in sent_text
+
+    @pytest.mark.asyncio
+    async def test_send_formats_bold_italic(self, adapter):
+        """Bold+italic ***text*** is formatted as *_text_* in sent messages."""
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "ts1"})
+        await adapter.send("C123", "***important*** update")
+        kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
+        assert "*_important_*" in kwargs["text"]
+
+    @pytest.mark.asyncio
+    async def test_send_explicitly_enables_mrkdwn(self, adapter):
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "ts1"})
+        await adapter.send("C123", "**hello**")
+        kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
+        assert kwargs.get("mrkdwn") is True
+
+    @pytest.mark.asyncio
+    async def test_send_does_not_double_escape_entities(self, adapter):
+        """Pre-escaped &amp; in sent messages must not become &amp;amp;."""
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "ts1"})
+        await adapter.send("C123", "Use &amp; for ampersand")
+        kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
+        assert "&amp;amp;" not in kwargs["text"]
+        assert "&amp;" in kwargs["text"]
+
+    @pytest.mark.asyncio
+    async def test_send_formats_url_with_parens(self, adapter):
+        """Wikipedia-style URL with parens survives send pipeline."""
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "ts1"})
+        await adapter.send("C123", "See [Foo](https://en.wikipedia.org/wiki/Foo_(bar))")
+        kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
+        assert "<https://en.wikipedia.org/wiki/Foo_(bar)|Foo>" in kwargs["text"]
 
 
 # ---------------------------------------------------------------------------

@@ -24,6 +24,7 @@ import logging
 from dataclasses import dataclass
 from typing import List, NamedTuple, Optional
 
+from hermes_cli.auth import PROVIDER_REGISTRY
 from hermes_cli.providers import (
     determine_api_mode,
     get_label,

@@ -299,6 +299,9 @@ class APIServerAdapter(BasePlatformAdapter):
         self._cors_origins: tuple[str, ...] = self._parse_cors_origins(
             extra.get("cors_origins", os.getenv("API_SERVER_CORS_ORIGINS", "")),
         )
+        self._model_name: str = self._resolve_model_name(
+            extra.get("model_name", os.getenv("API_SERVER_MODEL_NAME", "")),
+        )
         self._app: Optional["web.Application"] = None
         self._runner: Optional["web.AppRunner"] = None
         self._site: Optional["web.TCPSite"] = None
@@ -323,6 +326,26 @@ class APIServerAdapter(BasePlatformAdapter):
             items = [str(value)]
 
         return tuple(str(item).strip() for item in items if str(item).strip())
+
+    @staticmethod
+    def _resolve_model_name(explicit: str) -> str:
+        """Derive the advertised model name for /v1/models.
+
+        Priority:
+        1. Explicit override (config extra or API_SERVER_MODEL_NAME env var)
+        2. Active profile name (so each profile advertises a distinct model)
+        3. Fallback: "hermes-agent"
+        """
+        if explicit and explicit.strip():
+            return explicit.strip()
+        try:
+            from hermes_cli.profiles import get_active_profile_name
+            profile = get_active_profile_name()
+            if profile and profile not in ("default", "custom"):
+                return profile
+        except Exception:
+            pass
+        return "hermes-agent"
 
     def _cors_headers_for_origin(self, origin: str) -> Optional[Dict[str, str]]:
         """Return CORS headers for an allowed browser origin."""
@@ -468,12 +491,12 @@ class APIServerAdapter(BasePlatformAdapter):
             "object": "list",
             "data": [
                 {
-                    "id": "hermes-agent",
+                    "id": self._model_name,
                     "object": "model",
                     "created": int(time.time()),
                     "owned_by": "hermes",
                     "permission": [],
-                    "root": "hermes-agent",
+                    "root": self._model_name,
                     "parent": None,
                 }
             ],
@@ -546,7 +569,7 @@ class APIServerAdapter(BasePlatformAdapter):
             # history already set from request body above
 
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:29]}"
-        model_name = body.get("model", "hermes-agent")
+        model_name = body.get("model", self._model_name)
         created = int(time.time())
 
         if stream:
@@ -923,7 +946,7 @@ class APIServerAdapter(BasePlatformAdapter):
             "object": "response",
             "status": "completed",
             "created_at": created_at,
-            "model": body.get("model", "hermes-agent"),
+            "model": body.get("model", self._model_name),
             "output": output_items,
             "usage": {
                 "input_tokens": usage.get("input_tokens", 0),
@@ -1653,8 +1676,8 @@ class APIServerAdapter(BasePlatformAdapter):
 
             self._mark_connected()
             logger.info(
-                "[%s] API server listening on http://%s:%d",
-                self.name, self._host, self._port,
+                "[%s] API server listening on http://%s:%d (model: %s)",
+                self.name, self._host, self._port, self._model_name,
             )
             return True
 

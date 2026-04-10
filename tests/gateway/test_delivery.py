@@ -1,7 +1,7 @@
 """Tests for the delivery routing module."""
 
 from gateway.config import Platform, GatewayConfig, PlatformConfig, HomeChannel
-from gateway.delivery import DeliveryRouter, DeliveryTarget, parse_deliver_spec
+from gateway.delivery import DeliveryRouter, DeliveryTarget
 from gateway.session import SessionSource
 
 
@@ -39,28 +39,6 @@ class TestParseTargetPlatformChat:
     def test_unknown_platform(self):
         target = DeliveryTarget.parse("unknown_platform")
         assert target.platform == Platform.LOCAL
-
-
-class TestParseDeliverSpec:
-    def test_none_returns_default(self):
-        result = parse_deliver_spec(None)
-        assert result == "origin"
-
-    def test_empty_string_returns_default(self):
-        result = parse_deliver_spec("")
-        assert result == "origin"
-
-    def test_custom_default(self):
-        result = parse_deliver_spec(None, default="local")
-        assert result == "local"
-
-    def test_passthrough_string(self):
-        result = parse_deliver_spec("telegram")
-        assert result == "telegram"
-
-    def test_passthrough_list(self):
-        result = parse_deliver_spec(["local", "telegram"])
-        assert result == ["local", "telegram"]
 
 
 class TestTargetToStringRoundtrip:

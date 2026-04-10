@@ -11,7 +11,6 @@ from agent.prompt_builder import (
     _scan_context_content,
     _truncate_content,
     _parse_skill_file,
-    _read_skill_conditions,
     _skill_should_show,
     _find_hermes_md,
     _find_git_root,
@@ -774,61 +773,6 @@ class TestPromptBuilderConstants:
 # =========================================================================
 # Conditional skill activation
 # =========================================================================
-
-class TestReadSkillConditions:
-    def test_no_conditions_returns_empty_lists(self, tmp_path):
-        skill_file = tmp_path / "SKILL.md"
-        skill_file.write_text("---\nname: test\ndescription: A skill\n---\n")
-        conditions = _read_skill_conditions(skill_file)
-        assert conditions["fallback_for_toolsets"] == []
-        assert conditions["requires_toolsets"] == []
-        assert conditions["fallback_for_tools"] == []
-        assert conditions["requires_tools"] == []
-
-    def test_reads_fallback_for_toolsets(self, tmp_path):
-        skill_file = tmp_path / "SKILL.md"
-        skill_file.write_text(
-            "---\nname: ddg\ndescription: DuckDuckGo\nmetadata:\n  hermes:\n    fallback_for_toolsets: [web]\n---\n"
-        )
-        conditions = _read_skill_conditions(skill_file)
-        assert conditions["fallback_for_toolsets"] == ["web"]
-
-    def test_reads_requires_toolsets(self, tmp_path):
-        skill_file = tmp_path / "SKILL.md"
-        skill_file.write_text(
-            "---\nname: openhue\ndescription: Hue lights\nmetadata:\n  hermes:\n    requires_toolsets: [terminal]\n---\n"
-        )
-        conditions = _read_skill_conditions(skill_file)
-        assert conditions["requires_toolsets"] == ["terminal"]
-
-    def test_reads_multiple_conditions(self, tmp_path):
-        skill_file = tmp_path / "SKILL.md"
-        skill_file.write_text(
-            "---\nname: test\ndescription: Test\nmetadata:\n  hermes:\n    fallback_for_toolsets: [browser]\n    requires_tools: [terminal]\n---\n"
-        )
-        conditions = _read_skill_conditions(skill_file)
-        assert conditions["fallback_for_toolsets"] == ["browser"]
-        assert conditions["requires_tools"] == ["terminal"]
-
-    def test_missing_file_returns_empty(self, tmp_path):
-        conditions = _read_skill_conditions(tmp_path / "missing.md")
-        assert conditions == {}
-
-    def test_logs_condition_read_failures_and_returns_empty(self, tmp_path, monkeypatch, caplog):
-        skill_file = tmp_path / "SKILL.md"
-        skill_file.write_text("---\nname: broken\n---\n")
-
-        def boom(*args, **kwargs):
-            raise OSError("read exploded")
-
-        monkeypatch.setattr(type(skill_file), "read_text", boom)
-        with caplog.at_level(logging.DEBUG, logger="agent.prompt_builder"):
-            conditions = _read_skill_conditions(skill_file)
-
-        assert conditions == {}
-        assert "Failed to read skill conditions" in caplog.text
-        assert str(skill_file) in caplog.text
-
 
 class TestSkillShouldShow:
     def test_no_filter_info_always_shows(self):

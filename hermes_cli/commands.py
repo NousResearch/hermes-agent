@@ -174,12 +174,6 @@ def resolve_command(name: str) -> CommandDef | None:
     return _COMMAND_LOOKUP.get(name.lower().lstrip("/"))
 
 
-def register_plugin_command(cmd: CommandDef) -> None:
-    """Append a plugin-defined command to the registry and refresh lookups."""
-    COMMAND_REGISTRY.append(cmd)
-    rebuild_lookups()
-
-
 def rebuild_lookups() -> None:
     """Rebuild all derived lookup dicts from the current COMMAND_REGISTRY.
 

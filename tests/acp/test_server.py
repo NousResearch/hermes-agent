@@ -71,6 +71,7 @@ class TestInitialize:
         assert caps.session_capabilities is not None
         assert caps.session_capabilities.fork is not None
         assert caps.session_capabilities.list is not None
+        assert caps.session_capabilities.resume is not None
 
 
 # ---------------------------------------------------------------------------

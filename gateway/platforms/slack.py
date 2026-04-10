@@ -39,7 +39,7 @@ from gateway.platforms.base import (
     MessageType,
     SendResult,
     SUPPORTED_DOCUMENT_TYPES,
-    _safe_url_for_log,
+    safe_url_for_log,
     cache_document_from_bytes,
 )
 
@@ -686,7 +686,7 @@ class SlackAdapter(BasePlatformAdapter):
         except Exception as e:  # pragma: no cover - defensive logging
             logger.warning(
                 "[Slack] Failed to upload image from URL %s, falling back to text: %s",
-                _safe_url_for_log(image_url),
+                safe_url_for_log(image_url),
                 e,
                 exc_info=True,
             )

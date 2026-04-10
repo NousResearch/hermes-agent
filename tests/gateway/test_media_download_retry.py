@@ -377,6 +377,134 @@ class TestCacheAudioFromUrl:
 
 
 # ---------------------------------------------------------------------------
+# SSRF redirect guard tests (base.py)
+# ---------------------------------------------------------------------------
+
+
+class TestSSRFRedirectGuard:
+    """cache_image_from_url / cache_audio_from_url must reject redirects
+    that land on private/internal hosts (e.g. cloud metadata endpoint)."""
+
+    def _make_redirect_response(self, target_url: str):
+        """Build a mock httpx response that looks like a redirect."""
+        resp = MagicMock()
+        resp.is_redirect = True
+        resp.next_request = MagicMock(url=target_url)
+        return resp
+
+    def _make_client_capturing_hooks(self):
+        """Return (mock_client, captured_kwargs dict) where captured_kwargs
+        will contain the kwargs passed to httpx.AsyncClient()."""
+        captured = {}
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        def factory(*args, **kwargs):
+            captured.update(kwargs)
+            return mock_client
+
+        return mock_client, captured, factory
+
+    def test_image_blocks_private_redirect(self, tmp_path, monkeypatch):
+        """cache_image_from_url rejects a redirect to a private IP."""
+        monkeypatch.setattr("gateway.platforms.base.IMAGE_CACHE_DIR", tmp_path / "img")
+
+        redirect_resp = self._make_redirect_response(
+            "http://169.254.169.254/latest/meta-data"
+        )
+        mock_client, captured, factory = self._make_client_capturing_hooks()
+
+        async def fake_get(_url, **kwargs):
+            # Simulate httpx calling the response event hooks
+            for hook in captured["event_hooks"]["response"]:
+                await hook(redirect_resp)
+
+        mock_client.get = AsyncMock(side_effect=fake_get)
+
+        def fake_safe(url):
+            return url == "https://public.example.com/image.png"
+
+        async def run():
+            with patch("tools.url_safety.is_safe_url", side_effect=fake_safe), \
+                 patch("httpx.AsyncClient", side_effect=factory):
+                from gateway.platforms.base import cache_image_from_url
+                await cache_image_from_url(
+                    "https://public.example.com/image.png", ext=".png"
+                )
+
+        with pytest.raises(ValueError, match="Blocked redirect"):
+            asyncio.run(run())
+
+    def test_audio_blocks_private_redirect(self, tmp_path, monkeypatch):
+        """cache_audio_from_url rejects a redirect to a private IP."""
+        monkeypatch.setattr("gateway.platforms.base.AUDIO_CACHE_DIR", tmp_path / "audio")
+
+        redirect_resp = self._make_redirect_response(
+            "http://10.0.0.1/internal/secrets"
+        )
+        mock_client, captured, factory = self._make_client_capturing_hooks()
+
+        async def fake_get(_url, **kwargs):
+            for hook in captured["event_hooks"]["response"]:
+                await hook(redirect_resp)
+
+        mock_client.get = AsyncMock(side_effect=fake_get)
+
+        def fake_safe(url):
+            return url == "https://public.example.com/voice.ogg"
+
+        async def run():
+            with patch("tools.url_safety.is_safe_url", side_effect=fake_safe), \
+                 patch("httpx.AsyncClient", side_effect=factory):
+                from gateway.platforms.base import cache_audio_from_url
+                await cache_audio_from_url(
+                    "https://public.example.com/voice.ogg", ext=".ogg"
+                )
+
+        with pytest.raises(ValueError, match="Blocked redirect"):
+            asyncio.run(run())
+
+    def test_safe_redirect_allowed(self, tmp_path, monkeypatch):
+        """A redirect to a public IP is allowed through."""
+        monkeypatch.setattr("gateway.platforms.base.IMAGE_CACHE_DIR", tmp_path / "img")
+
+        redirect_resp = self._make_redirect_response(
+            "https://cdn.example.com/real-image.png"
+        )
+
+        ok_response = MagicMock()
+        ok_response.content = b"\xff\xd8\xff fake jpeg"
+        ok_response.raise_for_status = MagicMock()
+        ok_response.is_redirect = False
+
+        mock_client, captured, factory = self._make_client_capturing_hooks()
+
+        call_count = 0
+
+        async def fake_get(_url, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            # First call triggers redirect hook, second returns data
+            for hook in captured["event_hooks"]["response"]:
+                await hook(redirect_resp if call_count == 1 else ok_response)
+            return ok_response
+
+        mock_client.get = AsyncMock(side_effect=fake_get)
+
+        async def run():
+            with patch("tools.url_safety.is_safe_url", return_value=True), \
+                 patch("httpx.AsyncClient", side_effect=factory):
+                from gateway.platforms.base import cache_image_from_url
+                return await cache_image_from_url(
+                    "https://public.example.com/image.png", ext=".jpg"
+                )
+
+        path = asyncio.run(run())
+        assert path.endswith(".jpg")
+
+
+# ---------------------------------------------------------------------------
 # Slack mock setup (mirrors existing test_slack.py approach)
 # ---------------------------------------------------------------------------
 

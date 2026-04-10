@@ -10,9 +10,10 @@ Limitations (documented, not fixable at pre-flight level):
     can return a public IP for the check, then a private IP for the actual
     connection. Fixing this requires connection-level validation (e.g.
     Python's Champion library or an egress proxy like Stripe's Smokescreen).
-  - Redirect-based bypass in vision_tools is mitigated by an httpx event
-    hook that re-validates each redirect target. Web tools use third-party
-    SDKs (Firecrawl/Tavily) where redirect handling is on their servers.
+  - Redirect-based bypass is mitigated by httpx event hooks that re-validate
+    each redirect target in vision_tools, gateway platform adapters, and
+    media cache helpers. Web tools use third-party SDKs (Firecrawl/Tavily)
+    where redirect handling is on their servers.
 """
 
 import ipaddress

@@ -7936,6 +7936,7 @@ class AIAgent:
                                 "error": _exhaust_error,
                             }
 
+                        # ── Continuation for chat_completions (text only) ──
                         if self.api_mode == "chat_completions":
                             assistant_message = response.choices[0].message
                             if not assistant_message.tool_calls:
@@ -7947,7 +7948,7 @@ class AIAgent:
 
                                 if length_continue_retries < 3:
                                     self._vprint(
-                                        f"{self.log_prefix}↻ Requesting continuation "
+                                        f"{self.log_prefix}\u21bb Requesting continuation "
                                         f"({length_continue_retries}/3)..."
                                     )
                                     continue_msg = {
@@ -7975,6 +7976,53 @@ class AIAgent:
                                     "partial": True,
                                     "error": "Response remained truncated after 3 continuation attempts",
                                 }
+
+                        # ── Continuation for anthropic_messages (text only) ──
+                        if self.api_mode == "anthropic_messages" and not _trunc_has_tool_calls:
+                            length_continue_retries += 1
+                            # Collect partial text from Anthropic content blocks
+                            _partial_text = _trunc_content or ""
+                            if _partial_text:
+                                truncated_response_prefix += _partial_text
+                            # Build assistant message from Anthropic response blocks
+                            _anthropic_blocks = getattr(response, "content", [])
+                            if _anthropic_blocks:
+                                interim_msg = {
+                                    "role": "assistant",
+                                    "content": _anthropic_blocks,
+                                }
+                                messages.append(interim_msg)
+
+                            if length_continue_retries < 3:
+                                self._vprint(
+                                    f"{self.log_prefix}\u21bb Requesting continuation "
+                                    f"({length_continue_retries}/3) [anthropic]..."
+                                )
+                                continue_msg = {
+                                    "role": "user",
+                                    "content": (
+                                        "[System: Your previous response was truncated by the output "
+                                        "length limit. Continue exactly where you left off. Do not "
+                                        "restart or repeat prior text. Finish the answer directly.]"
+                                    ),
+                                }
+                                messages.append(continue_msg)
+                                self._session_messages = messages
+                                self._save_session_log(messages)
+                                restart_with_length_continuation = True
+                                break
+
+                            partial_response = self._strip_think_blocks(truncated_response_prefix).strip()
+                            self._cleanup_task_resources(effective_task_id)
+                            self._persist_session(messages, conversation_history)
+                            return {
+                                "final_response": partial_response or None,
+                                "messages": messages,
+                                "api_calls": api_call_count,
+                                "completed": False,
+                                "partial": True,
+                                "error": "Response remained truncated after 3 continuation attempts",
+                            }
 
                         if self.api_mode == "chat_completions":
                             assistant_message = response.choices[0].message

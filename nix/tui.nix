@@ -1,10 +1,10 @@
 # nix/tui.nix — Hermes TUI (Ink/React) compiled with tsc and bundled
-{ pkgs, ... }:
+{ pkgs, npm-lockfile-fix, ... }:
 let
   src = ../ui-tui;
   npmDeps = pkgs.fetchNpmDeps {
     inherit src;
-    hash = "sha256-iz6TrWec4MpfDLZR48V6XHoKnZkEn9x2t97YOqWZt5k=";
+    hash = "sha256-tlQ43Dv5S2p5Aw6ChSTvPXcI5/kkXHoeZsTlSLm75eM=";
   };
 
   packageJson = builtins.fromJSON (builtins.readFile (src + "/package.json"));
@@ -33,6 +33,29 @@ pkgs.buildNpmPackage {
 
     runHook postInstall
   '';
+
+  nativeBuildInputs = [
+    (pkgs.writeShellScriptBin "update_tui_lockfile" ''
+      set -euo pipefail
+
+      # get root of repo
+      REPO_ROOT=$(git rev-parse --show-toplevel)
+
+      # cd into ui-tui and reinstall
+      cd "$REPO_ROOT/ui-tui"
+      rm -rf node_modules/
+      npm install --package-lock-only
+      ${pkgs.lib.getExe' npm-lockfile-fix "npm-lockfile-fix"} ./package-lock.json
+
+      # compute the new hash
+      sed -i "s/hash = \"[^\"]*\";/hash = \"\";/" "$REPO_ROOT/nix/tui.nix"
+      NIX_OUTPUT=$(nix build .#tui 2>&1 || true)
+      NEW_HASH=$(echo "$NIX_OUTPUT" | grep 'got:' | awk '{print $2}') 
+      echo got new hash $NEW_HASH
+      sed -i "s|hash = \"[^\"]*\";|hash = \"$NEW_HASH\";|" "$REPO_ROOT/nix/tui.nix"
+      echo "Updated npm hash in $NIX_FILE to $NEW_HASH"
+    '')
+  ];
 
   passthru.devShellHook = ''
     STAMP=".nix-stamps/hermes-tui"

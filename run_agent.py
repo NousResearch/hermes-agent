@@ -359,8 +359,9 @@ def _sanitize_surrogates(text: str) -> str:
 def _sanitize_messages_surrogates(messages: list) -> bool:
     """Sanitize surrogate characters from all string content in a messages list.
 
-    Walks message dicts in-place.  Returns True if any surrogates were found
-    and replaced, False otherwise.
+    Walks message dicts in-place. Returns True if any surrogates were found
+    and replaced, False otherwise. Covers content/text, name, and tool call
+    metadata/arguments so retries don't fail on a non-content field.
     """
     found = False
     for msg in messages:
@@ -377,6 +378,88 @@ def _sanitize_messages_surrogates(messages: list) -> bool:
                     if isinstance(text, str) and _SURROGATE_RE.search(text):
                         part["text"] = _SURROGATE_RE.sub('\ufffd', text)
                         found = True
+        name = msg.get("name")
+        if isinstance(name, str) and _SURROGATE_RE.search(name):
+            msg["name"] = _SURROGATE_RE.sub('\ufffd', name)
+            found = True
+        tool_calls = msg.get("tool_calls")
+        if isinstance(tool_calls, list):
+            for tc in tool_calls:
+                if not isinstance(tc, dict):
+                    continue
+                tc_id = tc.get("id")
+                if isinstance(tc_id, str) and _SURROGATE_RE.search(tc_id):
+                    tc["id"] = _SURROGATE_RE.sub('\ufffd', tc_id)
+                    found = True
+                fn = tc.get("function")
+                if isinstance(fn, dict):
+                    fn_name = fn.get("name")
+                    if isinstance(fn_name, str) and _SURROGATE_RE.search(fn_name):
+                        fn["name"] = _SURROGATE_RE.sub('\ufffd', fn_name)
+                        found = True
+                    fn_args = fn.get("arguments")
+                    if isinstance(fn_args, str) and _SURROGATE_RE.search(fn_args):
+                        fn["arguments"] = _SURROGATE_RE.sub('\ufffd', fn_args)
+                        found = True
+    return found
+
+
+def _strip_non_ascii(text: str) -> str:
+    """Remove non-ASCII characters, replacing with closest ASCII equivalent or removing.
+
+    Used as a last resort when the system encoding is ASCII and can't handle
+    any non-ASCII characters (e.g. LANG=C on Chromebooks).
+    """
+    return text.encode('ascii', errors='ignore').decode('ascii')
+
+
+def _sanitize_messages_non_ascii(messages: list) -> bool:
+    """Strip non-ASCII characters from all string content in a messages list.
+
+    This is a last-resort recovery for systems with ASCII-only encoding
+    (LANG=C, Chromebooks, minimal containers).  Returns True if any
+    non-ASCII content was found and sanitized.
+    """
+    found = False
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        # Sanitize content (string)
+        content = msg.get("content")
+        if isinstance(content, str):
+            sanitized = _strip_non_ascii(content)
+            if sanitized != content:
+                msg["content"] = sanitized
+                found = True
+        elif isinstance(content, list):
+            for part in content:
+                if isinstance(part, dict):
+                    text = part.get("text")
+                    if isinstance(text, str):
+                        sanitized = _strip_non_ascii(text)
+                        if sanitized != text:
+                            part["text"] = sanitized
+                            found = True
+        # Sanitize name field (can contain non-ASCII in tool results)
+        name = msg.get("name")
+        if isinstance(name, str):
+            sanitized = _strip_non_ascii(name)
+            if sanitized != name:
+                msg["name"] = sanitized
+                found = True
+        # Sanitize tool_calls
+        tool_calls = msg.get("tool_calls")
+        if isinstance(tool_calls, list):
+            for tc in tool_calls:
+                if isinstance(tc, dict):
+                    fn = tc.get("function", {})
+                    if isinstance(fn, dict):
+                        fn_args = fn.get("arguments")
+                        if isinstance(fn_args, str):
+                            sanitized = _strip_non_ascii(fn_args)
+                            if sanitized != fn_args:
+                                fn["arguments"] = sanitized
+                                found = True
     return found
 
 
@@ -864,6 +947,7 @@ class AIAgent:
                     client_kwargs["default_headers"] = headers
 
             self.api_key = client_kwargs.get("api_key", "")
+            self.base_url = client_kwargs.get("base_url", self.base_url)
             try:
                 self.client = self._create_openai_client(client_kwargs, reason="agent_init", shared=True)
                 if not self.quiet_mode:
@@ -2937,7 +3021,7 @@ class AIAgent:
 
     @staticmethod
     def _cap_delegate_task_calls(tool_calls: list) -> list:
-        """Truncate excess delegate_task calls to MAX_CONCURRENT_CHILDREN.
+        """Truncate excess delegate_task calls to max_concurrent_children.
 
         The delegate_tool caps the task list inside a single call, but the
         model can emit multiple separate delegate_task tool_calls in one
@@ -2945,23 +3029,24 @@ class AIAgent:
 
         Returns the original list if no truncation was needed.
         """
-        from tools.delegate_tool import MAX_CONCURRENT_CHILDREN
+        from tools.delegate_tool import _get_max_concurrent_children
+        max_children = _get_max_concurrent_children()
         delegate_count = sum(1 for tc in tool_calls if tc.function.name == "delegate_task")
-        if delegate_count <= MAX_CONCURRENT_CHILDREN:
+        if delegate_count <= max_children:
             return tool_calls
         kept_delegates = 0
         truncated = []
         for tc in tool_calls:
             if tc.function.name == "delegate_task":
-                if kept_delegates < MAX_CONCURRENT_CHILDREN:
+                if kept_delegates < max_children:
                     truncated.append(tc)
                     kept_delegates += 1
             else:
                 truncated.append(tc)
         logger.warning(
             "Truncated %d excess delegate_task call(s) to enforce "
-            "MAX_CONCURRENT_CHILDREN=%d limit",
-            delegate_count - MAX_CONCURRENT_CHILDREN, MAX_CONCURRENT_CHILDREN,
+            "max_concurrent_children=%d limit",
+            delegate_count - max_children, max_children,
         )
         return truncated
 
@@ -5519,7 +5604,7 @@ class AIAgent:
                 preserve_dots=self._anthropic_preserve_dots(),
                 context_length=ctx_len,
                 base_url=getattr(self, "_anthropic_base_url", None),
-                fast_mode=self.request_overrides.get("speed") == "fast",
+                fast_mode=(self.request_overrides or {}).get("speed") == "fast",
             )
 
         if self.api_mode == "codex_responses":
@@ -7183,7 +7268,7 @@ class AIAgent:
         self._thinking_prefill_retries = 0
         self._last_content_with_tools = None
         self._mute_post_response = False
-        self._surrogate_sanitized = False
+        self._unicode_sanitization_passes = 0
 
         # Pre-turn connection health check: detect and clean up dead TCP
         # connections left over from provider outages or dropped streams.
@@ -7623,6 +7708,7 @@ class AIAgent:
 
             finish_reason = "stop"
             response = None  # Guard against UnboundLocalError if all retries fail
+            api_kwargs = None  # Guard against UnboundLocalError in except handler
 
             while retry_count < max_retries:
                 try:
@@ -8168,22 +8254,40 @@ class AIAgent:
                         self.thinking_callback("")
 
                     # -----------------------------------------------------------
-                    # Surrogate character recovery.  UnicodeEncodeError happens
-                    # when the messages contain lone surrogates (U+D800..U+DFFF)
-                    # that are invalid UTF-8.  Common source: clipboard paste
-                    # from Google Docs or similar rich-text editors.  We sanitize
-                    # the entire messages list in-place and retry once.
+                    # UnicodeEncodeError recovery.  Two common causes:
+                    #   1. Lone surrogates (U+D800..U+DFFF) from clipboard paste
+                    #      (Google Docs, rich-text editors) — sanitize and retry.
+                    #   2. ASCII codec on systems with LANG=C or non-UTF-8 locale
+                    #      (e.g. Chromebooks) — any non-ASCII character fails.
+                    #      Detect via the error message mentioning 'ascii' codec.
+                    # We sanitize messages in-place and may retry twice:
+                    # first to strip surrogates, then once more for pure
+                    # ASCII-only locale sanitization if needed.
                     # -----------------------------------------------------------
-                    if isinstance(api_error, UnicodeEncodeError) and not getattr(self, '_surrogate_sanitized', False):
-                        self._surrogate_sanitized = True
-                        if _sanitize_messages_surrogates(messages):
+                    if isinstance(api_error, UnicodeEncodeError) and getattr(self, '_unicode_sanitization_passes', 0) < 2:
+                        _err_str = str(api_error).lower()
+                        _is_ascii_codec = "'ascii'" in _err_str or "ascii" in _err_str
+                        _surrogates_found = _sanitize_messages_surrogates(messages)
+                        if _surrogates_found:
+                            self._unicode_sanitization_passes += 1
                             self._vprint(
                                 f"{self.log_prefix}⚠️  Stripped invalid surrogate characters from messages. Retrying...",
                                 force=True,
                             )
                             continue
-                        # Surrogates weren't in messages — might be in system
-                        # prompt or prefill.  Fall through to normal error path.
+                        if _is_ascii_codec:
+                            # ASCII codec: the system encoding can't handle
+                            # non-ASCII characters at all. Sanitize all
+                            # non-ASCII content from messages and retry.
+                            if _sanitize_messages_non_ascii(messages):
+                                self._unicode_sanitization_passes += 1
+                                self._vprint(
+                                    f"{self.log_prefix}⚠️  System encoding is ASCII — stripped non-ASCII characters from messages. Retrying...",
+                                    force=True,
+                                )
+                                continue
+                        # Nothing to sanitize in messages — might be in system
+                        # prompt or prefill. Fall through to normal error path.
 
                     status_code = getattr(api_error, "status_code", None)
                     error_context = self._extract_api_error_context(api_error)
@@ -8639,9 +8743,10 @@ class AIAgent:
                         if self._try_activate_fallback():
                             retry_count = 0
                             continue
-                        self._dump_api_request_debug(
-                            api_kwargs, reason="non_retryable_client_error", error=api_error,
-                        )
+                        if api_kwargs is not None:
+                            self._dump_api_request_debug(
+                                api_kwargs, reason="non_retryable_client_error", error=api_error,
+                            )
                         self._emit_status(
                             f"❌ Non-retryable error (HTTP {status_code}): "
                             f"{self._summarize_api_error(api_error)}"
@@ -8744,9 +8849,10 @@ class AIAgent:
                             self.log_prefix, max_retries, _final_summary,
                             _provider, _model, len(api_messages), f"{approx_tokens:,}",
                         )
-                        self._dump_api_request_debug(
-                            api_kwargs, reason="max_retries_exhausted", error=api_error,
-                        )
+                        if api_kwargs is not None:
+                            self._dump_api_request_debug(
+                                api_kwargs, reason="max_retries_exhausted", error=api_error,
+                            )
                         self._persist_session(messages, conversation_history)
                         _final_response = f"API call failed after {max_retries} retries: {_final_summary}"
                         if _is_stream_drop:

@@ -2675,19 +2675,89 @@ def create_source_router(auth: Optional[GitHubAuth] = None) -> List[SkillSource]
     return sources
 
 
+def _search_one_source(
+    src: SkillSource, query: str, limit: int
+) -> Tuple[str, List[SkillMeta]]:
+    """Search a single source.  Runs in a thread for parallelism."""
+    try:
+        return src.source_id(), src.search(query, limit=limit)
+    except Exception as e:
+        logger.debug("Search failed for %s: %s", src.source_id(), e)
+        return src.source_id(), []
+
+
+def parallel_search_sources(
+    sources: List[SkillSource],
+    query: str = "",
+    per_source_limits: Optional[Dict[str, int]] = None,
+    source_filter: str = "all",
+    overall_timeout: float = 30,
+    on_source_done: Optional[Any] = None,
+) -> Tuple[List[SkillMeta], Dict[str, int], List[str]]:
+    """Search all sources in parallel with per-source timeout.
+
+    Returns ``(all_results, source_counts, timed_out_ids)``.
+
+    *on_source_done* is an optional callback ``(source_id, count) -> None``
+    invoked as each source completes — useful for progress indicators.
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    per_source_limits = per_source_limits or {}
+
+    active: List[SkillSource] = []
+    for src in sources:
+        sid = src.source_id()
+        if source_filter != "all" and sid != source_filter and sid != "official":
+            continue
+        active.append(src)
+
+    all_results: List[SkillMeta] = []
+    source_counts: Dict[str, int] = {}
+    timed_out_ids: List[str] = []
+
+    if not active:
+        return all_results, source_counts, timed_out_ids
+
+    with ThreadPoolExecutor(max_workers=min(len(active), 8)) as pool:
+        futures = {}
+        for src in active:
+            lim = per_source_limits.get(src.source_id(), 50)
+            fut = pool.submit(_search_one_source, src, query, lim)
+            futures[fut] = src.source_id()
+
+        try:
+            for fut in as_completed(futures, timeout=overall_timeout):
+                try:
+                    sid, results = fut.result(timeout=0)
+                    source_counts[sid] = len(results)
+                    all_results.extend(results)
+                    if on_source_done:
+                        on_source_done(sid, len(results))
+                except Exception:
+                    pass
+        except TimeoutError:
+            timed_out_ids = [
+                futures[f] for f in futures if not f.done()
+            ]
+            if timed_out_ids:
+                logger.debug(
+                    "Skills browse timed out waiting for: %s",
+                    ", ".join(timed_out_ids),
+                )
+
+    return all_results, source_counts, timed_out_ids
+
+
 def unified_search(query: str, sources: List[SkillSource],
                    source_filter: str = "all", limit: int = 10) -> List[SkillMeta]:
-    """Search all sources and merge results."""
-    all_results: List[SkillMeta] = []
-
-    for src in sources:
-        if source_filter != "all" and src.source_id() != source_filter:
-            continue
-        try:
-            results = src.search(query, limit=limit)
-            all_results.extend(results)
-        except Exception as e:
-            logger.debug(f"Search failed for {src.source_id()}: {e}")
+    """Search all sources (in parallel) and merge results."""
+    all_results, _, _ = parallel_search_sources(
+        sources,
+        query=query,
+        source_filter=source_filter,
+        overall_timeout=30,
+    )
 
     # Deduplicate by name, preferring higher trust levels
     _TRUST_RANK = {"builtin": 2, "trusted": 1, "community": 0}

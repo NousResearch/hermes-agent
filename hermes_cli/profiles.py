@@ -42,6 +42,11 @@ _PROFILE_DIRS = [
     "plans",
     "workspace",
     "cron",
+    # Per-profile HOME for subprocesses: isolates system tool configs (git,
+    # ssh, gh, npm …) so credentials don't bleed between profiles.  In Docker
+    # this also ensures tool configs land inside the persistent volume.
+    # See hermes_constants.get_subprocess_home() and issue #4426.
+    "home",
 ]
 
 # Files copied during --clone (if they exist in the source)

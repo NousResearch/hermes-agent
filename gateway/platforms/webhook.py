@@ -262,7 +262,7 @@ class WebhookAdapter(BasePlatformAdapter):
                 ", ".join(self._dynamic_routes.keys()) or "(none)",
             )
         except Exception as e:
-            logger.warning("[webhook] Failed to reload dynamic routes: %s", e)
+            logger.error("[webhook] Failed to reload dynamic routes: %s", e)
 
     async def _handle_webhook(self, request: "web.Request") -> "web.Response":
         """POST /webhooks/{route_name} — receive and process a webhook event."""

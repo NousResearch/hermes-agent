@@ -168,7 +168,7 @@ def _load_config_files() -> List[Dict[str, str]]:
                             "container_path": container_path,
                         })
     except Exception as e:
-        logger.debug("Could not read terminal.credential_files from config: %s", e)
+        logger.warning("Could not read terminal.credential_files from config: %s", e)
 
     _config_files = result
     return _config_files

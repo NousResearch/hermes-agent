@@ -774,7 +774,7 @@ class AIAgent:
             self._anthropic_api_key = effective_key
             self._anthropic_base_url = base_url
             from agent.anthropic_adapter import _is_oauth_token as _is_oat
-            self._is_anthropic_oauth = _is_oat(effective_key)
+            self._is_anthropic_oauth = _is_oat(effective_key) if _is_native_anthropic else False
             self._anthropic_client = build_anthropic_client(effective_key, base_url)
             # No OpenAI client needed for Anthropic mode
             self.client = None
@@ -1369,7 +1369,7 @@ class AIAgent:
             self._anthropic_client = build_anthropic_client(
                 effective_key, self._anthropic_base_url,
             )
-            self._is_anthropic_oauth = _is_oauth_token(effective_key)
+            self._is_anthropic_oauth = _is_oauth_token(effective_key) if new_provider == "anthropic" else False
             self.client = None
             self._client_kwargs = {}
         else:
@@ -4179,7 +4179,7 @@ class AIAgent:
         self._anthropic_api_key = new_token
         # Update OAuth flag — token type may have changed (API key ↔ OAuth)
         from agent.anthropic_adapter import _is_oauth_token
-        self._is_anthropic_oauth = _is_oauth_token(new_token)
+        self._is_anthropic_oauth = _is_oauth_token(new_token) if self.provider == "anthropic" else False
         return True
 
     def _apply_client_headers_for_base_url(self, base_url: str) -> None:
@@ -5061,7 +5061,7 @@ class AIAgent:
                 self._anthropic_api_key = effective_key
                 self._anthropic_base_url = fb_base_url
                 self._anthropic_client = build_anthropic_client(effective_key, self._anthropic_base_url)
-                self._is_anthropic_oauth = _is_oauth_token(effective_key)
+                self._is_anthropic_oauth = _is_oauth_token(effective_key) if fb_provider == "anthropic" else False
                 self.client = None
                 self._client_kwargs = {}
             else:
@@ -5519,7 +5519,7 @@ class AIAgent:
                 preserve_dots=self._anthropic_preserve_dots(),
                 context_length=ctx_len,
                 base_url=getattr(self, "_anthropic_base_url", None),
-                fast_mode=self.request_overrides.get("speed") == "fast",
+                fast_mode=(self.request_overrides or {}).get("speed") == "fast",
             )
 
         if self.api_mode == "codex_responses":
@@ -7623,6 +7623,7 @@ class AIAgent:
 
             finish_reason = "stop"
             response = None  # Guard against UnboundLocalError if all retries fail
+            api_kwargs = None  # Guard against UnboundLocalError in error handler
 
             while retry_count < max_retries:
                 try:

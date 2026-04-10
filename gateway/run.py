@@ -16,6 +16,7 @@ Usage:
 import asyncio
 import json
 import logging
+import math
 import os
 import re
 import shlex
@@ -1028,6 +1029,88 @@ class GatewayRunner:
             )
             return "all"
         return mode
+
+    @staticmethod
+    def _load_still_working_interval(platform_key: str | None = None) -> float | None:
+        """Load per-platform still-working heartbeat interval from config.
+
+        Returns seconds as a float, or ``None`` when disabled.
+        Config keys:
+          - ``display.still_working_interval`` (global default, seconds)
+          - ``display.still_working_overrides.<platform>`` (per-platform override)
+
+        Values of ``0``, ``false``, or ``off`` disable the heartbeat.
+        Invalid global values fall back to the default 600 seconds. Invalid
+        per-platform overrides are ignored so they inherit the global setting.
+        """
+
+        def _coerce_interval(raw, *, key_name: str, invalid_fallback) -> float | None | object:
+            if raw is None or raw == "":
+                return _MISSING
+            if raw is False:
+                return None
+            if raw is True:
+                return invalid_fallback
+            text = str(raw).strip().lower()
+            if text in {"off", "false", "none"}:
+                return None
+            if text in {"on", "true"}:
+                return invalid_fallback
+            try:
+                value = float(raw)
+            except (TypeError, ValueError):
+                logger.warning(
+                    "Unknown %s '%s', defaulting to %s",
+                    key_name,
+                    raw,
+                    "inherit" if invalid_fallback is _MISSING else f"{invalid_fallback}s",
+                )
+                return invalid_fallback
+            if math.isnan(value) or math.isinf(value):
+                logger.warning(
+                    "Unknown %s '%s', defaulting to %s",
+                    key_name,
+                    raw,
+                    "inherit" if invalid_fallback is _MISSING else f"{invalid_fallback}s",
+                )
+                return invalid_fallback
+            if value <= 0:
+                return None
+            return value
+
+        _MISSING = object()
+        try:
+            import yaml as _y
+            cfg_path = _hermes_home / "config.yaml"
+            if cfg_path.exists():
+                with open(cfg_path, encoding="utf-8") as _f:
+                    cfg = _y.safe_load(_f) or {}
+                display_cfg = cfg.get("display", {}) if isinstance(cfg, dict) else {}
+            else:
+                display_cfg = {}
+        except Exception:
+            display_cfg = {}
+
+        raw_value = _coerce_interval(
+            display_cfg.get("still_working_interval"),
+            key_name="still_working_interval",
+            invalid_fallback=600.0,
+        )
+        interval = 600.0 if raw_value is _MISSING else raw_value
+
+        overrides = display_cfg.get("still_working_overrides", {})
+        if not isinstance(overrides, dict):
+            overrides = {}
+        if platform_key:
+            override_value = _coerce_interval(
+                overrides.get(platform_key),
+                key_name=f"still_working_overrides.{platform_key}",
+                invalid_fallback=_MISSING,
+            )
+            if override_value is not _MISSING:
+                interval = override_value
+
+        return interval
 
     @staticmethod
     def _load_provider_routing() -> dict:
@@ -7327,29 +7410,29 @@ class GatewayRunner:
         interrupt_monitor = asyncio.create_task(monitor_for_interrupt())
 
         # Periodic "still working" notifications for long-running tasks.
-        # Fires every 10 minutes so the user knows the agent hasn't died.
-        _NOTIFY_INTERVAL = 600  # 10 minutes
+        # Default every 10 minutes, configurable via display.still_working_interval
+        # with optional per-platform overrides in display.still_working_overrides.
+        _notify_interval = self._load_still_working_interval(platform_key)
         _notify_start = time.time()
 
         async def _notify_long_running():
             _notify_adapter = self.adapters.get(source.platform)
-            if not _notify_adapter:
+            if not _notify_adapter or _notify_interval is None:
                 return
             while True:
-                await asyncio.sleep(_NOTIFY_INTERVAL)
+                await asyncio.sleep(_notify_interval)
                 _elapsed_mins = int((time.time() - _notify_start) // 60)
                 # Include agent activity context if available.
                 _agent_ref = agent_holder[0]
                 _status_detail = ""
                 if _agent_ref and hasattr(_agent_ref, "get_activity_summary"):
                     try:
-                        _a = _agent_ref.get_activity_summary()
-                        _parts = [f"iteration {_a['api_call_count']}/{_a['max_iterations']}"]
-                        if _a.get("current_tool"):
-                            _parts.append(f"running: {_a['current_tool']}")
-                        else:
-                            _parts.append(_a.get("last_activity_desc", ""))
-                        _status_detail = " — " + ", ".join(_parts)
+                        _act = _agent_ref.get_activity_summary()
+                        _cur_tool = _act.get("current_tool")
+                        _iter_n = _act.get("api_call_count", 0)
+                        _iter_max = _act.get("max_iterations", 0)
+                        if _cur_tool:
+                            _status_detail = f" — iteration {_iter_n}/{_iter_max}, running: {_cur_tool}"
                     except Exception:
                         pass
                 try:
@@ -7361,7 +7444,8 @@ class GatewayRunner:
                 except Exception as _ne:
                     logger.debug("Long-running notification error: %s", _ne)
 
-        _notify_task = asyncio.create_task(_notify_long_running())
+        _notify_task = asyncio.create_task(_notify_long_running()) if _notify_interval is not None else None
+
 
         try:
             # Run in thread pool to not block.  Use an *inactivity*-based
@@ -7602,7 +7686,8 @@ class GatewayRunner:
             if progress_task:
                 progress_task.cancel()
             interrupt_monitor.cancel()
-            _notify_task.cancel()
+            if _notify_task:
+                _notify_task.cancel()
 
             # Wait for stream consumer to finish its final edit
             if stream_task:

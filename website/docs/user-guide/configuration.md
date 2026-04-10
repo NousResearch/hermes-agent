@@ -824,6 +824,8 @@ display:
   tool_progress: all      # off | new | all | verbose
   tool_progress_command: false  # Enable /verbose slash command in messaging gateway
   tool_progress_overrides: {}  # Per-platform overrides (see below)
+  still_working_interval: 600  # Seconds between gateway long-running heartbeats (0/false/off disables)
+  still_working_overrides: {}  # Per-platform interval overrides (see below)
   skin: default           # Built-in or custom CLI skin (see user-guide/features/skins)
   personality: "kawaii"  # Legacy cosmetic field still surfaced in some summaries
   compact: false          # Compact output mode (less whitespace)
@@ -858,6 +860,20 @@ display:
 ```
 
 Platforms without an override fall back to the global `tool_progress` value. Valid platform keys: `telegram`, `discord`, `slack`, `signal`, `whatsapp`, `matrix`, `mattermost`, `email`, `sms`, `homeassistant`, `dingtalk`, `feishu`, `wecom`, `weixin`, `bluebubbles`.
+
+### Long-running heartbeat interval
+
+The gateway sends a periodic `⏳ Still working...` message during very long agent turns so users know the request has not died. Control the global interval with `display.still_working_interval` (in seconds), and override it per platform with `display.still_working_overrides`:
+
+```yaml
+display:
+  still_working_interval: 600   # default: every 10 minutes
+  still_working_overrides:
+    signal: off                 # disable noisy heartbeats on Signal
+    telegram: 300               # every 5 minutes on Telegram
+```
+
+Values of `0`, `false`, or `off` disable the heartbeat. Platforms without an override use the global interval.
 
 ## Privacy
 

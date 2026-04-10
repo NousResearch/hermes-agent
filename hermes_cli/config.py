@@ -443,6 +443,8 @@ DEFAULT_CONFIG = {
         "skin": "default",
         "tool_progress_command": False,  # Enable /verbose command in messaging gateway
         "tool_progress_overrides": {},  # Per-platform overrides: {"signal": "off", "telegram": "all"}
+        "still_working_interval": 600,  # Seconds between long-running task heartbeats in the gateway (0/false/off disables)
+        "still_working_overrides": {},  # Per-platform interval overrides: {"signal": "off", "telegram": 300}
         "tool_preview_length": 0,  # Max chars for tool call previews (0 = no limit, show full paths/commands)
     },
 

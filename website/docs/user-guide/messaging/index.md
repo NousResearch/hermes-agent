@@ -276,6 +276,20 @@ You can also set this via environment variable:
 HERMES_BACKGROUND_NOTIFICATIONS=result
 ```
 
+### Long-running agent heartbeats
+
+When an agent turn itself runs for a long time (for example deep research, delegation, or many tool calls), the gateway can send periodic `⏳ Still working...` heartbeats. Control this with `display.still_working_interval`:
+
+```yaml
+display:
+  still_working_interval: 600   # default: every 10 minutes
+  still_working_overrides:
+    signal: off                 # disable on Signal
+    telegram: 300               # more frequent on Telegram
+```
+
+Values of `0`, `false`, or `off` disable the heartbeat.
+
 ### Use Cases
 
 - **Server monitoring** — "/background Check the health of all services and alert me if anything is down"

@@ -560,22 +560,40 @@
       # ── Directories ───────────────────────────────────────────────────
       {
         systemd.tmpfiles.rules = [
-          "d ${cfg.stateDir}                0750 ${cfg.user} ${cfg.group} - -"
-          "d ${cfg.stateDir}/.hermes        0750 ${cfg.user} ${cfg.group} - -"
+          "d ${cfg.stateDir}                2770 ${cfg.user} ${cfg.group} - -"
+          "d ${cfg.stateDir}/.hermes        2770 ${cfg.user} ${cfg.group} - -"
+          "d ${cfg.stateDir}/.hermes/cron   2770 ${cfg.user} ${cfg.group} - -"
+          "d ${cfg.stateDir}/.hermes/sessions 2770 ${cfg.user} ${cfg.group} - -"
+          "d ${cfg.stateDir}/.hermes/logs   2770 ${cfg.user} ${cfg.group} - -"
+          "d ${cfg.stateDir}/.hermes/memories 2770 ${cfg.user} ${cfg.group} - -"
           "d ${cfg.stateDir}/home           0750 ${cfg.user} ${cfg.group} - -"
-          "d ${cfg.workingDirectory}         0750 ${cfg.user} ${cfg.group} - -"
+          "d ${cfg.workingDirectory}         2770 ${cfg.user} ${cfg.group} - -"
         ];
       }
 
       # ── Activation: link config + auth + documents ────────────────────
       {
-        system.activationScripts."hermes-agent-setup" = lib.stringAfter [ "users" "setupSecrets" ] ''
+        system.activationScripts."hermes-agent-setup" = lib.stringAfter ([ "users" ] ++ lib.optional (config.system.activationScripts ? setupSecrets) "setupSecrets") ''
           # Ensure directories exist (activation runs before tmpfiles)
           mkdir -p ${cfg.stateDir}/.hermes
           mkdir -p ${cfg.stateDir}/home
           mkdir -p ${cfg.workingDirectory}
           chown ${cfg.user}:${cfg.group} ${cfg.stateDir} ${cfg.stateDir}/.hermes ${cfg.stateDir}/home ${cfg.workingDirectory}
-          chmod 0750 ${cfg.stateDir} ${cfg.stateDir}/.hermes ${cfg.stateDir}/home ${cfg.workingDirectory}
+          chmod 2770 ${cfg.stateDir} ${cfg.stateDir}/.hermes ${cfg.workingDirectory}
+          chmod 0750 ${cfg.stateDir}/home
+
+          # Create subdirs, set setgid + group-writable, migrate existing files.
+          # Nix-managed files (config.yaml, .env, .managed) stay 0640/0644.
+          find ${cfg.stateDir}/.hermes -maxdepth 1 \
+            \( -name "*.db" -o -name "*.db-wal" -o -name "*.db-shm" -o -name "SOUL.md" \) \
+            -exec chmod g+rw {} + 2>/dev/null || true
+          for _subdir in cron sessions logs memories; do
+            mkdir -p "${cfg.stateDir}/.hermes/$_subdir"
+            chown ${cfg.user}:${cfg.group} "${cfg.stateDir}/.hermes/$_subdir"
+            chmod 2770 "${cfg.stateDir}/.hermes/$_subdir"
+            find "${cfg.stateDir}/.hermes/$_subdir" -type f \
+              -exec chmod g+rw {} + 2>/dev/null || true
+          done
 
           # Merge Nix settings into existing config.yaml.
           # Preserves user-added keys (skills, streaming, etc.); Nix keys win.
@@ -661,6 +679,10 @@ HERMES_NIX_ENV_EOF
 
             Restart = cfg.restart;
             RestartSec = cfg.restartSec;
+
+            # Shared-state: files created by the gateway should be group-writable
+            # so interactive users in the hermes group can read/write them.
+            UMask = "0007";
 
             # Hardening
             NoNewPrivileges = true;

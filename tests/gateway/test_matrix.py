@@ -1943,7 +1943,7 @@ class TestMatrixReactions:
 
         with patch.dict("sys.modules", {"nio": fake_nio}):
             result = await self.adapter._send_reaction("!room:ex", "$event1", "👍")
-        assert result is True
+        assert result == "$reaction1"
         mock_client.room_send.assert_called_once()
         args = mock_client.room_send.call_args
         assert args[0][1] == "m.reaction"
@@ -1956,7 +1956,7 @@ class TestMatrixReactions:
         self.adapter._client = None
         with patch.dict("sys.modules", {"nio": _make_fake_nio()}):
             result = await self.adapter._send_reaction("!room:ex", "$ev", "👍")
-        assert result is False
+        assert result is None
 
     @pytest.mark.asyncio
     async def test_on_processing_start_sends_eyes(self):
@@ -1964,7 +1964,7 @@ class TestMatrixReactions:
         from gateway.platforms.base import MessageEvent, MessageType
 
         self.adapter._reactions_enabled = True
-        self.adapter._send_reaction = AsyncMock(return_value=True)
+        self.adapter._send_reaction = AsyncMock(return_value="$reaction_event_123")
 
         source = MagicMock()
         source.chat_id = "!room:ex"
@@ -1977,10 +1977,55 @@ class TestMatrixReactions:
         )
         await self.adapter.on_processing_start(event)
         self.adapter._send_reaction.assert_called_once_with("!room:ex", "$msg1", "👀")
+        assert self.adapter._pending_reactions == {("!room:ex", "$msg1"): "$reaction_event_123"}
 
     @pytest.mark.asyncio
     async def test_on_processing_complete_sends_check(self):
-        from gateway.platforms.base import MessageEvent, MessageType
+        from gateway.platforms.base import MessageEvent, MessageType, ProcessingOutcome
+
+        self.adapter._reactions_enabled = True
+        self.adapter._pending_reactions = {("!room:ex", "$msg1"): "$eyes_reaction_123"}
+        self.adapter._redact_reaction = AsyncMock(return_value=True)
+        self.adapter._send_reaction = AsyncMock(return_value="$check_reaction_456")
+
+        source = MagicMock()
+        source.chat_id = "!room:ex"
+        event = MessageEvent(
+            text="hello",
+            message_type=MessageType.TEXT,
+            source=source,
+            raw_message={},
+            message_id="$msg1",
+        )
+        await self.adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+        self.adapter._redact_reaction.assert_called_once_with("!room:ex", "$eyes_reaction_123")
+        self.adapter._send_reaction.assert_called_once_with("!room:ex", "$msg1", "✅")
+
+    @pytest.mark.asyncio
+    async def test_on_processing_complete_sends_cross_on_failure(self):
+        from gateway.platforms.base import MessageEvent, MessageType, ProcessingOutcome
+
+        self.adapter._reactions_enabled = True
+        self.adapter._pending_reactions = {("!room:ex", "$msg1"): "$eyes_reaction_123"}
+        self.adapter._redact_reaction = AsyncMock(return_value=True)
+        self.adapter._send_reaction = AsyncMock(return_value="$cross_reaction_456")
+
+        source = MagicMock()
+        source.chat_id = "!room:ex"
+        event = MessageEvent(
+            text="hello",
+            message_type=MessageType.TEXT,
+            source=source,
+            raw_message={},
+            message_id="$msg1",
+        )
+        await self.adapter.on_processing_complete(event, ProcessingOutcome.FAILURE)
+        self.adapter._redact_reaction.assert_called_once_with("!room:ex", "$eyes_reaction_123")
+        self.adapter._send_reaction.assert_called_once_with("!room:ex", "$msg1", "❌")
+
+    @pytest.mark.asyncio
+    async def test_on_processing_complete_cancelled_sends_no_terminal_reaction(self):
+        from gateway.platforms.base import MessageEvent, MessageType, ProcessingOutcome
 
         self.adapter._reactions_enabled = True
         self.adapter._send_reaction = AsyncMock(return_value=True)
@@ -1994,7 +2039,30 @@ class TestMatrixReactions:
             raw_message={},
             message_id="$msg1",
         )
-        await self.adapter.on_processing_complete(event, success=True)
+        await self.adapter.on_processing_complete(event, ProcessingOutcome.CANCELLED)
+        self.adapter._send_reaction.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_on_processing_complete_no_pending_reaction(self):
+        """on_processing_complete should skip redaction if no eyes reaction was tracked."""
+        from gateway.platforms.base import MessageEvent, MessageType, ProcessingOutcome
+
+        self.adapter._reactions_enabled = True
+        self.adapter._pending_reactions = {}
+        self.adapter._redact_reaction = AsyncMock()
+        self.adapter._send_reaction = AsyncMock(return_value="$check_reaction_789")
+
+        source = MagicMock()
+        source.chat_id = "!room:ex"
+        event = MessageEvent(
+            text="hello",
+            message_type=MessageType.TEXT,
+            source=source,
+            raw_message={},
+            message_id="$msg1",
+        )
+        await self.adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+        self.adapter._redact_reaction.assert_not_called()
         self.adapter._send_reaction.assert_called_once_with("!room:ex", "$msg1", "✅")
 
     @pytest.mark.asyncio

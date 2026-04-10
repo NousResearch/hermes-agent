@@ -72,13 +72,13 @@ def display_hermes_home() -> str:
         return str(home)
 
 
-VALID_REASONING_EFFORTS = ("xhigh", "high", "medium", "low", "minimal")
+VALID_REASONING_EFFORTS = ("minimal", "low", "medium", "high", "xhigh")
 
 
 def parse_reasoning_effort(effort: str) -> dict | None:
     """Parse a reasoning effort level into a config dict.
 
-    Valid levels: "xhigh", "high", "medium", "low", "minimal", "none".
+    Valid levels: "none", "minimal", "low", "medium", "high", "xhigh".
     Returns None when the input is empty or unrecognized (caller uses default).
     Returns {"enabled": False} for "none".
     Returns {"enabled": True, "effort": <level>} for valid effort levels.
@@ -93,13 +93,19 @@ def parse_reasoning_effort(effort: str) -> dict | None:
     return None
 
 
+def is_termux() -> bool:
+    """Return True when running inside a Termux (Android) environment.
+
+    Checks ``TERMUX_VERSION`` (set by Termux) or the Termux-specific
+    ``PREFIX`` path.  Import-safe — no heavy deps.
+    """
+    prefix = os.getenv("PREFIX", "")
+    return bool(os.getenv("TERMUX_VERSION") or "com.termux/files/usr" in prefix)
+
+
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 OPENROUTER_MODELS_URL = f"{OPENROUTER_BASE_URL}/models"
-OPENROUTER_CHAT_URL = f"{OPENROUTER_BASE_URL}/chat/completions"
 
 AI_GATEWAY_BASE_URL = "https://ai-gateway.vercel.sh/v1"
-AI_GATEWAY_MODELS_URL = f"{AI_GATEWAY_BASE_URL}/models"
-AI_GATEWAY_CHAT_URL = f"{AI_GATEWAY_BASE_URL}/chat/completions"
 
 NOUS_API_BASE_URL = "https://inference-api.nousresearch.com/v1"
-NOUS_API_CHAT_URL = f"{NOUS_API_BASE_URL}/chat/completions"

@@ -1,4 +1,6 @@
-"""Tests for MiniMax provider hardening — context lengths, thinking guard, catalog."""
+"""Tests for MiniMax provider hardening — context lengths, thinking guard, catalog, beta headers."""
+
+from unittest.mock import patch
 
 
 class TestMinimaxContextLengths:
@@ -103,3 +105,100 @@ class TestMinimaxModelCatalog:
             models = _PROVIDER_MODELS[provider]
             assert "MiniMax-M2.7-highspeed" not in models
             assert "MiniMax-M2.5-highspeed" not in models
+
+
+class TestMinimaxBetaHeaders:
+    """MiniMax Anthropic-compat endpoints reject fine-grained-tool-streaming beta.
+
+    Verify that build_anthropic_client omits the tool-streaming beta for MiniMax
+    (both global and China domains) while keeping it for native Anthropic and
+    other third-party endpoints.  Covers the fix for #6510 / #6555.
+    """
+
+    _TOOL_BETA = "fine-grained-tool-streaming-2025-05-14"
+    _THINKING_BETA = "interleaved-thinking-2025-05-14"
+
+    # -- helper ----------------------------------------------------------
+
+    def _build_and_get_betas(self, api_key, base_url=None):
+        """Build client, return the anthropic-beta header string."""
+        from agent.anthropic_adapter import build_anthropic_client
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            build_anthropic_client(api_key, base_url=base_url)
+            kwargs = mock_sdk.Anthropic.call_args[1]
+            headers = kwargs.get("default_headers", {})
+            return headers.get("anthropic-beta", "")
+
+    # -- MiniMax global --------------------------------------------------
+
+    def test_minimax_global_omits_tool_streaming(self):
+        betas = self._build_and_get_betas(
+            "mm-key-123", base_url="https://api.minimax.io/anthropic"
+        )
+        assert self._TOOL_BETA not in betas
+        assert self._THINKING_BETA in betas
+
+    def test_minimax_global_trailing_slash(self):
+        betas = self._build_and_get_betas(
+            "mm-key-123", base_url="https://api.minimax.io/anthropic/"
+        )
+        assert self._TOOL_BETA not in betas
+
+    # -- MiniMax China ---------------------------------------------------
+
+    def test_minimax_cn_omits_tool_streaming(self):
+        betas = self._build_and_get_betas(
+            "mm-cn-key-456", base_url="https://api.minimaxi.com/anthropic"
+        )
+        assert self._TOOL_BETA not in betas
+        assert self._THINKING_BETA in betas
+
+    def test_minimax_cn_trailing_slash(self):
+        betas = self._build_and_get_betas(
+            "mm-cn-key-456", base_url="https://api.minimaxi.com/anthropic/"
+        )
+        assert self._TOOL_BETA not in betas
+
+    # -- Non-MiniMax keeps full betas ------------------------------------
+
+    def test_native_anthropic_keeps_tool_streaming(self):
+        betas = self._build_and_get_betas("sk-ant-api03-real-key-here")
+        assert self._TOOL_BETA in betas
+        assert self._THINKING_BETA in betas
+
+    def test_third_party_proxy_keeps_tool_streaming(self):
+        betas = self._build_and_get_betas(
+            "custom-key", base_url="https://my-proxy.example.com/anthropic"
+        )
+        assert self._TOOL_BETA in betas
+
+    def test_custom_base_url_keeps_tool_streaming(self):
+        betas = self._build_and_get_betas(
+            "custom-key", base_url="https://custom.api.com"
+        )
+        assert self._TOOL_BETA in betas
+
+    # -- _common_betas_for_base_url unit tests ---------------------------
+
+    def test_common_betas_none_url(self):
+        from agent.anthropic_adapter import _common_betas_for_base_url, _COMMON_BETAS
+        assert _common_betas_for_base_url(None) == _COMMON_BETAS
+
+    def test_common_betas_empty_url(self):
+        from agent.anthropic_adapter import _common_betas_for_base_url, _COMMON_BETAS
+        assert _common_betas_for_base_url("") == _COMMON_BETAS
+
+    def test_common_betas_minimax_url(self):
+        from agent.anthropic_adapter import _common_betas_for_base_url, _TOOL_STREAMING_BETA
+        betas = _common_betas_for_base_url("https://api.minimax.io/anthropic")
+        assert _TOOL_STREAMING_BETA not in betas
+        assert len(betas) > 0  # still has other betas
+
+    def test_common_betas_minimax_cn_url(self):
+        from agent.anthropic_adapter import _common_betas_for_base_url, _TOOL_STREAMING_BETA
+        betas = _common_betas_for_base_url("https://api.minimaxi.com/anthropic")
+        assert _TOOL_STREAMING_BETA not in betas
+
+    def test_common_betas_regular_url(self):
+        from agent.anthropic_adapter import _common_betas_for_base_url, _COMMON_BETAS
+        assert _common_betas_for_base_url("https://api.anthropic.com") == _COMMON_BETAS

@@ -5,6 +5,7 @@ pieces. The OpenAI client and tool loading are mocked so no network calls
 are made.
 """
 
+import io
 import json
 import logging
 import re
@@ -18,6 +19,7 @@ import pytest
 
 import run_agent
 from run_agent import AIAgent
+from agent.error_classifier import FailoverReason
 from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
 
 
@@ -1061,6 +1063,77 @@ class TestExecuteToolCalls:
         assert len(messages[0]["content"]) < 150_000
         assert ("Truncated" in messages[0]["content"] or "<persisted-output>" in messages[0]["content"])
 
+    def test_quiet_tool_output_suppressed_when_progress_callback_present(self, agent):
+        tc = _mock_tool_call(name="web_search", arguments='{"q":"test"}', call_id="c1")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc])
+        messages = []
+        agent.tool_progress_callback = lambda *args, **kwargs: None
+
+        with patch("run_agent.handle_function_call", return_value="search result"), \
+             patch.object(agent, "_safe_print") as mock_print:
+            agent._execute_tool_calls(mock_msg, messages, "task-1")
+
+        mock_print.assert_not_called()
+        assert len(messages) == 1
+        assert messages[0]["role"] == "tool"
+
+    def test_quiet_tool_output_prints_without_progress_callback(self, agent):
+        tc = _mock_tool_call(name="web_search", arguments='{"q":"test"}', call_id="c1")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc])
+        messages = []
+        agent.tool_progress_callback = None
+
+        with patch("run_agent.handle_function_call", return_value="search result"), \
+             patch.object(agent, "_safe_print") as mock_print:
+            agent._execute_tool_calls(mock_msg, messages, "task-1")
+
+        mock_print.assert_called_once()
+        assert "search" in str(mock_print.call_args.args[0]).lower()
+        assert len(messages) == 1
+        assert messages[0]["role"] == "tool"
+
+    def test_vprint_suppressed_in_parseable_quiet_mode(self, agent):
+        agent.suppress_status_output = True
+
+        with patch.object(agent, "_safe_print") as mock_print:
+            agent._vprint("status line", force=True)
+            agent._vprint("normal line")
+
+        mock_print.assert_not_called()
+
+    def test_run_conversation_suppresses_retry_noise_in_parseable_quiet_mode(self, agent):
+        class _RateLimitError(Exception):
+            status_code = 429
+
+            def __str__(self):
+                return "Error code: 429 - Rate limit exceeded."
+
+        responses = [_RateLimitError(), _mock_response(content="Recovered")]
+
+        def _fake_api_call(api_kwargs):
+            result = responses.pop(0)
+            if isinstance(result, Exception):
+                raise result
+            return result
+
+        agent.suppress_status_output = True
+        agent._interruptible_api_call = _fake_api_call
+        agent._persist_session = lambda *args, **kwargs: None
+        agent._save_trajectory = lambda *args, **kwargs: None
+        agent._save_session_log = lambda *args, **kwargs: None
+
+        captured = io.StringIO()
+        agent._print_fn = lambda *args, **kw: print(*args, file=captured, **kw)
+
+        with patch("run_agent.time.sleep", return_value=None):
+            result = agent.run_conversation("hello")
+
+        assert result["completed"] is True
+        assert result["final_response"] == "Recovered"
+        output = captured.getvalue()
+        assert "API call failed" not in output
+        assert "Rate limit reached" not in output
+
 
 class TestConcurrentToolExecution:
     """Tests for _execute_tool_calls_concurrent and dispatch logic."""
@@ -1877,6 +1950,68 @@ class TestRunConversation:
         assert result["final_response"] is not None
         assert "Thinking Budget Exhausted" in result["final_response"]
 
+    def test_length_with_tool_calls_returns_partial_without_executing_tools(self, agent):
+        self._setup_agent(agent)
+        bad_tc = _mock_tool_call(
+            name="write_file",
+            arguments='{"path":"report.md","content":"partial',
+            call_id="c1",
+        )
+        resp = _mock_response(content="", finish_reason="length", tool_calls=[bad_tc])
+        agent.client.chat.completions.create.return_value = resp
+
+        with (
+            patch("run_agent.handle_function_call") as mock_handle_function_call,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("write the report")
+
+        assert result["completed"] is False
+        assert result["partial"] is True
+        assert "truncated due to output length limit" in result["error"]
+        mock_handle_function_call.assert_not_called()
+
+    def test_truncated_tool_call_retries_once_before_refusing(self, agent):
+        """When tool call args are truncated, the agent retries the API call
+        once. If the retry succeeds (valid JSON args), tool execution proceeds."""
+        self._setup_agent(agent)
+        agent.valid_tool_names.add("write_file")
+        bad_tc = _mock_tool_call(
+            name="write_file",
+            arguments='{"path":"report.md","content":"partial',
+            call_id="c1",
+        )
+        truncated_resp = _mock_response(
+            content="", finish_reason="length", tool_calls=[bad_tc],
+        )
+        good_tc = _mock_tool_call(
+            name="write_file",
+            arguments='{"path":"report.md","content":"full content"}',
+            call_id="c2",
+        )
+        good_resp = _mock_response(
+            content="", finish_reason="stop", tool_calls=[good_tc],
+        )
+        with (
+            patch("run_agent.handle_function_call", return_value='{"success":true}') as mock_hfc,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            # First call: truncated → retry. Second: valid → execute tool.
+            # Third: final text response.
+            final_resp = _mock_response(content="Done!", finish_reason="stop")
+            agent.client.chat.completions.create.side_effect = [
+                truncated_resp, good_resp, final_resp,
+            ]
+            result = agent.run_conversation("write the report")
+
+        # Tool was executed on the retry (good_resp)
+        mock_hfc.assert_called_once()
+        assert result["final_response"] == "Done!"
+
 
 class TestRetryExhaustion:
     """Regression: retry_count > max_retries was dead code (off-by-one).
@@ -2102,6 +2237,29 @@ class TestCredentialPoolRecovery:
         recovered, retry_same = agent._recover_with_credential_pool(
             status_code=402,
             has_retried_429=False,
+        )
+
+        assert recovered is True
+        assert retry_same is False
+        agent._swap_credential.assert_called_once_with(next_entry)
+
+    def test_recover_with_pool_rotates_on_billing_reason_even_with_http_400(self, agent):
+        next_entry = SimpleNamespace(label="secondary")
+
+        class _Pool:
+            def mark_exhausted_and_rotate(self, *, status_code, error_context=None):
+                assert status_code == 400
+                assert error_context == {"reason": "out_of_extra_usage"}
+                return next_entry
+
+        agent._credential_pool = _Pool()
+        agent._swap_credential = MagicMock()
+
+        recovered, retry_same = agent._recover_with_credential_pool(
+            status_code=400,
+            has_retried_429=False,
+            classified_reason=FailoverReason.billing,
+            error_context={"reason": "out_of_extra_usage"},
         )
 
         assert recovered is True
@@ -3009,6 +3167,20 @@ class TestStreamingApiCall:
         assert len(tc) == 2
         assert tc[0].function.name == "search"
         assert tc[1].function.name == "read"
+
+    def test_truncated_tool_call_args_upgrade_finish_reason_to_length(self, agent):
+        chunks = [
+            _make_chunk(tool_calls=[_make_tc_delta(0, "call_1", "write_file", '{"path":"x.txt","content":"hel')]),
+        ]
+        agent.client.chat.completions.create.return_value = iter(chunks)
+
+        resp = agent._interruptible_streaming_api_call({"messages": []})
+
+        tc = resp.choices[0].message.tool_calls
+        assert len(tc) == 1
+        assert tc[0].function.name == "write_file"
+        assert tc[0].function.arguments == '{"path":"x.txt","content":"hel'
+        assert resp.choices[0].finish_reason == "length"
 
     def test_ollama_reused_index_separate_tool_calls(self, agent):
         """Ollama sends every tool call at index 0 with different ids.

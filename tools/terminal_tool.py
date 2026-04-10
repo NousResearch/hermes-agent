@@ -75,6 +75,9 @@ from tools.tool_backend_helpers import (
 )
 
 
+# Hard cap on foreground timeout; override via TERMINAL_MAX_FOREGROUND_TIMEOUT env var.
+FOREGROUND_MAX_TIMEOUT = int(os.getenv("TERMINAL_MAX_FOREGROUND_TIMEOUT", "600"))
+
 # Disk usage warning threshold (in GB)
 DISK_USAGE_WARNING_THRESHOLD_GB = float(os.getenv("TERMINAL_DISK_WARNING_GB", "500"))
 
@@ -1112,6 +1115,21 @@ def _interpret_exit_code(command: str, exit_code: int) -> str | None:
     return None
 
 
+def _command_requires_pipe_stdin(command: str) -> bool:
+    """Return True when PTY mode would break stdin-driven commands.
+
+    Some CLIs change behavior when stdin is a TTY. In particular,
+    `gh auth login --with-token` expects the token to arrive via piped stdin and
+    waits for EOF; when we launch it under a PTY, `process.submit()` only sends a
+    newline, so the command appears to hang forever with no visible progress.
+    """
+    normalized = " ".join(command.lower().split())
+    return (
+        normalized.startswith("gh auth login")
+        and "--with-token" in normalized
+    )
+
+
 def terminal_tool(
     command: str,
     background: bool = False,
@@ -1192,6 +1210,17 @@ def terminal_tool(
         cwd = overrides.get("cwd") or config["cwd"]
         default_timeout = config["timeout"]
         effective_timeout = timeout or default_timeout
+
+        # Reject foreground commands where the model explicitly requests
+        # a timeout above FOREGROUND_MAX_TIMEOUT — nudge it toward background.
+        if not background and timeout and timeout > FOREGROUND_MAX_TIMEOUT:
+            return json.dumps({
+                "error": (
+                    f"Foreground timeout {timeout}s exceeds the maximum of "
+                    f"{FOREGROUND_MAX_TIMEOUT}s. Use background=true with "
+                    f"notify_on_complete=true for long-running commands."
+                ),
+            }, ensure_ascii=False)
 
         # Start cleanup thread
         _start_cleanup_thread()
@@ -1332,6 +1361,17 @@ def terminal_tool(
                 }, ensure_ascii=False)
 
         # Prepare command for execution
+        pty_disabled_reason = None
+        effective_pty = pty
+        if pty and _command_requires_pipe_stdin(command):
+            effective_pty = False
+            pty_disabled_reason = (
+                "PTY disabled for this command because it expects piped stdin/EOF "
+                "(for example gh auth login --with-token). For local background "
+                "processes, call process(action='close') after writing so it receives "
+                "EOF."
+            )
+
         if background:
             # Spawn a tracked background process via the process registry.
             # For local backends: uses subprocess.Popen with output buffering.
@@ -1349,7 +1389,7 @@ def terminal_tool(
                         task_id=effective_task_id,
                         session_key=session_key,
                         env_vars=env.env if hasattr(env, 'env') else None,
-                        use_pty=pty,
+                        use_pty=effective_pty,
                     )
                 else:
                     proc_session = process_registry.spawn_via_env(
@@ -1369,14 +1409,8 @@ def terminal_tool(
                 }
                 if approval_note:
                     result_data["approval"] = approval_note
-
-                # Transparent timeout clamping note
-                max_timeout = effective_timeout
-                if timeout and timeout > max_timeout:
-                    result_data["timeout_note"] = (
-                        f"Requested timeout {timeout}s was clamped to "
-                        f"configured limit of {max_timeout}s"
-                    )
+                if pty_disabled_reason:
+                    result_data["pty_note"] = pty_disabled_reason
 
                 # Mark for agent notification on completion
                 if notify_on_complete and background:
@@ -1705,7 +1739,7 @@ TERMINAL_SCHEMA = {
             },
             "timeout": {
                 "type": "integer",
-                "description": "Max seconds to wait (default: 180). Returns INSTANTLY when command finishes — set high for long tasks, you won't wait unnecessarily.",
+                "description": f"Max seconds to wait (default: 180, foreground max: {FOREGROUND_MAX_TIMEOUT}). Returns INSTANTLY when command finishes — set high for long tasks, you won't wait unnecessarily. Foreground timeout above {FOREGROUND_MAX_TIMEOUT}s is rejected; use background=true for longer commands.",
                 "minimum": 1
             },
             "workdir": {

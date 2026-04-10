@@ -9,6 +9,7 @@ const sidebars: SidebarsConfig = {
       items: [
         'getting-started/quickstart',
         'getting-started/installation',
+        'getting-started/termux',
         'getting-started/nix-setup',
         'getting-started/updating',
         'getting-started/learning-path',
@@ -142,6 +143,7 @@ const sidebars: SidebarsConfig = {
         'guides/use-voice-mode-with-hermes',
         'guides/build-a-hermes-plugin',
         'guides/automate-with-cron',
+        'guides/cron-troubleshooting',
         'guides/work-with-skills',
         'guides/delegation-patterns',
         'guides/migrate-from-openclaw',

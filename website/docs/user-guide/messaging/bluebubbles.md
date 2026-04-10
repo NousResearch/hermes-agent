@@ -43,17 +43,18 @@ BLUEBUBBLES_PASSWORD=your-server-password
 Choose one approach:
 
 **DM Pairing (recommended):**
+When someone messages your iMessage, Hermes automatically sends them a pairing code. Approve it with:
 ```bash
-hermes pairing generate bluebubbles
+hermes pairing approve bluebubbles <CODE>
 ```
-Share the pairing code — the user sends it via iMessage to get approved.
+Use `hermes pairing list` to see pending codes and approved users.
 
-**Pre-authorize specific users:**
+**Pre-authorize specific users** (in `~/.hermes/.env`):
 ```bash
 BLUEBUBBLES_ALLOWED_USERS=user@icloud.com,+15551234567
 ```
 
-**Open access:**
+**Open access** (in `~/.hermes/.env`):
 ```bash
 BLUEBUBBLES_ALLOW_ALL_USERS=true
 ```
@@ -134,8 +135,9 @@ Without the Private API, basic text messaging and media still work.
 ### Messages not arriving
 - Check that the webhook is registered in BlueBubbles Server → Settings → API → Webhooks
 - Verify the webhook URL is reachable from the Mac
-- Check `hermes gateway logs` for webhook errors
+- Check `hermes logs gateway` for webhook errors (or `hermes logs -f` to follow in real-time)
 
 ### "Private API helper not connected"
 - Install the Private API helper: [docs.bluebubbles.app](https://docs.bluebubbles.app/helper-bundle/installation)
 - Basic messaging works without it — only reactions, typing, and read receipts require it
+

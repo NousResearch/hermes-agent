@@ -70,7 +70,6 @@ DEFAULT_CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex"
 DEFAULT_QWEN_BASE_URL = "https://portal.qwen.ai/v1"
 DEFAULT_GITHUB_MODELS_BASE_URL = "https://api.githubcopilot.com"
 DEFAULT_COPILOT_ACP_BASE_URL = "acp://copilot"
-DEFAULT_GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai"
 CODEX_OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 CODEX_OAUTH_TOKEN_URL = "https://auth.openai.com/oauth/token"
 CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120
@@ -250,7 +249,7 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
 # Kimi Code Endpoint Detection
 # =============================================================================
 
-# Kimi Code (platform.kimi.ai) issues keys prefixed "sk-kimi-" that only work
+# Kimi Code (kimi.com/code) issues keys prefixed "sk-kimi-" that only work
 # on api.kimi.com/coding/v1.  Legacy keys from platform.moonshot.ai work on
 # api.moonshot.ai/v1 (the default).  Auto-detect when user hasn't set
 # KIMI_BASE_URL explicitly.
@@ -705,6 +704,27 @@ def write_credential_pool(provider_id: str, entries: List[Dict[str, Any]]) -> Pa
         return _save_auth_store(auth_store)
 
 
+def suppress_credential_source(provider_id: str, source: str) -> None:
+    """Mark a credential source as suppressed so it won't be re-seeded."""
+    with _auth_store_lock():
+        auth_store = _load_auth_store()
+        suppressed = auth_store.setdefault("suppressed_sources", {})
+        provider_list = suppressed.setdefault(provider_id, [])
+        if source not in provider_list:
+            provider_list.append(source)
+        _save_auth_store(auth_store)
+
+
+def is_source_suppressed(provider_id: str, source: str) -> bool:
+    """Check if a credential source has been suppressed by the user."""
+    try:
+        auth_store = _load_auth_store()
+        suppressed = auth_store.get("suppressed_sources", {})
+        return source in suppressed.get(provider_id, [])
+    except Exception:
+        return False
+
+
 def get_provider_auth_state(provider_id: str) -> Optional[Dict[str, Any]]:
     """Return persisted auth state for a provider, or None."""
     auth_store = _load_auth_store()
@@ -715,6 +735,57 @@ def get_active_provider() -> Optional[str]:
     """Return the currently active provider ID from auth store."""
     auth_store = _load_auth_store()
     return auth_store.get("active_provider")
+
+
+def is_provider_explicitly_configured(provider_id: str) -> bool:
+    """Return True only if the user has explicitly configured this provider.
+
+    Checks:
+      1. active_provider in auth.json matches
+      2. model.provider in config.yaml matches
+      3. Provider-specific env vars are set (e.g. ANTHROPIC_API_KEY)
+
+    This is used to gate auto-discovery of external credentials (e.g.
+    Claude Code's ~/.claude/.credentials.json) so they are never used
+    without the user's explicit choice.  See PR #4210 for the same
+    pattern applied to the setup wizard gate.
+    """
+    normalized = (provider_id or "").strip().lower()
+
+    # 1. Check auth.json active_provider
+    try:
+        auth_store = _load_auth_store()
+        active = (auth_store.get("active_provider") or "").strip().lower()
+        if active and active == normalized:
+            return True
+    except Exception:
+        pass
+
+    # 2. Check config.yaml model.provider
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        model_cfg = cfg.get("model")
+        if isinstance(model_cfg, dict):
+            cfg_provider = (model_cfg.get("provider") or "").strip().lower()
+            if cfg_provider == normalized:
+                return True
+    except Exception:
+        pass
+
+    # 3. Check provider-specific env vars
+    # Exclude CLAUDE_CODE_OAUTH_TOKEN — it's set by Claude Code itself,
+    # not by the user explicitly configuring anthropic in Hermes.
+    _IMPLICIT_ENV_VARS = {"CLAUDE_CODE_OAUTH_TOKEN"}
+    pconfig = PROVIDER_REGISTRY.get(normalized)
+    if pconfig and pconfig.auth_type == "api_key":
+        for env_var in pconfig.api_key_env_vars:
+            if env_var in _IMPLICIT_ENV_VARS:
+                continue
+            if has_usable_secret(os.getenv(env_var, "")):
+                return True
+
+    return False
 
 
 def clear_provider_auth(provider_id: Optional[str] = None) -> bool:
@@ -2343,33 +2414,6 @@ def resolve_external_process_provider_credentials(provider_id: str) -> Dict[str,
 
 
 # =============================================================================
-# External credential detection
-# =============================================================================
-
-def detect_external_credentials() -> List[Dict[str, Any]]:
-    """Scan for credentials from other CLI tools that Hermes can reuse.
-
-    Returns a list of dicts, each with:
-      - provider: str   -- Hermes provider id (e.g. "openai-codex")
-      - path: str       -- filesystem path where creds were found
-      - label: str      -- human-friendly description for the setup UI
-    """
-    found: List[Dict[str, Any]] = []
-
-    # Codex CLI: ~/.codex/auth.json (importable, not shared)
-    cli_tokens = _import_codex_cli_tokens()
-    if cli_tokens:
-        codex_path = Path.home() / ".codex" / "auth.json"
-        found.append({
-            "provider": "openai-codex",
-            "path": str(codex_path),
-            "label": f"Codex CLI credentials found ({codex_path}) — run `hermes auth` to create a separate session",
-        })
-
-    return found
-
-
-# =============================================================================
 # CLI Commands — login / logout
 # =============================================================================
 
@@ -2572,6 +2616,8 @@ def _prompt_model_selection(
             title=effective_title,
         )
         idx = menu.show()
+        from hermes_cli.curses_ui import flush_stdin
+        flush_stdin()
         if idx is None:
             return None
         print()
@@ -2581,7 +2627,7 @@ def _prompt_model_selection(
             custom = input("Enter model name: ").strip()
             return custom if custom else None
         return None
-    except (ImportError, NotImplementedError):
+    except (ImportError, NotImplementedError, OSError, subprocess.SubprocessError):
         pass
 
     # Fallback: numbered list
@@ -3017,12 +3063,15 @@ def _login_nous(args, pconfig: ProviderConfig) -> None:
             _save_provider_state(auth_store, "nous", auth_state)
             saved_to = _save_auth_store(auth_store)
 
-        config_path = _update_config_for_provider("nous", inference_base_url)
         print()
         print("Login successful!")
         print(f"  Auth state: {saved_to}")
-        print(f"  Config updated: {config_path} (model.provider=nous)")
 
+        # Resolve model BEFORE writing provider to config.yaml so we never
+        # leave the config in a half-updated state (provider=nous but model
+        # still set to the previous provider's model, e.g. opus from
+        # OpenRouter).  The auth.json active_provider was already set above.
+        selected_model = None
         try:
             runtime_key = auth_state.get("agent_key") or auth_state.get("access_token")
             if not isinstance(runtime_key, str) or not runtime_key:
@@ -3056,9 +3105,6 @@ def _login_nous(args, pconfig: ProviderConfig) -> None:
                     unavailable_models=unavailable_models,
                     portal_url=_portal,
                 )
-                if selected_model:
-                    _save_model_choice(selected_model)
-                    print(f"Default model set to: {selected_model}")
             elif unavailable_models:
                 _url = (_portal or DEFAULT_NOUS_PORTAL_URL).rstrip("/")
                 print("No free models currently available.")
@@ -3069,6 +3115,15 @@ def _login_nous(args, pconfig: ProviderConfig) -> None:
             message = format_auth_error(exc) if isinstance(exc, AuthError) else str(exc)
             print()
             print(f"Login succeeded, but could not fetch available models. Reason: {message}")
+
+        # Write provider + model atomically so config is never mismatched.
+        config_path = _update_config_for_provider(
+            "nous", inference_base_url, default_model=selected_model,
+        )
+        if selected_model:
+            _save_model_choice(selected_model)
+            print(f"Default model set to: {selected_model}")
+        print(f"  Config updated: {config_path} (model.provider=nous)")
 
     except KeyboardInterrupt:
         print("\nLogin cancelled.")

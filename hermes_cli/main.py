@@ -646,6 +646,7 @@ def cmd_chat(args):
         "verbose": args.verbose,
         "quiet": getattr(args, "quiet", False),
         "query": args.query,
+        "image": getattr(args, "image", None),
         "resume": getattr(args, "resume", None),
         "worktree": getattr(args, "worktree", False),
         "checkpoints": getattr(args, "checkpoints", False),
@@ -857,7 +858,6 @@ def cmd_whatsapp(args):
 
 def cmd_setup(args):
     """Interactive setup wizard."""
-    _require_tty("setup")
     from hermes_cli.setup import run_setup_wizard
     run_setup_wizard(args)
 
@@ -967,10 +967,11 @@ def select_provider_and_model(args=None):
         ("alibaba", "Alibaba Cloud / DashScope Coding (Qwen + multi-provider)"),
     ]
 
-    # Add user-defined custom providers from config.yaml
-    custom_providers_cfg = config.get("custom_providers") or []
-    _custom_provider_map = {}  # key → {name, base_url, api_key}
-    if isinstance(custom_providers_cfg, list):
+    def _named_custom_provider_map(cfg) -> dict[str, dict[str, str]]:
+        custom_providers_cfg = cfg.get("custom_providers") or []
+        custom_provider_map = {}
+        if not isinstance(custom_providers_cfg, list):
+            return custom_provider_map
         for entry in custom_providers_cfg:
             if not isinstance(entry, dict):
                 continue
@@ -979,16 +980,23 @@ def select_provider_and_model(args=None):
             if not name or not base_url:
                 continue
             key = "custom:" + name.lower().replace(" ", "-")
-            short_url = base_url.replace("https://", "").replace("http://", "").rstrip("/")
-            saved_model = entry.get("model", "")
-            model_hint = f" — {saved_model}" if saved_model else ""
-            top_providers.append((key, f"{name} ({short_url}){model_hint}"))
-            _custom_provider_map[key] = {
+            custom_provider_map[key] = {
                 "name": name,
                 "base_url": base_url,
                 "api_key": entry.get("api_key", ""),
-                "model": saved_model,
+                "model": entry.get("model", ""),
             }
+        return custom_provider_map
+
+    # Add user-defined custom providers from config.yaml
+    _custom_provider_map = _named_custom_provider_map(config)  # key → {name, base_url, api_key}
+    for key, provider_info in _custom_provider_map.items():
+        name = provider_info["name"]
+        base_url = provider_info["base_url"]
+        short_url = base_url.replace("https://", "").replace("http://", "").rstrip("/")
+        saved_model = provider_info.get("model", "")
+        model_hint = f" — {saved_model}" if saved_model else ""
+        top_providers.append((key, f"{name} ({short_url}){model_hint}"))
 
     top_keys = {k for k, _ in top_providers}
     extended_keys = {k for k, _ in extended_providers}
@@ -1053,8 +1061,15 @@ def select_provider_and_model(args=None):
         _model_flow_copilot(config, current_model)
     elif selected_provider == "custom":
         _model_flow_custom(config)
-    elif selected_provider.startswith("custom:") and selected_provider in _custom_provider_map:
-        _model_flow_named_custom(config, _custom_provider_map[selected_provider])
+    elif selected_provider.startswith("custom:"):
+        provider_info = _named_custom_provider_map(load_config()).get(selected_provider)
+        if provider_info is None:
+            print(
+                "Warning: the selected saved custom provider is no longer available. "
+                "It may have been removed from config.yaml. No change."
+            )
+            return
+        _model_flow_named_custom(config, provider_info)
     elif selected_provider == "remove-custom":
         _remove_custom_provider(config)
     elif selected_provider == "anthropic":
@@ -1127,10 +1142,10 @@ def _model_flow_openrouter(config, current_model=""):
         print()
 
     from hermes_cli.models import model_ids, get_pricing_for_provider
-    openrouter_models = model_ids()
+    openrouter_models = model_ids(force_refresh=True)
 
     # Fetch live pricing (non-blocking — returns empty dict on failure)
-    pricing = get_pricing_for_provider("openrouter")
+    pricing = get_pricing_for_provider("openrouter", force_refresh=True)
 
     selected = _prompt_model_selection(openrouter_models, current_model=current_model, pricing=pricing)
     if selected:
@@ -1657,8 +1672,10 @@ def _remove_custom_provider(config):
             title="Select provider to remove:",
         )
         idx = menu.show()
+        from hermes_cli.curses_ui import flush_stdin
+        flush_stdin()
         print()
-    except (ImportError, NotImplementedError):
+    except (ImportError, NotImplementedError, OSError, subprocess.SubprocessError):
         for i, c in enumerate(choices, 1):
             print(f"  {i}. {c}")
         print()
@@ -1734,12 +1751,14 @@ def _model_flow_named_custom(config, provider_info):
                 title=f"Select model from {name}:",
             )
             idx = menu.show()
+            from hermes_cli.curses_ui import flush_stdin
+            flush_stdin()
             print()
             if idx is None or idx >= len(models):
                 print("Cancelled.")
                 return
             model_name = models[idx]
-        except (ImportError, NotImplementedError):
+        except (ImportError, NotImplementedError, OSError, subprocess.SubprocessError):
             for i, m in enumerate(models, 1):
                 print(f"  {i}. {m}")
             print(f"  {len(models) + 1}. Cancel")
@@ -1811,7 +1830,10 @@ def _set_reasoning_effort(config, effort: str) -> None:
 
 def _prompt_reasoning_effort_selection(efforts, current_effort=""):
     """Prompt for a reasoning effort. Returns effort, 'none', or None to keep current."""
-    ordered = list(dict.fromkeys(str(effort).strip().lower() for effort in efforts if str(effort).strip()))
+    deduped = list(dict.fromkeys(str(effort).strip().lower() for effort in efforts if str(effort).strip()))
+    canonical_order = ("minimal", "low", "medium", "high", "xhigh")
+    ordered = [effort for effort in canonical_order if effort in deduped]
+    ordered.extend(effort for effort in deduped if effort not in canonical_order)
     if not ordered:
         return None
 
@@ -1849,6 +1871,8 @@ def _prompt_reasoning_effort_selection(efforts, current_effort=""):
             title="Select reasoning effort:",
         )
         idx = menu.show()
+        from hermes_cli.curses_ui import flush_stdin
+        flush_stdin()
         if idx is None:
             return None
         print()
@@ -1857,7 +1881,7 @@ def _prompt_reasoning_effort_selection(efforts, current_effort=""):
         if idx == len(ordered):
             return "none"
         return None
-    except (ImportError, NotImplementedError):
+    except (ImportError, NotImplementedError, OSError, subprocess.SubprocessError):
         pass
 
     print("Select reasoning effort:")
@@ -2643,6 +2667,12 @@ def cmd_doctor(args):
     run_doctor(args)
 
 
+def cmd_dump(args):
+    """Dump setup summary for support/debugging."""
+    from hermes_cli.dump import run_dump
+    run_dump(args)
+
+
 def cmd_config(args):
     """Configuration management."""
     from hermes_cli.config import config_command
@@ -3012,33 +3042,19 @@ def _restore_stashed_changes(
         print("\nYour stashed changes are preserved — nothing is lost.")
         print(f"  Stash ref: {stash_ref}")
 
-        # Ask before resetting (if interactive)
-        do_reset = True
-        if prompt_user:
-            print("\nReset working tree to clean state so Hermes can run?")
-            print("  (You can re-apply your changes later with: git stash apply)")
-            print("[Y/n] ", end="", flush=True)
-            response = input().strip().lower()
-            if response not in ("", "y", "yes"):
-                do_reset = False
-
-        if do_reset:
-            subprocess.run(
-                git_cmd + ["reset", "--hard", "HEAD"],
-                cwd=cwd,
-                capture_output=True,
-            )
-            print("Working tree reset to clean state.")
-        else:
-            print("Working tree left as-is (may have conflict markers).")
-            print("Resolve conflicts manually, then run: git stash drop")
-
-        print(f"Restore your changes with: git stash apply {stash_ref}")
-        # In non-interactive mode (gateway /update), don't abort — the code
-        # update itself succeeded, only the stash restore had conflicts.
-        # Aborting would report the entire update as failed.
-        if prompt_user:
-            sys.exit(1)
+        # Always reset to clean state — leaving conflict markers in source
+        # files makes hermes completely unrunnable (SyntaxError on import).
+        # The user's changes are safe in the stash for manual recovery.
+        subprocess.run(
+            git_cmd + ["reset", "--hard", "HEAD"],
+            cwd=cwd,
+            capture_output=True,
+        )
+        print("Working tree reset to clean state.")
+        print(f"Restore your changes later with: git stash apply {stash_ref}")
+        # Don't sys.exit — the code update itself succeeded, only the stash
+        # restore had conflicts.  Let cmd_update continue with pip install,
+        # skill sync, and gateway restart.
         return False
 
     stash_selector = _resolve_stash_selector(git_cmd, cwd, stash_ref)
@@ -3754,7 +3770,7 @@ def cmd_update(args):
         # running gateway needs restarting to pick up the new code.
         try:
             from hermes_cli.gateway import (
-                is_macos, is_linux, _ensure_user_systemd_env,
+                is_macos, supports_systemd_services, _ensure_user_systemd_env,
                 find_gateway_pids,
                 _get_service_pids,
             )
@@ -3765,7 +3781,7 @@ def cmd_update(args):
 
             # --- Systemd services (Linux) ---
             # Discover all hermes-gateway* units (default + profiles)
-            if is_linux():
+            if supports_systemd_services():
                 try:
                     _ensure_user_systemd_env()
                 except Exception:
@@ -4283,6 +4299,10 @@ For more help on a command:
         help="Single query (non-interactive mode)"
     )
     chat_parser.add_argument(
+        "--image",
+        help="Optional local image path to attach to a single query"
+    )
+    chat_parser.add_argument(
         "-m", "--model",
         help="Model to use (e.g., anthropic/claude-sonnet-4)"
     )
@@ -4472,12 +4492,12 @@ For more help on a command:
         "setup",
         help="Interactive setup wizard",
         description="Configure Hermes Agent with an interactive wizard. "
-                    "Run a specific section: hermes setup model|terminal|gateway|tools|agent"
+                    "Run a specific section: hermes setup model|tts|terminal|gateway|tools|agent"
     )
     setup_parser.add_argument(
         "section",
         nargs="?",
-        choices=["model", "terminal", "gateway", "tools", "agent"],
+        choices=["model", "tts", "terminal", "gateway", "tools", "agent"],
         default=None,
         help="Run a specific setup section instead of the full wizard"
     )
@@ -4724,6 +4744,22 @@ For more help on a command:
         help="Attempt to fix issues automatically"
     )
     doctor_parser.set_defaults(func=cmd_doctor)
+
+    # =========================================================================
+    # dump command
+    # =========================================================================
+    dump_parser = subparsers.add_parser(
+        "dump",
+        help="Dump setup summary for support/debugging",
+        description="Output a compact, plain-text summary of your Hermes setup "
+                    "that can be copy-pasted into Discord/GitHub for support context"
+    )
+    dump_parser.add_argument(
+        "--show-keys",
+        action="store_true",
+        help="Show redacted API key prefixes (first/last 4 chars) instead of just set/not set"
+    )
+    dump_parser.set_defaults(func=cmd_dump)
     
     # =========================================================================
     # config command

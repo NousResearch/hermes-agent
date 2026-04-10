@@ -520,72 +520,6 @@ class SessionDB:
             )
         self._execute_write(_do)
 
-    def set_token_counts(
-        self,
-        session_id: str,
-        input_tokens: int = 0,
-        output_tokens: int = 0,
-        model: str = None,
-        cache_read_tokens: int = 0,
-        cache_write_tokens: int = 0,
-        reasoning_tokens: int = 0,
-        estimated_cost_usd: Optional[float] = None,
-        actual_cost_usd: Optional[float] = None,
-        cost_status: Optional[str] = None,
-        cost_source: Optional[str] = None,
-        pricing_version: Optional[str] = None,
-        billing_provider: Optional[str] = None,
-        billing_base_url: Optional[str] = None,
-        billing_mode: Optional[str] = None,
-    ) -> None:
-        """Set token counters to absolute values (not increment).
-
-        Use this when the caller provides cumulative totals from a completed
-        conversation run (e.g. the gateway, where the cached agent's
-        session_prompt_tokens already reflects the running total).
-        """
-        def _do(conn):
-            conn.execute(
-                """UPDATE sessions SET
-                   input_tokens = ?,
-                   output_tokens = ?,
-                   cache_read_tokens = ?,
-                   cache_write_tokens = ?,
-                   reasoning_tokens = ?,
-                   estimated_cost_usd = ?,
-                   actual_cost_usd = CASE
-                       WHEN ? IS NULL THEN actual_cost_usd
-                       ELSE ?
-                   END,
-                   cost_status = COALESCE(?, cost_status),
-                   cost_source = COALESCE(?, cost_source),
-                   pricing_version = COALESCE(?, pricing_version),
-                   billing_provider = COALESCE(billing_provider, ?),
-                   billing_base_url = COALESCE(billing_base_url, ?),
-                   billing_mode = COALESCE(billing_mode, ?),
-                   model = COALESCE(model, ?)
-                   WHERE id = ?""",
-                (
-                    input_tokens,
-                    output_tokens,
-                    cache_read_tokens,
-                    cache_write_tokens,
-                    reasoning_tokens,
-                    estimated_cost_usd,
-                    actual_cost_usd,
-                    actual_cost_usd,
-                    cost_status,
-                    cost_source,
-                    pricing_version,
-                    billing_provider,
-                    billing_base_url,
-                    billing_mode,
-                    model,
-                    session_id,
-                ),
-            )
-        self._execute_write(_do)
-
     def get_session(self, session_id: str) -> Optional[Dict[str, Any]]:
         """Get a session by ID."""
         with self._lock:
@@ -944,7 +878,8 @@ class SessionDB:
                 try:
                     msg["tool_calls"] = json.loads(msg["tool_calls"])
                 except (json.JSONDecodeError, TypeError):
-                    pass
+                    logger.warning("Failed to deserialize tool_calls in get_messages, falling back to []")
+                    msg["tool_calls"] = []
             result.append(msg)
         return result
 
@@ -972,7 +907,8 @@ class SessionDB:
                 try:
                     msg["tool_calls"] = json.loads(row["tool_calls"])
                 except (json.JSONDecodeError, TypeError):
-                    pass
+                    logger.warning("Failed to deserialize tool_calls in conversation replay, falling back to []")
+                    msg["tool_calls"] = []
             # Restore reasoning fields on assistant messages so providers
             # that replay reasoning (OpenRouter, OpenAI, Nous) receive
             # coherent multi-turn reasoning context.
@@ -983,12 +919,14 @@ class SessionDB:
                     try:
                         msg["reasoning_details"] = json.loads(row["reasoning_details"])
                     except (json.JSONDecodeError, TypeError):
-                        pass
+                        logger.warning("Failed to deserialize reasoning_details, falling back to None")
+                        msg["reasoning_details"] = None
                 if row["codex_reasoning_items"]:
                     try:
                         msg["codex_reasoning_items"] = json.loads(row["codex_reasoning_items"])
                     except (json.JSONDecodeError, TypeError):
-                        pass
+                        logger.warning("Failed to deserialize codex_reasoning_items, falling back to None")
+                        msg["codex_reasoning_items"] = None
             messages.append(msg)
         return messages
 

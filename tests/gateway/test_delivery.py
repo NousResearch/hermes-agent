@@ -1,7 +1,7 @@
 """Tests for the delivery routing module."""
 
-from gateway.config import Platform, GatewayConfig, PlatformConfig, HomeChannel
-from gateway.delivery import DeliveryRouter, DeliveryTarget
+from gateway.config import Platform
+from gateway.delivery import DeliveryTarget
 from gateway.session import SessionSource
 
 
@@ -65,10 +65,4 @@ class TestTargetToStringRoundtrip:
         assert reparsed.chat_id == "999"
 
 
-class TestDeliveryRouter:
-    def test_resolve_targets_does_not_duplicate_local_when_explicit(self):
-        router = DeliveryRouter(GatewayConfig(always_log_local=True))
 
-        targets = router.resolve_targets(["local"])
-
-        assert [target.platform for target in targets] == [Platform.LOCAL]

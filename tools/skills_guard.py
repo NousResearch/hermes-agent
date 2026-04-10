@@ -190,7 +190,7 @@ THREAT_PATTERNS = [
     (r'<!--[^>]*(?:ignore|override|system|secret|hidden)[^>]*-->',
      "html_comment_injection", "high", "injection",
      "hidden instructions in HTML comments"),
-    (r'<\s*div\s+style\s*=\s*["\'].*display\s*:\s*none',
+    (r'<\s*div\s+style\s*=\s*["\'][\s\S]*?display\s*:\s*none',
      "hidden_div", "high", "injection",
      "hidden HTML div (invisible instructions)"),
 

@@ -25,28 +25,27 @@ The messaging gateway is the long-running process that connects Hermes to 14+ ex
 
 ## Architecture Overview
 
-```text
-┌─────────────────────────────────────────────────┐
-│                 GatewayRunner                     │
-│                                                   │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐       │
-│  │ Telegram  │  │ Discord  │  │  Slack   │  ...  │
-│  │ Adapter   │  │ Adapter  │  │ Adapter  │       │
-│  └─────┬─────┘  └─────┬────┘  └─────┬────┘       │
-│        │              │              │             │
-│        └──────────────┼──────────────┘             │
-│                       ▼                            │
-│              _handle_message()                     │
-│                       │                            │
-│          ┌────────────┼────────────┐               │
-│          ▼            ▼            ▼               │
-│   Slash command   AIAgent      Queue/BG            │
-│    dispatch       creation     sessions            │
-│                       │                            │
-│                       ▼                            │
-│              SessionStore                          │
-│           (SQLite persistence)                     │
-└─────────────────────────────────────────────────┘
+```mermaid
+flowchart TD
+    GR["GatewayRunner"]
+    T["Telegram Adapter"]
+    D["Discord Adapter"]
+    S["Slack Adapter"]
+    M["Other Adapters"]
+    H["`_handle_message()`"]
+    C["Slash command dispatch"]
+    A["AIAgent creation"]
+    Q["Queue/background sessions"]
+    SS["SessionStore (SQLite persistence)"]
+
+    T --> H
+    D --> H
+    S --> H
+    M --> H
+    H --> C
+    H --> A
+    H --> Q
+    A --> SS
 ```
 
 ## Message Flow
@@ -148,27 +147,24 @@ being loaded through separate YAML-only paths.
 
 Each messaging platform has an adapter in `gateway/platforms/`:
 
-```text
-gateway/platforms/
-├── base.py              # BaseAdapter — shared logic for all platforms
-├── telegram.py          # Telegram Bot API (long polling or webhook)
-├── discord.py           # Discord bot via discord.py
-├── slack.py             # Slack Socket Mode
-├── whatsapp.py          # WhatsApp Business Cloud API
-├── signal.py            # Signal via signal-cli REST API
-├── matrix.py            # Matrix via mautrix (optional E2EE)
-├── mattermost.py        # Mattermost WebSocket API
-├── email.py             # Email via IMAP/SMTP
-├── sms.py               # SMS via Twilio
-├── dingtalk.py          # DingTalk WebSocket
-├── feishu.py            # Feishu/Lark WebSocket or webhook
-├── wecom.py             # WeCom (WeChat Work) callback
-├── weixin.py            # Weixin (personal WeChat) via iLink Bot API
-├── bluebubbles.py       # Apple iMessage via BlueBubbles macOS server
-├── webhook.py           # Inbound/outbound webhook adapter
-├── api_server.py        # REST API server adapter
-└── homeassistant.py     # Home Assistant conversation integration
-```
+- `gateway/platforms/base.py` — BaseAdapter shared logic for all platforms
+- `gateway/platforms/telegram.py` — Telegram Bot API (long polling or webhook)
+- `gateway/platforms/discord.py` — Discord bot via `discord.py`
+- `gateway/platforms/slack.py` — Slack Socket Mode
+- `gateway/platforms/whatsapp.py` — WhatsApp Business Cloud API
+- `gateway/platforms/signal.py` — Signal via `signal-cli` REST API
+- `gateway/platforms/matrix.py` — Matrix via `mautrix` (optional E2EE)
+- `gateway/platforms/mattermost.py` — Mattermost WebSocket API
+- `gateway/platforms/email.py` — Email via IMAP/SMTP
+- `gateway/platforms/sms.py` — SMS via Twilio
+- `gateway/platforms/dingtalk.py` — DingTalk WebSocket
+- `gateway/platforms/feishu.py` — Feishu/Lark WebSocket or webhook
+- `gateway/platforms/wecom.py` — WeCom (WeChat Work) callback
+- `gateway/platforms/weixin.py` — Weixin (personal WeChat) via iLink Bot API
+- `gateway/platforms/bluebubbles.py` — Apple iMessage via BlueBubbles macOS server
+- `gateway/platforms/webhook.py` — Inbound/outbound webhook adapter
+- `gateway/platforms/api_server.py` — REST API server adapter
+- `gateway/platforms/homeassistant.py` — Home Assistant conversation integration
 
 Adapters implement a common interface:
 - `connect()` / `disconnect()` — lifecycle management

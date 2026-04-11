@@ -109,6 +109,8 @@ def setup_logging(
     from agent.redact import RedactingFormatter
 
     root = logging.getLogger()
+    if force:
+        _remove_managed_handlers(root, {"agent.log", "errors.log"})
 
     # --- agent.log (INFO+) — the main activity log -------------------------
     _add_rotating_handler(
@@ -237,6 +239,19 @@ def _add_rotating_handler(
     handler.setLevel(level)
     handler.setFormatter(formatter)
     logger.addHandler(handler)
+
+
+def _remove_managed_handlers(logger: logging.Logger, filenames: set[str]) -> None:
+    """Remove Hermes-managed rotating handlers for the given filenames."""
+    targets = {name.lower() for name in filenames}
+    for existing in list(logger.handlers):
+        if not isinstance(existing, RotatingFileHandler):
+            continue
+        base_filename = getattr(existing, "baseFilename", "")
+        if Path(base_filename).name.lower() not in targets:
+            continue
+        logger.removeHandler(existing)
+        existing.close()
 
 
 def _read_logging_config():

@@ -1,4 +1,4 @@
-import { INTERPOLATION_RE, LONG_MSG } from '../constants.js'
+import { INTERPOLATION_RE, LONG_MSG, TOOL_VERBS } from '../constants.js'
 
 // eslint-disable-next-line no-control-regex
 const ANSI_RE = /\x1b\[[0-9;]*m/g
@@ -33,6 +33,13 @@ export const compactPreview = (s: string, max: number) => {
   const one = s.replace(/\s+/g, ' ').trim()
 
   return !one ? '' : one.length > max ? one.slice(0, max - 1) + '…' : one
+}
+
+/** Build a single tool trail line — used by both live tool.complete and resume replay. */
+export const buildToolTrailLine = (name: string, context: string, error?: boolean): string => {
+  const label = TOOL_VERBS[name] ?? name
+  const mark = error ? '✗' : '✓'
+  return `${label}${context ? ': ' + compactPreview(context, 72) : ''} ${mark}`
 }
 
 /** Tool completed / failed row in the inline trail (not CoT prose). */

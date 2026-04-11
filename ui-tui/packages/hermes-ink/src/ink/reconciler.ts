@@ -1,9 +1,4 @@
-import { appendFileSync } from 'fs'
-
 import createReconciler from 'react-reconciler'
-
-import { getYogaCounters } from '../native-ts/yoga-layout/index.js'
-import { isEnvTruthy } from '../utils/envUtils.js'
 
 import {
   appendChildNode,
@@ -150,70 +145,7 @@ function applyProp(node: DOMElement, key: string, value: unknown): void {
 
 // --
 
-// react-reconciler's Fiber shape — only the fields we walk. The 5th arg to
-// createInstance is the Fiber (`workInProgress` in react-reconciler.dev.js).
-// _debugOwner is the component that rendered this element (dev builds only);
-// return is the parent fiber (always present). We prefer _debugOwner since it
-// skips past Box/Text wrappers to the actual named component.
-type FiberLike = {
-  elementType?: { displayName?: string; name?: string } | string | null
-  _debugOwner?: FiberLike | null
-  return?: FiberLike | null
-}
-
-export function getOwnerChain(fiber: unknown): string[] {
-  const chain: string[] = []
-  const seen = new Set<unknown>()
-  let cur = fiber as FiberLike | null | undefined
-
-  for (let i = 0; cur && i < 50; i++) {
-    if (seen.has(cur)) {
-      break
-    }
-
-    seen.add(cur)
-    const t = cur.elementType
-
-    const name =
-      typeof t === 'function'
-        ? (t as { displayName?: string; name?: string }).displayName ||
-          (t as { displayName?: string; name?: string }).name
-        : typeof t === 'string'
-          ? undefined // host element (ink-box etc) — skip
-          : t?.displayName || t?.name
-
-    if (name && name !== chain[chain.length - 1]) {
-      chain.push(name)
-    }
-
-    cur = cur._debugOwner ?? cur.return
-  }
-
-  return chain
-}
-
-let debugRepaints: boolean | undefined
-
-export function isDebugRepaintsEnabled(): boolean {
-  if (debugRepaints === undefined) {
-    debugRepaints = isEnvTruthy(process.env.CLAUDE_CODE_DEBUG_REPAINTS)
-  }
-
-  return debugRepaints
-}
-
 export const dispatcher = new Dispatcher()
-
-// --- COMMIT INSTRUMENTATION (temp debugging) ---
-
-const COMMIT_LOG = process.env.CLAUDE_CODE_COMMIT_LOG
-let _commits = 0
-let _lastLog = 0
-let _lastCommitAt = 0
-let _maxGapMs = 0
-let _createCount = 0
-let _prepareAt = 0
-// --- END ---
 
 // --- SCROLL PROFILING (bench/scroll-e2e.sh reads via getLastYogaMs) ---
 // Set by onComputeLayout wrapper in ink.tsx; read by onRender for phases.
@@ -261,65 +193,15 @@ const reconciler = createReconciler<
   null
 >({
   getRootHostContext: () => ({ isInsideText: false }),
-  prepareForCommit: () => {
-    if (COMMIT_LOG) {
-      _prepareAt = performance.now()
-    }
-
-    return null
-  },
+  prepareForCommit: () => null,
   preparePortalMount: () => null,
   clearContainer: () => false,
   resetAfterCommit(rootNode) {
     _lastCommitMs = _commitStart > 0 ? performance.now() - _commitStart : 0
     _commitStart = 0
 
-    if (COMMIT_LOG) {
-      const now = performance.now()
-      _commits++
-      const gap = _lastCommitAt > 0 ? now - _lastCommitAt : 0
-
-      if (gap > _maxGapMs) {
-        _maxGapMs = gap
-      }
-
-      _lastCommitAt = now
-      const reconcileMs = _prepareAt > 0 ? now - _prepareAt : 0
-
-      if (gap > 30 || reconcileMs > 20 || _createCount > 50) {
-        appendFileSync(
-          COMMIT_LOG,
-          `${now.toFixed(1)} gap=${gap.toFixed(1)}ms reconcile=${reconcileMs.toFixed(1)}ms creates=${_createCount}\n`
-        )
-      }
-
-      _createCount = 0
-
-      if (now - _lastLog > 1000) {
-        appendFileSync(COMMIT_LOG, `${now.toFixed(1)} commits=${_commits}/s maxGap=${_maxGapMs.toFixed(1)}ms\n`)
-        _commits = 0
-        _maxGapMs = 0
-        _lastLog = now
-      }
-    }
-
-    const _t0 = COMMIT_LOG ? performance.now() : 0
-
     if (typeof rootNode.onComputeLayout === 'function') {
       rootNode.onComputeLayout()
-    }
-
-    if (COMMIT_LOG) {
-      const layoutMs = performance.now() - _t0
-
-      if (layoutMs > 20) {
-        const c = getYogaCounters()
-
-        appendFileSync(
-          COMMIT_LOG,
-          `${_t0.toFixed(1)} SLOW_YOGA ${layoutMs.toFixed(1)}ms visited=${c.visited} measured=${c.measured} hits=${c.cacheHits} live=${c.live}\n`
-        )
-      }
     }
 
     if (process.env.NODE_ENV === 'test') {
@@ -336,16 +218,7 @@ const reconciler = createReconciler<
       return
     }
 
-    const _tr = COMMIT_LOG ? performance.now() : 0
     rootNode.onRender?.()
-
-    if (COMMIT_LOG) {
-      const renderMs = performance.now() - _tr
-
-      if (renderMs > 10) {
-        appendFileSync(COMMIT_LOG, `${_tr.toFixed(1)} SLOW_PAINT ${renderMs.toFixed(1)}ms\n`)
-      }
-    }
   },
   getChildHostContext(parentHostContext: HostContext, type: ElementNames): HostContext {
     const previousIsInsideText = parentHostContext.isInsideText
@@ -364,7 +237,7 @@ const reconciler = createReconciler<
     newProps: Props,
     _root: DOMElement,
     hostContext: HostContext,
-    internalHandle?: unknown
+    _internalHandle?: unknown
   ): DOMElement {
     if (hostContext.isInsideText && originalType === 'ink-box') {
       throw new Error(`<Box> can't be nested inside <Text> component`)
@@ -374,16 +247,8 @@ const reconciler = createReconciler<
 
     const node = createNode(type)
 
-    if (COMMIT_LOG) {
-      _createCount++
-    }
-
     for (const [key, value] of Object.entries(newProps)) {
       applyProp(node, key, value)
-    }
-
-    if (isDebugRepaintsEnabled()) {
-      node.debugOwnerChain = getOwnerChain(internalHandle)
     }
 
     return node

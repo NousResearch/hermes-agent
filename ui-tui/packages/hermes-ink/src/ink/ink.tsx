@@ -33,7 +33,6 @@ import reconciler, {
   dispatcher,
   getLastCommitMs,
   getLastYogaMs,
-  isDebugRepaintsEnabled,
   recordYogaMs,
   resetProfileCounters
 } from './reconciler.js'
@@ -509,7 +508,6 @@ export default class Ink {
         '\x1b[H' +
         // cursor home
         (this.altScreenMouseTracking ? ENABLE_MOUSE_TRACKING : '') +
-        // re-enable mouse (skip if CLAUDE_CODE_DISABLE_MOUSE)
         (this.altScreenActive ? '' : '\x1b[?1049l') +
         // exit alt (non-fullscreen only)
         '\x1b[?25l' // hide cursor (Ink manages)
@@ -762,19 +760,6 @@ export default class Ink {
           availableHeight: frame.viewport.height,
           reason: patch.reason
         })
-
-        if (isDebugRepaintsEnabled() && patch.debug) {
-          const chain = dom.findOwnerChainAtRow(this.rootNode, patch.debug.triggerY)
-          logForDebugging(
-            `[REPAINT] full reset · ${patch.reason} · row ${patch.debug.triggerY}\n` +
-              `  prev: "${patch.debug.prevLine}"\n` +
-              `  next: "${patch.debug.nextLine}"\n` +
-              `  culprit: ${chain.length ? chain.join(' < ') : '(no owner chain captured)'}`,
-            {
-              level: 'warn'
-            }
-          )
-        }
       }
     }
 

@@ -1,7 +1,7 @@
 import type { FocusManager } from './focus.js'
 import { createLayoutNode } from './layout/engine.js'
 import type { LayoutNode } from './layout/node.js'
-import { LayoutDisplay, LayoutMeasureMode } from './layout/node.js'
+import { LayoutMeasureMode } from './layout/node.js'
 import measureText from './measure-text.js'
 import { addPendingClear, nodeCache } from './node-cache.js'
 import squashTextNodes from './squash-text-nodes.js'
@@ -82,11 +82,6 @@ export type DOMElement = {
   // Only set on ink-root. The document owns focus — any node can
   // reach it by walking parentNode, like browser getRootNode().
   focusManager?: FocusManager
-  // React component stack captured at createInstance time (reconciler.ts),
-  // e.g. ['ToolUseLoader', 'Messages', 'REPL']. Only populated when
-  // CLAUDE_CODE_DEBUG_REPAINTS is set. Used by findOwnerChainAtRow to
-  // attribute scrollback-diff full-resets to the component that caused them.
-  debugOwnerChain?: string[]
 } & InkNode
 
 export type TextNode = {
@@ -442,44 +437,3 @@ export const clearYogaNodeReferences = (node: DOMElement | TextNode): void => {
   node.yogaNode = undefined
 }
 
-/**
- * Find the React component stack responsible for content at screen row `y`.
- *
- * DFS the DOM tree accumulating yoga offsets. Returns the debugOwnerChain of
- * the deepest node whose bounding box contains `y`. Called from ink.tsx when
- * log-update triggers a full reset, to attribute the flicker to its source.
- *
- * Only useful when CLAUDE_CODE_DEBUG_REPAINTS is set (otherwise chains are
- * undefined and this returns []).
- */
-export function findOwnerChainAtRow(root: DOMElement, y: number): string[] {
-  let best: string[] = []
-  walk(root, 0)
-
-  return best
-
-  function walk(node: DOMElement, offsetY: number): void {
-    const yoga = node.yogaNode
-
-    if (!yoga || yoga.getDisplay() === LayoutDisplay.None) {
-      return
-    }
-
-    const top = offsetY + yoga.getComputedTop()
-    const height = yoga.getComputedHeight()
-
-    if (y < top || y >= top + height) {
-      return
-    }
-
-    if (node.debugOwnerChain) {
-      best = node.debugOwnerChain
-    }
-
-    for (const child of node.childNodes) {
-      if (isDOMElement(child)) {
-        walk(child, top)
-      }
-    }
-  }
-}

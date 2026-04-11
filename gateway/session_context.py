@@ -48,6 +48,7 @@ _SESSION_CHAT_NAME: ContextVar[str] = ContextVar("HERMES_SESSION_CHAT_NAME", def
 _SESSION_THREAD_ID: ContextVar[str] = ContextVar("HERMES_SESSION_THREAD_ID", default="")
 _SESSION_USER_ID: ContextVar[str] = ContextVar("HERMES_SESSION_USER_ID", default="")
 _SESSION_USER_NAME: ContextVar[str] = ContextVar("HERMES_SESSION_USER_NAME", default="")
+_SESSION_KEY: ContextVar[str] = ContextVar("HERMES_SESSION_KEY", default="")
 
 _VAR_MAP = {
     "HERMES_SESSION_PLATFORM": _SESSION_PLATFORM,
@@ -56,6 +57,7 @@ _VAR_MAP = {
     "HERMES_SESSION_THREAD_ID": _SESSION_THREAD_ID,
     "HERMES_SESSION_USER_ID": _SESSION_USER_ID,
     "HERMES_SESSION_USER_NAME": _SESSION_USER_NAME,
+    "HERMES_SESSION_KEY": _SESSION_KEY,
 }
 
 
@@ -66,6 +68,7 @@ def set_session_vars(
     thread_id: str = "",
     user_id: str = "",
     user_name: str = "",
+    session_key: str = "",
 ) -> list:
     """Set all session context variables and return reset tokens.
 
@@ -82,6 +85,7 @@ def set_session_vars(
         _SESSION_THREAD_ID.set(thread_id),
         _SESSION_USER_ID.set(user_id),
         _SESSION_USER_NAME.set(user_name),
+        _SESSION_KEY.set(session_key),
     ]
     return tokens
 
@@ -97,6 +101,7 @@ def clear_session_vars(tokens: list) -> None:
         _SESSION_THREAD_ID,
         _SESSION_USER_ID,
         _SESSION_USER_NAME,
+        _SESSION_KEY,
     ]
     for var, token in zip(vars_in_order, tokens):
         var.reset(token)

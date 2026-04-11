@@ -579,6 +579,7 @@ class AIAgent:
         clarify_callback: callable = None,
         step_callback: callable = None,
         stream_delta_callback: callable = None,
+        interim_assistant_callback: callable = None,
         tool_gen_callback: callable = None,
         status_callback: callable = None,
         max_tokens: int = None,
@@ -728,6 +729,7 @@ class AIAgent:
         self.clarify_callback = clarify_callback
         self.step_callback = step_callback
         self.stream_delta_callback = stream_delta_callback
+        self.interim_assistant_callback = interim_assistant_callback
         self.status_callback = status_callback
         self.tool_gen_callback = tool_gen_callback
 
@@ -833,6 +835,11 @@ class AIAgent:
         # Deferred paragraph break flag — set after tool iterations so a
         # single "\n\n" is prepended to the next real text delta.
         self._stream_needs_break = False
+        # Visible assistant text already delivered through live token callbacks
+        # during the current model response. Used to avoid re-sending the same
+        # commentary when the provider later returns it as a completed interim
+        # assistant message.
+        self._current_streamed_assistant_text = ""
 
         # Optional current-turn user-message override used when the API-facing
         # user message intentionally differs from the persisted transcript
@@ -4745,6 +4752,49 @@ class AIAgent:
 
     # ── Unified streaming API call ─────────────────────────────────────────
 
+    def _reset_stream_delivery_tracking(self) -> None:
+        """Reset tracking for text delivered during the current model response."""
+        self._current_streamed_assistant_text = ""
+
+    def _record_streamed_assistant_text(self, text: str) -> None:
+        """Accumulate visible assistant text emitted through stream callbacks."""
+        if isinstance(text, str) and text:
+            self._current_streamed_assistant_text = (
+                getattr(self, "_current_streamed_assistant_text", "") + text
+            )
+
+    @staticmethod
+    def _normalize_interim_visible_text(text: str) -> str:
+        if not isinstance(text, str):
+            return ""
+        return re.sub(r"\s+", " ", text).strip()
+
+    def _interim_content_was_streamed(self, content: str) -> bool:
+        visible_content = self._normalize_interim_visible_text(
+            self._strip_think_blocks(content or "")
+        )
+        if not visible_content:
+            return False
+        streamed = self._normalize_interim_visible_text(
+            self._strip_think_blocks(getattr(self, "_current_streamed_assistant_text", "") or "")
+        )
+        return bool(streamed) and streamed == visible_content
+
+    def _emit_interim_assistant_message(self, assistant_msg: Dict[str, Any]) -> None:
+        """Surface a real mid-turn assistant commentary message to the UI layer."""
+        cb = getattr(self, "interim_assistant_callback", None)
+        if cb is None or not isinstance(assistant_msg, dict):
+            return
+        content = assistant_msg.get("content")
+        visible = self._strip_think_blocks(content or "").strip()
+        if not visible or visible == "(empty)":
+            return
+        already_streamed = self._interim_content_was_streamed(visible)
+        try:
+            cb(visible, already_streamed=already_streamed)
+        except Exception:
+            logger.debug("interim_assistant_callback error", exc_info=True)
+
     def _fire_stream_delta(self, text: str) -> None:
         """Fire all registered stream delta callbacks (display + TTS)."""
         # If a tool iteration set the break flag, prepend a single paragraph
@@ -4754,12 +4804,16 @@ class AIAgent:
         if getattr(self, "_stream_needs_break", False) and text and text.strip():
             self._stream_needs_break = False
             text = "\n\n" + text
-        for cb in (self.stream_delta_callback, self._stream_callback):
-            if cb is not None:
-                try:
-                    cb(text)
-                except Exception:
-                    pass
+        callbacks = [cb for cb in (self.stream_delta_callback, self._stream_callback) if cb is not None]
+        delivered = False
+        for cb in callbacks:
+            try:
+                cb(text)
+                delivered = True
+            except Exception:
+                pass
+        if delivered:
+            self._record_streamed_assistant_text(text)
 
     def _fire_reasoning_delta(self, text: str) -> None:
         """Fire reasoning callback if registered."""
@@ -4943,6 +4997,7 @@ class AIAgent:
                         if self.stream_delta_callback:
                             try:
                                 self.stream_delta_callback(delta.content)
+                                self._record_streamed_assistant_text(delta.content)
                             except Exception:
                                 pass
 
@@ -8043,6 +8098,7 @@ class AIAgent:
 
             while retry_count < max_retries:
                 try:
+                    self._reset_stream_delivery_tracking()
                     api_kwargs = self._build_api_kwargs(api_messages)
                     if self.api_mode == "codex_responses":
                         api_kwargs = self._preflight_codex_api_kwargs(api_kwargs, allow_stream=False)
@@ -9457,6 +9513,7 @@ class AIAgent:
                         )
                         if not duplicate_interim:
                             messages.append(interim_msg)
+                            self._emit_interim_assistant_message(interim_msg)
 
                     if self._codex_incomplete_retries < 3:
                         if not self.quiet_mode:
@@ -9676,6 +9733,7 @@ class AIAgent:
                         messages.pop()
 
                     messages.append(assistant_msg)
+                    self._emit_interim_assistant_message(assistant_msg)
 
                     # Close any open streaming display (response box, reasoning
                     # box) before tool execution begins.  Intermediate turns may
@@ -9954,6 +10012,7 @@ class AIAgent:
                         codex_ack_continuations += 1
                         interim_msg = self._build_assistant_message(assistant_message, "incomplete")
                         messages.append(interim_msg)
+                        self._emit_interim_assistant_message(interim_msg)
 
                         continue_msg = {
                             "role": "user",

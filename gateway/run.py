@@ -76,7 +76,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # Resolve Hermes home directory (respects HERMES_HOME override)
 from hermes_constants import get_hermes_home
-from utils import atomic_yaml_write
+from utils import atomic_yaml_write, is_truthy_value
 _hermes_home = get_hermes_home()
 
 # Load environment variables from ~/.hermes/.env first.
@@ -7079,10 +7079,14 @@ class GatewayRunner:
         from hermes_cli.tools_config import _get_platform_tools
         enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
 
+        display_config = user_config.get("display", {})
+        if not isinstance(display_config, dict):
+            display_config = {}
+
         # Apply tool preview length config (0 = no limit)
         try:
             from agent.display import set_tool_preview_max_len
-            _tpl = user_config.get("display", {}).get("tool_preview_length", 0)
+            _tpl = display_config.get("tool_preview_length", 0)
             set_tool_preview_max_len(int(_tpl) if _tpl else 0)
         except Exception:
             pass
@@ -7095,11 +7099,12 @@ class GatewayRunner:
         # Per-platform overrides (display.tool_progress_overrides) take
         # priority over the global setting — e.g. Signal users can set
         # tool_progress to "off" while keeping Telegram on "all".
-        _display_cfg = user_config.get("display", {})
-        _overrides = _display_cfg.get("tool_progress_overrides", {})
+        _overrides = display_config.get("tool_progress_overrides", {})
+        if not isinstance(_overrides, dict):
+            _overrides = {}
         _raw_tp = _overrides.get(platform_key)
         if _raw_tp is None:
-            _raw_tp = _display_cfg.get("tool_progress")
+            _raw_tp = display_config.get("tool_progress")
         if _raw_tp is False:
             _raw_tp = "off"
         progress_mode = (
@@ -7111,6 +7116,16 @@ class GatewayRunner:
         # so each progress line would be sent as a separate message.
         from gateway.config import Platform
         tool_progress_enabled = progress_mode != "off" and source.platform != Platform.WEBHOOK
+        # Natural assistant status messages are intentionally independent from
+        # tool progress and token streaming. Users can keep tool_progress quiet
+        # in chat platforms while opting into concise mid-turn updates.
+        interim_assistant_messages_enabled = (
+            source.platform != Platform.WEBHOOK
+            and is_truthy_value(
+                display_config.get("interim_assistant_messages"),
+                default=True,
+            )
+        )
         
         # Queue for progress messages (thread-safe)
         progress_queue = queue.Queue() if tool_progress_enabled else None
@@ -7423,7 +7438,7 @@ class GatewayRunner:
             reasoning_config = self._load_reasoning_config()
             self._reasoning_config = reasoning_config
             self._service_tier = self._load_service_tier()
-            # Set up streaming consumer if enabled
+            # Set up stream consumer for token streaming or interim commentary.
             _stream_consumer = None
             _stream_delta_cb = None
             _scfg = getattr(getattr(self, 'config', None), 'streaming', None)
@@ -7431,7 +7446,10 @@ class GatewayRunner:
                 from gateway.config import StreamingConfig
                 _scfg = StreamingConfig()
 
-            if _scfg.enabled and _scfg.transport != "off":
+            _want_stream_deltas = _scfg.enabled and _scfg.transport != "off"
+            _want_interim_messages = interim_assistant_messages_enabled
+            _want_interim_consumer = _want_interim_messages
+            if _want_stream_deltas or _want_interim_consumer:
                 try:
                     from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
                     _adapter = self.adapters.get(source.platform)
@@ -7447,10 +7465,32 @@ class GatewayRunner:
                             config=_consumer_cfg,
                             metadata={"thread_id": _progress_thread_id} if _progress_thread_id else None,
                         )
-                        _stream_delta_cb = _stream_consumer.on_delta
+                        if _want_stream_deltas:
+                            _stream_delta_cb = _stream_consumer.on_delta
                         stream_consumer_holder[0] = _stream_consumer
                 except Exception as _sc_err:
                     logger.debug("Could not set up stream consumer: %s", _sc_err)
+
+            def _interim_assistant_cb(text: str, *, already_streamed: bool = False) -> None:
+                if _stream_consumer is not None:
+                    if already_streamed:
+                        _stream_consumer.on_segment_break()
+                    else:
+                        _stream_consumer.on_commentary(text)
+                    return
+                if already_streamed or not _status_adapter or not str(text or "").strip():
+                    return
+                try:
+                    asyncio.run_coroutine_threadsafe(
+                        _status_adapter.send(
+                            _status_chat_id,
+                            text,
+                            metadata=_status_thread_metadata,
+                        ),
+                        _loop_for_step,
+                    )
+                except Exception as _e:
+                    logger.debug("interim_assistant_callback error: %s", _e)
 
             turn_route = self._resolve_turn_agent_config(message, model, runtime_kwargs)
 
@@ -7509,6 +7549,7 @@ class GatewayRunner:
             agent.tool_progress_callback = progress_callback if tool_progress_enabled else None
             agent.step_callback = _step_callback_sync if _hooks_ref.loaded_hooks else None
             agent.stream_delta_callback = _stream_delta_cb
+            agent.interim_assistant_callback = _interim_assistant_cb if _want_interim_messages else None
             agent.status_callback = _status_callback_sync
             agent.reasoning_config = reasoning_config
             agent.service_tier = self._service_tier
@@ -7812,6 +7853,7 @@ class GatewayRunner:
                 "output_tokens": _output_toks,
                 "model": _resolved_model,
                 "session_id": effective_session_id,
+                "response_previewed": result.get("response_previewed", False),
             }
         
         # Start progress message sender if enabled
@@ -8134,12 +8176,36 @@ class GatewayRunner:
                     # response before processing the queued follow-up.
                     # Skip if streaming already delivered it.
                     _sc = stream_consumer_holder[0]
-                    _already_streamed = _sc and getattr(_sc, "already_sent", False)
+                    if _sc and stream_task:
+                        try:
+                            await asyncio.wait_for(stream_task, timeout=5.0)
+                        except (asyncio.TimeoutError, asyncio.CancelledError):
+                            stream_task.cancel()
+                            try:
+                                await stream_task
+                            except asyncio.CancelledError:
+                                pass
+                        except Exception as e:
+                            logger.debug("Stream consumer wait before queued message failed: %s", e)
+                    _response_previewed = bool(result.get("response_previewed"))
+                    _already_streamed = bool(
+                        _sc
+                        and (
+                            getattr(_sc, "final_response_sent", False)
+                            or (
+                                _response_previewed
+                                and getattr(_sc, "already_sent", False)
+                            )
+                        )
+                    )
                     first_response = result.get("final_response", "")
                     if first_response and not _already_streamed:
                         try:
-                            await adapter.send(source.chat_id, first_response,
-                                               metadata={"thread_id": source.thread_id} if source.thread_id else None)
+                            await adapter.send(
+                                source.chat_id,
+                                first_response,
+                                metadata=_status_thread_metadata,
+                            )
                         except Exception as e:
                             logger.warning("Failed to send first response before queued message: %s", e)
                 # else: interrupted — discard the interrupted response ("Operation
@@ -8212,8 +8278,15 @@ class GatewayRunner:
         # message is new content the user hasn't seen, and it must reach
         # them even if streaming had sent earlier partial output.
         _sc = stream_consumer_holder[0]
-        if _sc and _sc.already_sent and isinstance(response, dict):
-            if not response.get("failed"):
+        if _sc and isinstance(response, dict) and not response.get("failed"):
+            _response_previewed = bool(response.get("response_previewed"))
+            if (
+                getattr(_sc, "final_response_sent", False)
+                or (
+                    _response_previewed
+                    and getattr(_sc, "already_sent", False)
+                )
+            ):
                 response["already_sent"] = True
         
         return response

@@ -1,5 +1,4 @@
-import { Box, Text, useInput } from 'ink'
-import TextInput from 'ink-text-input'
+import { Box, Text, TextInput, useInput } from '@hermes/ink'
 import { useState } from 'react'
 
 import type { Theme } from '../theme.js'
@@ -43,7 +42,7 @@ export function ApprovalPrompt({ onChoice, req, t }: { onChoice: (s: string) => 
   return (
     <Box flexDirection="column">
       <Text bold color={t.color.warn}>
-        ⚠️ DANGEROUS COMMAND: {req.description}
+        ! DANGEROUS COMMAND: {req.description}
       </Text>
       <Text color={t.color.dim}> {req.command}</Text>
       <Text />

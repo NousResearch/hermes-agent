@@ -1,8 +1,8 @@
-import { Box, Text } from 'ink'
+import { Box, Text } from '@hermes/ink'
 import { memo } from 'react'
 
 import { LONG_MSG, ROLE } from '../constants.js'
-import { hasAnsi, userDisplay } from '../lib/text.js'
+import { compactPreview, hasAnsi, isPasteBackedText, stripAnsi, userDisplay } from '../lib/text.js'
 import type { Theme } from '../theme.js'
 import type { Msg } from '../types.js'
 
@@ -21,9 +21,13 @@ export const MessageLine = memo(function MessageLine({
   t: Theme
 }) {
   if (msg.role === 'tool') {
+    const preview = compactPreview(hasAnsi(msg.text) ? stripAnsi(msg.text) : msg.text, Math.max(24, cols - 14))
+
     return (
       <Box alignSelf="flex-start" borderColor={t.color.dim} borderStyle="round" marginLeft={3} paddingX={1}>
-        <Text color={t.color.dim}>{msg.text}</Text>
+        <Text color={t.color.dim} wrap="truncate-end">
+          {preview || '(empty tool result)'}
+        </Text>
       </Box>
     )
   }
@@ -39,7 +43,7 @@ export const MessageLine = memo(function MessageLine({
       return hasAnsi(msg.text) ? <Text wrap="wrap">{msg.text}</Text> : <Md compact={compact} t={t} text={msg.text} />
     }
 
-    if (msg.role === 'user' && msg.text.length > LONG_MSG) {
+    if (msg.role === 'user' && msg.text.length > LONG_MSG && isPasteBackedText(msg.text)) {
       const [head, ...rest] = userDisplay(msg.text).split('[long message]')
 
       return (

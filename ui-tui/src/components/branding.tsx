@@ -1,4 +1,4 @@
-import { Box, Text, useStdout } from 'ink'
+import { Box, Text, useStdout } from '@hermes/ink'
 
 import { artWidth, caduceus, CADUCEUS_WIDTH, logo, LOGO_WIDTH } from '../banner.js'
 import { flat } from '../lib/text.js'
@@ -43,7 +43,9 @@ export function SessionPanel({ info, sid, t }: { info: SessionInfo; sid?: string
   const heroW = artWidth(heroLines) || CADUCEUS_WIDTH
   const leftW = Math.min(heroW + 4, Math.floor(cols * 0.4))
   const wide = cols >= 90 && leftW + 40 < cols
-  const w = wide ? cols - leftW - 12 : cols - 10
+  // Keep an explicit gutter so right border never gets overwritten by long lines.
+  const w = Math.max(20, wide ? cols - leftW - 14 : cols - 12)
+  const lineBudget = Math.max(12, w - 2)
   const cwd = info.cwd || process.cwd()
   const strip = (s: string) => (s.endsWith('_tools') ? s.slice(0, -6) : s)
   const title = `${t.brand.name}${info.version ? ` v${info.version}` : ''}${info.release_date ? ` (${info.release_date})` : ''}`
@@ -54,7 +56,7 @@ export function SessionPanel({ info, sid, t }: { info: SessionInfo; sid?: string
     for (const item of items.sort()) {
       const next = line ? `${line}, ${item}` : item
 
-      if (pfx.length + next.length > w) {
+      if (pfx.length + next.length > lineBudget) {
         return line ? `${line}, …+${items.length - line.split(', ').length}` : `${item}, …`
       }
 
@@ -122,10 +124,10 @@ export function SessionPanel({ info, sid, t }: { info: SessionInfo; sid?: string
         </Text>
         {typeof info.update_behind === 'number' && info.update_behind > 0 && (
           <Text bold color="yellow">
-            ⚠ {info.update_behind} {info.update_behind === 1 ? 'commit' : 'commits'} behind
+            ! {info.update_behind} {info.update_behind === 1 ? 'commit' : 'commits'} behind
             <Text bold={false} color="yellow" dimColor>
               {' '}
-              — run{' '}
+              - run{' '}
             </Text>
             <Text bold color="yellow">
               {info.update_command || 'hermes update'}

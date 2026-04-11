@@ -1,5 +1,4 @@
-import { Box, Text } from 'ink'
-import TextInput from 'ink-text-input'
+import { Box, Text, TextInput } from '@hermes/ink'
 import { useState } from 'react'
 
 import type { Theme } from '../theme.js'

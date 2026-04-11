@@ -137,3 +137,6 @@ export const userDisplay = (text: string): string => {
 
   return `${prefix || '(message)'} [long message]`
 }
+
+export const isPasteBackedText = (text: string): boolean =>
+  /\[\[paste:\d+\]\]|\[paste #\d+ (?:attached|excerpt)\]/.test(text)

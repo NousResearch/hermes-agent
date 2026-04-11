@@ -1,4 +1,4 @@
-import { Box, Text, useInput } from 'ink'
+import { Box, Text, useInput } from '@hermes/ink'
 import { useEffect, useState } from 'react'
 
 import type { GatewayClient } from '../gatewayClient.js'
@@ -115,9 +115,7 @@ export function SessionPicker({
                 ({s.message_count} msgs, {age(s.started_at)}, {s.source || 'tui'})
               </Text>
             </Box>
-            <Text color={sel === i ? t.color.cornsilk : t.color.dim}>
-              {s.title || s.preview || '(untitled)'}
-            </Text>
+            <Text color={sel === i ? t.color.cornsilk : t.color.dim}>{s.title || s.preview || '(untitled)'}</Text>
           </Box>
         )
       })}

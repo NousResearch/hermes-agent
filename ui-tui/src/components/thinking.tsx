@@ -1,4 +1,4 @@
-import { Text } from 'ink'
+import { Text } from '@hermes/ink'
 import { memo, useEffect, useState } from 'react'
 import spinners, { type BrailleSpinnerName } from 'unicode-animations'
 
@@ -21,7 +21,7 @@ const TOOL: BrailleSpinnerName[] = ['cascade', 'scan', 'diagswipe', 'fillsweep',
 const tone = (item: ActivityItem, t: Theme) =>
   item.tone === 'error' ? t.color.error : item.tone === 'warn' ? t.color.warn : t.color.dim
 
-const activityGlyph = (item: ActivityItem) => (item.tone === 'error' ? '✗' : item.tone === 'warn' ? '⚠' : '·')
+const activityGlyph = (item: ActivityItem) => (item.tone === 'error' ? '✗' : item.tone === 'warn' ? '!' : '·')
 
 const TreeFork = ({ last }: { last: boolean }) => <Text dimColor>{last ? '└─ ' : '├─ '}</Text>
 

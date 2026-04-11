@@ -475,6 +475,16 @@ class TestWebhookSignatureEnforcement:
         assert resp.status == 200
 
     @pytest.mark.asyncio
+    async def test_insecure_flag_with_url_still_validates(self):
+        """When both SMS_WEBHOOK_URL and SMS_INSECURE_NO_SIGNATURE are set,
+        validation stays active (URL takes precedence)."""
+        adapter = self._make_adapter(webhook_url="https://example.com/webhooks/twilio")
+        body = b"From=%2B15551234567&To=%2B15550001111&Body=hello&MessageSid=SM123"
+        request = self._mock_request(body, headers={})
+        resp = await adapter._handle_webhook(request)
+        assert resp.status == 403
+
+    @pytest.mark.asyncio
     async def test_missing_signature_returns_403(self):
         adapter = self._make_adapter(webhook_url="https://example.com/webhooks/twilio")
         body = b"From=%2B15551234567&To=%2B15550001111&Body=hello&MessageSid=SM123"

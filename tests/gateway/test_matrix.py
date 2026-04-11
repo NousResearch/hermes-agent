@@ -601,6 +601,40 @@ class TestMatrixDisplayName:
 # Requirements check
 # ---------------------------------------------------------------------------
 
+class TestMatrixModuleImport:
+    def test_module_importable_without_mautrix(self):
+        """gateway.platforms.matrix must be importable even when mautrix is
+        not installed — otherwise the gateway crashes for ALL platforms.
+
+        This test uses a subprocess to avoid polluting the current process's
+        sys.modules (reimporting a module creates a second module object whose
+        classes don't share globals with the original — breaking patch.object
+        in subsequent tests).
+        """
+        import subprocess
+        result = subprocess.run(
+            [sys.executable, "-c", (
+                "import sys\n"
+                "# Block mautrix completely\n"
+                "class _Blocker:\n"
+                "    def find_module(self, name, path=None):\n"
+                "        if name.startswith('mautrix'): return self\n"
+                "    def load_module(self, name):\n"
+                "        raise ImportError(f'blocked: {name}')\n"
+                "sys.meta_path.insert(0, _Blocker())\n"
+                "for k in list(sys.modules):\n"
+                "    if k.startswith('mautrix'): del sys.modules[k]\n"
+                "from gateway.platforms.matrix import check_matrix_requirements\n"
+                "assert not check_matrix_requirements()\n"
+                "print('OK')\n"
+            )],
+            capture_output=True, text=True, timeout=10,
+        )
+        assert result.returncode == 0, (
+            f"Subprocess failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
+        )
+
+
 class TestMatrixRequirements:
     def test_check_requirements_with_token(self, monkeypatch):
         monkeypatch.setenv("MATRIX_ACCESS_TOKEN", "syt_test")
@@ -738,7 +772,7 @@ class TestMatrixE2EEHardFail:
 
     @pytest.mark.asyncio
     async def test_connect_fails_when_encryption_true_but_no_e2ee_deps(self):
-        from gateway.platforms.matrix import MatrixAdapter
+        from gateway.platforms.matrix import MatrixAdapter, _check_e2ee_deps
 
         config = PlatformConfig(
             enabled=True,
@@ -768,7 +802,8 @@ class TestMatrixE2EEHardFail:
         from gateway.platforms import matrix as matrix_mod
         with patch.object(matrix_mod, "_check_e2ee_deps", return_value=False):
             with patch.dict("sys.modules", fake_mautrix_mods):
-                result = await adapter.connect()
+                with patch.object(adapter, "_sync_loop", AsyncMock(return_value=None)):
+                    result = await adapter.connect()
 
         assert result is False
 

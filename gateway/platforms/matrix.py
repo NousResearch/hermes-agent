@@ -35,18 +35,54 @@ from typing import Any, Dict, Optional, Set
 
 from html import escape as _html_escape
 
-from mautrix.types import (
-    ContentURI,
-    EventID,
-    EventType,
-    PaginationDirection,
-    PresenceState,
-    RoomCreatePreset,
-    RoomID,
-    SyncToken,
-    TrustState,
-    UserID,
-)
+try:
+    from mautrix.types import (
+        ContentURI,
+        EventID,
+        EventType,
+        PaginationDirection,
+        PresenceState,
+        RoomCreatePreset,
+        RoomID,
+        SyncToken,
+        TrustState,
+        UserID,
+    )
+except ImportError:
+    # Stubs so the module is importable without mautrix installed.
+    # check_matrix_requirements() will return False and the adapter
+    # won't be instantiated in production, but tests may exercise
+    # adapter methods so stubs must have the right attributes.
+    ContentURI = EventID = RoomID = SyncToken = UserID = str  # type: ignore[misc,assignment]
+
+    class _EventTypeStub:  # type: ignore[no-redef]
+        ROOM_MESSAGE = "m.room.message"
+        REACTION = "m.reaction"
+        ROOM_ENCRYPTED = "m.room.encrypted"
+        ROOM_NAME = "m.room.name"
+    EventType = _EventTypeStub  # type: ignore[misc,assignment]
+
+    class _PaginationDirectionStub:  # type: ignore[no-redef]
+        BACKWARD = "b"
+        FORWARD = "f"
+    PaginationDirection = _PaginationDirectionStub  # type: ignore[misc,assignment]
+
+    class _PresenceStateStub:  # type: ignore[no-redef]
+        ONLINE = "online"
+        OFFLINE = "offline"
+        UNAVAILABLE = "unavailable"
+    PresenceState = _PresenceStateStub  # type: ignore[misc,assignment]
+
+    class _RoomCreatePresetStub:  # type: ignore[no-redef]
+        PRIVATE = "private_chat"
+        PUBLIC = "public_chat"
+        TRUSTED_PRIVATE = "trusted_private_chat"
+    RoomCreatePreset = _RoomCreatePresetStub  # type: ignore[misc,assignment]
+
+    class _TrustStateStub:  # type: ignore[no-redef]
+        UNVERIFIED = 0
+        VERIFIED = 1
+    TrustState = _TrustStateStub  # type: ignore[misc,assignment]
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (

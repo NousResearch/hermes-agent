@@ -72,6 +72,8 @@ _PROVIDER_ALIASES = {
     "zhipu": "zai",
     "kimi": "kimi-coding",
     "moonshot": "kimi-coding",
+    "kimi-code": "kimi-code-plan",
+    "kimi-plan": "kimi-code-plan",
     "minimax-china": "minimax-cn",
     "minimax_cn": "minimax-cn",
     "claude": "anthropic",
@@ -102,6 +104,7 @@ _API_KEY_PROVIDER_AUX_MODELS: Dict[str, str] = {
     "gemini": "gemini-3-flash-preview",
     "zai": "glm-4.5-flash",
     "kimi-coding": "kimi-k2-turbo-preview",
+    "kimi-code-plan": "kimi-code",
     "minimax": "MiniMax-M2.7",
     "minimax-cn": "MiniMax-M2.7",
     "anthropic": "claude-haiku-4-5-20251001",
@@ -583,6 +586,149 @@ class AsyncAnthropicAuxiliaryClient:
         self.base_url = sync_wrapper.base_url
 
 
+class _KimiCodePlanCompletionsAdapter:
+    """Direct HTTP adapter for Kimi Code Plan's Anthropic-compatible endpoint."""
+
+    def __init__(self, api_key: str, base_url: str, model: str):
+        self._api_key = api_key
+        self._base_url = str(base_url or "").rstrip("/")
+        self._model = model
+
+    def create(self, **kwargs) -> Any:
+        import urllib.error
+        import urllib.request
+        from agent.anthropic_adapter import build_anthropic_kwargs
+
+        messages = kwargs.get("messages", [])
+        model = kwargs.get("model", self._model)
+        tools = kwargs.get("tools")
+        tool_choice = kwargs.get("tool_choice")
+        max_tokens = kwargs.get("max_tokens") or kwargs.get("max_completion_tokens") or 2000
+        temperature = kwargs.get("temperature")
+        timeout = float(kwargs.get("timeout") or 30)
+
+        normalized_tool_choice = None
+        if isinstance(tool_choice, str):
+            normalized_tool_choice = tool_choice
+        elif isinstance(tool_choice, dict):
+            choice_type = str(tool_choice.get("type", "")).lower()
+            if choice_type == "function":
+                normalized_tool_choice = tool_choice.get("function", {}).get("name")
+            elif choice_type in {"auto", "required", "none"}:
+                normalized_tool_choice = choice_type
+
+        anthropic_kwargs = build_anthropic_kwargs(
+            model=model,
+            messages=messages,
+            tools=tools,
+            max_tokens=max_tokens,
+            reasoning_config=None,
+            tool_choice=normalized_tool_choice,
+            is_oauth=False,
+            base_url=self._base_url,
+        )
+        if temperature is not None:
+            anthropic_kwargs["temperature"] = temperature
+
+        payload = json.dumps(anthropic_kwargs).encode("utf-8")
+        req = urllib.request.Request(
+            self._base_url + "/messages",
+            data=payload,
+            headers={
+                "content-type": "application/json",
+                "x-api-key": self._api_key,
+                "anthropic-version": "2023-06-01",
+                "user-agent": "claude-code/0.1.0",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                raw = json.loads(resp.read().decode("utf-8", "replace"))
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode("utf-8", "replace")
+            raise RuntimeError(f"Error code: {exc.code} - {body}") from exc
+
+        content_blocks = raw.get("content") or []
+        text_parts = []
+        tool_calls = []
+        for block in content_blocks:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") == "text":
+                text_parts.append(str(block.get("text") or ""))
+            elif block.get("type") == "tool_use":
+                tool_calls.append(SimpleNamespace(
+                    id=str(block.get("id") or ""),
+                    type="function",
+                    function=SimpleNamespace(
+                        name=str(block.get("name") or ""),
+                        arguments=json.dumps(block.get("input") or {}),
+                    ),
+                ))
+
+        usage_raw = raw.get("usage") or {}
+        usage = SimpleNamespace(
+            prompt_tokens=int(usage_raw.get("input_tokens") or usage_raw.get("prompt_tokens") or 0),
+            completion_tokens=int(usage_raw.get("output_tokens") or usage_raw.get("completion_tokens") or 0),
+            total_tokens=int(usage_raw.get("total_tokens") or 0),
+        )
+        if not usage.total_tokens:
+            usage.total_tokens = usage.prompt_tokens + usage.completion_tokens
+
+        message = SimpleNamespace(
+            role="assistant",
+            content="".join(text_parts).strip() or None,
+            tool_calls=tool_calls or None,
+        )
+        choice = SimpleNamespace(
+            index=0,
+            message=message,
+            finish_reason="tool_calls" if tool_calls else "stop",
+        )
+        return SimpleNamespace(
+            choices=[choice],
+            model=raw.get("model") or model,
+            usage=usage,
+        )
+
+
+class _KimiCodePlanChatShim:
+    def __init__(self, adapter: _KimiCodePlanCompletionsAdapter):
+        self.completions = adapter
+
+
+class KimiCodePlanAuxiliaryClient:
+    def __init__(self, api_key: str, base_url: str, model: str):
+        adapter = _KimiCodePlanCompletionsAdapter(api_key, base_url, model)
+        self.chat = _KimiCodePlanChatShim(adapter)
+        self.api_key = api_key
+        self.base_url = base_url
+
+
+class _AsyncKimiCodePlanCompletionsAdapter:
+    def __init__(self, sync_adapter: _KimiCodePlanCompletionsAdapter):
+        self._sync = sync_adapter
+
+    async def create(self, **kwargs) -> Any:
+        import asyncio
+        return await asyncio.to_thread(self._sync.create, **kwargs)
+
+
+class _AsyncKimiCodePlanChatShim:
+    def __init__(self, adapter: _AsyncKimiCodePlanCompletionsAdapter):
+        self.completions = adapter
+
+
+class AsyncKimiCodePlanAuxiliaryClient:
+    def __init__(self, sync_wrapper: "KimiCodePlanAuxiliaryClient"):
+        sync_adapter = sync_wrapper.chat.completions
+        async_adapter = _AsyncKimiCodePlanCompletionsAdapter(sync_adapter)
+        self.chat = _AsyncKimiCodePlanChatShim(async_adapter)
+        self.api_key = sync_wrapper.api_key
+        self.base_url = sync_wrapper.base_url
+
+
 def _read_nous_auth() -> Optional[dict]:
     """Read and validate ~/.hermes/auth.json for an active Nous provider.
 
@@ -716,7 +862,7 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
             logger.debug("Auxiliary text client: %s (%s) via pool", pconfig.name, model)
             extra = {}
             if "api.kimi.com" in base_url.lower():
-                extra["default_headers"] = {"User-Agent": "KimiCLI/1.30.0"}
+                extra["default_headers"] = {"User-Agent": "claude-code/0.1.0"}
             elif "api.githubcopilot.com" in base_url.lower():
                 from hermes_cli.models import copilot_default_headers
 
@@ -737,7 +883,7 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
         logger.debug("Auxiliary text client: %s (%s)", pconfig.name, model)
         extra = {}
         if "api.kimi.com" in base_url.lower():
-            extra["default_headers"] = {"User-Agent": "KimiCLI/1.30.0"}
+            extra["default_headers"] = {"User-Agent": "claude-code/0.1.0"}
         elif "api.githubcopilot.com" in base_url.lower():
             from hermes_cli.models import copilot_default_headers
 
@@ -1208,6 +1354,8 @@ def _to_async_client(sync_client, model: str):
         return AsyncCodexAuxiliaryClient(sync_client), model
     if isinstance(sync_client, AnthropicAuxiliaryClient):
         return AsyncAnthropicAuxiliaryClient(sync_client), model
+    if isinstance(sync_client, KimiCodePlanAuxiliaryClient):
+        return AsyncKimiCodePlanAuxiliaryClient(sync_client), model
 
     async_kwargs = {
         "api_key": sync_client.api_key,
@@ -1221,7 +1369,7 @@ def _to_async_client(sync_client, model: str):
 
         async_kwargs["default_headers"] = copilot_default_headers()
     elif "api.kimi.com" in base_lower:
-        async_kwargs["default_headers"] = {"User-Agent": "KimiCLI/1.30.0"}
+        async_kwargs["default_headers"] = {"User-Agent": "claude-code/0.1.0"}
     return AsyncOpenAI(**async_kwargs), model
 
 
@@ -1397,7 +1545,7 @@ def resolve_provider_client(
             )
             extra = {}
             if "api.kimi.com" in custom_base.lower():
-                extra["default_headers"] = {"User-Agent": "KimiCLI/1.30.0"}
+                extra["default_headers"] = {"User-Agent": "claude-code/0.1.0"}
             elif "api.githubcopilot.com" in custom_base.lower():
                 from hermes_cli.models import copilot_default_headers
                 extra["default_headers"] = copilot_default_headers()
@@ -1458,11 +1606,21 @@ def resolve_provider_client(
         return None, None
 
     if pconfig.auth_type == "api_key":
-        if provider == "anthropic":
-            client, default_model = _try_anthropic()
-            if client is None:
-                logger.warning("resolve_provider_client: anthropic requested but no Anthropic credentials found")
-                return None, None
+        if provider in ("anthropic", "kimi-code-plan"):
+            if provider == "anthropic":
+                client, default_model = _try_anthropic()
+                if client is None:
+                    logger.warning("resolve_provider_client: anthropic requested but no Anthropic credentials found")
+                    return None, None
+            else:
+                creds = resolve_api_key_provider_credentials(provider)
+                api_key = str(creds.get("api_key", "")).strip()
+                if not api_key:
+                    logger.warning("resolve_provider_client: kimi-code-plan requested but no Kimi API key found")
+                    return None, None
+                base_url = str(creds.get("base_url", "")).strip().rstrip("/") or pconfig.inference_base_url
+                default_model = _API_KEY_PROVIDER_AUX_MODELS.get(provider, "kimi-code")
+                client = KimiCodePlanAuxiliaryClient(api_key, base_url, default_model)
             final_model = _normalize_resolved_model(model or default_model, provider)
             return (_to_async_client(client, final_model) if async_mode else (client, final_model))
 
@@ -1487,7 +1645,7 @@ def resolve_provider_client(
         # Provider-specific headers
         headers = {}
         if "api.kimi.com" in base_url.lower():
-            headers["User-Agent"] = "KimiCLI/1.30.0"
+            headers["User-Agent"] = "claude-code/0.1.0"
         elif "api.githubcopilot.com" in base_url.lower():
             from hermes_cli.models import copilot_default_headers
 

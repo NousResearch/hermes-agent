@@ -427,6 +427,11 @@ class MatrixAdapter(BasePlatformAdapter):
             if isinstance(sync_data, dict):
                 rooms_join = sync_data.get("rooms", {}).get("join", {})
                 self._joined_rooms = set(rooms_join.keys())
+                # Store the next_batch token so incremental syncs start
+                # from where the initial sync left off.
+                nb = sync_data.get("next_batch")
+                if nb:
+                    await client.sync_store.put_next_batch(nb)
                 logger.info(
                     "Matrix: initial sync complete, joined %d rooms",
                     len(self._joined_rooms),
@@ -818,19 +823,40 @@ class MatrixAdapter(BasePlatformAdapter):
 
     async def _sync_loop(self) -> None:
         """Continuously sync with the homeserver."""
+        client = self._client
+        # Resume from the token stored during the initial sync.
+        next_batch = await client.sync_store.get_next_batch()
         while not self._closing:
             try:
-                sync_data = await self._client.sync(timeout=30000)
+                sync_data = await client.sync(
+                    since=next_batch, timeout=30000,
+                )
                 if isinstance(sync_data, dict):
                     # Update joined rooms from sync response.
                     rooms_join = sync_data.get("rooms", {}).get("join", {})
                     if rooms_join:
                         self._joined_rooms.update(rooms_join.keys())
 
-                # Share keys periodically if E2EE is enabled.
-                if self._encryption and getattr(self._client, "crypto", None):
+                    # Advance the sync token so the next request is
+                    # incremental instead of a full initial sync.
+                    nb = sync_data.get("next_batch")
+                    if nb:
+                        next_batch = nb
+                        await client.sync_store.put_next_batch(nb)
+
+                    # Dispatch events to registered handlers so that
+                    # _on_room_message / _on_reaction / _on_invite fire.
                     try:
-                        await self._client.crypto.share_keys()
+                        tasks = client.handle_sync(sync_data)
+                        if tasks:
+                            await asyncio.gather(*tasks)
+                    except Exception as exc:
+                        logger.warning("Matrix: sync event dispatch error: %s", exc)
+
+                # Share keys periodically if E2EE is enabled.
+                if self._encryption and getattr(client, "crypto", None):
+                    try:
+                        await client.crypto.share_keys()
                     except Exception as exc:
                         logger.warning("Matrix: E2EE key share failed: %s", exc)
 

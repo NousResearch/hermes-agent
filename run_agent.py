@@ -700,10 +700,14 @@ class AIAgent:
         except Exception:
             pass
 
-        # Direct OpenAI sessions use the Responses API path.  GPT-5.x tool
-        # calls with reasoning are rejected on /v1/chat/completions, and
-        # Hermes is a tool-using client by default.
-        if self.api_mode == "chat_completions" and self._is_direct_openai_url():
+        # GPT-5.x models require the Responses API path — they are rejected
+        # on /v1/chat/completions by both OpenAI and OpenRouter.  Also
+        # auto-upgrade for direct OpenAI URLs (api.openai.com) since all
+        # newer tool-calling models prefer Responses there.
+        if self.api_mode == "chat_completions" and (
+            self._is_direct_openai_url()
+            or self._model_requires_responses_api(self.model)
+        ):
             self.api_mode = "codex_responses"
 
         # Pre-warm OpenRouter model metadata cache in a background thread.
@@ -1701,6 +1705,21 @@ class AIAgent:
     def _is_openrouter_url(self) -> bool:
         """Return True when the base URL targets OpenRouter."""
         return "openrouter" in self._base_url_lower
+
+    @staticmethod
+    def _model_requires_responses_api(model: str) -> bool:
+        """Return True for models that require the Responses API path.
+
+        GPT-5.x models are rejected on /v1/chat/completions by both
+        OpenAI and OpenRouter (error: ``unsupported_api_for_model``).
+        Detect these so the correct api_mode is set regardless of
+        which provider is serving the model.
+        """
+        m = model.lower()
+        # Strip vendor prefix (e.g. "openai/gpt-5.4" → "gpt-5.4")
+        if "/" in m:
+            m = m.rsplit("/", 1)[-1]
+        return m.startswith("gpt-5")
 
     def _max_tokens_param(self, value: int) -> dict:
         """Return the correct max tokens kwarg for the current provider.
@@ -5251,7 +5270,7 @@ class AIAgent:
             except Exception:
                 pass
 
-            # Determine api_mode from provider / base URL
+            # Determine api_mode from provider / base URL / model
             fb_api_mode = "chat_completions"
             fb_base_url = str(fb_client.base_url)
             if fb_provider == "openai-codex":
@@ -5259,6 +5278,10 @@ class AIAgent:
             elif fb_provider == "anthropic" or fb_base_url.rstrip("/").lower().endswith("/anthropic"):
                 fb_api_mode = "anthropic_messages"
             elif self._is_direct_openai_url(fb_base_url):
+                fb_api_mode = "codex_responses"
+            elif self._model_requires_responses_api(fb_model):
+                # GPT-5.x models need Responses API on every provider
+                # (OpenRouter, Copilot, direct OpenAI, etc.)
                 fb_api_mode = "codex_responses"
 
             old_model = self.model
@@ -5348,8 +5371,8 @@ class AIAgent:
         to the fallback provider for every subsequent turn.  Calling this at
         the top of ``run_conversation()`` makes fallback turn-scoped.
 
-        The gateway creates a fresh agent per message so this is a no-op
-        there (``_fallback_activated`` is always False at turn start).
+        The gateway caches agents across messages (``_agent_cache`` in
+        ``gateway/run.py``), so this restoration IS needed there too.
         """
         if not self._fallback_activated:
             return False

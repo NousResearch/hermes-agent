@@ -484,12 +484,35 @@ def _(rid, params: dict) -> dict:
     try:
         db.reopen_session(target)
         history = db.get_messages_as_conversation(target)
-        messages = [
-            {"role": m["role"], "text": m.get("content") or ""}
-            for m in history
-            if m.get("role") in ("user", "assistant", "tool", "system")
-            and (m.get("content") or "").strip()
-        ]
+        messages = []
+        tool_call_args = {}
+        for m in history:
+            role = m.get("role")
+            if role not in ("user", "assistant", "tool", "system"):
+                continue
+            if role == "assistant" and m.get("tool_calls"):
+                for tc in m["tool_calls"]:
+                    fn = tc.get("function", {})
+                    tc_id = tc.get("id", "")
+                    if tc_id and fn.get("name"):
+                        try:
+                            args = json.loads(fn.get("arguments", "{}"))
+                        except (json.JSONDecodeError, TypeError):
+                            args = {}
+                        tool_call_args[tc_id] = (fn["name"], args)
+                if not (m.get("content") or "").strip():
+                    continue
+            if role == "tool":
+                tc_id = m.get("tool_call_id", "")
+                tc_info = tool_call_args.get(tc_id) if tc_id else None
+                name = (tc_info[0] if tc_info else None) or m.get("tool_name") or "tool"
+                args = (tc_info[1] if tc_info else None) or {}
+                ctx = _tool_ctx(name, args)
+                messages.append({"role": "tool", "name": name, "context": ctx})
+                continue
+            if not (m.get("content") or "").strip():
+                continue
+            messages.append({"role": role, "text": m.get("content") or ""})
         agent = _make_agent(sid, target, session_id=target)
         _init_session(sid, target, agent, history, cols=int(params.get("cols", 80)))
     except Exception as e:

@@ -7,6 +7,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from hermes_android.linux_subsystem import apply_linux_subsystem_env
+
 
 @dataclass
 class AndroidRuntimeEnv:
@@ -51,6 +53,10 @@ def prepare_runtime_env(
     os.environ["API_SERVER_PORT"] = str(port)
     os.environ["API_SERVER_KEY"] = key
     os.environ["API_SERVER_MODEL_NAME"] = api_server_model_name
+
+    for env_key, env_value in apply_linux_subsystem_env(files_path).items():
+        if env_value:
+            os.environ[env_key] = env_value
 
     return AndroidRuntimeEnv(
         files_dir=files_path,

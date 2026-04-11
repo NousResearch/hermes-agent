@@ -34,7 +34,6 @@ ROOT_PACKAGES = [
     "grep",
     "gzip",
     "less",
-    "llama-cpp",
     "procps",
     "sed",
     "tar",
@@ -216,28 +215,15 @@ def strip_termux_prefix(path: str) -> str | None:
     return normalized[len(prefix) :]
 
 
-def _normalize_asset_link_path(path: str) -> str:
-    return str(path).replace("\\", "/").strip().lstrip("/")
-
-
 def serializable_manifest(android_abi: str, packages: Iterable[TermuxPackageRecord], links: Iterable[dict] = ()) -> dict:
     package_list = list(packages)
-    normalized_links = [
-        {
-            **link,
-            "path": _normalize_asset_link_path(link.get("path", "")),
-            "target": _normalize_asset_link_path(link.get("target", "")),
-        }
-        for link in links
-    ]
-    normalized_links.sort(key=lambda link: (link["path"], link["target"]))
     return {
         "asset_root": ANDROID_LINUX_ASSET_ROOT,
         "android_abi": android_abi,
         "termux_arch": ANDROID_TO_TERMUX_ARCH[android_abi],
         "root_packages": list(ROOT_PACKAGES),
         "ignored_dependencies": sorted(IGNORED_DEPENDENCIES),
-        "links": normalized_links,
+        "links": list(links),
         "packages": [
             {
                 "name": package.name,

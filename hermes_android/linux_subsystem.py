@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 from typing import Any
 
@@ -24,33 +23,13 @@ def apply_linux_subsystem_env(files_dir: str | Path) -> dict[str, str]:
     state = load_linux_subsystem_state(files_dir)
     if not state or not state.get("enabled"):
         return {}
-    native_shell_path = str(state.get("shell_path") or state.get("bash_path") or "")
-    process_shell_path = "/system/bin/sh"
-    shell_library_dir = ""
-    if native_shell_path and not native_shell_path.startswith("/system/"):
-        shell_library_dir = str(Path(native_shell_path).parent)
-    native_library_dir = str(state.get("native_library_dir", "")) or shell_library_dir
-    lib_path = str(state.get("lib_path", ""))
-    ld_library_path = ":".join(
-        item for item in [shell_library_dir, native_library_dir, lib_path, os.environ.get("LD_LIBRARY_PATH", "")] if item
-    )
-    execution_mode = str(state.get("execution_mode", "android_system_shell"))
     return {
         "TERMINAL_ENV": "android_linux",
-        "HERMES_ANDROID_EXECUTION_MODE": execution_mode,
-        "HERMES_ANDROID_SHELL": process_shell_path,
-        "HERMES_ANDROID_NATIVE_SHELL": native_shell_path,
         "HERMES_ANDROID_LINUX_PREFIX": str(state.get("prefix_path", "")),
-        "HERMES_ANDROID_LINUX_BASH": process_shell_path,
-        "HERMES_ANDROID_LINUX_NATIVE_BASH": native_shell_path,
+        "HERMES_ANDROID_LINUX_BASH": str(state.get("bash_path", "")),
         "HERMES_ANDROID_LINUX_BIN": str(state.get("bin_path", "")),
-        "HERMES_ANDROID_LINUX_LIB": lib_path,
-        "HERMES_ANDROID_NATIVE_LIB": native_library_dir,
-        "HERMES_ANDROID_ALLOW_PREFIX_BIN": "",
-        "LD_LIBRARY_PATH": ld_library_path,
+        "HERMES_ANDROID_LINUX_LIB": str(state.get("lib_path", "")),
         "HERMES_ANDROID_LINUX_HOME": str(state.get("home_path", "")),
         "HERMES_ANDROID_LINUX_TMP": str(state.get("tmp_path", "")),
-        "HOME": str(state.get("home_path", "")),
-        "TMPDIR": str(state.get("tmp_path", "")),
         "TERMINAL_CWD": str(state.get("home_path", "")),
     }

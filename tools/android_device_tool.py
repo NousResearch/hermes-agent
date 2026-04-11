@@ -109,8 +109,8 @@ registry.register(
     schema={
         "name": "android_device_status",
         "description": (
-            "Inspect Hermes Android workspace and device capabilities. Returns shared-folder grant status, "
-            "direct shared-folder tool availability, and accessibility-control availability."
+            "Inspect Hermes Android workspace and device capabilities. Returns Linux command-suite status, "
+            "shared-folder grant status, and accessibility-control availability."
         ),
         "parameters": {
             "type": "object",

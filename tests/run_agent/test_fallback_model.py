@@ -113,6 +113,25 @@ class TestTryActivateFallback:
             assert agent.provider == "zai"
             assert agent.client is mock_client
 
+    def test_fallback_uses_resolved_normalized_model(self):
+        agent = _make_agent(
+            fallback_model={"provider": "zai", "model": "zai/glm-5.1"},
+        )
+        mock_client = _mock_resolve(
+            api_key="sk-zai-key",
+            base_url="https://api.z.ai/api/paas/v4",
+        )
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(mock_client, "glm-5.1"),
+        ):
+            result = agent._try_activate_fallback()
+
+        assert result is True
+        assert agent.model == "glm-5.1"
+        assert agent.provider == "zai"
+        assert agent.client is mock_client
+
     def test_activates_kimi_fallback(self):
         agent = _make_agent(
             fallback_model={"provider": "kimi-coding", "model": "kimi-k2.5"},

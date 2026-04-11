@@ -14,6 +14,7 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 
+from gateway.status import terminate_pid
 from hermes_cli.config import get_env_value, get_hermes_home, save_env_value, is_managed, managed_error
 # display_hermes_home is imported lazily at call sites to avoid ImportError
 # when hermes_constants is cached from a pre-update version during `hermes update`.
@@ -162,7 +163,7 @@ def kill_gateway_processes(force: bool = False, exclude_pids: set | None = None)
     """Kill any running gateway processes. Returns count killed.
 
     Args:
-        force: Use SIGKILL instead of SIGTERM.
+        force: Use the platform's force-kill mechanism instead of graceful terminate.
         exclude_pids: PIDs to skip (e.g. service-managed PIDs that were just
             restarted and should not be killed).
     """
@@ -171,10 +172,7 @@ def kill_gateway_processes(force: bool = False, exclude_pids: set | None = None)
     
     for pid in pids:
         try:
-            if force and not is_windows():
-                os.kill(pid, signal.SIGKILL)
-            else:
-                os.kill(pid, signal.SIGTERM)
+            terminate_pid(pid, force=force)
             killed += 1
         except ProcessLookupError:
             # Process already gone
@@ -182,6 +180,8 @@ def kill_gateway_processes(force: bool = False, exclude_pids: set | None = None)
         except PermissionError:
             print(f"⚠ Permission denied to kill PID {pid}")
     
+        except OSError as exc:
+            print(f"Failed to kill PID {pid}: {exc}")
     return killed
 
 
@@ -251,18 +251,18 @@ SERVICE_DESCRIPTION = "Hermes Agent Gateway - Messaging Platform Integration"
 def _profile_suffix() -> str:
     """Derive a service-name suffix from the current HERMES_HOME.
 
-    Returns ``""`` for the default ``~/.hermes``, the profile name for
-    ``~/.hermes/profiles/<name>``, or a short hash for any other custom
-    HERMES_HOME path.
+    Returns ``""`` for the default root, the profile name for
+    ``<root>/profiles/<name>``, or a short hash for any other path.
+    Works correctly in Docker (HERMES_HOME=/opt/data) and standard deployments.
     """
     import hashlib
     import re
-    from pathlib import Path as _Path
+    from hermes_constants import get_default_hermes_root
     home = get_hermes_home().resolve()
-    default = (_Path.home() / ".hermes").resolve()
+    default = get_default_hermes_root().resolve()
     if home == default:
         return ""
-    # Detect ~/.hermes/profiles/<name> pattern → use the profile name
+    # Detect <root>/profiles/<name> pattern → use the profile name
     profiles_root = (default / "profiles").resolve()
     try:
         rel = home.relative_to(profiles_root)
@@ -287,9 +287,9 @@ def _profile_arg(hermes_home: str | None = None) -> str:
             service definition for a different user (e.g. system service).
     """
     import re
-    from pathlib import Path as _Path
+    from hermes_constants import get_default_hermes_root
     home = Path(hermes_home or str(get_hermes_home())).resolve()
-    default = (_Path.home() / ".hermes").resolve()
+    default = get_default_hermes_root().resolve()
     if home == default:
         return ""
     profiles_root = (default / "profiles").resolve()
@@ -315,8 +315,6 @@ def get_service_name() -> str:
         return _SERVICE_BASE
     return f"{_SERVICE_BASE}-{suffix}"
 
-
-SERVICE_NAME = _SERVICE_BASE  # backward-compat for external importers; prefer get_service_name()
 
 
 def get_systemd_unit_path(system: bool = False) -> Path:
@@ -591,17 +589,6 @@ def get_python_path() -> str:
             return str(venv_python)
     return sys.executable
 
-def get_hermes_cli_path() -> str:
-    """Get the path to the hermes CLI."""
-    # Check if installed via pip
-    import shutil
-    hermes_bin = shutil.which("hermes")
-    if hermes_bin:
-        return hermes_bin
-    
-    # Fallback to direct module execution
-    return f"{get_python_path()} -m hermes_cli.main"
-
 
 # =============================================================================
 # Systemd (Linux)
@@ -616,6 +603,24 @@ def _build_user_local_paths(home: Path, path_entries: list[str]) -> list[str]:
         str(home / ".npm-global" / "bin"),   # npm global packages
     ]
     return [p for p in candidates if p not in path_entries and Path(p).exists()]
+
+
+def _remap_path_for_user(path: str, target_home_dir: str) -> str:
+    """Remap *path* from the current user's home to *target_home_dir*.
+
+    If *path* lives under ``Path.home()`` the corresponding prefix is swapped
+    to *target_home_dir*; otherwise the path is returned unchanged.
+
+      /root/.hermes/hermes-agent  -> /home/alice/.hermes/hermes-agent
+      /opt/hermes                 -> /opt/hermes  (kept as-is)
+    """
+    current_home = Path.home().resolve()
+    resolved = Path(path).resolve()
+    try:
+        relative = resolved.relative_to(current_home)
+        return str(Path(target_home_dir) / relative)
+    except ValueError:
+        return str(resolved)
 
 
 def _hermes_home_for_target_user(target_home_dir: str) -> str:
@@ -665,6 +670,15 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
         username, group_name, home_dir = _system_service_identity(run_as_user)
         hermes_home = _hermes_home_for_target_user(home_dir)
         profile_arg = _profile_arg(hermes_home)
+        # Remap all paths that may resolve under the calling user's home
+        # (e.g. /root/) to the target user's home so the service can
+        # actually access them.
+        python_path = _remap_path_for_user(python_path, home_dir)
+        working_dir = _remap_path_for_user(working_dir, home_dir)
+        venv_dir = _remap_path_for_user(venv_dir, home_dir)
+        venv_bin = _remap_path_for_user(venv_bin, home_dir)
+        node_bin = _remap_path_for_user(node_bin, home_dir)
+        path_entries = [_remap_path_for_user(p, home_dir) for p in path_entries]
         path_entries.extend(_build_user_local_paths(Path(home_dir), path_entries))
         path_entries.extend(common_bin_paths)
         sane_path = ":".join(path_entries)
@@ -1182,7 +1196,19 @@ def launchd_start():
 
 def launchd_stop():
     label = get_launchd_label()
-    subprocess.run(["launchctl", "kill", "SIGTERM", f"{_launchd_domain()}/{label}"], check=True, timeout=30)
+    target = f"{_launchd_domain()}/{label}"
+    # bootout unloads the service definition so KeepAlive doesn't respawn
+    # the process.  A plain `kill SIGTERM` only signals the process — launchd
+    # immediately restarts it because KeepAlive.SuccessfulExit = false.
+    # `hermes gateway start` re-bootstraps when it detects the job is unloaded.
+    try:
+        subprocess.run(["launchctl", "bootout", target], check=True, timeout=90)
+    except subprocess.CalledProcessError as e:
+        if e.returncode in (3, 113):
+            pass  # Already unloaded — nothing to stop.
+        else:
+            raise
+    _wait_for_gateway_exit(timeout=10.0, force_after=5.0)
     print("✓ Service stopped")
 
 def _wait_for_gateway_exit(timeout: float = 10.0, force_after: float = 5.0):
@@ -1194,7 +1220,7 @@ def _wait_for_gateway_exit(timeout: float = 10.0, force_after: float = 5.0):
 
     Args:
         timeout: Total seconds to wait before giving up.
-        force_after: Seconds of graceful waiting before sending SIGKILL.
+        force_after: Seconds of graceful waiting before escalating to force-kill.
     """
     import time
     from gateway.status import get_running_pid
@@ -1211,15 +1237,15 @@ def _wait_for_gateway_exit(timeout: float = 10.0, force_after: float = 5.0):
         if not force_sent and time.monotonic() >= force_deadline:
             # Grace period expired — force-kill the specific PID.
             try:
-                os.kill(pid, signal.SIGKILL)
+                terminate_pid(pid, force=True)
                 print(f"⚠ Gateway PID {pid} did not exit gracefully; sent SIGKILL")
-            except (ProcessLookupError, PermissionError):
+            except (ProcessLookupError, PermissionError, OSError):
                 return  # Already gone or we can't touch it.
             force_sent = True
 
         time.sleep(0.3)
 
-    # Timed out even after SIGKILL.
+    # Timed out even after force-kill.
     remaining_pid = get_running_pid()
     if remaining_pid is not None:
         print(f"⚠ Gateway PID {remaining_pid} still running after {timeout}s — restart may fail")
@@ -1599,6 +1625,12 @@ _PLATFORMS = [
         ],
     },
     {
+        "key": "weixin",
+        "label": "Weixin / WeChat",
+        "emoji": "💬",
+        "token_var": "WEIXIN_ACCOUNT_ID",
+    },
+    {
         "key": "bluebubbles",
         "label": "BlueBubbles (iMessage)",
         "emoji": "💬",
@@ -1668,6 +1700,13 @@ def _platform_status(platform: dict) -> str:
             suffix = " + E2EE" if e2ee and e2ee.lower() in ("true", "1", "yes") else ""
             return f"configured{suffix}"
         if val or password or homeserver:
+            return "partially configured"
+        return "not configured"
+    if platform.get("key") == "weixin":
+        token = get_env_value("WEIXIN_TOKEN")
+        if val and token:
+            return "configured"
+        if val or token:
             return "partially configured"
         return "not configured"
     if val:
@@ -1773,7 +1812,7 @@ def _setup_standard_platform(platform: dict):
                     print_warning("  Open access enabled — anyone can use your bot!")
                 elif access_idx == 1:
                     print_success("  DM pairing mode — users will receive a code to request access.")
-                    print_info("  Approve with: hermes pairing approve {platform} {code}")
+                    print_info("  Approve with: hermes pairing approve <platform> <code>")
                 else:
                     print_info("  Skipped — configure later with 'hermes gateway setup'")
             continue
@@ -1858,6 +1897,133 @@ def _is_service_running() -> bool:
             return False
     # Check for manual processes
     return len(find_gateway_pids()) > 0
+
+
+def _setup_weixin():
+    """Interactive setup for Weixin / WeChat personal accounts."""
+    print()
+    print(color("  ─── 💬 Weixin / WeChat Setup ───", Colors.CYAN))
+    print()
+    print_info("  1. Hermes will open Tencent iLink QR login in this terminal.")
+    print_info("  2. Use WeChat to scan and confirm the QR code.")
+    print_info("  3. Hermes will store the returned account_id/token in ~/.hermes/.env.")
+    print_info("  4. This adapter supports native text, image, video, and document delivery.")
+
+    existing_account = get_env_value("WEIXIN_ACCOUNT_ID")
+    existing_token = get_env_value("WEIXIN_TOKEN")
+    if existing_account and existing_token:
+        print()
+        print_success("Weixin is already configured.")
+        if not prompt_yes_no("  Reconfigure Weixin?", False):
+            return
+
+    try:
+        from gateway.platforms.weixin import check_weixin_requirements, qr_login
+    except Exception as exc:
+        print_error(f"  Weixin adapter import failed: {exc}")
+        print_info("  Install gateway dependencies first, then retry.")
+        return
+
+    if not check_weixin_requirements():
+        print_error("  Missing dependencies: Weixin needs aiohttp and cryptography.")
+        print_info("  Install them, then rerun `hermes gateway setup`.")
+        return
+
+    print()
+    if not prompt_yes_no("  Start QR login now?", True):
+        print_info("  Cancelled.")
+        return
+
+    import asyncio
+    try:
+        credentials = asyncio.run(qr_login(str(get_hermes_home())))
+    except KeyboardInterrupt:
+        print()
+        print_warning("  Weixin setup cancelled.")
+        return
+    except Exception as exc:
+        print_error(f"  QR login failed: {exc}")
+        return
+
+    if not credentials:
+        print_warning("  QR login did not complete.")
+        return
+
+    account_id = credentials.get("account_id", "")
+    token = credentials.get("token", "")
+    base_url = credentials.get("base_url", "")
+    user_id = credentials.get("user_id", "")
+
+    save_env_value("WEIXIN_ACCOUNT_ID", account_id)
+    save_env_value("WEIXIN_TOKEN", token)
+    if base_url:
+        save_env_value("WEIXIN_BASE_URL", base_url)
+    save_env_value("WEIXIN_CDN_BASE_URL", get_env_value("WEIXIN_CDN_BASE_URL") or "https://novac2c.cdn.weixin.qq.com/c2c")
+
+    print()
+    access_choices = [
+        "Use DM pairing approval (recommended)",
+        "Allow all direct messages",
+        "Only allow listed user IDs",
+        "Disable direct messages",
+    ]
+    access_idx = prompt_choice("  How should direct messages be authorized?", access_choices, 0)
+    if access_idx == 0:
+        save_env_value("WEIXIN_DM_POLICY", "pairing")
+        save_env_value("WEIXIN_ALLOW_ALL_USERS", "false")
+        save_env_value("WEIXIN_ALLOWED_USERS", "")
+        print_success("  DM pairing enabled.")
+        print_info("  Unknown DM users can request access and you approve them with `hermes pairing approve`.")
+    elif access_idx == 1:
+        save_env_value("WEIXIN_DM_POLICY", "open")
+        save_env_value("WEIXIN_ALLOW_ALL_USERS", "true")
+        save_env_value("WEIXIN_ALLOWED_USERS", "")
+        print_warning("  Open DM access enabled for Weixin.")
+    elif access_idx == 2:
+        default_allow = user_id or ""
+        allowlist = prompt("  Allowed Weixin user IDs (comma-separated)", default_allow, password=False).replace(" ", "")
+        save_env_value("WEIXIN_DM_POLICY", "allowlist")
+        save_env_value("WEIXIN_ALLOW_ALL_USERS", "false")
+        save_env_value("WEIXIN_ALLOWED_USERS", allowlist)
+        print_success("  Weixin allowlist saved.")
+    else:
+        save_env_value("WEIXIN_DM_POLICY", "disabled")
+        save_env_value("WEIXIN_ALLOW_ALL_USERS", "false")
+        save_env_value("WEIXIN_ALLOWED_USERS", "")
+        print_warning("  Direct messages disabled.")
+
+    print()
+    group_choices = [
+        "Disable group chats (recommended)",
+        "Allow all group chats",
+        "Only allow listed group chat IDs",
+    ]
+    group_idx = prompt_choice("  How should group chats be handled?", group_choices, 0)
+    if group_idx == 0:
+        save_env_value("WEIXIN_GROUP_POLICY", "disabled")
+        save_env_value("WEIXIN_GROUP_ALLOWED_USERS", "")
+        print_info("  Group chats disabled.")
+    elif group_idx == 1:
+        save_env_value("WEIXIN_GROUP_POLICY", "open")
+        save_env_value("WEIXIN_GROUP_ALLOWED_USERS", "")
+        print_warning("  All group chats enabled.")
+    else:
+        allow_groups = prompt("  Allowed group chat IDs (comma-separated)", "", password=False).replace(" ", "")
+        save_env_value("WEIXIN_GROUP_POLICY", "allowlist")
+        save_env_value("WEIXIN_GROUP_ALLOWED_USERS", allow_groups)
+        print_success("  Group allowlist saved.")
+
+    if user_id:
+        print()
+        if prompt_yes_no(f"  Use your Weixin user ID ({user_id}) as the home channel?", True):
+            save_env_value("WEIXIN_HOME_CHANNEL", user_id)
+            print_success(f"  Home channel set to {user_id}")
+
+    print()
+    print_success("Weixin configured!")
+    print_info(f"  Account ID: {account_id}")
+    if user_id:
+        print_info(f"  User ID: {user_id}")
 
 
 def _setup_signal():
@@ -2035,6 +2201,8 @@ def gateway_setup():
             _setup_whatsapp()
         elif platform["key"] == "signal":
             _setup_signal()
+        elif platform["key"] == "weixin":
+            _setup_weixin()
         else:
             _setup_standard_platform(platform)
 

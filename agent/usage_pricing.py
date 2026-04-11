@@ -595,30 +595,6 @@ def get_pricing(
     }
 
 
-def estimate_cost_usd(
-    model: str,
-    input_tokens: int,
-    output_tokens: int,
-    *,
-    provider: Optional[str] = None,
-    base_url: Optional[str] = None,
-    api_key: Optional[str] = None,
-) -> float:
-    """Backward-compatible helper for legacy callers.
-
-    This uses non-cached input/output only. New code should call
-    `estimate_usage_cost()` with canonical usage buckets.
-    """
-    result = estimate_usage_cost(
-        model,
-        CanonicalUsage(input_tokens=input_tokens, output_tokens=output_tokens),
-        provider=provider,
-        base_url=base_url,
-        api_key=api_key,
-    )
-    return float(result.amount_usd or _ZERO)
-
-
 def format_duration_compact(seconds: float) -> str:
     if seconds < 60:
         return f"{seconds:.0f}s"

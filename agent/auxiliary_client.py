@@ -687,6 +687,15 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
         if pconfig.auth_type != "api_key":
             continue
         if provider_id == "anthropic":
+            # Only try anthropic when the user has explicitly configured it.
+            # Without this gate, Claude Code credentials get silently used
+            # as auxiliary fallback when the user's primary provider fails.
+            try:
+                from hermes_cli.auth import is_provider_explicitly_configured
+                if not is_provider_explicitly_configured("anthropic"):
+                    continue
+            except ImportError:
+                pass
             return _try_anthropic()
 
         pool_present, entry = _select_pool_entry(provider_id)
@@ -702,7 +711,7 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
             logger.debug("Auxiliary text client: %s (%s) via pool", pconfig.name, model)
             extra = {}
             if "api.kimi.com" in base_url.lower():
-                extra["default_headers"] = {"User-Agent": "KimiCLI/1.3"}
+                extra["default_headers"] = {"User-Agent": "KimiCLI/1.30.0"}
             elif "api.githubcopilot.com" in base_url.lower():
                 from hermes_cli.models import copilot_default_headers
 
@@ -721,7 +730,7 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
         logger.debug("Auxiliary text client: %s (%s)", pconfig.name, model)
         extra = {}
         if "api.kimi.com" in base_url.lower():
-            extra["default_headers"] = {"User-Agent": "KimiCLI/1.3"}
+            extra["default_headers"] = {"User-Agent": "KimiCLI/1.30.0"}
         elif "api.githubcopilot.com" in base_url.lower():
             from hermes_cli.models import copilot_default_headers
 
@@ -848,7 +857,7 @@ def _read_main_provider() -> str:
     return ""
 
 
-def _resolve_custom_runtime() -> Tuple[Optional[str], Optional[str]]:
+def _resolve_custom_runtime() -> Tuple[Optional[str], Optional[str], Optional[str]]:
     """Resolve the active custom/main endpoint the same way the main CLI does.
 
     This covers both env-driven OPENAI_BASE_URL setups and config-saved custom
@@ -861,18 +870,29 @@ def _resolve_custom_runtime() -> Tuple[Optional[str], Optional[str]]:
         runtime = resolve_runtime_provider(requested="custom")
     except Exception as exc:
         logger.debug("Auxiliary client: custom runtime resolution failed: %s", exc)
-        return None, None
+        runtime = None
+
+    if not isinstance(runtime, dict):
+        openai_base = os.getenv("OPENAI_BASE_URL", "").strip().rstrip("/")
+        openai_key = os.getenv("OPENAI_API_KEY", "").strip()
+        if not openai_base:
+            return None, None, None
+        runtime = {
+            "base_url": openai_base,
+            "api_key": openai_key,
+        }
 
     custom_base = runtime.get("base_url")
     custom_key = runtime.get("api_key")
+    custom_mode = runtime.get("api_mode")
     if not isinstance(custom_base, str) or not custom_base.strip():
-        return None, None
+        return None, None, None
 
     custom_base = custom_base.strip().rstrip("/")
     if "openrouter.ai" in custom_base.lower():
         # requested='custom' falls back to OpenRouter when no custom endpoint is
         # configured. Treat that as "no custom endpoint" for auxiliary routing.
-        return None, None
+        return None, None, None
 
     # Local servers (Ollama, llama.cpp, vLLM, LM Studio) don't require auth.
     # Use a placeholder key — the OpenAI SDK requires a non-empty string but
@@ -881,20 +901,33 @@ def _resolve_custom_runtime() -> Tuple[Optional[str], Optional[str]]:
     if not isinstance(custom_key, str) or not custom_key.strip():
         custom_key = "no-key-required"
 
-    return custom_base, custom_key.strip()
+    if not isinstance(custom_mode, str) or not custom_mode.strip():
+        custom_mode = None
+
+    return custom_base, custom_key.strip(), custom_mode
 
 
 def _current_custom_base_url() -> str:
-    custom_base, _ = _resolve_custom_runtime()
+    custom_base, _, _ = _resolve_custom_runtime()
     return custom_base or ""
 
 
 def _try_custom_endpoint() -> Tuple[Optional[OpenAI], Optional[str]]:
-    custom_base, custom_key = _resolve_custom_runtime()
+    runtime = _resolve_custom_runtime()
+    if len(runtime) == 2:
+        custom_base, custom_key = runtime
+        custom_mode = None
+    else:
+        custom_base, custom_key, custom_mode = runtime
     if not custom_base or not custom_key:
         return None, None
+    if custom_base.lower().startswith(_CODEX_AUX_BASE_URL.lower()):
+        return None, None
     model = _read_main_model() or "gpt-4o-mini"
-    logger.debug("Auxiliary client: custom endpoint (%s)", model)
+    logger.debug("Auxiliary client: custom endpoint (%s, api_mode=%s)", model, custom_mode or "chat_completions")
+    if custom_mode == "codex_responses":
+        real_client = OpenAI(api_key=custom_key, base_url=custom_base)
+        return CodexAuxiliaryClient(real_client, model), model
     return OpenAI(api_key=custom_key, base_url=custom_base), model
 
 
@@ -965,40 +998,6 @@ def _try_anthropic() -> Tuple[Optional[Any], Optional[str]]:
         # when _anthropic_sdk is None.  Treat as unavailable.
         return None, None
     return AnthropicAuxiliaryClient(real_client, model, token, base_url, is_oauth=is_oauth), model
-
-
-def _resolve_forced_provider(forced: str) -> Tuple[Optional[OpenAI], Optional[str]]:
-    """Resolve a specific forced provider.  Returns (None, None) if creds missing."""
-    if forced == "openrouter":
-        client, model = _try_openrouter()
-        if client is None:
-            logger.warning("auxiliary.provider=openrouter but OPENROUTER_API_KEY not set")
-        return client, model
-
-    if forced == "nous":
-        client, model = _try_nous()
-        if client is None:
-            logger.warning("auxiliary.provider=nous but Nous Portal not configured (run: hermes auth)")
-        return client, model
-
-    if forced == "codex":
-        client, model = _try_codex()
-        if client is None:
-            logger.warning("auxiliary.provider=codex but no Codex OAuth token found (run: hermes model)")
-        return client, model
-
-    if forced == "main":
-        # "main" = skip OpenRouter/Nous, use the main chat model's credentials.
-        for try_fn in (_try_custom_endpoint, _try_codex, _resolve_api_key_provider):
-            client, model = try_fn()
-            if client is not None:
-                return client, model
-        logger.warning("auxiliary.provider=main but no main endpoint credentials found")
-        return None, None
-
-    # Unknown provider name — fall through to auto
-    logger.warning("Unknown auxiliary.provider=%r, falling back to auto", forced)
-    return None, None
 
 
 _AUTO_PROVIDER_LABELS = {
@@ -1195,8 +1194,20 @@ def _to_async_client(sync_client, model: str):
 
         async_kwargs["default_headers"] = copilot_default_headers()
     elif "api.kimi.com" in base_lower:
-        async_kwargs["default_headers"] = {"User-Agent": "KimiCLI/1.3"}
+        async_kwargs["default_headers"] = {"User-Agent": "KimiCLI/1.30.0"}
     return AsyncOpenAI(**async_kwargs), model
+
+
+def _normalize_resolved_model(model_name: Optional[str], provider: str) -> Optional[str]:
+    """Normalize a resolved model for the provider that will receive it."""
+    if not model_name:
+        return model_name
+    try:
+        from hermes_cli.model_normalize import normalize_model_for_provider
+
+        return normalize_model_for_provider(model_name, provider)
+    except Exception:
+        return model_name
 
 
 def resolve_provider_client(
@@ -1261,7 +1272,7 @@ def resolve_provider_client(
             logger.warning("resolve_provider_client: openrouter requested "
                            "but OPENROUTER_API_KEY not set")
             return None, None
-        final_model = model or default
+        final_model = _normalize_resolved_model(model or default, provider)
         return (_to_async_client(client, final_model) if async_mode
                 else (client, final_model))
 
@@ -1272,7 +1283,7 @@ def resolve_provider_client(
             logger.warning("resolve_provider_client: nous requested "
                            "but Nous Portal not configured (run: hermes auth)")
             return None, None
-        final_model = model or default
+        final_model = _normalize_resolved_model(model or default, provider)
         return (_to_async_client(client, final_model) if async_mode
                 else (client, final_model))
 
@@ -1286,7 +1297,7 @@ def resolve_provider_client(
                 logger.warning("resolve_provider_client: openai-codex requested "
                                "but no Codex OAuth token found (run: hermes model)")
                 return None, None
-            final_model = model or _CODEX_AUX_MODEL
+            final_model = _normalize_resolved_model(model or _CODEX_AUX_MODEL, provider)
             raw_client = OpenAI(api_key=codex_token, base_url=_CODEX_AUX_BASE_URL)
             return (raw_client, final_model)
         # Standard path: wrap in CodexAuxiliaryClient adapter
@@ -1295,7 +1306,7 @@ def resolve_provider_client(
             logger.warning("resolve_provider_client: openai-codex requested "
                            "but no Codex OAuth token found (run: hermes model)")
             return None, None
-        final_model = model or default
+        final_model = _normalize_resolved_model(model or default, provider)
         return (_to_async_client(client, final_model) if async_mode
                 else (client, final_model))
 
@@ -1314,10 +1325,13 @@ def resolve_provider_client(
                     "but base_url is empty"
                 )
                 return None, None
-            final_model = model or _read_main_model() or "gpt-4o-mini"
+            final_model = _normalize_resolved_model(
+                model or _read_main_model() or "gpt-4o-mini",
+                provider,
+            )
             extra = {}
             if "api.kimi.com" in custom_base.lower():
-                extra["default_headers"] = {"User-Agent": "KimiCLI/1.3"}
+                extra["default_headers"] = {"User-Agent": "KimiCLI/1.30.0"}
             elif "api.githubcopilot.com" in custom_base.lower():
                 from hermes_cli.models import copilot_default_headers
                 extra["default_headers"] = copilot_default_headers()
@@ -1329,7 +1343,7 @@ def resolve_provider_client(
                        _resolve_api_key_provider):
             client, default = try_fn()
             if client is not None:
-                final_model = model or default
+                final_model = _normalize_resolved_model(model or default, provider)
                 return (_to_async_client(client, final_model) if async_mode
                         else (client, final_model))
         logger.warning("resolve_provider_client: custom/main requested "
@@ -1344,7 +1358,10 @@ def resolve_provider_client(
             custom_base = custom_entry.get("base_url", "").strip()
             custom_key = custom_entry.get("api_key", "").strip() or "no-key-required"
             if custom_base:
-                final_model = model or _read_main_model() or "gpt-4o-mini"
+                final_model = _normalize_resolved_model(
+                    model or _read_main_model() or "gpt-4o-mini",
+                    provider,
+                )
                 client = OpenAI(api_key=custom_key, base_url=custom_base)
                 logger.debug(
                     "resolve_provider_client: named custom provider %r (%s)",
@@ -1376,7 +1393,7 @@ def resolve_provider_client(
             if client is None:
                 logger.warning("resolve_provider_client: anthropic requested but no Anthropic credentials found")
                 return None, None
-            final_model = model or default_model
+            final_model = _normalize_resolved_model(model or default_model, provider)
             return (_to_async_client(client, final_model) if async_mode else (client, final_model))
 
         creds = resolve_api_key_provider_credentials(provider)
@@ -1395,12 +1412,12 @@ def resolve_provider_client(
         )
 
         default_model = _API_KEY_PROVIDER_AUX_MODELS.get(provider, "")
-        final_model = model or default_model
+        final_model = _normalize_resolved_model(model or default_model, provider)
 
         # Provider-specific headers
         headers = {}
         if "api.kimi.com" in base_url.lower():
-            headers["User-Agent"] = "KimiCLI/1.3"
+            headers["User-Agent"] = "KimiCLI/1.30.0"
         elif "api.githubcopilot.com" in base_url.lower():
             from hermes_cli.models import copilot_default_headers
 
@@ -1510,22 +1527,6 @@ def _resolve_strict_vision_backend(provider: str) -> Tuple[Optional[Any], Option
 
 def _strict_vision_backend_available(provider: str) -> bool:
     return _resolve_strict_vision_backend(provider)[0] is not None
-
-
-def _preferred_main_vision_provider() -> Optional[str]:
-    """Return the selected main provider when it is also a supported vision backend."""
-    try:
-        from hermes_cli.config import load_config
-
-        config = load_config()
-        model_cfg = config.get("model", {})
-        if isinstance(model_cfg, dict):
-            provider = _normalize_vision_provider(model_cfg.get("provider", ""))
-            if provider in _VISION_AUTO_PROVIDER_ORDER:
-                return provider
-    except Exception:
-        pass
-    return None
 
 
 def get_available_vision_backends() -> List[str]:
@@ -1639,18 +1640,6 @@ def resolve_vision_provider_client(
     if client is None:
         return requested, None, None
     return requested, client, final_model
-
-
-def get_vision_auxiliary_client() -> Tuple[Optional[OpenAI], Optional[str]]:
-    """Return (client, default_model_slug) for vision/multimodal auxiliary tasks."""
-    _, client, final_model = resolve_vision_provider_client(async_mode=False)
-    return client, final_model
-
-
-def get_async_vision_auxiliary_client():
-    """Return (async_client, model_slug) for async vision consumers."""
-    _, client, final_model = resolve_vision_provider_client(async_mode=True)
-    return client, final_model
 
 
 def get_auxiliary_extra_body() -> dict:

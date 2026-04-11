@@ -189,7 +189,6 @@ SAMPLE_RATE = 16000  # Whisper native rate
 CHANNELS = 1  # Mono
 DTYPE = "int16"  # 16-bit PCM
 SAMPLE_WIDTH = 2  # bytes per sample (int16)
-MAX_RECORDING_SECONDS = 120  # Safety cap
 
 # Silence detection defaults
 SILENCE_RMS_THRESHOLD = 200  # RMS below this = silence (int16 range 0-32767)
@@ -417,10 +416,6 @@ class AudioRecorder:
         self._current_rms: int = 0
 
     # -- public properties ---------------------------------------------------
-
-    @property
-    def is_recording(self) -> bool:
-        return self._recording
 
     @property
     def elapsed_seconds(self) -> float:

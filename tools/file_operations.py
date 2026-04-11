@@ -252,23 +252,43 @@ class FileOperations(ABC):
     def read_file(self, path: str, offset: int = 1, limit: int = 500) -> ReadResult:
         """Read a file with pagination support."""
         ...
-    
+
+    @abstractmethod
+    def read_file_raw(self, path: str) -> ReadResult:
+        """Read the complete file content as a plain string.
+
+        No pagination, no line-number prefixes, no per-line truncation.
+        Returns ReadResult with .content = full file text, .error set on
+        failure. Always reads to EOF regardless of file size.
+        """
+        ...
+
     @abstractmethod
     def write_file(self, path: str, content: str) -> WriteResult:
         """Write content to a file, creating directories as needed."""
         ...
-    
+
     @abstractmethod
-    def patch_replace(self, path: str, old_string: str, new_string: str, 
+    def patch_replace(self, path: str, old_string: str, new_string: str,
                       replace_all: bool = False) -> PatchResult:
         """Replace text in a file using fuzzy matching."""
         ...
-    
+
     @abstractmethod
     def patch_v4a(self, patch_content: str) -> PatchResult:
         """Apply a V4A format patch."""
         ...
-    
+
+    @abstractmethod
+    def delete_file(self, path: str) -> WriteResult:
+        """Delete a file. Returns WriteResult with .error set on failure."""
+        ...
+
+    @abstractmethod
+    def move_file(self, src: str, dst: str) -> WriteResult:
+        """Move/rename a file from src to dst. Returns WriteResult with .error set on failure."""
+        ...
+
     @abstractmethod
     def search(self, pattern: str, path: str = ".", target: str = "content",
                file_glob: Optional[str] = None, limit: int = 50, offset: int = 0,
@@ -561,10 +581,62 @@ class ShellFileOperations(FileOperations):
             similar_files=similar[:5]  # Limit to 5 suggestions
         )
     
+    def read_file_raw(self, path: str) -> ReadResult:
+        """Read the complete file content as a plain string.
+
+        No pagination, no line-number prefixes, no per-line truncation.
+        Uses cat so the full file is returned regardless of size.
+        """
+        path = self._expand_path(path)
+        stat_cmd = f"wc -c < {self._escape_shell_arg(path)} 2>/dev/null"
+        stat_result = self._exec(stat_cmd)
+        if stat_result.exit_code != 0:
+            return self._suggest_similar_files(path)
+        try:
+            file_size = int(stat_result.stdout.strip())
+        except ValueError:
+            file_size = 0
+        if self._is_image(path):
+            return ReadResult(is_image=True, is_binary=True, file_size=file_size)
+        sample_result = self._exec(f"head -c 1000 {self._escape_shell_arg(path)} 2>/dev/null")
+        if self._is_likely_binary(path, sample_result.stdout):
+            return ReadResult(
+                is_binary=True, file_size=file_size,
+                error="Binary file — cannot display as text."
+            )
+        cat_result = self._exec(f"cat {self._escape_shell_arg(path)}")
+        if cat_result.exit_code != 0:
+            return ReadResult(error=f"Failed to read file: {cat_result.stdout}")
+        return ReadResult(content=cat_result.stdout, file_size=file_size)
+
+    def delete_file(self, path: str) -> WriteResult:
+        """Delete a file via rm."""
+        path = self._expand_path(path)
+        if _is_write_denied(path):
+            return WriteResult(error=f"Delete denied: {path} is a protected path")
+        result = self._exec(f"rm -f {self._escape_shell_arg(path)}")
+        if result.exit_code != 0:
+            return WriteResult(error=f"Failed to delete {path}: {result.stdout}")
+        return WriteResult()
+
+    def move_file(self, src: str, dst: str) -> WriteResult:
+        """Move a file via mv."""
+        src = self._expand_path(src)
+        dst = self._expand_path(dst)
+        for p in (src, dst):
+            if _is_write_denied(p):
+                return WriteResult(error=f"Move denied: {p} is a protected path")
+        result = self._exec(
+            f"mv {self._escape_shell_arg(src)} {self._escape_shell_arg(dst)}"
+        )
+        if result.exit_code != 0:
+            return WriteResult(error=f"Failed to move {src} -> {dst}: {result.stdout}")
+        return WriteResult()
+
     # =========================================================================
     # WRITE Implementation
     # =========================================================================
-    
+
     def write_file(self, path: str, content: str) -> WriteResult:
         """
         Write content to a file, creating parent directories as needed.
@@ -656,7 +728,7 @@ class ShellFileOperations(FileOperations):
         # Import and use fuzzy matching
         from tools.fuzzy_match import fuzzy_find_and_replace
         
-        new_content, match_count, error = fuzzy_find_and_replace(
+        new_content, match_count, _strategy, error = fuzzy_find_and_replace(
             content, old_string, new_string, replace_all
         )
         

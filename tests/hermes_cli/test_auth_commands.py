@@ -657,3 +657,41 @@ def test_auth_remove_manual_entry_does_not_touch_env(tmp_path, monkeypatch):
 
     # .env should be untouched
     assert env_path.read_text() == "SOME_KEY=some-value\n"
+
+
+def test_auth_remove_claude_code_suppresses_reseed(tmp_path, monkeypatch):
+    """Removing a claude_code credential must prevent it from being re-seeded."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+    monkeypatch.setattr(
+        "agent.credential_pool._seed_from_singletons",
+        lambda provider, entries: (False, {"claude_code"}),
+    )
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+
+    auth_store = {
+        "version": 1,
+        "credential_pool": {
+            "anthropic": [{
+                "id": "cc1",
+                "label": "claude_code",
+                "auth_type": "oauth",
+                "priority": 0,
+                "source": "claude_code",
+                "access_token": "sk-ant-oat01-token",
+            }]
+        },
+    }
+    (hermes_home / "auth.json").write_text(json.dumps(auth_store))
+
+    from types import SimpleNamespace
+    from hermes_cli.auth_commands import auth_remove_command
+    auth_remove_command(SimpleNamespace(provider="anthropic", target="1"))
+
+    updated = json.loads((hermes_home / "auth.json").read_text())
+    suppressed = updated.get("suppressed_sources", {})
+    assert "anthropic" in suppressed
+    assert "claude_code" in suppressed["anthropic"]

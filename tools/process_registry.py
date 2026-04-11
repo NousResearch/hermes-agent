@@ -484,15 +484,21 @@ class ProcessRegistry:
         self._move_to_finished(session)
 
     def _move_to_finished(self, session: ProcessSession):
-        """Move a session from running to finished."""
+        """Move a session from running to finished.
+
+        Idempotent: if the session was already moved (e.g. kill_process raced
+        with the reader thread), the second call is a no-op — no duplicate
+        completion notification is enqueued.
+        """
         with self._lock:
-            self._running.pop(session.id, None)
+            was_running = self._running.pop(session.id, None) is not None
             self._finished[session.id] = session
         self._write_checkpoint()
 
-        # If the caller requested agent notification, enqueue the completion
-        # so the CLI/gateway can auto-trigger a new agent turn.
-        if session.notify_on_complete:
+        # Only enqueue completion notification on the FIRST move.  Without
+        # this guard, kill_process() and the reader thread can both call
+        # _move_to_finished(), producing duplicate [SYSTEM: ...] messages.
+        if was_running and session.notify_on_complete:
             from tools.ansi_strip import strip_ansi
             output_tail = strip_ansi(session.output_buffer[-2000:]) if session.output_buffer else ""
             self.completion_queue.put({
@@ -579,7 +585,10 @@ class ProcessRegistry:
         from tools.ansi_strip import strip_ansi
         from tools.terminal_tool import _interrupt_event
 
-        default_timeout = int(os.getenv("TERMINAL_TIMEOUT", "180"))
+        try:
+            default_timeout = int(os.getenv("TERMINAL_TIMEOUT", "180"))
+        except (ValueError, TypeError):
+            default_timeout = 180
         max_timeout = default_timeout
         requested_timeout = timeout
         timeout_note = None

@@ -104,6 +104,45 @@ class TestStdioPidTracking:
         with _lock:
             assert fake_pid not in _stdio_pids
 
+    def test_kill_orphaned_uses_sigkill_when_available(self, monkeypatch):
+        """Unix-like platforms should keep using SIGKILL for orphan cleanup."""
+        from tools.mcp_tool import _kill_orphaned_mcp_children, _stdio_pids, _lock
+
+        fake_pid = 424242
+        with _lock:
+            _stdio_pids.clear()
+            _stdio_pids.add(fake_pid)
+
+        fake_sigkill = 9
+        monkeypatch.setattr(signal, "SIGKILL", fake_sigkill, raising=False)
+
+        with patch("tools.mcp_tool.os.kill") as mock_kill:
+            _kill_orphaned_mcp_children()
+
+        mock_kill.assert_called_once_with(fake_pid, fake_sigkill)
+
+        with _lock:
+            assert fake_pid not in _stdio_pids
+
+    def test_kill_orphaned_falls_back_without_sigkill(self, monkeypatch):
+        """Windows-like signal modules without SIGKILL should fall back to SIGTERM."""
+        from tools.mcp_tool import _kill_orphaned_mcp_children, _stdio_pids, _lock
+
+        fake_pid = 434343
+        with _lock:
+            _stdio_pids.clear()
+            _stdio_pids.add(fake_pid)
+
+        monkeypatch.delattr(signal, "SIGKILL", raising=False)
+
+        with patch("tools.mcp_tool.os.kill") as mock_kill:
+            _kill_orphaned_mcp_children()
+
+        mock_kill.assert_called_once_with(fake_pid, signal.SIGTERM)
+
+        with _lock:
+            assert fake_pid not in _stdio_pids
+
 
 # ---------------------------------------------------------------------------
 # Fix 3: MCP reload timeout (cli.py)

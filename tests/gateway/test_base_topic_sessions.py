@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, MessageEvent, SendResult
+from gateway.platforms.base import BasePlatformAdapter, MessageEvent, ProcessingOutcome, SendResult
 from gateway.session import SessionSource, build_session_key
 
 
@@ -44,8 +44,8 @@ class DummyTelegramAdapter(BasePlatformAdapter):
     async def on_processing_start(self, event: MessageEvent) -> None:
         self.processing_hooks.append(("start", event.message_id))
 
-    async def on_processing_complete(self, event: MessageEvent, success: bool) -> None:
-        self.processing_hooks.append(("complete", event.message_id, success))
+    async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
+        self.processing_hooks.append(("complete", event.message_id, outcome))
 
 
 def _make_event(chat_id: str, thread_id: str, message_id: str = "1") -> MessageEvent:
@@ -142,7 +142,7 @@ class TestBasePlatformTopicSessions:
         ]
         assert adapter.processing_hooks == [
             ("start", "1"),
-            ("complete", "1", True),
+            ("complete", "1", ProcessingOutcome.SUCCESS),
         ]
 
     @pytest.mark.asyncio
@@ -168,7 +168,7 @@ class TestBasePlatformTopicSessions:
 
         assert adapter.processing_hooks == [
             ("start", "1"),
-            ("complete", "1", False),
+            ("complete", "1", ProcessingOutcome.FAILURE),
         ]
 
     @pytest.mark.asyncio
@@ -190,7 +190,7 @@ class TestBasePlatformTopicSessions:
 
         assert adapter.processing_hooks == [
             ("start", "1"),
-            ("complete", "1", False),
+            ("complete", "1", ProcessingOutcome.FAILURE),
         ]
 
     @pytest.mark.asyncio
@@ -218,5 +218,31 @@ class TestBasePlatformTopicSessions:
 
         assert adapter.processing_hooks == [
             ("start", "1"),
-            ("complete", "1", False),
+            ("complete", "1", ProcessingOutcome.FAILURE),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_cancel_background_tasks_marks_expected_cancellation_cancelled(self):
+        adapter = DummyTelegramAdapter()
+        release = asyncio.Event()
+
+        async def handler(_event):
+            await release.wait()
+            return "ack"
+
+        async def hold_typing(_chat_id, interval=2.0, metadata=None):
+            await asyncio.Event().wait()
+
+        adapter.set_message_handler(handler)
+        adapter._keep_typing = hold_typing
+
+        event = _make_event("-1001", "17585")
+        await adapter.handle_message(event)
+        await asyncio.sleep(0)
+
+        await adapter.cancel_background_tasks()
+
+        assert adapter.processing_hooks == [
+            ("start", "1"),
+            ("complete", "1", ProcessingOutcome.CANCELLED),
         ]

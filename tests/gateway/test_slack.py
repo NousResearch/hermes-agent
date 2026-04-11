@@ -1587,6 +1587,61 @@ class TestFallbackPreservesThreadContext:
 
 
 # ---------------------------------------------------------------------------
+# TestSendImageSSRFGuards
+# ---------------------------------------------------------------------------
+
+class TestSendImageSSRFGuards:
+    """send_image should reject redirects that land on private/internal hosts."""
+
+    @pytest.mark.asyncio
+    async def test_send_image_blocks_private_redirect_target(self, adapter):
+        redirect_response = MagicMock()
+        redirect_response.is_redirect = True
+        redirect_response.next_request = MagicMock(
+            url="http://169.254.169.254/latest/meta-data"
+        )
+
+        client_kwargs = {}
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        async def fake_get(_url):
+            for hook in client_kwargs["event_hooks"]["response"]:
+                await hook(redirect_response)
+
+        mock_client.get = AsyncMock(side_effect=fake_get)
+        adapter._app.client.files_upload_v2 = AsyncMock(return_value={"ok": True})
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "reply_ts"})
+
+        def fake_async_client(*args, **kwargs):
+            client_kwargs.update(kwargs)
+            return mock_client
+
+        def fake_is_safe_url(url):
+            return url == "https://public.example/image.png"
+
+        with (
+            patch("tools.url_safety.is_safe_url", side_effect=fake_is_safe_url),
+            patch("httpx.AsyncClient", side_effect=fake_async_client),
+        ):
+            result = await adapter.send_image(
+                chat_id="C123",
+                image_url="https://public.example/image.png",
+                caption="see this",
+            )
+
+        assert result.success
+        assert client_kwargs["follow_redirects"] is True
+        assert client_kwargs["event_hooks"]["response"]
+        adapter._app.client.files_upload_v2.assert_not_awaited()
+        adapter._app.client.chat_postMessage.assert_awaited_once()
+        call_kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
+        assert "see this" in call_kwargs["text"]
+        assert "https://public.example/image.png" in call_kwargs["text"]
+
+
+# ---------------------------------------------------------------------------
 # TestProgressMessageThread
 # ---------------------------------------------------------------------------
 

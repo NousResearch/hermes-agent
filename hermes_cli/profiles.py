@@ -42,6 +42,11 @@ _PROFILE_DIRS = [
     "plans",
     "workspace",
     "cron",
+    # Per-profile HOME for subprocesses: isolates system tool configs (git,
+    # ssh, gh, npm …) so credentials don't bleed between profiles.  In Docker
+    # this also ensures tool configs land inside the persistent volume.
+    # See hermes_constants.get_subprocess_home() and issue #4426.
+    "home",
 ]
 
 # Files copied during --clone (if they exist in the source)
@@ -115,16 +120,26 @@ _HERMES_SUBCOMMANDS = frozenset({
 def _get_profiles_root() -> Path:
     """Return the directory where named profiles are stored.
 
-    Always ``~/.hermes/profiles/`` — anchored to the user's home,
-    NOT to the current HERMES_HOME (which may itself be a profile).
-    This ensures ``coder profile list`` can see all profiles.
+    Anchored to the hermes root, NOT to the current HERMES_HOME
+    (which may itself be a profile).  This ensures ``coder profile list``
+    can see all profiles.
+
+    In Docker/custom deployments where HERMES_HOME points outside
+    ``~/.hermes``, profiles live under ``HERMES_HOME/profiles/`` so
+    they persist on the mounted volume.
     """
-    return Path.home() / ".hermes" / "profiles"
+    return _get_default_hermes_home() / "profiles"
 
 
 def _get_default_hermes_home() -> Path:
-    """Return the default (pre-profile) HERMES_HOME path."""
-    return Path.home() / ".hermes"
+    """Return the default (pre-profile) HERMES_HOME path.
+
+    In standard deployments this is ``~/.hermes``.
+    In Docker/custom deployments where HERMES_HOME is outside ``~/.hermes``
+    (e.g. ``/opt/data``), returns HERMES_HOME directly.
+    """
+    from hermes_constants import get_default_hermes_root
+    return get_default_hermes_root()
 
 
 def _get_active_profile_path() -> Path:

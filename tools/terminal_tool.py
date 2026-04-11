@@ -75,6 +75,9 @@ from tools.tool_backend_helpers import (
 )
 
 
+# Hard cap on foreground timeout; override via TERMINAL_MAX_FOREGROUND_TIMEOUT env var.
+FOREGROUND_MAX_TIMEOUT = int(os.getenv("TERMINAL_MAX_FOREGROUND_TIMEOUT", "600"))
+
 # Disk usage warning threshold (in GB)
 DISK_USAGE_WARNING_THRESHOLD_GB = float(os.getenv("TERMINAL_DISK_WARNING_GB", "500"))
 
@@ -1208,6 +1211,17 @@ def terminal_tool(
         default_timeout = config["timeout"]
         effective_timeout = timeout or default_timeout
 
+        # Reject foreground commands where the model explicitly requests
+        # a timeout above FOREGROUND_MAX_TIMEOUT — nudge it toward background.
+        if not background and timeout and timeout > FOREGROUND_MAX_TIMEOUT:
+            return json.dumps({
+                "error": (
+                    f"Foreground timeout {timeout}s exceeds the maximum of "
+                    f"{FOREGROUND_MAX_TIMEOUT}s. Use background=true with "
+                    f"notify_on_complete=true for long-running commands."
+                ),
+            }, ensure_ascii=False)
+
         # Start cleanup thread
         _start_cleanup_thread()
 
@@ -1398,14 +1412,6 @@ def terminal_tool(
                 if pty_disabled_reason:
                     result_data["pty_note"] = pty_disabled_reason
 
-                # Transparent timeout clamping note
-                max_timeout = effective_timeout
-                if timeout and timeout > max_timeout:
-                    result_data["timeout_note"] = (
-                        f"Requested timeout {timeout}s was clamped to "
-                        f"configured limit of {max_timeout}s"
-                    )
-
                 # Mark for agent notification on completion
                 if notify_on_complete and background:
                     proc_session.notify_on_complete = True
@@ -1414,10 +1420,11 @@ def terminal_tool(
                     # In gateway mode, auto-register a fast watcher so the
                     # gateway can detect completion and trigger a new agent
                     # turn.  CLI mode uses the completion_queue directly.
-                    _gw_platform = os.getenv("HERMES_SESSION_PLATFORM", "")
+                    from gateway.session_context import get_session_env as _gse
+                    _gw_platform = _gse("HERMES_SESSION_PLATFORM", "")
                     if _gw_platform and not check_interval:
-                        _gw_chat_id = os.getenv("HERMES_SESSION_CHAT_ID", "")
-                        _gw_thread_id = os.getenv("HERMES_SESSION_THREAD_ID", "")
+                        _gw_chat_id = _gse("HERMES_SESSION_CHAT_ID", "")
+                        _gw_thread_id = _gse("HERMES_SESSION_THREAD_ID", "")
                         proc_session.watcher_platform = _gw_platform
                         proc_session.watcher_chat_id = _gw_chat_id
                         proc_session.watcher_thread_id = _gw_thread_id
@@ -1439,9 +1446,10 @@ def terminal_tool(
                         result_data["check_interval_note"] = (
                             f"Requested {check_interval}s raised to minimum 30s"
                         )
-                    watcher_platform = os.getenv("HERMES_SESSION_PLATFORM", "")
-                    watcher_chat_id = os.getenv("HERMES_SESSION_CHAT_ID", "")
-                    watcher_thread_id = os.getenv("HERMES_SESSION_THREAD_ID", "")
+                    from gateway.session_context import get_session_env as _gse2
+                    watcher_platform = _gse2("HERMES_SESSION_PLATFORM", "")
+                    watcher_chat_id = _gse2("HERMES_SESSION_CHAT_ID", "")
+                    watcher_thread_id = _gse2("HERMES_SESSION_THREAD_ID", "")
 
                     # Store on session for checkpoint persistence
                     proc_session.watcher_platform = watcher_platform
@@ -1733,7 +1741,7 @@ TERMINAL_SCHEMA = {
             },
             "timeout": {
                 "type": "integer",
-                "description": "Max seconds to wait (default: 180). Returns INSTANTLY when command finishes — set high for long tasks, you won't wait unnecessarily.",
+                "description": f"Max seconds to wait (default: 180, foreground max: {FOREGROUND_MAX_TIMEOUT}). Returns INSTANTLY when command finishes — set high for long tasks, you won't wait unnecessarily. Foreground timeout above {FOREGROUND_MAX_TIMEOUT}s is rejected; use background=true for longer commands.",
                 "minimum": 1
             },
             "workdir": {

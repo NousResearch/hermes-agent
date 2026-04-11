@@ -3485,7 +3485,12 @@ class GatewayRunner:
             # post-processing in _process_message_background is skipped
             # when already_sent is True, so media files would never be
             # delivered without this.
-            if agent_result.get("already_sent"):
+            #
+            # Never skip when the agent failed — the error message is new
+            # content the user hasn't seen (streaming only sent earlier
+            # partial output before the failure).  Without this guard,
+            # users see the agent "stop responding without explanation."
+            if agent_result.get("already_sent") and not agent_result.get("failed"):
                 if response:
                     _media_adapter = self.adapters.get(source.platform)
                     if _media_adapter:
@@ -8012,9 +8017,13 @@ class GatewayRunner:
 
         # If streaming already delivered the response, mark it so the
         # caller's send() is skipped (avoiding duplicate messages).
+        # BUT: never suppress delivery when the agent failed — the error
+        # message is new content the user hasn't seen, and it must reach
+        # them even if streaming had sent earlier partial output.
         _sc = stream_consumer_holder[0]
         if _sc and _sc.already_sent and isinstance(response, dict):
-            response["already_sent"] = True
+            if not response.get("failed"):
+                response["already_sent"] = True
         
         return response
 

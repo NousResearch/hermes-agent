@@ -67,6 +67,28 @@ class PlatformEntry:
     # "builtin" or "plugin"
     source: str = "plugin"
 
+    # ── Auth env var names (for _is_user_authorized integration) ──
+    # E.g. "IRC_ALLOWED_USERS" — checked for comma-separated user IDs.
+    allowed_users_env: str = ""
+    # E.g. "IRC_ALLOW_ALL_USERS" — if truthy, all users authorized.
+    allow_all_env: str = ""
+
+    # ── Message limits ──
+    # Max message length for smart-chunking.  0 = no limit.
+    max_message_length: int = 0
+
+    # ── Privacy ──
+    # If True, session descriptions redact PII (phone numbers, etc.)
+    pii_safe: bool = False
+
+    # ── Display ──
+    # Emoji for CLI/gateway display (e.g. "💬")
+    emoji: str = "🔌"
+
+    # Whether this platform should appear in _UPDATE_ALLOWED_PLATFORMS
+    # (allows /update command from this platform).
+    allow_update_command: bool = True
+
 
 class PlatformRegistry:
     """Central registry of platform adapters.

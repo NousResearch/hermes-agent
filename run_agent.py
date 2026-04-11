@@ -1304,13 +1304,7 @@ class AIAgent:
                     "Context engine '%s' not found — falling back to built-in compressor",
                     _engine_name,
                 )
-        else:
-            # Even with default config, check if a plugin registered one
-            try:
-                from hermes_cli.plugins import get_plugin_context_engine
-                _selected_engine = get_plugin_context_engine()
-            except Exception:
-                pass
+        # else: config says "compressor" — use built-in, don't auto-activate plugins
 
         if _selected_engine is not None:
             self.context_compressor = _selected_engine

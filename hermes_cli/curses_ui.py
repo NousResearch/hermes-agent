@@ -160,6 +160,133 @@ def curses_checklist(
         return _numbered_fallback(title, items, selected, cancel_returns, status_fn)
 
 
+def curses_radiolist(
+    title: str,
+    items: List[str],
+    selected: int = 0,
+    *,
+    cancel_returns: int | None = None,
+) -> int:
+    """Curses single-select radio list. Returns the selected index.
+
+    Args:
+        title: Header line displayed above the list.
+        items: Display labels for each row.
+        selected: Index that starts selected (pre-selected).
+        cancel_returns: Returned on ESC/q. Defaults to the original *selected*.
+    """
+    if cancel_returns is None:
+        cancel_returns = selected
+
+    if not sys.stdin.isatty():
+        return cancel_returns
+
+    try:
+        import curses
+        result_holder: list = [None]
+
+        def _draw(stdscr):
+            curses.curs_set(0)
+            if curses.has_colors():
+                curses.start_color()
+                curses.use_default_colors()
+                curses.init_pair(1, curses.COLOR_GREEN, -1)
+                curses.init_pair(2, curses.COLOR_YELLOW, -1)
+            cursor = selected
+            scroll_offset = 0
+
+            while True:
+                stdscr.clear()
+                max_y, max_x = stdscr.getmaxyx()
+
+                # Header
+                try:
+                    hattr = curses.A_BOLD
+                    if curses.has_colors():
+                        hattr |= curses.color_pair(2)
+                    stdscr.addnstr(0, 0, title, max_x - 1, hattr)
+                    stdscr.addnstr(
+                        1, 0,
+                        "  \u2191\u2193 navigate  ENTER/SPACE select  ESC cancel",
+                        max_x - 1, curses.A_DIM,
+                    )
+                except curses.error:
+                    pass
+
+                # Scrollable item list
+                visible_rows = max_y - 4
+                if cursor < scroll_offset:
+                    scroll_offset = cursor
+                elif cursor >= scroll_offset + visible_rows:
+                    scroll_offset = cursor - visible_rows + 1
+
+                for draw_i, i in enumerate(
+                    range(scroll_offset, min(len(items), scroll_offset + visible_rows))
+                ):
+                    y = draw_i + 3
+                    if y >= max_y - 1:
+                        break
+                    radio = "\u25cf" if i == selected else "\u25cb"
+                    arrow = "\u2192" if i == cursor else " "
+                    line = f" {arrow} ({radio}) {items[i]}"
+                    attr = curses.A_NORMAL
+                    if i == cursor:
+                        attr = curses.A_BOLD
+                        if curses.has_colors():
+                            attr |= curses.color_pair(1)
+                    try:
+                        stdscr.addnstr(y, 0, line, max_x - 1, attr)
+                    except curses.error:
+                        pass
+
+                stdscr.refresh()
+                key = stdscr.getch()
+
+                if key in (curses.KEY_UP, ord("k")):
+                    cursor = (cursor - 1) % len(items)
+                elif key in (curses.KEY_DOWN, ord("j")):
+                    cursor = (cursor + 1) % len(items)
+                elif key in (ord(" "), curses.KEY_ENTER, 10, 13):
+                    result_holder[0] = cursor
+                    return
+                elif key in (27, ord("q")):
+                    result_holder[0] = cancel_returns
+                    return
+
+        curses.wrapper(_draw)
+        flush_stdin()
+        return result_holder[0] if result_holder[0] is not None else cancel_returns
+
+    except Exception:
+        return _radio_numbered_fallback(title, items, selected, cancel_returns)
+
+
+def _radio_numbered_fallback(
+    title: str,
+    items: List[str],
+    selected: int,
+    cancel_returns: int,
+) -> int:
+    """Text-based numbered fallback for radio selection."""
+    print(color(f"\n  {title}", Colors.YELLOW))
+    print(color("  Select by number, Enter to confirm.\n", Colors.DIM))
+
+    for i, label in enumerate(items):
+        marker = color("(\u25cf)", Colors.GREEN) if i == selected else "(\u25cb)"
+        print(f"  {marker} {i + 1:>2}. {label}")
+    print()
+    try:
+        val = input(color(f"  Choice [default {selected + 1}]: ", Colors.DIM)).strip()
+        if not val:
+            return selected
+        idx = int(val) - 1
+        if 0 <= idx < len(items):
+            return idx
+        return selected
+    except (ValueError, KeyboardInterrupt, EOFError):
+        return cancel_returns
+
+
 def _numbered_fallback(
     title: str,
     items: List[str],

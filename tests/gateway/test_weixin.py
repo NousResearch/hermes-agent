@@ -283,6 +283,55 @@ class TestWeixinSendMessageIntegration:
         )
 
 
+class TestWeixinChunkDelivery:
+    def _connected_adapter(self) -> WeixinAdapter:
+        adapter = _make_adapter()
+        adapter._session = object()
+        adapter._token = "test-token"
+        adapter._base_url = "https://weixin.example.com"
+        adapter._token_store.get = lambda account_id, chat_id: "ctx-token"
+        return adapter
+
+    @patch("gateway.platforms.weixin.asyncio.sleep", new_callable=AsyncMock)
+    @patch("gateway.platforms.weixin._send_message", new_callable=AsyncMock)
+    def test_send_waits_between_multiple_chunks(self, send_message_mock, sleep_mock):
+        adapter = self._connected_adapter()
+        adapter.MAX_MESSAGE_LENGTH = 12
+
+        # Use double newlines so _pack_markdown_blocks splits into 3 blocks
+        result = asyncio.run(adapter.send("wxid_test123", "first\n\nsecond\n\nthird"))
+
+        assert result.success is True
+        assert send_message_mock.await_count == 3
+        assert sleep_mock.await_count == 2
+
+    @patch("gateway.platforms.weixin.asyncio.sleep", new_callable=AsyncMock)
+    @patch("gateway.platforms.weixin._send_message", new_callable=AsyncMock)
+    def test_send_retries_failed_chunk_before_continuing(self, send_message_mock, sleep_mock):
+        adapter = self._connected_adapter()
+        adapter.MAX_MESSAGE_LENGTH = 12
+        calls = {"count": 0}
+
+        async def flaky_send(*args, **kwargs):
+            calls["count"] += 1
+            if calls["count"] == 2:
+                raise RuntimeError("temporary iLink failure")
+
+        send_message_mock.side_effect = flaky_send
+
+        # Use double newlines so _pack_markdown_blocks splits into 3 blocks
+        result = asyncio.run(adapter.send("wxid_test123", "first\n\nsecond\n\nthird"))
+
+        assert result.success is True
+        # 3 chunks, but chunk 2 fails once and retries → 4 _send_message calls total
+        assert send_message_mock.await_count == 4
+        # The retried chunk should reuse the same client_id for deduplication
+        first_try = send_message_mock.await_args_list[1].kwargs
+        retry = send_message_mock.await_args_list[2].kwargs
+        assert first_try["text"] == retry["text"]
+        assert first_try["client_id"] == retry["client_id"]
+
+
 class TestWeixinRemoteMediaSafety:
     def test_download_remote_media_blocks_unsafe_urls(self):
         adapter = _make_adapter()

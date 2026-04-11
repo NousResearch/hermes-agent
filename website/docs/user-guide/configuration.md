@@ -800,7 +800,7 @@ You can also change the reasoning effort at runtime with the `/reasoning` comman
 
 ## Tool-Use Enforcement
 
-Some models (especially GPT-family) occasionally describe intended actions as text instead of making tool calls. Tool-use enforcement injects guidance that steers the model back to actually calling tools.
+Some models occasionally describe intended actions as text instead of making tool calls ("I would run the tests..." instead of actually calling the terminal). Tool-use enforcement injects system prompt guidance that steers the model back to actually calling tools.
 
 ```yaml
 agent:
@@ -809,12 +809,31 @@ agent:
 
 | Value | Behavior |
 |-------|----------|
-| `"auto"` (default) | Enabled for GPT models (`gpt-`, `openai/gpt-`) and disabled for all others. |
-| `true` | Always enabled for all models. |
-| `false` | Always disabled. |
-| `["gpt-", "o1-", "custom-model"]` | Enabled only for models whose name contains one of the listed substrings. |
+| `"auto"` (default) | Enabled for models matching: `gpt`, `codex`, `gemini`, `gemma`, `grok`. Disabled for all others (Claude, DeepSeek, Qwen, etc.). |
+| `true` | Always enabled, regardless of model. Useful if you notice your current model describing actions instead of performing them. |
+| `false` | Always disabled, regardless of model. |
+| `["gpt", "codex", "qwen", "llama"]` | Enabled only when the model name contains one of the listed substrings (case-insensitive). |
 
-When enabled, the system prompt includes guidance reminding the model to make actual tool calls rather than describing what it would do. This is transparent to the user and has no effect on models that already use tools reliably.
+### What it injects
+
+When enabled, three layers of guidance may be added to the system prompt:
+
+1. **General tool-use enforcement** (all matched models) — instructs the model to make tool calls immediately instead of describing intentions, keep working until the task is complete, and never end a turn with a promise of future action.
+
+2. **OpenAI execution discipline** (GPT and Codex models only) — additional guidance addressing GPT-specific failure modes: abandoning work on partial results, skipping prerequisite lookups, hallucinating instead of using tools, and declaring "done" without verification.
+
+3. **Google operational guidance** (Gemini and Gemma models only) — conciseness, absolute paths, parallel tool calls, and verify-before-edit patterns.
+
+These are transparent to the user and only affect the system prompt. Models that already use tools reliably (like Claude) don't need this guidance, which is why `"auto"` excludes them.
+
+### When to turn it on
+
+If you're using a model not in the default auto list and notice it frequently describes what it *would* do instead of doing it, set `tool_use_enforcement: true` or add the model substring to the list:
+
+```yaml
+agent:
+  tool_use_enforcement: ["gpt", "codex", "gemini", "grok", "my-custom-model"]
+```
 
 ## TTS Configuration
 

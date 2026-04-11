@@ -59,6 +59,9 @@ from hermes_constants import OPENROUTER_BASE_URL
 
 logger = logging.getLogger(__name__)
 
+# Module-level flag: only warn once per process about stale OPENAI_BASE_URL.
+_stale_base_url_warned = False
+
 _PROVIDER_ALIASES = {
     "google": "gemini",
     "google-gemini": "gemini",
@@ -1133,8 +1136,27 @@ def _resolve_auto() -> Tuple[Optional[OpenAI], Optional[str]]:
          provider they already have credentials for — no OpenRouter key needed.
       2. OpenRouter → Nous → custom → Codex → API-key providers (original chain).
     """
-    global auxiliary_is_nous
+    global auxiliary_is_nous, _stale_base_url_warned
     auxiliary_is_nous = False  # Reset — _try_nous() will set True if it wins
+
+    # ── Warn once if OPENAI_BASE_URL is set but config.yaml uses a named
+    #    provider (not 'custom').  This catches the common "env poisoning"
+    #    scenario where a user switches providers via `hermes model` but the
+    #    old OPENAI_BASE_URL lingers in ~/.hermes/.env. ──
+    if not _stale_base_url_warned:
+        _env_base = os.getenv("OPENAI_BASE_URL", "").strip()
+        _cfg_provider = _read_main_provider()
+        if (_env_base and _cfg_provider
+                and _cfg_provider != "custom"
+                and not _cfg_provider.startswith("custom:")):
+            logger.warning(
+                "OPENAI_BASE_URL is set (%s) but model.provider is '%s'. "
+                "Auxiliary clients may route to the wrong endpoint. "
+                "Run: hermes model to reconfigure, or remove "
+                "OPENAI_BASE_URL from ~/.hermes/.env",
+                _env_base, _cfg_provider,
+            )
+            _stale_base_url_warned = True
 
     # ── Step 1: non-aggregator main provider → use main model directly ──
     main_provider = _read_main_provider()

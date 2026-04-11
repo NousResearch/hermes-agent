@@ -1,6 +1,7 @@
 """Tests for agent.auxiliary_client resolution chain, provider overrides, and model overrides."""
 
 import json
+import logging
 import os
 from pathlib import Path
 from unittest.mock import patch, MagicMock, AsyncMock
@@ -1472,3 +1473,90 @@ class TestAsyncCallLlmFallback:
 
         assert result is fb_response
         mock_fb.assert_called_once_with("auto", "compression", reason="connection error")
+class TestStaleBaseUrlWarning:
+    """_resolve_auto() warns when OPENAI_BASE_URL conflicts with config provider (#5161)."""
+
+    def test_warns_when_openai_base_url_set_with_named_provider(self, monkeypatch, caplog):
+        """Warning fires when OPENAI_BASE_URL is set but provider is a named provider."""
+        import agent.auxiliary_client as mod
+        # Reset the module-level flag so the warning fires
+        monkeypatch.setattr(mod, "_stale_base_url_warned", False)
+        monkeypatch.setenv("OPENAI_BASE_URL", "http://localhost:11434/v1")
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+
+        with patch("agent.auxiliary_client._read_main_provider", return_value="openrouter"), \
+             patch("agent.auxiliary_client._read_main_model", return_value="google/gemini-flash"), \
+             caplog.at_level(logging.WARNING, logger="agent.auxiliary_client"):
+            _resolve_auto()
+
+        assert any("OPENAI_BASE_URL is set" in rec.message for rec in caplog.records), \
+            "Expected a warning about stale OPENAI_BASE_URL"
+        assert mod._stale_base_url_warned is True
+
+    def test_no_warning_when_provider_is_custom(self, monkeypatch, caplog):
+        """No warning when the provider is 'custom' — OPENAI_BASE_URL is expected."""
+        import agent.auxiliary_client as mod
+        monkeypatch.setattr(mod, "_stale_base_url_warned", False)
+        monkeypatch.setenv("OPENAI_BASE_URL", "http://localhost:11434/v1")
+        monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+
+        with patch("agent.auxiliary_client._read_main_provider", return_value="custom"), \
+             patch("agent.auxiliary_client._read_main_model", return_value="llama3"), \
+             patch("agent.auxiliary_client._resolve_custom_runtime",
+                   return_value=("http://localhost:11434/v1", "test-key", None)), \
+             patch("agent.auxiliary_client.OpenAI") as mock_openai, \
+             caplog.at_level(logging.WARNING, logger="agent.auxiliary_client"):
+            mock_openai.return_value = MagicMock()
+            _resolve_auto()
+
+        assert not any("OPENAI_BASE_URL is set" in rec.message for rec in caplog.records), \
+            "Should NOT warn when provider is 'custom'"
+
+    def test_no_warning_when_provider_is_named_custom(self, monkeypatch, caplog):
+        """No warning when the provider is 'custom:myname' — base_url comes from config."""
+        import agent.auxiliary_client as mod
+        monkeypatch.setattr(mod, "_stale_base_url_warned", False)
+        monkeypatch.setenv("OPENAI_BASE_URL", "http://localhost:11434/v1")
+        monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+
+        with patch("agent.auxiliary_client._read_main_provider", return_value="custom:ollama-local"), \
+             patch("agent.auxiliary_client._read_main_model", return_value="llama3"), \
+             patch("agent.auxiliary_client.resolve_provider_client",
+                   return_value=(MagicMock(), "llama3")), \
+             caplog.at_level(logging.WARNING, logger="agent.auxiliary_client"):
+            _resolve_auto()
+
+        assert not any("OPENAI_BASE_URL is set" in rec.message for rec in caplog.records), \
+            "Should NOT warn when provider is 'custom:*'"
+
+    def test_no_warning_when_openai_base_url_not_set(self, monkeypatch, caplog):
+        """No warning when OPENAI_BASE_URL is absent."""
+        import agent.auxiliary_client as mod
+        monkeypatch.setattr(mod, "_stale_base_url_warned", False)
+        monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+
+        with patch("agent.auxiliary_client._read_main_provider", return_value="openrouter"), \
+             patch("agent.auxiliary_client._read_main_model", return_value="google/gemini-flash"), \
+             caplog.at_level(logging.WARNING, logger="agent.auxiliary_client"):
+            _resolve_auto()
+
+        assert not any("OPENAI_BASE_URL is set" in rec.message for rec in caplog.records), \
+            "Should NOT warn when OPENAI_BASE_URL is not set"
+
+    def test_warning_only_fires_once(self, monkeypatch, caplog):
+        """Warning is suppressed after the first invocation."""
+        import agent.auxiliary_client as mod
+        monkeypatch.setattr(mod, "_stale_base_url_warned", False)
+        monkeypatch.setenv("OPENAI_BASE_URL", "http://localhost:11434/v1")
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+
+        with patch("agent.auxiliary_client._read_main_provider", return_value="openrouter"), \
+             patch("agent.auxiliary_client._read_main_model", return_value="google/gemini-flash"), \
+             caplog.at_level(logging.WARNING, logger="agent.auxiliary_client"):
+            _resolve_auto()
+            caplog.clear()
+            _resolve_auto()
+
+        assert not any("OPENAI_BASE_URL is set" in rec.message for rec in caplog.records), \
+            "Warning should not fire a second time"

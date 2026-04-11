@@ -1,12 +1,14 @@
 """Tests for the Weixin platform adapter."""
 
 import asyncio
+import json
 import os
 from unittest.mock import AsyncMock, patch
 
 from gateway.config import PlatformConfig
 from gateway.config import GatewayConfig, HomeChannel, Platform, _apply_env_overrides
-from gateway.platforms.weixin import WeixinAdapter
+from gateway.platforms import weixin
+from gateway.platforms.weixin import ContextTokenStore, WeixinAdapter
 from tools.send_message_tool import _parse_target_ref, _send_to_platform
 
 
@@ -185,6 +187,70 @@ class TestWeixinConfig:
         )
 
         assert config.get_connected_platforms() == []
+
+
+class TestWeixinStatePersistence:
+    def test_save_weixin_account_preserves_existing_file_on_replace_failure(self, tmp_path, monkeypatch):
+        account_path = tmp_path / "weixin" / "accounts" / "acct.json"
+        account_path.parent.mkdir(parents=True, exist_ok=True)
+        original = {"token": "old-token", "base_url": "https://old.example.com"}
+        account_path.write_text(json.dumps(original), encoding="utf-8")
+
+        def _boom(_src, _dst):
+            raise OSError("disk full")
+
+        monkeypatch.setattr("utils.os.replace", _boom)
+
+        try:
+            weixin.save_weixin_account(
+                str(tmp_path),
+                account_id="acct",
+                token="new-token",
+                base_url="https://new.example.com",
+                user_id="wxid_new",
+            )
+        except OSError:
+            pass
+        else:
+            raise AssertionError("expected save_weixin_account to propagate replace failure")
+
+        assert json.loads(account_path.read_text(encoding="utf-8")) == original
+
+    def test_context_token_persist_preserves_existing_file_on_replace_failure(self, tmp_path, monkeypatch):
+        token_path = tmp_path / "weixin" / "accounts" / "acct.context-tokens.json"
+        token_path.parent.mkdir(parents=True, exist_ok=True)
+        token_path.write_text(json.dumps({"user-a": "old-token"}), encoding="utf-8")
+
+        def _boom(_src, _dst):
+            raise OSError("disk full")
+
+        monkeypatch.setattr("utils.os.replace", _boom)
+
+        store = ContextTokenStore(str(tmp_path))
+        with patch.object(weixin.logger, "warning") as warning_mock:
+            store.set("acct", "user-b", "new-token")
+
+        assert json.loads(token_path.read_text(encoding="utf-8")) == {"user-a": "old-token"}
+        warning_mock.assert_called_once()
+
+    def test_save_sync_buf_preserves_existing_file_on_replace_failure(self, tmp_path, monkeypatch):
+        sync_path = tmp_path / "weixin" / "accounts" / "acct.sync.json"
+        sync_path.parent.mkdir(parents=True, exist_ok=True)
+        sync_path.write_text(json.dumps({"get_updates_buf": "old-sync"}), encoding="utf-8")
+
+        def _boom(_src, _dst):
+            raise OSError("disk full")
+
+        monkeypatch.setattr("utils.os.replace", _boom)
+
+        try:
+            weixin._save_sync_buf(str(tmp_path), "acct", "new-sync")
+        except OSError:
+            pass
+        else:
+            raise AssertionError("expected _save_sync_buf to propagate replace failure")
+
+        assert json.loads(sync_path.read_text(encoding="utf-8")) == {"get_updates_buf": "old-sync"}
 
 
 class TestWeixinSendMessageIntegration:

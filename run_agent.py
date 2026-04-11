@@ -9988,8 +9988,7 @@ class AIAgent:
                 except (OSError, ValueError):
                     logger.error(error_msg)
                 
-                if self.verbose_logging:
-                    logging.exception("Detailed error information:")
+                logger.debug("Outer loop error in API call #%d", api_call_count, exc_info=True)
                 
                 # If an assistant message with tool_calls was already appended,
                 # the API expects a role="tool" result for every tool_call_id.

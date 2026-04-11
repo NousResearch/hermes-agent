@@ -485,10 +485,15 @@ def test_build_api_kwargs_chatgpt_web_continues_read_file_after_truncated_inspec
 
     rewritten_user = kwargs["messages"][0]["content"]
     assert 'The tool available for this turn is: read_file.' in rewritten_user
+    assert 'Hermes has already determined that another tool call is required before the final answer.' in rewritten_user
+    assert 'Reply now with this exact structure:' in rewritten_user
     assert '"path": "tools/browser_tool.py"' in rewritten_user
     assert '"offset": 21' in rewritten_user
     assert '"limit": 40' in rewritten_user
-    assert agent._chatgpt_web_forced_tool_call is None
+    assert agent._chatgpt_web_forced_tool_call == {
+        "name": "read_file",
+        "arguments": {"path": "tools/browser_tool.py", "offset": 21, "limit": 40},
+    }
 
 
 

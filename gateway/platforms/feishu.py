@@ -452,6 +452,129 @@ def _extract_card_title(content: str) -> str:
     return "Hermes"
 
 
+def _split_markdown_blocks(content: str) -> List[tuple[str, str]]:
+    lines = content.splitlines()
+    blocks: List[tuple[str, str]] = []
+    text_lines: List[str] = []
+    table_lines: List[str] = []
+
+    def flush_text() -> None:
+        nonlocal text_lines
+        text = "\n".join(text_lines).strip()
+        if text:
+            blocks.append(("markdown", text))
+        text_lines = []
+
+    def flush_table() -> None:
+        nonlocal table_lines
+        text = "\n".join(table_lines).strip()
+        if text:
+            blocks.append(("table", text))
+        table_lines = []
+
+    for raw_line in lines:
+        line = raw_line.rstrip()
+        is_table_line = line.strip().startswith("|") and line.strip().endswith("|")
+        if is_table_line:
+            flush_text()
+            table_lines.append(line)
+            continue
+        flush_table()
+        text_lines.append(line)
+
+    flush_table()
+    flush_text()
+    return blocks
+
+
+def _parse_markdown_table(table_text: str) -> Optional[Dict[str, List[List[str]]]]:
+    lines = [line.strip() for line in table_text.splitlines() if line.strip()]
+    if len(lines) < 2:
+        return None
+
+    def parse_row(line: str) -> List[str]:
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        return [_strip_markdown_to_plain_text(cell) for cell in cells]
+
+    def is_separator_row(line: str) -> bool:
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        if not cells:
+            return False
+        return all(re.fullmatch(r":?-{3,}:?", cell) for cell in cells)
+
+    header = parse_row(lines[0])
+    if not is_separator_row(lines[1]):
+        return None
+
+    rows = [parse_row(line) for line in lines[2:]]
+    rows = [row for row in rows if any(cell for cell in row)]
+    if not header or not rows:
+        return None
+
+    width = len(header)
+    if width == 0:
+        return None
+    normalized_rows: List[List[str]] = []
+    for row in rows:
+        padded = (row + [""] * width)[:width]
+        normalized_rows.append(padded)
+    return {"header": [header[:width]], "rows": normalized_rows}
+
+
+def _build_table_column(cell_text: str, *, bold: bool = False, background_style: str = "default") -> Dict[str, Any]:
+    content = cell_text or " "
+    if bold:
+        content = f"**{content}**"
+    return {
+        "tag": "column",
+        "width": "weighted",
+        "weight": 1,
+        "vertical_align": "top",
+        "elements": [
+            {
+                "tag": "markdown",
+                "content": content,
+                "text_align": "left",
+                "text_size": "normal_v2",
+            }
+        ],
+        "background_style": background_style,
+    }
+
+
+def _build_markdown_table_elements(table_text: str) -> List[Dict[str, Any]]:
+    parsed = _parse_markdown_table(table_text)
+    if not parsed:
+        return [{"tag": "markdown", "content": table_text}]
+
+    elements: List[Dict[str, Any]] = []
+    header = parsed["header"][0]
+    elements.append(
+        {
+            "tag": "column_set",
+            "flex_mode": "none",
+            "background_style": "grey",
+            "columns": [_build_table_column(cell, bold=True, background_style="grey") for cell in header],
+        }
+    )
+    for index, row in enumerate(parsed["rows"]):
+        elements.append(
+            {
+                "tag": "column_set",
+                "flex_mode": "none",
+                "background_style": "default" if index % 2 == 0 else "grey",
+                "columns": [
+                    _build_table_column(
+                        cell,
+                        background_style="default" if index % 2 == 0 else "grey",
+                    )
+                    for cell in row
+                ],
+            }
+        )
+    return elements
+
+
 def _build_interactive_card_payload(content: str) -> str:
     status, body_content = _extract_status_marker(content)
     status_title, template, status_line = _status_presentation(status)
@@ -473,12 +596,16 @@ def _build_interactive_card_payload(content: str) -> str:
                 "content": f"**{status_line}**",
             }
         )
-    card["elements"].append(
-        {
-            "tag": "markdown",
-            "content": body_content,
-        }
-    )
+    for block_type, block_text in _split_markdown_blocks(body_content):
+        if block_type == "table":
+            card["elements"].extend(_build_markdown_table_elements(block_text))
+        else:
+            card["elements"].append(
+                {
+                    "tag": "markdown",
+                    "content": block_text,
+                }
+            )
     return json.dumps(card, ensure_ascii=False)
 
 

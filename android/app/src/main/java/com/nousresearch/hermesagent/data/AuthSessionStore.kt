@@ -7,6 +7,12 @@ import org.json.JSONObject
 class AuthSessionStore(context: Context) {
     private val preferences = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
+    data class AuthCallbackEvaluation(
+        val session: AuthSession? = null,
+        val consumed: Boolean = false,
+        val clearPending: Boolean = false,
+    )
+
     fun loadSessions(): List<AuthSession> {
         return AuthCatalog.options.map { option -> loadSession(option.id) ?: defaultSession(option) }
     }
@@ -32,7 +38,7 @@ class AuthSessionStore(context: Context) {
                 apiKey = json.optString("apiKey"),
                 baseUrl = json.optString("baseUrl"),
                 model = json.optString("model"),
-                updatedAtEpochMs = json.optLong("updatedAtEpochMs", System.currentTimeMillis()),
+                updatedAtEpochMs = json.optLong("updatedAtEpochMs", 0),
             )
         }.getOrNull()
     }
@@ -89,54 +95,15 @@ class AuthSessionStore(context: Context) {
     }
 
     fun consumeAuthCallback(uri: Uri): AuthSession? {
-        if (!isAuthCallback(uri)) {
+        val evaluation = evaluateAuthCallback(uri, loadPendingRequest())
+        if (!evaluation.consumed) {
             return null
         }
-
-        val pending = loadPendingRequest()
-        val methodId = uri.getQueryParameter("method")
-            ?.takeIf { it.isNotBlank() }
-            ?: pending?.methodId
-            ?: return null
-        val option = AuthCatalog.find(methodId) ?: return null
-        val callbackState = uri.getQueryParameter("state").orEmpty()
-        val stateMismatch = pending != null && pending.state.isNotBlank() && callbackState != pending.state
-        val error = uri.getQueryParameter("error").orEmpty()
-        val signedIn = !stateMismatch && error.isBlank() && (
-            !uri.getQueryParameter("email").isNullOrBlank()
-                || !uri.getQueryParameter("phone").isNullOrBlank()
-                || !uri.getQueryParameter("api_key").isNullOrBlank()
-                || !uri.getQueryParameter("access_token").isNullOrBlank()
-                || !uri.getQueryParameter("session_token").isNullOrBlank()
-        )
-
-        val session = AuthSession(
-            methodId = option.id,
-            label = option.label,
-            scope = option.scope,
-            runtimeProvider = uri.getQueryParameter("provider")
-                ?.takeIf { it.isNotBlank() }
-                ?: option.runtimeProvider,
-            signedIn = signedIn,
-            status = when {
-                stateMismatch -> "Auth callback rejected: state mismatch"
-                error.isNotBlank() -> "Auth failed: $error"
-                signedIn -> "Signed in with ${option.label}"
-                else -> "Auth callback received but no credentials were returned"
-            },
-            email = uri.getQueryParameter("email").orEmpty(),
-            phone = uri.getQueryParameter("phone").orEmpty(),
-            displayName = uri.getQueryParameter("display_name").orEmpty(),
-            accessToken = uri.getQueryParameter("access_token").orEmpty(),
-            refreshToken = uri.getQueryParameter("refresh_token").orEmpty(),
-            sessionToken = uri.getQueryParameter("session_token").orEmpty(),
-            apiKey = uri.getQueryParameter("api_key").orEmpty(),
-            baseUrl = uri.getQueryParameter("base_url").orEmpty(),
-            model = uri.getQueryParameter("model").orEmpty(),
-        )
-        saveSession(session)
-        clearPendingRequest()
-        return session
+        if (evaluation.clearPending) {
+            clearPendingRequest()
+        }
+        evaluation.session?.let(::saveSession)
+        return evaluation.session
     }
 
     fun hasSignedInAppAccount(): Boolean {
@@ -146,6 +113,17 @@ class AuthSessionStore(context: Context) {
     companion object {
         private const val PREFS_NAME = "hermes_android_auth"
         private const val KEY_PENDING_REQUEST = "pending_request"
+        private const val PENDING_REQUEST_MAX_AGE_MS = 15 * 60 * 1000L
+        private const val DEFAULT_STATUS = "Not signed in"
+        private const val MAX_STATE_LENGTH = 160
+        private const val MAX_STATUS_LENGTH = 240
+        private const val MAX_EMAIL_LENGTH = 320
+        private const val MAX_PHONE_LENGTH = 64
+        private const val MAX_NAME_LENGTH = 120
+        private const val MAX_MODEL_LENGTH = 160
+        private const val MAX_URL_LENGTH = 2048
+        private const val MAX_TOKEN_LENGTH = 8192
+
         const val CALLBACK_SCHEME = "hermesagent"
         const val CALLBACK_HOST = "auth"
         const val CALLBACK_PATH = "/callback"
@@ -158,6 +136,140 @@ class AuthSessionStore(context: Context) {
                 && (uri.path ?: "").startsWith(CALLBACK_PATH)
         }
 
+        fun isPendingRequestExpired(
+            request: PendingAuthRequest,
+            nowEpochMs: Long = System.currentTimeMillis(),
+        ): Boolean {
+            return nowEpochMs - request.createdAtEpochMs > PENDING_REQUEST_MAX_AGE_MS
+        }
+
+        internal fun evaluateAuthCallback(
+            uri: Uri?,
+            pending: PendingAuthRequest?,
+            nowEpochMs: Long = System.currentTimeMillis(),
+        ): AuthCallbackEvaluation {
+            if (!isAuthCallback(uri)) {
+                return AuthCallbackEvaluation()
+            }
+            val callbackUri = uri ?: return AuthCallbackEvaluation()
+            val methodIdFromUri = normalizeMethodId(callbackUri.getQueryParameter("method"))
+            val expectedOption = pending?.methodId?.let(AuthCatalog::find)
+            val callbackOption = methodIdFromUri?.let(AuthCatalog::find)
+            val option = expectedOption ?: callbackOption
+                ?: return AuthCallbackEvaluation(consumed = true, clearPending = pending != null)
+
+            if (pending == null) {
+                return AuthCallbackEvaluation(
+                    session = failureSession(option, "Auth callback rejected: no pending sign-in request", nowEpochMs),
+                    consumed = true,
+                    clearPending = false,
+                )
+            }
+
+            if (isPendingRequestExpired(pending, nowEpochMs)) {
+                return AuthCallbackEvaluation(
+                    session = failureSession(option, "Auth callback expired. Start sign-in again.", nowEpochMs),
+                    consumed = true,
+                    clearPending = true,
+                )
+            }
+
+            if (methodIdFromUri != null && methodIdFromUri != pending.methodId) {
+                return AuthCallbackEvaluation(
+                    session = failureSession(option, "Auth callback rejected: method mismatch", nowEpochMs),
+                    consumed = true,
+                    clearPending = true,
+                )
+            }
+
+            val callbackState = sanitizeValue(callbackUri.getQueryParameter("state"), MAX_STATE_LENGTH)
+            if (callbackState.isBlank() || pending.state.isBlank() || callbackState != pending.state) {
+                return AuthCallbackEvaluation(
+                    session = failureSession(option, "Auth callback rejected: state mismatch", nowEpochMs),
+                    consumed = true,
+                    clearPending = true,
+                )
+            }
+
+            val error = sanitizeStatus(
+                callbackUri.getQueryParameter("error_description")
+                    .orEmpty()
+                    .ifBlank { callbackUri.getQueryParameter("error").orEmpty() }
+            )
+            if (error.isNotBlank()) {
+                return AuthCallbackEvaluation(
+                    session = failureSession(option, "Auth failed: $error", nowEpochMs),
+                    consumed = true,
+                    clearPending = true,
+                )
+            }
+
+            val runtimeProvider = normalizeProvider(callbackUri.getQueryParameter("provider")).ifBlank {
+                option.runtimeProvider
+            }
+            if (option.scope == AuthScope.RuntimeProvider && runtimeProvider != option.runtimeProvider) {
+                return AuthCallbackEvaluation(
+                    session = failureSession(option, "Auth callback rejected: provider mismatch", nowEpochMs),
+                    consumed = true,
+                    clearPending = true,
+                )
+            }
+
+            val email = sanitizeValue(callbackUri.getQueryParameter("email"), MAX_EMAIL_LENGTH)
+            val phone = sanitizeValue(callbackUri.getQueryParameter("phone"), MAX_PHONE_LENGTH)
+            val displayName = sanitizeValue(callbackUri.getQueryParameter("display_name"), MAX_NAME_LENGTH)
+            val accessToken = sanitizeToken(callbackUri.getQueryParameter("access_token"))
+            val refreshToken = sanitizeToken(callbackUri.getQueryParameter("refresh_token"))
+            val sessionToken = sanitizeToken(callbackUri.getQueryParameter("session_token"))
+            val apiKey = sanitizeToken(callbackUri.getQueryParameter("api_key"))
+            val baseUrl = sanitizeHttpUrl(callbackUri.getQueryParameter("base_url")).ifBlank {
+                option.defaultBaseUrl
+            }
+            val model = sanitizeValue(callbackUri.getQueryParameter("model"), MAX_MODEL_LENGTH)
+                .ifBlank { option.defaultModel }
+
+            val hasIdentity = email.isNotBlank() || phone.isNotBlank() || displayName.isNotBlank()
+            val hasProviderCredentials = apiKey.isNotBlank() || accessToken.isNotBlank() || sessionToken.isNotBlank()
+            if (option.scope == AuthScope.AppAccount && !hasIdentity) {
+                return AuthCallbackEvaluation(
+                    session = failureSession(option, "Auth callback rejected: no account identity returned", nowEpochMs),
+                    consumed = true,
+                    clearPending = true,
+                )
+            }
+            if (option.scope == AuthScope.RuntimeProvider && !hasProviderCredentials) {
+                return AuthCallbackEvaluation(
+                    session = failureSession(option, "Auth callback rejected: no provider credentials were returned", nowEpochMs),
+                    consumed = true,
+                    clearPending = true,
+                )
+            }
+
+            val session = AuthSession(
+                methodId = option.id,
+                label = option.label,
+                scope = option.scope,
+                runtimeProvider = runtimeProvider,
+                signedIn = true,
+                status = successStatus(option),
+                email = email,
+                phone = phone,
+                displayName = displayName,
+                accessToken = accessToken,
+                refreshToken = refreshToken,
+                sessionToken = sessionToken,
+                apiKey = apiKey,
+                baseUrl = baseUrl,
+                model = model,
+                updatedAtEpochMs = nowEpochMs,
+            )
+            return AuthCallbackEvaluation(
+                session = session,
+                consumed = true,
+                clearPending = true,
+            )
+        }
+
         private fun sessionKey(methodId: String): String = "session_${methodId.lowercase()}"
 
         private fun defaultSession(option: AuthOption): AuthSession {
@@ -168,9 +280,72 @@ class AuthSessionStore(context: Context) {
                 runtimeProvider = option.runtimeProvider,
                 baseUrl = option.defaultBaseUrl,
                 model = option.defaultModel,
-                status = "Not signed in",
+                status = DEFAULT_STATUS,
                 signedIn = false,
+                updatedAtEpochMs = 0,
             )
+        }
+
+        private fun failureSession(option: AuthOption, status: String, nowEpochMs: Long): AuthSession {
+            return defaultSession(option).copy(
+                status = sanitizeStatus(status),
+                updatedAtEpochMs = nowEpochMs,
+            )
+        }
+
+        private fun successStatus(option: AuthOption): String {
+            return sanitizeStatus("Signed in with ${option.label}")
+        }
+
+        private fun normalizeMethodId(value: String?): String? {
+            return sanitizeValue(value, MAX_NAME_LENGTH).lowercase().ifBlank { null }
+        }
+
+        private fun normalizeProvider(value: String?): String {
+            return sanitizeValue(value, MAX_NAME_LENGTH).lowercase()
+        }
+
+        private fun sanitizeStatus(value: String): String {
+            return sanitizeValue(value, MAX_STATUS_LENGTH)
+        }
+
+        private fun sanitizeToken(value: String?): String {
+            return sanitizeValue(value, MAX_TOKEN_LENGTH)
+        }
+
+        private fun sanitizeHttpUrl(value: String?): String {
+            val candidate = sanitizeValue(value, MAX_URL_LENGTH)
+            if (candidate.isBlank()) {
+                return ""
+            }
+            val parsed = runCatching { Uri.parse(candidate) }.getOrNull() ?: return ""
+            val scheme = parsed.scheme?.lowercase().orEmpty()
+            val authority = parsed.encodedAuthority.orEmpty()
+            if (scheme !in setOf("http", "https") || authority.isBlank()) {
+                return ""
+            }
+            val normalizedPath = parsed.encodedPath
+                ?.trim()
+                ?.trimEnd('/')
+                ?.takeIf { it.isNotBlank() && it != "/" }
+            return Uri.Builder()
+                .scheme(scheme)
+                .encodedAuthority(authority)
+                .apply {
+                    if (!normalizedPath.isNullOrBlank()) {
+                        encodedPath(normalizedPath)
+                    }
+                }
+                .build()
+                .toString()
+                .trimEnd('/')
+        }
+
+        private fun sanitizeValue(value: String?, maxLength: Int): String {
+            return value.orEmpty()
+                .replace(Regex("[\\u0000-\\u001F]"), " ")
+                .trim()
+                .take(maxLength)
         }
     }
 }

@@ -39,6 +39,10 @@ fun AuthScreen(
             ) {
                 Text("Accounts", style = MaterialTheme.typography.headlineSmall)
                 Text(uiState.globalStatus, style = MaterialTheme.typography.bodyMedium)
+                Text(
+                    "Corr3xt opens in your browser and returns to Hermes through a secure callback.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
 
                 OutlinedTextField(
                     value = uiState.corr3xtBaseUrl,
@@ -52,6 +56,31 @@ fun AuthScreen(
                     }
                     Button(onClick = viewModel::refresh) {
                         Text("Refresh")
+                    }
+                }
+
+                if (uiState.hasPendingRequest) {
+                    Surface(
+                        modifier = Modifier.fillMaxWidth(),
+                        color = MaterialTheme.colorScheme.secondaryContainer,
+                        tonalElevation = 1.dp,
+                        shape = MaterialTheme.shapes.medium,
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(16.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Text("Pending Corr3xt sign-in", style = MaterialTheme.typography.titleMedium)
+                            Text(
+                                "Waiting for Corr3xt callback for ${uiState.pendingMethodLabel}.",
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                            Button(onClick = viewModel::cancelPendingRequest) {
+                                Text("Cancel pending sign-in")
+                            }
+                        }
                     }
                 }
 

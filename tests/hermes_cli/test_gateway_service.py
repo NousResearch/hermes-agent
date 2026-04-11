@@ -1,6 +1,7 @@
 """Tests for gateway service management helpers."""
 
 import os
+import pwd
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -923,6 +924,23 @@ class TestProfileArg:
         plist = gateway_cli.generate_launchd_plist()
         assert "<string>--profile</string>" in plist
         assert "<string>mybot</string>" in plist
+
+    def test_launchd_plist_path_uses_real_user_home_not_profile_home(self, tmp_path, monkeypatch):
+        profile_dir = tmp_path / ".hermes" / "profiles" / "orcha"
+        profile_dir.mkdir(parents=True)
+        machine_home = tmp_path / "machine-home"
+        machine_home.mkdir()
+        profile_home = profile_dir / "home"
+        profile_home.mkdir()
+
+        monkeypatch.setattr(Path, "home", lambda: profile_home)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+        monkeypatch.setattr(pwd, "getpwuid", lambda uid: SimpleNamespace(pw_dir=str(machine_home)))
+
+        plist_path = gateway_cli.get_launchd_plist_path()
+
+        assert plist_path == machine_home / "Library" / "LaunchAgents" / "ai.hermes.gateway-orcha.plist"
 
 
 class TestRemapPathForUser:

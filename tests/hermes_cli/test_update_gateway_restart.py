@@ -191,6 +191,19 @@ class TestLaunchdPlistPath:
             raise AssertionError("PATH key not found in plist")
 
 
+class TestLaunchdPlistCurrentness:
+    def test_launchd_plist_is_current_ignores_path_drift(self, tmp_path, monkeypatch):
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+
+        monkeypatch.setenv("PATH", "/custom/bin:/usr/bin:/bin")
+        plist_path.write_text(gateway_cli.generate_launchd_plist(), encoding="utf-8")
+
+        monkeypatch.setenv("PATH", "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin")
+
+        assert gateway_cli.launchd_plist_is_current() is True
+
+
 # ---------------------------------------------------------------------------
 # cmd_update — macOS launchd detection
 # ---------------------------------------------------------------------------
@@ -760,3 +773,28 @@ class TestFindGatewayPidsExclude:
         pids = gateway_cli.find_gateway_pids()
         assert 100 in pids
         assert 200 in pids
+
+    def test_filters_to_current_profile(self, monkeypatch, tmp_path):
+        profile_dir = tmp_path / ".hermes" / "profiles" / "orcha"
+        profile_dir.mkdir(parents=True)
+        monkeypatch.setattr(gateway_cli, "is_windows", lambda: False)
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: profile_dir)
+
+        def fake_run(cmd, **kwargs):
+            return subprocess.CompletedProcess(
+                cmd, 0,
+                stdout=(
+                    "100 /Users/dgrieco/.hermes/hermes-agent/venv/bin/python -m hermes_cli.main --profile orcha gateway run --replace\n"
+                    "200 /Users/dgrieco/.hermes/hermes-agent/venv/bin/python -m hermes_cli.main --profile other gateway run --replace\n"
+                ),
+                stderr="",
+            )
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+        monkeypatch.setattr("os.getpid", lambda: 999)
+        monkeypatch.setattr(gateway_cli, "_get_service_pids", lambda: set())
+        monkeypatch.setattr(gateway_cli, "_profile_arg", lambda hermes_home=None: "--profile orcha")
+
+        pids = gateway_cli.find_gateway_pids()
+
+        assert pids == [100]

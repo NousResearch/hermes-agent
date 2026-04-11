@@ -30,6 +30,7 @@ from concurrent.futures import (
 )
 from typing import Any, Dict, List, Optional
 
+from iteration_limits import is_unlimited_iteration_limit, parse_iteration_limit
 from toolsets import TOOLSETS
 from tools import file_state
 from tools.terminal_tool import set_approval_callback as _set_subagent_approval_cb
@@ -2329,7 +2330,7 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
             f"Cannot resolve delegation provider '{configured_provider}': {exc}. "
             f"Check that the provider is configured (API key set, valid provider name), "
             f"or set delegation.base_url/delegation.api_key for a direct endpoint. "
-            f"Available providers: openrouter, nous, zai, kimi-coding, minimax."
+            f"Available providers include: openrouter, nous, chatgpt-web, openai-codex, qwen-oauth, zai, kimi-coding, minimax."
         ) from exc
 
     api_key = runtime.get("api_key", "")

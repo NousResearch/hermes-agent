@@ -1125,6 +1125,802 @@ class APIServerAdapter(BasePlatformAdapter):
     except ImportError:
         pass
 
+    # ------------------------------------------------------------------
+    # Enhanced Workspace API — Sessions / Skills / Memory / Config
+    # ------------------------------------------------------------------
+
+    def _get_session_db(self):
+        """Return the shared SessionDB (lazy-init)."""
+        return self._ensure_session_db()
+
+    def _count_sessions(self, db, source: Optional[str] = None) -> int:
+        """Count top-level sessions, honoring source filters when available."""
+        if hasattr(db, "count_sessions"):
+            return db.count_sessions(source=source)
+
+        with db._lock:
+            if source:
+                cursor = db._conn.execute(
+                    "SELECT COUNT(*) FROM sessions WHERE parent_session_id IS NULL AND source = ?",
+                    (source,),
+                )
+            else:
+                cursor = db._conn.execute(
+                    "SELECT COUNT(*) FROM sessions WHERE parent_session_id IS NULL"
+                )
+            return cursor.fetchone()[0]
+
+    async def _handle_list_sessions(self, request: "web.Request") -> "web.Response":
+        """GET /api/sessions — list sessions with optional pagination."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        db = self._get_session_db()
+        if not db:
+            return web.json_response({"error": "Session database unavailable"}, status=503)
+        try:
+            limit = int(request.query.get("limit", "50"))
+            offset = int(request.query.get("offset", "0"))
+            source = request.query.get("source", None)
+            sessions = await asyncio.to_thread(
+                db.list_sessions_rich, source=source, limit=limit, offset=offset,
+            )
+            total = await asyncio.to_thread(self._count_sessions, db, source)
+            return web.json_response({"items": sessions, "total": total})
+        except Exception as e:
+            logger.error("[api_server] list_sessions error: %s", e)
+            return web.json_response({"error": str(e)}, status=500)
+
+    async def _handle_get_session(self, request: "web.Request") -> "web.Response":
+        """GET /api/sessions/{session_id} — get a single session."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        db = self._get_session_db()
+        if not db:
+            return web.json_response({"error": "Session database unavailable"}, status=503)
+        session_id = request.match_info["session_id"]
+        try:
+            resolved = await asyncio.to_thread(db.resolve_session_id, session_id)
+            if not resolved:
+                return web.json_response({"error": "Session not found"}, status=404)
+            session = await asyncio.to_thread(db.get_session, resolved)
+            if not session:
+                return web.json_response({"error": "Session not found"}, status=404)
+            return web.json_response({"session": session})
+        except Exception as e:
+            logger.error("[api_server] get_session error: %s", e)
+            return web.json_response({"error": str(e)}, status=500)
+
+    async def _handle_create_session(self, request: "web.Request") -> "web.Response":
+        """POST /api/sessions — create a new session."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        db = self._get_session_db()
+        if not db:
+            return web.json_response({"error": "Session database unavailable"}, status=503)
+        try:
+            body = await request.json() if request.content_length else {}
+            session_id = body.get("id") or f"ws_{uuid.uuid4().hex[:12]}"
+            title = body.get("title", "")
+            model = body.get("model", "")
+            await asyncio.to_thread(
+                db.create_session, session_id, source="workspace", model=model,
+            )
+            if title:
+                try:
+                    await asyncio.to_thread(db.set_session_title, session_id, title)
+                except ValueError as ve:
+                    error_msg = str(ve)
+                    if "already in use" in error_msg:
+                        logger.warning("[api_server] create_session title conflict: %s", error_msg)
+                        if hasattr(db, "delete_session"):
+                            try:
+                                await asyncio.to_thread(db.delete_session, session_id)
+                            except Exception:
+                                logger.debug("[api_server] failed to roll back create_session %s", session_id)
+                        return web.json_response(
+                            {"error": error_msg, "code": "title_conflict"},
+                            status=409,
+                        )
+                    raise
+            session = await asyncio.to_thread(db.get_session, session_id)
+            return web.json_response({"session": session}, status=201)
+        except Exception as e:
+            logger.error("[api_server] create_session error: %s", e)
+            return web.json_response({"error": str(e)}, status=500)
+
+    async def _handle_update_session(self, request: "web.Request") -> "web.Response":
+        """PATCH /api/sessions/{session_id} — update session title."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        db = self._get_session_db()
+        if not db:
+            return web.json_response({"error": "Session database unavailable"}, status=503)
+        session_id = request.match_info["session_id"]
+        try:
+            resolved = await asyncio.to_thread(db.resolve_session_id, session_id)
+            if not resolved:
+                return web.json_response({"error": "Session not found"}, status=404)
+            session_id = resolved
+            body = await request.json()
+            title = body.get("title")
+            if title is not None:
+                try:
+                    await asyncio.to_thread(db.set_session_title, session_id, title)
+                except ValueError as ve:
+                    error_msg = str(ve)
+                    if "already in use" in error_msg:
+                        logger.warning("[api_server] title conflict (ignored): %s", error_msg)
+                        # Return 409 Conflict so the client knows to stop retrying
+                        return web.json_response(
+                            {"error": error_msg, "code": "title_conflict"},
+                            status=409,
+                        )
+                    raise
+            session = await asyncio.to_thread(db.get_session, session_id)
+            if not session:
+                return web.json_response({"error": "Session not found"}, status=404)
+            return web.json_response({"session": session})
+        except Exception as e:
+            logger.error("[api_server] update_session error: %s", e)
+            return web.json_response({"error": str(e)}, status=500)
+
+    async def _handle_delete_session(self, request: "web.Request") -> "web.Response":
+        """DELETE /api/sessions/{session_id} — delete a session."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        db = self._get_session_db()
+        if not db:
+            return web.json_response({"error": "Session database unavailable"}, status=503)
+        session_id = request.match_info["session_id"]
+        try:
+            resolved = await asyncio.to_thread(db.resolve_session_id, session_id)
+            if not resolved:
+                return web.json_response({"error": "Session not found"}, status=404)
+            session_id = resolved
+            await asyncio.to_thread(db.delete_session, session_id)
+            return web.json_response({"ok": True})
+        except Exception as e:
+            logger.error("[api_server] delete_session error: %s", e)
+            return web.json_response({"error": str(e)}, status=500)
+
+    async def _handle_session_messages(self, request: "web.Request") -> "web.Response":
+        """GET /api/sessions/{session_id}/messages — get all messages for a session."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        db = self._get_session_db()
+        if not db:
+            return web.json_response({"error": "Session database unavailable"}, status=503)
+        session_id = request.match_info["session_id"]
+        try:
+            resolved = await asyncio.to_thread(db.resolve_session_id, session_id)
+            if not resolved:
+                return web.json_response({"items": [], "total": 0})
+            messages = await asyncio.to_thread(db.get_messages, resolved)
+            return web.json_response({"items": messages, "total": len(messages)})
+        except Exception as e:
+            logger.error("[api_server] session_messages error: %s", e)
+            return web.json_response({"error": str(e)}, status=500)
+
+    async def _handle_session_chat(self, request: "web.Request") -> "web.Response":
+        """POST /api/sessions/{session_id}/chat — send a message (non-streaming).
+
+        Uses run_conversation() with session history so the agent has full
+        context, matching the streaming path.
+        """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        session_id = request.match_info["session_id"]
+        # Resolve short prefix → full UUID (matches streaming handler).
+        try:
+            db = self._ensure_session_db()
+            if db is not None:
+                resolved = await asyncio.to_thread(db.resolve_session_id, session_id)
+                if resolved:
+                    session_id = resolved
+        except Exception:
+            pass
+        try:
+            body = await request.json()
+            message = body.get("message", "")
+            if not message:
+                return web.json_response({"error": "message is required"}, status=400)
+
+            system_message = body.get("system_message")
+
+            # Load conversation history from session DB
+            conversation_history: list = []
+            try:
+                db = self._ensure_session_db()
+                if db is not None and hasattr(db, "get_messages_as_conversation"):
+                    conversation_history = await asyncio.to_thread(
+                        db.get_messages_as_conversation, session_id,
+                    ) or []
+            except Exception as exc:
+                logger.warning("session_chat: failed to load history for %s: %s", session_id, exc)
+
+            result, usage = await self._run_agent(
+                user_message=message,
+                conversation_history=conversation_history,
+                ephemeral_system_prompt=system_message,
+                session_id=session_id,
+            )
+
+            final_response = ""
+            if isinstance(result, dict):
+                final_response = result.get("final_response", "")
+            elif isinstance(result, str):
+                final_response = result
+
+            return web.json_response({
+                "session_id": session_id,
+                "response": final_response,
+                "usage": usage,
+            })
+        except Exception as e:
+            logger.error("[api_server] session_chat error: %s", e)
+            return web.json_response({"error": str(e)}, status=500)
+
+    async def _handle_session_chat_stream(self, request: "web.Request") -> "web.StreamResponse":
+        """POST /api/sessions/{session_id}/chat/stream — SSE streaming chat.
+
+        Emits structured lifecycle events that the hermes-workspace frontend
+        expects:  run.started, assistant.delta, tool.started, tool.completed,
+        assistant.completed, run.completed (or error).
+
+        Uses the same _run_agent() path as /v1/chat/completions so the agent
+        gets full conversation history, tool callbacks, and streaming deltas.
+        """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        session_id = request.match_info["session_id"]
+        # Resolve short prefix → full UUID so agent + DB writes use the
+        # canonical session ID (fixes messages vanishing under wrong key).
+        try:
+            db = self._ensure_session_db()
+            if db is not None:
+                resolved = await asyncio.to_thread(db.resolve_session_id, session_id)
+                if resolved:
+                    session_id = resolved
+        except Exception:
+            pass
+        resp = None
+        try:
+            body = await request.json()
+            message = body.get("message", "")
+            if not message:
+                return web.json_response({"error": "message is required"}, status=400)
+
+            system_message = body.get("system_message")
+            run_id = f"run_{uuid.uuid4().hex[:16]}"
+            loop = asyncio.get_running_loop()
+
+            # -- Load conversation history from session DB -----------------
+            conversation_history: list = []
+            try:
+                db = self._ensure_session_db()
+                if db is not None and hasattr(db, "get_messages_as_conversation"):
+                    conversation_history = await asyncio.to_thread(
+                        db.get_messages_as_conversation, session_id,
+                    ) or []
+            except Exception as exc:
+                logger.warning("session_chat_stream: failed to load history for %s: %s", session_id, exc)
+
+            # -- Async event queue for SSE ---------------------------------
+            event_q: "asyncio.Queue" = asyncio.Queue(maxsize=500)
+
+            def _push(evt: dict):
+                try:
+                    loop.call_soon_threadsafe(event_q.put_nowait, evt)
+                except asyncio.QueueFull:
+                    logger.debug("session_chat_stream: event queue full, dropping %s", evt.get("event"))
+                except Exception:
+                    pass
+
+            # stream_delta_callback — fires for each text chunk from the LLM
+            def _on_delta(delta):
+                if delta is None:
+                    return
+                _push({
+                    "event": "assistant.delta",
+                    "run_id": run_id,
+                    "session_id": session_id,
+                    "delta": delta,
+                })
+
+            # tool_progress_callback — fires for tool lifecycle events
+            def _on_tool(event_type, tool_name=None, preview=None, args=None, **kwargs):
+                ts = time.time()
+                if event_type == "tool.started":
+                    _push({
+                        "event": "tool.started",
+                        "run_id": run_id,
+                        "session_id": session_id,
+                        "timestamp": ts,
+                        "tool": tool_name,
+                        "name": tool_name,
+                        "preview": preview,
+                        "args": str(args)[:2000] if args else None,
+                    })
+                elif event_type == "tool.completed":
+                    _push({
+                        "event": "tool.completed",
+                        "run_id": run_id,
+                        "session_id": session_id,
+                        "timestamp": ts,
+                        "tool": tool_name,
+                        "name": tool_name,
+                        "duration": round(kwargs.get("duration", 0), 3),
+                        "error": kwargs.get("is_error", False),
+                        "result": str(kwargs.get("result", ""))[:4000] if kwargs.get("result") else None,
+                    })
+                elif event_type == "reasoning.available":
+                    _push({
+                        "event": "tool.progress",
+                        "run_id": run_id,
+                        "session_id": session_id,
+                        "timestamp": ts,
+                        "name": "_thinking",
+                        "delta": preview or "",
+                    })
+
+            # -- Prepare SSE response --------------------------------------
+            sse_headers = {
+                "Content-Type": "text/event-stream",
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+                "X-Hermes-Session-Id": session_id,
+            }
+            origin = request.headers.get("Origin", "")
+            cors = self._cors_headers_for_origin(origin) if origin else None
+            if cors:
+                sse_headers.update(cors)
+            resp = web.StreamResponse(status=200, headers=sse_headers)
+            await resp.prepare(request)
+
+            # Helper to write an SSE event
+            async def _sse(event_name: str, data: dict):
+                line = f"event: {event_name}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+                await resp.write(line.encode())
+
+            # -- Emit run.started -----------------------------------------
+            await _sse("run.started", {
+                "run_id": run_id,
+                "session_id": session_id,
+                "timestamp": time.time(),
+                "user_message": {"role": "user", "content": message},
+            })
+
+            # -- Launch agent in background thread -------------------------
+            agent_ref = [None]
+            _STREAM_TIMEOUT = 300  # 5-minute hard timeout
+
+            async def _run_and_stream():
+                agent_task = asyncio.ensure_future(self._run_agent(
+                    user_message=message,
+                    conversation_history=conversation_history,
+                    ephemeral_system_prompt=system_message,
+                    session_id=session_id,
+                    stream_delta_callback=_on_delta,
+                    tool_progress_callback=_on_tool,
+                    agent_ref=agent_ref,
+                ))
+
+                def _cancel_agent():
+                    """Best-effort cleanup: interrupt agent thread + cancel task."""
+                    if agent_ref[0]:
+                        try:
+                            agent_ref[0].interrupt("SSE client disconnected")
+                        except Exception:
+                            pass
+                    if not agent_task.done():
+                        agent_task.cancel()
+
+                accumulated_text = []
+                try:
+                    while True:
+                        # Drain the queue — wait for events or agent completion
+                        try:
+                            evt = await asyncio.wait_for(event_q.get(), timeout=0.3)
+                            try:
+                                await _sse(evt["event"], evt)
+                            except (ConnectionError, ConnectionResetError, OSError):
+                                # Client disconnected mid-stream
+                                logger.info("session_chat_stream: client disconnected, aborting")
+                                _cancel_agent()
+                                return
+                            if evt["event"] == "assistant.delta":
+                                accumulated_text.append(evt.get("delta", ""))
+                        except asyncio.TimeoutError:
+                            pass
+
+                        # Check if agent is done
+                        if agent_task.done():
+                            # Drain remaining events
+                            while not event_q.empty():
+                                evt = event_q.get_nowait()
+                                try:
+                                    await _sse(evt["event"], evt)
+                                except (ConnectionError, ConnectionResetError, OSError):
+                                    return
+                                if evt["event"] == "assistant.delta":
+                                    accumulated_text.append(evt.get("delta", ""))
+                            break
+
+                    result, usage = agent_task.result()
+                    final_response = ""
+                    if isinstance(result, dict):
+                        final_response = result.get("final_response", "")
+                    elif isinstance(result, str):
+                        final_response = result
+
+                    # Emit assistant.completed with full text
+                    await _sse("assistant.completed", {
+                        "run_id": run_id,
+                        "session_id": session_id,
+                        "content": final_response or "".join(accumulated_text),
+                    })
+
+                    # Emit run.completed
+                    await _sse("run.completed", {
+                        "run_id": run_id,
+                        "session_id": session_id,
+                        "timestamp": time.time(),
+                        "output": final_response,
+                        "usage": usage,
+                    })
+
+                except asyncio.CancelledError:
+                    _cancel_agent()
+                    raise
+                except Exception as exc:
+                    logger.error("[api_server] session_chat_stream agent error: %s", exc)
+                    _cancel_agent()
+                    try:
+                        await _sse("error", {
+                            "run_id": run_id,
+                            "session_id": session_id,
+                            "message": str(exc),
+                        })
+                    except Exception:
+                        pass
+
+            try:
+                await asyncio.wait_for(_run_and_stream(), timeout=_STREAM_TIMEOUT)
+            except asyncio.TimeoutError:
+                logger.error("session_chat_stream: timeout after %ds", _STREAM_TIMEOUT)
+                try:
+                    await _sse("error", {"run_id": run_id, "session_id": session_id, "message": "Stream timeout"})
+                except Exception:
+                    pass
+            await resp.write(b"data: [DONE]\n\n")
+            return resp
+
+        except Exception as e:
+            logger.error("[api_server] session_chat_stream error: %s", e)
+            if resp is not None and resp.prepared:
+                try:
+                    await resp.write(f"event: error\ndata: {json.dumps({'error': str(e)})}\n\n".encode())
+                except Exception:
+                    pass
+                return resp
+            return web.json_response({"error": str(e)}, status=500)
+
+    async def _handle_session_search(self, request: "web.Request") -> "web.Response":
+        """GET /api/sessions/search — search across sessions."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        db = self._get_session_db()
+        if not db:
+            return web.json_response({"error": "Session database unavailable"}, status=503)
+        query = request.query.get("q", "")
+        limit = int(request.query.get("limit", "20"))
+        if not query:
+            return web.json_response({"query": "", "count": 0, "results": []})
+        try:
+            if hasattr(db, 'search_sessions'):
+                results = await asyncio.to_thread(db.search_sessions, query, limit=limit)
+            else:
+                results = []
+            return web.json_response({"query": query, "count": len(results), "results": results})
+        except Exception as e:
+            logger.error("[api_server] session_search error: %s", e)
+            return web.json_response({"error": str(e)}, status=500)
+
+    async def _handle_session_fork(self, request: "web.Request") -> "web.Response":
+        """POST /api/sessions/{session_id}/fork — fork a session."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        db = self._get_session_db()
+        if not db:
+            return web.json_response({"error": "Session database unavailable"}, status=503)
+        session_id = request.match_info["session_id"]
+        try:
+            resolved = await asyncio.to_thread(db.resolve_session_id, session_id)
+            if not resolved:
+                return web.json_response({"error": "Session not found"}, status=404)
+            session_id = resolved
+            new_id = f"ws_{uuid.uuid4().hex[:12]}"
+            old_session = await asyncio.to_thread(db.get_session, session_id)
+            if not old_session:
+                return web.json_response({"error": "Session not found"}, status=404)
+            await asyncio.to_thread(
+                db.create_session, new_id, source="workspace",
+                model=old_session.get("model", ""),
+            )
+            title = old_session.get("title", "")
+            if title:
+                await asyncio.to_thread(db.set_session_title, new_id, f"Fork of {title}")
+            # Copy messages
+            messages = await asyncio.to_thread(db.get_messages, session_id)
+            for msg in messages:
+                await asyncio.to_thread(
+                    db.append_message, new_id,
+                    role=msg["role"], content=msg.get("content"),
+                    tool_name=msg.get("tool_name"), tool_call_id=msg.get("tool_call_id"),
+                    tool_calls=json.dumps(msg["tool_calls"]) if isinstance(msg.get("tool_calls"), list) else msg.get("tool_calls"),
+                )
+            new_session = await asyncio.to_thread(db.get_session, new_id)
+            return web.json_response({"session": new_session, "forked_from": session_id}, status=201)
+        except Exception as e:
+            logger.error("[api_server] session_fork error: %s", e)
+            return web.json_response({"error": str(e)}, status=500)
+
+    # ── Skills API ──
+
+    def _get_skills_dir(self):
+        """Resolve the skills directory."""
+        from pathlib import Path
+        hermes_dir = Path.home() / ".hermes" / "skills"
+        if hermes_dir.is_dir():
+            return hermes_dir
+        return None
+
+    async def _handle_list_skills(self, request: "web.Request") -> "web.Response":
+        """GET /api/skills — list all skills."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        try:
+            import re as _re
+            from pathlib import Path
+            skills_dir = self._get_skills_dir()
+            if not skills_dir:
+                return web.json_response({"skills": [], "total": 0})
+            skills = []
+            for category_dir in sorted(skills_dir.iterdir()):
+                if not category_dir.is_dir() or category_dir.name.startswith('.'):
+                    continue
+                for skill_dir in sorted(category_dir.iterdir()):
+                    if not skill_dir.is_dir():
+                        continue
+                    skill_md = skill_dir / "SKILL.md"
+                    # Build a human-readable name from the directory name
+                    display_name = skill_dir.name.replace("-", " ").replace("_", " ").title()
+                    skill_id = f"{category_dir.name}/{skill_dir.name}"
+                    description = ""
+                    tags = [category_dir.name]
+                    content_preview = ""
+                    if skill_md.exists():
+                        try:
+                            raw = skill_md.read_text(encoding="utf-8")
+                            content_preview = raw[:2000]
+                            # Extract first paragraph-like line as description
+                            for line in raw.split("\n"):
+                                stripped = line.strip()
+                                if stripped and not stripped.startswith("#") and not stripped.startswith("---"):
+                                    description = stripped[:200]
+                                    break
+                            # Extract tags from content
+                            lower = raw[:3000].lower()
+                            tag_keywords = [
+                                "frontend", "react", "browser", "git", "github",
+                                "docker", "devops", "cloud", "image", "video",
+                                "search", "research", "ai", "llm", "productivity",
+                                "marketing", "sales", "email", "data", "analytics",
+                                "finance", "crypto", "automation", "api", "mcp",
+                            ]
+                            for kw in tag_keywords:
+                                if kw in lower:
+                                    tags.append(kw)
+                        except Exception:
+                            pass
+                    info = {
+                        "id": skill_id,
+                        "slug": skill_dir.name,
+                        "name": display_name,
+                        "description": description,
+                        "author": "",
+                        "triggers": [],
+                        "tags": list(set(tags)),
+                        "homepage": None,
+                        "category": category_dir.name,
+                        "icon": "✨",
+                        "content": content_preview,
+                        "fileCount": sum(1 for _ in skill_dir.rglob("*") if _.is_file()),
+                        "sourcePath": str(skill_dir),
+                        "path": str(skill_dir),
+                        "installed": True,
+                        "enabled": True,
+                        "builtin": False,
+                        "has_skill_md": skill_md.exists(),
+                        "security": {"level": "safe", "flags": [], "score": 0},
+                    }
+                    skills.append(info)
+            return web.json_response({"skills": skills, "total": len(skills)})
+        except Exception as e:
+            logger.error("[api_server] list_skills error: %s", e)
+            return web.json_response({"error": str(e)}, status=500)
+
+    async def _handle_get_skill(self, request: "web.Request") -> "web.Response":
+        """GET /api/skills/{name} — get a specific skill."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        name = request.match_info["name"]
+        requested_category = (request.query.get("category") or "").strip()
+        try:
+            skills_dir = self._get_skills_dir()
+            if not skills_dir:
+                return web.json_response({"error": "Skills directory not found"}, status=404)
+
+            matches = []
+            for category_dir in sorted(skills_dir.iterdir()):
+                if not category_dir.is_dir():
+                    continue
+                if requested_category and category_dir.name != requested_category:
+                    continue
+                skill_dir = category_dir / name
+                if skill_dir.is_dir():
+                    matches.append((category_dir, skill_dir))
+
+            if not matches:
+                return web.json_response({"error": f"Skill '{name}' not found"}, status=404)
+
+            if len(matches) > 1:
+                return web.json_response(
+                    {
+                        "error": f"Skill '{name}' exists in multiple categories",
+                        "code": "ambiguous_skill_name",
+                        "categories": [category_dir.name for category_dir, _ in matches],
+                    },
+                    status=409,
+                )
+
+            category_dir, skill_dir = matches[0]
+            skill_md = skill_dir / "SKILL.md"
+            info = {
+                "name": name,
+                "category": category_dir.name,
+                "path": str(skill_dir),
+                "has_skill_md": skill_md.exists(),
+            }
+            if skill_md.exists():
+                info["content"] = skill_md.read_text(encoding="utf-8")
+            files = [f.name for f in skill_dir.iterdir() if f.is_file()]
+            info["files"] = files
+            return web.json_response(info)
+        except Exception as e:
+            logger.error("[api_server] get_skill error: %s", e)
+            return web.json_response({"error": str(e)}, status=500)
+
+    async def _handle_skill_categories(self, request: "web.Request") -> "web.Response":
+        """GET /api/skills/categories — list skill categories."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        try:
+            from pathlib import Path
+            skills_dir = self._get_skills_dir()
+            if not skills_dir:
+                return web.json_response({"categories": []})
+            categories = []
+            for d in sorted(skills_dir.iterdir()):
+                if d.is_dir() and not d.name.startswith('.'):
+                    count = sum(1 for s in d.iterdir() if s.is_dir())
+                    categories.append({"name": d.name, "skill_count": count})
+            return web.json_response({"categories": categories})
+        except Exception as e:
+            logger.error("[api_server] skill_categories error: %s", e)
+            return web.json_response({"error": str(e)}, status=500)
+
+    # ── Memory API ──
+
+    async def _handle_get_memory(self, request: "web.Request") -> "web.Response":
+        """GET /api/memory — get memory and user profile."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        try:
+            from pathlib import Path
+            memories_dir = Path.home() / ".hermes" / "memories"
+            result = {}
+            memory_md = memories_dir / "MEMORY.md"
+            user_md = memories_dir / "USER.md"
+            if memory_md.exists():
+                result["memory"] = memory_md.read_text(encoding="utf-8")
+            else:
+                result["memory"] = ""
+            if user_md.exists():
+                result["user_profile"] = user_md.read_text(encoding="utf-8")
+            else:
+                result["user_profile"] = ""
+            return web.json_response(result)
+        except Exception as e:
+            logger.error("[api_server] get_memory error: %s", e)
+            return web.json_response({"error": str(e)}, status=500)
+
+    # ── Config API ──
+
+    async def _handle_get_config(self, request: "web.Request") -> "web.Response":
+        """GET /api/config — get current configuration."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        try:
+            from pathlib import Path
+            config_path = Path.home() / ".hermes" / "config.yaml"
+            if not config_path.exists():
+                return web.json_response({"error": "config.yaml not found"}, status=404)
+            import yaml
+            config_data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+            # Redact sensitive fields
+            if "mcp_servers" in config_data:
+                for name, srv in config_data["mcp_servers"].items():
+                    if isinstance(srv, dict) and "env" in srv:
+                        for k in list(srv["env"].keys()):
+                            if any(s in k.lower() for s in ("key", "token", "secret", "password")):
+                                srv["env"][k] = "***REDACTED***"
+            if "custom_providers" in config_data:
+                for p in config_data["custom_providers"]:
+                    if isinstance(p, dict) and "api_key" in p and p["api_key"]:
+                        p["api_key"] = "***REDACTED***"
+            return web.json_response(config_data)
+        except Exception as e:
+            logger.error("[api_server] get_config error: %s", e)
+            return web.json_response({"error": str(e)}, status=500)
+
+    async def _handle_patch_config(self, request: "web.Request") -> "web.Response":
+        """PATCH /api/config — update configuration fields."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        try:
+            from pathlib import Path
+            import yaml
+            config_path = Path.home() / ".hermes" / "config.yaml"
+            if not config_path.exists():
+                return web.json_response({"error": "config.yaml not found"}, status=404)
+            body = await request.json()
+            config_data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+            # Shallow merge allowed top-level keys
+            ALLOWED_PATCH_KEYS = {"model", "display", "memory", "terminal", "voice", "tts", "stt"}
+            for key, value in body.items():
+                if key in ALLOWED_PATCH_KEYS:
+                    if isinstance(config_data.get(key), dict) and isinstance(value, dict):
+                        config_data[key].update(value)
+                    else:
+                        config_data[key] = value
+            config_path.write_text(yaml.dump(config_data, default_flow_style=False), encoding="utf-8")
+            return web.json_response({"ok": True, "updated_keys": [k for k in body if k in ALLOWED_PATCH_KEYS]})
+        except Exception as e:
+            logger.error("[api_server] patch_config error: %s", e)
+            return web.json_response({"error": str(e)}, status=500)
+
+    # ------------------------------------------------------------------
+    # Cron Jobs API
+    # ------------------------------------------------------------------
+
     _JOB_ID_RE = __import__("re").compile(r"[a-f0-9]{12}")
     # Allowed fields for update — prevents clients injecting arbitrary keys
     _UPDATE_ALLOWED_FIELDS = {"name", "schedule", "prompt", "deliver", "skills", "skill", "repeat", "enabled"}

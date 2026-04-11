@@ -130,7 +130,7 @@ class TestGatewayStopCleanup:
         monkeypatch.setattr(
             gateway_cli,
             "kill_gateway_processes",
-            lambda force=False: kill_calls.append(force) or 2,
+            lambda force=False, all_profiles=False: kill_calls.append(force) or 2,
         )
 
         gateway_cli.gateway_command(SimpleNamespace(gateway_command="stop"))
@@ -156,7 +156,7 @@ class TestGatewayStopCleanup:
         monkeypatch.setattr(
             gateway_cli,
             "kill_gateway_processes",
-            lambda force=False: kill_calls.append(force) or 2,
+            lambda force=False, all_profiles=False: kill_calls.append(force) or 2,
         )
 
         gateway_cli.gateway_command(SimpleNamespace(gateway_command="stop", **{"all": True}))

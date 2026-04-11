@@ -24,6 +24,7 @@ model:
   #   "minimax"      - MiniMax global (requires: MINIMAX_API_KEY)
   #   "minimax-cn"   - MiniMax China (requires: MINIMAX_CN_API_KEY)
   #   "huggingface"  - Hugging Face Inference (requires: HF_TOKEN)
+  #   "xiaomi"       - Xiaomi MiMo (requires: XIAOMI_API_KEY)
   #   "kilocode"     - KiloCode gateway (requires: KILOCODE_API_KEY)
   #   "ai-gateway"   - Vercel AI Gateway (requires: AI_GATEWAY_API_KEY)
   #

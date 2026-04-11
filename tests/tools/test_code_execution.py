@@ -780,14 +780,18 @@ class TestLoadConfig(unittest.TestCase):
 @unittest.skipIf(sys.platform == "win32", "UDS not available on Windows")
 class TestInterruptHandling(unittest.TestCase):
     def test_interrupt_event_stops_execution(self):
-        """When _interrupt_event is set, execute_code should stop the script."""
+        """When interrupt is set for the execution thread, execute_code should stop."""
         code = "import time; time.sleep(60); print('should not reach')"
+        from tools.interrupt import set_interrupt
+
+        # Capture the main thread ID so we can target the interrupt correctly.
+        # execute_code runs in the current thread; set_interrupt needs its ID.
+        main_tid = threading.current_thread().ident
 
         def set_interrupt_after_delay():
             import time as _t
             _t.sleep(1)
-            from tools.terminal_tool import _interrupt_event
-            _interrupt_event.set()
+            set_interrupt(True, main_tid)
 
         t = threading.Thread(target=set_interrupt_after_delay, daemon=True)
         t.start()
@@ -804,8 +808,7 @@ class TestInterruptHandling(unittest.TestCase):
             self.assertEqual(result["status"], "interrupted")
             self.assertIn("interrupted", result["output"])
         finally:
-            from tools.terminal_tool import _interrupt_event
-            _interrupt_event.clear()
+            set_interrupt(False, main_tid)
             t.join(timeout=3)
 
 

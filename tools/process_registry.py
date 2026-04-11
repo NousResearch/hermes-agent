@@ -686,7 +686,7 @@ class ProcessRegistry:
             and output snapshot.
         """
         from tools.ansi_strip import strip_ansi
-        from tools.terminal_tool import _interrupt_event
+        from tools.interrupt import is_interrupted as _is_interrupted
 
         try:
             default_timeout = int(os.getenv("TERMINAL_TIMEOUT", "180"))
@@ -723,7 +723,7 @@ class ProcessRegistry:
                     result["timeout_note"] = timeout_note
                 return result
 
-            if _interrupt_event.is_set():
+            if _is_interrupted():
                 result = {
                     "status": "interrupted",
                     "output": strip_ansi(session.output_buffer[-1000:]),

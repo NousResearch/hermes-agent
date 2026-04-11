@@ -119,7 +119,7 @@ class TestSlashCommandPrefixMatching:
         ) as mock_get_skill_commands:
             cli_obj.process_command("/live-ski")
 
-        mock_get_skill_commands.assert_any_call(force_refresh=True)
+        mock_get_skill_commands.assert_called()
         unknown = any("Unknown command" in p for p in printed)
         assert not unknown, f"Expected live skill registry to match, got: {printed}"
 

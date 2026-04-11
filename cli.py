@@ -1366,6 +1366,7 @@ def _looks_like_slash_command(text: str) -> bool:
 
 from agent.skill_commands import (
     get_skill_commands,
+    mark_skill_commands_dirty,
     build_skill_invocation_message,
     build_plan_path,
     build_preloaded_skills_prompt,
@@ -1376,7 +1377,7 @@ _skill_commands = None
 
 def _current_skill_commands() -> dict:
     """Return live skill commands unless a test/override has patched them in."""
-    return _skill_commands if _skill_commands is not None else get_skill_commands(force_refresh=True)
+    return _skill_commands if _skill_commands is not None else get_skill_commands()
 
 
 def _get_plugin_cmd_handler_names() -> set:
@@ -4738,6 +4739,14 @@ class HermesCLI:
         """Handle /skills slash command — delegates to hermes_cli.skills_hub."""
         from hermes_cli.skills_hub import handle_skills_slash
         handle_skills_slash(cmd, ChatConsole())
+        cmd_lower = cmd.lower().strip()
+        if (
+            cmd_lower.startswith("/skills install")
+            or cmd_lower.startswith("/skills uninstall")
+            or cmd_lower.startswith("/skills update")
+            or cmd_lower.startswith("/skills snapshot import")
+        ):
+            mark_skill_commands_dirty()
 
     def _show_gateway_status(self):
         """Show status of the gateway and connected messaging platforms."""

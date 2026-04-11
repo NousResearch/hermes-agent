@@ -137,7 +137,7 @@ DEFAULT_COMMAND_TIMEOUT = 30
 SNAPSHOT_SUMMARIZE_THRESHOLD = 8000
 
 # Commands that legitimately return empty stdout (e.g. close, record).
-_EMPTY_OK_COMMANDS: frozenset = frozenset({"close", "record"})
+_EMPTY_OK_COMMANDS: frozenset = frozenset({"close", "record", "forward", "reload"})
 
 _cached_command_timeout: Optional[int] = None
 _command_timeout_resolved = False
@@ -563,7 +563,7 @@ BROWSER_TOOL_SCHEMAS = [
     },
     {
         "name": "browser_click",
-        "description": "Click on an element identified by its ref ID from the snapshot (e.g., '@e5'). The ref IDs are shown in square brackets in the snapshot output. Requires browser_navigate and browser_snapshot to be called first.",
+        "description": "Click on an element identified by its ref ID from the snapshot (e.g., '@e5'). The ref IDs are shown in square brackets in the snapshot output. Requires browser_navigate to be called first.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -577,7 +577,7 @@ BROWSER_TOOL_SCHEMAS = [
     },
     {
         "name": "browser_type",
-        "description": "Type text into an input field identified by its ref ID. Clears the field first, then types the new text. Requires browser_navigate and browser_snapshot to be called first.",
+        "description": "Type text into an input field identified by its ref ID. Clears the field first, then types the new text. Requires browser_navigate to be called first.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -595,7 +595,7 @@ BROWSER_TOOL_SCHEMAS = [
     },
     {
         "name": "browser_scroll",
-        "description": "Scroll the page in a direction. Use this to reveal more content that may be below or above the current viewport. Requires browser_navigate to be called first.",
+        "description": "Scroll the page in a direction. Use this to reveal more content that may be below or above the current viewport. Scrolls roughly one viewport (500px). Requires browser_navigate to be called first.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -676,6 +676,84 @@ BROWSER_TOOL_SCHEMAS = [
                 }
             },
             "required": []
+        }
+    },
+    {
+        "name": "browser_hover",
+        "description": "Hover over an element to trigger hover states, dropdown menus, or tooltips. Identify the element by its ref ID from the snapshot (e.g., '@e5').",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "ref": {
+                    "type": "string",
+                    "description": "The element reference from the snapshot (e.g., '@e5', '@e12')"
+                }
+            },
+            "required": ["ref"]
+        }
+    },
+    {
+        "name": "browser_select",
+        "description": "Select an option from a dropdown menu (<select> element) by its value. Identify the dropdown by its ref ID from the snapshot.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "ref": {
+                    "type": "string",
+                    "description": "The element reference from the snapshot (e.g., '@e5', '@e12')"
+                },
+                "value": {
+                    "type": "string",
+                    "description": "The value of the option to select"
+                }
+            },
+            "required": ["ref", "value"]
+        }
+    },
+    {
+        "name": "browser_wait",
+        "description": "Wait for an element to appear or a specified number of milliseconds. Pass a CSS selector to wait for an element, or a number to wait for milliseconds. Useful for dynamic content on SPAs.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "selector_or_ms": {
+                    "type": "string",
+                    "description": "A CSS selector to wait for an element, or a number (in milliseconds) to wait"
+                }
+            },
+            "required": ["selector_or_ms"]
+        }
+    },
+    {
+        "name": "browser_forward",
+        "description": "Navigate forward to the next page in browser history.",
+        "parameters": {
+            "type": "object",
+            "properties": {},
+            "required": []
+        }
+    },
+    {
+        "name": "browser_reload",
+        "description": "Reload the current page. Useful when page content may have changed or to retry a failed page load.",
+        "parameters": {
+            "type": "object",
+            "properties": {},
+            "required": []
+        }
+    },
+    {
+        "name": "browser_scroll_to",
+        "description": "Scroll the page until a specific element is visible in the viewport. Identify the element by its ref ID from the snapshot.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "ref": {
+                    "type": "string",
+                    "description": "The element reference from the snapshot (e.g., '@e5', '@e12')"
+                }
+            },
+            "required": ["ref"]
         }
     },
 ]
@@ -1793,6 +1871,216 @@ def browser_get_images(task_id: Optional[str] = None) -> str:
         }, ensure_ascii=False)
 
 
+def browser_hover(ref: str, task_id: Optional[str] = None) -> str:
+    """
+    Hover over an element to trigger hover states, dropdown menus, or tooltips.
+
+    Args:
+        ref: Element reference (e.g., "@e5")
+        task_id: Task identifier for session isolation
+
+    Returns:
+        JSON string with hover result
+    """
+    if _is_camofox_mode():
+        return json.dumps({
+            "success": False,
+            "error": "browser_hover not supported in Camofox mode"
+        }, ensure_ascii=False)
+
+    effective_task_id = task_id or "default"
+
+    # Ensure ref starts with @
+    if not ref.startswith("@"):
+        ref = f"@{ref}"
+
+    result = _run_browser_command(effective_task_id, "hover", [ref])
+
+    if result.get("success"):
+        return json.dumps({
+            "success": True,
+            "hovered": ref
+        }, ensure_ascii=False)
+    else:
+        return json.dumps({
+            "success": False,
+            "error": result.get("error", f"Failed to hover over {ref}")
+        }, ensure_ascii=False)
+
+
+def browser_select(ref: str, value: str, task_id: Optional[str] = None) -> str:
+    """
+    Select an option from a dropdown menu by its value.
+
+    Args:
+        ref: Element reference for the <select> element (e.g., "@e5")
+        value: The value of the option to select
+        task_id: Task identifier for session isolation
+
+    Returns:
+        JSON string with select result
+    """
+    if _is_camofox_mode():
+        return json.dumps({
+            "success": False,
+            "error": "browser_select not supported in Camofox mode"
+        }, ensure_ascii=False)
+
+    effective_task_id = task_id or "default"
+
+    # Ensure ref starts with @
+    if not ref.startswith("@"):
+        ref = f"@{ref}"
+
+    result = _run_browser_command(effective_task_id, "select", [ref, value])
+
+    if result.get("success"):
+        return json.dumps({
+            "success": True,
+            "selected": value,
+            "element": ref
+        }, ensure_ascii=False)
+    else:
+        return json.dumps({
+            "success": False,
+            "error": result.get("error", f"Failed to select '{value}' in {ref}")
+        }, ensure_ascii=False)
+
+
+def browser_wait(selector_or_ms: str, task_id: Optional[str] = None) -> str:
+    """
+    Wait for an element to appear or a specified number of milliseconds.
+
+    Args:
+        selector_or_ms: CSS selector to wait for, or number of milliseconds
+        task_id: Task identifier for session isolation
+
+    Returns:
+        JSON string with wait result
+    """
+    if _is_camofox_mode():
+        return json.dumps({
+            "success": False,
+            "error": "browser_wait not supported in Camofox mode"
+        }, ensure_ascii=False)
+
+    effective_task_id = task_id or "default"
+
+    result = _run_browser_command(effective_task_id, "wait", [selector_or_ms])
+
+    if result.get("success"):
+        return json.dumps({
+            "success": True,
+            "waited_for": selector_or_ms
+        }, ensure_ascii=False)
+    else:
+        return json.dumps({
+            "success": False,
+            "error": result.get("error", f"Failed to wait for {selector_or_ms}")
+        }, ensure_ascii=False)
+
+
+def browser_forward(task_id: Optional[str] = None) -> str:
+    """
+    Navigate forward in browser history.
+
+    Args:
+        task_id: Task identifier for session isolation
+
+    Returns:
+        JSON string with navigation result
+    """
+    if _is_camofox_mode():
+        return json.dumps({
+            "success": False,
+            "error": "browser_forward not supported in Camofox mode"
+        }, ensure_ascii=False)
+
+    effective_task_id = task_id or "default"
+    result = _run_browser_command(effective_task_id, "forward", [])
+
+    if result.get("success"):
+        data = result.get("data", {})
+        return json.dumps({
+            "success": True,
+            "url": data.get("url", "")
+        }, ensure_ascii=False)
+    else:
+        return json.dumps({
+            "success": False,
+            "error": result.get("error", "Failed to go forward")
+        }, ensure_ascii=False)
+
+
+def browser_reload(task_id: Optional[str] = None) -> str:
+    """
+    Reload the current page.
+
+    Args:
+        task_id: Task identifier for session isolation
+
+    Returns:
+        JSON string with reload result
+    """
+    if _is_camofox_mode():
+        return json.dumps({
+            "success": False,
+            "error": "browser_reload not supported in Camofox mode"
+        }, ensure_ascii=False)
+
+    effective_task_id = task_id or "default"
+    result = _run_browser_command(effective_task_id, "reload", [])
+
+    if result.get("success"):
+        data = result.get("data", {})
+        return json.dumps({
+            "success": True,
+            "url": data.get("url", "")
+        }, ensure_ascii=False)
+    else:
+        return json.dumps({
+            "success": False,
+            "error": result.get("error", "Failed to reload page")
+        }, ensure_ascii=False)
+
+
+def browser_scroll_to(ref: str, task_id: Optional[str] = None) -> str:
+    """
+    Scroll the page until a specific element is visible in the viewport.
+
+    Args:
+        ref: Element reference (e.g., "@e5")
+        task_id: Task identifier for session isolation
+
+    Returns:
+        JSON string with scroll result
+    """
+    if _is_camofox_mode():
+        return json.dumps({
+            "success": False,
+            "error": "browser_scroll_to not supported in Camofox mode"
+        }, ensure_ascii=False)
+
+    effective_task_id = task_id or "default"
+
+    # Ensure ref starts with @
+    if not ref.startswith("@"):
+        ref = f"@{ref}"
+
+    result = _run_browser_command(effective_task_id, "scrollintoview", [ref])
+
+    if result.get("success"):
+        return json.dumps({
+            "success": True,
+            "scrolled_to": ref
+        }, ensure_ascii=False)
+    else:
+        return json.dumps({
+            "success": False,
+            "error": result.get("error", f"Failed to scroll to {ref}")
+        }, ensure_ascii=False)
+
+
 def browser_vision(question: str, annotate: bool = False, task_id: Optional[str] = None) -> str:
     """
     Take a screenshot of the current page and analyze it with vision AI.
@@ -1816,6 +2104,58 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
     if _is_camofox_mode():
         from tools.browser_camofox import camofox_vision
         return camofox_vision(question, annotate, task_id)
+
+    # --- Vision model pre-flight: fail fast if no vision-capable model ---
+    # Check the same chain that call_llm(task="vision") would use:
+    #   1. AUXILIARY_VISION_MODEL env var
+    #   2. auxiliary.vision.model config
+    #   3. AUXILIARY_MODEL env var
+    #   4. auxiliary.model config
+    # If none are set *and* no provider auto-detection is likely to work,
+    # return an actionable error instead of a cryptic RuntimeError deep
+    # inside the LLM call.
+    _preflight_model = (
+        os.getenv("AUXILIARY_VISION_MODEL", "").strip()
+        or os.getenv("AUXILIARY_MODEL", "").strip()
+    )
+    if not _preflight_model:
+        try:
+            from hermes_cli.config import load_config
+            _pf_cfg = load_config()
+            _pf_aux = _pf_cfg.get("auxiliary", {}) if isinstance(_pf_cfg, dict) else {}
+            _pf_vision = _pf_aux.get("vision", {}) if isinstance(_pf_aux, dict) else {}
+            if isinstance(_pf_vision, dict):
+                _preflight_model = str(_pf_vision.get("model", "")).strip()
+            if not _preflight_model:
+                _preflight_model = str(_pf_aux.get("model", "")).strip()
+        except Exception:
+            pass
+    if not _preflight_model:
+        # Last resort: check if any provider is configured that would auto-resolve
+        try:
+            from agent.auxiliary_client import resolve_vision_provider_client
+            _pf_provider, _pf_client, _pf_model = resolve_vision_provider_client(
+                provider="auto", async_mode=False)
+            if _pf_client is None:
+                return json.dumps({
+                    "success": False,
+                    "error": (
+                        "No vision-capable model is configured. "
+                        "Set AUXILIARY_VISION_MODEL env var, or configure "
+                        "auxiliary.vision.model in ~/.hermes/config.yaml, "
+                        "or run 'hermes setup' to configure a provider."
+                    ),
+                }, ensure_ascii=False)
+        except Exception:
+            return json.dumps({
+                "success": False,
+                "error": (
+                    "No vision-capable model is configured. "
+                    "Set AUXILIARY_VISION_MODEL env var, or configure "
+                    "auxiliary.vision.model in ~/.hermes/config.yaml, "
+                    "or run 'hermes setup' to configure a provider."
+                ),
+            }, ensure_ascii=False)
 
     import base64
     import uuid as uuid_mod
@@ -1872,7 +2212,20 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
                     f"or a stale daemon process."
                 ),
             }, ensure_ascii=False)
-        
+
+        # Check screenshot size before base64 encoding — reject huge files
+        _screenshot_size = screenshot_path.stat().st_size
+        if _screenshot_size > 5242880:  # 5 MB
+            return json.dumps({
+                "success": False,
+                "error": (
+                    f"Screenshot is too large ({_screenshot_size / 1048576:.1f} MB, "
+                    f"limit 5 MB). Try narrowing the viewport or using "
+                    f"browser_scroll to focus on a specific section."
+                ),
+                "screenshot_path": str(screenshot_path),
+            }, ensure_ascii=False)
+
         # Read and convert to base64
         image_data = screenshot_path.read_bytes()
         image_base64 = base64.b64encode(image_data).decode("ascii")
@@ -2273,4 +2626,52 @@ registry.register(
     handler=lambda args, **kw: browser_console(clear=args.get("clear", False), expression=args.get("expression"), task_id=kw.get("task_id")),
     check_fn=check_browser_requirements,
     emoji="🖥️",
+)
+registry.register(
+    name="browser_hover",
+    toolset="browser",
+    schema=_BROWSER_SCHEMA_MAP["browser_hover"],
+    handler=lambda args, **kw: browser_hover(ref=args.get("ref", ""), task_id=kw.get("task_id")),
+    check_fn=check_browser_requirements,
+    emoji="👆",
+)
+registry.register(
+    name="browser_select",
+    toolset="browser",
+    schema=_BROWSER_SCHEMA_MAP["browser_select"],
+    handler=lambda args, **kw: browser_select(ref=args.get("ref", ""), value=args.get("value", ""), task_id=kw.get("task_id")),
+    check_fn=check_browser_requirements,
+    emoji="📋",
+)
+registry.register(
+    name="browser_wait",
+    toolset="browser",
+    schema=_BROWSER_SCHEMA_MAP["browser_wait"],
+    handler=lambda args, **kw: browser_wait(selector_or_ms=args.get("selector_or_ms", ""), task_id=kw.get("task_id")),
+    check_fn=check_browser_requirements,
+    emoji="⏳",
+)
+registry.register(
+    name="browser_forward",
+    toolset="browser",
+    schema=_BROWSER_SCHEMA_MAP["browser_forward"],
+    handler=lambda args, **kw: browser_forward(task_id=kw.get("task_id")),
+    check_fn=check_browser_requirements,
+    emoji="▶️",
+)
+registry.register(
+    name="browser_reload",
+    toolset="browser",
+    schema=_BROWSER_SCHEMA_MAP["browser_reload"],
+    handler=lambda args, **kw: browser_reload(task_id=kw.get("task_id")),
+    check_fn=check_browser_requirements,
+    emoji="🔄",
+)
+registry.register(
+    name="browser_scroll_to",
+    toolset="browser",
+    schema=_BROWSER_SCHEMA_MAP["browser_scroll_to"],
+    handler=lambda args, **kw: browser_scroll_to(ref=args.get("ref", ""), task_id=kw.get("task_id")),
+    check_fn=check_browser_requirements,
+    emoji="🎯",
 )

@@ -2087,8 +2087,9 @@ class TestRunConversation:
         assert "Thinking Budget Exhausted" in result["final_response"]
         assert "/thinkon" in result["final_response"]
 
-    def test_length_empty_content_detected_as_thinking_exhausted(self, agent):
-        """When finish_reason='length' and content is None/empty, detect exhaustion."""
+    def test_length_empty_content_without_think_tags_retries_normally(self, agent):
+        """When finish_reason='length' and content is None but no think tags,
+        fall through to normal continuation retry (not thinking-exhaustion)."""
         self._setup_agent(agent)
         resp = _mock_response(content=None, finish_reason="length")
         agent.client.chat.completions.create.return_value = resp
@@ -2100,12 +2101,10 @@ class TestRunConversation:
         ):
             result = agent.run_conversation("hello")
 
+        # Without think tags, the agent should attempt continuation retries
+        # (up to 3), not immediately fire thinking-exhaustion.
+        assert result["api_calls"] == 3
         assert result["completed"] is False
-        assert result["api_calls"] == 1
-        assert "reasoning" in result["error"].lower()
-        # User-friendly message is returned
-        assert result["final_response"] is not None
-        assert "Thinking Budget Exhausted" in result["final_response"]
 
     def test_length_with_tool_calls_returns_partial_without_executing_tools(self, agent):
         self._setup_agent(agent)

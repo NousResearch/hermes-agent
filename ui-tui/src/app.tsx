@@ -20,7 +20,15 @@ import { useCompletion } from './hooks/useCompletion.js'
 import { useInputHistory } from './hooks/useInputHistory.js'
 import { useQueue } from './hooks/useQueue.js'
 import { writeOsc52Clipboard } from './lib/osc52.js'
-import { buildToolTrailLine, compactPreview, fmtK, hasInterpolation, isToolTrailResultLine, pick, sameToolTrailGroup } from './lib/text.js'
+import {
+  buildToolTrailLine,
+  compactPreview,
+  fmtK,
+  hasInterpolation,
+  isToolTrailResultLine,
+  pick,
+  sameToolTrailGroup
+} from './lib/text.js'
 import { DEFAULT_THEME, fromSkin, type Theme } from './theme.js'
 import type {
   ActiveTool,
@@ -112,7 +120,9 @@ const toTranscriptMessages = (rows: unknown): Msg[] => {
   let pendingTools: string[] = []
 
   for (const row of rows) {
-    if (!row || typeof row !== 'object') continue
+    if (!row || typeof row !== 'object') {
+      continue
+    }
 
     const role = (row as any).role
     const text = (row as any).text
@@ -121,18 +131,24 @@ const toTranscriptMessages = (rows: unknown): Msg[] => {
       const name = (row as any).name ?? 'tool'
       const ctx = (row as any).context ?? ''
       pendingTools.push(buildToolTrailLine(name, ctx))
+
       continue
     }
 
-    if (typeof text !== 'string' || !text.trim()) continue
+    if (typeof text !== 'string' || !text.trim()) {
+      continue
+    }
 
     if (role === 'assistant') {
       const msg: Msg = { role, text }
+
       if (pendingTools.length) {
         msg.tools = pendingTools
         pendingTools = []
       }
+
       result.push(msg)
+
       continue
     }
 
@@ -2086,6 +2102,7 @@ export function App({ gw }: { gw: GatewayClient }) {
         <ToolTrail
           activity={busy ? activity : []}
           animateCot={busy && !streaming}
+          padAfter={!!streaming}
           t={theme}
           tools={tools}
           trail={turnTrail}

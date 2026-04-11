@@ -1873,10 +1873,10 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
                 ),
             }, ensure_ascii=False)
         
-        # Read and convert to base64
-        image_data = screenshot_path.read_bytes()
-        image_base64 = base64.b64encode(image_data).decode("ascii")
-        data_url = f"data:image/png;base64,{image_base64}"
+        # Convert screenshot to base64 at full resolution.
+        _screenshot_bytes = screenshot_path.read_bytes()
+        _screenshot_b64 = base64.b64encode(_screenshot_bytes).decode("ascii")
+        data_url = f"data:image/png;base64,{_screenshot_b64}"
         
         vision_prompt = (
             f"You are analyzing a screenshot of a web browser.\n\n"
@@ -1890,7 +1890,7 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
         # Use the centralized LLM router
         vision_model = _get_vision_model()
         logger.debug("browser_vision: analysing screenshot (%d bytes)",
-                     len(image_data))
+                     len(_screenshot_bytes))
 
         # Read vision timeout from config (auxiliary.vision.timeout), default 120s.
         # Local vision models (llama.cpp, ollama) can take well over 30s for
@@ -1922,7 +1922,27 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
         }
         if vision_model:
             call_kwargs["model"] = vision_model
-        response = call_llm(**call_kwargs)
+        # Try full-size screenshot; on size-related rejection, downscale and retry.
+        try:
+            response = call_llm(**call_kwargs)
+        except Exception as _api_err:
+            from tools.vision_tools import (
+                _is_image_size_error, _resize_image_for_vision, _RESIZE_TARGET_BYTES,
+            )
+            if (_is_image_size_error(_api_err)
+                    and len(data_url) > _RESIZE_TARGET_BYTES):
+                logger.info(
+                    "Vision API rejected screenshot (%.1f MB); "
+                    "auto-resizing to ~%.0f MB and retrying...",
+                    len(data_url) / (1024 * 1024),
+                    _RESIZE_TARGET_BYTES / (1024 * 1024),
+                )
+                data_url = _resize_image_for_vision(
+                    screenshot_path, mime_type="image/png")
+                call_kwargs["messages"][0]["content"][1]["image_url"]["url"] = data_url
+                response = call_llm(**call_kwargs)
+            else:
+                raise
         
         analysis = (response.choices[0].message.content or "").strip()
         # Redact secrets the vision LLM may have read from the screenshot.

@@ -222,6 +222,12 @@ def test_api_mode_normalizes_provider_case(monkeypatch):
 
 
 def test_api_mode_respects_explicit_openrouter_provider_over_codex_url(monkeypatch):
+    """GPT-5.x models need codex_responses even on OpenRouter.
+
+    OpenRouter rejects GPT-5 models on /v1/chat/completions with
+    ``unsupported_api_for_model``.  The model-level check overrides
+    the provider default.
+    """
     _patch_agent_bootstrap(monkeypatch)
     agent = run_agent.AIAgent(
         model="gpt-5-codex",
@@ -233,7 +239,7 @@ def test_api_mode_respects_explicit_openrouter_provider_over_codex_url(monkeypat
         skip_context_files=True,
         skip_memory=True,
     )
-    assert agent.api_mode == "chat_completions"
+    assert agent.api_mode == "codex_responses"
     assert agent.provider == "openrouter"
 
 

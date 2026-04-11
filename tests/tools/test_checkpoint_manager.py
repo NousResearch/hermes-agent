@@ -411,3 +411,68 @@ class TestErrorResilience:
         # Should not raise
         result = mgr.ensure_checkpoint(str(work_dir), "test")
         assert result is False
+
+
+# =========================================================================
+# Security / Input validation
+# =========================================================================
+
+class TestSecurity:
+    def test_restore_rejects_argument_injection(self, mgr, work_dir):
+        mgr.ensure_checkpoint(str(work_dir), "initial")
+        # Try to pass a git flag as a commit hash
+        result = mgr.restore(str(work_dir), "--patch")
+        assert result["success"] is False
+        assert "Invalid commit hash" in result["error"]
+        assert "must not start with '-'" in result["error"]
+        
+        result = mgr.restore(str(work_dir), "-p")
+        assert result["success"] is False
+        assert "Invalid commit hash" in result["error"]
+        
+    def test_restore_rejects_invalid_hex_chars(self, mgr, work_dir):
+        mgr.ensure_checkpoint(str(work_dir), "initial")
+        # Git hashes should not contain characters like ;, &, |
+        result = mgr.restore(str(work_dir), "abc; rm -rf /")
+        assert result["success"] is False
+        assert "expected 4-64 hex characters" in result["error"]
+        
+        result = mgr.diff(str(work_dir), "abc&def")
+        assert result["success"] is False
+        assert "expected 4-64 hex characters" in result["error"]
+
+    def test_restore_rejects_path_traversal(self, mgr, work_dir):
+        mgr.ensure_checkpoint(str(work_dir), "initial")
+        # Real commit hash but malicious path
+        checkpoints = mgr.list_checkpoints(str(work_dir))
+        target_hash = checkpoints[0]["hash"]
+        
+        # Absolute path outside
+        result = mgr.restore(str(work_dir), target_hash, file_path="/etc/passwd")
+        assert result["success"] is False
+        assert "got absolute path" in result["error"]
+        
+        # Relative traversal outside path
+        result = mgr.restore(str(work_dir), target_hash, file_path="../outside_file.txt")
+        assert result["success"] is False
+        assert "escapes the working directory" in result["error"]
+
+    def test_restore_accepts_valid_file_path(self, mgr, work_dir):
+        mgr.ensure_checkpoint(str(work_dir), "initial")
+        checkpoints = mgr.list_checkpoints(str(work_dir))
+        target_hash = checkpoints[0]["hash"]
+        
+        # Valid path inside directory
+        result = mgr.restore(str(work_dir), target_hash, file_path="main.py")
+        assert result["success"] is True
+        
+        # Another valid path with subdirectories
+        (work_dir / "subdir").mkdir()
+        (work_dir / "subdir" / "test.txt").write_text("hello")
+        mgr.new_turn()
+        mgr.ensure_checkpoint(str(work_dir), "second")
+        checkpoints = mgr.list_checkpoints(str(work_dir))
+        target_hash = checkpoints[0]["hash"]
+        
+        result = mgr.restore(str(work_dir), target_hash, file_path="subdir/test.txt")
+        assert result["success"] is True

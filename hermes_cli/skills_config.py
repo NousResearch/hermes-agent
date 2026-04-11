@@ -15,25 +15,9 @@ from typing import List, Optional, Set
 
 from hermes_cli.config import load_config, save_config
 from hermes_cli.colors import Colors, color
+from hermes_cli.platform_catalog import iter_skills_platform_specs
 
-PLATFORMS = {
-    "cli":      "🖥️  CLI",
-    "telegram": "📱 Telegram",
-    "discord":  "💬 Discord",
-    "slack":    "💼 Slack",
-    "whatsapp": "📱 WhatsApp",
-    "signal":   "📡 Signal",
-    "bluebubbles": "💬 BlueBubbles",
-    "email":    "📧 Email",
-    "homeassistant": "🏠 Home Assistant",
-    "mattermost": "💬 Mattermost",
-    "matrix":   "💬 Matrix",
-    "dingtalk": "💬 DingTalk",
-    "feishu": "🪽 Feishu",
-    "wecom": "💬 WeCom",
-    "weixin": "💬 Weixin",
-    "webhook": "🔗 Webhook",
-}
+PLATFORMS = {spec.key: spec.label_with_emoji for spec in iter_skills_platform_specs()}
 
 # ─── Config Helpers ───────────────────────────────────────────────────────────
 

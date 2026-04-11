@@ -24,6 +24,7 @@ from hermes_cli.nous_subscription import (
     apply_nous_provider_defaults,
     get_nous_subscription_features,
 )
+from hermes_cli.platform_catalog import iter_setup_platform_specs
 from tools.tool_backend_helpers import managed_nous_tools_enabled
 from hermes_constants import get_optional_skills_dir
 
@@ -2147,18 +2148,17 @@ def _setup_webhooks():
     print_info("   Open config in your editor:  hermes config edit")
 
 
-# Platform registry for the gateway checklist
-_GATEWAY_PLATFORMS = [
-    ("Telegram", "TELEGRAM_BOT_TOKEN", _setup_telegram),
-    ("Discord", "DISCORD_BOT_TOKEN", _setup_discord),
-    ("Slack", "SLACK_BOT_TOKEN", _setup_slack),
-    ("Matrix", "MATRIX_ACCESS_TOKEN", _setup_matrix),
-    ("Mattermost", "MATTERMOST_TOKEN", _setup_mattermost),
-    ("WhatsApp", "WHATSAPP_ENABLED", _setup_whatsapp),
-    ("Weixin (WeChat)", "WEIXIN_ACCOUNT_ID", _setup_weixin),
-    ("BlueBubbles (iMessage)", "BLUEBUBBLES_SERVER_URL", _setup_bluebubbles),
-    ("Webhooks (GitHub, GitLab, etc.)", "WEBHOOK_ENABLED", _setup_webhooks),
-]
+_GATEWAY_SETUP_FUNCS = {
+    "telegram": _setup_telegram,
+    "discord": _setup_discord,
+    "slack": _setup_slack,
+    "matrix": _setup_matrix,
+    "mattermost": _setup_mattermost,
+    "whatsapp": _setup_whatsapp,
+    "weixin": _setup_weixin,
+    "bluebubbles": _setup_bluebubbles,
+    "webhook": _setup_webhooks,
+}
 
 
 def setup_gateway(config: dict):
@@ -2168,15 +2168,14 @@ def setup_gateway(config: dict):
     print_info("Toggle with Space, confirm with Enter.")
     print()
 
+    setup_specs = iter_setup_platform_specs()
+
     # Build checklist items, pre-selecting already-configured platforms
     items = []
     pre_selected = []
-    for i, (name, env_var, _func) in enumerate(_GATEWAY_PLATFORMS):
-        # Matrix has two possible env vars
-        is_configured = bool(get_env_value(env_var))
-        if name == "Matrix" and not is_configured:
-            is_configured = bool(get_env_value("MATRIX_PASSWORD"))
-        label = f"{name}  (configured)" if is_configured else name
+    for i, spec in enumerate(setup_specs):
+        is_configured = spec.is_configured(get_env_value)
+        label = f"{spec.setup_display_label}  (configured)" if is_configured else spec.setup_display_label
         items.append(label)
         if is_configured:
             pre_selected.append(i)
@@ -2188,40 +2187,25 @@ def setup_gateway(config: dict):
         return
 
     for idx in selected:
-        name, _env_var, setup_func = _GATEWAY_PLATFORMS[idx]
-        setup_func()
+        spec = setup_specs[idx]
+        _GATEWAY_SETUP_FUNCS[spec.key]()
 
     # ── Gateway Service Setup ──
-    any_messaging = (
-        get_env_value("TELEGRAM_BOT_TOKEN")
-        or get_env_value("DISCORD_BOT_TOKEN")
-        or get_env_value("SLACK_BOT_TOKEN")
-        or get_env_value("MATTERMOST_TOKEN")
-        or get_env_value("MATRIX_ACCESS_TOKEN")
-        or get_env_value("MATRIX_PASSWORD")
-        or get_env_value("WHATSAPP_ENABLED")
-        or get_env_value("BLUEBUBBLES_SERVER_URL")
-        or get_env_value("WEBHOOK_ENABLED")
-    )
+    any_messaging = any(spec.is_configured(get_env_value) for spec in setup_specs)
     if any_messaging:
         print()
         print_info("━" * 50)
         print_success("Messaging platforms configured!")
 
         # Check if any home channels are missing
-        missing_home = []
-        if get_env_value("TELEGRAM_BOT_TOKEN") and not get_env_value(
-            "TELEGRAM_HOME_CHANNEL"
-        ):
-            missing_home.append("Telegram")
-        if get_env_value("DISCORD_BOT_TOKEN") and not get_env_value(
-            "DISCORD_HOME_CHANNEL"
-        ):
-            missing_home.append("Discord")
-        if get_env_value("SLACK_BOT_TOKEN") and not get_env_value("SLACK_HOME_CHANNEL"):
-            missing_home.append("Slack")
-        if get_env_value("BLUEBUBBLES_SERVER_URL") and not get_env_value("BLUEBUBBLES_HOME_CHANNEL"):
-            missing_home.append("BlueBubbles")
+        missing_home = [
+            spec.label
+            for spec in setup_specs
+            if spec.warn_missing_home
+            and spec.home_channel_env
+            and spec.is_configured(get_env_value)
+            and not get_env_value(spec.home_channel_env)
+        ]
 
         if missing_home:
             print()

@@ -20,6 +20,7 @@ from hermes_cli.config import (
     load_config, save_config, get_env_value, save_env_value,
 )
 from hermes_cli.colors import Colors, color
+from hermes_cli.platform_catalog import configured_platform_keys, iter_tool_platform_specs
 from hermes_cli.nous_subscription import (
     apply_nous_managed_defaults,
     get_nous_subscription_features,
@@ -118,25 +119,12 @@ def _get_plugin_toolset_keys() -> set:
     except Exception:
         return set()
 
-# Platform display config
 PLATFORMS = {
-    "cli":      {"label": "🖥️  CLI",       "default_toolset": "hermes-cli"},
-    "telegram": {"label": "📱 Telegram",   "default_toolset": "hermes-telegram"},
-    "discord":  {"label": "💬 Discord",    "default_toolset": "hermes-discord"},
-    "slack":    {"label": "💼 Slack",      "default_toolset": "hermes-slack"},
-    "whatsapp": {"label": "📱 WhatsApp",   "default_toolset": "hermes-whatsapp"},
-    "signal":   {"label": "📡 Signal",     "default_toolset": "hermes-signal"},
-    "bluebubbles": {"label": "💙 BlueBubbles", "default_toolset": "hermes-bluebubbles"},
-    "homeassistant": {"label": "🏠 Home Assistant", "default_toolset": "hermes-homeassistant"},
-    "email":    {"label": "📧 Email",      "default_toolset": "hermes-email"},
-    "matrix":   {"label": "💬 Matrix",     "default_toolset": "hermes-matrix"},
- "dingtalk": {"label": "💬 DingTalk", "default_toolset": "hermes-dingtalk"},
-    "feishu": {"label": "🪽 Feishu", "default_toolset": "hermes-feishu"},
-    "wecom": {"label": "💬 WeCom", "default_toolset": "hermes-wecom"},
-    "weixin": {"label": "💬 Weixin", "default_toolset": "hermes-weixin"},
-    "api_server": {"label": "🌐 API Server", "default_toolset": "hermes-api-server"},
-    "mattermost": {"label": "💬 Mattermost", "default_toolset": "hermes-mattermost"},
-    "webhook": {"label": "🔗 Webhook", "default_toolset": "hermes-webhook"},
+    spec.key: {
+        "label": spec.label_with_emoji,
+        "default_toolset": spec.default_toolset,
+    }
+    for spec in iter_tool_platform_specs()
 }
 
 
@@ -440,16 +428,7 @@ def _run_post_setup(post_setup_key: str):
 
 def _get_enabled_platforms() -> List[str]:
     """Return platform keys that are configured (have tokens or are CLI)."""
-    enabled = ["cli"]
-    if get_env_value("TELEGRAM_BOT_TOKEN"):
-        enabled.append("telegram")
-    if get_env_value("DISCORD_BOT_TOKEN"):
-        enabled.append("discord")
-    if get_env_value("SLACK_BOT_TOKEN"):
-        enabled.append("slack")
-    if get_env_value("WHATSAPP_ENABLED"):
-        enabled.append("whatsapp")
-    return enabled
+    return [key for key in configured_platform_keys(get_env_value) if key in PLATFORMS]
 
 
 def _platform_toolset_summary(config: dict, platforms: Optional[List[str]] = None) -> Dict[str, Set[str]]:

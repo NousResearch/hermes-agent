@@ -28,6 +28,7 @@ from hermes_cli.config import (
     read_raw_config,
     save_env_value,
 )
+from hermes_cli.platform_catalog import get_platform_spec
 # display_hermes_home is imported lazily at call sites to avoid ImportError
 # when hermes_constants is cached from a pre-update version during `hermes update`.
 from hermes_cli.setup import (
@@ -1786,6 +1787,16 @@ _PLATFORMS = [
         ],
     },
 ]
+
+
+for _entry in _PLATFORMS:
+    _spec = get_platform_spec(_entry["key"])
+    if _spec is None:
+        continue
+    _entry["label"] = _spec.label
+    _entry["emoji"] = _spec.emoji
+    if _spec.primary_config_env:
+        _entry["token_var"] = _spec.primary_config_env
 
 
 def _platform_status(platform: dict) -> str:

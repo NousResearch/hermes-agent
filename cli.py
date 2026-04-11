@@ -4457,12 +4457,21 @@ class HermesCLI:
             _cprint("  Session database not available.")
             return
 
-        # Resolve title or ID
-        from hermes_cli.main import _resolve_session_by_name_or_id
-        resolved = _resolve_session_by_name_or_id(target)
-        target_id = resolved or target
-
-        session_meta = self._session_db.get_session(target_id)
+        # Try direct session ID lookup first (what the panel passes)
+        session_meta = self._session_db.get_session(target)
+        if session_meta:
+            target_id = session_meta["id"]
+        else:
+            # Try prefix match (user may have copied truncated ID from panel)
+            resolved = self._session_db.resolve_session_id(target)
+            if resolved:
+                target_id = resolved
+                session_meta = self._session_db.get_session(target_id)
+            else:
+                # Fall back to title-based resolution using the same DB instance
+                resolved = self._session_db.resolve_session_by_title(target)
+                target_id = resolved or target
+                session_meta = self._session_db.get_session(target_id)
         if not session_meta:
             _cprint(f"  Session not found: {target}")
             _cprint("  Use /history or `hermes sessions list` to see available sessions.")
@@ -8276,7 +8285,7 @@ class HermesCLI:
         # Key bindings for the input area
         kb = KeyBindings()
         
-        @kb.add('enter')
+        @kb.add('enter', filter=Condition(lambda: not self._resume_panel_open and not self._stash_panel_open))
         def handle_enter(event):
             """Handle Enter key - submit input.
             
@@ -9201,7 +9210,7 @@ class HermesCLI:
                             w.control.buffer.cursor_position = len(f"/resume {sid}")
                             break
 
-        @kb.add('escape', filter=Condition(lambda: self._resume_panel_open))
+        @kb.add('escape', filter=Condition(lambda: self._resume_panel_open), eager=True)
         def _resume_esc(event):
             if self._resume_searching:
                 self._resume_searching = False
@@ -9213,24 +9222,21 @@ class HermesCLI:
                 self._resume_searching = False
             event.app.invalidate()
 
-        # Printable keys during resume search mode
-        def _make_search_handler(ch):
-            def handler(event):
-                self._resume_filter = self._resume_filter + ch
+        # Block ALL remaining keys when resume panel is open — prevents
+        # typed characters from reaching the input buffer.
+        @kb.add('any', filter=Condition(lambda: self._resume_panel_open), eager=True)
+        def _resume_block_input(event):
+            if self._resume_searching and event.data and len(event.data) == 1 and event.data.isprintable():
+                self._resume_filter += event.data
                 self._resume_cursor = 0
-                event.app.invalidate()
-            return handler
+            event.app.invalidate()
 
-        for _ch in "abcdefghijklmnopqrstuvwxyz0123456789_-./ ":
-            _handler = _make_search_handler(_ch)
-            kb.add(_ch, filter=Condition(lambda c=_ch: self._resume_panel_open and self._resume_searching))(_handler)
-
-        @kb.add('backspace', filter=Condition(lambda: self._resume_panel_open and self._resume_searching))
+        @kb.add('backspace', filter=Condition(lambda: self._resume_panel_open), eager=True)
         def _resume_backspace(event):
-            if self._resume_filter:
+            if self._resume_searching and self._resume_filter:
                 self._resume_filter = self._resume_filter[:-1]
                 self._resume_cursor = 0
-                event.app.invalidate()
+            event.app.invalidate()
 
         # Dynamic prompt: shows Hermes symbol when agent is working,
         # or answer prompt when clarify freetext mode is active.
@@ -9818,6 +9824,7 @@ class HermesCLI:
             input_rule_bot=input_rule_bot,
             voice_status_bar=voice_status_bar,
             completions_menu=completions_menu,
+            resume_panel_widget=resume_panel_widget,
         )
         # Inject unified agents + processes panel just before the status bar.
         proc_cli_ref = self

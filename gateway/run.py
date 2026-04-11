@@ -7574,12 +7574,19 @@ class GatewayRunner:
             # Track fallback model state: if the agent switched to a
             # fallback model during this run, persist it so /model shows
             # the actually-active model instead of the config default.
+            # Skip eviction when the run failed — evicting a failed agent
+            # forces MCP reinit on the next message for no benefit (the
+            # same error will recur).  This was the root cause of #7130:
+            # a bad model ID triggered fallback → eviction → recreation →
+            # MCP reinit → same 400 → loop, burning 91% CPU for hours.
             _agent = agent_holder[0]
-            if _agent is not None and hasattr(_agent, 'model'):
+            _result_for_fb = result_holder[0]
+            _run_failed = _result_for_fb.get("failed") if _result_for_fb else False
+            if _agent is not None and hasattr(_agent, 'model') and not _run_failed:
                 _cfg_model = _resolve_gateway_model()
                 if _agent.model != _cfg_model and not self._is_intentional_model_switch(session_key, _agent.model):
-                    # Fallback activated — evict cached agent so the next
-                    # message starts fresh and retries the primary model.
+                    # Fallback activated on a successful run — evict cached
+                    # agent so the next message retries the primary model.
                     self._evict_cached_agent(session_key)
 
             # Check if we were interrupted OR have a queued message (/queue).

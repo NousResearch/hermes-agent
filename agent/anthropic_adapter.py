@@ -161,18 +161,27 @@ def _get_claude_code_version() -> str:
 
 
 def _is_oauth_token(key: str) -> bool:
-    """Check if the key is an OAuth/setup token (not a regular Console API key).
+    """Check if the key is an Anthropic OAuth/setup token.
 
-    Regular API keys start with 'sk-ant-api'. Everything else (setup-tokens
-    starting with 'sk-ant-oat', managed keys, JWTs, etc.) needs Bearer auth.
+    Positively identifies Anthropic OAuth tokens by their key format:
+    - ``sk-ant-`` prefix (but NOT ``sk-ant-api``) → setup tokens, managed keys
+    - ``eyJ`` prefix → JWTs from the Anthropic OAuth flow
+
+    Non-Anthropic keys (MiniMax, Alibaba, etc.) don't match either pattern
+    and correctly return False.
     """
     if not key:
         return False
-    # Regular Console API keys use x-api-key header
+    # Regular Anthropic Console API keys — x-api-key auth, never OAuth
     if key.startswith("sk-ant-api"):
         return False
-    # Everything else (setup-tokens, managed keys, JWTs) uses Bearer auth
-    return True
+    # Anthropic-issued tokens (setup-tokens sk-ant-oat-*, managed keys)
+    if key.startswith("sk-ant-"):
+        return True
+    # JWTs from Anthropic OAuth flow
+    if key.startswith("eyJ"):
+        return True
+    return False
 
 
 def _normalize_base_url_text(base_url) -> str:

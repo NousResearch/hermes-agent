@@ -752,7 +752,10 @@ class MessageEvent:
         if not self.is_command():
             return self.text
         parts = self.text.split(maxsplit=1)
-        return parts[1] if len(parts) > 1 else ""
+        args = parts[1] if len(parts) > 1 else ""
+        # iOS auto-corrects -- to — (em dash) and - to – (en dash)
+        args = args.replace("\u2014\u2014", "--").replace("\u2014", "--").replace("\u2013", "-")
+        return args
 
 
 @dataclass 

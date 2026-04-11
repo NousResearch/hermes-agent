@@ -6252,6 +6252,20 @@ class AIAgent:
 
         compressed = self.context_compressor.compress(messages, current_tokens=approx_tokens)
 
+        # Reset stream consumer state after compression so the next API call's
+        # response starts fresh in a new Telegram message, not in the middle
+        # of the message that was being edited when compaction fired.
+        # The compression LLM call may have produced its own streaming deltas
+        # (editing the same message), so we clear state to prevent confusion.
+        sc = getattr(self, "_stream_consumer_instance", None)
+        if sc is not None:
+            sc._accumulated = ""
+            sc._message_id = None
+            sc._last_sent_text = ""
+            sc._last_edit_had_cursor = False
+            sc._fallback_final_send = False
+            sc._fallback_prefix = ""
+
         todo_snapshot = self._todo_store.format_for_injection()
         if todo_snapshot:
             compressed.append({"role": "user", "content": todo_snapshot})

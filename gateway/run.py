@@ -6968,6 +6968,10 @@ class GatewayRunner:
             agent.tool_progress_callback = progress_callback if tool_progress_enabled else None
             agent.step_callback = _step_callback_sync if _hooks_ref.loaded_hooks else None
             agent.stream_delta_callback = _stream_delta_cb
+            # Give the agent a direct reference to the stream consumer so
+            # _compress_context can reset its state after compaction,
+            # ensuring the next response starts fresh in a new message.
+            agent._stream_consumer_instance = stream_consumer_holder[0]
             agent.status_callback = _status_callback_sync
             agent.reasoning_config = reasoning_config
             agent.service_tier = self._service_tier

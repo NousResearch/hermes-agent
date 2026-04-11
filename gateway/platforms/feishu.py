@@ -52,6 +52,8 @@ except ImportError:
 try:
     import lark_oapi as lark
     from lark_oapi.api.application.v6 import GetApplicationRequest
+    from lark_oapi.api.auth.v3.model.internal_tenant_access_token_request import InternalTenantAccessTokenRequest
+    from lark_oapi.api.auth.v3.model.internal_tenant_access_token_request_body import InternalTenantAccessTokenRequestBody
     from lark_oapi.api.im.v1 import (
         CreateFileRequest,
         CreateFileRequestBody,
@@ -1483,8 +1485,15 @@ class FeishuAdapter(BasePlatformAdapter):
     async def _update_approval_card(
         self, message_id: str, label: str, user_name: str, choice: str,
     ) -> None:
-        """Replace the approval card with a resolved status card."""
-        if not self._client or not message_id:
+        """Replace the approval card with a resolved status card.
+
+        Feishu Interactive Card messages must be updated via PATCH (not PUT),
+        which the lark-oapi SDK's message.update doesn't support.
+        """
+        if not self._client:
+            return
+        if not message_id:
+            logger.warning("[Feishu] _update_approval_card called with empty message_id — card update skipped")
             return
         icon = "❌" if choice == "deny" else "✅"
         card = {
@@ -1501,12 +1510,51 @@ class FeishuAdapter(BasePlatformAdapter):
             ],
         }
         try:
-            payload = json.dumps(card, ensure_ascii=False)
-            body = self._build_update_message_body(msg_type="interactive", content=payload)
-            request = self._build_update_message_request(message_id=message_id, request_body=body)
-            await asyncio.to_thread(self._client.im.v1.message.update, request)
+            import httpx
+
+            # Get tenant_access_token via SDK
+            token_body = InternalTenantAccessTokenRequestBody.builder() \
+                .app_id(self._app_id) \
+                .app_secret(self._app_secret) \
+                .build()
+            token_req = InternalTenantAccessTokenRequest.builder() \
+                .request_body(token_body) \
+                .build()
+            token_resp = await asyncio.to_thread(
+                self._client.auth.v3.tenant_access_token.create,
+                token_req,
+            )
+            token = None
+            # Token is in raw.content JSON, not in .data
+            if self._response_succeeded(token_resp) and hasattr(token_resp, "raw"):
+                import json as _json
+                try:
+                    token_data = _json.loads(token_resp.raw.content)
+                    token = token_data.get("tenant_access_token")
+                except Exception:
+                    pass
+
+            if not token:
+                logger.warning("[Feishu] _update_approval_card: could not obtain tenant_access_token")
+                return
+
+            # Feishu Interactive Card update requires PATCH (not PUT)
+            api_domain = (FEISHU_DOMAIN or "https://open.feishu.cn") if self._domain_name != "lark" else (LARK_DOMAIN or "https://open.larksuite.com")
+            url = f"{api_domain}/open-apis/im/v1/messages/{message_id}"
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                resp = await client.patch(
+                    url,
+                    params={"message_id": message_id},
+                    headers={
+                        "Content-Type": "application/json",
+                        "Authorization": f"Bearer {token}",
+                    },
+                    json={"msg_type": "interactive", "content": json.dumps(card, ensure_ascii=False)},
+                )
+                if resp.status_code != 200:
+                    logger.warning("[Feishu] Card PATCH failed (%s): %s", resp.status_code, resp.text)
         except Exception as exc:
-            logger.warning("[Feishu] Failed to update approval card %s: %s", message_id, exc)
+            logger.info("[Feishu] Failed to update approval card %s: %s", message_id, exc)
 
     async def send_voice(
         self,

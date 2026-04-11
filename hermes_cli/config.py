@@ -446,6 +446,7 @@ DEFAULT_CONFIG = {
         "inline_diffs": True,     # Show inline diff previews for write actions (write_file, patch, skill_manage)
         "show_cost": False,       # Show $ cost in the status bar (off by default)
         "skin": "default",
+        "interim_assistant_messages": False,  # Gateway: show natural mid-turn assistant status messages
         "tool_progress_command": False,  # Enable /verbose command in messaging gateway
         "tool_progress_overrides": {},  # Per-platform overrides: {"signal": "off", "telegram": "all"}
         "tool_preview_length": 0,  # Max chars for tool call previews (0 = no limit, show full paths/commands)
@@ -636,7 +637,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 14,
+    "_config_version": 15,
 }
 
 # =============================================================================
@@ -1847,6 +1848,20 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
             save_config(config)
             if not quiet:
                 print(f"  ✓ Migrated legacy stt.model to provider-specific config")
+
+    # ── Version 14 → 15: add explicit gateway interim-message gate ──
+    if current_ver < 15:
+        config = read_raw_config()
+        display = config.get("display", {})
+        if not isinstance(display, dict):
+            display = {}
+        if "interim_assistant_messages" not in display:
+            display["interim_assistant_messages"] = False
+            config["display"] = display
+            results["config_added"].append("display.interim_assistant_messages=false (default)")
+            save_config(config)
+            if not quiet:
+                print("  ✓ Added display.interim_assistant_messages=false")
 
     if current_ver < latest_ver and not quiet:
         print(f"Config version: {current_ver} → {latest_ver}")

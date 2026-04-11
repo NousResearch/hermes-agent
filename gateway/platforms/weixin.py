@@ -1017,6 +1017,16 @@ class WeixinAdapter(BasePlatformAdapter):
         self._cdn_base_url = str(
             extra.get("cdn_base_url") or os.getenv("WEIXIN_CDN_BASE_URL", WEIXIN_CDN_BASE_URL)
         ).strip().rstrip("/")
+        self._send_chunk_delay_seconds = float(
+            extra.get("send_chunk_delay_seconds") or os.getenv("WEIXIN_SEND_CHUNK_DELAY_SECONDS", "0.35")
+        )
+        self._send_chunk_retries = int(
+            extra.get("send_chunk_retries") or os.getenv("WEIXIN_SEND_CHUNK_RETRIES", "2")
+        )
+        self._send_chunk_retry_delay_seconds = float(
+            extra.get("send_chunk_retry_delay_seconds")
+            or os.getenv("WEIXIN_SEND_CHUNK_RETRY_DELAY_SECONDS", "1.0")
+        )
         self._dm_policy = str(extra.get("dm_policy") or os.getenv("WEIXIN_DM_POLICY", "open")).strip().lower()
         self._group_policy = str(extra.get("group_policy") or os.getenv("WEIXIN_GROUP_POLICY", "disabled")).strip().lower()
         allow_from = extra.get("allow_from")
@@ -1346,6 +1356,47 @@ class WeixinAdapter(BasePlatformAdapter):
             content, self.MAX_MESSAGE_LENGTH, self._split_multiline_messages,
         )
 
+    async def _send_text_chunk(
+        self,
+        *,
+        chat_id: str,
+        chunk: str,
+        context_token: Optional[str],
+        client_id: str,
+    ) -> None:
+        """Send a single text chunk with per-chunk retry and backoff."""
+        last_error: Optional[Exception] = None
+        for attempt in range(self._send_chunk_retries + 1):
+            try:
+                await _send_message(
+                    self._session,
+                    base_url=self._base_url,
+                    token=self._token,
+                    to=chat_id,
+                    text=chunk,
+                    context_token=context_token,
+                    client_id=client_id,
+                )
+                return
+            except Exception as exc:
+                last_error = exc
+                if attempt >= self._send_chunk_retries:
+                    break
+                wait = self._send_chunk_retry_delay_seconds * (attempt + 1)
+                logger.warning(
+                    "[%s] send chunk failed to=%s attempt=%d/%d, retrying in %.2fs: %s",
+                    self.name,
+                    _safe_id(chat_id),
+                    attempt + 1,
+                    self._send_chunk_retries + 1,
+                    wait,
+                    exc,
+                )
+                if wait > 0:
+                    await asyncio.sleep(wait)
+        assert last_error is not None
+        raise last_error
+
     async def send(
         self,
         chat_id: str,
@@ -1360,19 +1411,16 @@ class WeixinAdapter(BasePlatformAdapter):
         try:
             chunks = self._split_text(self.format_message(content))
             for idx, chunk in enumerate(chunks):
-                if idx > 0:
-                    await asyncio.sleep(0.3)
                 client_id = f"hermes-weixin-{uuid.uuid4().hex}"
-                await _send_message(
-                    self._session,
-                    base_url=self._base_url,
-                    token=self._token,
-                    to=chat_id,
-                    text=chunk,
+                await self._send_text_chunk(
+                    chat_id=chat_id,
+                    chunk=chunk,
                     context_token=context_token,
                     client_id=client_id,
                 )
                 last_message_id = client_id
+                if idx < len(chunks) - 1 and self._send_chunk_delay_seconds > 0:
+                    await asyncio.sleep(self._send_chunk_delay_seconds)
             return SendResult(success=True, message_id=last_message_id)
         except Exception as exc:
             logger.error("[%s] send failed to=%s: %s", self.name, _safe_id(chat_id), exc)

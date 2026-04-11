@@ -11,30 +11,32 @@ description: "Complete guide to migrating your OpenClaw / Clawdbot setup to Herm
 ## Quick start
 
 ```bash
-# Preview what would happen (no files changed)
-hermes claw migrate --dry-run
-
-# Run the migration (secrets excluded by default)
+# Preview then migrate (always shows a preview first, then asks to confirm)
 hermes claw migrate
 
-# Full migration including API keys
-hermes claw migrate --preset full
+# Preview only, no changes
+hermes claw migrate --dry-run
+
+# Full migration including API keys, skip confirmation
+hermes claw migrate --preset full --yes
 ```
 
-The migration reads from `~/.openclaw/` by default. If you still have a legacy `~/.clawdbot/` or `~/.moldbot/` directory, it's detected automatically. Same for legacy config filenames (`clawdbot.json`, `moldbot.json`).
+The migration always shows a full preview of what will be imported before making any changes. Review the list, then confirm to proceed.
+
+Reads from `~/.openclaw/` by default. Legacy `~/.clawdbot/` or `~/.moldbot/` directories are detected automatically. Same for legacy config filenames (`clawdbot.json`, `moldbot.json`).
 
 ## Options
 
 | Option | Description |
 |--------|-------------|
-| `--dry-run` | Preview what would be migrated without writing anything. |
+| `--dry-run` | Preview only — stop after showing what would be migrated. |
 | `--preset <name>` | `full` (default, includes secrets) or `user-data` (excludes API keys). |
 | `--overwrite` | Overwrite existing Hermes files on conflicts (default: skip). |
 | `--migrate-secrets` | Include API keys (on by default with `--preset full`). |
 | `--source <path>` | Custom OpenClaw directory. |
 | `--workspace-target <path>` | Where to place `AGENTS.md`. |
 | `--skill-conflict <mode>` | `skip` (default), `overwrite`, or `rename`. |
-| `--yes` | Skip confirmation prompt. |
+| `--yes` | Skip the confirmation prompt after preview. |
 
 ## What gets migrated
 
@@ -48,7 +50,7 @@ The migration reads from `~/.openclaw/` by default. If you still have a legacy `
 | User profile | `workspace/USER.md` | `~/.hermes/memories/USER.md` | Same entry-merge logic as memory. |
 | Daily memory files | `workspace/memory/*.md` | `~/.hermes/memories/MEMORY.md` | All daily files merged into main memory. |
 
-All workspace files also check `workspace.default/` as a fallback path.
+Workspace files are also checked at `workspace.default/` and `workspace-main/` as fallback paths (OpenClaw renamed `workspace/` to `workspace-main/` in recent versions, and uses `workspace-{agentId}` for multi-agent setups).
 
 ### Skills (4 sources)
 
@@ -66,7 +68,7 @@ Skill conflicts are handled by `--skill-conflict`: `skip` leaves the existing He
 | What | OpenClaw config path | Hermes destination | Notes |
 |------|---------------------|-------------------|-------|
 | Default model | `agents.defaults.model` | `config.yaml` → `model` | Can be a string or `{primary, fallbacks}` object |
-| Custom providers | `models.providers.*` | `config.yaml` → `custom_providers` | Maps `baseUrl`, `apiType` ("openai"→"chat_completions", "anthropic"→"anthropic_messages") |
+| Custom providers | `models.providers.*` | `config.yaml` → `custom_providers` | Maps `baseUrl`, `apiType`/`api` — handles both short ("openai", "anthropic") and hyphenated ("openai-completions", "anthropic-messages", "google-generative-ai") values |
 | Provider API keys | `models.providers.*.apiKey` | `~/.hermes/.env` | Requires `--migrate-secrets`. See [API key resolution](#api-key-resolution) below. |
 
 ### Agent behavior
@@ -75,7 +77,7 @@ Skill conflicts are handled by `--skill-conflict`: `skip` leaves the existing He
 |------|---------------------|-------------------|---------|
 | Max turns | `agents.defaults.timeoutSeconds` | `agent.max_turns` | `timeoutSeconds / 10`, capped at 200 |
 | Verbose mode | `agents.defaults.verboseDefault` | `agent.verbose` | "off" / "on" / "full" |
-| Reasoning effort | `agents.defaults.thinkingDefault` | `agent.reasoning_effort` | "always"/"high" → "high", "auto"/"medium" → "medium", "off"/"low"/"none"/"minimal" → "low" |
+| Reasoning effort | `agents.defaults.thinkingDefault` | `agent.reasoning_effort` | "always"/"high"/"xhigh" → "high", "auto"/"medium"/"adaptive" → "medium", "off"/"low"/"none"/"minimal" → "low" |
 | Compression | `agents.defaults.compaction.mode` | `compression.enabled` | "off" → false, anything else → true |
 | Compression model | `agents.defaults.compaction.model` | `compression.summary_model` | Direct string copy |
 | Human delay | `agents.defaults.humanDelay.mode` | `human_delay.mode` | "natural" / "custom" / "off" |
@@ -122,26 +124,26 @@ TTS settings are read from **two** OpenClaw config locations with this priority:
 | ElevenLabs model ID | `config.yaml` → `tts.elevenlabs.model_id` |
 | OpenAI model | `config.yaml` → `tts.openai.model` |
 | OpenAI voice | `config.yaml` → `tts.openai.voice` |
-| Edge TTS voice | `config.yaml` → `tts.edge.voice` |
+| Edge TTS voice | `config.yaml` → `tts.edge.voice` (OpenClaw renamed "edge" to "microsoft" — both are recognized) |
 | TTS assets | `~/.hermes/tts/` (file copy) |
 
 ### Messaging platforms
 
 | Platform | OpenClaw config path | Hermes `.env` variable | Notes |
 |----------|---------------------|----------------------|-------|
-| Telegram | `channels.telegram.botToken` | `TELEGRAM_BOT_TOKEN` | Token can be string or [SecretRef](#secretref-handling) |
+| Telegram | `channels.telegram.botToken` or `.accounts.default.botToken` | `TELEGRAM_BOT_TOKEN` | Token can be string or [SecretRef](#secretref-handling). Both flat and accounts layout supported. |
 | Telegram | `credentials/telegram-default-allowFrom.json` | `TELEGRAM_ALLOWED_USERS` | Comma-joined from `allowFrom[]` array |
-| Discord | `channels.discord.token` | `DISCORD_BOT_TOKEN` | |
-| Discord | `channels.discord.allowFrom` | `DISCORD_ALLOWED_USERS` | |
-| Slack | `channels.slack.botToken` | `SLACK_BOT_TOKEN` | |
-| Slack | `channels.slack.appToken` | `SLACK_APP_TOKEN` | |
-| Slack | `channels.slack.allowFrom` | `SLACK_ALLOWED_USERS` | |
-| WhatsApp | `channels.whatsapp.allowFrom` | `WHATSAPP_ALLOWED_USERS` | Auth via Baileys QR pairing (not a token) |
-| Signal | `channels.signal.account` | `SIGNAL_ACCOUNT` | |
-| Signal | `channels.signal.httpUrl` | `SIGNAL_HTTP_URL` | |
-| Signal | `channels.signal.allowFrom` | `SIGNAL_ALLOWED_USERS` | |
-| Matrix | `channels.matrix.botToken` | `MATRIX_ACCESS_TOKEN` | Via deep-channels migration |
-| Mattermost | `channels.mattermost.botToken` | `MATTERMOST_BOT_TOKEN` | Via deep-channels migration |
+| Discord | `channels.discord.token` or `.accounts.default.token` | `DISCORD_BOT_TOKEN` | |
+| Discord | `channels.discord.allowFrom` or `.accounts.default.allowFrom` | `DISCORD_ALLOWED_USERS` | |
+| Slack | `channels.slack.botToken` or `.accounts.default.botToken` | `SLACK_BOT_TOKEN` | |
+| Slack | `channels.slack.appToken` or `.accounts.default.appToken` | `SLACK_APP_TOKEN` | |
+| Slack | `channels.slack.allowFrom` or `.accounts.default.allowFrom` | `SLACK_ALLOWED_USERS` | |
+| WhatsApp | `channels.whatsapp.allowFrom` or `.accounts.default.allowFrom` | `WHATSAPP_ALLOWED_USERS` | Auth via Baileys QR pairing — requires re-pairing after migration |
+| Signal | `channels.signal.account` or `.accounts.default.account` | `SIGNAL_ACCOUNT` | |
+| Signal | `channels.signal.httpUrl` or `.accounts.default.httpUrl` | `SIGNAL_HTTP_URL` | |
+| Signal | `channels.signal.allowFrom` or `.accounts.default.allowFrom` | `SIGNAL_ALLOWED_USERS` | |
+| Matrix | `channels.matrix.accessToken` or `.accounts.default.accessToken` | `MATRIX_ACCESS_TOKEN` | Uses `accessToken` (not `botToken`) |
+| Mattermost | `channels.mattermost.botToken` or `.accounts.default.botToken` | `MATTERMOST_BOT_TOKEN` | |
 
 ### Other config
 
@@ -178,13 +180,14 @@ These are saved to `~/.hermes/migration/openclaw/<timestamp>/archive/` for manua
 
 ## API key resolution
 
-When `--migrate-secrets` is enabled, API keys are collected from **three sources** in priority order:
+When `--migrate-secrets` is enabled, API keys are collected from **four sources** in priority order:
 
 1. **Config values** — `models.providers.*.apiKey` and TTS provider keys in `openclaw.json`
 2. **Environment file** — `~/.openclaw/.env` (keys like `OPENROUTER_API_KEY`, `ANTHROPIC_API_KEY`, etc.)
-3. **Auth profiles** — `~/.openclaw/agents/main/agent/auth-profiles.json` (per-agent credentials)
+3. **Config env sub-object** — `openclaw.json` → `"env"` or `"env"."vars"` (some setups store keys here instead of a separate `.env` file)
+4. **Auth profiles** — `~/.openclaw/agents/main/agent/auth-profiles.json` (per-agent credentials)
 
-Config values take priority. The `.env` fills any gaps. Auth profiles fill whatever remains.
+Config values take priority. Each subsequent source fills any remaining gaps.
 
 ### Supported key targets
 
@@ -207,7 +210,7 @@ OpenClaw config values for tokens and API keys can be in three formats:
 "channels": { "telegram": { "botToken": { "source": "env", "id": "TELEGRAM_BOT_TOKEN" } } }
 ```
 
-The migration resolves all three formats. For env templates and SecretRef objects with `source: "env"`, it looks up the value in `~/.openclaw/.env`. SecretRef objects with `source: "file"` or `source: "exec"` can't be resolved automatically — those values must be added to Hermes manually after migration.
+The migration resolves all three formats. For env templates and SecretRef objects with `source: "env"`, it looks up the value in `~/.openclaw/.env` and the `openclaw.json` env sub-object. SecretRef objects with `source: "file"` or `source: "exec"` can't be resolved automatically — the migration warns about these, and those values must be added to Hermes manually via `hermes config set`.
 
 ## After migration
 
@@ -215,13 +218,17 @@ The migration resolves all three formats. For env templates and SecretRef object
 
 2. **Review archived files** — anything in `~/.hermes/migration/openclaw/<timestamp>/archive/` needs manual attention.
 
-3. **Verify API keys** — run `hermes status` to check provider authentication.
+3. **Start a new session** — imported skills and memory entries take effect in new sessions, not the current one.
 
-4. **Test messaging** — if you migrated platform tokens, restart the gateway: `systemctl --user restart hermes-gateway`
+4. **Verify API keys** — run `hermes status` to check provider authentication.
 
-5. **Check session policies** — verify `hermes config get session_reset` matches your expectations.
+5. **Test messaging** — if you migrated platform tokens, restart the gateway: `systemctl --user restart hermes-gateway`
 
-6. **Re-pair WhatsApp** — WhatsApp uses QR code pairing (Baileys), not token migration. Run `hermes whatsapp` to pair.
+6. **Check session policies** — verify `hermes config get session_reset` matches your expectations.
+
+7. **Re-pair WhatsApp** — WhatsApp uses QR code pairing (Baileys), not token migration. Run `hermes whatsapp` to pair.
+
+8. **Archive cleanup** — after confirming everything works, run `hermes claw cleanup` to rename leftover OpenClaw directories to `.pre-migration/` (prevents state confusion).
 
 ## Troubleshooting
 
@@ -231,7 +238,7 @@ The migration checks `~/.openclaw/`, then `~/.clawdbot/`, then `~/.moldbot/`. If
 
 ### "No provider API keys found"
 
-Keys might be in your `.env` file instead of `openclaw.json`. The migration checks both — make sure `~/.openclaw/.env` exists and has the keys. If keys use `source: "file"` or `source: "exec"` SecretRefs, they can't be resolved automatically.
+Keys might be stored in several places depending on your OpenClaw version: inline in `openclaw.json` under `models.providers.*.apiKey`, in `~/.openclaw/.env`, in the `openclaw.json` `"env"` sub-object, or in `agents/main/agent/auth-profiles.json`. The migration checks all four. If keys use `source: "file"` or `source: "exec"` SecretRefs, they can't be resolved automatically — add them via `hermes config set`.
 
 ### Skills not appearing after migration
 

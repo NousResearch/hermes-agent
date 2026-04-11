@@ -5413,7 +5413,8 @@ For more help on a command:
     claw_migrate = claw_subparsers.add_parser(
         "migrate",
         help="Migrate from OpenClaw to Hermes",
-        description="Import settings, memories, skills, and API keys from an OpenClaw installation"
+        description="Import settings, memories, skills, and API keys from an OpenClaw installation. "
+                    "Always shows a preview before making changes."
     )
     claw_migrate.add_argument(
         "--source",
@@ -5422,7 +5423,7 @@ For more help on a command:
     claw_migrate.add_argument(
         "--dry-run",
         action="store_true",
-        help="Preview what would be migrated without making changes"
+        help="Preview only — stop after showing what would be migrated"
     )
     claw_migrate.add_argument(
         "--preset",

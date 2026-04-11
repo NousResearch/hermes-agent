@@ -617,6 +617,19 @@ class Migrator:
             candidate = self.source_root / rel
             if candidate.exists():
                 return candidate
+            # OpenClaw renamed workspace/ to workspace-main/ (and workspace-{agentId}
+            # for multi-agent).  Try the new path as a fallback.
+            if rel.startswith("workspace/"):
+                suffix = rel[len("workspace/"):]
+                for variant in ("workspace-main", "workspace-assistant"):
+                    alt = self.source_root / variant / suffix
+                    if alt.exists():
+                        return alt
+            elif rel.startswith("workspace.default/"):
+                suffix = rel[len("workspace.default/"):]
+                alt = self.source_root / "workspace-main" / suffix
+                if alt.exists():
+                    return alt
         return None
 
     def resolve_skill_destination(self, destination: Path) -> Path:
@@ -1033,11 +1046,8 @@ class Migrator:
     def migrate_secret_settings(self, config: Dict[str, Any]) -> None:
         secret_additions: Dict[str, str] = {}
 
-        telegram_token = (
-            config.get("channels", {})
-            .get("telegram", {})
-            .get("botToken")
-        )
+        tg_cfg = config.get("channels", {}).get("telegram", {})
+        telegram_token = self._get_channel_field(tg_cfg, "botToken") if isinstance(tg_cfg, dict) else None
         if isinstance(telegram_token, str) and telegram_token.strip():
             secret_additions["TELEGRAM_BOT_TOKEN"] = telegram_token.strip()
 
@@ -1057,15 +1067,28 @@ class Migrator:
         """Resolve a channel config value that may be a SecretRef."""
         return resolve_secret_input(value, self.load_openclaw_env())
 
+    @staticmethod
+    def _get_channel_field(ch_cfg: Dict[str, Any], field: str) -> Any:
+        """Get a field from channel config, checking both flat and accounts.default layout."""
+        val = ch_cfg.get(field)
+        if val is not None:
+            return val
+        accounts = ch_cfg.get("accounts")
+        if isinstance(accounts, dict):
+            default = accounts.get("default")
+            if isinstance(default, dict):
+                return default.get(field)
+        return None
+
     def migrate_discord_settings(self, config: Optional[Dict[str, Any]] = None) -> None:
         config = config or self.load_openclaw_config()
         additions: Dict[str, str] = {}
         discord = config.get("channels", {}).get("discord", {})
         if isinstance(discord, dict):
-            token = discord.get("token")
+            token = self._get_channel_field(discord, "token")
             if isinstance(token, str) and token.strip():
                 additions["DISCORD_BOT_TOKEN"] = token.strip()
-            allow_from = discord.get("allowFrom", [])
+            allow_from = self._get_channel_field(discord, "allowFrom") or []
             if isinstance(allow_from, list):
                 users = [str(u).strip() for u in allow_from if str(u).strip()]
                 if users:
@@ -1080,13 +1103,13 @@ class Migrator:
         additions: Dict[str, str] = {}
         slack = config.get("channels", {}).get("slack", {})
         if isinstance(slack, dict):
-            bot_token = slack.get("botToken")
+            bot_token = self._get_channel_field(slack, "botToken")
             if isinstance(bot_token, str) and bot_token.strip():
                 additions["SLACK_BOT_TOKEN"] = bot_token.strip()
-            app_token = slack.get("appToken")
+            app_token = self._get_channel_field(slack, "appToken")
             if isinstance(app_token, str) and app_token.strip():
                 additions["SLACK_APP_TOKEN"] = app_token.strip()
-            allow_from = slack.get("allowFrom", [])
+            allow_from = self._get_channel_field(slack, "allowFrom") or []
             if isinstance(allow_from, list):
                 users = [str(u).strip() for u in allow_from if str(u).strip()]
                 if users:
@@ -1101,7 +1124,7 @@ class Migrator:
         additions: Dict[str, str] = {}
         whatsapp = config.get("channels", {}).get("whatsapp", {})
         if isinstance(whatsapp, dict):
-            allow_from = whatsapp.get("allowFrom", [])
+            allow_from = self._get_channel_field(whatsapp, "allowFrom") or []
             if isinstance(allow_from, list):
                 users = [str(u).strip() for u in allow_from if str(u).strip()]
                 if users:
@@ -1116,13 +1139,13 @@ class Migrator:
         additions: Dict[str, str] = {}
         signal = config.get("channels", {}).get("signal", {})
         if isinstance(signal, dict):
-            account = signal.get("account")
+            account = self._get_channel_field(signal, "account")
             if isinstance(account, str) and account.strip():
                 additions["SIGNAL_ACCOUNT"] = account.strip()
-            http_url = signal.get("httpUrl")
+            http_url = self._get_channel_field(signal, "httpUrl")
             if isinstance(http_url, str) and http_url.strip():
                 additions["SIGNAL_HTTP_URL"] = http_url.strip()
-            allow_from = signal.get("allowFrom", [])
+            allow_from = self._get_channel_field(signal, "allowFrom") or []
             if isinstance(allow_from, list):
                 users = [str(u).strip() for u in allow_from if str(u).strip()]
                 if users:
@@ -1161,6 +1184,16 @@ class Migrator:
                 raw_key = provider_cfg.get("apiKey")
                 api_key = resolve_secret_input(raw_key, openclaw_env)
                 if not api_key:
+                    # Warn if a SecretRef with file/exec source was silently unresolvable
+                    if isinstance(raw_key, dict) and raw_key.get("source") in ("file", "exec"):
+                        self.record(
+                            "provider-keys",
+                            self.source_root / "openclaw.json",
+                            None,
+                            "skipped",
+                            f"Provider '{provider_name}' uses a {raw_key['source']}-backed SecretRef "
+                            f"that cannot be auto-migrated. Add this key manually via: hermes config set",
+                        )
                     continue
 
                 base_url = provider_cfg.get("baseUrl", "")
@@ -1223,6 +1256,21 @@ class Migrator:
             val = openclaw_env.get(oc_key, "").strip()
             if val and hermes_key not in secret_additions:
                 secret_additions[hermes_key] = val
+
+        # Check the openclaw.json "env" sub-object — some OpenClaw setups
+        # store API keys here instead of in a separate .env file.
+        # Keys can be at env.<KEY> or env.vars.<KEY>.
+        json_env = config.get("env")
+        if isinstance(json_env, dict):
+            env_vars = json_env.get("vars")
+            sources = [json_env]
+            if isinstance(env_vars, dict):
+                sources.append(env_vars)
+            for src in sources:
+                for oc_key, hermes_key in env_key_mapping.items():
+                    val = src.get(oc_key)
+                    if isinstance(val, str) and val.strip() and hermes_key not in secret_additions:
+                        secret_additions[hermes_key] = val.strip()
 
         # Check per-agent auth-profiles.json for additional credentials
         auth_profiles_path = self.source_root / "agents" / "main" / "agent" / "auth-profiles.json"
@@ -1324,8 +1372,9 @@ class Migrator:
         tts_data: Dict[str, Any] = {}
 
         provider = tts.get("provider")
-        if isinstance(provider, str) and provider in ("elevenlabs", "openai", "edge"):
-            tts_data["provider"] = provider
+        if isinstance(provider, str) and provider in ("elevenlabs", "openai", "edge", "microsoft"):
+            # OpenClaw renamed "edge" to "microsoft"; Hermes still uses "edge"
+            tts_data["provider"] = "edge" if provider == "microsoft" else provider
 
         # TTS provider settings live under messages.tts.providers.{provider}
         # in OpenClaw (not messages.tts.elevenlabs directly)
@@ -1374,9 +1423,9 @@ class Migrator:
                 tts_data["openai"] = oai_settings
 
         edge_tts = (
-            (providers.get("edge") or {})
-            if isinstance(providers.get("edge"), dict) else
-            (tts.get("edge") or {})
+            (providers.get("edge") or providers.get("microsoft") or {})
+            if isinstance(providers.get("edge"), dict) or isinstance(providers.get("microsoft"), dict) else
+            (tts.get("edge") or tts.get("microsoft") or {})
         )
         if isinstance(edge_tts, dict):
             edge_voice = edge_tts.get("voice")
@@ -1890,11 +1939,11 @@ class Migrator:
         if defaults.get("thinkingDefault"):
             # Map OpenClaw thinking -> Hermes reasoning_effort
             thinking = defaults["thinkingDefault"]
-            if thinking in ("always", "high"):
+            if thinking in ("always", "high", "xhigh"):
                 agent_cfg["reasoning_effort"] = "high"
-            elif thinking in ("auto", "medium"):
+            elif thinking in ("auto", "medium", "adaptive"):
                 agent_cfg["reasoning_effort"] = "medium"
-            elif thinking in ("off", "low", "none"):
+            elif thinking in ("off", "low", "none", "minimal"):
                 agent_cfg["reasoning_effort"] = "low"
             changes = True
 
@@ -2099,10 +2148,14 @@ class Migrator:
                                 f"Provider '{prov_name}' already exists")
                     continue
 
-                api_type = prov_cfg.get("apiType") or prov_cfg.get("type") or "openai"
+                api_type = prov_cfg.get("apiType") or prov_cfg.get("api") or prov_cfg.get("type") or "openai"
                 api_mode_map = {
                     "openai": "chat_completions",
+                    "openai-completions": "chat_completions",
+                    "openai-responses": "chat_completions",
                     "anthropic": "anthropic_messages",
+                    "anthropic-messages": "anthropic_messages",
+                    "google-generative-ai": "chat_completions",
                     "cohere": "chat_completions",
                 }
                 entry = {
@@ -2142,7 +2195,7 @@ class Migrator:
 
         # Extended channel token/allowlist mapping
         CHANNEL_ENV_MAP = {
-            "matrix": {"token": "MATRIX_ACCESS_TOKEN", "allowFrom": "MATRIX_ALLOWED_USERS",
+            "matrix": {"token": "MATRIX...OKEN", "tokenField": "accessToken", "allowFrom": "MATRIX_ALLOWED_USERS",
                         "extras": {"homeserverUrl": "MATRIX_HOMESERVER_URL", "userId": "MATRIX_USER_ID"}},
             "mattermost": {"token": "MATTERMOST_BOT_TOKEN", "allowFrom": "MATTERMOST_ALLOWED_USERS",
                            "extras": {"url": "MATTERMOST_URL", "teamId": "MATTERMOST_TEAM_ID"}},
@@ -2160,19 +2213,21 @@ class Migrator:
             if not ch_cfg:
                 continue
 
-            # Extract tokens
-            if ch_mapping.get("token") and ch_cfg.get("botToken") and self.migrate_secrets:
-                self._set_env_var(ch_mapping["token"], ch_cfg["botToken"],
-                                  f"channels.{ch_name}.botToken")
-            if ch_mapping.get("allowFrom") and ch_cfg.get("allowFrom"):
-                allow_val = ch_cfg["allowFrom"]
+            # Extract tokens (check flat path, then accounts.default)
+            token_field = ch_mapping.get("tokenField", "botToken")
+            bot_token = self._get_channel_field(ch_cfg, token_field)
+            if ch_mapping.get("token") and bot_token and self.migrate_secrets:
+                self._set_env_var(ch_mapping["token"], str(bot_token),
+                                  f"channels.{ch_name}.{token_field}")
+            allow_val = self._get_channel_field(ch_cfg, "allowFrom")
+            if ch_mapping.get("allowFrom") and allow_val:
                 if isinstance(allow_val, list):
                     allow_val = ",".join(str(x) for x in allow_val)
                 self._set_env_var(ch_mapping["allowFrom"], str(allow_val),
                                   f"channels.{ch_name}.allowFrom")
             # Extra fields
             for oc_key, env_key in (ch_mapping.get("extras") or {}).items():
-                val = ch_cfg.get(oc_key)
+                val = self._get_channel_field(ch_cfg, oc_key)
                 if val:
                     if isinstance(val, list):
                         val = ",".join(str(x) for x in val)
@@ -2494,6 +2549,33 @@ class Migrator:
             notes.append("- Run `hermes cron` to recreate scheduled tasks (see archive/cron-config.json)")
         elif has_cron_store_archive:
             notes.append("- Run `hermes cron` to recreate scheduled tasks (see archived cron-store)")
+
+        # Check if skills were imported
+        has_skills = any(i.kind == "skills" and i.status == "migrated" for i in self.items)
+        if has_skills:
+            notes.extend([
+                "",
+                "## Imported Skills",
+                "",
+                "Imported skills require a new session to take effect. After migration,",
+                "restart your agent or start a new chat session, then run `/skills`",
+                "to verify they loaded correctly.",
+                "",
+            ])
+
+        # Check if WhatsApp was detected
+        has_whatsapp = any(i.kind == "whatsapp-settings" and i.status == "migrated" for i in self.items)
+        if has_whatsapp:
+            notes.extend([
+                "",
+                "## WhatsApp Requires Re-Pairing",
+                "",
+                "WhatsApp uses QR-code pairing, not token-based auth. Your allowlist",
+                "was migrated, but you must re-pair the device by running:",
+                "",
+                "    hermes whatsapp",
+                "",
+            ])
 
         notes.extend([
             "- Run `hermes gateway install` if you need the gateway service",

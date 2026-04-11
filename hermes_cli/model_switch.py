@@ -50,6 +50,15 @@ logger = logging.getLogger(__name__)
 # Non-agentic model warning
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Reserved words — these are NOT valid model names.
+# Typed as /model <word> by users who expect a sub-command.
+# ---------------------------------------------------------------------------
+
+RESERVED_MODEL_WORDS = frozenset({
+    "list", "ls", "show", "help", "current", "status", "info", "details",
+})
+
 _HERMES_MODEL_WARNING = (
     "Nous Research Hermes 3 & 4 models are NOT agentic and are not designed "
     "for use with Hermes Agent. They lack the tool-calling capabilities "

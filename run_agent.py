@@ -8049,7 +8049,7 @@ class AIAgent:
 
             # Calculate approximate request size for logging
             total_chars = sum(len(str(msg)) for msg in api_messages)
-            approx_tokens = total_chars // 4  # Rough estimate: 4 chars per token
+            approx_tokens = estimate_messages_tokens_rough(api_messages)
             
             # Thinking spinner for quiet mode (animated during API call)
             thinking_spinner = None

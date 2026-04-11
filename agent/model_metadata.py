@@ -1045,16 +1045,21 @@ def get_model_context_length(
 
 
 def estimate_tokens_rough(text: str) -> int:
-    """Rough token estimate (~4 chars/token) for pre-flight checks."""
+    """Rough token estimate (~4 chars/token) for pre-flight checks.
+
+    Uses ceiling division so short texts (1-3 chars) never estimate as
+    0 tokens, which would cause the compressor and pre-flight checks to
+    systematically undercount when many short tool results are present.
+    """
     if not text:
         return 0
-    return len(text) // 4
+    return (len(text) + 3) // 4
 
 
 def estimate_messages_tokens_rough(messages: List[Dict[str, Any]]) -> int:
     """Rough token estimate for a message list (pre-flight only)."""
     total_chars = sum(len(str(msg)) for msg in messages)
-    return total_chars // 4
+    return (total_chars + 3) // 4
 
 
 def estimate_request_tokens_rough(
@@ -1077,4 +1082,4 @@ def estimate_request_tokens_rough(
         total_chars += sum(len(str(msg)) for msg in messages)
     if tools:
         total_chars += len(str(tools))
-    return total_chars // 4
+    return (total_chars + 3) // 4

@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { Box, Text, useApp, useInput, useStdout } from '@hermes/ink'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
-import { Banner, SessionPanel } from './components/branding.js'
+import { Banner, Panel, SessionPanel } from './components/branding.js'
 import { MaskedPrompt } from './components/maskedPrompt.js'
 import { MessageLine } from './components/messageLine.js'
 import { ApprovalPrompt, ClarifyPrompt } from './components/prompts.js'
@@ -28,6 +28,7 @@ import type {
   ApprovalReq,
   ClarifyReq,
   Msg,
+  PanelSection,
   PasteMode,
   PendingPaste,
   SecretReq,
@@ -297,7 +298,7 @@ export function App({ gw }: { gw: GatewayClient }) {
   const [turnTrail, setTurnTrail] = useState<string[]>([])
   const [bgTasks, setBgTasks] = useState<Set<string>>(new Set())
   const [catalog, setCatalog] = useState<SlashCatalog | null>(null)
-  const [pager, setPager] = useState<{ lines: string[]; offset: number } | null>(null)
+  const [pager, setPager] = useState<{ lines: string[]; offset: number; title?: string } | null>(null)
 
   // ── Refs ─────────────────────────────────────────────────────────
 
@@ -367,10 +368,17 @@ export function App({ gw }: { gw: GatewayClient }) {
 
   const sys = useCallback((text: string) => appendMessage({ role: 'system' as const, text }), [appendMessage])
 
-  const page = useCallback((text: string) => {
+  const page = useCallback((text: string, title?: string) => {
     const lines = text.split('\n')
-    setPager({ lines, offset: 0 })
+    setPager({ lines, offset: 0, title })
   }, [])
+
+  const panel = useCallback(
+    (title: string, sections: PanelSection[]) => {
+      appendMessage({ role: 'system', text: '', kind: 'panel', panelData: { title, sections } })
+    },
+    [appendMessage]
+  )
 
   const pushActivity = useCallback((text: string, tone: ActivityItem['tone'] = 'info', replaceLabel?: string) => {
     setActivity(prev => {
@@ -1341,37 +1349,18 @@ export function App({ gw }: { gw: GatewayClient }) {
 
       switch (name) {
         case 'help': {
-          const cats = catalog?.categories ?? []
-          const skills = catalog?.skillCount ?? 0
-          const lines: string[] = []
+          const sections: PanelSection[] = (catalog?.categories ?? []).map(({ name: catName, pairs }) => ({
+            title: catName,
+            rows: pairs
+          }))
 
-          for (const { name: catName, pairs } of cats) {
-            if (lines.length) {
-              lines.push('')
-            }
-
-            lines.push(`  ${catName}:`)
-
-            for (const [c, d] of pairs) {
-              lines.push(`    ${c.padEnd(18)} ${d}`)
-            }
+          if (catalog?.skillCount) {
+            sections.push({ text: `${catalog.skillCount} skill commands available — /skills to browse` })
           }
 
-          if (!lines.length) {
-            lines.push('  (no commands loaded)')
-          }
+          sections.push({ title: 'Hotkeys', rows: HOTKEYS })
 
-          if (skills > 0) {
-            lines.push('', `  ${skills} skill commands available — /skills to browse`)
-          }
-
-          lines.push('', '  Hotkeys:')
-
-          for (const [k, d] of HOTKEYS) {
-            lines.push(`    ${k.padEnd(14)} ${d}`)
-          }
-
-          sys(lines.join('\n'))
+          panel('Commands', sections)
 
           return true
         }
@@ -1435,16 +1424,16 @@ export function App({ gw }: { gw: GatewayClient }) {
           }
 
           if (arg === 'list') {
-            sys(
-              pastes.length
-                ? pastes
-                    .map(
-                      p =>
-                        `#${p.id} ${p.mode} · ${p.lineCount}L · ${p.kind} · ${compactPreview(p.text, 60) || '(empty)'}`
-                    )
-                    .join('\n')
-                : 'no text pastes'
-            )
+            if (!pastes.length) {
+              sys('no text pastes')
+            } else {
+              panel('Paste Shelf', [{
+                rows: pastes.map(p => [
+                  `#${p.id} ${p.mode}`,
+                  `${p.lineCount}L · ${p.kind} · ${compactPreview(p.text, 60) || '(empty)'}`
+                ] as [string, string])
+              }])
+            }
 
             return true
           }
@@ -1497,10 +1486,12 @@ export function App({ gw }: { gw: GatewayClient }) {
 
           return true
 
-        case 'logs':
-          sys(gw.getLogTail(Math.min(80, Math.max(1, parseInt(arg, 10) || 20))) || 'no gateway logs')
+        case 'logs': {
+          const logText = gw.getLogTail(Math.min(80, Math.max(1, parseInt(arg, 10) || 20)))
+          logText ? page(logText, 'Logs') : sys('no gateway logs')
 
           return true
+        }
 
         case 'statusbar':
 
@@ -1606,7 +1597,9 @@ export function App({ gw }: { gw: GatewayClient }) {
 
         case 'model':
           if (!arg) {
-            rpc('config.get', { key: 'provider' }).then((r: any) => sys(`${r.model} (${r.provider})`))
+            rpc('config.get', { key: 'provider' }).then((r: any) =>
+              panel('Model', [{ rows: [['Model', r.model], ['Provider', r.provider]] }])
+            )
           } else {
             rpc('config.set', { key: 'model', value: arg.replace('--global', '').trim() }).then((r: any) => {
               sys(`model → ${r.value}`)
@@ -1618,7 +1611,7 @@ export function App({ gw }: { gw: GatewayClient }) {
 
         case 'provider':
           gw.request('slash.exec', { command: 'provider', session_id: sid })
-            .then((r: any) => page(r?.output || '(no output)'))
+            .then((r: any) => page(r?.output || '(no output)', 'Provider'))
             .catch(() => sys('provider command failed'))
 
           return true
@@ -1654,7 +1647,7 @@ export function App({ gw }: { gw: GatewayClient }) {
             )
           } else {
             gw.request('slash.exec', { command: 'personality', session_id: sid })
-              .then((r: any) => sys(r?.output || '(no output)'))
+              .then((r: any) => panel('Personality', [{ text: r?.output || '(no output)' }]))
               .catch(() => sys('personality command failed'))
           }
 
@@ -1713,30 +1706,30 @@ export function App({ gw }: { gw: GatewayClient }) {
             }
 
             const f = (v: number) => (v ?? 0).toLocaleString()
-            const ln = (k: string, v: string) => `  ${k.padEnd(26)}${v.padStart(10)}`
-            const hr = `  ${'─'.repeat(36)}`
-
             const cost =
               r.cost_usd != null ? `${r.cost_status === 'estimated' ? '~' : ''}$${r.cost_usd.toFixed(4)}` : null
 
-            sys(
-              [
-                hr,
-                ln('Model:', r.model ?? ''),
-                ln('Input tokens:', f(r.input)),
-                ln('Cache read tokens:', f(r.cache_read)),
-                ln('Cache write tokens:', f(r.cache_write)),
-                ln('Output tokens:', f(r.output)),
-                ln('Total tokens:', f(r.total)),
-                ln('API calls:', f(r.calls)),
-                cost && ln('Cost:', cost),
-                hr,
-                r.context_max && `  Context: ${f(r.context_used)} / ${f(r.context_max)} (${r.context_percent}%)`,
-                r.compressions && `  Compressions: ${r.compressions}`
-              ]
-                .filter(Boolean)
-                .join('\n')
-            )
+            const rows: [string, string][] = [
+              ['Model', r.model ?? ''],
+              ['Input tokens', f(r.input)],
+              ['Cache read tokens', f(r.cache_read)],
+              ['Cache write tokens', f(r.cache_write)],
+              ['Output tokens', f(r.output)],
+              ['Total tokens', f(r.total)],
+              ['API calls', f(r.calls)]
+            ]
+
+            if (cost) rows.push(['Cost', cost])
+
+            const sections: PanelSection[] = [{ rows }]
+
+            if (r.context_max) {
+              sections.push({ text: `Context: ${f(r.context_used)} / ${f(r.context_max)} (${r.context_percent}%)` })
+            }
+
+            if (r.compressions) sections.push({ text: `Compressions: ${r.compressions}` })
+
+            panel('Usage', sections)
           })
 
           return true
@@ -1752,7 +1745,16 @@ export function App({ gw }: { gw: GatewayClient }) {
           return true
 
         case 'profile':
-          rpc('config.get', { key: 'profile' }).then((r: any) => sys(r.display || r.home))
+          rpc('config.get', { key: 'profile' }).then((r: any) => {
+            const text = r.display || r.home
+            const lines = text.split('\n').filter(Boolean)
+
+            if (lines.length <= 2) {
+              panel('Profile', [{ text }])
+            } else {
+              page(text, 'Profile')
+            }
+          })
 
           return true
 
@@ -1765,7 +1767,13 @@ export function App({ gw }: { gw: GatewayClient }) {
 
         case 'insights':
           rpc('insights.get', { days: parseInt(arg) || 30 }).then((r: any) =>
-            sys(`${r.days}d: ${r.sessions} sessions, ${r.messages} messages`)
+            panel('Insights', [{
+              rows: [
+                ['Period', `${r.days} days`],
+                ['Sessions', `${r.sessions}`],
+                ['Messages', `${r.messages}`]
+              ]
+            }])
           )
 
           return true
@@ -1778,7 +1786,12 @@ export function App({ gw }: { gw: GatewayClient }) {
                 return sys('no checkpoints')
               }
 
-              sys(r.checkpoints.map((c: any, i: number) => `  ${i} ${c.hash?.slice(0, 8)} ${c.message}`).join('\n'))
+              panel('Checkpoints', [{
+                rows: r.checkpoints.map((c: any, i: number) => [
+                  `${i} ${c.hash?.slice(0, 8)}`,
+                  c.message
+                ] as [string, string])
+              }])
             })
           } else {
             const hash = sub === 'restore' || sub === 'diff' ? rArgs[0] : sub
@@ -1805,7 +1818,9 @@ export function App({ gw }: { gw: GatewayClient }) {
               return sys('no plugins')
             }
 
-            sys(r.plugins.map((p: any) => `  ${p.name} v${p.version}${p.enabled ? '' : ' (disabled)'}`).join('\n'))
+            panel('Plugins', [{
+              items: r.plugins.map((p: any) => `${p.name} v${p.version}${p.enabled ? '' : ' (disabled)'}`)
+            }])
           })
 
           return true
@@ -1820,43 +1835,31 @@ export function App({ gw }: { gw: GatewayClient }) {
                 return sys('no skills installed')
               }
 
-              const lines: string[] = []
-
-              for (const [cat, names] of Object.entries(sk)) {
-                lines.push(`  ${cat}: ${(names as string[]).join(', ')}`)
-              }
-
-              sys(lines.join('\n'))
+              panel('Installed Skills', Object.entries(sk).map(([cat, names]) => ({
+                title: cat,
+                items: names as string[]
+              })))
             })
 
             return true
           }
 
           if (sub === 'browse') {
-            const page = parseInt(sArgs[0] ?? '1', 10) || 1
-            rpc('skills.manage', { action: 'browse', page }).then((r: any) => {
-              if (!r.items?.length) {
-                return sys('no skills found in the hub')
-              }
+            const pg = parseInt(sArgs[0] ?? '1', 10) || 1
+            rpc('skills.manage', { action: 'browse', page: pg }).then((r: any) => {
+              if (!r.items?.length) return sys('no skills found in the hub')
 
-              const lines = [
-                `  Skills Hub (page ${r.page}/${r.total_pages}, ${r.total} total)`,
-                '',
-                ...r.items.map(
-                  (s: any) =>
-                    `    ${(s.name ?? '').padEnd(28)} ${(s.description ?? '').slice(0, 60)}${s.description?.length > 60 ? '…' : ''}`
-                )
-              ]
+              const sections: PanelSection[] = [{
+                rows: r.items.map((s: any) => [
+                  s.name ?? '',
+                  (s.description ?? '').slice(0, 60) + (s.description?.length > 60 ? '…' : '')
+                ] as [string, string])
+              }]
 
-              if (r.page < r.total_pages) {
-                lines.push('', `  /skills browse ${r.page + 1} → next page`)
-              }
+              if (r.page < r.total_pages) sections.push({ text: `/skills browse ${r.page + 1} → next page` })
+              if (r.page > 1) sections.push({ text: `/skills browse ${r.page - 1} → prev page` })
 
-              if (r.page > 1) {
-                lines.push(`  /skills browse ${r.page - 1} → prev page`)
-              }
-
-              sys(lines.join('\n'))
+              panel(`Skills Hub (page ${r.page}/${r.total_pages}, ${r.total} total)`, sections)
             })
 
             return true
@@ -1868,6 +1871,94 @@ export function App({ gw }: { gw: GatewayClient }) {
 
           return true
         }
+
+        case 'agents':
+
+        case 'tasks':
+          rpc('agents.list', {}).then((r: any) => {
+            const procs = r.processes ?? []
+            const running = procs.filter((p: any) => p.status === 'running')
+            const finished = procs.filter((p: any) => p.status !== 'running')
+            const sections: PanelSection[] = []
+
+            if (running.length) {
+              sections.push({
+                title: `Running (${running.length})`,
+                rows: running.map((p: any) => [p.session_id.slice(0, 8), p.command])
+              })
+            }
+
+            if (finished.length) {
+              sections.push({
+                title: `Finished (${finished.length})`,
+                rows: finished.map((p: any) => [p.session_id.slice(0, 8), p.command])
+              })
+            }
+
+            if (!sections.length) sections.push({ text: 'No active processes' })
+
+            panel('Agents', sections)
+          }).catch(() => sys('agents command failed'))
+
+          return true
+
+        case 'cron':
+          if (!arg || arg === 'list') {
+            rpc('cron.manage', { action: 'list' }).then((r: any) => {
+              const jobs = r.jobs ?? []
+
+              if (!jobs.length) return sys('no scheduled jobs')
+
+              panel('Cron', [{
+                rows: jobs.map((j: any) => [
+                  j.name || j.job_id?.slice(0, 12),
+                  `${j.schedule} · ${j.state ?? 'active'}`
+                ] as [string, string])
+              }])
+            }).catch(() => sys('cron command failed'))
+          } else {
+            gw.request('slash.exec', { command: cmd.slice(1), session_id: sid })
+              .then((r: any) => sys(r?.output || '(no output)'))
+              .catch(() => sys('cron command failed'))
+          }
+
+          return true
+
+        case 'config':
+          rpc('config.show', {}).then((r: any) => {
+            panel('Config', (r.sections ?? []).map((s: any) => ({
+              title: s.title,
+              rows: s.rows
+            })))
+          }).catch(() => sys('config command failed'))
+
+          return true
+
+        case 'tools':
+          rpc('tools.list', { session_id: sid }).then((r: any) => {
+            if (!r.toolsets?.length) return sys('no tools')
+
+            panel('Tools', r.toolsets.map((ts: any) => ({
+              title: `${ts.enabled ? '*' : ' '} ${ts.name} [${ts.tool_count} tools]`,
+              items: ts.tools
+            })))
+          }).catch(() => sys('tools command failed'))
+
+          return true
+
+        case 'toolsets':
+          rpc('toolsets.list', { session_id: sid }).then((r: any) => {
+            if (!r.toolsets?.length) return sys('no toolsets')
+
+            panel('Toolsets', [{
+              rows: r.toolsets.map((ts: any) => [
+                `${ts.enabled ? '(*)' : '   '} ${ts.name}`,
+                `[${ts.tool_count}] ${ts.description}`
+              ] as [string, string])
+            }])
+          }).catch(() => sys('toolsets command failed'))
+
+          return true
 
         default:
           gw.request('slash.exec', { command: cmd.slice(1), session_id: sid })
@@ -1892,22 +1983,7 @@ export function App({ gw }: { gw: GatewayClient }) {
           return true
       }
     },
-    [
-      catalog,
-      compact,
-      gw,
-      lastUserMsg,
-      messages,
-      newSession,
-      page,
-      pastes,
-      pushActivity,
-      rpc,
-      send,
-      sid,
-      statusBar,
-      sys
-    ]
+    [catalog, compact, gw, lastUserMsg, messages, newSession, page, panel, pastes, pushActivity, rpc, send, sid, statusBar, sys]
   )
 
   slashRef.current = slash
@@ -1998,6 +2074,8 @@ export function App({ gw }: { gw: GatewayClient }) {
               <Banner t={theme} />
               <SessionPanel info={m.info} sid={sid} t={theme} />
             </Box>
+          ) : m.kind === 'panel' && m.panelData ? (
+            <Panel sections={m.panelData.sections} t={theme} title={m.panelData.title} />
           ) : (
             <MessageLine cols={cols} compact={compact} msg={m} t={theme} />
           )}
@@ -2118,16 +2196,26 @@ export function App({ gw }: { gw: GatewayClient }) {
         )}
 
         {pager && (
-          <Box flexDirection="column">
+          <Box borderColor={theme.color.bronze} borderStyle="round" flexDirection="column" paddingX={2} paddingY={1}>
+            {pager.title && (
+              <Box justifyContent="center" marginBottom={1}>
+                <Text bold color={theme.color.gold}>
+                  {pager.title}
+                </Text>
+              </Box>
+            )}
+
             {pager.lines.slice(pager.offset, pager.offset + pagerPageSize).map((line, i) => (
               <Text key={i}>{line}</Text>
             ))}
 
-            <Text color={theme.color.dim}>
-              {pager.offset + pagerPageSize < pager.lines.length
-                ? `── Enter/Space for more · q to close (${Math.min(pager.offset + pagerPageSize, pager.lines.length)}/${pager.lines.length}) ──`
-                : `── end · q to close (${pager.lines.length} lines) ──`}
-            </Text>
+            <Box marginTop={1}>
+              <Text color={theme.color.dim}>
+                {pager.offset + pagerPageSize < pager.lines.length
+                  ? `Enter/Space for more · q to close (${Math.min(pager.offset + pagerPageSize, pager.lines.length)}/${pager.lines.length})`
+                  : `end · q to close (${pager.lines.length} lines)`}
+              </Text>
+            </Box>
           </Box>
         )}
 

@@ -1894,12 +1894,14 @@ class DiscordAdapter(BasePlatformAdapter):
 
         _parent_id = str(getattr(getattr(interaction, "channel", None), "parent_id", "") or "")
         _skills = self._resolve_channel_skills(thread_id, _parent_id or None)
+        _model = self._resolve_channel_model(thread_id, _parent_id or None)
         event = MessageEvent(
             text=text,
             message_type=MessageType.TEXT,
             source=source,
             raw_message=interaction,
             auto_skill=_skills,
+            auto_model=_model,
         )
         await self.handle_message(event)
 
@@ -1926,6 +1928,30 @@ class DiscordAdapter(BasePlatformAdapter):
                     return [skills]
                 if isinstance(skills, list) and skills:
                     return list(dict.fromkeys(skills))  # dedup, preserve order
+        return None
+
+    def _resolve_channel_model(self, channel_id: str, parent_id: str | None = None) -> str | None:
+        """Look up optional model override for a Discord channel/forum thread.
+
+        Config format (in platform extra):
+            channel_skill_bindings:
+              - id: "123456"
+                skills: ["skill-a"]
+                model: "kiro-opus"   # optional model alias or full model id
+        Also checks parent_id so forum threads inherit the forum's bindings.
+        """
+        bindings = self.config.extra.get("channel_skill_bindings", [])
+        if not bindings:
+            return None
+        ids_to_check = {channel_id}
+        if parent_id:
+            ids_to_check.add(parent_id)
+        for entry in bindings:
+            entry_id = str(entry.get("id", ""))
+            if entry_id in ids_to_check:
+                model = entry.get("model")
+                if model:
+                    return str(model)
         return None
 
     def _thread_parent_channel(self, channel: Any) -> Any:
@@ -2516,6 +2542,7 @@ class DiscordAdapter(BasePlatformAdapter):
         _parent_id = str(getattr(_chan, "parent_id", "") or "")
         _chan_id = str(getattr(_chan, "id", ""))
         _skills = self._resolve_channel_skills(_chan_id, _parent_id or None)
+        _model = self._resolve_channel_model(_chan_id, _parent_id or None)
         event = MessageEvent(
             text=event_text,
             message_type=msg_type,
@@ -2527,6 +2554,7 @@ class DiscordAdapter(BasePlatformAdapter):
             reply_to_message_id=str(message.reference.message_id) if message.reference else None,
             timestamp=message.created_at,
             auto_skill=_skills,
+            auto_model=_model,
         )
 
         # Track thread participation so the bot won't require @mention for

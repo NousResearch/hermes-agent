@@ -2510,6 +2510,52 @@ class GatewayRunner:
             except Exception as e:
                 logger.warning("[Gateway] Failed to auto-load skill(s) %s: %s", _skill_names, e)
 
+        # Auto-apply model override for channel bindings (e.g., Discord channel_skill_bindings).
+        # Only apply on new sessions — ongoing sessions keep their current model.
+        _auto_model = getattr(event, "auto_model", None)
+        if _is_new_session and _auto_model:
+            try:
+                from hermes_cli.model_switch import _switch_model
+                from hermes_cli.auth import list_authenticated_providers
+                _cfg = self._load_config()
+                _user_provs = _cfg.get("providers", {})
+                _custom_provs = _cfg.get("custom_providers", [])
+                _cur_model = _cfg.get("model", {}).get("default", "")
+                _cur_provider = _cfg.get("model", {}).get("provider", "")
+                _cur_base_url = _cfg.get("model", {}).get("base_url", "")
+                _cur_api_key = _cfg.get("model", {}).get("api_key", "")
+                _result = _switch_model(
+                    raw_input=_auto_model,
+                    current_provider=_cur_provider,
+                    current_model=_cur_model,
+                    current_base_url=_cur_base_url,
+                    current_api_key=_cur_api_key,
+                    is_global=False,
+                    user_providers=_user_provs,
+                    custom_providers=_custom_provs,
+                )
+                if _result.success:
+                    if not hasattr(self, "_session_model_overrides"):
+                        self._session_model_overrides = {}
+                    self._session_model_overrides[session_key] = {
+                        "model": _result.new_model,
+                        "provider": _result.target_provider,
+                        "api_key": _result.api_key,
+                        "base_url": _result.base_url,
+                        "api_mode": _result.api_mode,
+                    }
+                    logger.info(
+                        "[Gateway] Auto-applied model override '%s' -> '%s' for session %s",
+                        _auto_model, _result.new_model, session_key,
+                    )
+                else:
+                    logger.warning(
+                        "[Gateway] Failed to resolve auto_model '%s': %s",
+                        _auto_model, _result.error_message,
+                    )
+            except Exception as e:
+                logger.warning("[Gateway] Failed to apply auto_model '%s': %s", _auto_model, e)
+
         # Load conversation history from transcript
         history = self.session_store.load_transcript(session_entry.session_id)
         
@@ -6971,7 +7017,7 @@ class GatewayRunner:
             agent.status_callback = _status_callback_sync
             agent.reasoning_config = reasoning_config
             agent.service_tier = self._service_tier
-            agent.request_overrides = turn_route.get("request_overrides")
+            agent.request_overrides = turn_route.get("request_overrides") or {}
 
             # Background review delivery — send "💾 Memory updated" etc. to user
             def _bg_review_send(message: str) -> None:

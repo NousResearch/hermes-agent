@@ -592,6 +592,10 @@ class MessageEvent:
     # Auto-loaded skill(s) for topic/channel bindings (e.g., Telegram DM Topics,
     # Discord channel_skill_bindings).  A single name or ordered list.
     auto_skill: Optional[str | list[str]] = None
+
+    # Auto-applied model override for channel bindings (e.g., Discord channel_skill_bindings).
+    # Supports model alias names defined in config.yaml model_aliases.
+    auto_model: Optional[str] = None
     
     # Internal flag — set for synthetic events (e.g. background process
     # completion notifications) that must bypass user authorization checks.

@@ -226,11 +226,33 @@ def is_linux() -> bool:
     return sys.platform.startswith('linux')
 
 
-from hermes_constants import is_termux
+from hermes_constants import is_termux, is_wsl
+
+
+def _wsl_systemd_operational() -> bool:
+    """Check if systemd is actually running as PID 1 on WSL.
+
+    WSL2 with ``systemd=true`` in wsl.conf has working systemd.
+    WSL2 without it (or WSL1) does not — systemctl commands fail.
+    """
+    try:
+        result = subprocess.run(
+            ["systemctl", "is-system-running"],
+            capture_output=True, text=True, timeout=5,
+        )
+        # "running", "degraded", "starting" all mean systemd is PID 1
+        status = result.stdout.strip().lower()
+        return status in ("running", "degraded", "starting", "initializing")
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return False
 
 
 def supports_systemd_services() -> bool:
-    return is_linux() and not is_termux()
+    if not is_linux() or is_termux():
+        return False
+    if is_wsl():
+        return _wsl_systemd_operational()
+    return True
 
 
 def is_macos() -> bool:
@@ -2244,7 +2266,8 @@ def gateway_setup():
             print()
             if supports_systemd_services() or is_macos():
                 platform_name = "systemd" if supports_systemd_services() else "launchd"
-                if prompt_yes_no(f"  Install the gateway as a {platform_name} service? (runs in background, starts on boot)", True):
+                wsl_note = " (note: services may not survive WSL restarts)" if is_wsl() else ""
+                if prompt_yes_no(f"  Install the gateway as a {platform_name} service?{wsl_note} (runs in background, starts on boot)", True):
                     try:
                         installed_scope = None
                         did_install = False
@@ -2269,16 +2292,21 @@ def gateway_setup():
                     print_info("  You can install later: hermes gateway install")
                     if supports_systemd_services():
                         print_info("  Or as a boot-time service: sudo hermes gateway install --system")
-                    print_info("  Or run in foreground:  hermes gateway")
+                    print_info("  Or run in foreground:  hermes gateway run")
+            elif is_wsl():
+                print_info("  WSL detected but systemd is not running.")
+                print_info("  Run in foreground: hermes gateway run")
+                print_info("  For persistence:   tmux new -s hermes 'hermes gateway run'")
+                print_info("  To enable systemd: add systemd=true to /etc/wsl.conf, then 'wsl --shutdown'")
             else:
                 if is_termux():
                     from hermes_constants import display_hermes_home as _dhh
                     print_info("  Termux does not use systemd/launchd services.")
-                    print_info("  Run in foreground: hermes gateway")
-                    print_info(f"  Or start it manually in the background (best effort): nohup hermes gateway >{_dhh()}/logs/gateway.log 2>&1 &")
+                    print_info("  Run in foreground: hermes gateway run")
+                    print_info(f"  Or start it manually in the background (best effort): nohup hermes gateway run >{_dhh()}/logs/gateway.log 2>&1 &")
                 else:
                     print_info("  Service install not supported on this platform.")
-                    print_info("  Run in foreground: hermes gateway")
+                    print_info("  Run in foreground: hermes gateway run")
     else:
         print()
         print_info("No platforms configured. Run 'hermes gateway setup' when ready.")
@@ -2319,9 +2347,23 @@ def gateway_command(args):
             print("Run manually: hermes gateway")
             sys.exit(1)
         if supports_systemd_services():
+            if is_wsl():
+                print_warning("WSL detected — systemd services may not survive WSL restarts.")
+                print_info("  Consider running in foreground instead: hermes gateway run")
+                print_info("  Or use tmux/screen for persistence: tmux new -s hermes 'hermes gateway run'")
+                print()
             systemd_install(force=force, system=system, run_as_user=run_as_user)
         elif is_macos():
             launchd_install(force)
+        elif is_wsl():
+            print("WSL detected but systemd is not running.")
+            print("Either enable systemd (add systemd=true to /etc/wsl.conf and restart WSL)")
+            print("or run the gateway in foreground mode:")
+            print()
+            print("  hermes gateway run                              # direct foreground")
+            print("  tmux new -s hermes 'hermes gateway run'         # persistent via tmux")
+            print("  nohup hermes gateway run > ~/.hermes/logs/gateway.log 2>&1 &  # background")
+            sys.exit(1)
         else:
             print("Service installation not supported on this platform.")
             print("Run manually: hermes gateway run")
@@ -2354,6 +2396,16 @@ def gateway_command(args):
             systemd_start(system=system)
         elif is_macos():
             launchd_start()
+        elif is_wsl():
+            print("WSL detected but systemd is not available.")
+            print("Run the gateway in foreground mode instead:")
+            print()
+            print("  hermes gateway run                              # direct foreground")
+            print("  tmux new -s hermes 'hermes gateway run'         # persistent via tmux")
+            print("  nohup hermes gateway run > ~/.hermes/logs/gateway.log 2>&1 &  # background")
+            print()
+            print("To enable systemd: add systemd=true to /etc/wsl.conf and run 'wsl --shutdown' from PowerShell.")
+            sys.exit(1)
         else:
             print("Not supported on this platform.")
             sys.exit(1)
@@ -2488,6 +2540,10 @@ def gateway_command(args):
                 if is_termux():
                     print("Termux note:")
                     print("  Android may stop background jobs when Termux is suspended")
+                elif is_wsl():
+                    print("WSL note:")
+                    print("  The gateway is running in foreground/manual mode (recommended for WSL).")
+                    print("  Use tmux or screen for persistence across terminal closes.")
                 else:
                     print("To install as a service:")
                     print("  hermes gateway install")
@@ -2502,9 +2558,12 @@ def gateway_command(args):
                         print(f"  {line}")
                 print()
                 print("To start:")
-                print("  hermes gateway          # Run in foreground")
+                print("  hermes gateway run      # Run in foreground")
                 if is_termux():
-                    print("  nohup hermes gateway > ~/.hermes/logs/gateway.log 2>&1 &  # Best-effort background start")
+                    print("  nohup hermes gateway run > ~/.hermes/logs/gateway.log 2>&1 &  # Best-effort background start")
+                elif is_wsl():
+                    print("  tmux new -s hermes 'hermes gateway run'         # persistent via tmux")
+                    print("  nohup hermes gateway run > ~/.hermes/logs/gateway.log 2>&1 &  # background")
                 else:
                     print("  hermes gateway install  # Install as user service")
                     print("  sudo hermes gateway install --system  # Install as boot-time system service")

@@ -357,8 +357,19 @@ def _resize_image_for_vision(image_path: Path, mime_type: Optional[str] = None,
 
     for attempt in range(5):
         if attempt > 0:
-            new_w = max(img.width // 2, 64)
-            new_h = max(img.height // 2, 64)
+            # Proportional scaling: halve the longer side and scale the
+            # shorter side to preserve aspect ratio (min dimension 64).
+            scale = 0.5
+            new_w = max(int(img.width * scale), 64)
+            new_h = max(int(img.height * scale), 64)
+            # Re-derive the scale from whichever dimension hit the floor
+            # so both axes shrink by the same factor.
+            if new_w == 64 and img.width > 0:
+                effective_scale = 64 / img.width
+                new_h = max(int(img.height * effective_scale), 64)
+            elif new_h == 64 and img.height > 0:
+                effective_scale = 64 / img.height
+                new_w = max(int(img.width * effective_scale), 64)
             # Stop if dimensions can't shrink further
             if (new_w, new_h) == prev_dims:
                 break

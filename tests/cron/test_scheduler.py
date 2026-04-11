@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, patch, MagicMock
 import pytest
 
 from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_result, _send_media_via_adapter, run_job, SILENT_MARKER, _build_job_prompt
+from tools.env_passthrough import clear_env_passthrough
 
 
 class TestResolveOrigin:
@@ -877,6 +878,57 @@ class TestRunJobPerJobOverrides:
 
 
 class TestRunJobSkillBacked:
+    def test_run_job_preserves_skill_env_passthrough_into_worker_thread(self, tmp_path):
+        job = {
+            "id": "skill-env-job",
+            "name": "skill env test",
+            "prompt": "Use the skill.",
+            "skill": "notion",
+        }
+
+        fake_db = MagicMock()
+
+        def _skill_view(name):
+            assert name == "notion"
+            from tools.env_passthrough import register_env_passthrough
+
+            register_env_passthrough(["NOTION_API_KEY"])
+            return json.dumps({"success": True, "content": "# notion\nUse Notion."})
+
+        def _run_conversation(prompt):
+            from tools.env_passthrough import get_all_passthrough
+
+            assert "NOTION_API_KEY" in get_all_passthrough()
+            return {"final_response": "ok"}
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "***",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch("tools.skills_tool.skill_view", side_effect=_skill_view), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.side_effect = _run_conversation
+            mock_agent_cls.return_value = mock_agent
+
+            try:
+                success, output, final_response, error = run_job(job)
+            finally:
+                clear_env_passthrough()
+
+        assert success is True
+        assert error is None
+        assert final_response == "ok"
+
     def test_run_job_loads_skill_and_disables_recursive_cron_tools(self, tmp_path):
         job = {
             "id": "skill-job",

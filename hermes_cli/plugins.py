@@ -445,6 +445,53 @@ class PluginContext:
             self.manifest.name, provider.name,
         )
 
+    # -- platform adapter registration ---------------------------------------
+
+    def register_platform(
+        self,
+        name: str,
+        label: str,
+        adapter_factory: Callable,
+        check_fn: Callable,
+        validate_config: Callable | None = None,
+        required_env: list | None = None,
+        install_hint: str = "",
+    ) -> None:
+        """Register a gateway platform adapter.
+
+        The adapter_factory receives a ``PlatformConfig`` and returns a
+        ``BasePlatformAdapter`` subclass instance.  The gateway calls
+        ``check_fn()`` before instantiation to verify dependencies.
+
+        Example::
+
+            ctx.register_platform(
+                name="irc",
+                label="IRC",
+                adapter_factory=lambda cfg: IRCAdapter(cfg),
+                check_fn=lambda: True,
+            )
+        """
+        from gateway.platform_registry import platform_registry, PlatformEntry
+
+        entry = PlatformEntry(
+            name=name,
+            label=label,
+            adapter_factory=adapter_factory,
+            check_fn=check_fn,
+            validate_config=validate_config,
+            required_env=required_env or [],
+            install_hint=install_hint,
+            source="plugin",
+        )
+        platform_registry.register(entry)
+        self._manager._plugin_platform_names.add(name)
+        logger.debug(
+            "Plugin %s registered platform: %s",
+            self.manifest.name,
+            name,
+        )
+
     # -- hook registration --------------------------------------------------
 
     def register_hook(self, hook_name: str, callback: Callable) -> None:
@@ -523,6 +570,7 @@ class PluginManager:
         self._plugins: Dict[str, LoadedPlugin] = {}
         self._hooks: Dict[str, List[Callable]] = {}
         self._plugin_tool_names: Set[str] = set()
+        self._plugin_platform_names: Set[str] = set()
         self._cli_commands: Dict[str, dict] = {}
         self._context_engine = None  # Set by a plugin via register_context_engine()
         self._plugin_commands: Dict[str, dict] = {}  # Slash commands registered by plugins

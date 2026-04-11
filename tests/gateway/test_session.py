@@ -89,9 +89,12 @@ class TestSessionSourceRoundtrip:
         assert restored.chat_topic is None
         assert restored.chat_type == "dm"
 
-    def test_invalid_platform_raises(self):
-        with pytest.raises((ValueError, KeyError)):
-            SessionSource.from_dict({"platform": "nonexistent", "chat_id": "1"})
+    def test_unknown_platform_accepted_for_plugins(self):
+        """Unknown platform names are now accepted (dynamic enum members for
+        plugin platforms), so from_dict should succeed rather than raise."""
+        source = SessionSource.from_dict({"platform": "nonexistent", "chat_id": "1"})
+        assert source.platform.value == "nonexistent"
+        assert source.chat_id == "1"
 
 
 class TestSessionSourceDescription:

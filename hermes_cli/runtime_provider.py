@@ -368,8 +368,9 @@ def _resolve_openrouter_runtime(
     requested_provider: str,
     explicit_api_key: Optional[str] = None,
     explicit_base_url: Optional[str] = None,
+    model_cfg: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    model_cfg = _get_model_config()
+    model_cfg = model_cfg or _get_model_config()
     cfg_base_url = model_cfg.get("base_url") if isinstance(model_cfg.get("base_url"), str) else ""
     cfg_provider = model_cfg.get("provider") if isinstance(model_cfg.get("provider"), str) else ""
     cfg_api_key = ""
@@ -774,7 +775,7 @@ def resolve_runtime_provider(
         # Allow base URL override from config.yaml model.base_url, but only
         # when the configured provider is anthropic — otherwise a non-Anthropic
         # base_url (e.g. Codex endpoint) would leak into Anthropic requests.
-        cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
+        cfg_provider = normalize_provider_id(str(model_cfg.get("provider") or "").strip().lower()) if model_cfg.get("provider") else ""
         cfg_base_url = ""
         if cfg_provider == "anthropic":
             cfg_base_url = (model_cfg.get("base_url") or "").strip().rstrip("/")
@@ -796,7 +797,7 @@ def resolve_runtime_provider(
         # matches this provider — mirrors the Anthropic path above.  Without
         # this, users who set model.base_url to e.g. api.minimaxi.com/anthropic
         # (China endpoint) still get the hardcoded api.minimax.io default (#6039).
-        cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
+        cfg_provider = normalize_provider_id(str(model_cfg.get("provider") or "").strip().lower()) if model_cfg.get("provider") else ""
         cfg_base_url = ""
         if cfg_provider == provider:
             cfg_base_url = (model_cfg.get("base_url") or "").strip().rstrip("/")
@@ -833,6 +834,7 @@ def resolve_runtime_provider(
         requested_provider=requested_provider,
         explicit_api_key=explicit_api_key,
         explicit_base_url=explicit_base_url,
+        model_cfg=model_cfg,
     )
     runtime["requested_provider"] = requested_provider
     return runtime

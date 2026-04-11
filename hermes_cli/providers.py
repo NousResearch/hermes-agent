@@ -421,11 +421,19 @@ def resolve_user_provider(name: str, user_config: Dict[str, Any]) -> Optional[Pr
         return None
 
     entry = user_config.get(name)
+    resolved_name = name
+    if not isinstance(entry, dict):
+        lowered_name = str(name or "").strip().lower()
+        for key, candidate in user_config.items():
+            if str(key).strip().lower() == lowered_name:
+                entry = candidate
+                resolved_name = str(key)
+                break
     if not isinstance(entry, dict):
         return None
 
     # Extract fields
-    display_name = entry.get("name", "") or name
+    display_name = entry.get("name", "") or resolved_name
     api_url = entry.get("api", "") or entry.get("url", "") or entry.get("base_url", "") or ""
     key_env = entry.get("key_env", "") or ""
     transport = entry.get("transport", "openai_chat") or "openai_chat"
@@ -435,7 +443,7 @@ def resolve_user_provider(name: str, user_config: Dict[str, Any]) -> Optional[Pr
         env_vars.append(key_env)
 
     return ProviderDef(
-        id=name,
+        id=str(resolved_name).strip().lower(),
         name=display_name,
         transport=transport,
         api_key_env_vars=tuple(env_vars),

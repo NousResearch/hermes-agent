@@ -475,12 +475,20 @@ def _provider_configured_status(
                     return _status_label(True)
         return _status_label(False)
 
-    if user_providers and provider_slug in user_providers:
-        entry = user_providers.get(provider_slug)
+    if user_providers:
+        entry = next(
+            (
+                value
+                for key, value in user_providers.items()
+                if str(key).strip().lower() == provider_slug
+            ),
+            None,
+        )
         configured = isinstance(entry, dict) and bool(
             (entry.get("api") or entry.get("url") or entry.get("base_url") or "").strip()
         )
-        return _status_label(configured)
+        if entry is not None:
+            return _status_label(configured)
 
     status = get_auth_status(provider_slug)
     configured = bool(status.get("configured") or status.get("logged_in"))
@@ -684,7 +692,8 @@ def build_model_selection_tree(
         seen_other_slugs.add(provider_slug)
 
     if user_providers and isinstance(user_providers, dict):
-        for provider_slug, entry in user_providers.items():
+        for raw_provider_slug, entry in user_providers.items():
+            provider_slug = str(raw_provider_slug).strip().lower()
             if provider_slug in seen_other_slugs or not isinstance(entry, dict):
                 continue
             default_model = (

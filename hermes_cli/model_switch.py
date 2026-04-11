@@ -29,6 +29,7 @@ from hermes_cli.providers import (
     determine_api_mode,
     get_label,
     is_aggregator,
+    normalize_provider,
     resolve_provider_full,
 )
 from hermes_cli.model_normalize import (
@@ -261,7 +262,7 @@ def runtime_model_selection_state(config: dict | None) -> RuntimeModelSelectionS
         current_provider = str(cfg.get("provider") or current_provider).strip() or current_provider
         current_base_url = str(cfg.get("base_url") or "").strip()
 
-    current_provider = current_provider.lower() or "openrouter"
+    current_provider = normalize_provider(current_provider.lower() or "openrouter")
     if current_provider == "auto":
         try:
             current_provider = resolve_provider("auto")

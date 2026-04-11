@@ -1247,8 +1247,10 @@ class AIAgent:
         # Store for reuse in switch_model (so config override persists across model switches)
         self._config_context_length = _config_context_length
 
-        # Check custom_providers per-model context_length and max_tokens
-        if _config_context_length is None:
+        # Check custom_providers per-model context_length and max_tokens.
+        # Look up independently so an explicit context_length doesn't suppress
+        # the per-model max_tokens lookup, and vice versa.
+        if _config_context_length is None or self.max_tokens is None:
             _custom_providers = _agent_cfg.get("custom_providers")
             if isinstance(_custom_providers, list):
                 for _cp_entry in _custom_providers:
@@ -1260,13 +1262,13 @@ class AIAgent:
                         if isinstance(_cp_models, dict):
                             _cp_model_cfg = _cp_models.get(self.model, {})
                             if isinstance(_cp_model_cfg, dict):
-                                _cp_ctx = _cp_model_cfg.get("context_length")
-                                if _cp_ctx is not None:
-                                    try:
-                                        _config_context_length = int(_cp_ctx)
-                                    except (TypeError, ValueError):
-                                        pass
-                                # Also read max_tokens from per-model config if not already set
+                                if _config_context_length is None:
+                                    _cp_ctx = _cp_model_cfg.get("context_length")
+                                    if _cp_ctx is not None:
+                                        try:
+                                            _config_context_length = int(_cp_ctx)
+                                        except (TypeError, ValueError):
+                                            pass
                                 if self.max_tokens is None:
                                     _cp_max_tok = _cp_model_cfg.get("max_tokens")
                                     if _cp_max_tok is not None:

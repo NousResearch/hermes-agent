@@ -1431,8 +1431,12 @@ class WeixinAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
         **kwargs,
     ) -> SendResult:
-        # Accept legacy 'path' kwarg for backwards compat
         path = image_path or kwargs.get("path", "")
+        if not path:
+            return SendResult(
+                success=False,
+                error="send_image_file requires 'image_path' (or legacy 'path')",
+            )
         return await self.send_document(chat_id, path, caption=caption, metadata=metadata)
 
     async def send_document(
@@ -1526,7 +1530,6 @@ class WeixinAdapter(BasePlatformAdapter):
         media_item = item_builder(
             encrypt_query_param=encrypted_query_param,
             aes_key_b64=aes_key_b64_for_msg,
-            aes_key_hex=aes_key.hex(),
             ciphertext_size=len(ciphertext),
             plaintext_size=rawsize,
             filename=Path(path).name,

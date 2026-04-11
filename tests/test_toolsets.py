@@ -105,6 +105,19 @@ class TestValidateToolset:
         finally:
             registry.deregister("mcp_dynserver_ping")
 
+    def test_mcp_alias_collision_does_not_shadow_existing_toolset(self):
+        registry.register(
+            name="mcp_web_ping",
+            toolset="mcp-web",
+            schema={"name": "mcp_web_ping", "description": "Ping", "parameters": {"type": "object", "properties": {}}},
+            handler=lambda *_args, **_kwargs: "{}",
+        )
+        try:
+            assert get_toolset("web") is not None
+            assert "mcp_web_ping" not in resolve_toolset("web")
+        finally:
+            registry.deregister("mcp_web_ping")
+
 
 class TestGetToolsetInfo:
     def test_leaf(self):
@@ -204,3 +217,15 @@ class TestToolsetConsistency:
         # All platform toolsets should be identical
         for ts in tool_sets[1:]:
             assert ts == tool_sets[0]
+
+    def test_all_excludes_hidden_mcp_collisions(self):
+        registry.register(
+            name="mcp_web_hidden_tool",
+            toolset="mcp-web",
+            schema={"name": "mcp_web_hidden_tool", "description": "Hidden", "parameters": {"type": "object", "properties": {}}},
+            handler=lambda *_args, **_kwargs: "{}",
+        )
+        try:
+            assert "mcp_web_hidden_tool" not in resolve_toolset("all")
+        finally:
+            registry.deregister("mcp_web_hidden_tool")

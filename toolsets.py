@@ -410,11 +410,17 @@ def get_legacy_toolset_map() -> Dict[str, List[str]]:
 def _get_mcp_toolset_aliases() -> Dict[str, str]:
     """Map raw MCP server names to their internal registry toolset names."""
     aliases: Dict[str, str] = {}
+    reserved_names = set(TOOLSETS) | set(LEGACY_TOOLSET_ALIASES)
+    reserved_names.update(
+        toolset_name
+        for toolset_name in _get_registry_toolset_names()
+        if not toolset_name.startswith("mcp-")
+    )
     for toolset_name in _get_registry_toolset_names():
         if not toolset_name.startswith("mcp-"):
             continue
         alias = toolset_name[4:]
-        if alias and alias not in TOOLSETS:
+        if alias and alias not in reserved_names:
             aliases.setdefault(alias, toolset_name)
     return aliases
 
@@ -470,7 +476,7 @@ def resolve_toolset(name: str, visited: Set[str] = None) -> List[str]:
         visited = set()
 
     if name in {"all", "*"}:
-        all_tools: Set[str] = set(registry.get_all_tool_names())
+        all_tools: Set[str] = set()
         for toolset_name in get_toolset_names():
             all_tools.update(resolve_toolset(toolset_name, visited.copy()))
         return list(all_tools)

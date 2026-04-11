@@ -627,3 +627,37 @@ class TestProcessToolHandler:
         from tools.process_registry import _handle_process
         result = json.loads(_handle_process({"action": "unknown_action"}))
         assert "error" in result
+
+
+# =========================================================================
+# Incremental output visibility (regression)
+# =========================================================================
+
+class TestIncrementalOutput:
+    """poll() must see output while the process is still running, not only at EOF."""
+
+    def test_poll_sees_output_before_process_exits(self, registry, tmp_path):
+        """Spawn a process that prints lines with delays; poll mid-run."""
+        script = tmp_path / "slow_print.py"
+        script.write_text(
+            "import time\n"
+            "for i in range(20):\n"
+            "    print(f'line {i}', flush=True)\n"
+            "    time.sleep(0.3)\n"
+        )
+        session = registry.spawn_local(
+            f"{sys.executable} -u {script}",
+            cwd=str(tmp_path),
+            use_pty=False,
+        )
+        try:
+            # Wait until output appears (bash -lic startup can take a few seconds)
+            assert _wait_until(
+                lambda: "line 0" in registry.poll(session.id).get("output_preview", ""),
+                timeout=20.0,
+                interval=0.1,
+            ), f"Expected early output visible during run, got: {registry.poll(session.id)['output_preview']!r}"
+            # Confirm the process is still running when we see output
+            assert registry.poll(session.id)["status"] == "running"
+        finally:
+            registry.kill_process(session.id)

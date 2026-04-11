@@ -29,6 +29,7 @@ Usage:
     process_registry.kill(session.id)
 """
 
+import codecs
 import json
 import logging
 import os
@@ -473,12 +474,21 @@ class ProcessRegistry:
 
     def _reader_loop(self, session: ProcessSession):
         """Background thread: read stdout from a local Popen process."""
+        # Bypass TextIOWrapper.read() which tries to accumulate N chars before
+        # returning -- that hides incremental output from poll().  Instead read
+        # raw bytes via BufferedReader.read1() (at most one underlying read
+        # syscall, returns immediately with whatever is available) and decode
+        # through an IncrementalDecoder that handles multi-byte char boundaries.
+        decoder = codecs.getincrementaldecoder("utf-8")("replace")
         first_chunk = True
         try:
             while True:
-                chunk = session.process.stdout.read(4096)
-                if not chunk:
+                raw = session.process.stdout.buffer.read1(4096)
+                if not raw:
                     break
+                chunk = decoder.decode(raw)
+                if not chunk:
+                    continue
                 if first_chunk:
                     chunk = self._clean_shell_noise(chunk)
                     first_chunk = False
@@ -490,6 +500,16 @@ class ProcessRegistry:
         except Exception as e:
             logger.debug("Process stdout reader ended: %s", e)
         finally:
+            # Flush any trailing bytes held by the incremental decoder before
+            # marking the process finished.
+            try:
+                trailing = decoder.decode(b"", final=True)
+                if trailing:
+                    with session._lock:
+                        session.output_buffer += trailing
+            except Exception:
+                pass
+
             # Always reap the child to prevent zombie processes.
             try:
                 session.process.wait(timeout=5)

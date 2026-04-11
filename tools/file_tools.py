@@ -449,6 +449,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
             related = _discover_related_paths(path, result.content)
             if related:
                 result_dict["_related_paths"] = related
+                logger.debug("read_file _related_paths: %s -> %d hints", path, len(related))
 
         return json.dumps(result_dict, ensure_ascii=False)
     except Exception as e:
@@ -802,6 +803,10 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
                 if hasattr(m, 'preview') and m.preview:
                     m.preview = redact_sensitive_text(m.preview)
         result_dict = result.to_dict()
+        if preview_lines > 0 and hasattr(result, 'matches'):
+            previews_attached = sum(1 for m in result.matches if getattr(m, 'preview', None))
+            logger.debug("search_files preview_lines=%d: %d/%d previews attached",
+                         preview_lines, previews_attached, len(result.matches))
 
         if count >= 3:
             result_dict["_warning"] = (

@@ -933,6 +933,14 @@ Write only the summary body. Do not include any preamble or prefix."""
             source_messages[compress_start:compress_end],
         )
         checkpoint_text = checkpoint.format_for_injection() if checkpoint else None
+        if checkpoint_text:
+            logger.debug(
+                "TaskCheckpoint generated: %d chars, pending=%d, modified=%d, step=%s",
+                len(checkpoint_text),
+                len(checkpoint.pending_tool_calls),
+                len(checkpoint.recently_modified_files),
+                checkpoint.current_plan_step[:40] if checkpoint.current_plan_step else "(none)",
+            )
 
         if not self.quiet_mode:
             logger.info(

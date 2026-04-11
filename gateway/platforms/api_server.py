@@ -7,7 +7,6 @@ Exposes an HTTP server with endpoints:
 - GET  /v1/responses/{response_id} — Retrieve a stored response
 - DELETE /v1/responses/{response_id} — Delete a stored response
 - GET  /v1/models                  — lists hermes-agent as an available model
-- GET  /v1/sessions                — list sessions with preview, title, last_active, message_count
 - POST /v1/runs                    — start a run, returns run_id immediately (202)
 - GET  /v1/runs/{run_id}/events    — SSE stream of structured lifecycle events
 - GET  /health                     — health check
@@ -477,80 +476,6 @@ class APIServerAdapter(BasePlatformAdapter):
                     "parent": None,
                 }
             ],
-        })
-
-    async def _handle_list_sessions(self, request: "web.Request") -> "web.Response":
-        """GET /v1/sessions — list sessions with preview and metadata."""
-        auth_err = self._check_auth(request)
-        if auth_err:
-            return auth_err
-
-        session_db = self._ensure_session_db()
-        if not session_db:
-            return web.json_response(
-                {"error": {"message": "Session database not available", "type": "internal_error"}},
-                status=503,
-            )
-
-        # Parse query params
-        try:
-            limit = int(request.query.get("limit", "50"))
-            offset = int(request.query.get("offset", "0"))
-        except ValueError:
-            return web.json_response(
-                {"error": {"message": "Invalid limit/offset parameter", "type": "invalid_request_error"}},
-                status=400,
-            )
-
-        # Clamp limits
-        limit = min(max(1, limit), 200)
-        offset = max(0, offset)
-
-        try:
-            sessions_raw = session_db.list_sessions_rich(limit=limit, offset=offset)
-        except Exception as e:
-            logger.error("Failed to list sessions: %s", e)
-            return web.json_response(
-                {"error": {"message": f"Failed to list sessions: {e}", "type": "internal_error"}},
-                status=500,
-            )
-
-        # Format sessions for API response
-        from datetime import datetime, timezone
-
-        sessions = []
-        for s in sessions_raw:
-            # Convert timestamps to ISO8601
-            started_at = s.get("started_at")
-            last_active = s.get("last_active")
-            ended_at = s.get("ended_at")
-
-            def ts_to_iso(ts):
-                if ts is None:
-                    return None
-                try:
-                    if isinstance(ts, (int, float)):
-                        return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
-                    return ts
-                except Exception:
-                    return None
-
-            sessions.append({
-                "id": s.get("id"),
-                "title": s.get("title"),
-                "preview": s.get("preview", "")[:80] if s.get("preview") else "",
-                "source": s.get("source"),
-                "model": s.get("model"),
-                "message_count": s.get("message_count", 0),
-                "started_at": ts_to_iso(started_at),
-                "last_active": ts_to_iso(last_active),
-                "ended_at": ts_to_iso(ended_at),
-            })
-
-        return web.json_response({
-            "object": "list",
-            "sessions": sessions,
-            "total": len(sessions),
         })
 
     async def _handle_chat_completions(self, request: "web.Request") -> "web.Response":
@@ -1627,7 +1552,6 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_get("/health", self._handle_health)
             self._app.router.add_get("/v1/health", self._handle_health)
             self._app.router.add_get("/v1/models", self._handle_models)
-            self._app.router.add_get("/v1/sessions", self._handle_list_sessions)
             self._app.router.add_post("/v1/chat/completions", self._handle_chat_completions)
             self._app.router.add_post("/v1/responses", self._handle_responses)
             self._app.router.add_get("/v1/responses/{response_id}", self._handle_get_response)

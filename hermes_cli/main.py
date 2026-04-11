@@ -952,8 +952,7 @@ def select_provider_and_model(args=None):
         ("ai-gateway", "AI Gateway (Vercel — 200+ models, pay-per-use)"),
         ("alibaba", "Alibaba Cloud / DashScope Coding (Qwen + multi-provider)"),
         ("huggingface", "Hugging Face Inference Providers (20+ open models)"),
-        ("deepseek", "DeepSeek (official API — limited models) [less complete]"),
-        ("synthetic", "Synthetic — US-based inference API (24+ Hugging Face models)"),
+        ("synthetic", "Synthetic — US-based inference API. Pay-per-use or subscription."),
     ]
 
     # Add user-defined custom providers from config.yaml

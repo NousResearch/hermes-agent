@@ -129,18 +129,116 @@ When you provide a `tasks` array, subagents run in **parallel** using a thread p
 
 Single-task delegation runs directly without thread pool overhead.
 
-## Model Override
+## Per-Task Model Selection
 
-You can configure a different model for subagents via `config.yaml` — useful for delegating simple tasks to cheaper/faster models:
+You can override the model on a **per-task basis** using the `model` parameter, enabling subagent-driven development where each task runs on the best model for its complexity:
+
+### Model Parameter Syntax
+
+The `model` parameter accepts the same syntax as the `/model` slash command:
+
+1. **Bare model ID** — runs on your current provider:
+   ```python
+   delegate_task(goal="Summarize README.md", model="haiku")
+   delegate_task(goal="Design a system", model="opus")
+   ```
+
+2. **Short alias** — auto-resolves against your provider's catalog:
+   ```python
+   delegate_task(goal="Write a test", model="sonnet")
+   ```
+
+3. **Provider switch** — append `--provider <slug>` to route to a different provider:
+   ```python
+   delegate_task(
+       goal="Search the web",
+       model="llama-3.3-70b --provider openrouter"
+   )
+   delegate_task(
+       goal="Refactor code",
+       model="gpt-4-turbo --provider openai"
+   )
+   ```
+
+Valid provider slugs: `openrouter`, `anthropic`, `openai`, `google`, `deepseek`, `zai` (Z.AI), `kimi-coding`, `minimax`, `x-ai`, and any user-defined provider in `config.yaml`.
+
+### Batch with Mixed Models
+
+The most powerful pattern — delegate different tasks to different models in parallel:
+
+```python
+delegate_task(tasks=[
+    {
+        "goal": "Find all TODO comments in src/",
+        "model": "haiku",  # Fast + cheap for simple lookups
+        "toolsets": ["terminal", "file"]
+    },
+    {
+        "goal": "Redesign the authentication flow",
+        "model": "sonnet",  # Moderate reasoning
+        "toolsets": ["terminal", "file"]
+    },
+    {
+        "goal": "Evaluate a complex algorithm",
+        "model": "opus",  # Heavy reasoning
+        "toolsets": ["file"]
+    },
+    {
+        "goal": "Search GitHub for similar patterns",
+        "model": "glm-4.7 --provider openrouter",  # Cross-provider
+        "toolsets": ["web"]
+    }
+])
+```
+
+All tasks run in parallel with their chosen models, each getting dedicated credentials and provider routing.
+
+### Model Precedence
+
+When resolving which model to use:
+1. **Per-task `model`** (highest priority) — if specified in the task dict
+2. **Top-level `model`** — if passed to `delegate_task(model=...)`
+3. **`delegation.model` config** — if set in `~/.hermes/config.yaml`
+4. **Parent's model** (lowest priority) — inherit from parent agent
+
+### Configuration Fallback
+
+For a consistent subagent model across all delegations, configure it in `config.yaml`:
 
 ```yaml
 # In ~/.hermes/config.yaml
 delegation:
-  model: "google/gemini-flash-2.0"    # Cheaper model for subagents
-  provider: "openrouter"              # Optional: route subagents to a different provider
+  model: "google/gemini-flash-2.0"    # Default for all subagents
+  provider: "openrouter"              # Optional: which provider to use
 ```
 
 If omitted, subagents use the same model as the parent.
+
+### Common Patterns
+
+**Cost optimization** — route cheap tasks to haiku, expensive tasks to opus:
+```python
+delegate_task(
+    goal="Fix the build",
+    model="haiku"  # Fast loop, low cost
+)
+```
+
+**Rate-limit relief** — spread load across providers:
+```python
+delegate_task(tasks=[
+    {"goal": "Task A", "model": "sonnet --provider anthropic"},
+    {"goal": "Task B", "model": "gpt-4-turbo --provider openai"},
+])
+```
+
+**OpenRouter free tier** — append `:free` variant suffix (colons are for variant tags, not provider prefix):
+```python
+delegate_task(
+    goal="Quick research",
+    model="llama-3.3-70b:free --provider openrouter"
+)
+```
 
 ## Toolset Selection Tips
 

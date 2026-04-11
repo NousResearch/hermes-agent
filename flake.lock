@@ -43,11 +43,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1734767823,
-        "narHash": "sha256-UHVfdyuOdGEDRPkoSJRsX7HhN8oL/g903QUlzhBTadI=",
+        "lastModified": 1775903712,
+        "narHash": "sha256-2GV79U6iVH4gKAPWYrxUReB0S41ty/Y3dBLquU8AlaA=",
         "owner": "jeslie0",
         "repo": "npm-lockfile-fix",
-        "rev": "193e463bf27a36f85775eddde7189f93a493d2b3",
+        "rev": "c6093acb0c0548e0f9b8b3d82918823721930fe8",
         "type": "github"
       },
       "original": {

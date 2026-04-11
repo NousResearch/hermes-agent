@@ -4,7 +4,7 @@ let
   src = ../ui-tui;
   npmDeps = pkgs.fetchNpmDeps {
     inherit src;
-    hash = "sha256-zFGNrlB07I5MwF+Fo4Jf/MZnKIFzkfD+MoL+svt6Fr0=";
+    hash = "sha256-QQixyLmsn5+Y1daHifzDaNQbaoZjm+ezGrGoLXcc95U=";
   };
 
   packageJson = builtins.fromJSON (builtins.readFile (src + "/package.json"));
@@ -46,7 +46,7 @@ pkgs.buildNpmPackage {
       rm -rf node_modules/
       npm cache clean --force
       npm install
-      ${pkgs.lib.getExe' npm-lockfile-fix "npm-lockfile-fix"} ./package-lock.json
+      ${pkgs.lib.getExe npm-lockfile-fix} ./package-lock.json
 
       NIX_FILE="$REPO_ROOT/nix/tui.nix"
       # compute the new hash

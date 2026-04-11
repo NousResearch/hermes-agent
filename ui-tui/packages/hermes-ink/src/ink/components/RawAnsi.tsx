@@ -25,7 +25,7 @@ type Props = {
  * (width × lines.length) and hands the joined string straight to output.write(),
  * which already splits on '\n' and parses ANSI into the screen buffer.
  */
-export function RawAnsi(t0) {
+export function RawAnsi(t0: Props) {
   const $ = _c(6)
 
   const { lines, width } = t0

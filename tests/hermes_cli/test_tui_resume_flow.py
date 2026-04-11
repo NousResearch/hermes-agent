@@ -25,7 +25,7 @@ def test_cmd_chat_tui_continue_uses_latest_tui_session(monkeypatch):
         calls.append(source)
         return "20260408_235959_a1b2c3" if source == "tui" else None
 
-    def fake_launch(resume_session_id=None):
+    def fake_launch(resume_session_id=None, tui_dev=False):
         captured["resume"] = resume_session_id
         raise SystemExit(0)
 
@@ -54,7 +54,7 @@ def test_cmd_chat_tui_continue_falls_back_to_latest_cli_session(monkeypatch):
             return "20260408_235959_d4e5f6"
         return None
 
-    def fake_launch(resume_session_id=None):
+    def fake_launch(resume_session_id=None, tui_dev=False):
         captured["resume"] = resume_session_id
         raise SystemExit(0)
 
@@ -74,7 +74,7 @@ def test_cmd_chat_tui_resume_resolves_title_before_launch(monkeypatch):
 
     captured = {}
 
-    def fake_launch(resume_session_id=None):
+    def fake_launch(resume_session_id=None, tui_dev=False):
         captured["resume"] = resume_session_id
         raise SystemExit(0)
 

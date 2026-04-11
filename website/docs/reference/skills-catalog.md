@@ -242,6 +242,7 @@ Skills for document creation, presentations, spreadsheets, and other productivit
 | `linear` | Manage Linear issues, projects, and teams via the GraphQL API. Create, update, search, and organize issues. | `productivity/linear` |
 | `nano-pdf` | Edit PDFs with natural-language instructions using the nano-pdf CLI. Modify text, fix typos, update titles, and make content changes to specific pages without manual editing. | `productivity/nano-pdf` |
 | `notion` | Notion API for creating and managing pages, databases, and blocks via curl. Search, create, update, and query Notion workspaces directly from the terminal. | `productivity/notion` |
+| `real-sports-delivery` | Orchestrate the Real Sports extractor with Hermes: run extraction, validate ai-ready.json freshness, hand off delivery to Hermes, and post the result to Discord. Treats the extractor repo as the source of truth. | `productivity/real-sports-delivery` |
 | `ocr-and-documents` | Extract text from PDFs and scanned documents. Use web_extract for remote URLs, pymupdf for local text-based PDFs, marker-pdf for OCR/scanned docs. For DOCX use python-docx, for PPTX see the powerpoint skill. | `productivity/ocr-and-documents` |
 | `powerpoint` | "Use this skill any time a .pptx file is involved in any way — as input, output, or both. This includes: creating slide decks, pitch decks, or presentations; reading, parsing, or extracting text from any .pptx file (even if the extracted content will be used elsewhere, like in a… | `productivity/powerpoint` |
 

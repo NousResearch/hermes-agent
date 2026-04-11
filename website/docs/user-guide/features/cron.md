@@ -86,6 +86,19 @@ cronjob(
 
 This is useful when you want a scheduled agent to inherit reusable workflows without stuffing the full skill text into the cron prompt itself.
 
+A good real-world example is the Real Sports delivery workflow:
+
+```python
+cronjob(
+    action="create",
+    skills=["real-sports-delivery"],
+    prompt="Run the Real Sports delivery workflow from the configured extractor checkout.",
+    schedule="0 8 * * *",
+    name="Real Sports picks",
+    deliver="discord",
+)
+```
+
 ## Editing jobs
 
 You do not need to delete and recreate jobs just to change them.

@@ -12,6 +12,7 @@ import com.nousresearch.hermesagent.data.DeviceCapabilityStore
 import com.nousresearch.hermesagent.device.DeviceStateWriter
 import com.nousresearch.hermesagent.device.HermesAccessibilityController
 import com.nousresearch.hermesagent.device.HermesGlobalAction
+import com.nousresearch.hermesagent.device.HermesLinuxSubsystemBridge
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -30,6 +31,14 @@ data class DeviceUiState(
     val workspaceFiles: List<WorkspaceFileUi> = emptyList(),
     val sharedFolderLabel: String = "No shared folder granted yet",
     val sharedFolderUri: String = "",
+    val linuxEnabled: Boolean = false,
+    val linuxAndroidAbi: String = "",
+    val linuxTermuxArch: String = "",
+    val linuxPrefixPath: String = "",
+    val linuxBashPath: String = "",
+    val linuxHomePath: String = "",
+    val linuxTmpPath: String = "",
+    val linuxPackageCount: Int = 0,
     val accessibilityEnabled: Boolean = false,
     val accessibilityConnected: Boolean = false,
     val status: String = "",
@@ -139,6 +148,7 @@ class DeviceViewModel(application: Application) : AndroidViewModel(application) 
     private fun buildState(status: String = ""): DeviceUiState {
         val context = getApplication<Application>()
         val sharedFolder = capabilityStore.load()
+        val linuxState = HermesLinuxSubsystemBridge.readState(context)
         val workspace = DeviceStateWriter.workspaceDir(context)
         val workspaceFiles = workspace
             .listFiles()
@@ -159,6 +169,14 @@ class DeviceViewModel(application: Application) : AndroidViewModel(application) 
             workspaceFiles = workspaceFiles,
             sharedFolderLabel = sharedFolder.sharedFolderLabel.ifBlank { "No shared folder granted yet" },
             sharedFolderUri = sharedFolder.sharedFolderUri,
+            linuxEnabled = linuxState?.optBoolean("enabled") == true,
+            linuxAndroidAbi = linuxState?.optString("android_abi").orEmpty(),
+            linuxTermuxArch = linuxState?.optString("termux_arch").orEmpty(),
+            linuxPrefixPath = linuxState?.optString("prefix_path").orEmpty(),
+            linuxBashPath = linuxState?.optString("bash_path").orEmpty(),
+            linuxHomePath = linuxState?.optString("home_path").orEmpty(),
+            linuxTmpPath = linuxState?.optString("tmp_path").orEmpty(),
+            linuxPackageCount = linuxState?.optJSONArray("packages")?.length() ?: 0,
             accessibilityEnabled = HermesAccessibilityController.isServiceEnabled(context),
             accessibilityConnected = HermesAccessibilityController.isServiceConnected(),
             status = status,

@@ -145,6 +145,14 @@ def read_device_capabilities() -> dict[str, Any]:
         "available_global_actions": list(_DEFAULT_GLOBAL_ACTIONS),
         "shared_folder_tools": list(_SHARED_FOLDER_TOOLS),
         "ui_targeting_tools": list(_ACCESSIBILITY_TOOLS),
+        "linux_enabled": False,
+        "linux_android_abi": "",
+        "linux_termux_arch": "",
+        "linux_prefix_path": "",
+        "linux_bash_path": "",
+        "linux_home_path": "",
+        "linux_tmp_path": "",
+        "linux_package_count": 0,
     }
 
     state_path = _device_state_path()
@@ -161,6 +169,14 @@ def read_device_capabilities() -> dict[str, Any]:
                 "accessibility_enabled",
                 "accessibility_connected",
                 "available_global_actions",
+                "linux_enabled",
+                "linux_android_abi",
+                "linux_termux_arch",
+                "linux_prefix_path",
+                "linux_bash_path",
+                "linux_home_path",
+                "linux_tmp_path",
+                "linux_package_count",
             ):
                 if key in loaded:
                     payload[key] = loaded[key]
@@ -173,6 +189,10 @@ def read_device_capabilities() -> dict[str, Any]:
         "Grant a shared folder in the Device tab, then use android_shared_folder_list/read/write "
         "to work on those files directly. Use workspace read_file/write_file/search_files/patch only "
         "for imported copies or scratch files."
+    )
+    payload["linux_guide"] = (
+        "The Android Linux suite exposes a real local bash-based command subsystem. Use terminal/process "
+        "for direct CLI execution inside the extracted command prefix shown in linux_prefix_path."
     )
     payload["accessibility_guide"] = (
         "Enable Hermes accessibility, inspect the visible UI with android_ui_snapshot, then trigger a "

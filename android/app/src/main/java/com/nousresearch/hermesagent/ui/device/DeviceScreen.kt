@@ -71,6 +71,7 @@ fun DeviceScreen(
             ) {
                 Text("Device", style = MaterialTheme.typography.headlineSmall)
                 DeviceGuideCard(workspacePath = uiState.workspacePath)
+                LinuxSuiteCard(uiState = uiState)
                 WorkspaceAccessCard(
                     uiState = uiState,
                     onImportFile = { importLauncher.launch(arrayOf("*/*")) },
@@ -107,13 +108,60 @@ private fun DeviceGuideCard(workspacePath: String) {
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             Text("How to use this alpha", style = MaterialTheme.typography.titleMedium)
-            Text("1. Grant a shared folder from Android's native picker if you want Hermes to edit the real files in place.")
-            Text("2. Ask Hermes to call android_device_status first, then use android_shared_folder_list / android_shared_folder_read / android_shared_folder_write for direct shared-folder work.")
+            Text("1. Hermes now ships a local Linux command suite inside the Android app. Ask Hermes to call android_device_status first, then use terminal/process for full CLI execution.")
+            Text("2. Grant a shared folder from Android's native picker if you want Hermes to edit the real files in place with android_shared_folder_list/read/write.")
             Text("3. Import files into the workspace only when you want scratch copies or staging files.")
             Text("4. Enable Hermes accessibility if you want Hermes to inspect the visible UI and trigger targeted actions in addition to Home / Back / Recents / Notifications / Quick settings.")
             if (workspacePath.isNotBlank()) {
                 Text("Workspace path: $workspacePath", style = MaterialTheme.typography.bodySmall)
             }
+        }
+    }
+}
+
+@Composable
+private fun LinuxSuiteCard(uiState: DeviceUiState) {
+    OutlinedCard(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text("Linux command suite", style = MaterialTheme.typography.titleMedium)
+            Text(
+                if (uiState.linuxEnabled) {
+                    "Hermes can execute full CLI commands locally with terminal/process using the extracted Linux suite."
+                } else {
+                    "Linux command suite is still provisioning. Retry Hermes once the backend finishes booting."
+                },
+            )
+            if (uiState.linuxAndroidAbi.isNotBlank() || uiState.linuxTermuxArch.isNotBlank()) {
+                Text(
+                    "ABI: ${uiState.linuxAndroidAbi} · suite arch: ${uiState.linuxTermuxArch}",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            if (uiState.linuxPrefixPath.isNotBlank()) {
+                Text("Prefix: ${uiState.linuxPrefixPath}", style = MaterialTheme.typography.bodySmall)
+            }
+            if (uiState.linuxBashPath.isNotBlank()) {
+                Text("Bash: ${uiState.linuxBashPath}", style = MaterialTheme.typography.bodySmall)
+            }
+            if (uiState.linuxHomePath.isNotBlank()) {
+                Text("Home: ${uiState.linuxHomePath}", style = MaterialTheme.typography.bodySmall)
+            }
+            if (uiState.linuxTmpPath.isNotBlank()) {
+                Text("Temp: ${uiState.linuxTmpPath}", style = MaterialTheme.typography.bodySmall)
+            }
+            Text(
+                "Included package count: ${uiState.linuxPackageCount}",
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Text(
+                "Ask Hermes to use terminal for commands like 'git status', 'ls', 'curl', 'grep', or longer shell pipelines directly in this suite.",
+                style = MaterialTheme.typography.bodySmall,
+            )
         }
     }
 }
@@ -135,7 +183,7 @@ private fun WorkspaceAccessCard(
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             Text("Shared folder + workspace access", style = MaterialTheme.typography.titleMedium)
-            Text("Grant a shared folder to let Hermes read and write the real files directly. Imported files still land in the Hermes workspace when you want copies instead.")
+            Text("Grant a shared folder to let Hermes read and write the real files directly. Imported files still land in the Hermes workspace when you want copies instead, while terminal/process now cover general CLI work.")
             Text("Shared folder: ${uiState.sharedFolderLabel}", style = MaterialTheme.typography.bodySmall)
             if (uiState.sharedFolderUri.isNotBlank()) {
                 Text(uiState.sharedFolderUri, style = MaterialTheme.typography.bodySmall)

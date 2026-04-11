@@ -354,8 +354,9 @@ TOOLSETS = {
     },
 
     "hermes-android-app": {
-        "description": "Android app alpha toolset — direct shared-folder access, Android UI targeting, and workspace fallback tools",
+        "description": "Android app alpha toolset — local Linux terminal/process execution plus direct shared-folder and UI targeting tools",
         "tools": [
+            "terminal", "process",
             "android_device_status",
             "android_shared_folder_list", "android_shared_folder_read", "android_shared_folder_write",
             "android_ui_snapshot", "android_ui_action",

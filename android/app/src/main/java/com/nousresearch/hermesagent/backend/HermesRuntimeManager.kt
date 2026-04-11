@@ -3,6 +3,7 @@ package com.nousresearch.hermesagent.backend
 import android.content.Context
 import com.chaquo.python.Python
 import com.chaquo.python.android.AndroidPlatform
+import com.nousresearch.hermesagent.device.HermesLinuxSubsystemBridge
 import org.json.JSONObject
 
 object HermesRuntimeManager {
@@ -26,6 +27,7 @@ object HermesRuntimeManager {
         }
 
         return try {
+            HermesLinuxSubsystemBridge.ensureInstalled(context.applicationContext)
             if (!Python.isStarted()) {
                 Python.start(AndroidPlatform(context.applicationContext))
             }

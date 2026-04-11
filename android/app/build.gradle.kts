@@ -11,6 +11,7 @@ val repoRoot = rootDir.parentFile
 val hermesVersionFile = repoRoot.resolve("hermes_cli/__init__.py")
 val releaseTag = System.getenv("HERMES_RELEASE_TAG").orEmpty().trim()
 val hermesWheelDir = layout.buildDirectory.dir("hermes-wheel")
+val generatedHermesLinuxAssetsDir = layout.buildDirectory.dir("generated/hermes-linux-assets")
 val keystorePropertiesFile = rootDir.resolve("keystore.properties")
 val keystoreProperties = Properties().apply {
     if (keystorePropertiesFile.isFile) {
@@ -138,6 +139,12 @@ android {
         compose = true
     }
 
+    sourceSets {
+        getByName("main") {
+            assets.srcDir(generatedHermesLinuxAssetsDir)
+        }
+    }
+
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
@@ -190,8 +197,29 @@ val prepareHermesAndroidWheel = tasks.register<Exec>("prepareHermesAndroidWheel"
     )
 }
 
+val prepareHermesAndroidLinuxAssets = tasks.register<Exec>("prepareHermesAndroidLinuxAssets") {
+    group = "android"
+    description = "Download and normalize the Android Linux command-suite assets."
+    val outputDir = generatedHermesLinuxAssetsDir.get().asFile
+    outputs.dir(outputDir)
+    doFirst {
+        outputDir.mkdirs()
+    }
+    commandLine(
+        resolvedBuildPython(),
+        repoRoot.resolve("scripts/prepare_android_linux_assets.py").absolutePath,
+        "--output-dir",
+        outputDir.absolutePath,
+    )
+}
+
+tasks.named("preBuild") {
+    dependsOn(prepareHermesAndroidLinuxAssets)
+}
+
 tasks.matching { it.name.endsWith("PythonRequirements") }.configureEach {
     dependsOn(prepareHermesAndroidWheel)
+    dependsOn(prepareHermesAndroidLinuxAssets)
     val taskName = name
     val variant = taskName.removePrefix("install").removeSuffix("PythonRequirements")
     if (variant.isNotEmpty()) {

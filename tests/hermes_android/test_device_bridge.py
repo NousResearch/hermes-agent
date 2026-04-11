@@ -44,6 +44,7 @@ def test_read_device_capabilities_merges_android_state_file(tmp_path, monkeypatc
     assert payload["accessibility_enabled"] is True
     assert payload["accessibility_connected"] is True
     assert payload["available_global_actions"] == ["home", "back"]
+    assert payload["linux_enabled"] is False
     assert payload["workspace_file_count"] == 1
     assert payload["workspace_files"][0]["relative_path"] == "notes.txt"
 

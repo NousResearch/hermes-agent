@@ -656,7 +656,19 @@ def cmd_chat(args):
     }
     # Filter out None values
     kwargs = {k: v for k, v in kwargs.items() if v is not None}
-    
+
+    # Interactive chat (no single-shot -q/--query, no -i/--image) needs a real
+    # TTY. Otherwise prompt_toolkit's add_reader on stdin can crash with
+    # OSError [Errno 22] from kqueue on macOS (Vt100Input only catches
+    # PermissionError, which is the epoll-equivalent on Linux).
+    if not kwargs.get("query") and not kwargs.get("image") and not sys.stdin.isatty():
+        print(
+            "Error: 'hermes chat' requires an interactive terminal when no -q/--query is given.\n"
+            "Run it directly in your terminal, or pass -q for single-shot mode.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     try:
         cli_main(**kwargs)
     except ValueError as e:

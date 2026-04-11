@@ -296,6 +296,20 @@ class MatrixAdapter(BasePlatformAdapter):
                 from mautrix.crypto.store import MemoryCryptoStore
 
                 crypto_store = MemoryCryptoStore()
+
+                # Restore persisted crypto state from a previous run.
+                pickle_path = _STORE_DIR / "crypto_store.pickle"
+                if pickle_path.exists():
+                    try:
+                        import pickle
+                        with open(pickle_path, "rb") as f:
+                            saved = pickle.load(f)  # noqa: S301 — trusted local file
+                        if isinstance(saved, MemoryCryptoStore):
+                            crypto_store = saved
+                            logger.info("Matrix: restored E2EE crypto store from %s", pickle_path)
+                    except Exception as exc:
+                        logger.warning("Matrix: could not restore crypto store: %s", exc)
+
                 olm = OlmMachine(client, crypto_store, state_store)
 
                 # Set trust policy: accept unverified devices so senders
@@ -370,6 +384,20 @@ class MatrixAdapter(BasePlatformAdapter):
                 await self._sync_task
             except (asyncio.CancelledError, Exception):
                 pass
+
+        # Persist E2EE crypto store before closing so the next restart
+        # can decrypt events using sessions from this run.
+        if self._client and self._encryption and getattr(self._client, "crypto", None):
+            try:
+                import pickle
+                crypto_store = self._client.crypto.crypto_store
+                _STORE_DIR.mkdir(parents=True, exist_ok=True)
+                pickle_path = _STORE_DIR / "crypto_store.pickle"
+                with open(pickle_path, "wb") as f:
+                    pickle.dump(crypto_store, f)
+                logger.info("Matrix: persisted E2EE crypto store to %s", pickle_path)
+            except Exception as exc:
+                logger.debug("Matrix: could not persist crypto store on disconnect: %s", exc)
 
         if self._client:
             try:
@@ -804,6 +832,11 @@ class MatrixAdapter(BasePlatformAdapter):
             )
 
             # Route to the appropriate handler.
+            # Remove from dedup set so _on_room_message doesn't drop it
+            # (the encrypted event ID was already registered by _on_encrypted_event).
+            decrypted_id = str(getattr(decrypted, "event_id", getattr(event, "event_id", "")))
+            if decrypted_id:
+                self._processed_events_set.discard(decrypted_id)
             try:
                 await self._on_room_message(decrypted)
             except Exception as exc:

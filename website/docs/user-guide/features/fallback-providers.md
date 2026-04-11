@@ -50,6 +50,7 @@ Both `provider` and `model` are **required**. If either is missing, the fallback
 | OpenCode Zen | `opencode-zen` | `OPENCODE_ZEN_API_KEY` |
 | OpenCode Go | `opencode-go` | `OPENCODE_GO_API_KEY` |
 | Kilo Code | `kilocode` | `KILOCODE_API_KEY` |
+| Xiaomi MiMo | `xiaomi` | `XIAOMI_API_KEY` |
 | Alibaba / DashScope | `alibaba` | `DASHSCOPE_API_KEY` |
 | Hugging Face | `huggingface` | `HF_TOKEN` |
 | Custom endpoint | `custom` | `base_url` + `api_key_env` (see below) |
@@ -169,7 +170,7 @@ When a task's provider is set to `"auto"` (the default), Hermes tries providers 
 
 ```text
 OpenRouter → Nous Portal → Custom endpoint → Codex OAuth →
-API-key providers (z.ai, Kimi, MiniMax, Hugging Face, Anthropic) → give up
+API-key providers (z.ai, Kimi, MiniMax, Xiaomi MiMo, Hugging Face, Anthropic) → give up
 ```
 
 **For vision tasks:**

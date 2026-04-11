@@ -109,7 +109,6 @@ _API_KEY_PROVIDER_AUX_MODELS: Dict[str, str] = {
     "opencode-zen": "gemini-3-flash",
     "opencode-go": "glm-5",
     "kilocode": "google/gemini-3-flash-preview",
-    "xiaomi": "mimo-v2-flash",
 }
 
 # Vision-specific model overrides for direct providers.

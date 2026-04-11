@@ -285,12 +285,12 @@ class TestXiaomiProvidersModule:
 
 
 class TestXiaomiAuxiliary:
-    """Xiaomi should have a default auxiliary model and a vision model override."""
+    """Xiaomi auxiliary routing: vision → omni, non-vision → user's main model, never flash."""
 
-    def test_aux_model_defined(self):
+    def test_no_flash_in_aux_models(self):
+        """mimo-v2-flash must NEVER be used for automatic aux routing."""
         from agent.auxiliary_client import _API_KEY_PROVIDER_AUX_MODELS
-        assert "xiaomi" in _API_KEY_PROVIDER_AUX_MODELS
-        assert _API_KEY_PROVIDER_AUX_MODELS["xiaomi"] == "mimo-v2-flash"
+        assert "xiaomi" not in _API_KEY_PROVIDER_AUX_MODELS
 
     def test_vision_model_override(self):
         """Xiaomi vision tasks should use mimo-v2-omni (multimodal), not the main model."""

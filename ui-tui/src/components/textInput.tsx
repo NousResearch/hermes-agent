@@ -1,4 +1,5 @@
 import * as Ink from '@hermes/ink'
+import type { InputEvent, Key } from '@hermes/ink'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 type InkExt = typeof Ink & {
@@ -303,7 +304,7 @@ export function TextInput({ columns = 80, value, onChange, onPaste, onSubmit, pl
   // ── Input handler ────────────────────────────────────────────────
 
   useInput(
-    (inp, k, event) => {
+    (inp: string, k: Key, event: InputEvent) => {
       // Some terminals normalize Ctrl+V to "v"; others deliver raw ^V (\x16).
       const ctrlPaste = k.ctrl && (inp.toLowerCase() === 'v' || event.keypress.raw === '\x16')
       const metaPaste = k.meta && inp.toLowerCase() === 'v'

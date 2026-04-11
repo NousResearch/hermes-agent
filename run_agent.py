@@ -3887,6 +3887,17 @@ class AIAgent:
                 self._client_log_context(),
             )
             return client
+        if self.provider == "claude-code-acp" or str(client_kwargs.get("base_url", "")).startswith("acp://claude-code"):
+            from agent.claude_code_client import ClaudeCodeClient
+
+            client = ClaudeCodeClient(**client_kwargs)
+            logger.info(
+                "Claude Code ACP client created (%s, shared=%s) %s",
+                reason,
+                shared,
+                self._client_log_context(),
+            )
+            return client
         client = OpenAI(**client_kwargs)
         logger.info(
             "OpenAI client created (%s, shared=%s) %s",

@@ -934,6 +934,9 @@ def select_provider_and_model(args=None):
         "kilocode": "Kilo Code",
         "alibaba": "Alibaba Cloud (DashScope)",
         "huggingface": "Hugging Face",
+        "llm-acp": "ACP LLM",
+        "claude-agent-acp": "Claude Agent ACP",
+        "claude-code-acp": "Claude Code ACP",
         "custom": "Custom endpoint",
     }
     active_label = provider_labels.get(active, active) if active else "none"
@@ -956,6 +959,9 @@ def select_provider_and_model(args=None):
 
     extended_providers = [
         ("copilot-acp", "GitHub Copilot ACP (spawns `copilot --acp --stdio`)"),
+        ("claude-code-acp", "Claude Code ACP (uses local `claude` CLI as backend)"),
+        ("claude-agent-acp", "Claude Agent ACP (spawns `claude-agent-acp --stdio`)"),
+        ("llm-acp", "ACP LLM (generic ACP subprocess — any ACP-compatible LLM server)"),
         ("gemini", "Google AI Studio (Gemini models — OpenAI-compatible endpoint)"),
         ("zai", "Z.AI / GLM (Zhipu AI direct API)"),
         ("kimi-coding", "Kimi / Moonshot (Moonshot AI direct API)"),
@@ -1058,6 +1064,12 @@ def select_provider_and_model(args=None):
         _model_flow_qwen_oauth(config, current_model)
     elif selected_provider == "copilot-acp":
         _model_flow_copilot_acp(config, current_model)
+    elif selected_provider == "claude-code-acp":
+        _model_flow_claude_code_acp(config, current_model)
+    elif selected_provider == "claude-agent-acp":
+        _model_flow_claude_agent_acp(config, current_model)
+    elif selected_provider == "llm-acp":
+        _model_flow_llm_acp(config, current_model)
     elif selected_provider == "copilot":
         _model_flow_copilot(config, current_model)
     elif selected_provider == "custom":
@@ -2181,6 +2193,164 @@ def _model_flow_copilot_acp(config, current_model=""):
     deactivate_provider()
 
     print(f"Default model set to: {selected} (via {pconfig.name})")
+
+
+def _model_flow_claude_code_acp(config, current_model=""):
+    import os
+    from hermes_cli.auth import PROVIDER_REGISTRY, deactivate_provider
+    from hermes_cli.config import load_config, save_config, save_env_value
+
+    del config
+    provider_id = "claude-code-acp"
+    pconfig = PROVIDER_REGISTRY[provider_id]
+
+    env_cmd = os.getenv("CLAUDE_CODE_ACP_COMMAND", "").strip()
+    default_cmd = env_cmd or "claude"
+    print("  Claude Code ACP uses your local `claude` CLI as the Hermes backend.")
+    print("  Each Hermes turn spawns `claude --print --output-format stream-json`.")
+    print(f"  Current command: {default_cmd}")
+    print()
+
+    try:
+        cmd = input(f"  Command [{default_cmd}]: ").strip() or default_cmd
+    except (KeyboardInterrupt, EOFError):
+        print()
+        return
+
+    try:
+        model_name = input("  Model name (or Enter to skip): ").strip()
+    except (KeyboardInterrupt, EOFError):
+        print()
+        return
+
+    save_env_value("CLAUDE_CODE_ACP_COMMAND", cmd)
+
+    cfg = load_config()
+    model = cfg.get("model")
+    if not isinstance(model, dict):
+        model = {"default": model} if model else {}
+        cfg["model"] = model
+    model["provider"] = provider_id
+    model["base_url"] = pconfig.inference_base_url
+    model["api_mode"] = "chat_completions"
+    if model_name:
+        model["default"] = model_name
+    save_config(cfg)
+    deactivate_provider()
+
+    print(f"  Configured: {provider_id} via {cmd}")
+
+
+def _model_flow_claude_agent_acp(config, current_model=""):
+    import os
+    import getpass
+    from hermes_cli.auth import PROVIDER_REGISTRY, deactivate_provider
+    from hermes_cli.config import load_config, save_config
+
+    del config
+    provider_id = "claude-agent-acp"
+    pconfig = PROVIDER_REGISTRY[provider_id]
+
+    env_cmd = os.getenv("CLAUDE_AGENT_ACP_COMMAND", "").strip()
+    default_cmd = env_cmd or "claude-agent-acp"
+    print("  Claude Agent ACP connects Hermes to a Claude Code ACP subprocess.")
+    print("  Install: https://github.com/agentclientprotocol/claude-agent-acp")
+    print(f"  Current command: {default_cmd}")
+    print()
+
+    try:
+        cmd = input(f"  Command [{default_cmd}]: ").strip() or default_cmd
+    except (KeyboardInterrupt, EOFError):
+        print()
+        return
+
+    if not cmd:
+        print("  Cancelled.")
+        return
+
+    try:
+        model_name = input("  Model name (or Enter to skip): ").strip()
+    except (KeyboardInterrupt, EOFError):
+        print()
+        return
+
+    from hermes_cli.config import save_env_value
+    save_env_value("CLAUDE_AGENT_ACP_COMMAND", cmd)
+
+    cfg = load_config()
+    model = cfg.get("model")
+    if not isinstance(model, dict):
+        model = {"default": model} if model else {}
+        cfg["model"] = model
+    model["provider"] = provider_id
+    model["base_url"] = pconfig.inference_base_url
+    model["api_mode"] = "chat_completions"
+    if model_name:
+        model["default"] = model_name
+    save_config(cfg)
+    deactivate_provider()
+
+    print(f"  Configured: {provider_id} via {cmd}")
+
+
+def _model_flow_llm_acp(config, current_model=""):
+    import os
+    import getpass
+    from hermes_cli.auth import PROVIDER_REGISTRY, deactivate_provider
+    from hermes_cli.config import load_config, save_config
+
+    del config
+    provider_id = "llm-acp"
+    pconfig = PROVIDER_REGISTRY[provider_id]
+
+    env_cmd = os.getenv("ACP_LLM_COMMAND", "").strip()
+    env_url = os.getenv("ACP_LLM_BASE_URL", "").strip()
+    print("  ACP LLM connects Hermes to any ACP-compatible LLM subprocess.")
+    print(f"  Current command: {env_cmd or '(not set)'}")
+    print(f"  Current base URL: {env_url or pconfig.inference_base_url}")
+    print()
+
+    try:
+        cmd = input("  Command (required, e.g. my-acp-llm): ").strip()
+    except (KeyboardInterrupt, EOFError):
+        print()
+        return
+
+    if not cmd:
+        print("  Cancelled — command is required.")
+        return
+
+    try:
+        base_url = input(f"  Base URL [{env_url or pconfig.inference_base_url}]: ").strip()
+    except (KeyboardInterrupt, EOFError):
+        print()
+        return
+    if not base_url:
+        base_url = env_url or pconfig.inference_base_url
+
+    try:
+        model_name = input("  Model name (or Enter to skip): ").strip()
+    except (KeyboardInterrupt, EOFError):
+        print()
+        return
+
+    from hermes_cli.config import save_env_value
+    save_env_value("ACP_LLM_COMMAND", cmd)
+
+    cfg = load_config()
+    model = cfg.get("model")
+    if not isinstance(model, dict):
+        model = {"default": model} if model else {}
+        cfg["model"] = model
+    model["provider"] = provider_id
+    model["base_url"] = base_url
+    model["api_mode"] = "chat_completions"
+    if model_name:
+        model["default"] = model_name
+    save_config(cfg)
+    deactivate_provider()
+
+    print(f"  Configured: {provider_id} via {cmd}")
 
 
 def _model_flow_kimi(config, current_model=""):

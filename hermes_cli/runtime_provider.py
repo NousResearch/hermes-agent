@@ -24,6 +24,7 @@ from hermes_cli.auth import (
     resolve_qwen_runtime_credentials,
     resolve_api_key_provider_credentials,
     resolve_external_process_provider_credentials,
+    resolve_acp_provider_credentials,
     has_usable_secret,
 )
 from hermes_cli.config import load_config
@@ -734,6 +735,19 @@ def resolve_runtime_provider(
         creds = resolve_external_process_provider_credentials(provider)
         return {
             "provider": "copilot-acp",
+            "api_mode": "chat_completions",
+            "base_url": creds.get("base_url", "").rstrip("/"),
+            "api_key": creds.get("api_key", ""),
+            "command": creds.get("command", ""),
+            "args": list(creds.get("args") or []),
+            "source": creds.get("source", "process"),
+            "requested_provider": requested_provider,
+        }
+
+    if provider in ("llm-acp", "claude-agent-acp", "claude-code-acp"):
+        creds = resolve_acp_provider_credentials(provider)
+        return {
+            "provider": provider,
             "api_mode": "chat_completions",
             "base_url": creds.get("base_url", "").rstrip("/"),
             "api_key": creds.get("api_key", ""),

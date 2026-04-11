@@ -87,7 +87,7 @@ class ProviderConfig:
     """Describes a known inference provider."""
     id: str
     name: str
-    auth_type: str  # "oauth_device_code", "oauth_external", or "api_key"
+    auth_type: str  # "oauth_device_code", "oauth_external", "api_key", or "acp"
     portal_base_url: str = ""
     inference_base_url: str = ""
     client_id: str = ""
@@ -249,6 +249,27 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         inference_base_url="https://router.huggingface.co/v1",
         api_key_env_vars=("HF_TOKEN",),
         base_url_env_var="HF_BASE_URL",
+    ),
+    "llm-acp": ProviderConfig(
+        id="llm-acp",
+        name="ACP LLM",
+        auth_type="acp",
+        inference_base_url="acp://llm",
+        base_url_env_var="ACP_LLM_BASE_URL",
+    ),
+    "claude-agent-acp": ProviderConfig(
+        id="claude-agent-acp",
+        name="Claude Agent ACP",
+        auth_type="acp",
+        inference_base_url="acp://claude-agent",
+        base_url_env_var="CLAUDE_AGENT_ACP_BASE_URL",
+    ),
+    "claude-code-acp": ProviderConfig(
+        id="claude-code-acp",
+        name="Claude Code ACP",
+        auth_type="acp",
+        inference_base_url="acp://claude-code",
+        base_url_env_var="CLAUDE_CODE_ACP_BASE_URL",
     ),
 }
 
@@ -904,6 +925,9 @@ def resolve_provider(
         "github": "copilot", "github-copilot": "copilot",
         "github-models": "copilot", "github-model": "copilot",
         "github-copilot-acp": "copilot-acp", "copilot-acp-agent": "copilot-acp",
+        "acp-llm": "llm-acp", "llmacp": "llm-acp",
+        "claude-acp": "claude-agent-acp", "claude-agent": "claude-agent-acp",
+        "claude-code-acp": "claude-code-acp", "cc-acp": "claude-code-acp",
         "aigateway": "ai-gateway", "vercel": "ai-gateway", "vercel-ai-gateway": "ai-gateway",
         "opencode": "opencode-zen", "zen": "opencode-zen",
         "qwen-portal": "qwen-oauth", "qwen-cli": "qwen-oauth", "qwen-oauth": "qwen-oauth",
@@ -2422,6 +2446,63 @@ def resolve_external_process_provider_credentials(provider_id: str) -> Dict[str,
     return {
         "provider": provider_id,
         "api_key": "copilot-acp",
+        "base_url": base_url.rstrip("/"),
+        "command": resolved_command or command,
+        "args": args,
+        "source": "process",
+    }
+
+
+def resolve_acp_provider_credentials(provider_id: str) -> Dict[str, Any]:
+    """Resolve runtime details for generic ACP subprocess providers (auth_type='acp')."""
+    pconfig = PROVIDER_REGISTRY.get(provider_id)
+    if not pconfig or pconfig.auth_type != "acp":
+        raise AuthError(
+            f"Provider '{provider_id}' is not an ACP provider.",
+            provider=provider_id,
+            code="invalid_provider",
+        )
+
+    base_url = ""
+    if pconfig.base_url_env_var:
+        base_url = os.getenv(pconfig.base_url_env_var, "").strip()
+    if not base_url:
+        base_url = pconfig.inference_base_url
+
+    if provider_id == "claude-code-acp":
+        command = os.getenv("CLAUDE_CODE_ACP_COMMAND", "").strip() or "claude"
+        raw_args = os.getenv("CLAUDE_CODE_ACP_ARGS", "").strip()
+        args = shlex.split(raw_args) if raw_args else [
+            "--print", "--output-format", "stream-json", "--verbose", "--dangerously-skip-permissions", "--no-session-persistence"
+        ]
+    elif provider_id == "claude-agent-acp":
+        command = os.getenv("CLAUDE_AGENT_ACP_COMMAND", "").strip() or "claude-agent-acp"
+        raw_args = os.getenv("CLAUDE_AGENT_ACP_ARGS", "").strip()
+        args = shlex.split(raw_args) if raw_args else ["--stdio"]
+    else:
+        command = os.getenv("ACP_LLM_COMMAND", "").strip()
+        if not command:
+            raise AuthError(
+                "ACP_LLM_COMMAND is required for the 'llm-acp' provider. "
+                "Set it to the command that starts your ACP-compatible LLM server.",
+                provider=provider_id,
+                code="missing_command",
+            )
+        raw_args = os.getenv("ACP_LLM_ARGS", "").strip()
+        args = shlex.split(raw_args) if raw_args else ["--stdio"]
+
+    resolved_command = shutil.which(command) if command else None
+    if not resolved_command and not base_url.startswith("acp+tcp://"):
+        raise AuthError(
+            f"Could not find ACP command '{command}'. "
+            "Install it or set the appropriate environment variable.",
+            provider=provider_id,
+            code="missing_command",
+        )
+
+    return {
+        "provider": provider_id,
+        "api_key": provider_id,
         "base_url": base_url.rstrip("/"),
         "command": resolved_command or command,
         "args": args,

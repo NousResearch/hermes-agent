@@ -3212,7 +3212,7 @@ class AIAgent:
         if platform_key in PLATFORM_HINTS:
             prompt_parts.append(PLATFORM_HINTS[platform_key])
 
-        return "\n\n".join(prompt_parts)
+        return "\n\n".join(p.strip() for p in prompt_parts if p.strip())
 
     # =========================================================================
     # Pre/post-call guardrails (inspired by PR #1321 — @alireza78a)
@@ -8046,6 +8046,36 @@ class AIAgent:
             # gated on context_compressor — so orphans from session loading or
             # manual message manipulation are always caught.
             api_messages = self._sanitize_api_messages(api_messages)
+
+            # Normalize message whitespace and tool-call JSON for consistent
+            # prefix matching.  Ensures bit-perfect prefixes across turns,
+            # which enables KV cache reuse on local inference servers
+            # (llama.cpp, vLLM, Ollama) and improves cache hit rates for
+            # cloud providers.  Operates on api_messages (the API copy) so
+            # the original conversation history in `messages` is untouched.
+            for am in api_messages:
+                if isinstance(am.get("content"), str):
+                    am["content"] = am["content"].strip()
+            for am in api_messages:
+                tcs = am.get("tool_calls")
+                if not tcs:
+                    continue
+                new_tcs = []
+                for tc in tcs:
+                    if isinstance(tc, dict) and "function" in tc:
+                        try:
+                            args_obj = json.loads(tc["function"]["arguments"])
+                            tc = {**tc, "function": {
+                                **tc["function"],
+                                "arguments": json.dumps(
+                                    args_obj, separators=(",", ":"),
+                                    sort_keys=True,
+                                ),
+                            }}
+                        except Exception:
+                            pass
+                    new_tcs.append(tc)
+                am["tool_calls"] = new_tcs
 
             # Calculate approximate request size for logging
             total_chars = sum(len(str(msg)) for msg in api_messages)

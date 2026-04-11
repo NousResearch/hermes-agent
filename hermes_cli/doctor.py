@@ -799,11 +799,15 @@ def run_doctor(args):
     try:
         # Add project root to path for imports
         sys.path.insert(0, str(PROJECT_ROOT))
-        from model_tools import check_tool_availability, get_toolset_requirements_snapshot
-        
+        import model_tools as _model_tools
+
+        check_tool_availability = _model_tools.check_tool_availability
         available, unavailable = check_tool_availability()
         available, unavailable = _apply_doctor_tool_availability_overrides(available, unavailable)
-        toolset_requirements = get_toolset_requirements_snapshot()
+        if hasattr(_model_tools, "get_toolset_requirements_snapshot"):
+            toolset_requirements = _model_tools.get_toolset_requirements_snapshot()
+        else:
+            toolset_requirements = getattr(_model_tools, "TOOLSET_REQUIREMENTS", {})
 
         for tid in available:
             info = toolset_requirements.get(tid, {})

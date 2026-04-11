@@ -558,12 +558,6 @@ def _get_platform_tools(
     # as an allowlist. Otherwise include every globally enabled MCP server.
     # Special sentinel: "no_mcp" in the toolset list disables all MCP servers.
     mcp_servers = config.get("mcp_servers") or {}
-    enabled_mcp_server_toolsets = {
-        f"mcp-{name}"
-        for name, server_cfg in mcp_servers.items()
-        if isinstance(server_cfg, dict)
-        and _parse_enabled_flag(server_cfg.get("enabled", True), default=True)
-    }
     enabled_mcp_servers = {
         name
         for name, server_cfg in mcp_servers.items()
@@ -571,22 +565,27 @@ def _get_platform_tools(
         and _parse_enabled_flag(server_cfg.get("enabled", True), default=True)
     }
     # Allow "no_mcp" sentinel to opt out of all MCP servers for this platform
-    legacy_named_mcp_toolsets = {
-        f"mcp-{ts}"
-        for ts in explicit_passthrough & enabled_mcp_servers
+    legacy_named_mcp_servers = {
+        ts[4:]
+        for ts in explicit_passthrough
+        if ts.startswith("mcp-") and ts[4:] in enabled_mcp_servers
     }
-    explicit_passthrough = (explicit_passthrough - enabled_mcp_servers) | legacy_named_mcp_toolsets
+    explicit_passthrough = {
+        ts
+        for ts in explicit_passthrough
+        if not ts.startswith("mcp-")
+    } | legacy_named_mcp_servers
     if "no_mcp" in toolset_names:
         explicit_mcp_servers = set()
-        enabled_toolsets.update(explicit_passthrough - enabled_mcp_server_toolsets - {"no_mcp"})
+        enabled_toolsets.update(explicit_passthrough - enabled_mcp_servers - {"no_mcp"})
     else:
-        explicit_mcp_servers = explicit_passthrough & enabled_mcp_server_toolsets
-        enabled_toolsets.update(explicit_passthrough - enabled_mcp_server_toolsets)
+        explicit_mcp_servers = explicit_passthrough & enabled_mcp_servers
+        enabled_toolsets.update(explicit_passthrough - enabled_mcp_servers)
     if include_default_mcp_servers:
         if explicit_mcp_servers or "no_mcp" in toolset_names:
             enabled_toolsets.update(explicit_mcp_servers)
         else:
-            enabled_toolsets.update(enabled_mcp_server_toolsets)
+            enabled_toolsets.update(enabled_mcp_servers)
     else:
         enabled_toolsets.update(explicit_mcp_servers)
 

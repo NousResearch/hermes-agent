@@ -4819,13 +4819,13 @@ class HermesCLI:
         )
 
         if resolution.status == "ambiguous":
-            _cprint(f"{_GOLD}Ambiguous command: {cmd_lower}{_RST}")
+            _cprint(f"{_ACCENT}Ambiguous command: {cmd_lower}{_RST}")
             _cprint(f"{_DIM}Did you mean: {', '.join(sorted(resolution.matches))}?{_RST}")
             return True
 
         if resolution.status == "unknown" or resolution.entry is None:
             _cprint(f"\033[1;31mUnknown command: {cmd_lower}{_RST}")
-            _cprint(f"{_DIM}{_GOLD}Type /help for available commands{_RST}")
+            _cprint(f"{_DIM}{_ACCENT}Type /help for available commands{_RST}")
             return True
 
         entry = resolution.entry

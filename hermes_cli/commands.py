@@ -996,7 +996,9 @@ def resolve_gateway_slash_command(
 
     builtin = resolve_command(slash_name)
     overrides = _resolve_config_gates(config)
-    if builtin is not None and _is_gateway_available(builtin, overrides):
+    if builtin is not None and (
+        _is_gateway_available(builtin, overrides) or builtin.gateway_config_gate
+    ):
         return SlashResolution(
             status="matched",
             entry=SlashCommandEntry(

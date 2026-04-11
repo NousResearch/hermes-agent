@@ -5516,10 +5516,10 @@ class GatewayRunner:
         # --- cycle mode -------------------------------------------------------
         cycle = ["off", "new", "all", "verbose"]
         descriptions = {
-            "off": "⚙️ Tool progress: **OFF** — no tool activity shown.",
-            "new": "⚙️ Tool progress: **NEW** — shown when tool changes (preview length: `display.tool_preview_length`, default 40).",
-            "all": "⚙️ Tool progress: **ALL** — every tool call shown (preview length: `display.tool_preview_length`, default 40).",
-            "verbose": "⚙️ Tool progress: **VERBOSE** — every tool call with full arguments.",
+            "off": "⚙️ Tool progress (`display.tool_progress`): **OFF** — no tool activity shown.",
+            "new": "⚙️ Tool progress (`display.tool_progress`): **NEW** — shown when tool changes (preview length: `display.tool_preview_length`, default 40).",
+            "all": "⚙️ Tool progress (`display.tool_progress`): **ALL** — every tool call shown (preview length: `display.tool_preview_length`, default 40).",
+            "verbose": "⚙️ Tool progress (`display.tool_progress`): **VERBOSE** — every tool call with full arguments.",
         }
 
         raw_progress = user_config.get("display", {}).get("tool_progress", "all")

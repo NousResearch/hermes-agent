@@ -801,14 +801,14 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     mattermost_token = os.getenv("MATTERMOST_TOKEN")
     mattermost_url = os.getenv("MATTERMOST_URL", "")
     if mattermost_token or mattermost_url:
+        if Platform.MATTERMOST not in config.platforms:
+            config.platforms[Platform.MATTERMOST] = PlatformConfig()
+        config.platforms[Platform.MATTERMOST].token = mattermost_token
+        config.platforms[Platform.MATTERMOST].extra["url"] = mattermost_url
         if not (mattermost_token and mattermost_url):
             logger.warning("Mattermost config is partial; both MATTERMOST_TOKEN and MATTERMOST_URL are required")
         else:
-            if Platform.MATTERMOST not in config.platforms:
-                config.platforms[Platform.MATTERMOST] = PlatformConfig()
             config.platforms[Platform.MATTERMOST].enabled = True
-            config.platforms[Platform.MATTERMOST].token = mattermost_token
-            config.platforms[Platform.MATTERMOST].extra["url"] = mattermost_url
     mattermost_home = os.getenv("MATTERMOST_HOME_CHANNEL")
     if mattermost_home and Platform.MATTERMOST in config.platforms:
         config.platforms[Platform.MATTERMOST].home_channel = HomeChannel(

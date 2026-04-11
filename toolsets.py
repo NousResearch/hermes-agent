@@ -72,6 +72,19 @@ LEGACY_TOOLSET_ALIASES: Dict[str, List[str]] = {
 }
 
 
+STATIC_TOOLSET_FALLBACKS: Dict[str, List[str]] = {
+    "web": LEGACY_TOOLSET_ALIASES["web_tools"],
+    "terminal": LEGACY_TOOLSET_ALIASES["terminal_tools"],
+    "vision": LEGACY_TOOLSET_ALIASES["vision_tools"],
+    "image_gen": LEGACY_TOOLSET_ALIASES["image_tools"],
+    "skills": LEGACY_TOOLSET_ALIASES["skills_tools"],
+    "browser": LEGACY_TOOLSET_ALIASES["browser_tools"],
+    "cronjob": LEGACY_TOOLSET_ALIASES["cronjob_tools"],
+    "file": LEGACY_TOOLSET_ALIASES["file_tools"],
+    "tts": LEGACY_TOOLSET_ALIASES["tts_tools"],
+}
+
+
 # Static bundle definitions only. Registry-owned toolsets resolve their direct
 # membership live from ``tools.registry``; the ``tools`` lists here only contain
 # extra bundle-specific additions that are not owned by the toolset itself.
@@ -426,11 +439,25 @@ def get_toolset(name: str) -> Optional[Dict[str, Any]]:
         if static_def is not None
         else _get_registry_tool_names(normalized_name)
     )
+    if not registry_tools and not static_def and not normalized_name.startswith("mcp-"):
+        normalized_name = f"mcp-{normalized_name}"
+        registry_tools = _get_registry_tool_names(normalized_name)
 
     if not static_def and not registry_tools:
         return None
 
-    direct_tools = list(dict.fromkeys((static_def or {}).get("tools", []) + registry_tools))
+    fallback_tools = []
+    if static_def is not None:
+        available = set(registry.get_all_tool_names())
+        fallback_tools = [
+            tool_name
+            for tool_name in STATIC_TOOLSET_FALLBACKS.get(name, [])
+            if tool_name in available
+        ]
+
+    direct_tools = list(
+        dict.fromkeys((static_def or {}).get("tools", []) + registry_tools + fallback_tools)
+    )
     includes = list((static_def or {}).get("includes", []))
     description = (static_def or {}).get("description") or _default_toolset_description(
         normalized_name,
@@ -528,9 +555,15 @@ def validate_toolset(name: str) -> bool:
         return True
     if name in TOOLSETS:
         return True
+    normalized = _normalize_toolset_name(name)
     if name in _get_mcp_toolset_aliases():
         return True
-    return name in _get_registry_toolset_names()
+    registry_names = _get_registry_toolset_names()
+    if normalized in registry_names:
+        return True
+    if not normalized.startswith("mcp-") and f"mcp-{normalized}" in registry_names:
+        return True
+    return name in registry_names
 
 
 def create_custom_toolset(

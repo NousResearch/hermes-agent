@@ -921,23 +921,17 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
 
 
 def _load_config() -> dict:
-    """Load delegation config from CLI_CONFIG or persistent config.
+    """Load delegation config from the active runtime config.
 
-    Checks the runtime config (cli.py CLI_CONFIG) first, then falls back
-    to the persistent config (hermes_cli/config.py load_config()) so that
-    ``delegation.model`` / ``delegation.provider`` are picked up regardless
-    of the entry point (CLI, gateway, cron).
+    Uses the shared runtime-config loader so delegation respects the active
+    ``HERMES_HOME`` and environment bridge instead of the process-global
+    ``cli.CLI_CONFIG`` snapshot, which can leak a user's local CLI settings
+    into tests and non-CLI entry points.
     """
     try:
-        from cli import CLI_CONFIG
-        cfg = CLI_CONFIG.get("delegation", {})
-        if cfg:
-            return cfg
-    except Exception:
-        pass
-    try:
-        from hermes_cli.config import load_config
-        full = load_config()
+        from hermes_cli.config import load_runtime_config
+
+        full = load_runtime_config(runtime="generic")
         return full.get("delegation", {})
     except Exception:
         return {}

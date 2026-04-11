@@ -5367,12 +5367,8 @@ class AIAgent:
                     "Fallback to %s failed: provider not configured",
                     fb_provider)
                 return self._try_activate_fallback()  # try next in chain
-            try:
-                from hermes_cli.model_normalize import normalize_model_for_provider
-
-                fb_model = normalize_model_for_provider(fb_model, fb_provider)
-            except Exception:
-                pass
+            if _resolved_fb_model and "/" in fb_model:
+                fb_model = _resolved_fb_model
 
             # Determine api_mode from provider / base URL / model
             fb_api_mode = "chat_completions"

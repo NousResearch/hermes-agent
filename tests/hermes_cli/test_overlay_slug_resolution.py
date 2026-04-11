@@ -4,14 +4,11 @@ HERMES_OVERLAYS keys may be models.dev IDs (e.g. "github-copilot") while
 _PROVIDER_MODELS and config.yaml use Hermes IDs ("copilot").  The slug
 resolution in list_authenticated_providers() Section 2 must bridge this gap.
 
-Covers: #5223, #6492
+Covers: #5223, #6492, #6595
 """
 
-import json
 import os
 from unittest.mock import patch
-
-import pytest
 
 from hermes_cli.model_switch import list_authenticated_providers
 
@@ -81,3 +78,24 @@ def test_kilo_overlay_uses_hermes_slug():
 
     kilo_mdev = next((p for p in providers if p["slug"] == "kilo"), None)
     assert kilo_mdev is None, "kilo slug should not appear (resolved to kilocode)"
+
+
+def test_openai_codex_overlay_uses_dynamic_catalog(monkeypatch):
+    """openai-codex should surface dynamically discovered models in /model listings."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(
+        "hermes_cli.auth._load_auth_store",
+        lambda: {"providers": {"openai-codex": {"tokens": {"access_token": "tok"}}}},
+    )
+    monkeypatch.setattr(
+        "hermes_cli.models.provider_model_ids",
+        lambda provider, force_refresh=False: ["gpt-5.4", "gpt-5.3-codex-spark"]
+        if provider == "openai-codex" else [],
+    )
+
+    providers = list_authenticated_providers(current_provider="openai-codex", max_models=10)
+
+    codex = next((p for p in providers if p["slug"] == "openai-codex"), None)
+    assert codex is not None, "openai-codex should appear when auth store contains credentials"
+    assert codex["models"] == ["gpt-5.4", "gpt-5.3-codex-spark"]
+    assert codex["total_models"] == 2

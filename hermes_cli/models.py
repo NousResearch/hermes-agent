@@ -1150,6 +1150,36 @@ def _resolve_copilot_catalog_api_key() -> str:
         return ""
 
 
+def _resolve_codex_catalog_token() -> Optional[str]:
+    """Best-effort token resolution for Codex model discovery.
+
+    Uses the same credential sources as runtime resolution, but quietly falls back
+    when no token is available so catalog callers can still use local cache /
+    curated defaults.
+    """
+    try:
+        from hermes_cli.auth import get_codex_auth_status
+
+        status = get_codex_auth_status()
+        token = status.get("api_key") if isinstance(status, dict) else None
+        if isinstance(token, str) and token.strip():
+            return token.strip()
+    except Exception:
+        pass
+
+    try:
+        from hermes_cli.auth import resolve_codex_runtime_credentials
+
+        creds = resolve_codex_runtime_credentials()
+        token = creds.get("api_key") if isinstance(creds, dict) else None
+        if isinstance(token, str) and token.strip():
+            return token.strip()
+    except Exception:
+        pass
+
+    return None
+
+
 def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) -> list[str]:
     """Return the best known model catalog for a provider.
 
@@ -1162,7 +1192,7 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
     if normalized == "openai-codex":
         from hermes_cli.codex_models import get_codex_model_ids
 
-        return get_codex_model_ids()
+        return get_codex_model_ids(access_token=_resolve_codex_catalog_token())
     if normalized in {"copilot", "copilot-acp"}:
         try:
             live = _fetch_github_models(_resolve_copilot_catalog_api_key())
@@ -1795,6 +1825,31 @@ def validate_requested_model(
             "recognized": False,
             "message": message,
         }
+
+    if normalized == "openai-codex":
+        codex_models = provider_model_ids(normalized)
+        if requested_for_lookup in set(codex_models):
+            return {
+                "accepted": True,
+                "persist": True,
+                "recognized": True,
+                "message": None,
+            }
+        if codex_models:
+            suggestions = get_close_matches(requested, codex_models, n=3, cutoff=0.5)
+            suggestion_text = ""
+            if suggestions:
+                suggestion_text = "\n  Similar models: " + ", ".join(f"`{s}`" for s in suggestions)
+            return {
+                "accepted": True,
+                "persist": True,
+                "recognized": False,
+                "message": (
+                    f"Note: `{requested}` was not found in the OpenAI Codex model listing. "
+                    f"It may still work if your account exposes hidden or newly rolled out models."
+                    f"{suggestion_text}"
+                ),
+            }
 
     # Probe the live API to check if the model actually exists
     api_models = fetch_api_models(api_key, base_url)

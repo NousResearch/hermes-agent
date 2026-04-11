@@ -856,8 +856,19 @@ def list_authenticated_providers(
         if not has_creds:
             continue
 
-        # Use curated list — look up by Hermes slug, fall back to overlay key
-        model_ids = curated.get(hermes_slug, []) or curated.get(pid, [])
+        # Use dynamic catalogs for providers that can discover their live model
+        # list (notably openai-codex), otherwise fall back to curated defaults.
+        if hermes_slug == "openai-codex":
+            try:
+                from hermes_cli.models import provider_model_ids
+
+                model_ids = provider_model_ids(hermes_slug)
+            except Exception:
+                model_ids = []
+        else:
+            model_ids = []
+        if not model_ids:
+            model_ids = curated.get(hermes_slug, []) or curated.get(pid, [])
         total = len(model_ids)
         top = model_ids[:max_models]
 

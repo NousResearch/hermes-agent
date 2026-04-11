@@ -187,6 +187,13 @@ class TestProviderModelIds:
         assert len(ids) > 0
         assert all("/" in mid for mid in ids)
 
+    def test_openai_codex_uses_dynamic_catalog_with_runtime_token(self):
+        with patch("hermes_cli.auth.get_codex_auth_status", return_value={"api_key": "tok", "logged_in": True}), \
+             patch("hermes_cli.codex_models.get_codex_model_ids", return_value=["gpt-5.4", "gpt-5.3-codex-spark"]):
+            ids = provider_model_ids("openai-codex")
+
+        assert ids == ["gpt-5.4", "gpt-5.3-codex-spark"]
+
     def test_unknown_provider_returns_empty(self):
         assert provider_model_ids("some-unknown-provider") == []
 
@@ -194,12 +201,12 @@ class TestProviderModelIds:
         assert "glm-5" in provider_model_ids("zai")
 
     def test_copilot_prefers_live_catalog(self):
-        with patch("hermes_cli.auth.resolve_api_key_provider_credentials", return_value={"api_key": "gh-token"}), \
+        with patch("hermes_cli.auth.resolve_api_key_provider_credentials", return_value={"api_key": "***"}), \
              patch("hermes_cli.models._fetch_github_models", return_value=["gpt-5.4", "claude-sonnet-4.6"]):
             assert provider_model_ids("copilot") == ["gpt-5.4", "claude-sonnet-4.6"]
 
     def test_copilot_acp_reuses_copilot_catalog(self):
-        with patch("hermes_cli.auth.resolve_api_key_provider_credentials", return_value={"api_key": "gh-token"}), \
+        with patch("hermes_cli.auth.resolve_api_key_provider_credentials", return_value={"api_key": "***"}), \
              patch("hermes_cli.models._fetch_github_models", return_value=["gpt-5.4", "claude-sonnet-4.6"]):
             assert provider_model_ids("copilot-acp") == ["gpt-5.4", "claude-sonnet-4.6"]
 
@@ -446,6 +453,36 @@ class TestValidateApiFallback:
         result = _validate("anthropic/claude-opus-4.6", api_models=None)
         assert result["accepted"] is True
         assert result["persist"] is True
+
+    def test_openai_codex_uses_codex_catalog_when_generic_probe_is_unavailable(self):
+        with patch("hermes_cli.models.fetch_api_models", return_value=None), \
+             patch("hermes_cli.models.provider_model_ids", return_value=["gpt-5.4", "gpt-5.3-codex-spark"]):
+            result = validate_requested_model(
+                "gpt-5.3-codex-spark",
+                "openai-codex",
+                api_key="tok",
+                base_url="https://chatgpt.com/backend-api/codex",
+            )
+
+        assert result["accepted"] is True
+        assert result["persist"] is True
+        assert result["recognized"] is True
+        assert result["message"] is None
+
+    def test_openai_codex_invalid_name_warns_from_codex_catalog(self):
+        with patch("hermes_cli.models.fetch_api_models", return_value=None), \
+             patch("hermes_cli.models.provider_model_ids", return_value=["gpt-5.4", "gpt-5.3-codex-spark"]):
+            result = validate_requested_model(
+                "gpt-5.3-Codex-Spark",
+                "openai-codex",
+                api_key="tok",
+                base_url="https://chatgpt.com/backend-api/codex",
+            )
+
+        assert result["accepted"] is True
+        assert result["persist"] is True
+        assert result["recognized"] is False
+        assert "OpenAI Codex model listing" in result["message"]
 
     def test_unknown_model_also_accepted_when_api_down(self):
         """No hardcoded catalog gatekeeping — accept, persist, and warn."""

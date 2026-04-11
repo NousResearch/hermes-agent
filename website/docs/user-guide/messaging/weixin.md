@@ -87,8 +87,8 @@ The adapter will restore saved credentials, connect to the iLink API, and begin 
 - **Media support** — images, video, files, and voice messages
 - **AES-128-ECB encrypted CDN** — automatic encryption/decryption for all media transfers
 - **Context token persistence** — disk-backed reply continuity across restarts
-- **Markdown formatting** — headers, tables, and code blocks are reformatted for WeChat readability
-- **Smart message chunking** — long messages are split at logical boundaries (paragraphs, code fences)
+- **Markdown formatting** — preserve authored Markdown, including tables and code blocks
+- **Smart message chunking** — only over-limit messages are split at logical boundaries (paragraphs, code fences)
 - **Typing indicators** — shows "typing…" status in the WeChat client while the agent processes
 - **SSRF protection** — outbound media URLs are validated before download
 - **Message deduplication** — 5-minute sliding window prevents double-processing
@@ -202,21 +202,21 @@ This ensures reply continuity even after gateway restarts.
 
 ## Markdown Formatting
 
-WeChat's personal chat does not natively render full Markdown. The adapter reformats content for better readability:
+The adapter preserves authored Markdown so structured output stays intact in a single message whenever possible:
 
-- **Headers** (`# Title`) → converted to `【Title】` (level 1) or `**Title**` (level 2+)
-- **Tables** → reformatted as labeled key-value lists (e.g., `- Column: Value`)
-- **Code fences** → preserved as-is (WeChat renders these adequately)
-- **Excessive blank lines** → collapsed to double newlines
+- **Headers** remain as authored
+- **Tables** remain as authored
+- **Code fences** remain as authored
+- **Excessive blank lines** are still collapsed to double newlines
 
 ## Message Chunking
 
 Long messages are split intelligently for chat delivery:
 
 - Maximum message length: **4000 characters**
+- Messages that already fit within the limit stay as a single message
 - Split points prefer paragraph boundaries and blank lines
 - Code fences are kept intact (never split mid-block)
-- Indented continuation lines (sub-items in reformatted tables/lists) stay with their parent
 - Oversized individual blocks fall back to the base adapter's truncation logic
 
 ## Typing Indicators

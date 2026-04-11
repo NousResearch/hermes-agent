@@ -21,17 +21,14 @@ def _make_adapter() -> WeixinAdapter:
 
 
 class TestWeixinFormatting:
-    def test_format_message_preserves_markdown_and_rewrites_headers(self):
+    def test_format_message_preserves_markdown_headers(self):
         adapter = _make_adapter()
 
         content = "# Title\n\n## Plan\n\nUse **bold** and [docs](https://example.com)."
 
-        assert (
-            adapter.format_message(content)
-            == "【Title】\n\n**Plan**\n\nUse **bold** and [docs](https://example.com)."
-        )
+        assert adapter.format_message(content) == content
 
-    def test_format_message_rewrites_markdown_tables(self):
+    def test_format_message_preserves_markdown_tables(self):
         adapter = _make_adapter()
 
         content = (
@@ -41,19 +38,14 @@ class TestWeixinFormatting:
             "| Retries | 3 |\n"
         )
 
-        assert adapter.format_message(content) == (
-            "- Setting: Timeout\n"
-            "  Value: 30s\n"
-            "- Setting: Retries\n"
-            "  Value: 3"
-        )
+        assert adapter.format_message(content) == content.strip()
 
     def test_format_message_preserves_fenced_code_blocks(self):
         adapter = _make_adapter()
 
         content = "## Snippet\n\n```python\nprint('hi')\n```"
 
-        assert adapter.format_message(content) == "**Snippet**\n\n```python\nprint('hi')\n```"
+        assert adapter.format_message(content) == content
 
     def test_format_message_returns_empty_string_for_none(self):
         adapter = _make_adapter()
@@ -62,15 +54,15 @@ class TestWeixinFormatting:
 
 
 class TestWeixinChunking:
-    def test_split_text_sends_top_level_newlines_as_separate_messages(self):
+    def test_split_text_keeps_under_limit_content_in_single_message(self):
         adapter = _make_adapter()
 
         content = adapter.format_message("第一行\n第二行\n第三行")
         chunks = adapter._split_text(content)
 
-        assert chunks == ["第一行", "第二行", "第三行"]
+        assert chunks == ["第一行\n第二行\n第三行"]
 
-    def test_split_text_keeps_indented_followup_with_previous_line(self):
+    def test_split_text_keeps_tables_together_when_under_limit(self):
         adapter = _make_adapter()
 
         content = adapter.format_message(
@@ -81,10 +73,7 @@ class TestWeixinChunking:
         )
         chunks = adapter._split_text(content)
 
-        assert chunks == [
-            "- Setting: Timeout\n  Value: 30s",
-            "- Setting: Retries\n  Value: 3",
-        ]
+        assert chunks == [content]
 
     def test_split_text_keeps_complete_code_block_together_when_possible(self):
         adapter = _make_adapter()

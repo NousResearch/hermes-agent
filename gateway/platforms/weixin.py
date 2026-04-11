@@ -107,8 +107,6 @@ MSG_STATE_FINISH = 2
 TYPING_START = 1
 TYPING_STOP = 2
 
-_HEADER_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
-_TABLE_RULE_RE = re.compile(r"^\s*\|?(?:\s*:?-{3,}:?\s*\|)+\s*:?-{3,}:?\s*\|?\s*$")
 _FENCE_RE = re.compile(r"^```([^\n`]*)\s*$")
 
 
@@ -559,98 +557,8 @@ def _mime_from_filename(filename: str) -> str:
     return mimetypes.guess_type(filename)[0] or "application/octet-stream"
 
 
-def _split_table_row(line: str) -> List[str]:
-    row = line.strip()
-    if row.startswith("|"):
-        row = row[1:]
-    if row.endswith("|"):
-        row = row[:-1]
-    return [cell.strip() for cell in row.split("|")]
-
-
-def _rewrite_headers_for_weixin(line: str) -> str:
-    match = _HEADER_RE.match(line)
-    if not match:
-        return line.rstrip()
-    level = len(match.group(1))
-    title = match.group(2).strip()
-    if level == 1:
-        return f"【{title}】"
-    return f"**{title}**"
-
-
-def _rewrite_table_block_for_weixin(lines: List[str]) -> str:
-    if len(lines) < 2:
-        return "\n".join(lines)
-    headers = _split_table_row(lines[0])
-    body_rows = [_split_table_row(line) for line in lines[2:] if line.strip()]
-    if not headers or not body_rows:
-        return "\n".join(lines)
-
-    formatted_rows: List[str] = []
-    for row in body_rows:
-        pairs = []
-        for idx, header in enumerate(headers):
-            if idx >= len(row):
-                break
-            label = header or f"Column {idx + 1}"
-            value = row[idx].strip()
-            if value:
-                pairs.append((label, value))
-        if not pairs:
-            continue
-        if len(pairs) == 1:
-            label, value = pairs[0]
-            formatted_rows.append(f"- {label}: {value}")
-            continue
-        if len(pairs) == 2:
-            label, value = pairs[0]
-            other_label, other_value = pairs[1]
-            formatted_rows.append(f"- {label}: {value}")
-            formatted_rows.append(f"  {other_label}: {other_value}")
-            continue
-        summary = " | ".join(f"{label}: {value}" for label, value in pairs)
-        formatted_rows.append(f"- {summary}")
-    return "\n".join(formatted_rows) if formatted_rows else "\n".join(lines)
-
-
 def _normalize_markdown_blocks(content: str) -> str:
-    lines = content.splitlines()
-    result: List[str] = []
-    i = 0
-    in_code_block = False
-
-    while i < len(lines):
-        line = lines[i].rstrip()
-        fence_match = _FENCE_RE.match(line.strip())
-        if fence_match:
-            in_code_block = not in_code_block
-            result.append(line)
-            i += 1
-            continue
-
-        if in_code_block:
-            result.append(line)
-            i += 1
-            continue
-
-        if (
-            i + 1 < len(lines)
-            and "|" in lines[i]
-            and _TABLE_RULE_RE.match(lines[i + 1].rstrip())
-        ):
-            table_lines = [lines[i].rstrip(), lines[i + 1].rstrip()]
-            i += 2
-            while i < len(lines) and "|" in lines[i]:
-                table_lines.append(lines[i].rstrip())
-                i += 1
-            result.append(_rewrite_table_block_for_weixin(table_lines))
-            continue
-
-        result.append(_rewrite_headers_for_weixin(line))
-        i += 1
-
-    normalized = "\n".join(item.rstrip() for item in result)
+    normalized = "\n".join(line.rstrip() for line in content.splitlines())
     normalized = re.sub(r"\n{3,}", "\n\n", normalized)
     return normalized.strip()
 
@@ -693,45 +601,6 @@ def _split_markdown_blocks(content: str) -> List[str]:
     return [block for block in blocks if block]
 
 
-def _split_delivery_units_for_weixin(content: str) -> List[str]:
-    """Split formatted content into chat-friendly delivery units.
-
-    Weixin can render Markdown, but chat readability is better when top-level
-    line breaks become separate messages. Keep fenced code blocks intact and
-    attach indented continuation lines to the previous top-level line so
-    transformed tables/lists do not get torn apart.
-    """
-    units: List[str] = []
-
-    for block in _split_markdown_blocks(content):
-        if _FENCE_RE.match(block.splitlines()[0].strip()):
-            units.append(block)
-            continue
-
-        current: List[str] = []
-        for raw_line in block.splitlines():
-            line = raw_line.rstrip()
-            if not line.strip():
-                if current:
-                    units.append("\n".join(current).strip())
-                    current = []
-                continue
-
-            is_continuation = bool(current) and raw_line.startswith((" ", "\t"))
-            if is_continuation:
-                current.append(line)
-                continue
-
-            if current:
-                units.append("\n".join(current).strip())
-            current = [line]
-
-        if current:
-            units.append("\n".join(current).strip())
-
-    return [unit for unit in units if unit]
-
-
 def _pack_markdown_blocks_for_weixin(content: str, max_length: int) -> List[str]:
     if len(content) <= max_length:
         return [content]
@@ -758,19 +627,14 @@ def _pack_markdown_blocks_for_weixin(content: str, max_length: int) -> List[str]
 def _split_text_for_weixin_delivery(content: str, max_length: int) -> List[str]:
     """Split content into sequential Weixin messages.
 
-    Prefer one message per top-level line/markdown unit when the author used
-    explicit line breaks. Oversized units fall back to block-aware packing so
-    long code fences still split safely.
+    Preserve the original markdown structure whenever it already fits in a
+    single Weixin message. Oversized payloads fall back to block-aware packing
+    so long paragraphs and code fences still split safely.
     """
-    if len(content) <= max_length and "\n" not in content:
+    if len(content) <= max_length:
         return [content]
 
-    chunks: List[str] = []
-    for unit in _split_delivery_units_for_weixin(content):
-        if len(unit) <= max_length:
-            chunks.append(unit)
-            continue
-        chunks.extend(_pack_markdown_blocks_for_weixin(unit, max_length))
+    chunks = _pack_markdown_blocks_for_weixin(content, max_length)
     return chunks or [content]
 
 

@@ -969,6 +969,53 @@ class TestLastPromptTokens:
         store.update_session("k1", last_prompt_tokens=0)
         assert entry.last_prompt_tokens == 0
 
+
+class TestSuspendRecentlyActive:
+    def test_suspends_only_recent_sessions(self, tmp_path):
+        """Startup suspension should only mark recently updated sessions."""
+        from datetime import datetime, timedelta
+        from gateway.session import SessionEntry
+
+        config = GatewayConfig()
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            store = SessionStore(sessions_dir=tmp_path, config=config)
+        store._loaded = True
+        store._db = None
+        store._save = MagicMock()
+
+        recent_entry = SessionEntry(
+            session_key="recent",
+            session_id="s1",
+            created_at=datetime.now() - timedelta(minutes=1),
+            updated_at=datetime.now() - timedelta(seconds=30),
+        )
+        old_entry = SessionEntry(
+            session_key="old",
+            session_id="s2",
+            created_at=datetime.now() - timedelta(hours=1),
+            updated_at=datetime.now() - timedelta(minutes=10),
+        )
+        already_suspended_entry = SessionEntry(
+            session_key="suspended",
+            session_id="s3",
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+            suspended=True,
+        )
+        store._entries = {
+            "recent": recent_entry,
+            "old": old_entry,
+            "suspended": already_suspended_entry,
+        }
+
+        suspended = store.suspend_recently_active(max_age_seconds=120)
+
+        assert suspended == 1
+        assert recent_entry.suspended is True
+        assert old_entry.suspended is False
+        assert already_suspended_entry.suspended is True
+        store._save.assert_called_once()
+
 class TestRewriteTranscriptPreservesReasoning:
     """rewrite_transcript must not drop reasoning fields from SQLite."""
 

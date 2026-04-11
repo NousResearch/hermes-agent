@@ -750,10 +750,20 @@ def _looks_like_chatty_line_for_weixin(line: str) -> bool:
     return True
 
 
+def _looks_like_heading_line_for_weixin(line: str) -> bool:
+    """Return True when a short line behaves like a plain-text heading."""
+    stripped = line.strip()
+    if not stripped:
+        return False
+    return len(stripped) <= 24 and stripped.endswith((":", "："))
+
+
 def _should_split_short_chat_block_for_weixin(block: str) -> bool:
-    """Split only short, chat-like multiline blocks into separate bubbles."""
+    """Split only chat-like multiline blocks into separate bubbles."""
     lines = [line for line in block.splitlines() if line.strip()]
-    if not 2 <= len(lines) <= 3:
+    if not 2 <= len(lines) <= 6:
+        return False
+    if _looks_like_heading_line_for_weixin(lines[0]):
         return False
     return all(_looks_like_chatty_line_for_weixin(line) for line in lines)
 
@@ -784,26 +794,16 @@ def _pack_markdown_blocks_for_weixin(content: str, max_length: int) -> List[str]
 def _split_text_for_weixin_delivery(content: str, max_length: int) -> List[str]:
     """Split content into sequential Weixin messages.
 
-    Prefer one message per top-level line/markdown unit when the author used
-    explicit line breaks. Oversized units fall back to block-aware packing so
-    long code fences still split safely.
+    Only split intentionally chatty short replies into separate bubbles.
+    Longer content stays intact unless the platform hard limit forces packing.
     """
-    if len(content) <= max_length and "\n" not in content:
-        return [content]
-
-    chunks: List[str] = []
-    for block in _split_markdown_blocks(content):
-        units = (
-            _split_delivery_units_for_weixin(block)
-            if _should_split_short_chat_block_for_weixin(block)
-            else [block]
+    if len(content) <= max_length:
+        return (
+            _split_delivery_units_for_weixin(content)
+            if _should_split_short_chat_block_for_weixin(content)
+            else [content]
         )
-        for unit in units:
-            if len(unit) <= max_length:
-                chunks.append(unit)
-                continue
-            chunks.extend(_pack_markdown_blocks_for_weixin(unit, max_length))
-    return chunks or [content]
+    return _pack_markdown_blocks_for_weixin(content, max_length) or [content]
 
 
 def _extract_text(item_list: List[Dict[str, Any]]) -> str:

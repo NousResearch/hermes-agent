@@ -928,19 +928,28 @@ def _load_config() -> dict:
     ``delegation.model`` / ``delegation.provider`` are picked up regardless
     of the entry point (CLI, gateway, cron).
     """
-    try:
-        from cli import CLI_CONFIG
-        cfg = CLI_CONFIG.get("delegation", {})
-        if cfg:
-            return cfg
-    except Exception:
-        pass
+    disk_cfg = {}
     try:
         from hermes_cli.config import load_config
-        full = load_config()
-        return full.get("delegation", {})
+        disk_cfg = load_config().get("delegation", {}) or {}
     except Exception:
-        return {}
+        pass
+
+    runtime_cfg = {}
+    try:
+        from cli import CLI_CONFIG
+        runtime_cfg = CLI_CONFIG.get("delegation", {}) or {}
+    except Exception:
+        pass
+
+    # Merge: disk config is the base, runtime overrides only non-empty values.
+    # This fixes stale CLI_CONFIG at runtime when config.yaml is edited after
+    # the process starts (e.g. gateway sessions).
+    merged = dict(disk_cfg)
+    for k, v in runtime_cfg.items():
+        if v not in (None, ""):
+            merged[k] = v
+    return merged
 
 
 # ---------------------------------------------------------------------------

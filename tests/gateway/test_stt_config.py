@@ -105,7 +105,7 @@ async def test_prepare_inbound_message_text_transcribes_queued_voice_event():
             "provider": "local_command",
         },
     ):
-        result = await runner._prepare_inbound_message_text(
+        result, message_content = await runner._prepare_inbound_message_text(
             event=event,
             source=source,
             history=[],
@@ -114,3 +114,4 @@ async def test_prepare_inbound_message_text_transcribes_queued_voice_event():
     assert result is not None
     assert "queued voice transcript" in result
     assert "voice message" in result.lower()
+    assert message_content is None

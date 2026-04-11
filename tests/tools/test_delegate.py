@@ -1278,5 +1278,52 @@ class TestDelegationReasoningEffort(unittest.TestCase):
         self.assertEqual(call_kwargs["reasoning_config"], {"enabled": True, "effort": "medium"})
 
 
+class TestLoadConfigMerge(unittest.TestCase):
+    """Tests for _load_config disk+runtime merging behavior."""
+
+    def test_disk_config_used_when_runtime_empty(self):
+        """When runtime CLI_CONFIG delegation is empty, disk config is used."""
+        mock_cli = MagicMock()
+        mock_cli.CLI_CONFIG = {"delegation": {}}
+
+        with patch.dict(sys.modules, {"cli": mock_cli}):
+            with patch("hermes_cli.config.load_config") as mock_load_config:
+                mock_load_config.return_value = {"delegation": {"model": "glm-5.1", "provider": "zai-customize"}}
+
+                from tools.delegate_tool import _load_config
+                cfg = _load_config()
+                self.assertEqual(cfg["model"], "glm-5.1")
+                self.assertEqual(cfg["provider"], "zai-customize")
+
+    def test_runtime_overrides_disk(self):
+        """Runtime non-empty values override disk config."""
+        mock_cli = MagicMock()
+        mock_cli.CLI_CONFIG = {"delegation": {"model": "glm-5.1", "max_iterations": 50}}
+
+        with patch.dict(sys.modules, {"cli": mock_cli}):
+            with patch("hermes_cli.config.load_config") as mock_load_config:
+                mock_load_config.return_value = {"delegation": {"model": "glm-4.7", "provider": "zai-customize", "max_iterations": 30}}
+
+                from tools.delegate_tool import _load_config
+                cfg = _load_config()
+                self.assertEqual(cfg["model"], "glm-5.1")  # runtime override
+                self.assertEqual(cfg["provider"], "zai-customize")  # disk preserved
+                self.assertEqual(cfg["max_iterations"], 50)  # runtime override
+
+    def test_empty_runtime_values_do_not_override_disk(self):
+        """Runtime empty strings / None do not clobber disk values."""
+        mock_cli = MagicMock()
+        mock_cli.CLI_CONFIG = {"delegation": {"model": "", "provider": None}}
+
+        with patch.dict(sys.modules, {"cli": mock_cli}):
+            with patch("hermes_cli.config.load_config") as mock_load_config:
+                mock_load_config.return_value = {"delegation": {"model": "glm-5.1", "provider": "zai-customize"}}
+
+                from tools.delegate_tool import _load_config
+                cfg = _load_config()
+                self.assertEqual(cfg["model"], "glm-5.1")
+                self.assertEqual(cfg["provider"], "zai-customize")
+
+
 if __name__ == "__main__":
     unittest.main()

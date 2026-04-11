@@ -1,4 +1,4 @@
-import React from 'react'
+import React, { type ReactNode } from 'react'
 import { c as _c } from 'react/compiler-runtime'
 
 import Link from './components/Link.js'
@@ -6,7 +6,7 @@ import Text from './components/Text.js'
 import type { Color } from './styles.js'
 import { type NamedColor, Parser, type Color as TermioColor, type TextStyle } from './termio.js'
 type Props = {
-  children: string
+  children?: ReactNode
   /** When true, force all text to be rendered with dim styling */
   dimColor?: boolean
 }
@@ -22,6 +22,11 @@ type SpanProps = {
   hyperlink?: string
 }
 
+type Span = {
+  text: string
+  props: SpanProps
+}
+
 /**
  * Component that parses ANSI escape codes and renders them using Text components.
  *
@@ -30,7 +35,7 @@ type SpanProps = {
  *
  * Memoized to prevent re-renders when parent changes but children string is the same.
  */
-export const Ansi = React.memo(function Ansi(t0) {
+export const Ansi = React.memo(function Ansi(t0: Props) {
   const $ = _c(12)
 
   const { children, dimColor } = t0
@@ -78,7 +83,7 @@ export const Ansi = React.memo(function Ansi(t0) {
       let t3
 
       if ($[7] !== dimColor) {
-        t3 = (span, i) => {
+        t3 = (span: Span, i: number) => {
           const hyperlink = span.props.hyperlink
 
           if (dimColor) {
@@ -165,10 +170,6 @@ export const Ansi = React.memo(function Ansi(t0) {
 
   return t3
 })
-type Span = {
-  text: string
-  props: SpanProps
-}
 
 /**
  * Parse an ANSI string into spans using the termio parser.
@@ -359,7 +360,7 @@ type BaseTextStyleProps = {
 }
 
 // Wrapper component that handles bold/dim mutual exclusivity for Text
-function StyledText(t0) {
+function StyledText(t0: BaseTextStyleProps & { bold?: boolean; dim?: boolean; children?: ReactNode }) {
   const $ = _c(14)
   let bold
   let children

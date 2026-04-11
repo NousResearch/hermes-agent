@@ -53,6 +53,13 @@ class TestSessionLifecycle:
         session = db.get_session("s1")
         assert session["system_prompt"] == "You are a helpful assistant."
 
+    def test_update_session_model(self, db):
+        db.create_session(session_id="s1", source="cli", model="gpt-5.4")
+        db.update_session_model("s1", "glm-5.1")
+
+        session = db.get_session("s1")
+        assert session["model"] == "glm-5.1"
+
     def test_update_token_counts(self, db):
         db.create_session(session_id="s1", source="cli")
         db.update_token_counts("s1", input_tokens=200, output_tokens=100)

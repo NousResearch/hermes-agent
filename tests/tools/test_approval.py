@@ -1,6 +1,7 @@
 """Tests for the dangerous command approval module."""
 
 import ast
+import os
 from pathlib import Path
 from unittest.mock import patch as mock_patch
 
@@ -9,6 +10,7 @@ from tools.approval import (
     _get_approval_mode,
     approve_session,
     clear_session,
+    check_all_command_guards,
     detect_dangerous_command,
     has_pending,
     is_approved,
@@ -112,6 +114,45 @@ class TestSafeCommand:
         assert is_dangerous is False
         assert key is None
         assert desc is None
+
+
+class TestLocalizedApprovalMessages:
+    def test_gateway_approval_required_message_is_localized(self):
+        with mock_patch(
+            "tools.tirith_security.check_command_security",
+            return_value={"action": "allow", "findings": [], "summary": ""},
+        ):
+            with mock_patch.dict(
+                os.environ,
+                {"HERMES_EXEC_ASK": "1", "HERMES_SESSION_KEY": "zh-approval"},
+                clear=False,
+            ):
+                result = check_all_command_guards(
+                    "nohup python -m hermes_cli.main gateway run --replace",
+                    "local",
+                )
+
+        assert result["approved"] is False
+        assert result["status"] == "approval_required"
+        assert "已向用户发起授权请求" in result["message"]
+        assert "请不要绕过 systemd 直接启动 gateway" in result["message"]
+        assert "Asking the user for approval" not in result["message"]
+        clear_session("zh-approval")
+
+    def test_cli_prompt_uses_chinese_copy(self, capsys):
+        with mock_patch("builtins.input", return_value="d"):
+            result = prompt_dangerous_approval(
+                "rm -rf /tmp/demo",
+                "recursive delete",
+                timeout_seconds=1,
+            )
+
+        output = capsys.readouterr().out
+        assert result == "deny"
+        assert "危险命令" in output
+        assert "递归删除" in output
+        assert "[o]本次" in output
+        assert "DANGEROUS COMMAND" not in output
 
 
 class TestSubmitAndPopPending:
@@ -254,7 +295,8 @@ class TestDangerousActionApproval:
 
         assert result["approved"] is False
         assert "179033731" in result["message"]
-        assert "administrator" in result["message"].lower()
+        assert "管理员" in result["message"]
+        assert "当前用户不是管理员" in result["message"]
 
     def test_non_admin_cannot_reuse_permanently_approved_dangerous_terminal_pattern(self):
         session_key = "dangerous-terminal-permanent-approved"
@@ -285,7 +327,8 @@ class TestDangerousActionApproval:
 
         assert result["approved"] is False
         assert "179033731" in result["message"]
-        assert "administrator" in result["message"].lower()
+        assert "管理员" in result["message"]
+        assert "当前用户不是管理员" in result["message"]
 
     def test_non_admin_gateway_user_is_blocked_from_approving_action(self):
         token = approval_module.set_current_admin_policy(["179033731"], False)

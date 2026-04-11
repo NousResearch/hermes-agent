@@ -841,6 +841,28 @@ def _read_main_provider() -> str:
     return ""
 
 
+def _read_active_auth_provider() -> str:
+    """Read the active provider from auth state as an auxiliary fallback hint."""
+    try:
+        from hermes_cli.auth import get_active_provider
+
+        active = get_active_provider()
+        if isinstance(active, str) and active.strip():
+            return _normalize_aux_provider(active)
+    except Exception:
+        pass
+
+    try:
+        if _AUTH_JSON_PATH.is_file():
+            data = json.loads(_AUTH_JSON_PATH.read_text())
+            active = data.get("active_provider")
+            if isinstance(active, str) and active.strip():
+                return _normalize_aux_provider(active)
+    except Exception:
+        pass
+    return ""
+
+
 def _resolve_custom_runtime() -> Tuple[Optional[str], Optional[str]]:
     """Resolve the active custom/main endpoint the same way the main CLI does.
 
@@ -1632,17 +1654,13 @@ def _strict_vision_backend_available(provider: str) -> bool:
 
 def _preferred_main_vision_provider() -> Optional[str]:
     """Return the selected main provider when it is also a supported vision backend."""
-    try:
-        from hermes_cli.config import load_config
+    provider = _normalize_vision_provider(_read_main_provider())
+    if provider and provider not in ("auto", ""):
+        return provider
 
-        config = load_config()
-        model_cfg = config.get("model", {})
-        if isinstance(model_cfg, dict):
-            provider = _normalize_vision_provider(model_cfg.get("provider", ""))
-            if provider in _VISION_AUTO_PROVIDER_ORDER:
-                return provider
-    except Exception:
-        pass
+    active = _normalize_vision_provider(_read_active_auth_provider())
+    if active and active not in ("auto", ""):
+        return active
     return None
 
 
@@ -1677,7 +1695,7 @@ def resolve_vision_request_target(
         if _strict_vision_backend_available(candidate):
             return candidate, None
 
-    main_provider = _normalize_vision_provider(_read_main_provider())
+    main_provider = _preferred_main_vision_provider()
     if main_provider and main_provider not in ("auto", ""):
         if main_provider == "custom":
             return "custom", _current_custom_base_url() or None
@@ -1695,7 +1713,7 @@ def get_available_vision_backends() -> List[str]:
                  if _strict_vision_backend_available(p)]
     # Also check the user's active provider (may be DeepSeek, Alibaba, named
     # custom, etc.) — resolve_provider_client handles all provider types.
-    main_provider = _read_main_provider()
+    main_provider = _preferred_main_vision_provider()
     if (main_provider and main_provider not in ("auto", "")
             and main_provider not in available):
         client, _ = resolve_provider_client(main_provider, _read_main_model())
@@ -1788,7 +1806,7 @@ def resolve_vision_provider_client(
                 return _finalize(candidate, sync_client, default_model)
 
         # Fall back to the user's active provider + model.
-        main_provider = _read_main_provider()
+        main_provider = _preferred_main_vision_provider()
         main_model = _read_main_model()
         if main_provider and main_provider not in ("auto", ""):
             sync_client, resolved_model = resolve_provider_client(

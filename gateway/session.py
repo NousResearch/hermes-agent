@@ -278,6 +278,11 @@ def build_session_context_prompt(
             "**Session type:** Multi-user group — messages are prefixed "
             "with [sender name]. Multiple users may participate."
         )
+        lines.append(
+            "**Reply focus:** Prioritize the latest message or current batch. "
+            "Do not drag stale topics, old task state, or previously completed "
+            "answers into a new reply unless someone explicitly asks to continue them."
+        )
     elif context.source.user_name:
         lines.append(f"**User:** {context.source.user_name}")
     elif context.source.user_id:

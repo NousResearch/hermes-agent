@@ -151,6 +151,50 @@ DANGEROUS_PATTERNS = [
 ]
 
 
+_APPROVAL_DESCRIPTION_ZH = {
+    "delete in root path": "删除根路径内容",
+    "recursive delete": "递归删除",
+    "recursive delete (long flag)": "递归删除（长参数）",
+    "world/other-writable permissions": "将权限改为所有人可写",
+    "recursive world/other-writable (long flag)": "递归将权限改为所有人可写（长参数）",
+    "recursive chown to root": "递归将属主改为 root",
+    "recursive chown to root (long flag)": "递归将属主改为 root（长参数）",
+    "format filesystem": "格式化文件系统",
+    "disk copy": "磁盘级复制",
+    "write to block device": "写入块设备",
+    "SQL DROP": "执行 SQL DROP",
+    "SQL DELETE without WHERE": "执行不带 WHERE 的 SQL DELETE",
+    "SQL TRUNCATE": "执行 SQL TRUNCATE",
+    "overwrite system config": "覆写系统配置",
+    "stop/disable system service": "停止或禁用系统服务",
+    "kill all processes": "杀掉全部进程",
+    "force kill processes": "强制杀进程",
+    "fork bomb": "fork 炸弹",
+    "shell command via -c/-lc flag": "通过 -c/-lc 执行 shell 命令",
+    "script execution via -e/-c flag": "通过 -e/-c 执行脚本",
+    "pipe remote content to shell": "把远程内容直接管道给 shell 执行",
+    "execute remote script via process substitution": "通过进程替换执行远程脚本",
+    "overwrite system file via tee": "通过 tee 覆写系统文件",
+    "overwrite system file via redirection": "通过重定向覆写系统文件",
+    "xargs with rm": "通过 xargs 调用 rm",
+    "find -exec rm": "通过 find -exec 调用 rm",
+    "find -delete": "使用 find -delete",
+    "start gateway outside systemd (use 'systemctl --user restart hermes-gateway')": (
+        "请不要绕过 systemd 直接启动 gateway，请改用 "
+        "`systemctl --user restart hermes-gateway`"
+    ),
+    "kill hermes/gateway process (self-termination)": "终止 hermes/gateway 自身进程",
+    "copy/move file into /etc/": "复制或移动文件到 /etc/",
+    "in-place edit of system config": "原地修改系统配置",
+    "in-place edit of system config (long flag)": "原地修改系统配置（长参数）",
+}
+
+_APPROVAL_TITLE_ZH = {
+    "Dangerous command requires approval": "危险命令需要授权",
+    "Dangerous action requires approval": "危险操作需要授权",
+}
+
+
 def _legacy_pattern_key(pattern: str) -> str:
     """Reproduce the old regex-derived approval key for backwards compatibility."""
     return pattern.split(r'\b')[1] if r'\b' in pattern else pattern[:20]
@@ -172,6 +216,57 @@ def _approval_key_aliases(pattern_key: str) -> set[str]:
     historical regex-derived key.
     """
     return _PATTERN_KEY_ALIASES.get(pattern_key, {pattern_key})
+
+
+def localize_approval_description(description: str) -> str:
+    """Return a Chinese user-facing description for a dangerous action."""
+    text = str(description or "").strip()
+    if not text:
+        return ""
+    parts = [part.strip() for part in text.split(";") if part.strip()]
+    localized_parts = [
+        _APPROVAL_DESCRIPTION_ZH.get(part, part)
+        for part in parts
+    ]
+    return "；".join(localized_parts)
+
+
+def localize_approval_title(title: str) -> str:
+    """Return a Chinese user-facing title for approval prompts."""
+    text = str(title or "").strip()
+    if not text:
+        return "危险命令需要授权"
+    return _APPROVAL_TITLE_ZH.get(text, text)
+
+
+def build_gateway_approval_message(
+    *,
+    command: str,
+    description: str,
+    prompt_title: str = "Dangerous command requires approval",
+    approver_name: str = "管理员",
+    allow_persistence: bool = True,
+) -> str:
+    """Build a localized gateway approval prompt for chat platforms."""
+    title_text = localize_approval_title(prompt_title)
+    description_text = localize_approval_description(description)
+    cmd_preview = command[:200] + "..." if len(command) > 200 else command
+    if allow_persistence:
+        instructions = (
+            "请回复 `/approve` 执行；回复 `/approve session` 在本会话内授权同类命令；"
+            "回复 `/approve always` 长期授权同类命令；回复 `/deny` 取消。"
+        )
+    else:
+        instructions = (
+            f"这事我得先取得{approver_name}的授权。"
+            f"请{approver_name}回复 `/approve` 执行，或回复 `/deny` 取消。"
+        )
+    return (
+        f"⚠️ **{title_text}：**\n"
+        f"```\n{cmd_preview}\n```\n"
+        f"原因：{description_text}\n\n"
+        f"{instructions}"
+    )
 
 
 # =========================================================================
@@ -443,15 +538,16 @@ def prompt_dangerous_approval(command: str, description: str,
 
     os.environ["HERMES_SPINNER_PAUSE"] = "1"
     try:
+        description_text = localize_approval_description(description)
         while True:
             print()
-            print(f"  ⚠️  DANGEROUS COMMAND: {description}")
+            print(f"  ⚠️  危险命令：{description_text}")
             print(f"      {command}")
             print()
             if allow_permanent:
-                print("      [o]nce  |  [s]ession  |  [a]lways  |  [d]eny")
+                print("      [o]本次  |  [s]本会话  |  [a]长期  |  [d]拒绝")
             else:
-                print("      [o]nce  |  [s]ession  |  [d]eny")
+                print("      [o]本次  |  [s]本会话  |  [d]拒绝")
             print()
             sys.stdout.flush()
 
@@ -459,7 +555,7 @@ def prompt_dangerous_approval(command: str, description: str,
 
             def get_input():
                 try:
-                    prompt = "      Choice [o/s/a/D]: " if allow_permanent else "      Choice [o/s/D]: "
+                    prompt = "      选择 [o/s/a/D]：" if allow_permanent else "      选择 [o/s/D]："
                     result["choice"] = input(prompt).strip().lower()
                 except (EOFError, OSError):
                     result["choice"] = ""
@@ -469,28 +565,28 @@ def prompt_dangerous_approval(command: str, description: str,
             thread.join(timeout=timeout_seconds)
 
             if thread.is_alive():
-                print("\n      ⏱ Timeout - denying command")
+                print("\n      ⏱ 超时，已拒绝该命令")
                 return "deny"
 
             choice = result["choice"]
             if choice in ('o', 'once'):
-                print("      ✓ Allowed once")
+                print("      ✓ 已授权本次执行")
                 return "once"
             elif choice in ('s', 'session'):
-                print("      ✓ Allowed for this session")
+                print("      ✓ 已授权本会话内同类命令")
                 return "session"
             elif choice in ('a', 'always'):
                 if not allow_permanent:
-                    print("      ✓ Allowed for this session")
+                    print("      ✓ 已授权本会话内同类命令")
                     return "session"
-                print("      ✓ Added to permanent allowlist")
+                print("      ✓ 已长期授权同类命令")
                 return "always"
             else:
-                print("      ✗ Denied")
+                print("      ✗ 已拒绝")
                 return "deny"
 
     except (EOFError, KeyboardInterrupt):
-        print("\n      ✗ Cancelled")
+        print("\n      ✗ 已取消")
         return "deny"
     finally:
         if "HERMES_SPINNER_PAUSE" in os.environ:
@@ -561,7 +657,7 @@ def request_dangerous_action_approval(
                         _gateway_queues.pop(session_key, None)
                 return {
                     "approved": False,
-                    "message": "BLOCKED: Failed to send approval request to user. Do NOT retry.",
+                    "message": "BLOCKED: 向用户发送授权请求失败。不要重试。",
                     "description": description,
                 }
 
@@ -581,10 +677,10 @@ def request_dangerous_action_approval(
 
             choice = entry.result
             if not resolved or choice is None or choice == "deny":
-                reason = "timed out" if not resolved else "denied by user"
+                reason = "等待授权超时" if not resolved else "用户已拒绝"
                 return {
                     "approved": False,
-                    "message": f"BLOCKED: Action {reason}. Do NOT retry this action.",
+                    "message": f"BLOCKED: 操作未获授权（{reason}）。不要重试。",
                     "description": description,
                 }
 
@@ -603,7 +699,7 @@ def request_dangerous_action_approval(
             "description": description,
             "message": (
                 f"⚠️ 这事我得先取得{approver_name}的授权。\n\n"
-                f"**原因：** {description}\n\n"
+                f"**原因：** {localize_approval_description(description)}\n\n"
                 f"**操作：**\n```\n{action_preview}\n```"
             ),
         }
@@ -618,7 +714,7 @@ def request_dangerous_action_approval(
         if choice == "deny":
             return {
                 "approved": False,
-                "message": "BLOCKED: User denied. Do NOT retry.",
+                "message": "BLOCKED: 用户已拒绝，不要重试。",
                 "description": description,
             }
         return {
@@ -760,9 +856,8 @@ def check_dangerous_command(command: str, env_type: str,
         return {
             "approved": False,
             "message": (
-                "BLOCKED: dangerous actions in this session require administrator "
-                f"approval from user ID(s): {admin_list}. The current user is not "
-                "an administrator."
+                "BLOCKED: 当前会话中的危险操作必须由管理员授权。"
+                f"允许授权的用户 ID：{admin_list}。当前用户不是管理员。"
             ),
         }
 
@@ -782,6 +877,7 @@ def check_dangerous_command(command: str, env_type: str,
             "pattern_key": pattern_key,
             "description": description,
         })
+        description_text = localize_approval_description(description)
         return {
             "approved": False,
             "pattern_key": pattern_key,
@@ -789,8 +885,8 @@ def check_dangerous_command(command: str, env_type: str,
             "command": command,
             "description": description,
             "message": (
-                f"⚠️ This command is potentially dangerous ({description}). "
-                f"Asking the user for approval.\n\n**Command:**\n```\n{command}\n```"
+                f"⚠️ 这个命令可能有风险（{description_text}），已向用户发起授权请求。\n\n"
+                f"**命令：**\n```\n{command}\n```"
             ),
         }
 
@@ -800,7 +896,11 @@ def check_dangerous_command(command: str, env_type: str,
     if choice == "deny":
         return {
             "approved": False,
-            "message": f"BLOCKED: User denied this potentially dangerous command (matched '{description}' pattern). Do NOT retry this command - the user has explicitly rejected it.",
+            "message": (
+                "BLOCKED: 用户拒绝了这条高风险命令。"
+                f"命中的风险规则：{localize_approval_description(description)}。"
+                "不要重试这条命令。"
+            ),
             "pattern_key": pattern_key,
             "description": description,
         }
@@ -900,9 +1000,8 @@ def check_all_command_guards(command: str, env_type: str,
         return {
             "approved": False,
             "message": (
-                "BLOCKED: dangerous actions in this session require administrator "
-                f"approval from user ID(s): {admin_list}. The current user is not "
-                "an administrator."
+                "BLOCKED: 当前会话中的危险操作必须由管理员授权。"
+                f"允许授权的用户 ID：{admin_list}。当前用户不是管理员。"
             ),
         }
 
@@ -946,8 +1045,11 @@ def check_all_command_guards(command: str, env_type: str,
             combined_desc_for_llm = "; ".join(desc for _, desc, _ in warnings)
             return {
                 "approved": False,
-                "message": f"BLOCKED by smart approval: {combined_desc_for_llm}. "
-                           "The command was assessed as genuinely dangerous. Do NOT retry.",
+                "message": (
+                    "BLOCKED: 智能审批判定该命令确实危险。"
+                    f"风险原因：{localize_approval_description(combined_desc_for_llm)}。"
+                    "不要重试。"
+                ),
                 "smart_denied": True,
             }
         # verdict == "escalate" → fall through to manual prompt
@@ -996,7 +1098,7 @@ def check_all_command_guards(command: str, env_type: str,
                         _gateway_queues.pop(session_key, None)
                 return {
                     "approved": False,
-                    "message": "BLOCKED: Failed to send approval request to user. Do NOT retry.",
+                    "message": "BLOCKED: 向用户发送授权请求失败。不要重试。",
                     "pattern_key": primary_key,
                     "description": combined_desc,
                 }
@@ -1019,10 +1121,10 @@ def check_all_command_guards(command: str, env_type: str,
 
             choice = entry.result
             if not resolved or choice is None or choice == "deny":
-                reason = "timed out" if not resolved else "denied by user"
+                reason = "等待授权超时" if not resolved else "用户已拒绝"
                 return {
                     "approved": False,
-                    "message": f"BLOCKED: Command {reason}. Do NOT retry this command.",
+                    "message": f"BLOCKED: 命令未获授权（{reason}）。不要重试这条命令。",
                     "pattern_key": primary_key,
                     "description": combined_desc,
                 }
@@ -1056,7 +1158,9 @@ def check_all_command_guards(command: str, env_type: str,
             "command": command,
             "description": combined_desc,
             "message": (
-                f"⚠️ {combined_desc}. Asking the user for approval.\n\n**Command:**\n```\n{command}\n```"
+                f"⚠️ 这个命令可能有风险（{localize_approval_description(combined_desc)}），"
+                "已向用户发起授权请求。\n\n"
+                f"**命令：**\n```\n{command}\n```"
             ),
         }
 
@@ -1069,7 +1173,7 @@ def check_all_command_guards(command: str, env_type: str,
     if choice == "deny":
         return {
             "approved": False,
-            "message": "BLOCKED: User denied. Do NOT retry.",
+            "message": "BLOCKED: 用户已拒绝，不要重试。",
             "pattern_key": primary_key,
             "description": combined_desc,
         }

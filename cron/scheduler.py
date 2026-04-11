@@ -680,6 +680,9 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         # Max iterations
         max_iterations = _cfg.get("agent", {}).get("max_turns") or _cfg.get("max_turns") or 90
 
+        # Optional provider fallback chain (same config contract as CLI/gateway)
+        fallback_model = _cfg.get("fallback_providers") or _cfg.get("fallback_model") or None
+
         # Provider routing
         pr = _cfg.get("provider_routing", {})
         smart_routing = _cfg.get("smart_model_routing", {}) or {}
@@ -729,6 +732,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             providers_ignored=pr.get("ignore"),
             providers_order=pr.get("order"),
             provider_sort=pr.get("sort"),
+            fallback_model=fallback_model,
             disabled_toolsets=["cronjob", "messaging", "clarify"],
             quiet_mode=True,
             skip_memory=True,  # Cron system prompts would corrupt user representations

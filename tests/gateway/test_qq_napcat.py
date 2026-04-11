@@ -190,6 +190,39 @@ async def test_group_message_matching_wake_word_pattern_is_processed():
 
 
 @pytest.mark.asyncio
+async def test_group_message_matching_default_maga_alias_is_processed():
+    from gateway.platforms.qq_napcat import QqNapCatAdapter
+
+    adapter = QqNapCatAdapter(
+        PlatformConfig(
+            enabled=True,
+            extra={
+                "ws_url": "ws://127.0.0.1:3001",
+                "allow_all_groups": True,
+                "require_mention": True,
+            },
+        )
+    )
+    adapter.handle_message = AsyncMock()
+
+    await adapter._handle_payload(
+        {
+            "post_type": "message",
+            "message_type": "group",
+            "self_id": 999001,
+            "message_id": 1271,
+            "user_id": 456789,
+            "group_id": 987654321,
+            "raw_message": "马嘎 看看这个",
+            "message": [{"type": "text", "data": {"text": "马嘎 看看这个"}}],
+            "sender": {"nickname": "Alice", "card": "AliceCard"},
+        }
+    )
+
+    adapter.handle_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_group_follow_up_window_allows_same_user_without_repeat_mention():
     from gateway.platforms.qq_napcat import QqNapCatAdapter
     from gateway.platforms.base import MessageEvent
@@ -494,6 +527,110 @@ async def test_project_group_mode_merges_observed_messages_before_trigger_dispat
     assert event.message_id == "202"
     assert "AliceCard: 今天天气真好" in event.text
     assert "BobCard: 不知道马噶那边怎么样" in event.text
+
+
+@pytest.mark.asyncio
+async def test_project_group_mode_skips_low_signal_single_message_without_explicit_trigger():
+    from gateway.platforms.qq_napcat import QqNapCatAdapter
+
+    adapter = QqNapCatAdapter(
+        PlatformConfig(
+            enabled=True,
+            extra={
+                "ws_url": "ws://127.0.0.1:3001",
+                "allow_all_groups": True,
+                "require_mention": True,
+                "project_group_mode": True,
+                "group_batch_debounce_seconds": 0.01,
+            },
+        )
+    )
+    adapter.handle_message = AsyncMock()
+
+    await adapter._handle_payload(
+        _group_payload(
+            message_id=2021,
+            user_id=456789,
+            text="今天天气真好",
+            nickname="Alice",
+            card="AliceCard",
+        )
+    )
+
+    await asyncio.sleep(0.03)
+
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_project_group_mode_dispatches_explicit_request_without_mention():
+    from gateway.platforms.qq_napcat import QqNapCatAdapter
+
+    adapter = QqNapCatAdapter(
+        PlatformConfig(
+            enabled=True,
+            extra={
+                "ws_url": "ws://127.0.0.1:3001",
+                "allow_all_groups": True,
+                "require_mention": True,
+                "project_group_mode": True,
+                "group_batch_debounce_seconds": 0.01,
+            },
+        )
+    )
+    adapter.handle_message = AsyncMock()
+
+    await adapter._handle_payload(
+        _group_payload(
+            message_id=2022,
+            user_id=456789,
+            text="马噶那边啥情况，看看这个怎么安排？",
+            nickname="Alice",
+            card="AliceCard",
+        )
+    )
+
+    await asyncio.sleep(0.03)
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert "AliceCard: 马噶那边啥情况，看看这个怎么安排？" in event.text
+
+
+@pytest.mark.asyncio
+async def test_project_group_mode_dispatches_admin_message_without_mention():
+    from gateway.platforms.qq_napcat import QqNapCatAdapter
+
+    adapter = QqNapCatAdapter(
+        PlatformConfig(
+            enabled=True,
+            extra={
+                "ws_url": "ws://127.0.0.1:3001",
+                "allow_all_groups": True,
+                "require_mention": True,
+                "project_group_mode": True,
+                "group_batch_debounce_seconds": 0.01,
+                "admin_users": ["179033731"],
+            },
+        )
+    )
+    adapter.handle_message = AsyncMock()
+
+    await adapter._handle_payload(
+        _group_payload(
+            message_id=2023,
+            user_id=179033731,
+            text="看看这个事情怎么推进",
+            nickname="發發發",
+            card="發發發",
+        )
+    )
+
+    await asyncio.sleep(0.03)
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert "發發發: 看看这个事情怎么推进" in event.text
 
 
 @pytest.mark.asyncio

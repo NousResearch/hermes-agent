@@ -1,0 +1,27 @@
+# Findings
+
+- Prior work already added QQ-specific tests for `require_mention`, `mention_patterns`, follow-up windows, and reply-to-bot behavior.
+- `gateway/platforms/base.py` already exposes `_record_successful_response_context(event, sent_message_ids)` for adapters to override after successful delivery.
+- Remote QQ config already has admin user and home channel set, but group replies are still blocked because group allowance and mention-gating rollout are incomplete.
+- `gateway/platforms/qq_napcat.py` already has basic `require_mention` and text-cleaning helpers, but it still lacks reply-to-bot detection, follow-up windows, and successful-response tracking.
+- `gateway/config.py` already parses `QQ_NAPCAT_REQUIRE_MENTION` and `QQ_NAPCAT_MENTION_PATTERNS` from env overrides, but YAML bridging does not yet copy `require_mention` or `mention_patterns` from `config.yaml` into the QQ platform config or env bridge map.
+- Implemented QQ group follow-up gating in `gateway/platforms/qq_napcat.py`:
+  - reply segments populate `MessageEvent.reply_to_message_id`
+  - group follow-up windows open per `(group_id, user_id)` after a successful bot reply
+  - replies to recently sent bot messages are accepted even from another user in the same group
+- Implemented QQ config bridging in `gateway/config.py`:
+  - YAML and env both support `require_mention` and `mention_patterns`
+  - mention-pattern strings are normalized to avoid doubled regex escapes like `\\\\s`
+- Remote targeted verification passed after sync: `40 passed` for `tests/gateway/test_qq_napcat.py` and `tests/gateway/test_config.py`.
+- Remote QQ config now has `allow_all_groups: true`, `require_mention: true`, `mention_patterns: ['^\\s*马噶\\b']`, and a `[[NO_REPLY]]` system prompt for `马噶`.
+- QQ 私聊故障的根因在 `gateway/run.py`：`_run_agent()` 内部的 `run_sync()` 使用了未定义的 `context.admin_user_ids` / `context.is_admin_user`，导致任何进入 agent 的私聊消息都可能抛 `NameError`.
+- 修复方式是把 `admin_user_ids` 和 `is_admin_user` 作为显式参数从 `_handle_message_with_agent()` 传入 `_run_agent()`，再由审批桥接调用 `set_current_admin_policy(...)`。
+- 新增回归测试 `tests/gateway/test_reasoning_command.py::TestReasoningCommand::test_run_agent_passes_admin_policy_to_gateway_approval`，先红后绿，确保审批上下文不会再次丢失。
+- 用户澄清了命名语义：`马哥 / 老马 / 马屌 / 马逼 / 小马 / 马户` 都是对机器人“马噶”的别名，不是管理员称呼。
+- 已把该语义写入远端 `qq_napcat.system_prompt`，并把 `mention_patterns` 扩展为这些别名，确保群里直接喊这些名字也会命中 QQ 唤醒门控。
+- 本地 `gateway/session.py` 也补了提示：当当前用户是管理员时，模型不要机械复述原始 QQ 号和权限元数据，要自然称呼，不要把内部权限块原样说出来。
+- `pay.kxaug` 不是单纯慢，而是在当前 Hermes 负载下会出现“HTTP 200 但 assistant.content 为空”的空回；这和用户实际看到的“已处理但不说话”现象一致。
+- `api.888933` 对极简裸请求是通的，但 Hermes 默认 developer prompt + skills 列表负载下会触发 `HTTP 403: Your request was blocked`；因此不能直接拿它做唯一主端点。
+- `wududu.edu.kg` 上的 `glm-5.1` 能通过 Hermes `AIAgent` 的最小真实运行验证，当前是三者里唯一能稳定完成主对话链路的端点。
+- 现在最稳的生产配置不是“坚持用用户最后口头指定的 pay 主端点”，而是“用经实测能通过 Hermes 全负载的 glm 主端点，再把两个 gpt-5.4 端点挂到 fallback 链上”。
+- 识图链路与文本主对话链路表现不同：`pay.kxaug` 的 gpt-5.4 文本对话空回，但此前远端实际图片分析成功；因此当前保守策略是让 vision 暂留 pay，文本主链路迁到 glm。

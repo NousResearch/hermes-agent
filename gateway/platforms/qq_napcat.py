@@ -38,6 +38,17 @@ from gateway.platforms.base import (
 
 logger = logging.getLogger(__name__)
 
+_QQ_DEFAULT_TRIGGER_ALIASES = (
+    "马嘎",
+    "马噶",
+    "马哥",
+    "老马",
+    "马屌",
+    "马逼",
+    "小马",
+    "马户",
+)
+
 
 @dataclass
 class _BufferedGroupMessage:
@@ -127,7 +138,9 @@ class QqNapCatAdapter(BasePlatformAdapter):
         self.reconnect_interval = int(extra.get("reconnect_interval") or 5)
         self.allowed_groups = {str(group) for group in (extra.get("allowed_groups") or []) if str(group).strip()}
         self.allow_all_groups = bool(extra.get("allow_all_groups", False))
+        self._admin_users = {str(user).strip() for user in (extra.get("admin_users") or []) if str(user).strip()}
         self._mention_patterns = self._compile_mention_patterns()
+        self._default_trigger_aliases = _QQ_DEFAULT_TRIGGER_ALIASES
         self._bot_user_id = ""
         self._followup_window_seconds = int(extra.get("followup_window_seconds") or 900)
         self._project_group_mode = _coerce_bool(extra.get("project_group_mode"), False)
@@ -151,6 +164,9 @@ class QqNapCatAdapter(BasePlatformAdapter):
             1,
             int(extra.get("group_batch_max_messages") or 30),
         )
+        self._group_trigger_min_messages = 4
+        self._group_trigger_min_speakers = 3
+        self._group_trigger_min_chars = 160
         self._group_followup_windows: Dict[Tuple[str, str], float] = {}
         self._group_shared_followup_windows: Dict[str, float] = {}
         self._recent_group_bot_messages: Dict[str, Tuple[str, float]] = {}
@@ -244,8 +260,6 @@ class QqNapCatAdapter(BasePlatformAdapter):
         return False
 
     def _message_matches_mention_patterns(self, payload: Dict[str, Any]) -> bool:
-        if not self._mention_patterns:
-            return False
         body = str(payload.get("raw_message") or "")
         if not body:
             segments = payload.get("message")
@@ -255,7 +269,34 @@ class QqNapCatAdapter(BasePlatformAdapter):
                     for segment in segments
                     if str(segment.get("type") or "").lower() == "text"
                 )
+        if any(alias in body for alias in self._default_trigger_aliases):
+            return True
+        if not self._mention_patterns:
+            return False
         return any(pattern.search(body) for pattern in self._mention_patterns)
+
+    def _group_message_trigger_reason(self, payload: Dict[str, Any]) -> Optional[str]:
+        if not self._group_message_allowed(payload):
+            return None
+        if not self._qq_require_mention():
+            return "require_mention_disabled"
+
+        raw_text = str(payload.get("raw_message") or "").strip()
+        if raw_text.startswith("/"):
+            return "slash_command"
+        if self._message_mentions_bot(payload):
+            return "bot_mention"
+        if self._message_is_reply_to_bot(payload):
+            return "reply_to_bot"
+        if self._project_group_mode and self._has_group_followup_window(payload):
+            return "group_followup_window"
+        if self._has_followup_window(payload):
+            return "user_followup_window"
+        if self._has_recent_session_followup(payload):
+            return "recent_session_followup"
+        if self._message_matches_mention_patterns(payload):
+            return "name_trigger"
+        return None
 
     def _clean_bot_mention_text(self, text: str, payload: Dict[str, Any]) -> str:
         bot_id = str(payload.get("self_id") or self._bot_user_id or "").strip()
@@ -417,25 +458,114 @@ class QqNapCatAdapter(BasePlatformAdapter):
         return True
 
     def _group_message_triggers_ai(self, payload: Dict[str, Any]) -> bool:
-        if not self._group_message_allowed(payload):
-            return False
-        if not self._qq_require_mention():
-            return True
+        return self._group_message_trigger_reason(payload) is not None
 
-        raw_text = str(payload.get("raw_message") or "").strip()
-        if raw_text.startswith("/"):
+    def _message_has_nontext_media(self, payload: Dict[str, Any]) -> bool:
+        segments = payload.get("message")
+        if not isinstance(segments, list):
+            return False
+        for segment in segments:
+            if str(segment.get("type") or "").lower() in {"image", "record", "video", "file"}:
+                return True
+        return False
+
+    @staticmethod
+    def _text_looks_like_request(text: str) -> bool:
+        body = str(text or "").strip().lower()
+        if not body:
+            return False
+        if any(token in body for token in ("?", "？")):
             return True
-        if self._message_mentions_bot(payload):
-            return True
-        if self._message_is_reply_to_bot(payload):
-            return True
-        if self._project_group_mode and self._has_group_followup_window(payload):
-            return True
-        if self._has_followup_window(payload):
-            return True
-        if self._has_recent_session_followup(payload):
-            return True
-        return self._message_matches_mention_patterns(payload)
+        request_markers = (
+            "吗",
+            "么",
+            "咋",
+            "怎么",
+            "如何",
+            "为啥",
+            "为什么",
+            "能不能",
+            "可不可以",
+            "要不要",
+            "看看",
+            "看下",
+            "看一下",
+            "帮我",
+            "帮忙",
+            "查下",
+            "查一下",
+            "分析",
+            "安排",
+            "处理",
+            "修",
+            "改",
+            "做一下",
+            "做到哪",
+            "进度",
+            "还在",
+            "在吗",
+            "在?",
+            "在？",
+            "什么情况",
+            "啥情况",
+            "有没有",
+            "发一下",
+            "给我",
+        )
+        return any(marker in body for marker in request_markers)
+
+    def _project_group_batch_should_dispatch(
+        self,
+        group_id: str,
+        batch: list[_BufferedGroupMessage],
+    ) -> tuple[bool, str]:
+        if not batch:
+            return False, "empty"
+
+        # Hard triggers: once any of these appear, let the main model decide
+        # whether to answer or emit [[NO_REPLY]].
+        for item in batch:
+            payload = item.payload
+            trigger_reason = self._group_message_trigger_reason(payload)
+            if trigger_reason:
+                return True, f"direct_trigger:{trigger_reason}"
+            if str(payload.get("user_id") or "").strip() in self._admin_users:
+                return True, "admin_user"
+            if self._message_has_nontext_media(payload):
+                return True, "media"
+
+        score = 0
+        reasons = []
+        unique_speakers = {
+            str(item.event.source.user_id or "").strip()
+            for item in batch
+            if str(item.event.source.user_id or "").strip()
+        }
+        total_chars = 0
+
+        if len(batch) >= self._group_trigger_min_messages:
+            score += 1
+            reasons.append("message_volume")
+
+        if len(unique_speakers) >= self._group_trigger_min_speakers:
+            score += 1
+            reasons.append("multi_speaker")
+
+        for item in batch:
+            text = str(item.event.text or "").strip()
+            total_chars += len(text)
+            if self._text_looks_like_request(text):
+                score += 2
+                reasons.append("explicit_request")
+                break
+
+        if total_chars >= self._group_trigger_min_chars:
+            score += 1
+            reasons.append("text_volume")
+
+        if score >= 2:
+            return True, ",".join(reasons) or f"score={score}"
+        return False, ",".join(reasons) or f"score={score}"
 
     def _should_process_group_message(self, payload: Dict[str, Any]) -> bool:
         return self._group_message_triggers_ai(payload)
@@ -787,10 +917,31 @@ class QqNapCatAdapter(BasePlatformAdapter):
                     await asyncio.sleep(self._group_batch_retry_seconds)
                     continue
 
+                should_dispatch, reason = self._project_group_batch_should_dispatch(
+                    group_id, batch
+                )
+                if not should_dispatch:
+                    logger.debug(
+                        "[%s] Skipping low-signal QQ group batch for %s (%d messages, %s)",
+                        self.name,
+                        group_id,
+                        len(batch),
+                        reason,
+                    )
+                    self._group_pending_batches.pop(group_id, None)
+                    return
+
                 self._group_pending_batches.pop(group_id, None)
                 self._group_last_dispatch_at[group_id] = time.time()
                 self._group_last_included_at[group_id] = max(
                     item.observed_at for item in batch
+                )
+                logger.debug(
+                    "[%s] Dispatching QQ group batch for %s (%d messages, %s)",
+                    self.name,
+                    group_id,
+                    len(batch),
+                    reason,
                 )
                 await self.handle_message(merged_event)
                 return
@@ -821,9 +972,6 @@ class QqNapCatAdapter(BasePlatformAdapter):
             self._schedule_group_batch_flush(group_id)
             return
 
-        if not self._group_message_triggers_ai(payload):
-            return
-
         seed = self._seed_group_batch(group_id)
         if not seed:
             seed = [item]
@@ -844,6 +992,11 @@ class QqNapCatAdapter(BasePlatformAdapter):
                     await self._handle_project_group_payload(payload)
                     return
                 if not self._should_process_group_message(payload):
+                    logger.debug(
+                        "[%s] Ignoring QQ group message for %s (reason=no_trigger)",
+                        self.name,
+                        payload.get("group_id"),
+                    )
                     return
             event = self._build_message_event(payload)
             if message_type == "group":

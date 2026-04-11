@@ -1493,6 +1493,58 @@ class TestRunConversation:
         assert result["final_response"] == "Final answer"
         assert result["completed"] is True
 
+    def test_chat_completions_without_stream_consumers_uses_non_streaming_path(self, agent):
+        """Headless callers should not force SSE when nobody consumes deltas."""
+        self._setup_agent(agent)
+        resp = _mock_response(content="Final answer", finish_reason="stop")
+        agent.api_mode = "chat_completions"
+        agent.client = object()
+        agent.stream_delta_callback = None
+        agent._stream_callback = None
+
+        with (
+            patch.object(
+                agent,
+                "_interruptible_streaming_api_call",
+                side_effect=AssertionError("streaming path should stay off"),
+            ),
+            patch.object(agent, "_interruptible_api_call", return_value=resp) as mock_nonstream,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello")
+
+        mock_nonstream.assert_called_once()
+        assert result["final_response"] == "Final answer"
+        assert result["completed"] is True
+
+    def test_chat_completions_with_stream_consumers_uses_streaming_path(self, agent):
+        """Interactive callers should keep using the streaming request path."""
+        self._setup_agent(agent)
+        resp = _mock_response(content="Final answer", finish_reason="stop")
+        agent.api_mode = "chat_completions"
+        agent.client = object()
+        agent.stream_delta_callback = lambda _delta: None
+        agent._stream_callback = None
+
+        with (
+            patch.object(agent, "_interruptible_streaming_api_call", return_value=resp) as mock_stream,
+            patch.object(
+                agent,
+                "_interruptible_api_call",
+                side_effect=AssertionError("non-streaming path should stay off"),
+            ),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello")
+
+        mock_stream.assert_called_once()
+        assert result["final_response"] == "Final answer"
+        assert result["completed"] is True
+
     def test_tool_calls_then_stop(self, agent):
         self._setup_agent(agent)
         tc = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
@@ -1737,6 +1789,42 @@ class TestRunConversation:
         assert calls["refresh"] == 1
         assert result["completed"] is True
         assert result["final_response"] == "Recovered after remint"
+
+    def test_custom_401_retries_once_with_fresh_client(self, agent):
+        self._setup_agent(agent)
+        agent.provider = "custom"
+        agent.api_mode = "chat_completions"
+        agent.base_url = "https://pay.kxaug.xyz/v1"
+
+        calls = {"api": 0}
+
+        class _UnauthorizedError(RuntimeError):
+            def __init__(self):
+                super().__init__("Error code: 401 - unauthorized")
+                self.status_code = 401
+                self.body = {"message": "Unauthorized"}
+
+        def _fake_api_call(api_kwargs):
+            calls["api"] += 1
+            if calls["api"] == 1:
+                raise _UnauthorizedError()
+            return _mock_response(
+                content="Recovered after transient 401", finish_reason="stop"
+            )
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch.object(agent, "_interruptible_api_call", side_effect=_fake_api_call),
+            patch.object(agent, "_replace_primary_openai_client") as mock_rebuild_client,
+        ):
+            result = agent.run_conversation("hello")
+
+        assert calls["api"] == 2
+        mock_rebuild_client.assert_called_once_with(reason="custom_401_retry")
+        assert result["completed"] is True
+        assert result["final_response"] == "Recovered after transient 401"
 
     def test_context_compression_triggered(self, agent):
         """When compressor says should_compress, compression runs."""
@@ -2364,6 +2452,33 @@ class TestSystemPromptStability:
 
         # Empty string is falsy, so should fall through to fresh build
         assert "Hermes Agent" in agent._cached_system_prompt
+
+    def test_stored_prompt_rebuilt_when_session_model_changed(self, agent):
+        """A stored prompt from an old model must not survive a runtime switch."""
+        mock_db = MagicMock()
+        mock_db.get_session.return_value = {
+            "model": "gpt-5.4",
+            "system_prompt": "Conversation started: Friday\nModel: gpt-5.4\nProvider: custom",
+        }
+        agent._session_db = mock_db
+        agent.session_id = "sess-model-switch"
+        agent.model = "glm-5.1"
+        agent.provider = "custom"
+        agent._cached_system_prompt = None
+        agent.client.chat.completions.create.return_value = _mock_response(
+            content="done",
+            usage={"prompt_tokens": 10, "completion_tokens": 4, "total_tokens": 14},
+        )
+
+        result = agent.run_conversation(
+            "hello again",
+            conversation_history=[{"role": "user", "content": "hello"}],
+        )
+
+        assert result["final_response"] == "done"
+        assert "Model: glm-5.1" in agent._cached_system_prompt
+        mock_db.update_session_model.assert_called_once_with("sess-model-switch", "glm-5.1")
+        mock_db.update_system_prompt.assert_called_once()
 
 class TestBudgetPressure:
     """Budget pressure warning system (issue #414)."""

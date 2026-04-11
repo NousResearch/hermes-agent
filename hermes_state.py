@@ -409,6 +409,15 @@ class SessionDB:
             )
         self._execute_write(_do)
 
+    def update_session_model(self, session_id: str, model: str) -> None:
+        """Update the session's current model identifier."""
+        def _do(conn):
+            conn.execute(
+                "UPDATE sessions SET model = ? WHERE id = ?",
+                (model, session_id),
+            )
+        self._execute_write(_do)
+
     def update_token_counts(
         self,
         session_id: str,

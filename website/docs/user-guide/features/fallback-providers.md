@@ -17,19 +17,23 @@ Credential pools handle same-provider rotation (e.g., multiple OpenRouter keys).
 
 ## Primary Model Fallback
 
-When your main LLM provider encounters errors — rate limits, server overload, auth failures, connection drops — Hermes can automatically switch to a backup provider:model pair mid-session without losing your conversation.
+When your main LLM provider encounters errors — rate limits, server overload, auth failures, connection drops — Hermes can automatically switch to a backup provider:model chain mid-session without losing your conversation.
 
 ### Configuration
 
-Add a `fallback_model` section to `~/.hermes/config.yaml`:
+Add a `fallback_providers` section to `~/.hermes/config.yaml`:
 
 ```yaml
-fallback_model:
-  provider: openrouter
-  model: anthropic/claude-sonnet-4
+fallback_providers:
+  - provider: openrouter
+    model: anthropic/claude-sonnet-4
+  - provider: custom
+    model: my-local-model
+    base_url: http://localhost:8000/v1
+    api_key_env: MY_LOCAL_KEY
 ```
 
-Both `provider` and `model` are **required**. If either is missing, the fallback is disabled.
+Each usable entry needs both `provider` and `model`. Hermes tries the list in order. The legacy single-entry `fallback_model` form still works, but it is treated as a one-entry chain.
 
 ### Supported Providers
 
@@ -59,11 +63,11 @@ Both `provider` and `model` are **required**. If either is missing, the fallback
 For a custom OpenAI-compatible endpoint, add `base_url` and optionally `api_key_env`:
 
 ```yaml
-fallback_model:
-  provider: custom
-  model: my-local-model
-  base_url: http://localhost:8000/v1
-  api_key_env: MY_LOCAL_KEY          # env var name containing the API key
+fallback_providers:
+  - provider: custom
+    model: my-local-model
+    base_url: http://localhost:8000/v1
+    api_key_env: MY_LOCAL_KEY        # env var name containing the API key
 ```
 
 ### When Fallback Triggers
@@ -78,15 +82,15 @@ The fallback activates automatically when the primary model fails with:
 
 When triggered, Hermes:
 
-1. Resolves credentials for the fallback provider
+1. Resolves credentials for the next fallback provider
 2. Builds a new API client
 3. Swaps the model, provider, and client in-place
 4. Resets the retry counter and continues the conversation
 
 The switch is seamless — your conversation history, tool calls, and context are preserved. The agent continues from exactly where it left off, just using a different model.
 
-:::info One-Shot
-Fallback activates **at most once** per session. If the fallback provider also fails, normal error handling takes over (retries, then error message). This prevents cascading failover loops.
+:::info Ordered Chain
+`fallback_providers` is an ordered chain. Hermes tries the next configured provider when the current one exhausts its retries. The legacy `fallback_model` form still works, but it is treated as a one-entry chain.
 :::
 
 ### Examples
@@ -97,9 +101,9 @@ model:
   provider: anthropic
   default: claude-sonnet-4-6
 
-fallback_model:
-  provider: openrouter
-  model: anthropic/claude-sonnet-4
+fallback_providers:
+  - provider: openrouter
+    model: anthropic/claude-sonnet-4
 ```
 
 **Nous Portal as fallback for OpenRouter:**
@@ -108,25 +112,25 @@ model:
   provider: openrouter
   default: anthropic/claude-opus-4
 
-fallback_model:
-  provider: nous
-  model: nous-hermes-3
+fallback_providers:
+  - provider: nous
+    model: nous-hermes-3
 ```
 
 **Local model as fallback for cloud:**
 ```yaml
-fallback_model:
-  provider: custom
-  model: llama-3.1-70b
-  base_url: http://localhost:8000/v1
-  api_key_env: LOCAL_API_KEY
+fallback_providers:
+  - provider: custom
+    model: llama-3.1-70b
+    base_url: http://localhost:8000/v1
+    api_key_env: LOCAL_API_KEY
 ```
 
 **Codex OAuth as fallback:**
 ```yaml
-fallback_model:
-  provider: openai-codex
-  model: gpt-5.3-codex
+fallback_providers:
+  - provider: openai-codex
+    model: gpt-5.3-codex
 ```
 
 ### Where Fallback Works
@@ -136,11 +140,11 @@ fallback_model:
 | CLI sessions | ✔ |
 | Messaging gateway (Telegram, Discord, etc.) | ✔ |
 | Subagent delegation | ✘ (subagents do not inherit fallback config) |
-| Cron jobs | ✘ (run with a fixed provider) |
+| Cron jobs | ✔ (use the same fallback chain as the main agent) |
 | Auxiliary tasks (vision, compression) | ✘ (use their own provider chain — see below) |
 
 :::tip
-There are no environment variables for `fallback_model` — it is configured exclusively through `config.yaml`. This is intentional: fallback configuration is a deliberate choice, not something a stale shell export should override.
+There are no environment variables for `fallback_providers` or legacy `fallback_model` — they are configured exclusively through `config.yaml`. This is intentional: fallback configuration is a deliberate choice, not something a stale shell export should override.
 :::
 
 ---
@@ -299,7 +303,7 @@ See [Subagent Delegation](/docs/user-guide/features/delegation) for full configu
 
 ## Cron Job Providers
 
-Cron jobs run with whatever provider is configured at execution time. They do not support a fallback model. To use a different provider for cron jobs, configure `provider` and `model` overrides on the cron job itself:
+Cron jobs use the same `fallback_providers` chain as the main agent. By default they run with whatever provider is configured at execution time, and will fail over through the configured fallback list on 429/5xx/auth failures. To force a different primary provider for a specific cron job, configure `provider` and `model` overrides on the job itself:
 
 ```python
 cronjob(
@@ -319,7 +323,7 @@ See [Scheduled Tasks (Cron)](/docs/user-guide/features/cron) for full configurat
 
 | Feature | Fallback Mechanism | Config Location |
 |---------|-------------------|----------------|
-| Main agent model | `fallback_model` in config.yaml — one-shot failover on errors | `fallback_model:` (top-level) |
+| Main agent model | Ordered fallback chain on errors | `fallback_providers:` or legacy `fallback_model:` |
 | Vision | Auto-detection chain + internal OpenRouter retry | `auxiliary.vision` |
 | Web extraction | Auto-detection chain + internal OpenRouter retry | `auxiliary.web_extract` |
 | Context compression | Auto-detection chain, degrades to no-summary if unavailable | `auxiliary.compression` or `compression.summary_provider` |

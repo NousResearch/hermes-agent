@@ -196,6 +196,46 @@ class TestTryActivateFallback:
             assert agent.client is mock_client
             assert agent.model == "my-model"
 
+    def test_custom_base_url_resolves_api_key_env_before_activation(self, monkeypatch):
+        """Custom fallbacks should resolve api_key_env before building the client."""
+        monkeypatch.setenv("MY_CUSTOM_KEY", "custom-secret")
+        agent = _make_agent(
+            fallback_model={
+                "provider": "custom",
+                "model": "my-model",
+                "base_url": "http://localhost:8080/v1",
+                "api_key_env": "MY_CUSTOM_KEY",
+            },
+        )
+        mock_client = _mock_resolve(
+            api_key="custom-secret",
+            base_url="http://localhost:8080/v1",
+        )
+        captured = {}
+
+        def _fake_resolve_provider_client(provider, model=None, raw_codex=False,
+                                          explicit_base_url=None, explicit_api_key=None):
+            captured["provider"] = provider
+            captured["model"] = model
+            captured["raw_codex"] = raw_codex
+            captured["explicit_base_url"] = explicit_base_url
+            captured["explicit_api_key"] = explicit_api_key
+            return mock_client, "my-model"
+
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            side_effect=_fake_resolve_provider_client,
+        ):
+            assert agent._try_activate_fallback() is True
+
+        assert captured == {
+            "provider": "custom",
+            "model": "my-model",
+            "raw_codex": True,
+            "explicit_base_url": "http://localhost:8080/v1",
+            "explicit_api_key": "custom-secret",
+        }
+
     def test_prompt_caching_enabled_for_claude_on_openrouter(self):
         agent = _make_agent(
             fallback_model={"provider": "openrouter", "model": "anthropic/claude-sonnet-4"},
@@ -343,6 +383,95 @@ class TestFallbackInit:
     def test_fallback_none_for_non_dict(self):
         agent = _make_agent(fallback_model="not-a-dict")
         assert agent._fallback_model is None
+
+    def test_fallback_chain_deduplicates_primary_and_duplicate_entries(self):
+        with (
+            patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+        ):
+            agent = AIAgent(
+                api_key="test-key",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+                provider="custom",
+                base_url="https://pay.kxaug.xyz/v1",
+                model="gpt-5.4",
+                fallback_model=[
+                    {
+                        "provider": "custom",
+                        "model": "gpt-5.4",
+                        "base_url": "https://pay.kxaug.xyz/v1",
+                    },
+                    {
+                        "provider": "custom",
+                        "model": "gpt-5.4",
+                        "base_url": "https://api.888933.xyz/v1",
+                    },
+                    {
+                        "provider": "custom",
+                        "model": "gpt-5.4",
+                        "base_url": "https://api.888933.xyz/v1",
+                    },
+                ],
+            )
+
+        assert len(agent._fallback_chain) == 1
+        assert agent._fallback_chain[0]["base_url"] == "https://api.888933.xyz/v1"
+
+    def test_try_activate_fallback_skips_entry_matching_current_runtime(self):
+        agent = _make_agent(
+            fallback_model=[
+                {
+                    "provider": "custom",
+                    "model": "gpt-5.4",
+                    "base_url": "https://pay.kxaug.xyz/v1",
+                },
+                {
+                    "provider": "custom",
+                    "model": "gpt-5.4",
+                    "base_url": "https://api.888933.xyz/v1",
+                },
+            ]
+        )
+        agent.provider = "custom"
+        agent.base_url = "https://pay.kxaug.xyz/v1"
+        agent.model = "gpt-5.4"
+
+        mock_client = _mock_resolve(
+            api_key="sk-fallback-key",
+            base_url="https://api.888933.xyz/v1",
+        )
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(mock_client, "gpt-5.4"),
+        ):
+            assert agent._try_activate_fallback() is True
+
+        assert agent.base_url == "https://api.888933.xyz/v1"
+        assert agent._fallback_index == 2
+
+    def test_try_activate_fallback_respects_explicit_api_mode_override(self):
+        agent = _make_agent(
+            fallback_model={
+                "provider": "custom",
+                "model": "gpt-5.4",
+                "base_url": "https://compat.example.com/v1",
+                "api_mode": "chat_completions",
+            }
+        )
+        mock_client = _mock_resolve(
+            api_key="sk-fallback-key",
+            base_url="https://compat.example.com/v1",
+        )
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(mock_client, "gpt-5.4"),
+        ):
+            assert agent._try_activate_fallback() is True
+
+        assert agent.api_mode == "chat_completions"
 
 
 # =============================================================================

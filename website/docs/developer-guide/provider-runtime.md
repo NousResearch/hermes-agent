@@ -148,13 +148,15 @@ When an auxiliary task is configured with provider `main`, Hermes resolves that 
 - custom endpoints saved via `hermes model` / `config.yaml` also work
 - auxiliary routing can tell the difference between a real saved custom endpoint and the OpenRouter fallback
 
+For vision, auto-resolution also falls back to the currently active authenticated provider from `auth.json` when `config.yaml` does not pin a provider. That keeps payload-family selection correct for Codex/Anthropic-style vision backends even when the runtime is driven by auth state rather than a saved `model.provider`.
+
 ## Fallback models
 
-Hermes supports a configured fallback model/provider pair, allowing runtime failover when the primary model encounters errors.
+Hermes supports an ordered fallback model/provider chain, allowing runtime failover when the primary model encounters errors. The legacy single-entry `fallback_model` form is still supported and is normalized into a one-entry chain.
 
 ### How it works internally
 
-1. **Storage**: `AIAgent.__init__` stores the `fallback_model` dict and sets `_fallback_activated = False`.
+1. **Storage**: `AIAgent.__init__` normalizes `fallback_providers` or legacy `fallback_model` into `_fallback_chain`, stores `_fallback_index`, and sets `_fallback_activated = False`.
 
 2. **Trigger points**: `_try_activate_fallback()` is called from three places in the main retry loop in `run_agent.py`:
    - After max retries on invalid API responses (None choices, missing content)
@@ -163,28 +165,29 @@ Hermes supports a configured fallback model/provider pair, allowing runtime fail
 
 3. **Activation flow** (`_try_activate_fallback`):
    - Returns `False` immediately if already activated or not configured
+   - Skips entries that point back to the current runtime and de-duplicates repeated endpoints in the configured chain
    - Calls `resolve_provider_client()` from `auxiliary_client.py` to build a new client with proper auth
-   - Determines `api_mode`: `codex_responses` for openai-codex, `anthropic_messages` for anthropic, `chat_completions` for everything else
+   - Determines `api_mode`: uses an explicit fallback-entry override when present, otherwise infers `codex_responses` for openai-codex, `anthropic_messages` for anthropic, and `chat_completions` for everything else
    - Swaps in-place: `self.model`, `self.provider`, `self.base_url`, `self.api_mode`, `self.client`, `self._client_kwargs`
    - For anthropic fallback: builds a native Anthropic client instead of OpenAI-compatible
    - Re-evaluates prompt caching (enabled for Claude models on OpenRouter)
-   - Sets `_fallback_activated = True` — prevents firing again
+   - Sets `_fallback_activated = True` to record that failover happened on this turn
    - Resets retry count to 0 and continues the loop
 
 4. **Config flow**:
-   - CLI: `cli.py` reads `CLI_CONFIG["fallback_model"]` → passes to `AIAgent(fallback_model=...)`
+   - CLI: `cli.py` reads `CLI_CONFIG["fallback_providers"]` or legacy `CLI_CONFIG["fallback_model"]` → passes to `AIAgent(fallback_model=...)`
    - Gateway: `gateway/run.py._load_fallback_model()` reads `config.yaml` → passes to `AIAgent`
-   - Validation: both `provider` and `model` keys must be non-empty, or fallback is disabled
+   - Cron: `cron/scheduler.py` reads `fallback_providers` or legacy `fallback_model` from `config.yaml` → passes to `AIAgent`
+   - Validation: each usable entry must have non-empty `provider` and `model`, or it is skipped/disabled
 
 ### What does NOT support fallback
 
 - **Subagent delegation** (`tools/delegate_tool.py`): subagents inherit the parent's provider but not the fallback config
-- **Cron jobs** (`cron/`): run with a fixed provider, no fallback mechanism
 - **Auxiliary tasks**: use their own independent provider auto-detection chain (see Auxiliary model routing above)
 
 ### Test coverage
 
-See `tests/test_fallback_model.py` for comprehensive tests covering all supported providers, one-shot semantics, and edge cases.
+See `tests/run_agent/test_fallback_model.py` and `tests/run_agent/test_provider_fallback.py` for coverage of provider-specific activation, chain advancement, and edge cases.
 
 ## Related docs
 

@@ -83,6 +83,41 @@ def _clear_approval_state():
     mod._pending.clear()
 
 
+def test_build_gateway_approval_message_is_localized():
+    from tools.approval import build_gateway_approval_message
+
+    msg = build_gateway_approval_message(
+        command="pkill -f 'python -m hermes_cli.main gateway run --replace'",
+        description="start gateway outside systemd (use 'systemctl --user restart hermes-gateway')",
+        prompt_title="Dangerous command requires approval",
+        approver_name="董事长",
+        allow_persistence=True,
+    )
+
+    assert "危险命令需要授权" in msg
+    assert "原因：" in msg
+    assert "请不要绕过 systemd 直接启动 gateway" in msg
+    assert "请回复 `/approve` 执行" in msg
+    assert "Reply `/approve`" not in msg
+    assert "Reason:" not in msg
+
+
+def test_build_gateway_approval_message_non_persistent_is_localized():
+    from tools.approval import build_gateway_approval_message
+
+    msg = build_gateway_approval_message(
+        command="qq_group_moderation kick group:987654321 user:123456",
+        description="kick group member",
+        prompt_title="Dangerous action requires approval",
+        approver_name="董事长",
+        allow_persistence=False,
+    )
+
+    assert "危险操作需要授权" in msg
+    assert "这事我得先取得董事长的授权" in msg
+    assert "请董事长回复 `/approve` 执行，或回复 `/deny` 取消。" in msg
+
+
 # ------------------------------------------------------------------
 # Blocking gateway approval infrastructure (tools/approval.py)
 # ------------------------------------------------------------------
@@ -648,7 +683,7 @@ class TestBlockingApprovalE2E:
         t.join(timeout=10)
 
         assert result_holder[0]["approved"] is False
-        assert "timed out" in result_holder[0]["message"]
+        assert "等待授权超时" in result_holder[0]["message"]
         unregister_gateway_notify(session_key)
 
     def test_parallel_subagent_approvals(self):

@@ -1451,12 +1451,53 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
                     "Add: model: anthropic/claude-sonnet-4 (or another model)",
                 ))
 
-    # ── Check for fallback_model accidentally nested inside custom_providers ──
+    # ── fallback_providers must be a top-level list of dicts ───────────
+    fb_chain = config.get("fallback_providers")
+    if fb_chain is not None:
+        if not isinstance(fb_chain, list):
+            issues.append(ConfigIssue(
+                "error",
+                f"fallback_providers should be a list of dicts with 'provider' and 'model', got {type(fb_chain).__name__}",
+                "Change to:\n"
+                "  fallback_providers:\n"
+                "    - provider: openrouter\n"
+                "      model: anthropic/claude-sonnet-4",
+            ))
+        else:
+            for i, entry in enumerate(fb_chain):
+                if not isinstance(entry, dict):
+                    issues.append(ConfigIssue(
+                        "warning",
+                        f"fallback_providers[{i}] is not a dict — this entry will be ignored",
+                        "Use:\n"
+                        f"  fallback_providers[{i}]: {{provider: openrouter, model: anthropic/claude-sonnet-4}}",
+                    ))
+                    continue
+                if entry and not entry.get("provider"):
+                    issues.append(ConfigIssue(
+                        "warning",
+                        f"fallback_providers[{i}] is missing 'provider' field — this entry will be ignored",
+                        "Add: provider: openrouter (or another provider)",
+                    ))
+                if entry and not entry.get("model"):
+                    issues.append(ConfigIssue(
+                        "warning",
+                        f"fallback_providers[{i}] is missing 'model' field — this entry will be ignored",
+                        "Add: model: anthropic/claude-sonnet-4 (or another model)",
+                    ))
+
+    # ── Check for fallback config accidentally nested inside custom_providers ──
     if isinstance(cp, dict) and "fallback_model" not in config and "fallback_model" in (cp or {}):
         issues.append(ConfigIssue(
             "error",
             "fallback_model appears inside custom_providers instead of at root level",
             "Move fallback_model to the top level of config.yaml (no indentation)",
+        ))
+    if isinstance(cp, dict) and "fallback_providers" not in config and "fallback_providers" in (cp or {}):
+        issues.append(ConfigIssue(
+            "error",
+            "fallback_providers appears inside custom_providers instead of at root level",
+            "Move fallback_providers to the top level of config.yaml (no indentation)",
         ))
 
     # ── model section: should exist when custom_providers is configured ──
@@ -1948,7 +1989,7 @@ _SECURITY_COMMENT = """
 """
 
 _FALLBACK_COMMENT = """
-# ── Fallback Model ────────────────────────────────────────────────────
+# ── Fallback Providers ────────────────────────────────────────────────
 # Automatic provider failover when primary is unavailable.
 # Uncomment and configure to enable. Triggers on rate limits (429),
 # overload (529), service errors (503), or connection failures.
@@ -1964,6 +2005,15 @@ _FALLBACK_COMMENT = """
 #
 # For custom OpenAI-compatible endpoints, add base_url and api_key_env.
 #
+# fallback_providers:
+#   - provider: openrouter
+#     model: anthropic/claude-sonnet-4
+#   - provider: custom
+#     model: my-local-model
+#     base_url: http://localhost:8000/v1
+#     api_key_env: MY_LOCAL_KEY
+#
+# Legacy one-entry form still works:
 # fallback_model:
 #   provider: openrouter
 #   model: anthropic/claude-sonnet-4
@@ -1982,7 +2032,6 @@ _FALLBACK_COMMENT = """
 #     model: google/gemini-2.5-flash
 """
 
-
 _COMMENTED_SECTIONS = """
 # ── Security ──────────────────────────────────────────────────────────
 # API keys, tokens, and passwords are redacted from tool output by default.
@@ -1991,7 +2040,7 @@ _COMMENTED_SECTIONS = """
 # security:
 #   redact_secrets: false
 
-# ── Fallback Model ────────────────────────────────────────────────────
+# ── Fallback Providers ────────────────────────────────────────────────
 # Automatic provider failover when primary is unavailable.
 # Uncomment and configure to enable. Triggers on rate limits (429),
 # overload (529), service errors (503), or connection failures.
@@ -2007,6 +2056,15 @@ _COMMENTED_SECTIONS = """
 #
 # For custom OpenAI-compatible endpoints, add base_url and api_key_env.
 #
+# fallback_providers:
+#   - provider: openrouter
+#     model: anthropic/claude-sonnet-4
+#   - provider: custom
+#     model: my-local-model
+#     base_url: http://localhost:8000/v1
+#     api_key_env: MY_LOCAL_KEY
+#
+# Legacy one-entry form still works:
 # fallback_model:
 #   provider: openrouter
 #   model: anthropic/claude-sonnet-4
@@ -2043,8 +2101,18 @@ def save_config(config: Dict[str, Any]):
     sec = normalized.get("security", {})
     if not sec or sec.get("redact_secrets") is None:
         parts.append(_SECURITY_COMMENT)
+
+    has_fallback = False
     fb = normalized.get("fallback_model", {})
-    if not fb or not (fb.get("provider") and fb.get("model")):
+    if isinstance(fb, dict) and fb.get("provider") and fb.get("model"):
+        has_fallback = True
+    fb_chain = normalized.get("fallback_providers", [])
+    if isinstance(fb_chain, list) and any(
+        isinstance(entry, dict) and entry.get("provider") and entry.get("model")
+        for entry in fb_chain
+    ):
+        has_fallback = True
+    if not has_fallback:
         parts.append(_FALLBACK_COMMENT)
 
     atomic_yaml_write(

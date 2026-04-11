@@ -150,3 +150,87 @@ async def test_empty_placeholder_in_dm_returns_fallback_reply():
     assert runner.session_store.append_to_transcript.called
     runner._send_voice_reply.assert_not_awaited()
     runner._deliver_media_from_response.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_empty_placeholder_in_qq_group_with_explicit_maga_mention_returns_fallback():
+    platform = getattr(Platform, "QQ_NAPCAT")
+    runner = _make_runner(platform)
+    runner._run_agent = AsyncMock(
+        return_value={
+            "final_response": "(empty)",
+            "messages": [],
+            "tools": [],
+            "history_offset": 0,
+            "last_prompt_tokens": 0,
+        }
+    )
+    event = MessageEvent(
+        text="@马嘎 cursor 风格的官方网站 快落实",
+        source=SessionSource(
+            platform=platform,
+            user_id="123456",
+            chat_id="987654",
+            user_name="tester",
+            chat_type="group",
+        ),
+        message_id="m4",
+    )
+
+    result = await runner._handle_message(event)
+
+    assert result == "刚才我这轮空转了，但消息我收到了。你再发一遍，或者我继续接着干。"
+    assert runner.session_store.append_to_transcript.called
+    runner._send_voice_reply.assert_not_awaited()
+    runner._deliver_media_from_response.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_empty_placeholder_in_qq_group_with_explicit_maga_alias_returns_fallback():
+    platform = getattr(Platform, "QQ_NAPCAT")
+    runner = _make_runner(platform)
+    runner._run_agent = AsyncMock(
+        return_value={
+            "final_response": "(empty)",
+            "messages": [],
+            "tools": [],
+            "history_offset": 0,
+            "last_prompt_tokens": 0,
+        }
+    )
+    event = MessageEvent(
+        text="@马噶 还在不在",
+        source=SessionSource(
+            platform=platform,
+            user_id="123456",
+            chat_id="987654",
+            user_name="tester",
+            chat_type="group",
+        ),
+        message_id="m5",
+    )
+
+    result = await runner._handle_message(event)
+
+    assert result == "刚才我这轮空转了，但消息我收到了。你再发一遍，或者我继续接着干。"
+
+
+@pytest.mark.asyncio
+async def test_no_reply_marker_in_qq_group_with_explicit_maga_mention_returns_fallback():
+    platform = getattr(Platform, "QQ_NAPCAT")
+    runner = _make_runner(platform)
+    event = MessageEvent(
+        text="@马嘎 在?",
+        source=SessionSource(
+            platform=platform,
+            user_id="123456",
+            chat_id="987654",
+            user_name="tester",
+            chat_type="group",
+        ),
+        message_id="m6",
+    )
+
+    result = await runner._handle_message(event)
+
+    assert result == "刚才我这轮空转了，但消息我收到了。你再发一遍，或者我继续接着干。"

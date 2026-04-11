@@ -112,6 +112,26 @@ class TestSaveAndLoadRoundtrip:
             reloaded = load_config()
             assert reloaded["terminal"]["timeout"] == 999
 
+    def test_save_config_with_fallback_providers_omits_fallback_comment_block(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            config = load_config()
+            config["fallback_providers"] = [
+                {"provider": "openrouter", "model": "anthropic/claude-sonnet-4"},
+            ]
+            save_config(config)
+
+            content = (tmp_path / "config.yaml").read_text(encoding="utf-8")
+            assert "fallback_providers:" in content
+            assert "# ── Fallback" not in content
+
+    def test_save_config_without_fallback_keeps_chain_comment_template(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            config = load_config()
+            save_config(config)
+
+            content = (tmp_path / "config.yaml").read_text(encoding="utf-8")
+            assert "# fallback_providers:" in content
+
 
 class TestSaveEnvValueSecure:
     def test_save_env_value_writes_without_stdout(self, tmp_path, capsys):

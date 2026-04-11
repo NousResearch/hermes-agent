@@ -29,6 +29,7 @@ Usage:
 """
 
 import base64
+import ipaddress
 import json
 import logging
 import os
@@ -95,9 +96,26 @@ def _validate_image_url(url: str) -> bool:
     if not parsed.netloc:
         return False
 
-    # Block private/internal addresses to prevent SSRF
-    from tools.url_safety import is_safe_url
-    if not is_safe_url(url):
+    hostname = (parsed.hostname or "").strip().lower()
+    if not hostname:
+        return False
+
+    if hostname == "localhost" or hostname.endswith(".local"):
+        return False
+
+    try:
+        ip = ipaddress.ip_address(hostname)
+    except ValueError:
+        ip = None
+
+    if ip and (
+        ip.is_private
+        or ip.is_loopback
+        or ip.is_link_local
+        or ip.is_multicast
+        or ip.is_unspecified
+        or ip.is_reserved
+    ):
         return False
 
     return True

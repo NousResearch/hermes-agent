@@ -286,6 +286,67 @@ logger = logging.getLogger(__name__)
 # session from bypassing the "already running" guard during the async gap
 # between the guard check and actual agent creation.
 _AGENT_PENDING_SENTINEL = object()
+_SHARED_GROUP_VISIBLE_HISTORY_LIMIT = 24
+_QQ_VISIBLE_NAME_ALIASES = (
+    "@马嘎",
+    "@马噶",
+    "马嘎",
+    "马噶",
+    "马哥",
+    "老马",
+    "马屌",
+    "马逼",
+    "小马",
+    "马户",
+)
+
+
+def _is_shared_group_internal_artifact(content: Any) -> bool:
+    text = str(content or "").strip()
+    if not text:
+        return False
+    return text.startswith(
+        (
+            "[CONTEXT COMPACTION]",
+            "[Your active task list was preserved across context compression]",
+        )
+    )
+
+
+def _simplify_shared_group_history_for_agent(
+    history: List[Dict[str, Any]],
+    *,
+    visible_limit: int = _SHARED_GROUP_VISIBLE_HISTORY_LIMIT,
+) -> List[Dict[str, Any]]:
+    """Reduce shared-group history to visible chat turns only.
+
+    Shared QQ project-group sessions are collaborative, but raw agent internals
+    (tool traces, compaction summaries, preserved todo state) pollute later
+    turns and make chat models keep dragging stale topics forward.  For shared
+    group chats, only replay visible user/assistant turns and bias toward the
+    most recent exchange window.
+    """
+    visible_messages: List[Dict[str, Any]] = []
+    for msg in history:
+        role = str(msg.get("role") or "").strip()
+        if role not in ("user", "assistant"):
+            continue
+
+        content = msg.get("content")
+        if not isinstance(content, str):
+            continue
+        content = content.strip()
+        if not content or content == "[[NO_REPLY]]":
+            continue
+        if _is_shared_group_internal_artifact(content):
+            continue
+
+        visible_messages.append({"role": role, "content": content})
+
+    if visible_limit > 0 and len(visible_messages) > visible_limit:
+        visible_messages = visible_messages[-visible_limit:]
+
+    return visible_messages
 
 
 def _resolve_runtime_agent_kwargs() -> dict:
@@ -350,12 +411,40 @@ def _dequeue_pending_text(adapter, session_key: str) -> str | None:
     return text
 
 
-def _empty_response_fallback(source: SessionSource) -> str:
+def _qq_group_empty_response_fallback(message: str) -> str:
+    """Return a QQ-group fallback when an explicitly addressed turn went silent."""
+    body = str(message or "").strip()
+    if not body:
+        return ""
+    if any(name in body for name in _QQ_VISIBLE_NAME_ALIASES):
+        return "刚才我这轮空转了，但消息我收到了。你再发一遍，或者我继续接着干。"
+    return ""
+
+
+def _qq_busy_followup_ack(source: SessionSource, message: str = "") -> str:
+    """Return a short visible QQ acknowledgement for queued follow-ups."""
+    if getattr(source, "platform", None) != Platform.QQ_NAPCAT:
+        return ""
+    if getattr(source, "chat_type", "") == "dm":
+        return "收到，这条我先排队，上一轮忙完马上接着回你。"
+
+    body = str(message or "").strip()
+    if any(name in body for name in _QQ_VISIBLE_NAME_ALIASES):
+        return "收到，这条我先排队，上一轮忙完接着回你。"
+    return ""
+
+
+def _empty_response_fallback(source: SessionSource, message: str = "") -> str:
     """Return a user-facing fallback when the model yields no final text."""
     if getattr(source, "chat_type", "") == "dm":
         if getattr(source, "platform", None) == Platform.QQ_NAPCAT:
             return "刚才接口抽了，没吐出正文。你再发一条，或者我继续接着刚才的话题说。"
         return "I didn't get a usable response just now. Please send that again."
+    if (
+        getattr(source, "chat_type", "") == "group"
+        and getattr(source, "platform", None) == Platform.QQ_NAPCAT
+    ):
+        return _qq_group_empty_response_fallback(message)
     return ""
 
 
@@ -1145,6 +1234,8 @@ class GatewayRunner:
             adapter.set_message_handler(self._handle_message)
             adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
             adapter.set_session_store(self.session_store)
+            if hasattr(adapter, "set_busy_input_mode"):
+                adapter.set_busy_input_mode(self._get_busy_input_mode(platform))
             
             # Try to connect
             logger.info("Connecting to %s...", platform.value)
@@ -1443,6 +1534,8 @@ class GatewayRunner:
                     adapter.set_message_handler(self._handle_message)
                     adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
                     adapter.set_session_store(self.session_store)
+                    if hasattr(adapter, "set_busy_input_mode"):
+                        adapter.set_busy_input_mode(self._get_busy_input_mode(platform))
 
                     success = await adapter.connect()
                     if success:
@@ -1863,6 +1956,13 @@ class GatewayRunner:
         if config and hasattr(config, "get_unauthorized_dm_behavior"):
             return config.get_unauthorized_dm_behavior(platform)
         return "pair"
+
+    def _get_busy_input_mode(self, platform: Optional[Platform]) -> str:
+        """Return how follow-up text should behave while the agent is active."""
+        config = getattr(self, "config", None)
+        if config and hasattr(config, "get_busy_input_mode"):
+            return config.get_busy_input_mode(platform)
+        return "interrupt"
     
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
         """
@@ -1944,6 +2044,10 @@ class GatewayRunner:
                 label = response_text if len(response_text) <= 20 else response_text[:20] + "…"
                 return f"✓ Sent `{label}` to the update process."
 
+        raw_text = (event.text or "").strip()
+        if raw_text and not raw_text.startswith("/") and self._is_runtime_identity_query(raw_text):
+            return self._format_runtime_identity_response(source)
+
         # PRIORITY handling when an agent is already running for this session.
         # Default behavior is to interrupt immediately so user text/stop messages
         # are handled with minimal latency.
@@ -2004,6 +2108,7 @@ class GatewayRunner:
         if _quick_key in self._running_agents:
             if event.get_command() == "status":
                 return await self._handle_status_command(event)
+            _busy_input_mode = self._get_busy_input_mode(source.platform)
 
             # Resolve the command once for all early-intercept checks below.
             from hermes_cli.commands import resolve_command as _resolve_cmd_inner
@@ -2065,7 +2170,10 @@ class GatewayRunner:
                         source=event.source,
                         message_id=event.message_id,
                     )
-                    adapter._pending_messages[_quick_key] = queued_event
+                    if hasattr(adapter, "queue_message"):
+                        adapter.queue_message(_quick_key, queued_event)
+                    else:
+                        adapter._pending_messages[_quick_key] = queued_event
                 return "Queued for the next turn."
 
             # /model must not be used while the agent is running.
@@ -2085,16 +2193,8 @@ class GatewayRunner:
                 logger.debug("PRIORITY photo follow-up for session %s — queueing without interrupt", _quick_key[:20])
                 adapter = self.adapters.get(source.platform)
                 if adapter:
-                    # Reuse adapter queue semantics so photo bursts merge cleanly.
-                    if _quick_key in adapter._pending_messages:
-                        existing = adapter._pending_messages[_quick_key]
-                        if getattr(existing, "message_type", None) == MessageType.PHOTO:
-                            existing.media_urls.extend(event.media_urls)
-                            existing.media_types.extend(event.media_types)
-                            if event.text:
-                                existing.text = BasePlatformAdapter._merge_caption(existing.text, event.text)
-                        else:
-                            adapter._pending_messages[_quick_key] = event
+                    if hasattr(adapter, "queue_message"):
+                        adapter.queue_message(_quick_key, event)
                     else:
                         adapter._pending_messages[_quick_key] = event
                 return None
@@ -2112,8 +2212,43 @@ class GatewayRunner:
                 # agent starts.
                 adapter = self.adapters.get(source.platform)
                 if adapter:
-                    adapter._pending_messages[_quick_key] = event
+                    if hasattr(adapter, "queue_message"):
+                        adapter.queue_message(_quick_key, event)
+                    else:
+                        adapter._pending_messages[_quick_key] = event
+                busy_ack = _qq_busy_followup_ack(source, event.text)
+                if busy_ack:
+                    logger.info(
+                        "queued follow-up while session pending: platform=%s chat=%s session=%s",
+                        source.platform.value if getattr(source, "platform", None) else "unknown",
+                        source.chat_id or "unknown",
+                        _quick_key[:32],
+                    )
+                    return busy_ack
                 return None
+
+            if _busy_input_mode == "queue":
+                logger.debug(
+                    "PRIORITY queue for session %s — deferring follow-up without interrupt",
+                    _quick_key[:20],
+                )
+                adapter = self.adapters.get(source.platform)
+                if adapter:
+                    if hasattr(adapter, "queue_message"):
+                        adapter.queue_message(_quick_key, event)
+                    else:
+                        adapter._pending_messages[_quick_key] = event
+                busy_ack = _qq_busy_followup_ack(source, event.text)
+                if busy_ack:
+                    logger.info(
+                        "queued follow-up for active session: platform=%s chat=%s session=%s",
+                        source.platform.value if getattr(source, "platform", None) else "unknown",
+                        source.chat_id or "unknown",
+                        _quick_key[:32],
+                    )
+                    return busy_ack
+                return None
+
             logger.debug("PRIORITY interrupt for session %s", _quick_key[:20])
             running_agent.interrupt(event.text)
             if _quick_key in self._pending_messages:
@@ -2546,6 +2681,16 @@ class GatewayRunner:
 
         # Load conversation history from transcript
         history = self.session_store.load_transcript(session_entry.session_id)
+        history_for_agent = history
+        if getattr(context, "shared_session_kind", None) == "group":
+            history_for_agent = _simplify_shared_group_history_for_agent(history)
+            if len(history_for_agent) != len(history):
+                logger.info(
+                    "Shared group history simplified for session %s: %d -> %d messages",
+                    session_entry.session_id,
+                    len(history),
+                    len(history_for_agent),
+                )
         
         # -----------------------------------------------------------------
         # Session hygiene: auto-compress pathologically large transcripts
@@ -3012,7 +3157,7 @@ class GatewayRunner:
             agent_result = await self._run_agent(
                 message=message_text,
                 context_prompt=context_prompt,
-                history=history,
+                history=history_for_agent,
                 source=source,
                 session_id=session_entry.session_id,
                 session_key=session_key,
@@ -3031,25 +3176,33 @@ class GatewayRunner:
 
             response = agent_result.get("final_response") or ""
             suppress_reply = bool(agent_result.get("suppress_reply"))
-            if response.strip() == "(empty)":
-                fallback = _empty_response_fallback(source)
+            response_state = "sent"
+            if response.strip() in {"(empty)", "[[NO_REPLY]]"}:
+                fallback = _empty_response_fallback(source, message_text)
                 if fallback:
                     response = fallback
                     suppress_reply = False
+                    response_state = "qq_explicit_fallback"
                 else:
                     suppress_reply = True
                     response = ""
+                    response_state = "suppressed_empty"
             if response.strip() == "[[NO_REPLY]]":
                 suppress_reply = True
                 response = ""
+                response_state = "suppressed_no_reply"
+            elif not response and suppress_reply and response_state == "sent":
+                response_state = "suppressed"
+            elif not response and agent_result.get("failed"):
+                response_state = "failed_silent"
             agent_messages = agent_result.get("messages", [])
             _response_time = time.time() - _msg_start_time
             _api_calls = agent_result.get("api_calls", 0)
             _resp_len = len(response)
             logger.info(
-                "response ready: platform=%s chat=%s time=%.1fs api_calls=%d response=%d chars",
+                "response ready: platform=%s chat=%s time=%.1fs api_calls=%d response=%d chars state=%s",
                 _platform_name, source.chat_id or "unknown",
-                _response_time, _api_calls, _resp_len,
+                _response_time, _api_calls, _resp_len, response_state,
             )
 
             # Surface error details when the agent failed silently (final_response=None)
@@ -3366,6 +3519,77 @@ class GatewayRunner:
         if base_url and ("localhost" in base_url or "127.0.0.1" in base_url or "0.0.0.0" in base_url):
             lines.append(f"◆ Endpoint: {base_url}")
 
+        return "\n".join(lines)
+
+    @staticmethod
+    def _is_runtime_identity_query(text: str) -> bool:
+        """Detect short natural-language questions about the current model."""
+        normalized = re.sub(r"\s+", "", (text or "").strip().lower())
+        if not normalized:
+            return False
+
+        patterns = (
+            r"^你(现[在]?|当前)?(是什么|是啥|啥)?模型.*$",
+            r"^你(现[在]?|当前)?用的什么模型.*$",
+            r"^你.*什么模型.*$",
+            r"^你.*模型.*现在.*$",
+            r"^你还是gpt[- ]?5(\.4)?[吗?？!！。,.看]*.*$",
+            r"^whatmodelareyou.*$",
+            r"^whichmodelareyou.*$",
+            r"^whatproviderareyouusing.*$",
+        )
+        return any(re.match(pattern, normalized) for pattern in patterns)
+
+    @staticmethod
+    def _endpoint_host(base_url: str) -> str:
+        cleaned = str(base_url or "").strip()
+        if not cleaned:
+            return ""
+        cleaned = re.sub(r"^https?://", "", cleaned, flags=re.IGNORECASE)
+        return cleaned.rstrip("/")
+
+    def _format_runtime_identity_response(self, source: SessionSource) -> str:
+        """Return a deterministic response for current model/provider questions."""
+        model = _resolve_gateway_model()
+        provider = None
+        base_url = None
+        scope = "当前主模型配置"
+
+        try:
+            cfg_path = _hermes_home / "config.yaml"
+            if cfg_path.exists():
+                import yaml as _identity_yaml
+                with open(cfg_path, encoding="utf-8") as f:
+                    data = _identity_yaml.safe_load(f) or {}
+                model_cfg = data.get("model", {})
+                if isinstance(model_cfg, dict):
+                    provider = model_cfg.get("provider") or None
+                    base_url = model_cfg.get("base_url") or None
+        except Exception:
+            pass
+
+        try:
+            runtime = _resolve_runtime_agent_kwargs()
+            provider = provider or runtime.get("provider")
+            base_url = base_url or runtime.get("base_url")
+        except Exception:
+            pass
+
+        session_key = self._session_key_for_source(source)
+        override = getattr(self, "_session_model_overrides", {}).get(session_key, {})
+        if override:
+            scope = "当前这个会话"
+            model = override.get("model") or model
+            provider = override.get("provider") or provider
+            base_url = override.get("base_url") or base_url
+
+        provider = provider or "openrouter"
+        lines = [
+            f"{scope}是 `{model or 'unknown'}`。",
+            f"Provider 是 `{provider}`。",
+        ]
+        if base_url and provider == "custom":
+            lines.append(f"端点是 `{self._endpoint_host(base_url)}`。")
         return "\n".join(lines)
 
     async def _handle_reset_command(self, event: MessageEvent) -> str:
@@ -7010,6 +7234,7 @@ class GatewayRunner:
             # The callback bridges sync→async to send the approval request
             # to the user immediately.
             from tools.approval import (
+                build_gateway_approval_message,
                 register_gateway_notify,
                 reset_current_admin_policy,
                 reset_current_session_key,
@@ -7063,22 +7288,12 @@ class GatewayRunner:
                         )
 
                 # Fallback: plain text approval prompt
-                cmd_preview = cmd[:200] + "..." if len(cmd) > 200 else cmd
-                if allow_persistence:
-                    instructions = (
-                        "Reply `/approve` to execute, `/approve session` to approve this pattern "
-                        "for the session, `/approve always` to approve permanently, or `/deny` to cancel."
-                    )
-                else:
-                    instructions = (
-                        f"这事我得先取得{approver_name}的授权。"
-                        f"请{approver_name}回复 `/approve` 执行，或 `/deny` 取消。"
-                    )
-                msg = (
-                    f"⚠️ **{title}:**\n"
-                    f"```\n{cmd_preview}\n```\n"
-                    f"Reason: {desc}\n\n"
-                    f"{instructions}"
+                msg = build_gateway_approval_message(
+                    command=cmd,
+                    description=desc,
+                    prompt_title=title,
+                    approver_name=approver_name,
+                    allow_persistence=allow_persistence,
                 )
                 admin_note = self._admin_only_message(
                     source,
@@ -7139,8 +7354,11 @@ class GatewayRunner:
                 _output_toks = getattr(_agent, "session_completion_tokens", 0)
             _resolved_model = getattr(_agent, "model", None) if _agent else None
 
-            if isinstance(final_response, str) and final_response.strip() == "(empty)":
-                fallback = _empty_response_fallback(source)
+            if isinstance(final_response, str) and final_response.strip() in {
+                "(empty)",
+                "[[NO_REPLY]]",
+            }:
+                fallback = _empty_response_fallback(source, message)
                 if fallback:
                     final_response = fallback
                 else:
@@ -7535,7 +7753,16 @@ class GatewayRunner:
                     # Queue the pending message for normal processing on next turn
                     adapter = self.adapters.get(source.platform)
                     if adapter and hasattr(adapter, 'queue_message'):
-                        adapter.queue_message(session_key, pending)
+                        from gateway.platforms.base import MessageEvent as _ME, MessageType as _MT
+                        adapter.queue_message(
+                            session_key,
+                            _ME(
+                                text=pending,
+                                message_type=_MT.TEXT,
+                                source=source,
+                                message_id=event.message_id,
+                            ),
+                        )
                     return result_holder[0] or {"final_response": response, "messages": history}
 
                 was_interrupted = result.get("interrupted")

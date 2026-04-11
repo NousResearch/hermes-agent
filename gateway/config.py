@@ -47,6 +47,15 @@ def _normalize_unauthorized_dm_behavior(value: Any, default: str = "pair") -> st
     return default
 
 
+def _normalize_busy_input_mode(value: Any, default: str = "interrupt") -> str:
+    """Normalize busy-input mode to a supported value."""
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"interrupt", "queue"}:
+            return normalized
+    return default
+
+
 def _coerce_list(value: Any) -> List[str]:
     """Normalize config/env list values into a list of non-empty strings."""
     if value is None:
@@ -302,6 +311,9 @@ class GatewayConfig:
     # Unauthorized DM policy
     unauthorized_dm_behavior: str = "pair"  # "pair" or "ignore"
 
+    # What to do when a new message arrives while the agent is already working.
+    busy_input_mode: str = "interrupt"  # "interrupt" or "queue"
+
     # Streaming configuration
     streaming: StreamingConfig = field(default_factory=StreamingConfig)
 
@@ -366,6 +378,16 @@ class GatewayConfig:
             elif platform == Platform.QQ_NAPCAT and config.extra.get("ws_url"):
                 connected.append(platform)
         return connected
+
+    def get_busy_input_mode(self, platform: Optional[Platform] = None) -> str:
+        """Return the effective busy-input mode for a platform."""
+        mode = _normalize_busy_input_mode(getattr(self, "busy_input_mode", None), "interrupt")
+        if platform:
+            platform_cfg = self.platforms.get(platform)
+            extra = getattr(platform_cfg, "extra", None) if platform_cfg else None
+            if isinstance(extra, dict) and "busy_input_mode" in extra:
+                mode = _normalize_busy_input_mode(extra.get("busy_input_mode"), mode)
+        return mode
     
     def get_home_channel(self, platform: Platform) -> Optional[HomeChannel]:
         """Get the home channel for a platform."""
@@ -414,6 +436,7 @@ class GatewayConfig:
             "group_sessions_per_user": self.group_sessions_per_user,
             "thread_sessions_per_user": self.thread_sessions_per_user,
             "unauthorized_dm_behavior": self.unauthorized_dm_behavior,
+            "busy_input_mode": self.busy_input_mode,
             "streaming": self.streaming.to_dict(),
         }
     
@@ -461,6 +484,10 @@ class GatewayConfig:
             data.get("unauthorized_dm_behavior"),
             "pair",
         )
+        busy_input_mode = _normalize_busy_input_mode(
+            data.get("busy_input_mode"),
+            "interrupt",
+        )
 
         return cls(
             platforms=platforms,
@@ -475,6 +502,7 @@ class GatewayConfig:
             group_sessions_per_user=_coerce_bool(group_sessions_per_user, True),
             thread_sessions_per_user=_coerce_bool(thread_sessions_per_user, False),
             unauthorized_dm_behavior=unauthorized_dm_behavior,
+            busy_input_mode=busy_input_mode,
             streaming=StreamingConfig.from_dict(data.get("streaming", {})),
         )
 
@@ -568,6 +596,25 @@ def load_gateway_config() -> GatewayConfig:
                     "pair",
                 )
 
+            gateway_cfg = yaml_cfg.get("gateway")
+            if isinstance(gateway_cfg, dict) and "busy_input_mode" in gateway_cfg:
+                gw_data["busy_input_mode"] = _normalize_busy_input_mode(
+                    gateway_cfg.get("busy_input_mode"),
+                    gw_data.get("busy_input_mode", "interrupt"),
+                )
+            elif "busy_input_mode" in yaml_cfg:
+                gw_data["busy_input_mode"] = _normalize_busy_input_mode(
+                    yaml_cfg.get("busy_input_mode"),
+                    gw_data.get("busy_input_mode", "interrupt"),
+                )
+            else:
+                display_cfg = yaml_cfg.get("display")
+                if isinstance(display_cfg, dict) and "busy_input_mode" in display_cfg:
+                    gw_data["busy_input_mode"] = _normalize_busy_input_mode(
+                        display_cfg.get("busy_input_mode"),
+                        gw_data.get("busy_input_mode", "interrupt"),
+                    )
+
             # Merge platforms section from config.yaml into gw_data so that
             # nested keys like platforms.webhook.extra.routes are loaded.
             yaml_platforms = yaml_cfg.get("platforms")
@@ -608,6 +655,11 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["require_mention"] = platform_cfg["require_mention"]
                 if "mention_patterns" in platform_cfg:
                     bridged["mention_patterns"] = platform_cfg["mention_patterns"]
+                if "busy_input_mode" in platform_cfg:
+                    bridged["busy_input_mode"] = _normalize_busy_input_mode(
+                        platform_cfg.get("busy_input_mode"),
+                        gw_data.get("busy_input_mode", "interrupt"),
+                    )
                 if not bridged:
                     continue
                 plat_data = platforms_data.setdefault(plat.value, {})

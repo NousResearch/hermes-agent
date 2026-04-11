@@ -25,7 +25,7 @@ import sys
 from pathlib import Path as _Path
 sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
 
-from gateway.config import Platform, PlatformConfig
+from gateway.config import Platform, PlatformConfig, _normalize_busy_input_mode
 from gateway.session import SessionSource, build_session_key
 from hermes_constants import get_hermes_dir
 
@@ -510,6 +510,10 @@ class BasePlatformAdapter(ABC):
         # Chats where typing indicator is paused (e.g. during approval waits).
         # _keep_typing skips send_typing when the chat_id is in this set.
         self._typing_paused: set = set()
+        self._busy_input_mode = _normalize_busy_input_mode(
+            getattr(self.config, "extra", {}).get("busy_input_mode"),
+            "interrupt",
+        )
 
     @property
     def has_fatal_error(self) -> bool:
@@ -1179,6 +1183,45 @@ class BasePlatformAdapter(ABC):
             return f"{existing_text}\n\n{new_text}".strip()
         return existing_text
 
+    def get_busy_input_mode(self) -> str:
+        """Return how active-session follow-up text should be handled."""
+        return _normalize_busy_input_mode(getattr(self, "_busy_input_mode", None), "interrupt")
+
+    def set_busy_input_mode(self, mode: str) -> None:
+        """Update the active-session follow-up mode at runtime."""
+        normalized = _normalize_busy_input_mode(mode, self.get_busy_input_mode())
+        self._busy_input_mode = normalized
+        if isinstance(getattr(self.config, "extra", None), dict):
+            self.config.extra["busy_input_mode"] = normalized
+
+    def queue_message(self, session_key: str, event: MessageEvent) -> None:
+        """Queue or merge a follow-up message for processing after the current run."""
+        existing = self._pending_messages.get(session_key)
+
+        if event.message_type == MessageType.PHOTO:
+            if existing and existing.message_type == MessageType.PHOTO:
+                existing.media_urls.extend(event.media_urls)
+                existing.media_types.extend(event.media_types)
+                if event.text:
+                    existing.text = self._merge_caption(existing.text, event.text)
+                return
+            self._pending_messages[session_key] = event
+            return
+
+        if (
+            existing
+            and getattr(existing, "message_type", None) == MessageType.TEXT
+            and event.message_type == MessageType.TEXT
+        ):
+            new_text = (event.text or "").strip()
+            if not new_text:
+                return
+            existing_text = (existing.text or "").strip()
+            existing.text = f"{existing_text}\n{new_text}".strip() if existing_text else new_text
+            return
+
+        self._pending_messages[session_key] = event
+
     async def handle_message(self, event: MessageEvent) -> None:
         """
         Process an incoming message.
@@ -1229,15 +1272,17 @@ class BasePlatformAdapter(ABC):
             # then process them immediately after the current task finishes.
             if event.message_type == MessageType.PHOTO:
                 logger.debug("[%s] Queuing photo follow-up for session %s without interrupt", self.name, session_key)
-                existing = self._pending_messages.get(session_key)
-                if existing and existing.message_type == MessageType.PHOTO:
-                    existing.media_urls.extend(event.media_urls)
-                    existing.media_types.extend(event.media_types)
-                    if event.text:
-                        existing.text = self._merge_caption(existing.text, event.text)
-                else:
-                    self._pending_messages[session_key] = event
+                self.queue_message(session_key, event)
                 return  # Don't interrupt now - will run after current task completes
+
+            if self.get_busy_input_mode() == "queue":
+                logger.debug(
+                    "[%s] New message while session %s is active — queueing without interrupt",
+                    self.name,
+                    session_key,
+                )
+                self.queue_message(session_key, event)
+                return
 
             # Default behavior for non-photo follow-ups: interrupt the running agent
             logger.debug("[%s] New message while session %s is active — triggering interrupt", self.name, session_key)

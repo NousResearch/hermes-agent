@@ -334,6 +334,98 @@ def _paths_overlap(left: Path, right: Path) -> bool:
     return left_parts[:common_len] == right_parts[:common_len]
 
 
+def _normalize_runtime_provider(value: str | None) -> str:
+    return str(value or "").strip().lower()
+
+
+def _normalize_runtime_model(value: str | None) -> str:
+    return str(value or "").strip()
+
+
+def _normalize_runtime_base_url(value: str | None) -> str:
+    return str(value or "").strip().rstrip("/").lower()
+
+
+def _runtime_targets_match(
+    provider_a: str | None,
+    model_a: str | None,
+    base_url_a: str | None,
+    provider_b: str | None,
+    model_b: str | None,
+    base_url_b: str | None,
+) -> bool:
+    """Return True when two runtime targets resolve to the same backend."""
+    norm_provider_a = _normalize_runtime_provider(provider_a)
+    norm_provider_b = _normalize_runtime_provider(provider_b)
+    norm_model_a = _normalize_runtime_model(model_a)
+    norm_model_b = _normalize_runtime_model(model_b)
+    norm_base_url_a = _normalize_runtime_base_url(base_url_a)
+    norm_base_url_b = _normalize_runtime_base_url(base_url_b)
+
+    if norm_base_url_a and norm_base_url_b:
+        return norm_base_url_a == norm_base_url_b
+    if norm_provider_a != norm_provider_b:
+        return False
+    if norm_model_a and norm_model_b:
+        return norm_model_a == norm_model_b
+    return bool(norm_provider_a)
+
+
+def _normalize_fallback_chain(
+    fallback_model: Any,
+    *,
+    current_provider: str | None,
+    current_model: str | None,
+    current_base_url: str | None,
+) -> list[dict]:
+    """Normalize fallback config into a deduplicated ordered provider chain."""
+    if isinstance(fallback_model, list):
+        raw_entries = fallback_model
+    elif isinstance(fallback_model, dict):
+        raw_entries = [fallback_model]
+    else:
+        raw_entries = []
+
+    normalized_entries: list[dict] = []
+    for entry in raw_entries:
+        if not isinstance(entry, dict):
+            continue
+        provider = _normalize_runtime_provider(entry.get("provider"))
+        model = _normalize_runtime_model(entry.get("model"))
+        if not provider or not model:
+            continue
+        candidate = dict(entry)
+        candidate["provider"] = provider
+        candidate["model"] = model
+
+        if _runtime_targets_match(
+            candidate.get("provider"),
+            candidate.get("model"),
+            candidate.get("base_url"),
+            current_provider,
+            current_model,
+            current_base_url,
+        ):
+            continue
+
+        if any(
+            _runtime_targets_match(
+                candidate.get("provider"),
+                candidate.get("model"),
+                candidate.get("base_url"),
+                existing.get("provider"),
+                existing.get("model"),
+                existing.get("base_url"),
+            )
+            for existing in normalized_entries
+        ):
+            continue
+
+        normalized_entries.append(candidate)
+
+    return normalized_entries
+
+
 
 _SURROGATE_RE = re.compile(r'[\ud800-\udfff]')
 
@@ -831,15 +923,12 @@ class AIAgent:
         # when the primary is exhausted (rate-limit, overload, connection
         # failure).  Supports both legacy single-dict ``fallback_model`` and
         # new list ``fallback_providers`` format.
-        if isinstance(fallback_model, list):
-            self._fallback_chain = [
-                f for f in fallback_model
-                if isinstance(f, dict) and f.get("provider") and f.get("model")
-            ]
-        elif isinstance(fallback_model, dict) and fallback_model.get("provider") and fallback_model.get("model"):
-            self._fallback_chain = [fallback_model]
-        else:
-            self._fallback_chain = []
+        self._fallback_chain = _normalize_fallback_chain(
+            fallback_model,
+            current_provider=self.provider,
+            current_model=self.model,
+            current_base_url=self.base_url,
+        )
         self._fallback_index = 0
         self._fallback_activated = False
         # Legacy attribute kept for backward compat (tests, external callers)
@@ -2873,6 +2962,33 @@ class AIAgent:
 
         return "\n\n".join(prompt_parts)
 
+    @staticmethod
+    def _declared_provider_from_system_prompt(system_prompt: str) -> str:
+        """Extract the stored provider line from a serialized system prompt."""
+        if not system_prompt:
+            return ""
+        match = re.search(r"^Provider:\s*(.+)$", system_prompt, re.MULTILINE)
+        return match.group(1).strip() if match else ""
+
+    def _can_reuse_stored_system_prompt(self, session_row: Dict[str, Any] | None) -> bool:
+        """Return True when a persisted prompt still matches the current runtime."""
+        if not session_row:
+            return False
+
+        stored_prompt = session_row.get("system_prompt") or ""
+        if not stored_prompt:
+            return False
+
+        stored_model = str(session_row.get("model") or "").strip()
+        if stored_model and self.model and stored_model != self.model:
+            return False
+
+        stored_provider = self._declared_provider_from_system_prompt(stored_prompt)
+        if stored_provider and self.provider and stored_provider != self.provider:
+            return False
+
+        return True
+
     # =========================================================================
     # Pre/post-call guardrails (inspired by PR #1321 — @alireza78a)
     # =========================================================================
@@ -4412,6 +4528,35 @@ class AIAgent:
             or getattr(self, "_stream_callback", None) is not None
         )
 
+    def _should_use_streaming_api_call(self) -> bool:
+        """Return True when the main loop should prefer the streaming path.
+
+        Streaming is valuable when the caller can actually consume token deltas
+        (CLI streaming, gateway progressive edits, TTS, etc.). In headless
+        gateway/cron sessions with no stream consumer, forcing SSE makes the
+        request path depend on long-lived proxy behavior and can generate noisy
+        reconnect/status spam on otherwise healthy providers.
+
+        Set ``HERMES_STREAM_WITHOUT_CONSUMERS=1`` to restore the previous
+        "always prefer streaming" behavior for non-Codex providers.
+        """
+        if self.api_mode == "codex_responses":
+            return True
+
+        has_consumers = self._has_stream_consumers()
+        if not has_consumers and not env_var_enabled("HERMES_STREAM_WITHOUT_CONSUMERS"):
+            return False
+
+        if not has_consumers:
+            # Unit tests often patch ``client`` with a Mock that returns a plain
+            # response object rather than an iterator of streaming chunks.
+            from unittest.mock import Mock
+
+            if isinstance(getattr(self, "client", None), Mock):
+                return False
+
+        return True
+
     def _interruptible_streaming_api_call(
         self, api_kwargs: dict, *, on_first_delta: callable = None
     ):
@@ -4953,8 +5098,18 @@ class AIAgent:
         self._fallback_index += 1
         fb_provider = (fb.get("provider") or "").strip().lower()
         fb_model = (fb.get("model") or "").strip()
+        fb_base_url_hint = (fb.get("base_url") or "").strip() or None
         if not fb_provider or not fb_model:
             return self._try_activate_fallback()  # skip invalid, try next
+        if _runtime_targets_match(
+            fb_provider,
+            fb_model,
+            fb_base_url_hint,
+            self.provider,
+            self.model,
+            self.base_url,
+        ):
+            return self._try_activate_fallback()
 
         # Use centralized router for client construction.
         # raw_codex=True because the main agent needs direct responses.stream()
@@ -4964,8 +5119,10 @@ class AIAgent:
             # Pass base_url and api_key from fallback config so custom
             # endpoints (e.g. Ollama Cloud) resolve correctly instead of
             # falling through to OpenRouter defaults.
-            fb_base_url_hint = (fb.get("base_url") or "").strip() or None
             fb_api_key_hint = (fb.get("api_key") or "").strip() or None
+            fb_api_key_env = (fb.get("api_key_env") or "").strip()
+            if not fb_api_key_hint and fb_api_key_env:
+                fb_api_key_hint = os.getenv(fb_api_key_env, "").strip() or None
             # For Ollama Cloud endpoints, pull OLLAMA_API_KEY from env
             # when no explicit key is in the fallback config.
             if fb_base_url_hint and "ollama.com" in fb_base_url_hint.lower() and not fb_api_key_hint:
@@ -4981,16 +5138,19 @@ class AIAgent:
                 return self._try_activate_fallback()  # try next in chain
 
             # Determine api_mode from provider / base URL
-            fb_api_mode = "chat_completions"
+            fb_api_mode = (fb.get("api_mode") or "").strip()
             fb_base_url = str(fb_client.base_url)
-            if fb_provider == "openai-codex":
-                fb_api_mode = "codex_responses"
-            elif fb_provider == "anthropic" or fb_base_url.rstrip("/").lower().endswith("/anthropic"):
-                fb_api_mode = "anthropic_messages"
-            elif self._is_direct_openai_url(fb_base_url):
-                fb_api_mode = "codex_responses"
+            if fb_api_mode not in {"chat_completions", "codex_responses", "anthropic_messages"}:
+                fb_api_mode = "chat_completions"
+                if fb_provider == "openai-codex":
+                    fb_api_mode = "codex_responses"
+                elif fb_provider == "anthropic" or fb_base_url.rstrip("/").lower().endswith("/anthropic"):
+                    fb_api_mode = "anthropic_messages"
+                elif self._is_direct_openai_url(fb_base_url):
+                    fb_api_mode = "codex_responses"
 
             old_model = self.model
+            fb_label = str(fb.get("name") or fb.get("label") or fb_model).strip() or fb_model
             self.model = fb_model
             self.provider = fb_provider
             self.base_url = fb_base_url
@@ -5052,11 +5212,11 @@ class AIAgent:
 
             self._emit_status(
                 f"🔄 Primary model failed — switching to fallback: "
-                f"{fb_model} via {fb_provider}"
+                f"{fb_label} via {fb_provider}"
             )
             logging.info(
                 "Fallback activated: %s → %s (%s)",
-                old_model, fb_model, fb_provider,
+                old_model, fb_label, fb_provider,
             )
             return True
         except Exception as e:
@@ -7098,10 +7258,11 @@ class AIAgent:
         # prefix cache.
         if self._cached_system_prompt is None:
             stored_prompt = None
+            session_row = None
             if conversation_history and self._session_db:
                 try:
                     session_row = self._session_db.get_session(self.session_id)
-                    if session_row:
+                    if self._can_reuse_stored_system_prompt(session_row):
                         stored_prompt = session_row.get("system_prompt") or None
                 except Exception:
                     pass  # Fall through to build fresh
@@ -7131,9 +7292,11 @@ class AIAgent:
                 # Store the system prompt snapshot in SQLite
                 if self._session_db:
                     try:
+                        if session_row is not None and self.model:
+                            self._session_db.update_session_model(self.session_id, self.model)
                         self._session_db.update_system_prompt(self.session_id, self._cached_system_prompt)
                     except Exception as e:
-                        logger.debug("Session DB update_system_prompt failed: %s", e)
+                        logger.debug("Session DB system prompt/model update failed: %s", e)
 
         active_system_prompt = self._cached_system_prompt
 
@@ -7435,6 +7598,7 @@ class AIAgent:
             codex_auth_retry_attempted=False
             anthropic_auth_retry_attempted=False
             nous_auth_retry_attempted=False
+            custom_401_retry_attempted = False
             thinking_sig_retry_attempted = False
             has_retried_429 = False
             restart_with_compressed_messages = False
@@ -7473,17 +7637,14 @@ class AIAgent:
                     if env_var_enabled("HERMES_DUMP_REQUESTS"):
                         self._dump_api_request_debug(api_kwargs, reason="preflight")
 
-                    # Always prefer the streaming path — even without stream
-                    # consumers.  Streaming gives us fine-grained health
-                    # checking (90s stale-stream detection, 60s read timeout)
-                    # that the non-streaming path lacks.  Without this,
-                    # subagents and other quiet-mode callers can hang
-                    # indefinitely when the provider keeps the connection
-                    # alive with SSE pings but never delivers a response.
-                    # The streaming path is a no-op for callbacks when no
-                    # consumers are registered, and falls back to non-
-                    # streaming automatically if the provider doesn't
-                    # support it.
+                    # Prefer streaming only when somebody can consume token
+                    # deltas. Headless callers (gateway queue mode, cron, etc.)
+                    # otherwise use the simpler request path by default,
+                    # because custom provider proxies are often less stable on
+                    # long-lived SSE connections than on ordinary POSTs.
+                    # ``HERMES_STREAM_WITHOUT_CONSUMERS=1`` restores the old
+                    # behavior for operators who still want stream health
+                    # checks without a live consumer.
                     def _stop_spinner():
                         nonlocal thinking_spinner
                         if thinking_spinner:
@@ -7492,14 +7653,7 @@ class AIAgent:
                         if self.thinking_callback:
                             self.thinking_callback("")
 
-                    _use_streaming = True
-                    if not self._has_stream_consumers():
-                        # No display/TTS consumer. Still prefer streaming for
-                        # health checking, but skip for Mock clients in tests
-                        # (mocks return SimpleNamespace, not stream iterators).
-                        from unittest.mock import Mock
-                        if isinstance(getattr(self, "client", None), Mock):
-                            _use_streaming = False
+                    _use_streaming = self._should_use_streaming_api_call()
 
                     if _use_streaming:
                         response = self._interruptible_streaming_api_call(
@@ -8027,6 +8181,26 @@ class AIAgent:
                         print(f"{self.log_prefix}     • For Claude Code: run 'claude /login' to refresh, then retry")
                         print(f"{self.log_prefix}     • Legacy cleanup: hermes config set ANTHROPIC_TOKEN \"\"")
                         print(f"{self.log_prefix}     • Clear stale keys: hermes config set ANTHROPIC_API_KEY \"\"")
+
+                    # Some custom OpenAI-compatible gateways intermittently
+                    # return a spurious 401 for an otherwise valid request.
+                    # Treat a single 401 as transient: rebuild the shared
+                    # client and retry once before surfacing it as fatal.
+                    if (
+                        self.api_mode == "chat_completions"
+                        and self.provider == "custom"
+                        and status_code == 401
+                        and not custom_401_retry_attempted
+                    ):
+                        custom_401_retry_attempted = True
+                        self._emit_status(
+                            "⚠️ Custom endpoint returned 401 unexpectedly — retrying once with a fresh connection..."
+                        )
+                        try:
+                            self._replace_primary_openai_client(reason="custom_401_retry")
+                        except Exception:
+                            pass
+                        continue
 
                     # ── Thinking block signature recovery ─────────────────
                     # Anthropic signs thinking blocks against the full turn

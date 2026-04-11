@@ -19,6 +19,8 @@ import yaml
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
+from hermes_constants import get_hermes_home
+
 from agent.model_metadata import (
     CONTEXT_PROBE_TIERS,
     DEFAULT_CONTEXT_LENGTHS,
@@ -26,6 +28,7 @@ from agent.model_metadata import (
     estimate_tokens_rough,
     estimate_messages_tokens_rough,
     get_model_context_length,
+    get_custom_provider_context_length,
     get_next_probe_tier,
     get_cached_context_length,
     parse_context_limit_from_error,
@@ -296,6 +299,112 @@ class TestGetModelContextLength:
         )
 
         assert result == 200000
+
+    @patch("agent.model_metadata.fetch_model_metadata")
+    def test_custom_provider_context_from_config_beats_fallback(self, mock_fetch, tmp_path, monkeypatch):
+        """custom_providers per-model context_length should be resolved centrally."""
+        mock_fetch.return_value = {}
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        config_path = get_hermes_home() / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump({
+                "custom_providers": [
+                    {
+                        "name": "cpamc",
+                        "base_url": "http://100.93.186.121:8317/v1",
+                        "models": {
+                            "qwen3.6-plus": {"context_length": 1_000_000},
+                        },
+                    }
+                ]
+            }),
+            encoding="utf-8",
+        )
+
+        result = get_model_context_length(
+            "qwen3.6-plus",
+            base_url="http://100.93.186.121:8317/v1",
+            provider="custom:cpamc",
+        )
+
+        assert result == 1_000_000
+
+    def test_get_custom_provider_context_length_matches_named_provider(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        config_path = get_hermes_home() / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump({
+                "custom_providers": [
+                    {
+                        "name": "CP AMC",
+                        "base_url": "http://different.example/v1",
+                        "models": {
+                            "gpt-5.4": {"context_length": 1_000_000},
+                        },
+                    }
+                ]
+            }),
+            encoding="utf-8",
+        )
+
+        result = get_custom_provider_context_length(
+            "gpt-5.4",
+            provider="custom:cp-amc",
+        )
+
+        assert result == 1_000_000
+
+    def test_get_custom_provider_context_length_handles_named_provider_prefixed_model(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        config_path = get_hermes_home() / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump({
+                "custom_providers": [
+                    {
+                        "name": "cpamc",
+                        "base_url": "http://100.93.186.121:8317/v1",
+                        "models": {
+                            "gpt-5.4": {"context_length": 1_000_000},
+                        },
+                    }
+                ]
+            }),
+            encoding="utf-8",
+        )
+
+        result = get_custom_provider_context_length(
+            "cpamc:gpt-5.4",
+            base_url="http://100.93.186.121:8317/v1",
+            provider="custom:cpamc",
+        )
+
+        assert result == 1_000_000
+
+    def test_get_custom_provider_context_length_handles_nested_custom_prefixes(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        config_path = get_hermes_home() / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump({
+                "custom_providers": [
+                    {
+                        "name": "cpamc",
+                        "base_url": "http://100.93.186.121:8317/v1",
+                        "models": {
+                            "gpt-5.4": {"context_length": 1_000_000},
+                        },
+                    }
+                ]
+            }),
+            encoding="utf-8",
+        )
+
+        result = get_custom_provider_context_length(
+            "custom:cpamc:gpt-5.4",
+            base_url="http://100.93.186.121:8317/v1",
+            provider="custom:cpamc",
+        )
+
+        assert result == 1_000_000
 
 
 # =========================================================================

@@ -3786,16 +3786,19 @@ class HermesCLI:
             try:
                 # Load user providers from config
                 user_provs = None
+                custom_provs = None
                 try:
                     from hermes_cli.config import load_config
                     cfg = load_config()
                     user_provs = cfg.get("providers")
+                    custom_provs = cfg.get("custom_providers")
                 except Exception:
                     pass
 
                 providers = list_authenticated_providers(
                     current_provider=self.provider or "",
                     user_providers=user_provs,
+                    custom_providers=custom_provs,
                     max_models=6,
                 )
                 if providers:
@@ -3836,6 +3839,8 @@ class HermesCLI:
             current_api_key=self.api_key or "",
             is_global=persist_global,
             explicit_provider=explicit_provider,
+            user_providers=user_provs,
+            custom_providers=custom_provs,
         )
 
         if not result.success:

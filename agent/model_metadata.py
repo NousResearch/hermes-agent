@@ -60,6 +60,100 @@ def _strip_provider_prefix(model: str) -> str:
         return suffix
     return model
 
+
+def _normalize_custom_provider_name(name: str) -> str:
+    return name.strip().lower().replace(" ", "-")
+
+
+def _candidate_custom_provider_models(model: str, entry_provider_name: str = "") -> List[str]:
+    candidates: List[str] = []
+    seen: set[str] = set()
+
+    def _add(value: str) -> None:
+        if not value or value in seen:
+            return
+        seen.add(value)
+        candidates.append(value)
+
+    current = model
+    _add(current)
+    while True:
+        stripped = _strip_provider_prefix(current)
+        if stripped == current:
+            break
+        current = stripped
+        _add(current)
+
+    if entry_provider_name:
+        for candidate in list(candidates):
+            if ":" not in candidate:
+                continue
+            candidate_prefix, candidate_suffix = candidate.split(":", 1)
+            if _normalize_custom_provider_name(candidate_prefix) == entry_provider_name:
+                _add(candidate_suffix)
+
+    return candidates
+
+
+def get_custom_provider_context_length(
+    model: str,
+    base_url: str = "",
+    provider: str = "",
+) -> Optional[int]:
+    """Return per-model context_length from config.yaml custom_providers."""
+    from hermes_constants import get_hermes_home
+
+    config_path = get_hermes_home() / "config.yaml"
+    if not config_path.exists():
+        return None
+
+    try:
+        with open(config_path, encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+    except Exception as e:
+        logger.debug("Failed to load config.yaml for custom provider context lookup: %s", e)
+        return None
+
+    if not isinstance(data, dict):
+        return None
+
+    custom_providers = data.get("custom_providers")
+    if not isinstance(custom_providers, list):
+        return None
+
+    normalized_base_url = _normalize_base_url(base_url)
+    normalized_provider_name = ""
+    if isinstance(provider, str) and provider.lower().startswith("custom:"):
+        normalized_provider_name = _normalize_custom_provider_name(provider.split(":", 1)[1])
+
+    for entry in custom_providers:
+        if not isinstance(entry, dict):
+            continue
+        entry_base_url = _normalize_base_url(entry.get("base_url") or "")
+        entry_name = entry.get("name") or ""
+        entry_provider_name = (
+            _normalize_custom_provider_name(entry_name)
+            if isinstance(entry_name, str) and entry_name.strip()
+            else ""
+        )
+        matches_base_url = bool(normalized_base_url and entry_base_url == normalized_base_url)
+        matches_provider_name = bool(normalized_provider_name and entry_provider_name == normalized_provider_name)
+        if not (matches_base_url or matches_provider_name):
+            continue
+
+        models = entry.get("models")
+        if not isinstance(models, dict):
+            return None
+
+        for candidate_model in _candidate_custom_provider_models(model, entry_provider_name):
+            model_cfg = models.get(candidate_model)
+            if isinstance(model_cfg, dict):
+                return _coerce_reasonable_int(model_cfg.get("context_length"))
+
+        return None
+
+    return None
+
 _model_metadata_cache: Dict[str, Dict[str, Any]] = {}
 _model_metadata_cache_time: float = 0
 _MODEL_CACHE_TTL = 3600
@@ -860,6 +954,14 @@ def get_model_context_length(
     if config_context_length is not None and isinstance(config_context_length, int) and config_context_length > 0:
         return config_context_length
 
+    custom_provider_context = get_custom_provider_context_length(
+        model,
+        base_url=base_url,
+        provider=provider,
+    )
+    if custom_provider_context is not None:
+        return custom_provider_context
+
     # Normalise provider-prefixed model names (e.g. "local:model-name" →
     # "model-name") so cache lookups and server queries use the bare ID that
     # local servers actually know about.  Ollama "model:tag" colons are preserved.
@@ -903,7 +1005,7 @@ def get_model_context_length(
             logger.info(
                 "Could not detect context length for model %r at %s — "
                 "defaulting to %s tokens (probe-down). Set model.context_length "
-                "in config.yaml to override.",
+                "or custom_providers[].models.<model>.context_length in config.yaml to override.",
                 model, base_url, f"{DEFAULT_FALLBACK_CONTEXT:,}",
             )
             return DEFAULT_FALLBACK_CONTEXT

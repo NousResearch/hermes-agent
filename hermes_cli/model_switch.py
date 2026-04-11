@@ -383,6 +383,7 @@ def switch_model(
     is_global: bool = False,
     explicit_provider: str = "",
     user_providers: dict = None,
+    custom_providers: list | None = None,
 ) -> ModelSwitchResult:
     """Core model-switching pipeline shared between CLI and gateway.
 
@@ -416,6 +417,7 @@ def switch_model(
         is_global: Whether to persist the switch.
         explicit_provider: From --provider flag (empty = no explicit provider).
         user_providers: The ``providers:`` dict from config.yaml (for user endpoints).
+        custom_providers: The ``custom_providers:`` list from config.yaml.
 
     Returns:
         ModelSwitchResult with all information the caller needs.
@@ -437,11 +439,37 @@ def switch_model(
     if explicit_provider:
         # Resolve the provider
         pdef = resolve_provider_full(explicit_provider, user_providers)
+        if pdef is None and custom_providers and isinstance(custom_providers, list):
+            from agent.credential_pool import CUSTOM_POOL_PREFIX, _normalize_custom_pool_name
+            custom_slug = explicit_provider.strip().lower()
+            if custom_slug.startswith(CUSTOM_POOL_PREFIX):
+                custom_name = custom_slug[len(CUSTOM_POOL_PREFIX):]
+                for entry in custom_providers:
+                    if not isinstance(entry, dict):
+                        continue
+                    entry_name = (entry.get("name") or "").strip()
+                    entry_base_url = (entry.get("base_url") or "").strip()
+                    if not entry_name or not entry_base_url:
+                        continue
+                    if _normalize_custom_pool_name(entry_name) != custom_name:
+                        continue
+                    from hermes_cli.providers import ProviderDef
+                    pdef = ProviderDef(
+                        id=explicit_provider,
+                        name=entry_name,
+                        transport="openai_chat",
+                        api_key_env_vars=(),
+                        base_url=entry_base_url,
+                        is_aggregator=False,
+                        auth_type="api_key",
+                        source="custom-provider",
+                    )
+                    break
         if pdef is None:
             _switch_err = (
                 f"Unknown provider '{explicit_provider}'. "
                 f"Check 'hermes model' for available providers, or define it "
-                f"in config.yaml under 'providers:'."
+                f"in config.yaml under 'providers:' or 'custom_providers:'."
             )
             # Check for common config issues that cause provider resolution failures
             try:
@@ -706,6 +734,7 @@ def list_authenticated_providers(
     current_provider: str = "",
     user_providers: dict = None,
     max_models: int = 8,
+    custom_providers: list | None = None,
 ) -> List[dict]:
     """Detect which providers have credentials and list their curated models.
 
@@ -720,11 +749,13 @@ def list_authenticated_providers(
       - is_user_defined: bool
       - models: list[str] — curated model IDs (up to max_models)
       - total_models: int — total curated count
-      - source: str — "built-in", "models.dev", "user-config"
+      - source: str — "built-in", "models.dev", "user-config", "custom-provider"
 
     Only includes providers that have API keys set or are user-defined endpoints.
     """
     import os
+    from agent.credential_pool import CUSTOM_POOL_PREFIX
+    from agent.credential_pool import _normalize_custom_pool_name
     from agent.models_dev import (
         PROVIDER_TO_MODELS_DEV,
         fetch_models_dev,
@@ -816,7 +847,50 @@ def list_authenticated_providers(
         })
         seen_slugs.add(pid)
 
-    # --- 3. User-defined endpoints from config ---
+    # --- 3. Named custom providers from config.yaml custom_providers ---
+    if custom_providers and isinstance(custom_providers, list):
+        for entry in custom_providers:
+            if not isinstance(entry, dict):
+                continue
+            name = (entry.get("name") or "").strip()
+            base_url = (entry.get("base_url") or "").strip()
+            if not name or not base_url:
+                continue
+
+            slug = f"{CUSTOM_POOL_PREFIX}{_normalize_custom_pool_name(name)}"
+            if slug in seen_slugs:
+                continue
+
+            models_cfg = entry.get("models") or {}
+            if isinstance(models_cfg, dict):
+                model_ids = [mid for mid in models_cfg.keys() if isinstance(mid, str) and mid.strip()]
+            else:
+                model_ids = []
+
+            saved_model = entry.get("model")
+            if isinstance(saved_model, str) and saved_model.strip():
+                saved_model = saved_model.strip()
+                if saved_model in model_ids:
+                    model_ids.remove(saved_model)
+                model_ids.insert(0, saved_model)
+
+            total = len(model_ids)
+            top = model_ids[:max_models]
+            short_url = base_url.replace("https://", "").replace("http://", "").rstrip("/")
+
+            results.append({
+                "slug": slug,
+                "name": name,
+                "is_current": slug == current_provider,
+                "is_user_defined": True,
+                "models": top,
+                "total_models": total,
+                "source": "custom-provider",
+                "api_url": short_url,
+            })
+            seen_slugs.add(slug)
+
+    # --- 4. User-defined endpoints from config ---
     if user_providers and isinstance(user_providers, dict):
         for ep_name, ep_cfg in user_providers.items():
             if not isinstance(ep_cfg, dict):

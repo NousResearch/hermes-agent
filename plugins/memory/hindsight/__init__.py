@@ -500,6 +500,20 @@ class HindsightMemoryProvider(MemoryProvider):
         # "local" is a legacy alias for "local_embedded"
         if self._mode == "local":
             self._mode = "local_embedded"
+
+        # Validate local_embedded dependency before any further initialization.
+        # local_embedded requires hindsight-all (provides hindsight.HindsightEmbedded);
+        # the cloud/external modes only need hindsight-client (hindsight_client.Hindsight).
+        if self._mode == "local_embedded":
+            try:
+                from hindsight import HindsightEmbedded  # noqa: F401
+            except ImportError:
+                raise RuntimeError(
+                    "Hindsight local_embedded mode requires the 'hindsight-all' package, "
+                    "which is not installed. Run:\n\n"
+                    "    uv pip install --system hindsight-all\n\n"
+                    "Then restart the gateway."
+                )
         self._api_key = self._config.get("apiKey") or self._config.get("api_key") or os.environ.get("HINDSIGHT_API_KEY", "")
         default_url = _DEFAULT_LOCAL_URL if self._mode in ("local_embedded", "local_external") else _DEFAULT_API_URL
         self._api_url = self._config.get("api_url") or os.environ.get("HINDSIGHT_API_URL", default_url)

@@ -6,6 +6,7 @@ turn counting, tags), and schema completeness.
 """
 
 import json
+import sys
 import threading
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -596,3 +597,129 @@ class TestAvailability:
         monkeypatch.setenv("HINDSIGHT_MODE", "local")
         p = HindsightMemoryProvider()
         assert p.is_available()
+
+
+# ---------------------------------------------------------------------------
+# Tests for local_embedded dependency validation (GitHub issue #7718)
+# ---------------------------------------------------------------------------
+
+class TestLocalEmbeddedDependency:
+    """Verify local_embedded mode fails loudly when hindsight-all is missing.
+
+    These tests validate the fix for GitHub issue #7718:
+    https://github.com/NousResearch/Hermes-Agent/issues/7718
+
+    The root cause: ``local_embedded`` mode imports
+    ``from hindsight import HindsightEmbedded`` (requires hindsight-all
+    package) but ``plugin.yaml`` only declared ``hindsight-client`` as a
+    dependency.  Users selecting ``local_embedded`` therefore experienced a
+    silent AttributeError at runtime.  The fix has two parts:
+
+    1. plugin.yaml now declares both ``hindsight-client`` *and*
+       ``hindsight-all`` as dependencies.
+    2. ``initialize()`` now performs a guard import and raises a clear
+       ``RuntimeError`` with the install command if ``hindsight-all`` is
+       absent.
+    """
+
+    def _make_mock_hindsight_without_embedded(self):
+        """Return a sys.modules-compatible mock of the ``hindsight`` package
+        that raises ImportError for every attribute (simulating
+        ``hindsight-all`` not being installed)."""
+        from types import ModuleType
+
+        class _MockHindsightModule(ModuleType):
+            def __getattr__(self, name):
+                raise ImportError(
+                    f"module 'hindsight' has no attribute '{name}'. "
+                    "hint: run 'uv pip install --system hindsight-all'"
+                )
+
+        return _MockHindsightModule("hindsight")
+
+    def test_local_embedded_raises_when_hindsight_not_installed(
+        self, tmp_path, monkeypatch
+    ):
+        """``initialize()`` must raise ``RuntimeError`` (not silently skip)
+        when ``hindsight-all`` is absent and mode is ``local_embedded``."""
+        config = {
+            "mode": "local_embedded",
+            "llm_provider": "openai",
+            "llm_api_key": "sk-test",
+            "llm_model": "gpt-4o-mini",
+        }
+        config_path = tmp_path / "hindsight" / "config.json"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(json.dumps(config))
+        monkeypatch.setattr(
+            "plugins.memory.hindsight.get_hermes_home", lambda: tmp_path
+        )
+
+        p = HindsightMemoryProvider()
+        mock_h = self._make_mock_hindsight_without_embedded()
+        monkeypatch.setitem(sys.modules, "hindsight", mock_h)
+        with pytest.raises(RuntimeError, match="hindsight-all"):
+            p.initialize(
+                session_id="test-session",
+                hermes_home=str(tmp_path),
+                platform="cli",
+            )
+
+    def test_legacy_local_alias_also_checks_dependency(
+        self, tmp_path, monkeypatch
+    ):
+        """The legacy ``"local"`` alias must also trigger the dependency
+        check (it is silently remapped to ``local_embedded`` internally)."""
+        config = {
+            "mode": "local",
+            "llm_provider": "openai",
+            "llm_api_key": "sk-test",
+            "llm_model": "gpt-4o-mini",
+        }
+        config_path = tmp_path / "hindsight" / "config.json"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(json.dumps(config))
+        monkeypatch.setattr(
+            "plugins.memory.hindsight.get_hermes_home", lambda: tmp_path
+        )
+
+        p = HindsightMemoryProvider()
+        mock_h = self._make_mock_hindsight_without_embedded()
+        monkeypatch.setitem(sys.modules, "hindsight", mock_h)
+        with pytest.raises(RuntimeError, match="hindsight-all"):
+            p.initialize(
+                session_id="test-session",
+                hermes_home=str(tmp_path),
+                platform="cli",
+            )
+
+    def test_cloud_mode_does_not_require_hindsight_all(
+        self, tmp_path, monkeypatch
+    ):
+        """``cloud`` mode must NOT attempt to import from the ``hindsight``
+        top-level package; it uses ``hindsight_client.Hindsight`` which is
+        provided by ``hindsight-client``.  ``initialize()`` should complete
+        without checking for ``hindsight-all``."""
+        config = {
+            "mode": "cloud",
+            "apiKey": "sk-test",
+            "api_url": "http://localhost:9999",
+            "bank_id": "test-bank",
+            "budget": "mid",
+        }
+        config_path = tmp_path / "hindsight" / "config.json"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(json.dumps(config))
+        monkeypatch.setattr(
+            "plugins.memory.hindsight.get_hermes_home", lambda: tmp_path
+        )
+
+        p = HindsightMemoryProvider()
+        mock_h = self._make_mock_hindsight_without_embedded()
+        monkeypatch.setitem(sys.modules, "hindsight", mock_h)
+        p.initialize(
+            session_id="test-session",
+            hermes_home=str(tmp_path),
+            platform="cli",
+        )
+        assert p._mode == "cloud"

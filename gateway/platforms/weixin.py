@@ -755,23 +755,58 @@ def _pack_markdown_blocks_for_weixin(content: str, max_length: int) -> List[str]
     return packed
 
 
-def _split_text_for_weixin_delivery(content: str, max_length: int) -> List[str]:
+def _split_text_for_weixin_delivery(
+    content: str, max_length: int, split_per_line: bool = False,
+) -> List[str]:
     """Split content into sequential Weixin messages.
 
-    Prefer one message per top-level line/markdown unit when the author used
-    explicit line breaks. Oversized units fall back to block-aware packing so
-    long code fences still split safely.
-    """
-    if len(content) <= max_length and "\n" not in content:
-        return [content]
+    *compact* (default): Keep everything in a single message whenever it fits
+    within the platform limit, even when the author used explicit line breaks.
+    Only fall back to block-aware packing when the payload exceeds
+    ``max_length``.
 
-    chunks: List[str] = []
-    for unit in _split_delivery_units_for_weixin(content):
-        if len(unit) <= max_length:
-            chunks.append(unit)
-            continue
-        chunks.extend(_pack_markdown_blocks_for_weixin(unit, max_length))
-    return chunks or [content]
+    *per_line* (``split_per_line=True``): Legacy behavior — top-level line
+    breaks become separate chat messages; oversized units still use
+    block-aware packing.
+
+    The active mode is controlled via ``config.yaml`` ->
+    ``platforms.weixin.extra.split_multiline_messages`` (``true`` / ``false``)
+    or the env var ``WEIXIN_SPLIT_MULTILINE_MESSAGES``.
+    """
+    if split_per_line:
+        # Legacy: one message per top-level delivery unit.
+        if len(content) <= max_length and "\n" not in content:
+            return [content]
+        chunks: List[str] = []
+        for unit in _split_delivery_units_for_weixin(content):
+            if len(unit) <= max_length:
+                chunks.append(unit)
+                continue
+            chunks.extend(_pack_markdown_blocks_for_weixin(unit, max_length))
+        return chunks or [content]
+
+    # Compact (default): single message when under the limit.
+    if len(content) <= max_length:
+        return [content]
+    return _pack_markdown_blocks_for_weixin(content, max_length) or [content]
+
+
+def _coerce_bool(value: Any, default: bool = True) -> bool:
+    """Coerce a config value to bool, tolerating strings like ``"true"``."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value).strip().lower()
+    if not text:
+        return default
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off"}:
+        return False
+    return default
 
 
 def _extract_text(item_list: List[Dict[str, Any]]) -> str:
@@ -991,6 +1026,11 @@ class WeixinAdapter(BasePlatformAdapter):
             group_allow_from = os.getenv("WEIXIN_GROUP_ALLOWED_USERS", "")
         self._allow_from = self._coerce_list(allow_from)
         self._group_allow_from = self._coerce_list(group_allow_from)
+        self._split_multiline_messages = _coerce_bool(
+            extra.get("split_multiline_messages")
+            or os.getenv("WEIXIN_SPLIT_MULTILINE_MESSAGES"),
+            default=False,
+        )
 
         if self._account_id and not self._token:
             persisted = load_weixin_account(hermes_home, self._account_id)
@@ -1330,7 +1370,9 @@ class WeixinAdapter(BasePlatformAdapter):
             logger.debug("[%s] getConfig failed for %s: %s", self.name, _safe_id(user_id), exc)
 
     def _split_text(self, content: str) -> List[str]:
-        return _split_text_for_weixin_delivery(content, self.MAX_MESSAGE_LENGTH)
+        return _split_text_for_weixin_delivery(
+            content, self.MAX_MESSAGE_LENGTH, self._split_multiline_messages,
+        )
 
     async def send(
         self,
@@ -1344,7 +1386,10 @@ class WeixinAdapter(BasePlatformAdapter):
         context_token = self._token_store.get(self._account_id, chat_id)
         last_message_id: Optional[str] = None
         try:
-            for chunk in self._split_text(self.format_message(content)):
+            chunks = self._split_text(self.format_message(content))
+            for idx, chunk in enumerate(chunks):
+                if idx > 0:
+                    await asyncio.sleep(0.3)
                 client_id = f"hermes-weixin-{uuid.uuid4().hex}"
                 await _send_message(
                     self._session,

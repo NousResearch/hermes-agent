@@ -32,7 +32,6 @@ _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _EXTRA_ENV_KEYS = frozenset({
     "OPENAI_API_KEY", "OPENAI_BASE_URL",
     "ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN",
-    "AUXILIARY_VISION_MODEL",
     "DISCORD_HOME_CHANNEL", "TELEGRAM_HOME_CHANNEL",
     "SIGNAL_ACCOUNT", "SIGNAL_HTTP_URL",
     "SIGNAL_ALLOWED_USERS", "SIGNAL_GROUP_ALLOWED_USERS",
@@ -863,6 +862,21 @@ OPTIONAL_ENV_VARS = {
     "HF_BASE_URL": {
         "description": "Hugging Face Inference Providers base URL override",
         "prompt": "HF base URL (leave empty for default)",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
+    "XIAOMI_API_KEY": {
+        "description": "Xiaomi MiMo API key for MiMo models (mimo-v2-pro, mimo-v2-omni, mimo-v2-flash)",
+        "prompt": "Xiaomi MiMo API Key",
+        "url": "https://platform.xiaomimimo.com",
+        "password": True,
+        "category": "provider",
+    },
+    "XIAOMI_BASE_URL": {
+        "description": "Xiaomi MiMo base URL override (default: https://api.xiaomimimo.com/v1)",
+        "prompt": "Xiaomi base URL (leave empty for default)",
         "url": None,
         "password": False,
         "category": "provider",

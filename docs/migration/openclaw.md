@@ -11,11 +11,13 @@ When you run `hermes setup` for the first time and Hermes detects `~/.openclaw`,
 ### 2. CLI Command (quick, scriptable)
 
 ```bash
-hermes claw migrate                      # Full migration with confirmation prompt
-hermes claw migrate --dry-run            # Preview what would happen
+hermes claw migrate                      # Preview then migrate (always shows preview first)
+hermes claw migrate --dry-run            # Preview only, no changes
 hermes claw migrate --preset user-data   # Migrate without API keys/secrets
 hermes claw migrate --yes                # Skip confirmation prompt
 ```
+
+The migration always shows a full preview of what will be imported before making any changes. You review the preview and confirm before anything is written.
 
 **All options:**
 
@@ -39,7 +41,7 @@ Ask the agent to run the migration for you:
 ```
 
 The agent will use the `openclaw-migration` skill to:
-1. Run a dry-run first to preview changes
+1. Run a preview first to show what would change
 2. Ask about conflict resolution (SOUL.md, skills, etc.)
 3. Let you choose between `user-data` and `full` presets
 4. Execute the migration with your choices
@@ -58,16 +60,31 @@ The agent will use the `openclaw-migration` skill to:
 | Messaging settings | `~/.openclaw/config.yaml` (TELEGRAM_ALLOWED_USERS, MESSAGING_CWD) | `~/.hermes/.env` |
 | TTS assets | `~/.openclaw/workspace/tts/` | `~/.hermes/tts/` |
 
+Workspace files are also checked at `workspace.default/` and `workspace-main/` as fallback paths (OpenClaw renamed `workspace/` to `workspace-main/` in recent versions).
+
 ### `full` preset (adds to `user-data`)
 | Item | Source | Destination |
 |------|--------|-------------|
-| Telegram bot token | `~/.openclaw/config.yaml` | `~/.hermes/.env` |
-| OpenRouter API key | `~/.openclaw/.env` or config | `~/.hermes/.env` |
-| OpenAI API key | `~/.openclaw/.env` or config | `~/.hermes/.env` |
-| Anthropic API key | `~/.openclaw/.env` or config | `~/.hermes/.env` |
-| ElevenLabs API key | `~/.openclaw/.env` or config | `~/.hermes/.env` |
+| Telegram bot token | `openclaw.json` channels config | `~/.hermes/.env` |
+| OpenRouter API key | `.env`, `openclaw.json`, or `openclaw.json["env"]` | `~/.hermes/.env` |
+| OpenAI API key | `.env`, `openclaw.json`, or `openclaw.json["env"]` | `~/.hermes/.env` |
+| Anthropic API key | `.env`, `openclaw.json`, or `openclaw.json["env"]` | `~/.hermes/.env` |
+| ElevenLabs API key | `.env`, `openclaw.json`, or `openclaw.json["env"]` | `~/.hermes/.env` |
 
-Only these 6 allowlisted secrets are ever imported. Other credentials are skipped and reported.
+API keys are searched across four sources: inline config values, `~/.openclaw/.env`, the `openclaw.json` `"env"` sub-object, and per-agent auth profiles.
+
+Only allowlisted secrets are ever imported. Other credentials are skipped and reported.
+
+## OpenClaw Schema Compatibility
+
+The migration handles both old and current OpenClaw config layouts:
+
+- **Channel tokens**: Reads from flat paths (`channels.telegram.botToken`) and the newer `accounts.default` layout (`channels.telegram.accounts.default.botToken`)
+- **TTS provider**: OpenClaw renamed "edge" to "microsoft" — both are recognized and mapped to Hermes' "edge"
+- **Provider API types**: Both short (`openai`, `anthropic`) and hyphenated (`openai-completions`, `anthropic-messages`, `google-generative-ai`) values are mapped correctly
+- **thinkingDefault**: All enum values are handled including newer ones (`minimal`, `xhigh`, `adaptive`)
+- **Matrix**: Uses `accessToken` field (not `botToken`)
+- **SecretRef formats**: Plain strings, env templates (`${VAR}`), and `source: "env"` SecretRefs are resolved. `source: "file"` and `source: "exec"` SecretRefs produce a warning — add those keys manually after migration.
 
 ## Conflict Handling
 
@@ -84,18 +101,24 @@ For skills, you can also use `--skill-conflict rename` to import conflicting ski
 
 ## Migration Report
 
-Every migration (including dry runs) produces a report showing:
+Every migration produces a report showing:
 - **Migrated items** — what was successfully imported
 - **Conflicts** — items skipped because they already exist
 - **Skipped items** — items not found in the source
 - **Errors** — items that failed to import
 
-For execute runs, the full report is saved to `~/.hermes/migration/openclaw/<timestamp>/`.
+For executed migrations, the full report is saved to `~/.hermes/migration/openclaw/<timestamp>/`.
+
+## Post-Migration Notes
+
+- **Skills require a new session** — imported skills take effect after restarting your agent or starting a new chat.
+- **WhatsApp requires re-pairing** — WhatsApp uses QR-code pairing, not token-based auth. Run `hermes whatsapp` to pair.
+- **Archive cleanup** — after migration, you'll be offered to rename `~/.openclaw/` to `.openclaw.pre-migration/` to prevent state confusion. You can also run `hermes claw cleanup` later.
 
 ## Troubleshooting
 
 ### "OpenClaw directory not found"
-The migration looks for `~/.openclaw` by default. If your OpenClaw is installed elsewhere, use `--source`:
+The migration looks for `~/.openclaw` by default, then tries `~/.clawdbot` and `~/.moldbot`. If your OpenClaw is installed elsewhere, use `--source`:
 ```bash
 hermes claw migrate --source /path/to/.openclaw
 ```
@@ -108,3 +131,12 @@ hermes skills install openclaw-migration
 
 ### Memory overflow
 If your OpenClaw MEMORY.md or USER.md exceeds Hermes' character limits, excess entries are exported to an overflow file in the migration report directory. You can manually review and add the most important ones.
+
+### API keys not found
+Keys might be stored in different places depending on your OpenClaw setup:
+- `~/.openclaw/.env` file
+- Inline in `openclaw.json` under `models.providers.*.apiKey`
+- In `openclaw.json` under the `"env"` or `"env.vars"` sub-objects
+- In `~/.openclaw/agents/main/agent/auth-profiles.json`
+
+The migration checks all four. If keys use `source: "file"` or `source: "exec"` SecretRefs, they can't be resolved automatically — add them via `hermes config set`.

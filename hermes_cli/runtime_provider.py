@@ -27,6 +27,7 @@ from hermes_cli.auth import (
     has_usable_secret,
 )
 from hermes_cli.config import load_config
+from hermes_cli.providers import normalize_provider as normalize_provider_id
 from hermes_constants import OPENROUTER_BASE_URL
 
 
@@ -97,8 +98,8 @@ def _provider_supports_explicit_api_mode(provider: Optional[str], configured_pro
     persisted mode when the config's provider matches the runtime
     provider (or when no configured provider is recorded).
     """
-    normalized_provider = (provider or "").strip().lower()
-    normalized_configured = (configured_provider or "").strip().lower()
+    normalized_provider = normalize_provider_id((provider or "").strip().lower()) if provider else ""
+    normalized_configured = normalize_provider_id((configured_provider or "").strip().lower()) if configured_provider else ""
     if not normalized_configured:
         return True
     if normalized_provider == "custom":
@@ -107,7 +108,7 @@ def _provider_supports_explicit_api_mode(provider: Optional[str], configured_pro
 
 
 def _copilot_runtime_api_mode(model_cfg: Dict[str, Any], api_key: str) -> str:
-    configured_provider = str(model_cfg.get("provider") or "").strip().lower()
+    configured_provider = normalize_provider_id(str(model_cfg.get("provider") or "").strip().lower()) if model_cfg.get("provider") else ""
     configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
     if configured_mode and _provider_supports_explicit_api_mode("copilot", configured_provider):
         return configured_mode
@@ -156,7 +157,7 @@ def _resolve_runtime_from_pool_entry(
         base_url = base_url or DEFAULT_QWEN_BASE_URL
     elif provider == "anthropic":
         api_mode = "anthropic_messages"
-        cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
+        cfg_provider = normalize_provider_id(str(model_cfg.get("provider") or "").strip().lower()) if model_cfg.get("provider") else ""
         cfg_base_url = ""
         if cfg_provider == "anthropic":
             cfg_base_url = str(model_cfg.get("base_url") or "").strip().rstrip("/")
@@ -168,7 +169,7 @@ def _resolve_runtime_from_pool_entry(
     elif provider == "copilot":
         api_mode = _copilot_runtime_api_mode(model_cfg, getattr(entry, "runtime_api_key", ""))
     else:
-        configured_provider = str(model_cfg.get("provider") or "").strip().lower()
+        configured_provider = normalize_provider_id(str(model_cfg.get("provider") or "").strip().lower()) if model_cfg.get("provider") else ""
         # Honour model.base_url from config.yaml when the configured provider
         # matches this provider — same pattern as the Anthropic branch above.
         # Only override when the pool entry has no explicit base_url (i.e. it
@@ -366,8 +367,8 @@ def _resolve_openrouter_runtime(
         if isinstance(v, str) and v.strip():
             cfg_api_key = v.strip()
             break
-    requested_norm = (requested_provider or "").strip().lower()
-    cfg_provider = cfg_provider.strip().lower()
+    requested_norm = normalize_provider_id((requested_provider or "").strip().lower()) if requested_provider else ""
+    cfg_provider = normalize_provider_id(cfg_provider.strip().lower()) if cfg_provider else ""
 
     env_openrouter_base_url = os.getenv("OPENROUTER_BASE_URL", "").strip()
 
@@ -462,7 +463,7 @@ def _resolve_explicit_runtime(
         return None
 
     if provider == "anthropic":
-        cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
+        cfg_provider = normalize_provider_id(str(model_cfg.get("provider") or "").strip().lower()) if model_cfg.get("provider") else ""
         cfg_base_url = ""
         if cfg_provider == "anthropic":
             cfg_base_url = str(model_cfg.get("base_url") or "").strip().rstrip("/")
@@ -616,7 +617,7 @@ def resolve_runtime_provider(
 
     should_use_pool = provider != "openrouter"
     if provider == "openrouter":
-        cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
+        cfg_provider = normalize_provider_id(str(model_cfg.get("provider") or "").strip().lower()) if model_cfg.get("provider") else ""
         cfg_base_url = str(model_cfg.get("base_url") or "").strip()
         env_openai_base_url = os.getenv("OPENAI_BASE_URL", "").strip()
         env_openrouter_base_url = os.getenv("OPENROUTER_BASE_URL", "").strip()
@@ -787,7 +788,7 @@ def resolve_runtime_provider(
         if provider == "copilot":
             api_mode = _copilot_runtime_api_mode(model_cfg, creds.get("api_key", ""))
         else:
-            configured_provider = str(model_cfg.get("provider") or "").strip().lower()
+            configured_provider = normalize_provider_id(str(model_cfg.get("provider") or "").strip().lower()) if model_cfg.get("provider") else ""
             # Only honor persisted api_mode when it belongs to the same provider family.
             configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
             if configured_mode and _provider_supports_explicit_api_mode(provider, configured_provider):

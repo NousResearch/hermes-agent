@@ -79,6 +79,10 @@ def build_channel_directory(adapters: Dict[Any, Any]) -> Dict[str, Any]:
     # Platforms that don't support direct channel enumeration get session-based
     # discovery automatically.  Skip infrastructure entries that aren't messaging
     # platforms — everything else falls through to _build_from_sessions().
+    # Email is session-discovered only, so include it explicitly here.
+    if "email" not in platforms:
+        platforms["email"] = _build_from_sessions("email")
+
     _SKIP_SESSION_DISCOVERY = frozenset({"local", "api_server", "webhook"})
     for plat in Platform:
         plat_name = plat.value

@@ -520,8 +520,8 @@ class TelegramAdapter(BasePlatformAdapter):
             builder = Application.builder().token(self.config.token)
             custom_base_url = self.config.extra.get("base_url")
             if custom_base_url:
-                builder = builder.base_url(custom_base_url)
-                builder = builder.base_file_url(
+                builder.base_url(custom_base_url)
+                builder.base_file_url(
                     self.config.extra.get("base_file_url", custom_base_url)
                 )
                 logger.info(
@@ -590,7 +590,8 @@ class TelegramAdapter(BasePlatformAdapter):
                 request = HTTPXRequest(**request_kwargs)
                 get_updates_request = HTTPXRequest(**request_kwargs)
 
-            builder = builder.request(request).get_updates_request(get_updates_request)
+            builder.request(request)
+            builder.get_updates_request(get_updates_request)
             self._app = builder.build()
             self._bot = self._app.bot
             

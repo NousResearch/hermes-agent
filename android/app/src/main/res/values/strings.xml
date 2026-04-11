@@ -1,4 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Hermes</string>
+    <string name="hermes_accessibility_service_label">Hermes accessibility control</string>
+    <string name="hermes_accessibility_service_description">Lets Hermes perform high-level phone actions such as Home, Back, Recents, Notifications, and Quick settings after you enable the service.</string>
 </resources>

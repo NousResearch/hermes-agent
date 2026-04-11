@@ -354,8 +354,10 @@ TOOLSETS = {
     },
 
     "hermes-android-app": {
-        "description": "Android app MVP toolset — mobile-safe defaults for the embedded API server",
+        "description": "Android app alpha toolset — mobile-safe defaults plus workspace file access and device status",
         "tools": [
+            "android_device_status",
+            "read_file", "search_files", "write_file", "patch",
             "web_search", "web_extract",
             "vision_analyze",
             "skills_list", "skill_view", "skill_manage",

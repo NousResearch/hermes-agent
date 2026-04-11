@@ -187,6 +187,7 @@ _TOOL_RECOVERY_IMPORTS = {
     "write_file": "tools.file_tools",
     "patch": "tools.file_tools",
     "search_files": "tools.file_tools",
+    "android_device_status": "tools.android_device_tool",
     "vision_analyze": "tools.vision_tools",
     "skills_list": "tools.skills_tool",
     "skill_view": "tools.skills_tool",

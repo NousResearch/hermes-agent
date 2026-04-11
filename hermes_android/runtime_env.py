@@ -39,7 +39,7 @@ def prepare_runtime_env(
     files_path = Path(files_dir).expanduser().resolve()
     hermes_home = files_path / "hermes-home"
     hermes_home.mkdir(parents=True, exist_ok=True)
-    for child in ("logs", "sessions", "skills", "downloads"):
+    for child in ("logs", "sessions", "skills", "downloads", "workspace"):
         (hermes_home / child).mkdir(parents=True, exist_ok=True)
 
     port = api_server_port or _find_free_port(api_server_host)

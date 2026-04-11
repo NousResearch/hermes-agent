@@ -17,7 +17,7 @@ def test_prepare_runtime_env_sets_android_env_and_dirs(tmp_path, monkeypatch):
     assert runtime.api_server_port == 8765
     assert runtime.api_server_key == "secret-key"
 
-    for child in ("logs", "sessions", "skills", "downloads"):
+    for child in ("logs", "sessions", "skills", "downloads", "workspace"):
         assert (runtime.hermes_home / child).is_dir()
 
     assert os.environ["HERMES_HOME"] == str(runtime.hermes_home)

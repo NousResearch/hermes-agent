@@ -11,6 +11,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 
 private val ENABLED_TOOLS = listOf(
+    "android_device_status",
+    "read_file",
+    "search_files",
+    "write_file",
+    "patch",
     "web_search",
     "web_extract",
     "vision_analyze",
@@ -24,7 +29,6 @@ private val ENABLED_TOOLS = listOf(
 
 private val BLOCKED_TOOL_CLASSES = listOf(
     "terminal / process",
-    "local file editing",
     "browser automation",
     "execute_code",
     "delegate_task",
@@ -37,13 +41,17 @@ private val BLOCKED_TOOL_CLASSES = listOf(
 fun ToolProfileCard() {
     OutlinedCard(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(16.dp)) {
-            Text("Android MVP Tool Profile", style = MaterialTheme.typography.titleMedium)
+            Text("Android alpha Tool Profile", style = MaterialTheme.typography.titleMedium)
             Text(
                 "Enabled: ${ENABLED_TOOLS.joinToString()}",
                 modifier = Modifier.padding(top = 8.dp),
             )
             Text(
-                "Not included in the first mobile release: ${BLOCKED_TOOL_CLASSES.joinToString()}",
+                "Workspace file tools target the Hermes Device workspace. Use android_device_status to discover the current path before asking Hermes to edit files.",
+                modifier = Modifier.padding(top = 8.dp),
+            )
+            Text(
+                "Still excluded from the mobile runtime: ${BLOCKED_TOOL_CLASSES.joinToString()}",
                 modifier = Modifier.padding(top = 8.dp),
             )
         }

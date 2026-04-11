@@ -12,6 +12,11 @@ class TestHermesAndroidAppToolset:
 
         resolved = resolve_toolset("hermes-android-app")
         for expected in [
+            "android_device_status",
+            "read_file",
+            "write_file",
+            "patch",
+            "search_files",
             "web_search",
             "web_extract",
             "vision_analyze",
@@ -27,10 +32,6 @@ class TestHermesAndroidAppToolset:
         for blocked in [
             "terminal",
             "process",
-            "read_file",
-            "write_file",
-            "patch",
-            "search_files",
             "image_generate",
             "execute_code",
             "delegate_task",

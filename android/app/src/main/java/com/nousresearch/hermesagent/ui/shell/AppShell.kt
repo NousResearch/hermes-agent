@@ -30,6 +30,7 @@ import com.nousresearch.hermesagent.R
 import com.nousresearch.hermesagent.ui.auth.AuthScreen
 import com.nousresearch.hermesagent.ui.boot.BootUiState
 import com.nousresearch.hermesagent.ui.chat.ChatScreen
+import com.nousresearch.hermesagent.ui.device.DeviceScreen
 import com.nousresearch.hermesagent.ui.portal.NousPortalScreen
 import com.nousresearch.hermesagent.ui.settings.SettingsScreen
 import com.nousresearch.hermesagent.ui.theme.HermesTheme
@@ -38,6 +39,7 @@ enum class AppSection(val label: String) {
     Hermes("Hermes"),
     Accounts("Accounts"),
     NousPortal("Nous Portal"),
+    Device("Device"),
     Settings("Settings"),
 }
 
@@ -68,12 +70,14 @@ fun AppShellScreen(
                         onRetry = onRetryHermes,
                         onOpenAccounts = { currentSection = AppSection.Accounts },
                         onOpenPortal = { currentSection = AppSection.NousPortal },
+                        onOpenDevice = { currentSection = AppSection.Device },
                         onOpenSettings = { currentSection = AppSection.Settings },
                         modifier = Modifier.fillMaxSize(),
                     )
 
                     AppSection.Accounts -> AuthScreen(modifier = Modifier.fillMaxSize())
                     AppSection.NousPortal -> NousPortalScreen(modifier = Modifier.fillMaxSize())
+                    AppSection.Device -> DeviceScreen(modifier = Modifier.fillMaxSize())
                     AppSection.Settings -> SettingsScreen(modifier = Modifier.fillMaxSize())
                 }
             }
@@ -129,6 +133,7 @@ private fun HermesSection(
     onRetry: () -> Unit,
     onOpenAccounts: () -> Unit,
     onOpenPortal: () -> Unit,
+    onOpenDevice: () -> Unit,
     onOpenSettings: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -172,10 +177,11 @@ private fun HermesSection(
         GettingStartedCard(
             onOpenAccounts = onOpenAccounts,
             onOpenPortal = onOpenPortal,
+            onOpenDevice = onOpenDevice,
             onOpenSettings = onOpenSettings,
         )
         Text(
-            text = "The Nous Portal section is available independently while the local Hermes runtime is booting.",
+            text = "The Nous Portal and Device sections are available independently while the local Hermes runtime is booting.",
             style = MaterialTheme.typography.bodyMedium,
         )
     }
@@ -185,6 +191,7 @@ private fun HermesSection(
 private fun GettingStartedCard(
     onOpenAccounts: () -> Unit,
     onOpenPortal: () -> Unit,
+    onOpenDevice: () -> Unit,
     onOpenSettings: () -> Unit,
 ) {
     Surface(
@@ -202,8 +209,9 @@ private fun GettingStartedCard(
             Text("Getting started", style = MaterialTheme.typography.titleMedium)
             Text("1. Accounts: connect ChatGPT, Claude, Gemini, email, phone, or Google.")
             Text("2. Settings: choose a provider, confirm the base URL/model, and save your API key.")
-            Text("3. Nous Portal: open the full portal experience in your browser if the embedded preview is limited.")
-            Text("4. Hermes: return here and tap Retry Hermes after setup changes.")
+            Text("3. Nous Portal: open the full portal experience in your browser if the embedded preview stays limited.")
+            Text("4. Device: import files into the Hermes workspace and enable accessibility controls if you want high-level phone actions.")
+            Text("5. Hermes: return here and tap Retry Hermes after setup changes.")
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -215,8 +223,16 @@ private fun GettingStartedCard(
                     Text("Settings")
                 }
             }
-            Button(onClick = onOpenPortal, modifier = Modifier.fillMaxWidth()) {
-                Text("Open Nous Portal")
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Button(onClick = onOpenPortal, modifier = Modifier.weight(1f)) {
+                    Text("Open Nous Portal")
+                }
+                Button(onClick = onOpenDevice, modifier = Modifier.weight(1f)) {
+                    Text("Device")
+                }
             }
         }
     }

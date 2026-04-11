@@ -6,12 +6,14 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import com.nousresearch.hermesagent.auth.AuthRuntimeApplier
 import com.nousresearch.hermesagent.data.AuthSessionStore
+import com.nousresearch.hermesagent.device.DeviceStateWriter
 import com.nousresearch.hermesagent.ui.boot.BootScreen
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         handleAuthCallback(intent)
+        DeviceStateWriter.write(applicationContext)
         setContent {
             BootScreen()
         }
@@ -21,6 +23,7 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         handleAuthCallback(intent)
+        DeviceStateWriter.write(applicationContext)
     }
 
     private fun handleAuthCallback(intent: Intent?) {

@@ -1809,6 +1809,35 @@ def validate_requested_model(
             "message": message,
         }
 
+    # OpenAI Codex has its own catalog path; /v1/models probing is not the right validation path.
+    if normalized == "openai-codex":
+        try:
+            codex_models = provider_model_ids("openai-codex")
+        except Exception:
+            codex_models = []
+        if codex_models:
+            if requested_for_lookup in set(codex_models):
+                return {
+                    "accepted": True,
+                    "persist": True,
+                    "recognized": True,
+                    "message": None,
+                }
+            suggestions = get_close_matches(requested_for_lookup, codex_models, n=3, cutoff=0.5)
+            suggestion_text = ""
+            if suggestions:
+                suggestion_text = "\n  Similar models: " + ", ".join(f"`{s}`" for s in suggestions)
+            return {
+                "accepted": True,
+                "persist": True,
+                "recognized": False,
+                "message": (
+                    f"Note: `{requested}` was not found in the OpenAI Codex model listing. "
+                    f"It may still work if your account has access to it."
+                    f"{suggestion_text}"
+                ),
+            }
+
     # Probe the live API to check if the model actually exists
     api_models = fetch_api_models(api_key, base_url)
 

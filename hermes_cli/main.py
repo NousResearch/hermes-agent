@@ -934,6 +934,7 @@ def select_provider_and_model(args=None):
         "kilocode": "Kilo Code",
         "alibaba": "Alibaba Cloud (DashScope)",
         "huggingface": "Hugging Face",
+        "xiaomi": "Xiaomi MiMo",
         "custom": "Custom endpoint",
     }
     active_label = provider_labels.get(active, active) if active else "none"
@@ -966,6 +967,7 @@ def select_provider_and_model(args=None):
         ("opencode-go", "OpenCode Go (open models, $10/month subscription)"),
         ("ai-gateway", "AI Gateway (Vercel — 200+ models, pay-per-use)"),
         ("alibaba", "Alibaba Cloud / DashScope Coding (Qwen + multi-provider)"),
+        ("xiaomi", "Xiaomi MiMo (MiMo-V2 models — pro, omni, flash)"),
     ]
 
     def _named_custom_provider_map(cfg) -> dict[str, dict[str, str]]:
@@ -1077,7 +1079,7 @@ def select_provider_and_model(args=None):
         _model_flow_anthropic(config, current_model)
     elif selected_provider == "kimi-coding":
         _model_flow_kimi(config, current_model)
-    elif selected_provider in ("gemini", "zai", "minimax", "minimax-cn", "kilocode", "opencode-zen", "opencode-go", "ai-gateway", "alibaba", "huggingface"):
+    elif selected_provider in ("gemini", "zai", "minimax", "minimax-cn", "kilocode", "opencode-zen", "opencode-go", "ai-gateway", "alibaba", "huggingface", "xiaomi"):
         _model_flow_api_key_provider(config, selected_provider, current_model)
 
     # ── Post-switch cleanup: clear stale OPENAI_BASE_URL ──────────────
@@ -2547,13 +2549,8 @@ def _model_flow_anthropic(config, current_model=""):
     from hermes_cli.models import _PROVIDER_MODELS
 
     # Check ALL credential sources
-    existing_key = (
-        get_env_value("ANTHROPIC_TOKEN")
-        or os.getenv("ANTHROPIC_TOKEN", "")
-        or get_env_value("ANTHROPIC_API_KEY")
-        or os.getenv("ANTHROPIC_API_KEY", "")
-        or os.getenv("CLAUDE_CODE_OAUTH_TOKEN", "")
-    )
+    from hermes_cli.auth import get_anthropic_key
+    existing_key = get_anthropic_key()
     cc_available = False
     try:
         from agent.anthropic_adapter import read_claude_code_credentials, is_claude_code_token_valid
@@ -3879,7 +3876,7 @@ def cmd_update(args):
             # Exclude PIDs that belong to just-restarted services so we don't
             # immediately kill the process that systemd/launchd just spawned.
             service_pids = _get_service_pids()
-            manual_pids = find_gateway_pids(exclude_pids=service_pids)
+            manual_pids = find_gateway_pids(exclude_pids=service_pids, all_profiles=True)
             for pid in manual_pids:
                 try:
                     os.kill(pid, _signal.SIGTERM)
@@ -4357,7 +4354,7 @@ For more help on a command:
     )
     chat_parser.add_argument(
         "--provider",
-        choices=["auto", "openrouter", "nous", "openai-codex", "copilot-acp", "copilot", "anthropic", "gemini", "huggingface", "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode"],
+        choices=["auto", "openrouter", "nous", "openai-codex", "copilot-acp", "copilot", "anthropic", "gemini", "huggingface", "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode", "xiaomi"],
         default=None,
         help="Inference provider (default: auto)"
     )
@@ -5411,7 +5408,8 @@ For more help on a command:
     claw_migrate = claw_subparsers.add_parser(
         "migrate",
         help="Migrate from OpenClaw to Hermes",
-        description="Import settings, memories, skills, and API keys from an OpenClaw installation"
+        description="Import settings, memories, skills, and API keys from an OpenClaw installation. "
+                    "Always shows a preview before making changes."
     )
     claw_migrate.add_argument(
         "--source",
@@ -5420,7 +5418,7 @@ For more help on a command:
     claw_migrate.add_argument(
         "--dry-run",
         action="store_true",
-        help="Preview what would be migrated without making changes"
+        help="Preview only — stop after showing what would be migrated"
     )
     claw_migrate.add_argument(
         "--preset",

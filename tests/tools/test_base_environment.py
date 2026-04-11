@@ -130,6 +130,27 @@ class TestEmbedStdinHeredoc:
 
 
 class TestInitSessionFailure:
+    def test_init_session_bootstrap_changes_to_configured_cwd(self):
+        env = _TestableEnv(cwd="/tmp/configured")
+
+        calls = []
+
+        def mock_run_bash(cmd, *, login=False, timeout=120, stdin_data=None):
+            calls.append({"cmd": cmd, "login": login})
+            mock = MagicMock()
+            mock.poll.return_value = 0
+            mock.returncode = 0
+            mock.stdout = iter([])
+            return mock
+
+        env._run_bash = mock_run_bash
+        env.init_session()
+
+        assert len(calls) == 1
+        assert calls[0]["login"] is True
+        assert "cd /tmp/configured" in calls[0]["cmd"] or "cd '/tmp/configured'" in calls[0]["cmd"]
+        assert env._snapshot_ready is True
+
     def test_snapshot_ready_false_on_failure(self):
         env = _TestableEnv()
 

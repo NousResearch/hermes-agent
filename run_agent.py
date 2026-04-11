@@ -6773,7 +6773,9 @@ class AIAgent:
             # limit ensures full capacity.
             try:
                 from agent.anthropic_adapter import _get_anthropic_max_output
-                _model_output_limit = _get_anthropic_max_output(self.model)
+                _model_output_limit = _get_anthropic_max_output(
+                    self.model, base_url=getattr(self, "base_url", "") or ""
+                )
                 api_kwargs["max_tokens"] = _model_output_limit
             except Exception:
                 pass  # fail open — let the proxy pick its default

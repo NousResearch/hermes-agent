@@ -95,7 +95,7 @@ _ANTHROPIC_OUTPUT_LIMITS = {
 _ANTHROPIC_DEFAULT_OUTPUT_LIMIT = 128_000
 
 
-def _get_anthropic_max_output(model: str) -> int:
+def _get_anthropic_max_output(model: str, base_url: str = "") -> int:
     """Look up the max output token limit for an Anthropic model.
 
     Uses substring matching against _ANTHROPIC_OUTPUT_LIMITS so date-stamped
@@ -105,6 +105,10 @@ def _get_anthropic_max_output(model: str) -> int:
 
     Normalizes dots to hyphens so that model names like
     ``anthropic/claude-opus-4.6`` match the ``claude-opus-4-6`` table key.
+
+    For third-party Anthropic-compatible endpoints (not api.anthropic.com),
+    caps the default at 65536 since most proxies/providers have lower output
+    ceilings than native Anthropic models.
     """
     m = model.lower().replace(".", "-")
     best_key = ""
@@ -113,6 +117,13 @@ def _get_anthropic_max_output(model: str) -> int:
         if key in m and len(key) > len(best_key):
             best_key = key
             best_val = val
+
+    # Cap default output for third-party endpoints that don't support
+    # Anthropic's native output ceilings (e.g. DashScope max is 65536).
+    # Only applies when no explicit Claude model was matched.
+    if not best_key and _is_third_party_anthropic_endpoint(base_url):
+        best_val = min(best_val, 65_536)
+
     return best_val
 
 
@@ -1319,7 +1330,7 @@ def build_anthropic_kwargs(
 
     model = normalize_model_name(model, preserve_dots=preserve_dots)
     # effective_max_tokens = output cap for this call (≠ total context window)
-    effective_max_tokens = max_tokens or _get_anthropic_max_output(model)
+    effective_max_tokens = max_tokens or _get_anthropic_max_output(model, base_url)
 
     # Clamp output cap to fit inside the total context window.
     # Only matters for small custom endpoints where context_length < native

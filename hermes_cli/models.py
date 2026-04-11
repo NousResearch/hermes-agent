@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import urllib.request
 import urllib.error
 from difflib import get_close_matches
@@ -1098,6 +1099,9 @@ _ANTHROPIC_FAST_MODE_MODELS: frozenset[str] = frozenset({
     "claude-opus-4.6",
 })
 
+# Matches a trailing -YYYYMMDD date suffix (e.g. '-20260401').
+_DATE_SUFFIX_RE = re.compile(r"-\d{8}$")
+
 
 def _strip_vendor_prefix(model_id: str) -> str:
     """Strip vendor/ prefix from a model ID (e.g. 'anthropic/claude-opus-4-6' -> 'claude-opus-4-6')."""
@@ -1107,6 +1111,13 @@ def _strip_vendor_prefix(model_id: str) -> str:
     return raw
 
 
+def _strip_model_suffixes(model_id: str) -> str:
+    """Strip OpenRouter variant tags (:fast, :beta) and date-pinned suffixes (-YYYYMMDD)."""
+    base = model_id.split(":")[0]
+    base = _DATE_SUFFIX_RE.sub("", base)
+    return base
+
+
 def model_supports_fast_mode(model_id: Optional[str]) -> bool:
     """Return whether Hermes should expose the /fast toggle for this model."""
     raw = _strip_vendor_prefix(str(model_id or ""))
@@ -1114,14 +1125,14 @@ def model_supports_fast_mode(model_id: Optional[str]) -> bool:
         return True
     # Anthropic fast mode — strip date suffixes (e.g. claude-opus-4-6-20260401)
     # and OpenRouter variant tags (:fast, :beta) for matching.
-    base = raw.split(":")[0]
+    base = _strip_model_suffixes(raw)
     return base in _ANTHROPIC_FAST_MODE_MODELS
 
 
 def _is_anthropic_fast_model(model_id: Optional[str]) -> bool:
     """Return True if the model supports Anthropic's fast mode (speed='fast')."""
     raw = _strip_vendor_prefix(str(model_id or ""))
-    base = raw.split(":")[0]
+    base = _strip_model_suffixes(raw)
     return base in _ANTHROPIC_FAST_MODE_MODELS
 
 

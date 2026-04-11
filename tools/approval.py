@@ -105,6 +105,12 @@ DANGEROUS_PATTERNS = [
     # to regex at detection time. Catch the structural pattern instead.
     (r'\bkill\b.*\$\(\s*pgrep\b', "kill process via pgrep expansion (self-termination)"),
     (r'\bkill\b.*`\s*pgrep\b', "kill process via backtick pgrep expansion (self-termination)"),
+    # macOS launchctl self-termination: kickstart -k SIGTERMs the service,
+    # KeepAlive respawns it, resumed session retries the same call → infinite loop
+    (r'\blaunchctl\s+(kickstart|kill|bootout|bootstrap)\b', "macOS launchctl service control (self-termination risk)"),
+    (r'\blaunchctl\s+(load|unload)\b.*hermes', "launchctl manipulate hermes service"),
+    # hermes CLI gateway control from inside the agent → same self-termination risk
+    (r'\bhermes\b.*\bgateway\s+(restart|stop|kill)\b', "hermes CLI gateway control (self-termination risk)"),
     # File copy/move/edit into sensitive system paths
     (r'\b(cp|mv|install)\b.*\s/etc/', "copy/move file into /etc/"),
     (r'\bsed\s+-[^\s]*i.*\s/etc/', "in-place edit of system config"),

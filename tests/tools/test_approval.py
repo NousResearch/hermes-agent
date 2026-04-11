@@ -580,6 +580,86 @@ class TestGatewayProtection:
         dangerous, key, desc = detect_dangerous_command(cmd)
         assert dangerous is False
 
+    # --- macOS launchctl self-termination ----------------------------------
+    # `launchctl kickstart -k` sends SIGTERM to the target service. If the
+    # agent targets its own gateway service, launchd KeepAlive respawns the
+    # gateway, the resumed session sees the pending (uncompleted) tool call,
+    # and the model retries the same command — producing an infinite self-kill
+    # loop. See the 2026-04-11 ade profile incident.
+
+    def test_launchctl_kickstart_detected(self):
+        cmd = "launchctl kickstart -k gui/501/ai.hermes.gateway-ade"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+        assert "launchctl" in desc.lower()
+
+    def test_launchctl_kickstart_with_id_expansion_detected(self):
+        """The real-world form uses $(id -u) rather than a literal uid."""
+        cmd = "launchctl kickstart -k gui/$(id -u)/ai.hermes.gateway-ade"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+
+    def test_launchctl_kill_detected(self):
+        cmd = "launchctl kill SIGTERM gui/501/ai.hermes.gateway-ade"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+
+    def test_launchctl_bootout_detected(self):
+        cmd = "launchctl bootout gui/501/ai.hermes.gateway-ade"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+
+    def test_launchctl_unload_hermes_detected(self):
+        cmd = "launchctl unload ~/Library/LaunchAgents/ai.hermes.gateway-ade.plist"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+        assert "hermes" in desc.lower()
+
+    def test_launchctl_list_not_flagged(self):
+        """Inspection-only launchctl subcommands must remain allowed."""
+        cmd = "launchctl list | grep ai.hermes.gateway-ade"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is False
+
+    def test_launchctl_print_not_flagged(self):
+        cmd = "launchctl print gui/501"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is False
+
+    # --- hermes CLI self-termination ---------------------------------------
+    # `hermes gateway restart/stop/kill` from inside the gateway triggers the
+    # same class of self-kill loop on any platform. Upstream commit a55c044c
+    # also detects this at the CLI layer and routes to SIGUSR1 graceful
+    # restart, but defense-in-depth at the approval layer is still valuable
+    # for the raw `hermes ... gateway restart` pattern in agent tool calls.
+
+    def test_hermes_gateway_restart_detected(self):
+        cmd = "hermes -p ade gateway restart"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+        assert "hermes" in desc.lower()
+
+    def test_hermes_gateway_stop_detected(self):
+        cmd = "hermes gateway stop"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+
+    def test_hermes_gateway_kill_detected(self):
+        cmd = "hermes -p cocoa gateway kill"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+
+    def test_hermes_gateway_start_not_flagged(self):
+        """`hermes gateway start` is safe — starting a non-running gateway."""
+        cmd = "hermes gateway start"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is False
+
+    def test_hermes_gateway_status_not_flagged(self):
+        cmd = "hermes gateway status"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is False
+
 
 class TestNormalizationBypass:
     """Obfuscation techniques must not bypass dangerous command detection."""

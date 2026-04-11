@@ -270,6 +270,50 @@ class TestWebhookHostConfig:
             assert adapter._webhook_url == "https://example.com/webhooks/twilio"
 
 
+# ── Startup guard (fail-closed) ────────────────────────────────────
+
+class TestStartupGuard:
+    """Adapter must refuse to start without SMS_WEBHOOK_URL."""
+
+    def _make_adapter(self, extra_env=None):
+        from gateway.platforms.sms import SmsAdapter
+
+        env = {
+            "TWILIO_ACCOUNT_SID": "ACtest",
+            "TWILIO_AUTH_TOKEN": "tok",
+            "TWILIO_PHONE_NUMBER": "+15550001111",
+        }
+        if extra_env:
+            env.update(extra_env)
+        with patch.dict(os.environ, env, clear=False):
+            pc = PlatformConfig(enabled=True, api_key="tok")
+            adapter = SmsAdapter(pc)
+        return adapter
+
+    @pytest.mark.asyncio
+    async def test_refuses_start_without_webhook_url(self):
+        adapter = self._make_adapter()
+        result = await adapter.connect()
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_insecure_flag_allows_start_without_url(self):
+        with patch.dict(os.environ, {"SMS_INSECURE_NO_SIGNATURE": "true"}):
+            adapter = self._make_adapter()
+            result = await adapter.connect()
+            assert result is True
+            await adapter.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_webhook_url_allows_start(self):
+        adapter = self._make_adapter(
+            extra_env={"SMS_WEBHOOK_URL": "https://example.com/webhooks/twilio"}
+        )
+        result = await adapter.connect()
+        assert result is True
+        await adapter.disconnect()
+
+
 # ── Twilio signature validation ────────────────────────────────────
 
 def _compute_twilio_signature(auth_token, url, params):
@@ -420,9 +464,11 @@ class TestWebhookSignatureEnforcement:
         return request
 
     @pytest.mark.asyncio
-    async def test_no_webhook_url_skips_validation(self):
-        """Without SMS_WEBHOOK_URL, all requests are accepted."""
-        adapter = self._make_adapter(webhook_url="")
+    async def test_insecure_flag_skips_validation(self):
+        """With SMS_INSECURE_NO_SIGNATURE=true and no URL, requests are accepted."""
+        env = {"SMS_INSECURE_NO_SIGNATURE": "true"}
+        with patch.dict(os.environ, env):
+            adapter = self._make_adapter(webhook_url="")
         body = b"From=%2B15551234567&To=%2B15550001111&Body=hello&MessageSid=SM123"
         request = self._mock_request(body)
         resp = await adapter._handle_webhook(request)

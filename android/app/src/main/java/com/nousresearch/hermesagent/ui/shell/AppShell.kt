@@ -9,6 +9,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -64,6 +66,9 @@ fun AppShellScreen(
                     AppSection.Hermes -> HermesSection(
                         uiState = bootUiState,
                         onRetry = onRetryHermes,
+                        onOpenAccounts = { currentSection = AppSection.Accounts },
+                        onOpenPortal = { currentSection = AppSection.NousPortal },
+                        onOpenSettings = { currentSection = AppSection.Settings },
                         modifier = Modifier.fillMaxSize(),
                     )
 
@@ -122,6 +127,9 @@ private fun HermesBrandBar() {
 private fun HermesSection(
     uiState: BootUiState,
     onRetry: () -> Unit,
+    onOpenAccounts: () -> Unit,
+    onOpenPortal: () -> Unit,
+    onOpenSettings: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     if (uiState.ready) {
@@ -129,9 +137,12 @@ private fun HermesSection(
         return
     }
 
+    val scrollState = rememberScrollState()
     Column(
-        modifier = modifier.padding(24.dp),
-        verticalArrangement = Arrangement.Center,
+        modifier = modifier
+            .verticalScroll(scrollState)
+            .padding(24.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Image(
@@ -142,28 +153,71 @@ private fun HermesSection(
         Text(
             text = uiState.status,
             style = MaterialTheme.typography.headlineSmall,
-            modifier = Modifier.padding(top = 16.dp),
         )
         if (uiState.baseUrl.isNotBlank()) {
-            Text(text = uiState.baseUrl, modifier = Modifier.padding(top = 12.dp))
+            Text(text = uiState.baseUrl)
         }
         if (uiState.probeResult.isNotBlank()) {
-            Text(text = uiState.probeResult, modifier = Modifier.padding(top = 12.dp))
+            Text(text = uiState.probeResult)
         }
         if (uiState.error.isNotBlank()) {
             Text(
                 text = uiState.error,
                 color = MaterialTheme.colorScheme.error,
-                modifier = Modifier.padding(top = 12.dp),
             )
         }
-        Button(onClick = onRetry, modifier = Modifier.padding(top = 20.dp)) {
+        Button(onClick = onRetry) {
             Text("Retry Hermes")
         }
+        GettingStartedCard(
+            onOpenAccounts = onOpenAccounts,
+            onOpenPortal = onOpenPortal,
+            onOpenSettings = onOpenSettings,
+        )
         Text(
             text = "The Nous Portal section is available independently while the local Hermes runtime is booting.",
-            modifier = Modifier.padding(top = 16.dp),
             style = MaterialTheme.typography.bodyMedium,
         )
+    }
+}
+
+@Composable
+private fun GettingStartedCard(
+    onOpenAccounts: () -> Unit,
+    onOpenPortal: () -> Unit,
+    onOpenSettings: () -> Unit,
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        tonalElevation = 2.dp,
+        shape = MaterialTheme.shapes.medium,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Text("Getting started", style = MaterialTheme.typography.titleMedium)
+            Text("1. Accounts: connect ChatGPT, Claude, Gemini, email, phone, or Google.")
+            Text("2. Settings: choose a provider, confirm the base URL/model, and save your API key.")
+            Text("3. Nous Portal: open the full portal experience in your browser if the embedded preview is limited.")
+            Text("4. Hermes: return here and tap Retry Hermes after setup changes.")
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Button(onClick = onOpenAccounts, modifier = Modifier.weight(1f)) {
+                    Text("Accounts")
+                }
+                Button(onClick = onOpenSettings, modifier = Modifier.weight(1f)) {
+                    Text("Settings")
+                }
+            }
+            Button(onClick = onOpenPortal, modifier = Modifier.fillMaxWidth()) {
+                Text("Open Nous Portal")
+            }
+        }
     }
 }

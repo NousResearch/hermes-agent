@@ -33,6 +33,7 @@ fun SettingsScreen(
 ) {
     val uiState by viewModel.uiState.collectAsState()
     var expanded by remember { mutableStateOf(false) }
+    val selectedPreset = ProviderPresets.find(uiState.provider)
 
     MaterialTheme {
         Surface(modifier = modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
@@ -43,6 +44,7 @@ fun SettingsScreen(
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 Text("Settings", style = MaterialTheme.typography.headlineSmall)
+                SettingsHelpCard(providerLabel = selectedPreset?.label ?: uiState.provider)
 
                 ExposedDropdownMenuBox(expanded = expanded, onExpandedChange = { expanded = !expanded }) {
                     OutlinedTextField(
@@ -73,6 +75,10 @@ fun SettingsScreen(
                         }
                     }
                 }
+                Text(
+                    "Choose the provider you want Hermes to call directly. Use Accounts for browser-based sign-ins; use Settings for API-key based setup.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
 
                 OutlinedTextField(
                     value = uiState.baseUrl,
@@ -80,17 +86,31 @@ fun SettingsScreen(
                     label = { Text("Base URL") },
                     modifier = Modifier.fillMaxWidth(),
                 )
+                Text(
+                    "Default for ${selectedPreset?.label ?: uiState.provider}: ${selectedPreset?.baseUrl?.ifBlank { "provider default / optional" } ?: "provider default / optional"}",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+
                 OutlinedTextField(
                     value = uiState.model,
                     onValueChange = viewModel::updateModel,
                     label = { Text("Model") },
                     modifier = Modifier.fillMaxWidth(),
                 )
+                Text(
+                    "Suggested model: ${selectedPreset?.modelHint?.ifBlank { "choose a provider-supported model" } ?: "choose a provider-supported model"}",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+
                 OutlinedTextField(
                     value = uiState.apiKey,
                     onValueChange = viewModel::updateApiKey,
                     label = { Text("API Key") },
                     modifier = Modifier.fillMaxWidth(),
+                )
+                Text(
+                    "Paste the key for the selected provider, then tap Save to restart the local Hermes backend with the new config.",
+                    style = MaterialTheme.typography.bodySmall,
                 )
 
                 ToolProfileCard()
@@ -103,6 +123,28 @@ fun SettingsScreen(
                     Text(uiState.status)
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun SettingsHelpCard(providerLabel: String) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        tonalElevation = 2.dp,
+        shape = MaterialTheme.shapes.medium,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text("New here?", style = MaterialTheme.typography.titleMedium)
+            Text("Start with OpenRouter or another API provider if you already have a key.")
+            Text("Use Accounts if you want Corr3xt-based sign-in flows for ChatGPT, Claude, Gemini, email, phone, or Google.")
+            Text("Current provider profile: $providerLabel")
         }
     }
 }

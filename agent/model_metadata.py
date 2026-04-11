@@ -179,6 +179,12 @@ _MAX_COMPLETION_KEYS = (
 
 # Local server hostnames / address patterns
 _LOCAL_HOSTS = ("localhost", "127.0.0.1", "::1", "0.0.0.0")
+# Docker / Podman / Lima DNS names that resolve to the host machine
+_CONTAINER_LOCAL_SUFFIXES = (
+    ".docker.internal",
+    ".containers.internal",
+    ".lima.internal",
+)
 
 
 def _normalize_base_url(base_url: str) -> str:
@@ -253,6 +259,9 @@ def is_local_endpoint(base_url: str) -> bool:
     except Exception:
         return False
     if host in _LOCAL_HOSTS:
+        return True
+    # Docker / Podman / Lima internal DNS names (e.g. host.docker.internal)
+    if any(host.endswith(suffix) for suffix in _CONTAINER_LOCAL_SUFFIXES):
         return True
     # RFC-1918 private ranges and link-local
     import ipaddress

@@ -2,6 +2,7 @@ export interface ActiveTool {
   id: string
   name: string
   context?: string
+  startedAt?: number
 }
 
 export interface ActivityItem {

@@ -22,6 +22,7 @@ Requires:
 """
 
 import asyncio
+import contextvars
 import hashlib
 import hmac
 import json
@@ -49,6 +50,18 @@ from gateway.platforms.base import (
 )
 
 logger = logging.getLogger(__name__)
+
+# ── Correlation ID context ─────────────────────────────────────────────
+_correlation_id: contextvars.ContextVar[str] = contextvars.ContextVar("correlation_id", default=None)
+
+
+def _get_correlation_id() -> str:
+    return _correlation_id.get()
+
+
+def _set_correlation_id(cid: str) -> None:
+    _correlation_id.set(cid)
+
 
 # Default settings
 DEFAULT_HOST = "127.0.0.1"
@@ -415,6 +428,20 @@ if AIOHTTP_AVAILABLE:
         return response
 else:
     cors_middleware = None  # type: ignore[assignment]
+
+
+if AIOHTTP_AVAILABLE:
+    @web.middleware
+    async def correlation_id_middleware(request, handler):
+        """Assign a unique correlation ID to each request for log tracing."""
+        import uuid
+        cid = request.headers.get("X-Correlation-ID") or str(uuid.uuid4())[:8]
+        _set_correlation_id(cid)
+        response = await handler(request)
+        response.headers["X-Correlation-ID"] = cid
+        return response
+else:
+    correlation_id_middleware = None  # type: ignore[assignment]
 
 
 def _openai_error(message: str, err_type: str = "invalid_request_error", param: str = None, code: str = None) -> Dict[str, Any]:
@@ -2614,7 +2641,7 @@ class APIServerAdapter(BasePlatformAdapter):
             return False
 
         try:
-            mws = [mw for mw in (cors_middleware, body_limit_middleware, security_headers_middleware) if mw is not None]
+            mws = [mw for mw in (correlation_id_middleware, cors_middleware, body_limit_middleware, security_headers_middleware) if mw is not None]
             self._app = web.Application(middlewares=mws)
             self._app["api_server_adapter"] = self
             self._app.router.add_get("/health", self._handle_health)

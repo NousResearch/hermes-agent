@@ -1,0 +1,9 @@
+name: cerebrocortex
+version: 0.1.0
+description: "CerebroCortex — brain-analogous memory with associative networks, ACT-R/FSRS decay, spreading activation, and dream consolidation. Local-first (SQLite + ChromaDB + igraph)."
+pip_dependencies:
+  - cerebro-cortex
+hooks:
+  - on_session_end
+  - on_memory_write
+  - on_delegation

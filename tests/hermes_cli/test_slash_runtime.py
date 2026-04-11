@@ -1,6 +1,6 @@
 """Tests for shared slash-command runtime resolution."""
 
-from hermes_cli.slash_runtime import (
+from hermes_cli.commands import (
     resolve_cli_slash_command,
     resolve_gateway_slash_command,
 )

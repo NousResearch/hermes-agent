@@ -4833,7 +4833,7 @@ class HermesCLI:
         cmd_lower = command.lower().strip()
         cmd_original = command.strip()
 
-        from hermes_cli.slash_runtime import (
+        from hermes_cli.commands import (
             get_plugin_command_specs,
             resolve_cli_slash_command,
         )

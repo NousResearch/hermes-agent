@@ -2431,7 +2431,7 @@ class GatewayRunner:
                 "args": event.get_command_args().strip(),
             })
 
-        from hermes_cli.slash_runtime import (
+        from hermes_cli.commands import (
             get_plugin_command_specs,
             resolve_gateway_slash_command,
         )

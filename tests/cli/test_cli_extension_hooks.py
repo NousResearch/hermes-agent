@@ -94,6 +94,24 @@ class TestExtensionHookDefaults:
             "bottom-rule", "voice-status", "completions-menu",
         ]
 
+    def test_show_config_uses_loaded_terminal_config_when_env_is_unset(self, monkeypatch, capsys):
+        cli = _make_cli()
+        cli.config["terminal"] = {
+            "backend": "local",
+            "cwd": "/tmp/hermes-runtime",
+            "timeout": 180,
+        }
+        monkeypatch.delenv("TERMINAL_ENV", raising=False)
+        monkeypatch.delenv("TERMINAL_CWD", raising=False)
+        monkeypatch.delenv("TERMINAL_TIMEOUT", raising=False)
+
+        cli.show_config()
+        output = capsys.readouterr().out
+
+        assert "Environment:  local" in output
+        assert "Working Dir:  /tmp/hermes-runtime" in output
+        assert "Timeout:      180s" in output
+
 
 class TestExtensionHookSubclass:
     def test_extra_widgets_inserted_before_status_bar(self):

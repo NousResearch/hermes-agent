@@ -3346,19 +3346,23 @@ class HermesCLI:
 
     def show_config(self):
         """Display current configuration with kawaii ASCII art."""
-        # Get terminal config from environment (which was set from cli-config.yaml)
-        terminal_env = os.getenv("TERMINAL_ENV", "local")
-        terminal_cwd = os.getenv("TERMINAL_CWD", os.getcwd())
-        terminal_timeout = os.getenv("TERMINAL_TIMEOUT", "60")
-        
+        terminal_cfg = dict(self.config.get("terminal") or {})
+        terminal_env = str(os.getenv("TERMINAL_ENV") or terminal_cfg.get("backend") or "local")
+        terminal_cwd = str(os.getenv("TERMINAL_CWD") or terminal_cfg.get("cwd") or os.getcwd())
+        terminal_timeout = str(
+            os.getenv("TERMINAL_TIMEOUT")
+            or terminal_cfg.get("timeout")
+            or ""
+        )
+
         user_config_path = _hermes_home / 'config.yaml'
-        project_config_path = Path(__file__).parent / 'cli-config.yaml'
         if user_config_path.exists():
             config_path = user_config_path
+            config_status = "(loaded)"
         else:
-            config_path = project_config_path
-        config_status = "(loaded)" if config_path.exists() else "(not found)"
-        
+            config_path = "built-in defaults"
+            config_status = "(loaded)"
+
         api_key_display = '********' + self.api_key[-4:] if self.api_key and len(self.api_key) > 4 else 'Not set!'
         
         print()

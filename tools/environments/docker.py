@@ -417,13 +417,25 @@ class DockerEnvironment(BaseEnvironment):
             "sleep", "infinity",  # no fixed lifetime — idle reaper handles cleanup
         ]
         logger.debug(f"Starting container: {' '.join(run_cmd)}")
-        result = subprocess.run(
-            run_cmd,
-            capture_output=True,
-            text=True,
-            timeout=120,  # image pull may take a while
-            check=True,
-        )
+        try:
+            result = subprocess.run(
+                run_cmd,
+                capture_output=True,
+                text=True,
+                timeout=120,  # image pull may take a while
+                check=True,
+            )
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+            # Container may have been created before the failure — clean it up.
+            logger.error("docker run failed for %s: %s", container_name, e)
+            try:
+                subprocess.run(
+                    [self._docker_exe, "rm", "-f", container_name],
+                    capture_output=True, timeout=10,
+                )
+            except Exception:
+                logger.warning("Failed to clean up container %s after docker run failure", container_name)
+            raise
         self._container_id = result.stdout.strip()
         logger.info(f"Started container {container_name} ({self._container_id[:12]})")
 
@@ -433,7 +445,12 @@ class DockerEnvironment(BaseEnvironment):
         self._init_env_args = self._build_init_env_args()
 
         # Initialize session snapshot inside the container
-        self.init_session()
+        try:
+            self.init_session()
+        except Exception:
+            logger.error("init_session failed, cleaning up container %s", self._container_id)
+            self.cleanup()
+            raise
 
     def _build_init_env_args(self) -> list[str]:
         """Build -e KEY=VALUE args for injecting host env vars into init_session.

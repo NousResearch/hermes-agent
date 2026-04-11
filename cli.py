@@ -191,14 +191,27 @@ def _get_chrome_debug_candidates(system: str) -> list[str]:
 
 def load_cli_config() -> Dict[str, Any]:
     """Load CLI runtime config from the shared config authority."""
-    from hermes_cli.config import load_runtime_config
+    from hermes_cli.config import load_runtime_config, read_raw_config
 
-    return load_runtime_config(
+    config = load_runtime_config(
         config_path=_hermes_home / "config.yaml",
         fallback_paths=[Path(__file__).parent / "cli-config.yaml"],
         runtime="cli",
         ensure_home=False,
     )
+    raw_config = read_raw_config(
+        config_path=_hermes_home / "config.yaml",
+        fallback_paths=[Path(__file__).parent / "cli-config.yaml"],
+    )
+    raw_model = raw_config.get("model")
+    if isinstance(raw_model, dict):
+        model_cfg = config.get("model")
+        if isinstance(model_cfg, dict):
+            if "provider" not in raw_model:
+                model_cfg["provider"] = "auto"
+            if "base_url" not in raw_model:
+                model_cfg["base_url"] = ""
+    return config
 
 # Load configuration at module startup
 CLI_CONFIG = load_cli_config()

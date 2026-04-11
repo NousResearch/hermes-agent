@@ -877,7 +877,8 @@ def select_provider_and_model(args=None):
     provider picker, credential prompting, model selection, and config
     persistence.
     """
-    from hermes_cli.config import get_config_path, load_runtime_config
+    from hermes_cli.auth import AuthError, format_auth_error, resolve_provider
+    from hermes_cli.config import get_config_path, load_config, load_runtime_config
     from hermes_cli.model_switch import (
         persist_model_switch_result,
         runtime_model_selection_state,
@@ -885,14 +886,34 @@ def select_provider_and_model(args=None):
     )
     from hermes_cli.providers import get_label
 
-    config = load_runtime_config(
-        config_path=get_config_path(),
-        fallback_paths=[PROJECT_ROOT / "cli-config.yaml"],
-        runtime="cli",
-    )
+    config_path = get_config_path()
+    fallback_paths = [PROJECT_ROOT / "cli-config.yaml"]
+    if config_path.exists() or any(path.exists() for path in fallback_paths):
+        config = load_runtime_config(
+            config_path=config_path,
+            fallback_paths=fallback_paths,
+            runtime="cli",
+        )
+    else:
+        config = load_config()
     state = runtime_model_selection_state(config)
     current_model = state.current_model or "(not set)"
-    active = state.current_provider or "openrouter"
+    import os
+
+    model_cfg = config.get("model")
+    configured_provider = model_cfg.get("provider") if isinstance(model_cfg, dict) else None
+    effective_provider = configured_provider or os.getenv("HERMES_INFERENCE_PROVIDER") or "auto"
+    try:
+        active = resolve_provider(effective_provider)
+    except AuthError as exc:
+        warning = format_auth_error(exc)
+        print(f"Warning: {warning} Falling back to auto provider detection.")
+        try:
+            active = resolve_provider("auto")
+        except AuthError:
+            active = state.current_provider or "openrouter"
+    if active == "openrouter" and state.current_base_url and "openrouter.ai" not in state.current_base_url:
+        active = "custom"
     active_label = get_label(active) if active else "none"
 
     print()
@@ -1062,11 +1083,14 @@ def select_provider_and_model(args=None):
     elif selected_provider == "custom":
         _model_flow_custom(config)
     elif selected_provider.startswith("custom:"):
-        current_config = load_runtime_config(
-            config_path=get_config_path(),
-            fallback_paths=[PROJECT_ROOT / "cli-config.yaml"],
-            runtime="cli",
-        )
+        if config_path.exists() or any(path.exists() for path in fallback_paths):
+            current_config = load_runtime_config(
+                config_path=config_path,
+                fallback_paths=fallback_paths,
+                runtime="cli",
+            )
+        else:
+            current_config = load_config()
         provider_info = _named_custom_provider_map(current_config).get(selected_provider)
         if provider_info is None:
             print(

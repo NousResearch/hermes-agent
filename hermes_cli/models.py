@@ -499,6 +499,11 @@ _CANONICAL_PROVIDER_IDS = {
     "custom",
 }
 
+_PROVIDER_LABELS = {
+    provider_id: (get_provider_label(provider_id) or provider_id)
+    for provider_id in _CANONICAL_PROVIDER_IDS
+}
+
 _PROVIDER_ALIASES = dict(PROVIDER_ALIASES)
 
 

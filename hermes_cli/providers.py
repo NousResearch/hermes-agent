@@ -232,15 +232,15 @@ ALIASES: Dict[str, str] = {
     "hugging-face": "huggingface",
     "huggingface-hub": "huggingface",
 
-    # Local server aliases → generic custom endpoint
-    "lmstudio": "custom",
-    "lm-studio": "custom",
-    "lm_studio": "custom",
-    "ollama": "custom",
-    "vllm": "custom",
-    "llamacpp": "custom",
-    "llama.cpp": "custom",
-    "llama-cpp": "custom",
+    # Local server aliases → preserve Hermes-facing IDs for /model flows
+    "lmstudio": "lmstudio",
+    "lm-studio": "lmstudio",
+    "lm_studio": "lmstudio",
+    "ollama": "ollama-cloud",
+    "vllm": "local",
+    "llamacpp": "local",
+    "llama.cpp": "local",
+    "llama-cpp": "local",
 }
 
 

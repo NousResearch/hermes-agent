@@ -1066,6 +1066,12 @@ def test_resolve_provider_custom_returns_custom():
     assert resolve_provider("custom") == "custom"
 
 
+def test_resolve_provider_local_aliases_still_route_to_custom():
+    from hermes_cli.auth import resolve_provider
+    assert resolve_provider("lmstudio") == "custom"
+    assert resolve_provider("ollama") == "custom"
+
+
 def test_resolve_provider_openrouter_unchanged():
     """resolve_provider('openrouter') must still return 'openrouter'."""
     from hermes_cli.auth import resolve_provider

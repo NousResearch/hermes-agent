@@ -266,7 +266,8 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
     # ``custom:local`` always target the saved custom provider.
     if requested_norm == "auto":
         return None
-    if not requested_norm.startswith("custom:"):
+    local_aliases = {"local", "lmstudio", "ollama-cloud"}
+    if not requested_norm.startswith("custom:") and requested_norm not in local_aliases:
         try:
             auth_mod.resolve_provider(requested_norm)
         except AuthError:

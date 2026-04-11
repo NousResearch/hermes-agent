@@ -894,6 +894,8 @@ def resolve_provider(
     5. Fallback: "openrouter"
     """
     normalized = normalize_provider_id((requested or "auto").strip().lower())
+    if normalized in {"lmstudio", "ollama-cloud", "local"}:
+        normalized = "custom"
 
     if normalized == "openrouter":
         return "openrouter"

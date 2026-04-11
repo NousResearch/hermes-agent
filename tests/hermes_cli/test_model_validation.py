@@ -155,6 +155,8 @@ class TestNormalizeProvider:
         assert normalize_provider("kimi") == "kimi-coding"
         assert normalize_provider("moonshot") == "kimi-coding"
         assert normalize_provider("github-copilot") == "copilot"
+        assert normalize_provider("lmstudio") == "lmstudio"
+        assert normalize_provider("ollama") == "ollama-cloud"
 
     def test_case_insensitive(self):
         assert normalize_provider("OpenRouter") == "openrouter"

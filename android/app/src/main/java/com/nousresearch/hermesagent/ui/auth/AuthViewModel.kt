@@ -1,7 +1,7 @@
 package com.nousresearch.hermesagent.ui.auth
 
-import android.app.ActivityNotFoundException
 import android.app.Application
+import android.content.ActivityNotFoundException
 import android.content.Intent
 import androidx.lifecycle.AndroidViewModel
 import com.nousresearch.hermesagent.auth.AuthRuntimeApplier

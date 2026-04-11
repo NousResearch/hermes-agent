@@ -394,6 +394,11 @@ def get_legacy_toolset_map() -> Dict[str, List[str]]:
 
 def _get_mcp_toolset_aliases() -> Dict[str, str]:
     """Map raw MCP server names to their internal registry toolset names."""
+    try:
+        from tools.mcp_tool import get_connected_server_toolset_aliases
+    except Exception:
+        return {}
+
     aliases: Dict[str, str] = {}
     reserved_names = set(TOOLSETS) | set(LEGACY_TOOLSET_ALIASES)
     reserved_names.update(
@@ -401,10 +406,7 @@ def _get_mcp_toolset_aliases() -> Dict[str, str]:
         for toolset_name in _get_registry_toolset_names()
         if not toolset_name.startswith("mcp-")
     )
-    for toolset_name in _get_registry_toolset_names():
-        if not toolset_name.startswith("mcp-"):
-            continue
-        alias = toolset_name[4:]
+    for alias, toolset_name in get_connected_server_toolset_aliases().items():
         if alias and alias not in reserved_names:
             aliases.setdefault(alias, toolset_name)
     return aliases
@@ -418,6 +420,20 @@ def _default_toolset_description(name: str, display_name: Optional[str] = None) 
     if display_name and name.startswith("mcp-"):
         return f"MCP server '{display_name}' tools"
     return f"Plugin toolset: {label}"
+
+
+def _get_connected_mcp_tools(name: str) -> List[str]:
+    """Return live tool names for a connected MCP server alias."""
+    try:
+        from tools.mcp_tool import get_connected_server_tool_names
+    except Exception:
+        return []
+
+    raw = str(name or "").strip()
+    if not raw:
+        return []
+    normalized = raw[4:] if raw.startswith("mcp-") else raw
+    return get_connected_server_tool_names(normalized)
 
 
 def _normalize_toolset_name(name: str) -> str:
@@ -442,6 +458,9 @@ def get_toolset(name: str) -> Optional[Dict[str, Any]]:
     if not registry_tools and not static_def and not normalized_name.startswith("mcp-"):
         normalized_name = f"mcp-{normalized_name}"
         registry_tools = _get_registry_tool_names(normalized_name)
+
+    if not static_def and not registry_tools:
+        registry_tools = _get_connected_mcp_tools(name) or _get_connected_mcp_tools(normalized_name)
 
     if not static_def and not registry_tools:
         return None
@@ -562,6 +581,8 @@ def validate_toolset(name: str) -> bool:
     if normalized in registry_names:
         return True
     if not normalized.startswith("mcp-") and f"mcp-{normalized}" in registry_names:
+        return True
+    if _get_connected_mcp_tools(name):
         return True
     return name in registry_names
 

@@ -513,7 +513,7 @@ class GatewayRunner:
         
         # DM pairing store for code-based user authorization
         from gateway.pairing import PairingStore
-        self.pairing_store = PairingStore()
+        self.pairing_store = PairingStore(base_dir=_hermes_home / "platforms" / "pairing")
         
         # Event hook system
         from gateway.hooks import HookRegistry
@@ -7057,7 +7057,7 @@ class GatewayRunner:
             
             # Build progress message with primary argument preview
             from agent.display import get_tool_emoji
-            emoji = get_tool_emoji(tool_name, default="⚙️")
+            emoji = "⚙️" if tool_name == "terminal" else get_tool_emoji(tool_name, default="⚙️")
             
             # Verbose mode: show detailed arguments, respects tool_preview_length
             if progress_mode == "verbose":

@@ -1799,6 +1799,33 @@ async def _discover_and_register_server(name: str, config: dict) -> List[str]:
     return registered_names
 
 
+def get_connected_server_toolset_aliases() -> Dict[str, str]:
+    """Return explicit raw-server-name -> toolset-name aliases for live servers."""
+    with _lock:
+        return {name: f"mcp-{name}" for name in _servers}
+
+
+def get_connected_server_tool_names(name: str) -> List[str]:
+    """Return registered or discoverable tool names for a connected MCP server."""
+    with _lock:
+        server = _servers.get(name)
+    if server is None:
+        return []
+    if hasattr(server, "_registered_tool_names"):
+        return list(getattr(server, "_registered_tool_names") or [])
+
+    names: List[str] = []
+    for mcp_tool in getattr(server, "_tools", []) or []:
+        try:
+            schema = _convert_mcp_schema(name, mcp_tool)
+        except Exception:
+            continue
+        tool_name = schema.get("name")
+        if isinstance(tool_name, str) and tool_name:
+            names.append(tool_name)
+    return names
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------

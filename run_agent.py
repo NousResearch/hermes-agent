@@ -1407,10 +1407,12 @@ class AIAgent:
                 print(f"📊 Context limit: {self.context_compressor.context_length:,} tokens (auto-compression disabled)")
 
         # Check immediately so CLI users see the warning at startup.
-        # Gateway status_callback is not yet wired, so any warning is stored
-        # in _compression_warning and replayed in the first run_conversation().
+        # Gateway status_callback is not yet wired, so quiet/no-callback
+        # agents defer the auxiliary probe until the first run_conversation().
         self._compression_warning = None
-        self._check_compression_model_feasibility()
+        self._compression_warning_needs_check = bool(self.quiet_mode and not self.status_callback)
+        if not self._compression_warning_needs_check:
+            self._check_compression_model_feasibility()
 
         # Snapshot primary runtime for per-turn restoration.  When fallback
         # activates during a turn, the next turn restores these values so the
@@ -7569,12 +7571,6 @@ class AIAgent:
                     )
             except Exception:
                 pass
-        # Replay compression warning through status_callback for gateway
-        # platforms (the callback was not wired during __init__).
-        if self._compression_warning:
-            self._replay_compression_warning()
-            self._compression_warning = None  # send once
-
         # NOTE: _turns_since_memory and _iters_since_skill are NOT reset here.
         # They are initialized in __init__ and must persist across run_conversation
         # calls so that nudge logic accumulates correctly in CLI mode.
@@ -7798,6 +7794,16 @@ class AIAgent:
         
         # Clear any stale interrupt state at start
         self.clear_interrupt()
+
+        if self._compression_warning_needs_check:
+            self._check_compression_model_feasibility()
+            self._compression_warning_needs_check = False
+
+        # Replay compression warning through status_callback for gateway
+        # platforms (the callback was not wired during __init__).
+        if self._compression_warning:
+            self._replay_compression_warning()
+            self._compression_warning = None  # send once
 
         # External memory provider: prefetch once before the tool loop.
         # Reuse the cached result on every iteration to avoid re-calling

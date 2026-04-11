@@ -693,15 +693,19 @@ def check_all_command_guards(command: str, env_type: str,
     if env_type in ("docker", "singularity", "modal", "daytona"):
         return {"approved": True, "message": None}
 
-    # --yolo or approvals.mode=off: bypass all approval prompts.
-    # Gateway /yolo is session-scoped; CLI --yolo remains process-scoped.
-    approval_mode = _get_approval_mode()
-    if os.getenv("HERMES_YOLO_MODE") or is_current_session_yolo_enabled() or approval_mode == "off":
-        return {"approved": True, "message": None}
-
     is_cli = os.getenv("HERMES_INTERACTIVE")
     is_gateway = os.getenv("HERMES_GATEWAY_SESSION")
     is_ask = os.getenv("HERMES_EXEC_ASK")
+
+    # --yolo bypasses all approval prompts. approvals.mode=off still bypasses
+    # normal interactive flows, but explicit gateway/ask approval paths must
+    # remain blocking so their behavior does not depend on ambient config
+    # state from another test run or profile.
+    approval_mode = _get_approval_mode()
+    if os.getenv("HERMES_YOLO_MODE") or is_current_session_yolo_enabled():
+        return {"approved": True, "message": None}
+    if approval_mode == "off" and not (is_gateway or is_ask):
+        return {"approved": True, "message": None}
 
     # Preserve the existing non-interactive behavior: outside CLI/gateway/ask
     # flows, we do not block on approvals and we skip external guard work.
@@ -753,7 +757,7 @@ def check_all_command_guards(command: str, env_type: str,
     # When approvals.mode=smart, ask the aux LLM before prompting the user.
     # Inspired by OpenAI Codex's Smart Approvals guardian subagent
     # (openai/codex#13860).
-    if approval_mode == "smart":
+    if approval_mode == "smart" and not (is_gateway or is_ask):
         combined_desc_for_llm = "; ".join(desc for _, desc, _ in warnings)
         verdict = _smart_approve(command, combined_desc_for_llm)
         if verdict == "approve":

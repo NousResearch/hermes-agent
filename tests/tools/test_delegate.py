@@ -843,7 +843,6 @@ class TestSubagentCostRollup(unittest.TestCase):
         self.assertEqual(parent.session_estimated_cost_usd, 0.10)
         self.assertEqual(len(result["results"]), 1)
 
-
 class TestBlockedTools(_DelegateConfigIsolatedTestCase):
     def test_blocked_tools_constant(self):
         for tool in ["delegate_task", "clarify", "memory", "send_message", "execute_code"]:
@@ -1528,8 +1527,6 @@ class TestChildCredentialPoolResolution(_DelegateConfigIsolatedTestCase):
             MockAgent.call_args[1]["enabled_toolsets"],
             ["web", "browser"],
         )
-
-
 class TestChildCredentialLeasing(_DelegateConfigIsolatedTestCase):
     def test_run_single_child_acquires_and_releases_lease(self):
         from tools.delegate_tool import _run_single_child
@@ -1792,8 +1789,53 @@ class TestDelegateHeartbeat(_DelegateConfigIsolatedTestCase):
             f"got {len(touch_calls)} touches over 0.4s at 0.05s interval",
         )
 
+    def test_heartbeat_still_trips_idle_stale_when_no_tool(self):
+        """A wedged child with no current_tool still trips the idle threshold.
 
+        Regression guard: the fix for #13041 must not disable stale
+        detection entirely. A child that's hung between turns (no tool
+        running, no iteration progress) must still stop touching the
+        parent so the gateway timeout can fire.
+        """
+        from tools.delegate_tool import _run_single_child
 
+        parent = _make_mock_parent()
+        touch_calls = []
+        parent._touch_activity = lambda desc: touch_calls.append(desc)
+
+        child = MagicMock()
+        # Wedged child: no tool running, iteration frozen.
+        child.get_activity_summary.return_value = {
+            "current_tool": None,
+            "api_call_count": 3,
+            "max_iterations": 50,
+            "last_activity_desc": "waiting for API response",
+        }
+
+        def slow_run(**kwargs):
+            time.sleep(0.6)
+            return {"final_response": "done", "completed": True, "api_calls": 3}
+
+        child.run_conversation.side_effect = slow_run
+
+        # At interval 0.05s, idle threshold (5 cycles) trips at ~0.25s.
+        # We should see the heartbeat stop firing well before 0.6s.
+        with patch("tools.delegate_tool._HEARTBEAT_INTERVAL", 0.05):
+            _run_single_child(
+                task_index=0,
+                goal="Test wedged child",
+                child=child,
+                parent_agent=parent,
+            )
+
+        # With idle threshold=5 + interval=0.05s, touches should cap
+        # around 5. Bound loosely to avoid timing flakes.
+        self.assertLess(
+            len(touch_calls), 9,
+            f"Idle stale detection did not fire: got {len(touch_calls)} "
+            f"touches over 0.6s — expected heartbeat to stop after "
+            f"~5 stale cycles",
+        )
 class TestDelegationReasoningEffort(_DelegateConfigIsolatedTestCase):
     """Tests for delegation.reasoning_effort config override."""
 

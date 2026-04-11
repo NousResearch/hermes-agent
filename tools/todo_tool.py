@@ -46,11 +46,11 @@ class TodoStore:
         """
         if not merge:
             # Replace mode: new list entirely
-            self._items = [self._validate(t) for t in todos]
+            self._items = [self._validate(t) for t in self._dedupe_by_id(todos)]
         else:
             # Merge mode: update existing items by id, append new ones
             existing = {item["id"]: item for item in self._items}
-            for t in todos:
+            for t in self._dedupe_by_id(todos):
                 item_id = str(t.get("id", "")).strip()
                 if not item_id:
                     continue  # Can't merge without an id
@@ -142,6 +142,22 @@ class TodoStore:
             status = "pending"
 
         return {"id": item_id, "content": content, "status": status}
+
+    @classmethod
+    def _dedupe_by_id(cls, todos: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Collapse duplicate ids while preserving the last occurrence and its position."""
+        normalized: List[Optional[Dict[str, Any]]] = []
+        latest_index_by_id: Dict[str, int] = {}
+        for raw_item in todos:
+            item = dict(raw_item)
+            item_id = str(item.get("id", "")).strip() or "?"
+            item["id"] = item_id
+            previous_index = latest_index_by_id.get(item_id)
+            if previous_index is not None:
+                normalized[previous_index] = None
+            latest_index_by_id[item_id] = len(normalized)
+            normalized.append(item)
+        return [item for item in normalized if item is not None]
 
 
 def todo_tool(

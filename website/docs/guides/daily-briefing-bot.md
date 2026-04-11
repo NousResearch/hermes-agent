@@ -186,7 +186,7 @@ Get a morning overview and an evening recap:
 
 ### Adding Personal Context with Memory
 
-If you have [memory](/docs/user-guide/features/memory) enabled, you can store preferences that persist across sessions. But remember — cron jobs run in fresh sessions without conversational memory. To add personal context, bake it directly into the prompt:
+If you have [memory](/docs/user-guide/features/memory) enabled, you can store preferences that persist across sessions. But remember — cron jobs run in fresh sessions with read-only access to your memory (MEMORY.md and USER.md). The agent can see your stored preferences and notes, but cannot modify them. To add extra personal context beyond what's in memory, bake it directly into the prompt:
 
 ```
 /cron add "0 8 * * *" "You are creating a briefing for a senior ML engineer who cares about: PyTorch ecosystem, transformer architectures, open-weight models, and AI regulation in the EU. Skip stories about product launches or funding rounds unless they involve open source.

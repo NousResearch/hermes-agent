@@ -25,6 +25,7 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **Kimi / Moonshot** | `KIMI_API_KEY` in `~/.hermes/.env` (provider: `kimi-coding`) |
 | **MiniMax** | `MINIMAX_API_KEY` in `~/.hermes/.env` (provider: `minimax`) |
 | **MiniMax China** | `MINIMAX_CN_API_KEY` in `~/.hermes/.env` (provider: `minimax-cn`) |
+| **Venice** | `VENICE_API_KEY` in `~/.hermes/.env` (provider: `venice`, aliases: `venice-ai`, `venice.ai`) |
 | **Alibaba Cloud** | `DASHSCOPE_API_KEY` in `~/.hermes/.env` (provider: `alibaba`, aliases: `dashscope`, `qwen`) |
 | **Kilo Code** | `KILOCODE_API_KEY` in `~/.hermes/.env` (provider: `kilocode`) |
 | **Xiaomi MiMo** | `XIAOMI_API_KEY` in `~/.hermes/.env` (provider: `xiaomi`, aliases: `mimo`, `xiaomi-mimo`) |
@@ -182,6 +183,31 @@ When using the Z.AI / GLM provider, Hermes automatically probes multiple endpoin
 When using xAI as a provider (any base URL containing `x.ai`), Hermes automatically enables prompt caching by sending the `x-grok-conv-id` header with every API request. This routes requests to the same server within a conversation session, allowing xAI's infrastructure to reuse cached system prompts and conversation history.
 
 No configuration is needed — caching activates automatically when an xAI endpoint is detected and a session ID is available. This reduces latency and cost for multi-turn conversations.
+
+### Venice
+
+Venice exposes an OpenAI-compatible API, so Hermes treats it like the other direct API-key providers: standard `chat_completions`, normal `provider:model` syntax, and optional base-URL override support.
+
+```bash
+# Venice-hosted chat model
+hermes chat --provider venice --model venice-uncensored
+# Requires: VENICE_API_KEY in ~/.hermes/.env
+
+# Coding-oriented model served by Venice
+hermes chat --provider venice --model openai-gpt-53-codex
+```
+
+Or set it permanently in `config.yaml`:
+
+```yaml
+model:
+  provider: "venice"
+  default: "venice-uncensored"
+```
+
+Aliases `venice-ai` and `venice.ai` resolve to the same provider. The default base URL is `https://api.venice.ai/api/v1`, and you can override it with `VENICE_BASE_URL`.
+
+If you already use Venice's [official CLI](https://github.com/veniceai/venice-cli) and have run `venice config set api_key …`, Hermes will automatically read the key from `~/.venice/config.json` when `VENICE_API_KEY` is not set — no extra configuration required. The `VENICE_API_KEY` environment variable always takes precedence when both are present.
 
 ### Hugging Face Inference Providers
 
@@ -853,6 +879,7 @@ You can also select named custom providers from the interactive `hermes model` m
 | **Multi-provider routing** | LiteLLM Proxy or OpenRouter |
 | **Cost optimization** | ClawRouter or OpenRouter with `sort: "price"` |
 | **Maximum privacy** | Ollama, vLLM, or llama.cpp (fully local) |
+| **Hosted privacy-focused API** | Venice |
 | **Enterprise / Azure** | Azure OpenAI with custom endpoint |
 | **Chinese AI models** | z.ai (GLM), Kimi/Moonshot, MiniMax, or Xiaomi MiMo (first-class providers) |
 

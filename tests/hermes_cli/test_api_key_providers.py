@@ -1,4 +1,4 @@
-"""Tests for API-key provider support (z.ai/GLM, Kimi, MiniMax, AI Gateway)."""
+"""Tests for API-key provider support (z.ai/GLM, Kimi, MiniMax, Venice, AI Gateway)."""
 
 import os
 import sys
@@ -44,6 +44,7 @@ class TestProviderRegistry:
         ("kimi-coding", "Kimi / Moonshot", "api_key"),
         ("minimax", "MiniMax", "api_key"),
         ("minimax-cn", "MiniMax (China)", "api_key"),
+        ("venice", "Venice", "api_key"),
         ("ai-gateway", "AI Gateway", "api_key"),
         ("kilocode", "Kilo Code", "api_key"),
     ])
@@ -90,6 +91,11 @@ class TestProviderRegistry:
         assert pconfig.api_key_env_vars == ("AI_GATEWAY_API_KEY",)
         assert pconfig.base_url_env_var == "AI_GATEWAY_BASE_URL"
 
+    def test_venice_env_vars(self):
+        pconfig = PROVIDER_REGISTRY["venice"]
+        assert pconfig.api_key_env_vars == ("VENICE_API_KEY",)
+        assert pconfig.base_url_env_var == "VENICE_BASE_URL"
+
     def test_kilocode_env_vars(self):
         pconfig = PROVIDER_REGISTRY["kilocode"]
         assert pconfig.api_key_env_vars == ("KILOCODE_API_KEY",)
@@ -107,6 +113,7 @@ class TestProviderRegistry:
         assert PROVIDER_REGISTRY["kimi-coding"].inference_base_url == "https://api.moonshot.ai/v1"
         assert PROVIDER_REGISTRY["minimax"].inference_base_url == "https://api.minimax.io/anthropic"
         assert PROVIDER_REGISTRY["minimax-cn"].inference_base_url == "https://api.minimaxi.com/anthropic"
+        assert PROVIDER_REGISTRY["venice"].inference_base_url == "https://api.venice.ai/api/v1"
         assert PROVIDER_REGISTRY["ai-gateway"].inference_base_url == "https://ai-gateway.vercel.sh/v1"
         assert PROVIDER_REGISTRY["kilocode"].inference_base_url == "https://api.kilo.ai/api/gateway"
         assert PROVIDER_REGISTRY["huggingface"].inference_base_url == "https://router.huggingface.co/v1"
@@ -128,6 +135,7 @@ PROVIDER_ENV_VARS = (
     "CLAUDE_CODE_OAUTH_TOKEN",
     "GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY",
     "KIMI_API_KEY", "KIMI_BASE_URL", "MINIMAX_API_KEY", "MINIMAX_CN_API_KEY",
+    "VENICE_API_KEY", "VENICE_BASE_URL",
     "AI_GATEWAY_API_KEY", "AI_GATEWAY_BASE_URL",
     "KILOCODE_API_KEY", "KILOCODE_BASE_URL",
     "DASHSCOPE_API_KEY", "OPENCODE_ZEN_API_KEY", "OPENCODE_GO_API_KEY",
@@ -162,6 +170,9 @@ class TestResolveProvider:
     def test_explicit_ai_gateway(self):
         assert resolve_provider("ai-gateway") == "ai-gateway"
 
+    def test_explicit_venice(self):
+        assert resolve_provider("venice") == "venice"
+
     def test_alias_glm(self):
         assert resolve_provider("glm") == "zai"
 
@@ -185,6 +196,12 @@ class TestResolveProvider:
 
     def test_alias_vercel(self):
         assert resolve_provider("vercel") == "ai-gateway"
+
+    def test_alias_venice_ai(self):
+        assert resolve_provider("venice-ai") == "venice"
+
+    def test_alias_venice_dot_ai(self):
+        assert resolve_provider("venice.ai") == "venice"
 
     def test_explicit_kilocode(self):
         assert resolve_provider("kilocode") == "kilocode"
@@ -253,6 +270,23 @@ class TestResolveProvider:
         monkeypatch.setenv("MINIMAX_CN_API_KEY", "test-mm-cn-key")
         assert resolve_provider("auto") == "minimax-cn"
 
+    def test_auto_detects_venice_key(self, monkeypatch):
+        # Clear API keys for providers that precede venice in PROVIDER_REGISTRY so
+        # the auto-detect walk reaches venice instead of short-circuiting on a
+        # developer-environment key (e.g. XAI_API_KEY) that has nothing to do
+        # with this test.
+        for var in (
+            "OPENROUTER_API_KEY", "OPENAI_API_KEY",
+            "ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN",
+            "GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY",
+            "KIMI_API_KEY", "MINIMAX_API_KEY", "MINIMAX_CN_API_KEY",
+            "DEEPSEEK_API_KEY", "DASHSCOPE_API_KEY", "XAI_API_KEY",
+            "AI_GATEWAY_API_KEY", "KILOCODE_API_KEY", "HF_TOKEN",
+        ):
+            monkeypatch.delenv(var, raising=False)
+        monkeypatch.setenv("VENICE_API_KEY", "test-venice-key")
+        assert resolve_provider("auto") == "venice"
+
     def test_auto_detects_ai_gateway_key(self, monkeypatch):
         monkeypatch.setenv("AI_GATEWAY_API_KEY", "test-gw-key")
         assert resolve_provider("auto") == "ai-gateway"
@@ -308,6 +342,14 @@ class TestApiKeyProviderStatus:
         monkeypatch.setenv("KIMI_BASE_URL", "https://custom.kimi.example/v1")
         status = get_api_key_provider_status("kimi-coding")
         assert status["base_url"] == "https://custom.kimi.example/v1"
+
+    def test_venice_status_uses_default_base_url(self, monkeypatch):
+        monkeypatch.setenv("VENICE_API_KEY", "venice-key")
+        status = get_api_key_provider_status("venice")
+        assert status["configured"] is True
+        assert status["logged_in"] is True
+        assert status["key_source"] == "VENICE_API_KEY"
+        assert status["base_url"] == "https://api.venice.ai/api/v1"
 
     def test_copilot_status_uses_gh_cli_token(self, monkeypatch):
         monkeypatch.setattr("hermes_cli.copilot_auth._try_gh_cli_token", lambda: "gho_gh_cli_token")
@@ -447,6 +489,57 @@ class TestResolveApiKeyProviderCredentials:
         assert creds["api_key"] == "gw-secret-key"
         assert creds["base_url"] == "https://ai-gateway.vercel.sh/v1"
 
+    def test_resolve_venice_with_key(self, monkeypatch):
+        monkeypatch.setenv("VENICE_API_KEY", "venice-secret-key")
+        creds = resolve_api_key_provider_credentials("venice")
+        assert creds["provider"] == "venice"
+        assert creds["api_key"] == "venice-secret-key"
+        assert creds["base_url"] == "https://api.venice.ai/api/v1"
+        assert creds["source"] == "VENICE_API_KEY"
+
+    def test_resolve_venice_custom_base_url(self, monkeypatch):
+        monkeypatch.setenv("VENICE_API_KEY", "venice-key")
+        monkeypatch.setenv("VENICE_BASE_URL", "https://proxy.example.com/venice/v1")
+        creds = resolve_api_key_provider_credentials("venice")
+        assert creds["base_url"] == "https://proxy.example.com/venice/v1"
+
+    def test_resolve_venice_falls_back_to_venice_cli_config(self, monkeypatch, tmp_path):
+        # No VENICE_API_KEY set; venice-cli's ~/.venice/config.json must be honored.
+        monkeypatch.delenv("VENICE_API_KEY", raising=False)
+        fake_home = tmp_path / "home"
+        (fake_home / ".venice").mkdir(parents=True)
+        (fake_home / ".venice" / "config.json").write_text(
+            '{"api_key": "venice-cli-key", "default_model": "kimi-k2-5"}',
+            encoding="utf-8",
+        )
+        monkeypatch.setattr("hermes_cli.auth.Path.home", lambda: fake_home)
+        creds = resolve_api_key_provider_credentials("venice")
+        assert creds["api_key"] == "venice-cli-key"
+        assert creds["source"] == "venice-cli-config"
+        assert creds["base_url"] == "https://api.venice.ai/api/v1"
+
+    def test_resolve_venice_env_var_wins_over_cli_config(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("VENICE_API_KEY", "env-key")
+        fake_home = tmp_path / "home"
+        (fake_home / ".venice").mkdir(parents=True)
+        (fake_home / ".venice" / "config.json").write_text(
+            '{"api_key": "cli-key"}', encoding="utf-8",
+        )
+        monkeypatch.setattr("hermes_cli.auth.Path.home", lambda: fake_home)
+        creds = resolve_api_key_provider_credentials("venice")
+        assert creds["api_key"] == "env-key"
+        assert creds["source"] == "VENICE_API_KEY"
+
+    def test_resolve_venice_ignores_malformed_cli_config(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("VENICE_API_KEY", raising=False)
+        fake_home = tmp_path / "home"
+        (fake_home / ".venice").mkdir(parents=True)
+        (fake_home / ".venice" / "config.json").write_text("not json{", encoding="utf-8")
+        monkeypatch.setattr("hermes_cli.auth.Path.home", lambda: fake_home)
+        creds = resolve_api_key_provider_credentials("venice")
+        assert creds["api_key"] == ""
+        assert creds["source"] == "default"
+
     def test_resolve_kilocode_with_key(self, monkeypatch):
         monkeypatch.setenv("KILOCODE_API_KEY", "kilo-secret-key")
         creds = resolve_api_key_provider_credentials("kilocode")
@@ -540,6 +633,15 @@ class TestRuntimeProviderResolution:
         assert result["api_mode"] == "chat_completions"
         assert result["api_key"] == "kilo-key"
         assert "kilo.ai" in result["base_url"]
+
+    def test_runtime_venice(self, monkeypatch):
+        monkeypatch.setenv("VENICE_API_KEY", "venice-key")
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+        result = resolve_runtime_provider(requested="venice")
+        assert result["provider"] == "venice"
+        assert result["api_mode"] == "chat_completions"
+        assert result["api_key"] == "venice-key"
+        assert result["base_url"] == "https://api.venice.ai/api/v1"
 
     def test_runtime_auto_detects_api_key_provider(self, monkeypatch):
         monkeypatch.setenv("KIMI_API_KEY", "auto-kimi-key")
@@ -642,7 +744,7 @@ class TestHasAnyProviderConfigured:
         monkeypatch.setattr(config_module, "get_hermes_home", lambda: hermes_home)
         monkeypatch.setattr("hermes_cli.copilot_auth.resolve_copilot_token", lambda: ("", ""))
         # Clear all provider env vars so earlier checks don't short-circuit
-        _all_vars = {"OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
+        _all_vars = set(PROVIDER_ENV_VARS) | {"OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
                       "ANTHROPIC_TOKEN", "OPENAI_BASE_URL"}
         for pconfig in PROVIDER_REGISTRY.values():
             if pconfig.auth_type == "api_key":
@@ -650,7 +752,10 @@ class TestHasAnyProviderConfigured:
         for var in _all_vars:
             monkeypatch.delenv(var, raising=False)
         # Prevent gh-cli / copilot auth fallback from leaking in
-        monkeypatch.setattr("hermes_cli.auth.get_auth_status", lambda _pid: {})
+        monkeypatch.setattr(
+            "hermes_cli.auth.get_auth_status",
+            lambda provider_id=None: {"logged_in": False},
+        )
         # Simulate valid Claude Code credentials
         monkeypatch.setattr(
             "agent.anthropic_adapter.read_claude_code_credentials",
@@ -676,9 +781,8 @@ class TestHasAnyProviderConfigured:
         monkeypatch.setattr(config_module, "get_env_path", lambda: hermes_home / ".env")
         monkeypatch.setattr(config_module, "get_hermes_home", lambda: hermes_home)
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        # Clear all provider env vars
-        for var in ("OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
-                     "ANTHROPIC_TOKEN", "OPENAI_BASE_URL"):
+        # Clear all provider env vars.
+        for var in PROVIDER_ENV_VARS:
             monkeypatch.delenv(var, raising=False)
         from hermes_cli.main import _has_any_provider_configured
         assert _has_any_provider_configured() is True
@@ -696,8 +800,7 @@ class TestHasAnyProviderConfigured:
         monkeypatch.setattr(config_module, "get_env_path", lambda: hermes_home / ".env")
         monkeypatch.setattr(config_module, "get_hermes_home", lambda: hermes_home)
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        for var in ("OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
-                     "ANTHROPIC_TOKEN", "OPENAI_BASE_URL"):
+        for var in PROVIDER_ENV_VARS:
             monkeypatch.delenv(var, raising=False)
         from hermes_cli.main import _has_any_provider_configured
         assert _has_any_provider_configured() is True
@@ -715,8 +818,7 @@ class TestHasAnyProviderConfigured:
         monkeypatch.setattr(config_module, "get_env_path", lambda: hermes_home / ".env")
         monkeypatch.setattr(config_module, "get_hermes_home", lambda: hermes_home)
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        for var in ("OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
-                     "ANTHROPIC_TOKEN", "OPENAI_BASE_URL"):
+        for var in PROVIDER_ENV_VARS:
             monkeypatch.delenv(var, raising=False)
         from hermes_cli.main import _has_any_provider_configured
         assert _has_any_provider_configured() is True
@@ -736,7 +838,7 @@ class TestHasAnyProviderConfigured:
         monkeypatch.setattr(config_module, "get_hermes_home", lambda: hermes_home)
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
         monkeypatch.setattr("hermes_cli.copilot_auth.resolve_copilot_token", lambda: ("", ""))
-        _all_vars = {"OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
+        _all_vars = set(PROVIDER_ENV_VARS) | {"OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
                       "ANTHROPIC_TOKEN", "OPENAI_BASE_URL"}
         for pconfig in PROVIDER_REGISTRY.values():
             if pconfig.auth_type == "api_key":
@@ -744,7 +846,10 @@ class TestHasAnyProviderConfigured:
         for var in _all_vars:
             monkeypatch.delenv(var, raising=False)
         # Prevent gh-cli / copilot auth fallback from leaking in
-        monkeypatch.setattr("hermes_cli.auth.get_auth_status", lambda _pid: {})
+        monkeypatch.setattr(
+            "hermes_cli.auth.get_auth_status",
+            lambda provider_id=None: {"logged_in": False},
+        )
         from hermes_cli.main import _has_any_provider_configured
         assert _has_any_provider_configured() is False
 
@@ -760,9 +865,8 @@ class TestHasAnyProviderConfigured:
         monkeypatch.setattr(config_module, "get_env_path", lambda: hermes_home / ".env")
         monkeypatch.setattr(config_module, "get_hermes_home", lambda: hermes_home)
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-        # Clear all provider env vars
-        for var in ("OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
-                     "ANTHROPIC_TOKEN", "OPENAI_BASE_URL"):
+        # Clear all provider env vars.
+        for var in PROVIDER_ENV_VARS:
             monkeypatch.delenv(var, raising=False)
         # Simulate valid Claude Code credentials
         monkeypatch.setattr(
@@ -986,3 +1090,27 @@ class TestHuggingFaceModels:
         from hermes_cli.models import _PROVIDER_LABELS
         assert "huggingface" in _PROVIDER_LABELS
         assert _PROVIDER_LABELS["huggingface"] == "Hugging Face"
+
+
+# =============================================================================
+# Venice provider model list tests
+# =============================================================================
+
+class TestVeniceModels:
+    """Verify Venice model lists and labels are wired into the provider catalogs."""
+
+    def test_models_py_has_venice(self):
+        from hermes_cli.models import _PROVIDER_MODELS
+        assert "venice" in _PROVIDER_MODELS
+        assert "venice-uncensored" in _PROVIDER_MODELS["venice"]
+        assert "openai-gpt-53-codex" in _PROVIDER_MODELS["venice"]
+
+    def test_provider_aliases_in_models_py(self):
+        from hermes_cli.models import _PROVIDER_ALIASES
+        assert _PROVIDER_ALIASES.get("venice-ai") == "venice"
+        assert _PROVIDER_ALIASES.get("venice.ai") == "venice"
+
+    def test_provider_label(self):
+        from hermes_cli.models import _PROVIDER_LABELS
+        assert "venice" in _PROVIDER_LABELS
+        assert _PROVIDER_LABELS["venice"] == "Venice"

@@ -206,6 +206,14 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=("XAI_API_KEY",),
         base_url_env_var="XAI_BASE_URL",
     ),
+    "venice": ProviderConfig(
+        id="venice",
+        name="Venice",
+        auth_type="api_key",
+        inference_base_url="https://api.venice.ai/api/v1",
+        api_key_env_vars=("VENICE_API_KEY",),
+        base_url_env_var="VENICE_BASE_URL",
+    ),
     "ai-gateway": ProviderConfig(
         id="ai-gateway",
         name="AI Gateway",
@@ -373,6 +381,30 @@ def has_usable_secret(value: Any, *, min_length: int = 4) -> bool:
     return True
 
 
+def _try_venice_cli_config_key() -> Optional[str]:
+    """Read api_key from the official venice-cli config (~/.venice/config.json).
+
+    Mirrors veniceai/venice-cli's storage at ``~/.venice/config.json`` so users
+    who already configured ``venice config set api_key …`` get zero-config
+    Hermes interop without re-exporting ``VENICE_API_KEY``.
+    """
+    try:
+        config_path = Path.home() / ".venice" / "config.json"
+        if not config_path.is_file():
+            return None
+        with config_path.open("r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError) as exc:
+        logger.debug("venice-cli config lookup failed: %s", exc)
+        return None
+    if not isinstance(data, dict):
+        return None
+    key = data.get("api_key")
+    if isinstance(key, str) and has_usable_secret(key):
+        return key.strip()
+    return None
+
+
 def _resolve_api_key_provider_secret(
     provider_id: str, pconfig: ProviderConfig
 ) -> tuple[str, str]:
@@ -394,6 +426,11 @@ def _resolve_api_key_provider_secret(
         val = os.getenv(env_var, "").strip()
         if has_usable_secret(val):
             return val, env_var
+
+    if provider_id == "venice":
+        cli_key = _try_venice_cli_config_key()
+        if cli_key:
+            return cli_key, "venice-cli-config"
 
     return "", ""
 
@@ -934,6 +971,7 @@ def resolve_provider(
         "github": "copilot", "github-copilot": "copilot",
         "github-models": "copilot", "github-model": "copilot",
         "github-copilot-acp": "copilot-acp", "copilot-acp-agent": "copilot-acp",
+        "veniceai": "venice", "venice-ai": "venice", "venice.ai": "venice",
         "aigateway": "ai-gateway", "vercel": "ai-gateway", "vercel-ai-gateway": "ai-gateway",
         "opencode": "opencode-zen", "zen": "opencode-zen",
         "qwen-portal": "qwen-oauth", "qwen-cli": "qwen-oauth", "qwen-oauth": "qwen-oauth",

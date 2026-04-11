@@ -381,6 +381,16 @@ class TestStripProviderPrefix:
         assert _strip_provider_prefix("openrouter:anthropic/claude-sonnet-4") == "anthropic/claude-sonnet-4"
         assert _strip_provider_prefix("anthropic:claude-sonnet-4") == "claude-sonnet-4"
 
+    @pytest.mark.parametrize(
+        ("raw_model", "expected"),
+        [
+            ("venice:venice-uncensored", "venice-uncensored"),
+            ("venice.ai:deepseek-v3.2", "deepseek-v3.2"),
+        ],
+    )
+    def test_venice_provider_prefix_is_stripped(self, raw_model, expected):
+        assert _strip_provider_prefix(raw_model) == expected
+
     def test_ollama_model_tag_preserved(self):
         """Ollama model:tag format must NOT be stripped."""
         assert _strip_provider_prefix("qwen3.5:27b") == "qwen3.5:27b"

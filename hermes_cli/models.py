@@ -193,6 +193,14 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "mimo-v2-omni",
         "mimo-v2-flash",
     ],
+    "venice": [
+        "venice-uncensored",
+        "deepseek-v3.2",
+        "qwen3-coder-480b-a35b-instruct",
+        "openai-gpt-53-codex",
+        "zai-org-glm-4.7",
+        "kimi-k2-5",
+    ],
     "opencode-zen": [
         "gpt-5.4-pro",
         "gpt-5.4",
@@ -491,6 +499,7 @@ _PROVIDER_LABELS = {
     "minimax-cn": "MiniMax (China)",
     "anthropic": "Anthropic",
     "deepseek": "DeepSeek",
+    "venice": "Venice",
     "opencode-zen": "OpenCode Zen",
     "opencode-go": "OpenCode Go",
     "ai-gateway": "AI Gateway",
@@ -523,6 +532,9 @@ _PROVIDER_ALIASES = {
     "claude": "anthropic",
     "claude-code": "anthropic",
     "deep-seek": "deepseek",
+    "veniceai": "venice",
+    "venice-ai": "venice",
+    "venice.ai": "venice",
     "opencode": "opencode-zen",
     "zen": "opencode-zen",
     "go": "opencode-go",
@@ -829,7 +841,7 @@ def list_available_providers() -> list[dict[str, str]]:
         "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode", "anthropic", "alibaba",
         "qwen-oauth", "xiaomi",
         "opencode-zen", "opencode-go",
-        "ai-gateway", "deepseek", "custom",
+        "ai-gateway", "deepseek", "venice", "custom",
     ]
     # Build reverse alias map
     aliases_for: dict[str, list[str]] = {}

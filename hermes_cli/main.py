@@ -935,6 +935,7 @@ def select_provider_and_model(args=None):
         "alibaba": "Alibaba Cloud (DashScope)",
         "huggingface": "Hugging Face",
         "xiaomi": "Xiaomi MiMo",
+        "venice": "Venice",
         "custom": "Custom endpoint",
     }
     active_label = provider_labels.get(active, active) if active else "none"
@@ -968,6 +969,7 @@ def select_provider_and_model(args=None):
         ("ai-gateway", "AI Gateway (Vercel — 200+ models, pay-per-use)"),
         ("alibaba", "Alibaba Cloud / DashScope Coding (Qwen + multi-provider)"),
         ("xiaomi", "Xiaomi MiMo (MiMo-V2 models — pro, omni, flash)"),
+        ("venice", "Venice (privacy-focused API — venice-uncensored, DeepSeek, Qwen)"),
     ]
 
     def _named_custom_provider_map(cfg) -> dict[str, dict[str, str]]:
@@ -1079,7 +1081,7 @@ def select_provider_and_model(args=None):
         _model_flow_anthropic(config, current_model)
     elif selected_provider == "kimi-coding":
         _model_flow_kimi(config, current_model)
-    elif selected_provider in ("gemini", "zai", "minimax", "minimax-cn", "kilocode", "opencode-zen", "opencode-go", "ai-gateway", "alibaba", "huggingface", "xiaomi"):
+    elif selected_provider in ("gemini", "zai", "minimax", "minimax-cn", "kilocode", "opencode-zen", "opencode-go", "ai-gateway", "alibaba", "huggingface", "xiaomi", "venice"):
         _model_flow_api_key_provider(config, selected_provider, current_model)
 
     # ── Post-switch cleanup: clear stale OPENAI_BASE_URL ──────────────

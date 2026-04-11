@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 _PROVIDER_PREFIXES: frozenset[str] = frozenset({
     "openrouter", "nous", "openai-codex", "copilot", "copilot-acp",
     "gemini", "zai", "kimi-coding", "minimax", "minimax-cn", "anthropic", "deepseek",
+    "venice", "huggingface",
     "opencode-zen", "opencode-go", "ai-gateway", "kilocode", "alibaba",
     "qwen-oauth",
     "xiaomi",
@@ -33,6 +34,7 @@ _PROVIDER_PREFIXES: frozenset[str] = frozenset({
     "google", "google-gemini", "google-ai-studio",
     "glm", "z-ai", "z.ai", "zhipu", "github", "github-copilot",
     "github-models", "kimi", "moonshot", "claude", "deep-seek",
+    "veniceai", "venice-ai", "venice.ai",
     "opencode", "zen", "go", "vercel", "kilo", "dashscope", "aliyun", "qwen",
     "mimo", "xiaomi-mimo",
     "qwen-portal",
@@ -113,18 +115,21 @@ DEFAULT_CONTEXT_LENGTHS = {
     "gemma": 8192,  # fallback for older gemma models
     # DeepSeek
     "deepseek": 128000,
+    "deepseek-v3.2": 163840,
     # Meta
     "llama": 131072,
     # Qwen — specific model families before the catch-all.
     # Official docs: https://help.aliyun.com/zh/model-studio/developer-reference/
     "qwen3-coder-plus": 1000000,  # 1M context
     "qwen3-coder": 262144,        # 256K context
+    "qwen3-coder-480b-a35b-instruct": 262144,
     "qwen": 131072,
     # MiniMax — official docs: 204,800 context for all models
     # https://platform.minimax.io/docs/api-reference/text-anthropic-api
     "minimax": 204800,
     # GLM
     "glm": 202752,
+    "zai-org-glm-4.7": 202752,
     # xAI Grok — xAI /v1/models does not return context_length metadata,
     # so these hardcoded fallbacks prevent Hermes from probing-down to
     # the default 128k when the user points at https://api.x.ai/v1
@@ -142,6 +147,10 @@ DEFAULT_CONTEXT_LENGTHS = {
     "grok": 131072,             # catch-all (grok-beta, unknown grok-*)
     # Kimi
     "kimi": 262144,
+    "kimi-k2-5": 262144,
+    # Venice
+    "venice-uncensored": 32768,
+    "openai-gpt-53-codex": 409600,
     # Arcee
     "trinity": 262144,
     # Hugging Face Inference Providers — model IDs use org/name format
@@ -215,6 +224,7 @@ _URL_TO_PROVIDER: Dict[str, str] = {
     "generativelanguage.googleapis.com": "gemini",
     "inference-api.nousresearch.com": "nous",
     "api.deepseek.com": "deepseek",
+    "api.venice.ai": "venice",
     "api.githubcopilot.com": "copilot",
     "models.github.ai": "copilot",
     "api.fireworks.ai": "fireworks",

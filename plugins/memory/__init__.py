@@ -80,6 +80,10 @@ def load_memory_provider(name: str) -> Optional["MemoryProvider"]:
 
     Returns None if the provider is not found or fails to load.
     """
+    if name == "builtin":
+        from agent.builtin_memory_provider import BuiltinMemoryProvider
+        return BuiltinMemoryProvider()
+
     provider_dir = _MEMORY_PLUGINS_DIR / name
     if not provider_dir.is_dir():
         logger.debug("Memory provider '%s' not found in %s", name, _MEMORY_PLUGINS_DIR)

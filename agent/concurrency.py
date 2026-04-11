@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import threading
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass, field
 from typing import Iterator, AsyncIterator
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -119,3 +122,45 @@ class ConcurrencySemaphore:
         finally:
             if acquired:
                 self.release()
+
+
+# ── Module-level registry ────────────────────────────────────────────
+
+_registry: dict[tuple[str, str], ConcurrencySemaphore] = {}
+_registry_lock = threading.Lock()
+
+
+def get_semaphore(
+    provider: str,
+    api_key: str,
+    *,
+    max_concurrent: int | None = None,
+    model: str | None = None,
+) -> ConcurrencySemaphore:
+    """Get or create a semaphore for a (provider, api_key) pair.
+
+    On first call for a given pair, ``max_concurrent`` sets the limit.
+    If omitted, the default is looked up from
+    :func:`agent.model_metadata.get_default_concurrency`.  Subsequent
+    calls return the same instance (``max_concurrent`` is ignored).
+    """
+    key = (provider or "", api_key or "")
+    with _registry_lock:
+        if key in _registry:
+            return _registry[key]
+        if max_concurrent is None:
+            from agent.model_metadata import get_default_concurrency
+            max_concurrent = get_default_concurrency(provider, model)
+        sem = ConcurrencySemaphore(max_concurrent)
+        logger.debug(
+            "concurrency: created semaphore for (%s, %s…) max=%d",
+            provider, (api_key or "")[:8], max_concurrent,
+        )
+        _registry[key] = sem
+        return sem
+
+
+def reset_registry() -> None:
+    """Clear all semaphores.  For tests only."""
+    with _registry_lock:
+        _registry.clear()

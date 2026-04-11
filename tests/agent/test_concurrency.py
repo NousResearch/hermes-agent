@@ -5,7 +5,7 @@ import time
 
 import pytest
 
-from agent.concurrency import ConcurrencySemaphore
+from agent.concurrency import ConcurrencySemaphore, get_semaphore, reset_registry
 
 
 class TestConcurrencySemaphore:
@@ -108,3 +108,29 @@ class TestConcurrencySemaphoreAsync:
         async with sem.async_slot(timeout=0.05) as acquired:
             assert acquired is False
         sem.release()
+
+
+class TestRegistry:
+    def setup_method(self):
+        reset_registry()
+
+    def test_get_semaphore_creates_new(self):
+        sem = get_semaphore("zai", "key-1", max_concurrent=1)
+        assert isinstance(sem, ConcurrencySemaphore)
+        assert sem.max_concurrent == 1
+
+    def test_get_semaphore_returns_same_instance(self):
+        sem1 = get_semaphore("zai", "key-1", max_concurrent=1)
+        sem2 = get_semaphore("zai", "key-1", max_concurrent=5)
+        assert sem1 is sem2
+        assert sem1.max_concurrent == 1  # first call's value wins
+
+    def test_different_keys_get_different_semaphores(self):
+        sem1 = get_semaphore("zai", "key-1", max_concurrent=1)
+        sem2 = get_semaphore("zai", "key-2", max_concurrent=2)
+        assert sem1 is not sem2
+
+    def test_different_providers_get_different_semaphores(self):
+        sem1 = get_semaphore("zai", "key-1", max_concurrent=1)
+        sem2 = get_semaphore("kimi", "key-1", max_concurrent=1)
+        assert sem1 is not sem2

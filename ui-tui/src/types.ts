@@ -25,8 +25,9 @@ export interface ClarifyReq {
 export interface Msg {
   role: Role
   text: string
-  kind?: 'intro' | 'slash'
+  kind?: 'intro' | 'panel' | 'slash'
   info?: SessionInfo
+  panelData?: PanelData
   thinking?: string
   tools?: string[]
 }
@@ -61,6 +62,18 @@ export interface SecretReq {
   envVar: string
   prompt: string
   requestId: string
+}
+
+export interface PanelData {
+  sections: PanelSection[]
+  title: string
+}
+
+export interface PanelSection {
+  items?: string[]
+  rows?: [string, string][]
+  text?: string
+  title?: string
 }
 
 export type PasteKind = 'code' | 'log' | 'text'

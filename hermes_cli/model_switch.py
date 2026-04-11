@@ -878,6 +878,9 @@ def list_authenticated_providers(
         for ep_name, ep_cfg in user_providers.items():
             if not isinstance(ep_cfg, dict):
                 continue
+            # Skip if this provider was already added by Sections 1/2
+            if ep_name in seen_slugs:
+                continue
             display_name = ep_cfg.get("name", "") or ep_name
             api_url = ep_cfg.get("api", "") or ep_cfg.get("url", "") or ""
             default_model = ep_cfg.get("default_model", "")
@@ -898,6 +901,7 @@ def list_authenticated_providers(
                 "source": "user-config",
                 "api_url": api_url,
             })
+            seen_slugs.add(ep_name)
 
     # --- 4. Saved custom providers from config ---
     if custom_providers and isinstance(custom_providers, list):

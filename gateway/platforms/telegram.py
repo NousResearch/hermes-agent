@@ -8,6 +8,7 @@ Uses python-telegram-bot library for:
 """
 
 import asyncio
+import inspect
 import json
 import logging
 import os
@@ -15,6 +16,13 @@ import re
 from typing import Dict, List, Optional, Any
 
 logger = logging.getLogger(__name__)
+
+
+async def _maybe_await(result: Any) -> Any:
+    """Await PTB calls in production while tolerating simple test doubles."""
+    if inspect.isawaitable(result):
+        return await result
+    return result
 
 try:
     from telegram import Update, Bot, Message, InlineKeyboardButton, InlineKeyboardMarkup
@@ -232,16 +240,16 @@ class TelegramAdapter(BasePlatformAdapter):
 
         try:
             if self._app and self._app.updater and self._app.updater.running:
-                await self._app.updater.stop()
+                await _maybe_await(self._app.updater.stop())
         except Exception:
             pass
 
         try:
-            await self._app.updater.start_polling(
+            await _maybe_await(self._app.updater.start_polling(
                 allowed_updates=Update.ALL_TYPES,
                 drop_pending_updates=False,
                 error_callback=self._polling_error_callback_ref,
-            )
+            ))
             logger.info(
                 "[%s] Telegram polling resumed after network error (attempt %d)",
                 self.name, attempt,
@@ -279,16 +287,16 @@ class TelegramAdapter(BasePlatformAdapter):
             )
             try:
                 if self._app and self._app.updater and self._app.updater.running:
-                    await self._app.updater.stop()
+                    await _maybe_await(self._app.updater.stop())
             except Exception:
                 pass
             await asyncio.sleep(RETRY_DELAY)
             try:
-                await self._app.updater.start_polling(
+                await _maybe_await(self._app.updater.start_polling(
                     allowed_updates=Update.ALL_TYPES,
                     drop_pending_updates=False,
                     error_callback=self._polling_error_callback_ref,
-                )
+                ))
                 logger.info("[%s] Telegram polling resumed after conflict retry %d", self.name, self._polling_conflict_count)
                 self._polling_conflict_count = 0  # reset on success
                 return
@@ -309,7 +317,7 @@ class TelegramAdapter(BasePlatformAdapter):
         self._set_fatal_error("telegram_polling_conflict", message, retryable=False)
         try:
             if self._app and self._app.updater:
-                await self._app.updater.stop()
+                await _maybe_await(self._app.updater.stop())
         except Exception as stop_error:
             logger.warning("[%s] Failed stopping Telegram polling after conflict: %s", self.name, stop_error, exc_info=True)
         await self._notify_fatal_error()
@@ -622,7 +630,7 @@ class TelegramAdapter(BasePlatformAdapter):
             _max_connect = 3
             for _attempt in range(_max_connect):
                 try:
-                    await self._app.initialize()
+                    await _maybe_await(self._app.initialize())
                     break
                 except (NetworkError, TimedOut, OSError) as init_err:
                     if _attempt < _max_connect - 1:
@@ -634,7 +642,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         await asyncio.sleep(wait)
                     else:
                         raise
-            await self._app.start()
+            await _maybe_await(self._app.start())
 
             # Decide between webhook and polling mode
             webhook_url = os.getenv("TELEGRAM_WEBHOOK_URL", "").strip()
@@ -649,7 +657,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 from urllib.parse import urlparse
                 webhook_path = urlparse(webhook_url).path or "/telegram"
 
-                await self._app.updater.start_webhook(
+                await _maybe_await(self._app.updater.start_webhook(
                     listen="0.0.0.0",
                     port=webhook_port,
                     url_path=webhook_path,
@@ -657,7 +665,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     secret_token=webhook_secret,
                     allowed_updates=Update.ALL_TYPES,
                     drop_pending_updates=True,
-                )
+                ))
                 self._webhook_mode = True
                 logger.info(
                     "[%s] Webhook server listening on 0.0.0.0:%d%s",
@@ -669,7 +677,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 # previous webhook registration and silently stop receiving updates.
                 delete_webhook = getattr(self._bot, "delete_webhook", None)
                 if callable(delete_webhook):
-                    await delete_webhook(drop_pending_updates=False)
+                    await _maybe_await(delete_webhook(drop_pending_updates=False))
 
                 loop = asyncio.get_running_loop()
 
@@ -687,11 +695,11 @@ class TelegramAdapter(BasePlatformAdapter):
                 # Store reference for retry use in _handle_polling_conflict
                 self._polling_error_callback_ref = _polling_error_callback
 
-                await self._app.updater.start_polling(
+                await _maybe_await(self._app.updater.start_polling(
                     allowed_updates=Update.ALL_TYPES,
                     drop_pending_updates=True,
                     error_callback=_polling_error_callback,
-                )
+                ))
             
             # Register bot commands so Telegram shows a hint menu when users type /
             # List is derived from the central COMMAND_REGISTRY — adding a new
@@ -703,9 +711,9 @@ class TelegramAdapter(BasePlatformAdapter):
                 # payload size limit.  Skill descriptions are truncated to 40
                 # chars in telegram_menu_commands() to fit 100 commands safely.
                 menu_commands, hidden_count = telegram_menu_commands(max_commands=100)
-                await self._bot.set_my_commands([
+                await _maybe_await(self._bot.set_my_commands([
                     BotCommand(name, desc) for name, desc in menu_commands
-                ])
+                ]))
                 if hidden_count:
                     logger.info(
                         "[%s] Telegram menu: %d commands registered, %d hidden (over 100 limit). Use /commands for full list.",

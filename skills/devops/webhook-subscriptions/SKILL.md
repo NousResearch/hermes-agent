@@ -46,11 +46,14 @@ WEBHOOK_PORT=8644
 WEBHOOK_SECRET=generate-a-strong-secret-here
 ```
 
-After configuration, start (or restart) the gateway:
+After configuration, restart the managed gateway service:
+```bash
+hermes gateway restart
+```
+
+If you specifically need foreground debugging with live logs:
 ```bash
 hermes gateway run
-# Or if using systemd:
-systemctl --user restart hermes-gateway
 ```
 
 Verify it's running:

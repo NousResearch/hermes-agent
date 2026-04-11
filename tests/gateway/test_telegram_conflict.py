@@ -45,6 +45,17 @@ def _no_auto_discovery(monkeypatch):
     monkeypatch.setattr("gateway.platforms.telegram.discover_fallback_ips", _noop)
 
 
+def _application_builder(app):
+    builder = MagicMock()
+    builder.token.return_value = builder
+    builder.base_url.return_value = builder
+    builder.base_file_url.return_value = builder
+    builder.request.return_value = builder
+    builder.get_updates_request.return_value = builder
+    builder.build.return_value = app
+    return builder
+
+
 @pytest.mark.asyncio
 async def test_connect_rejects_same_host_token_lock(monkeypatch):
     adapter = TelegramAdapter(PlatformConfig(enabled=True, token="secret-token"))
@@ -96,9 +107,7 @@ async def test_polling_conflict_retries_before_fatal(monkeypatch):
         initialize=AsyncMock(),
         start=AsyncMock(),
     )
-    builder = MagicMock()
-    builder.token.return_value = builder
-    builder.build.return_value = app
+    builder = _application_builder(app)
     monkeypatch.setattr("gateway.platforms.telegram.Application", SimpleNamespace(builder=MagicMock(return_value=builder)))
 
     # Speed up retries for testing
@@ -170,9 +179,7 @@ async def test_polling_conflict_becomes_fatal_after_retries(monkeypatch):
         initialize=AsyncMock(),
         start=AsyncMock(),
     )
-    builder = MagicMock()
-    builder.token.return_value = builder
-    builder.build.return_value = app
+    builder = _application_builder(app)
     monkeypatch.setattr("gateway.platforms.telegram.Application", SimpleNamespace(builder=MagicMock(return_value=builder)))
 
     # Speed up retries for testing
@@ -214,8 +221,6 @@ async def test_connect_marks_retryable_fatal_error_for_startup_network_failure(m
         lambda scope, identity: None,
     )
 
-    builder = MagicMock()
-    builder.token.return_value = builder
     app = SimpleNamespace(
         bot=SimpleNamespace(delete_webhook=AsyncMock(), set_my_commands=AsyncMock()),
         updater=SimpleNamespace(),
@@ -223,7 +228,7 @@ async def test_connect_marks_retryable_fatal_error_for_startup_network_failure(m
         initialize=AsyncMock(side_effect=RuntimeError("Temporary failure in name resolution")),
         start=AsyncMock(),
     )
-    builder.build.return_value = app
+    builder = _application_builder(app)
     monkeypatch.setattr("gateway.platforms.telegram.Application", SimpleNamespace(builder=MagicMock(return_value=builder)))
 
     ok = await adapter.connect()
@@ -263,9 +268,7 @@ async def test_connect_clears_webhook_before_polling(monkeypatch):
         initialize=AsyncMock(),
         start=AsyncMock(),
     )
-    builder = MagicMock()
-    builder.token.return_value = builder
-    builder.build.return_value = app
+    builder = _application_builder(app)
     monkeypatch.setattr(
         "gateway.platforms.telegram.Application",
         SimpleNamespace(builder=MagicMock(return_value=builder)),

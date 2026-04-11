@@ -16,8 +16,8 @@ def test_opencode_go_appears_when_api_key_set():
     
     assert opencode_go is not None, "opencode-go should appear when OPENCODE_GO_API_KEY is set"
     assert opencode_go["models"] == ["glm-5", "kimi-k2.5", "mimo-v2-pro", "mimo-v2-omni", "minimax-m2.7", "minimax-m2.5"]
-    # opencode-go is in PROVIDER_TO_MODELS_DEV, so it appears as "built-in" (Part 1)
-    assert opencode_go["source"] == "built-in"
+    # opencode-go may come from models.dev or the Hermes overlay fallback.
+    assert opencode_go["source"] in {"built-in", "hermes"}
 
 
 def test_opencode_go_not_appears_when_no_creds():

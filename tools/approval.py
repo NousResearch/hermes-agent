@@ -94,9 +94,9 @@ DANGEROUS_PATTERNS = [
     (r'\bxargs\s+.*\brm\b', "xargs with rm"),
     (r'\bfind\b.*-exec\s+(/\S*/)?rm\b', "find -exec rm"),
     (r'\bfind\b.*-delete\b', "find -delete"),
-    # Gateway protection: never start gateway outside systemd management
-    (r'gateway\s+run\b.*(&\s*$|&\s*;|\bdisown\b|\bsetsid\b)', "start gateway outside systemd (use 'systemctl --user restart hermes-gateway')"),
-    (r'\bnohup\b.*gateway\s+run\b', "start gateway outside systemd (use 'systemctl --user restart hermes-gateway')"),
+    # Gateway protection: never background the gateway outside the managed service flow
+    (r'gateway\s+run\b.*(&\s*$|&\s*;|\bdisown\b|\bsetsid\b)', "start gateway outside the managed service flow (use 'hermes gateway restart')"),
+    (r'\bnohup\b.*gateway\s+run\b', "start gateway outside the managed service flow (use 'hermes gateway restart')"),
     # Self-termination protection: prevent agent from killing its own process
     (r'\b(pkill|killall)\b.*\b(hermes|gateway|cli\.py)\b', "kill hermes/gateway process (self-termination)"),
     # Self-termination via kill + command substitution (pgrep/pidof).

@@ -158,6 +158,10 @@ class TestTelegramExecApproval:
 class TestTelegramApprovalCallback:
     """Test the approval callback handling in _handle_callback_query."""
 
+    @pytest.fixture(autouse=True)
+    def _allow_callback_user(self, monkeypatch):
+        monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "*")
+
     @pytest.mark.asyncio
     async def test_resolves_approval_on_click(self):
         adapter = _make_adapter()

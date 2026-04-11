@@ -521,13 +521,13 @@ class TestForkBombDetection:
 
 
 class TestGatewayProtection:
-    """Prevent agents from starting the gateway outside systemd management."""
+    """Prevent agents from starting the gateway outside the managed service flow."""
 
     def test_gateway_run_with_disown_detected(self):
         cmd = "kill 1605 && cd ~/.hermes/hermes-agent && source venv/bin/activate && python -m hermes_cli.main gateway run --replace &disown; echo done"
         dangerous, key, desc = detect_dangerous_command(cmd)
         assert dangerous is True
-        assert "systemctl" in desc
+        assert "hermes gateway restart" in desc
 
     def test_gateway_run_with_ampersand_detected(self):
         cmd = "python -m hermes_cli.main gateway run --replace &"
@@ -538,11 +538,13 @@ class TestGatewayProtection:
         cmd = "nohup python -m hermes_cli.main gateway run --replace"
         dangerous, key, desc = detect_dangerous_command(cmd)
         assert dangerous is True
+        assert "hermes gateway restart" in desc
 
     def test_gateway_run_with_setsid_detected(self):
         cmd = "hermes_cli.main gateway run --replace &disown"
         dangerous, key, desc = detect_dangerous_command(cmd)
         assert dangerous is True
+        assert "hermes gateway restart" in desc
 
     def test_gateway_run_foreground_not_flagged(self):
         """Normal foreground gateway run (as in systemd ExecStart) is fine."""
@@ -818,5 +820,3 @@ class TestChmodExecuteCombo:
         cmd = "chmod +x script.sh"
         dangerous, _, _ = detect_dangerous_command(cmd)
         assert dangerous is False
-
-

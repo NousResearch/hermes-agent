@@ -5711,6 +5711,7 @@ class AIAgent:
 
     def _build_api_kwargs(self, api_messages: list) -> dict:
         """Build the keyword arguments dict for the active API mode."""
+        request_overrides = getattr(self, "request_overrides", {}) or {}
         if self.api_mode == "anthropic_messages":
             from agent.anthropic_adapter import build_anthropic_kwargs
             anthropic_messages = self._prepare_anthropic_messages_for_api(api_messages)
@@ -5735,7 +5736,7 @@ class AIAgent:
                 preserve_dots=self._anthropic_preserve_dots(),
                 context_length=ctx_len,
                 base_url=getattr(self, "_anthropic_base_url", None),
-                fast_mode=(self.request_overrides or {}).get("speed") == "fast",
+                fast_mode=request_overrides.get("speed") == "fast",
             )
 
         if self.api_mode == "codex_responses":
@@ -5792,8 +5793,8 @@ class AIAgent:
             elif not is_github_responses:
                 kwargs["include"] = []
 
-            if self.request_overrides:
-                kwargs.update(self.request_overrides)
+            if request_overrides:
+                kwargs.update(request_overrides)
 
             if self.max_tokens is not None and not is_codex_backend:
                 kwargs["max_output_tokens"] = self.max_tokens
@@ -5976,8 +5977,8 @@ class AIAgent:
 
         # Priority Processing / generic request overrides (e.g. service_tier).
         # Applied last so overrides win over any defaults set above.
-        if self.request_overrides:
-            api_kwargs.update(self.request_overrides)
+        if request_overrides:
+            api_kwargs.update(request_overrides)
 
         return api_kwargs
 

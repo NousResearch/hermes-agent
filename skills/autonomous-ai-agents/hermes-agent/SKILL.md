@@ -220,6 +220,7 @@ hermes memory setup/status/off  Memory provider config
 hermes completion bash|zsh  Shell completions
 hermes acp                  ACP server (IDE integration)
 hermes claw migrate         Migrate from OpenClaw
+hermes claw cleanup         Archive leftover OpenClaw directories
 hermes uninstall            Uninstall Hermes
 ```
 

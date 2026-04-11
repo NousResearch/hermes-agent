@@ -177,6 +177,22 @@ def _select_pool_entry(provider: str) -> Tuple[bool, Optional[Any]]:
         return True, None
 
 
+def _peek_pool_entry(provider: str) -> Tuple[bool, Optional[Any]]:
+    """Return a pool entry without refreshing or rotating credentials."""
+    try:
+        pool = load_pool(provider)
+    except Exception as exc:
+        logger.debug("Auxiliary client: could not load pool for %s: %s", provider, exc)
+        return False, None
+    if not pool or not pool.has_credentials():
+        return False, None
+    try:
+        return True, pool.peek()
+    except Exception as exc:
+        logger.debug("Auxiliary client: could not peek pool entry for %s: %s", provider, exc)
+        return True, None
+
+
 def _pool_runtime_api_key(entry: Any) -> str:
     if entry is None:
         return ""
@@ -198,6 +214,15 @@ def _pool_runtime_base_url(entry: Any, fallback: str = "") -> str:
         or fallback
     )
     return str(url or "").strip().rstrip("/")
+
+
+def _jwt_is_expired(token: str) -> bool:
+    try:
+        from hermes_cli.auth import _codex_access_token_is_expiring
+
+        return bool(_codex_access_token_is_expiring(token, 0))
+    except Exception:
+        return False
 
 
 # ── Codex Responses → chat.completions adapter ─────────────────────────────
@@ -640,11 +665,14 @@ def _read_codex_access_token() -> Optional[str]:
     fallback-to-Codex working when the pool state is stale but the stored OAuth
     token is still valid.
     """
-    pool_present, entry = _select_pool_entry("openai-codex")
+    pool_present, entry = _peek_pool_entry("openai-codex")
     if pool_present:
         token = _pool_runtime_api_key(entry)
         if token:
-            return token
+            if _jwt_is_expired(token):
+                logger.debug("Codex pool access token expired, skipping")
+            else:
+                return token
 
     try:
         from hermes_cli.auth import _read_codex_tokens
@@ -656,17 +684,9 @@ def _read_codex_access_token() -> Optional[str]:
 
         # Check JWT expiry — expired tokens block the auto chain and
         # prevent fallback to working providers (e.g. Anthropic).
-        try:
-            import base64
-            payload = access_token.split(".")[1]
-            payload += "=" * (-len(payload) % 4)
-            claims = json.loads(base64.urlsafe_b64decode(payload))
-            exp = claims.get("exp", 0)
-            if exp and time.time() > exp:
-                logger.debug("Codex access token expired (exp=%s), skipping", exp)
-                return None
-        except Exception:
-            pass  # Non-JWT token or decode error — use as-is
+        if _jwt_is_expired(access_token):
+            logger.debug("Codex access token expired, skipping")
+            return None
 
         return access_token.strip()
     except Exception as exc:

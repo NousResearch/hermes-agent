@@ -167,6 +167,9 @@ class TestDetectProviderForModel:
             "ANTHROPIC_TOKEN",
             "CLAUDE_CODE_TOKEN",
             "CLAUDE_CODE_OAUTH_TOKEN",
+            "COPILOT_GITHUB_TOKEN",
+            "GH_TOKEN",
+            "GITHUB_TOKEN",
         ):
             monkeypatch.delenv(env_var, raising=False)
         """Bare model names should get mapped to full OpenRouter slugs."""

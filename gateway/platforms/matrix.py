@@ -352,7 +352,16 @@ class MatrixAdapter(BasePlatformAdapter):
                 from mautrix.crypto import OlmMachine
                 from mautrix.crypto.store import MemoryCryptoStore
 
-                crypto_store = MemoryCryptoStore()
+                # account_id and pickle_key are required by mautrix ≥0.21.
+                # Use the Matrix user ID as account_id for stable identity.
+                # pickle_key secures in-memory serialisation; derive from
+                # the same user_id:device_id pair used for the on-disk HMAC.
+                _acct_id = self._user_id or "hermes"
+                _pickle_key = f"{_acct_id}:{self._device_id}"
+                crypto_store = MemoryCryptoStore(
+                    account_id=_acct_id,
+                    pickle_key=_pickle_key,
+                )
 
                 # Restore persisted crypto state from a previous run.
                 # Uses HMAC to verify integrity before unpickling.

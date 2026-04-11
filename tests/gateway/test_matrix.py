@@ -157,7 +157,9 @@ def _make_fake_mautrix():
     mautrix_crypto_store = types.ModuleType("mautrix.crypto.store")
 
     class MemoryCryptoStore:
-        pass
+        def __init__(self, account_id="", pickle_key=""):
+            self.account_id = account_id
+            self.pickle_key = pickle_key
 
     mautrix_crypto_store.MemoryCryptoStore = MemoryCryptoStore
 

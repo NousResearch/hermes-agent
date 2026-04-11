@@ -27,6 +27,7 @@ def _make_run_side_effect(
     systemd_active=False,
     system_service_active=False,
     system_restart_rc=0,
+    sudo_system_restart_rc=None,
     launchctl_loaded=False,
 ):
     """Build a subprocess.run side_effect that simulates git + service commands."""
@@ -78,8 +79,12 @@ def _make_run_side_effect(
         # systemctl restart — distinguish --user from system scope
         if "systemctl" in joined and "restart" in joined:
             if "--user" not in joined and system_service_active:
-                stderr = "" if system_restart_rc == 0 else "Failed to restart: Permission denied"
-                return subprocess.CompletedProcess(cmd, system_restart_rc, stdout="", stderr=stderr)
+                if "sudo -n" in joined:
+                    rc = system_restart_rc if sudo_system_restart_rc is None else sudo_system_restart_rc
+                else:
+                    rc = system_restart_rc
+                stderr = "" if rc == 0 else "Failed to restart: Permission denied"
+                return subprocess.CompletedProcess(cmd, rc, stdout="", stderr=stderr)
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
         # launchctl list ai.hermes.gateway
@@ -430,6 +435,7 @@ class TestCmdUpdateSystemService:
         monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
         monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: True)
         monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
+        monkeypatch.setattr("os.geteuid", lambda: 0)
 
         mock_run.side_effect = _make_run_side_effect(
             commit_count="3",
@@ -448,6 +454,37 @@ class TestCmdUpdateSystemService:
             if "restart" in " ".join(str(a) for a in c.args[0])
             and "systemctl" in " ".join(str(a) for a in c.args[0])
             and "--user" not in " ".join(str(a) for a in c.args[0])
+        ]
+        assert len(restart_calls) == 1
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_update_detects_system_service_and_uses_sudo_when_non_root(
+        self, mock_run, _mock_which, mock_args, capsys, monkeypatch,
+    ):
+        """When system service is active and Hermes runs non-root, restart via sudo -n."""
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: True)
+        monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
+        monkeypatch.setattr("os.geteuid", lambda: 1000)
+        _mock_which.side_effect = lambda name: "/usr/bin/sudo" if name == "sudo" else None
+
+        mock_run.side_effect = _make_run_side_effect(
+            commit_count="3",
+            systemd_active=False,
+            system_service_active=True,
+            system_restart_rc=1,
+            sudo_system_restart_rc=0,
+        )
+
+        with patch.object(gateway_cli, "find_gateway_pids", return_value=[]):
+            cmd_update(mock_args)
+
+        captured = capsys.readouterr().out
+        assert "Restarted hermes-gateway" in captured
+        restart_calls = [
+            c for c in mock_run.call_args_list
+            if c.args and c.args[0][:4] == ["sudo", "-n", "systemctl", "restart"]
         ]
         assert len(restart_calls) == 1
 

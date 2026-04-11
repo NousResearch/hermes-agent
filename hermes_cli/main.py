@@ -3843,8 +3843,12 @@ def cmd_update(args):
                                 capture_output=True, text=True, timeout=5,
                             )
                             if check.stdout.strip() == "active":
+                                restart_cmd = scope_cmd + ["restart", svc_name]
+                                if scope == "system" and os.geteuid() != 0 and shutil.which("sudo"):
+                                    restart_cmd = ["sudo", "-n"] + restart_cmd
+
                                 restart = subprocess.run(
-                                    scope_cmd + ["restart", svc_name],
+                                    restart_cmd,
                                     capture_output=True, text=True, timeout=15,
                                 )
                                 if restart.returncode == 0:

@@ -76,6 +76,10 @@ CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120
 QWEN_OAUTH_CLIENT_ID = "f0304373b74a44d2b584a3fb70ca9e56"
 QWEN_OAUTH_TOKEN_URL = "https://chat.qwen.ai/api/v1/oauth2/token"
 QWEN_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120
+# User-Agent sent with Qwen OAuth refresh requests.
+# Matches the format used by qwen-code-api so the OAuth server
+# returns a JSON token response instead of a redirect/non-JSON body.
+_QWEN_USER_AGENT = "HermesAgent/1.0"
 
 
 # =============================================================================
@@ -1098,6 +1102,7 @@ def _refresh_qwen_cli_tokens(tokens: Dict[str, Any], timeout_seconds: float = 20
             headers={
                 "Content-Type": "application/x-www-form-urlencoded",
                 "Accept": "application/json",
+                "User-Agent": _QWEN_USER_AGENT,
             },
             data={
                 "grant_type": "refresh_token",
@@ -1125,8 +1130,14 @@ def _refresh_qwen_cli_tokens(tokens: Dict[str, Any], timeout_seconds: float = 20
     try:
         payload = response.json()
     except Exception as exc:
+        # Surface diagnostics so users can report the actual server response
+        diag = (
+            f"status={response.status_code}, "
+            f"content-type={response.headers.get('content-type', 'unknown')}, "
+            f"body={response.text[:200]!r}"
+        )
         raise AuthError(
-            f"Qwen OAuth refresh returned invalid JSON: {exc}",
+            f"Qwen OAuth refresh returned invalid JSON ({diag}): {exc}",
             provider="qwen-oauth",
             code="qwen_refresh_invalid_json",
         ) from exc

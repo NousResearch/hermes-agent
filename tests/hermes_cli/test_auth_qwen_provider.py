@@ -397,3 +397,53 @@ def test_get_qwen_auth_status_not_logged_in(qwen_env):
     status = get_qwen_auth_status()
     assert status["logged_in"] is False
     assert "error" in status
+
+
+# ---------------------------------------------------------------------------
+# Additional tests for User-Agent fix (GitHub issue #7746)
+# ---------------------------------------------------------------------------
+
+def test_refresh_qwen_cli_tokens_sends_user_agent_header(qwen_env):
+    """Verify that the OAuth refresh request includes a User-Agent header
+    so the Qwen server returns JSON instead of an HTML/non-JSON response."""
+    tokens = _make_qwen_tokens(refresh_token="rt")
+
+    resp = MagicMock()
+    resp.status_code = 200
+    resp.json.return_value = {"access_token": "at", "refresh_token": "rt", "expires_in": 3600}
+
+    with patch("hermes_cli.auth.httpx") as mock_httpx:
+        mock_httpx.post.return_value = resp
+        _refresh_qwen_cli_tokens(tokens)
+
+    call_kwargs = mock_httpx.post.call_args.kwargs
+    headers = call_kwargs.get("headers", {})
+    assert "User-Agent" in headers, (
+        f"User-Agent header missing. Headers sent: {headers}"
+    )
+    assert headers["User-Agent"] == "HermesAgent/1.0"
+
+
+def test_refresh_qwen_cli_tokens_invalid_json_error_includes_diagnostics(qwen_env):
+    """When the server returns a non-JSON response, the error message must
+    include status code, content-type, and response body preview so the
+    failure is diagnosable without needing network capture tools."""
+    tokens = _make_qwen_tokens(refresh_token="rt")
+
+    resp = MagicMock()
+    resp.status_code = 200
+    # Must configure the MagicMock for .headers so .get() returns a string
+    resp.headers = MagicMock()
+    resp.headers.get.return_value = "text/html"
+    resp.text = "<html><body>Please enable JS</body></html>"
+    resp.json.side_effect = ValueError("Expecting value: line 1 column 1 (char 0)")
+
+    with patch("hermes_cli.auth.httpx") as mock_httpx:
+        mock_httpx.post.return_value = resp
+        with pytest.raises(AuthError) as exc:
+            _refresh_qwen_cli_tokens(tokens)
+    assert exc.value.code == "qwen_refresh_invalid_json"
+    msg = str(exc.value)
+    assert "status=200" in msg, f"Error message should include status code. Got: {msg}"
+    assert "text/html" in msg, f"Error message should include content-type. Got: {msg}"
+    assert "Please enable JS" in msg, f"Error message should include body preview. Got: {msg}"

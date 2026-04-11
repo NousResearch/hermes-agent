@@ -943,31 +943,6 @@ def select_provider_and_model(args=None):
     print(f"  Active provider:  {active_label}")
     print()
 
-    # Step 1: Provider selection — top providers shown first, rest behind "More..."
-    top_providers = [
-        ("nous", "Nous Portal (Nous Research subscription)"),
-        ("openrouter", "OpenRouter (100+ models, pay-per-use)"),
-        ("anthropic", "Anthropic (Claude models — API key or Claude Code)"),
-        ("openai-codex", "OpenAI Codex"),
-        ("qwen-oauth", "Qwen OAuth (reuses local Qwen CLI login)"),
-        ("copilot", "GitHub Copilot (uses GITHUB_TOKEN or gh auth token)"),
-        ("huggingface", "Hugging Face Inference Providers (20+ open models)"),
-    ]
-
-    extended_providers = [
-        ("copilot-acp", "GitHub Copilot ACP (spawns `copilot --acp --stdio`)"),
-        ("gemini", "Google AI Studio (Gemini models — OpenAI-compatible endpoint)"),
-        ("zai", "Z.AI / GLM (Zhipu AI direct API)"),
-        ("kimi-coding", "Kimi / Moonshot (Moonshot AI direct API)"),
-        ("minimax", "MiniMax (global direct API)"),
-        ("minimax-cn", "MiniMax China (domestic direct API)"),
-        ("kilocode", "Kilo Code (Kilo Gateway API)"),
-        ("opencode-zen", "OpenCode Zen (35+ curated models, pay-as-you-go)"),
-        ("opencode-go", "OpenCode Go (open models, $10/month subscription)"),
-        ("ai-gateway", "AI Gateway (Vercel — 200+ models, pay-per-use)"),
-        ("alibaba", "Alibaba Cloud / DashScope Coding (Qwen + multi-provider)"),
-    ]
-
     def _named_custom_provider_map(cfg) -> dict[str, dict[str, str]]:
         custom_providers_cfg = cfg.get("custom_providers") or []
         custom_provider_map = {}
@@ -991,61 +966,128 @@ def select_provider_and_model(args=None):
 
     # Add user-defined custom providers from config.yaml
     _custom_provider_map = _named_custom_provider_map(config)  # key → {name, base_url, api_key}
-    for key, provider_info in _custom_provider_map.items():
-        name = provider_info["name"]
-        base_url = provider_info["base_url"]
-        short_url = base_url.replace("https://", "").replace("http://", "").rstrip("/")
-        saved_model = provider_info.get("model", "")
-        model_hint = f" — {saved_model}" if saved_model else ""
-        top_providers.append((key, f"{name} ({short_url}){model_hint}"))
 
-    top_keys = {k for k, _ in top_providers}
-    extended_keys = {k for k, _ in extended_providers}
+    def _with_status(label: str, status_label: str = "") -> str:
+        return f"{label}  [{status_label}]" if status_label else label
 
-    # If the active provider is in the extended list, promote it into top
-    if active and active in extended_keys:
-        promoted = [(k, l) for k, l in extended_providers if k == active]
-        extended_providers = [(k, l) for k, l in extended_providers if k != active]
-        top_providers = promoted + top_providers
-        top_keys.add(active)
+    def _selection_choice_label(item) -> str:
+        from hermes_cli.model_selection import selection_item_meta_text
 
-    # Build the primary menu
-    ordered = []
-    default_idx = 0
-    for key, label in top_providers:
-        if active and key == active:
-            ordered.append((key, f"{label}  ← currently active"))
-            default_idx = len(ordered) - 1
-        else:
-            ordered.append((key, label))
+        meta = selection_item_meta_text(item)
+        return f"{item.label} — {meta}" if meta else item.label
 
-    ordered.append(("more", "More providers..."))
-    ordered.append(("cancel", "Cancel"))
+    from hermes_cli.model_selection import build_model_selection_tree, ModelSelectionController
+    from hermes_cli.model_switch import switch_model
 
-    provider_idx = _prompt_provider_choice(
-        [label for _, label in ordered], default=default_idx,
+    tree = build_model_selection_tree(
+        current_provider=active or "",
+        current_model="" if current_model == "(not set)" else current_model,
+        user_providers=config.get("providers"),
+        custom_providers=config.get("custom_providers"),
     )
-    if provider_idx is None or ordered[provider_idx][0] == "cancel":
+    root_ordered: list[tuple[str, str]] = [
+        (f"source:{source.id}", _with_status(source.label, source.status_label))
+        for source in tree.sources
+    ]
+    if active:
+        current_source_key = f"source:{'openrouter' if active == 'openrouter' else ('oauth' if active in {'openai-codex', 'nous', 'qwen-oauth'} else 'other')}"
+        source_items = [item for item in root_ordered if item[0].startswith("source:")]
+        source_items.sort(key=lambda item: (item[0] != current_source_key, item[0]))
+        root_ordered = source_items
+    root_ordered.append(("custom", "Custom endpoint (enter URL manually)"))
+    if _custom_provider_map:
+        root_ordered.append(("remove-custom", "Remove a saved custom provider"))
+    root_ordered.append(("cancel", "Cancel"))
+
+    default_root_idx = next(
+        (idx for idx, (key, _label) in enumerate(root_ordered) if key == "source:other"),
+        0,
+    )
+    for idx, (key, _label) in enumerate(root_ordered):
+        if key == "source:openrouter" and active == "openrouter":
+            default_root_idx = idx
+        elif key == "source:oauth" and active in {"openai-codex", "nous", "qwen-oauth"}:
+            default_root_idx = idx
+        elif key == "source:other" and active not in {"openrouter", "openai-codex", "nous", "qwen-oauth"} and active:
+            default_root_idx = idx
+
+    root_idx = _prompt_provider_choice(
+        [label for _, label in root_ordered],
+        default=default_root_idx,
+    )
+    if root_idx is None or root_ordered[root_idx][0] == "cancel":
         print("No change.")
         return
 
-    selected_provider = ordered[provider_idx][0]
+    selected_root = root_ordered[root_idx][0]
+    selected_provider = ""
+    selected_request = None
 
-    # "More providers..." — show the extended list
-    if selected_provider == "more":
-        ext_ordered = list(extended_providers)
-        ext_ordered.append(("custom", "Custom endpoint (enter URL manually)"))
-        if _custom_provider_map:
-            ext_ordered.append(("remove-custom", "Remove a saved custom provider"))
-        ext_ordered.append(("cancel", "Cancel"))
-
-        ext_idx = _prompt_provider_choice(
-            [label for _, label in ext_ordered], default=0,
-        )
-        if ext_idx is None or ext_ordered[ext_idx][0] == "cancel":
+    if selected_root.startswith("source:"):
+        source_id = selected_root.split(":", 1)[1]
+        provider_nodes = list(tree.providers(source_id))
+        provider_nodes.sort(key=lambda node: (not node.current, node.label))
+        provider_choices = [
+            _with_status(node.label, node.status_label)
+            for node in provider_nodes
+        ]
+        provider_choices.append("Cancel")
+        default_provider_idx = 0
+        for idx, node in enumerate(provider_nodes):
+            if node.current:
+                default_provider_idx = idx
+                break
+        provider_idx = _prompt_provider_choice(provider_choices, default=default_provider_idx)
+        if provider_idx is None or provider_idx >= len(provider_nodes):
             print("No change.")
             return
-        selected_provider = ext_ordered[ext_idx][0]
+        selected_provider_node = provider_nodes[provider_idx]
+        selected_provider = selected_provider_node.provider_slug
+
+        controller = ModelSelectionController(tree)
+        controller.set_provider(selected_provider_node.id)
+        model_view = controller.current_view()
+        if model_view.items and any(item.enabled for item in model_view.items):
+            model_choices = [
+                _selection_choice_label(item)
+                for item in model_view.items
+            ]
+            model_choices.append("Cancel")
+            model_idx = _prompt_provider_choice(
+                model_choices,
+                default=model_view.default_cursor(),
+            )
+            if model_idx is None or model_idx >= len(model_view.items):
+                print("No change.")
+                return
+            selected_request = controller.activate_index(model_idx)
+            if selected_request is None:
+                print("No change.")
+                return
+    else:
+        selected_provider = selected_root
+
+    if selected_request is not None:
+        current_model_value = "" if current_model == "(not set)" else current_model
+        current_base_url = model_cfg.get("base_url", "") if isinstance(model_cfg, dict) else ""
+        current_api_key = model_cfg.get("api_key", "") if isinstance(model_cfg, dict) else ""
+        result = switch_model(
+            raw_input=selected_request.model_id,
+            current_provider=active or "",
+            current_model=current_model_value,
+            current_base_url=current_base_url,
+            current_api_key=current_api_key,
+            explicit_provider=selected_request.provider_slug,
+            user_providers=config.get("providers"),
+            custom_providers=config.get("custom_providers"),
+        )
+        if not result.success:
+            print(f"Could not switch model: {result.error_message}")
+            return
+        _persist_selected_model_result(result)
+        provider_label = result.provider_label or result.target_provider
+        print(f"Default model set to: {result.new_model} (via {provider_label})")
+        return
 
     # Step 2: Provider-specific setup + model selection
     if selected_provider == "openrouter":
@@ -1079,6 +1121,50 @@ def select_provider_and_model(args=None):
         _model_flow_kimi(config, current_model)
     elif selected_provider in ("gemini", "zai", "minimax", "minimax-cn", "kilocode", "opencode-zen", "opencode-go", "ai-gateway", "alibaba", "huggingface"):
         _model_flow_api_key_provider(config, selected_provider, current_model)
+
+
+def _persist_selected_model_result(result) -> None:
+    """Persist a model switch result using the same provider semantics as setup flows."""
+    from hermes_cli.auth import (
+        _save_model_choice,
+        _update_config_for_provider,
+        deactivate_provider,
+    )
+    from hermes_cli.config import load_config, save_config
+
+    oauth_providers = {"nous", "openai-codex", "qwen-oauth"}
+    if result.target_provider in oauth_providers:
+        _update_config_for_provider(
+            result.target_provider,
+            result.base_url,
+            default_model=result.new_model,
+        )
+        _save_model_choice(result.new_model)
+        return
+
+    cfg = load_config()
+    model_cfg = cfg.get("model")
+    if isinstance(model_cfg, dict):
+        model_section = dict(model_cfg)
+    elif isinstance(model_cfg, str) and model_cfg.strip():
+        model_section = {"default": model_cfg.strip()}
+    else:
+        model_section = {}
+
+    model_section["default"] = result.new_model
+    model_section["provider"] = result.target_provider
+    if result.base_url:
+        model_section["base_url"] = result.base_url.rstrip("/")
+    else:
+        model_section.pop("base_url", None)
+    if result.api_mode:
+        model_section["api_mode"] = result.api_mode
+    else:
+        model_section.pop("api_mode", None)
+    model_section.pop("api_key", None)
+    cfg["model"] = model_section
+    save_config(cfg)
+    deactivate_provider()
 
 
 def _prompt_provider_choice(choices, *, default=0):
@@ -4447,7 +4533,7 @@ For more help on a command:
     gateway_subparsers = gateway_parser.add_subparsers(dest="gateway_command")
     
     # gateway run (default)
-    gateway_run = gateway_subparsers.add_parser("run", help="Run gateway in foreground (recommended for WSL, Docker, Termux)")
+    gateway_run = gateway_subparsers.add_parser("run", help="Run gateway in foreground")
     gateway_run.add_argument("-v", "--verbose", action="count", default=0,
                              help="Increase stderr log verbosity (-v=INFO, -vv=DEBUG)")
     gateway_run.add_argument("-q", "--quiet", action="store_true",
@@ -4456,7 +4542,7 @@ For more help on a command:
                              help="Replace any existing gateway instance (useful for systemd)")
     
     # gateway start
-    gateway_start = gateway_subparsers.add_parser("start", help="Start the installed systemd/launchd background service")
+    gateway_start = gateway_subparsers.add_parser("start", help="Start gateway service")
     gateway_start.add_argument("--system", action="store_true", help="Target the Linux system-level gateway service")
     
     # gateway stop
@@ -4474,7 +4560,7 @@ For more help on a command:
     gateway_status.add_argument("--system", action="store_true", help="Target the Linux system-level gateway service")
     
     # gateway install
-    gateway_install = gateway_subparsers.add_parser("install", help="Install gateway as a systemd/launchd background service")
+    gateway_install = gateway_subparsers.add_parser("install", help="Install gateway as service")
     gateway_install.add_argument("--force", action="store_true", help="Force reinstall")
     gateway_install.add_argument("--system", action="store_true", help="Install as a Linux system-level service (starts at boot)")
     gateway_install.add_argument("--run-as-user", dest="run_as_user", help="User account the Linux system service should run as")

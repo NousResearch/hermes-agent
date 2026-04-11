@@ -387,6 +387,7 @@ def switch_model(
     explicit_provider: str = "",
     user_providers: dict = None,
     custom_providers: list | None = None,
+    skip_validation: bool = False,
 ) -> ModelSwitchResult:
     """Core model-switching pipeline shared between CLI and gateway.
 
@@ -653,20 +654,28 @@ def switch_model(
     new_model = normalize_model_for_provider(new_model, target_provider)
 
     # --- Validate ---
-    try:
-        validation = validate_requested_model(
-            new_model,
-            target_provider,
-            api_key=api_key,
-            base_url=base_url,
-        )
-    except Exception:
+    if skip_validation:
         validation = {
             "accepted": True,
             "persist": True,
-            "recognized": False,
+            "recognized": True,
             "message": None,
         }
+    else:
+        try:
+            validation = validate_requested_model(
+                new_model,
+                target_provider,
+                api_key=api_key,
+                base_url=base_url,
+            )
+        except Exception:
+            validation = {
+                "accepted": True,
+                "persist": True,
+                "recognized": False,
+                "message": None,
+            }
 
     if not validation.get("accepted"):
         msg = validation.get("message", "Invalid model")
@@ -940,5 +949,4 @@ def list_authenticated_providers(
     results.sort(key=lambda r: (not r["is_current"], -r["total_models"]))
 
     return results
-
 

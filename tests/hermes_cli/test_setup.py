@@ -237,11 +237,16 @@ def test_select_provider_and_model_warns_if_named_custom_provider_disappears(
     cfg["custom_providers"] = [{"name": "Local", "base_url": "http://localhost:8080/v1"}]
     save_config(cfg)
 
+    prompt_calls = {"count": 0}
+
     def fake_prompt_provider_choice(choices, default=0):
+        prompt_calls["count"] += 1
+        if prompt_calls["count"] == 1:
+            return next(i for i, label in enumerate(choices) if label == "Other providers")
         current = load_config()
         current["custom_providers"] = []
         save_config(current)
-        return next(i for i, label in enumerate(choices) if label.startswith("Local (localhost:8080/v1)"))
+        return next(i for i, label in enumerate(choices) if label.startswith("Local"))
 
     monkeypatch.setattr("hermes_cli.auth.resolve_provider", lambda provider: None)
     monkeypatch.setattr("hermes_cli.main._prompt_provider_choice", fake_prompt_provider_choice)
@@ -256,6 +261,66 @@ def test_select_provider_and_model_warns_if_named_custom_provider_disappears(
 
     out = capsys.readouterr().out
     assert "selected saved custom provider is no longer available" in out
+
+
+def test_select_provider_and_model_uses_canonical_request_for_openrouter_branch(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _clear_provider_env(monkeypatch)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+
+    cfg = load_config()
+    cfg["model"] = {
+        "provider": "openrouter",
+        "default": "openai/gpt-5.4",
+        "base_url": "https://openrouter.ai/api/v1",
+    }
+    save_config(cfg)
+
+    captured = {}
+
+    monkeypatch.setattr("hermes_cli.auth.resolve_provider", lambda provider: "openrouter")
+
+    def fake_prompt_provider_choice(choices, default=0):
+        if "Other providers..." in choices:
+            return 0
+        for idx, choice in enumerate(choices):
+            if choice.startswith("OpenAI"):
+                return idx
+        for idx, choice in enumerate(choices):
+            if choice.startswith("GPT-5.4"):
+                return idx
+        return default
+
+    monkeypatch.setattr("hermes_cli.main._prompt_provider_choice", fake_prompt_provider_choice)
+
+    def fake_switch_model(**kwargs):
+        captured.update(kwargs)
+        from hermes_cli.model_switch import ModelSwitchResult
+
+        return ModelSwitchResult(
+            success=True,
+            new_model="openai/gpt-5.4",
+            target_provider="openrouter",
+            provider_changed=False,
+            api_key="or-key",
+            base_url="https://openrouter.ai/api/v1",
+            api_mode="chat_completions",
+            provider_label="OpenRouter",
+        )
+
+    monkeypatch.setattr("hermes_cli.model_switch.switch_model", fake_switch_model)
+    monkeypatch.setattr("hermes_cli.main._persist_selected_model_result", lambda result: captured.setdefault("persisted", result.new_model))
+
+    from hermes_cli.main import select_provider_and_model
+
+    select_provider_and_model()
+
+    assert captured["explicit_provider"] == "openrouter"
+    assert captured["raw_input"] == "openai/gpt-5.4"
+    assert captured.get("skip_validation", False) is False
+    assert captured["persisted"] == "openai/gpt-5.4"
 
 
 def test_codex_setup_uses_runtime_access_token_for_live_model_list(tmp_path, monkeypatch):

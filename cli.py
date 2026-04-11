@@ -1398,6 +1398,7 @@ class HermesCLI:
         self._approval_lock = threading.Lock()
         self._secret_state = None
         self._secret_deadline = 0
+        self._model_selection_controller = None
         self._spinner_text: str = ""  # thinking spinner text for TUI
         self._tool_start_time: float = 0.0  # monotonic timestamp when current tool started (for live elapsed)
         self._command_running = False
@@ -3855,81 +3856,344 @@ class HermesCLI:
         remaining = len(self.conversation_history)
         print(f"  {remaining} message(s) remaining in history.")
     
-    def _handle_model_switch(self, cmd_original: str):
-        """Handle /model command — switch model for this session.
+    def _maybe_accept_slash_completion_on_enter(self, buffer) -> bool:
+        """Handle Enter on the slash-command completion menu."""
+        complete_state = getattr(buffer, "complete_state", None)
+        raw_text = str(getattr(buffer, "text", "") or "")
+        stripped = raw_text.strip()
+        if complete_state is None or not stripped.startswith("/") or " " in stripped:
+            return False
 
-        Supports:
-          /model                              — show current model + usage hints
-          /model <name>                       — switch for this session only
-          /model <name> --global              — switch and persist to config.yaml
-          /model <name> --provider <provider> — switch provider + model
-          /model --provider <provider>        — switch to provider, auto-detect model
-        """
-        from hermes_cli.model_switch import switch_model, parse_model_flags, list_authenticated_providers
-        from hermes_cli.providers import get_label
+        completion = getattr(complete_state, "current_completion", None)
+        if completion is None:
+            try:
+                buffer.go_to_completion(0)
+            except Exception:
+                return False
+            complete_state = getattr(buffer, "complete_state", None)
+            completion = getattr(complete_state, "current_completion", None)
+        if completion is None:
+            return False
 
-        # Parse args from the original command
-        parts = cmd_original.split(None, 1)  # split off '/model'
-        raw_args = parts[1].strip() if len(parts) > 1 else ""
+        display_text = str(getattr(completion, "display_text", "") or "")
+        cmd_name = (
+            display_text[1:]
+            if display_text.startswith("/")
+            else str(getattr(completion, "text", "") or "").strip()
+        )
+        if not cmd_name or " " in cmd_name:
+            return False
 
-        # Parse --provider and --global flags
-        model_input, explicit_provider, persist_global = parse_model_flags(raw_args)
+        if cmd_name == "model":
+            self._open_model_selection(buffer)
+            return True
+
+        try:
+            buffer.apply_completion(completion)
+        except Exception:
+            return False
+        return True
+
+    def _maybe_accept_model_selection_on_space(self, buffer) -> bool:
+        """Make Space commit or advance the canonical /model selector."""
+        if self._model_selection_active():
+            return self._commit_model_selection(buffer)
+
+        raw_text = str(getattr(buffer, "text", "") or "")
+        stripped = raw_text.strip()
+        if stripped == "/model":
+            self._open_model_selection(buffer)
+            return True
+
+        complete_state = getattr(buffer, "complete_state", None)
+        if complete_state is None:
+            return False
+        completion = getattr(complete_state, "current_completion", None)
+        if completion is None:
+            try:
+                buffer.go_to_completion(0)
+            except Exception:
+                return False
+            complete_state = getattr(buffer, "complete_state", None)
+            completion = getattr(complete_state, "current_completion", None)
+        if completion is None:
+            return False
+
+        display_text = str(getattr(completion, "display_text", "") or "")
+        cmd_name = (
+            display_text[1:]
+            if display_text.startswith("/")
+            else str(getattr(completion, "text", "") or "").strip()
+        )
+        if cmd_name == "model":
+            self._open_model_selection(buffer)
+            return True
+        return False
+
+    def _apply_model_switch_result(self, result, *, persist_global: bool = False) -> None:
+        """Apply a successful model switch to the live CLI state."""
+        old_model = self.model
+        self.model = result.new_model
+        self.provider = result.target_provider
+        self.requested_provider = result.target_provider
+        if result.api_key:
+            self.api_key = result.api_key
+            self._explicit_api_key = result.api_key
+        if result.base_url:
+            self.base_url = result.base_url
+            self._explicit_base_url = result.base_url
+        if result.api_mode:
+            self.api_mode = result.api_mode
+
+        if self.agent is not None:
+            try:
+                self.agent.switch_model(
+                    new_model=result.new_model,
+                    new_provider=result.target_provider,
+                    api_key=result.api_key,
+                    base_url=result.base_url,
+                    api_mode=result.api_mode,
+                )
+            except Exception as exc:
+                _cprint(f"  ⚠ Agent swap failed ({exc}); change applied to next session.")
+
+        self._pending_model_switch_note = (
+            f"[Note: model was just switched from {old_model} to {result.new_model} "
+            f"via {result.provider_label or result.target_provider}. "
+            f"Adjust your self-identification accordingly.]"
+        )
+
+        provider_label = result.provider_label or result.target_provider
+        _cprint(f"  ✓ Model switched: {result.new_model}")
+        _cprint(f"    Provider: {provider_label}")
+
+        mi = result.model_info
+        if mi:
+            if mi.context_window:
+                _cprint(f"    Context: {mi.context_window:,} tokens")
+            if mi.max_output:
+                _cprint(f"    Max output: {mi.max_output:,} tokens")
+            if mi.has_cost_data():
+                _cprint(f"    Cost: {mi.format_cost()}")
+            _cprint(f"    Capabilities: {mi.format_capabilities()}")
+        else:
+            try:
+                from agent.model_metadata import get_model_context_length
+
+                ctx = get_model_context_length(
+                    result.new_model,
+                    base_url=result.base_url or self.base_url,
+                    api_key=result.api_key or self.api_key,
+                    provider=result.target_provider,
+                )
+                _cprint(f"    Context: {ctx:,} tokens")
+            except Exception:
+                pass
+
+        cache_enabled = (
+            ("openrouter" in (result.base_url or "").lower() and "claude" in result.new_model.lower())
+            or result.api_mode == "anthropic_messages"
+        )
+        if cache_enabled:
+            _cprint("    Prompt caching: enabled")
+
+        if result.warning_message:
+            _cprint(f"    ⚠ {result.warning_message}")
+
+        if persist_global:
+            save_config_value("model.default", result.new_model)
+            if result.provider_changed:
+                save_config_value("model.provider", result.target_provider)
+            _cprint("    Saved to config.yaml (--global)")
+        else:
+            _cprint("    (session only — add --global to persist)")
+
+    def _model_selection_active(self) -> bool:
+        return getattr(self, "_model_selection_controller", None) is not None
+
+    def _commit_model_selection(self, buffer=None) -> bool:
+        return self._activate_model_selection(buffer)
+
+    def _sync_model_selection_completion(self, buffer) -> None:
+        controller = getattr(self, "_model_selection_controller", None)
+        if buffer is None:
+            return
+        if controller is None:
+            try:
+                buffer.cancel_completion()
+            except Exception:
+                pass
+            return
+        try:
+            if not buffer.complete_state:
+                buffer.start_completion(select_first=False)
+            if buffer.complete_state:
+                buffer.go_to_completion(controller.cursor)
+        except Exception:
+            pass
+
+    def _sync_model_selection_buffer(self, buffer) -> None:
+        controller = getattr(self, "_model_selection_controller", None)
+        if controller is None or buffer is None:
+            return
+        path_parts = ["/model"]
+        if controller.source_id:
+            path_parts.append(controller.source_id)
+        if controller.provider_id:
+            provider_id = controller.provider_id
+            if ":" in provider_id:
+                path_parts.append(provider_id.split(":", 1)[1])
+        text = " ".join(path_parts) + " "
+        from prompt_toolkit.document import Document
+
+        try:
+            buffer.set_document(
+                Document(text=text, cursor_position=len(text)),
+                bypass_readonly=True,
+            )
+        except Exception:
+            pass
+
+    def _open_model_selection(self, buffer=None) -> None:
+        """Open the canonical source -> provider -> model selector in the slash menu."""
+        from hermes_cli.model_selection import (
+            ModelSelectionController,
+            build_model_selection_tree,
+        )
 
         user_provs = None
         custom_provs = None
         try:
             from hermes_cli.config import load_config
+
             cfg = load_config()
             user_provs = cfg.get("providers")
             custom_provs = cfg.get("custom_providers")
         except Exception:
             pass
 
-        # No args at all: show available providers + models
+        tree = build_model_selection_tree(
+            current_provider=self.provider or "",
+            current_model=self.model or "",
+            user_providers=user_provs,
+            custom_providers=custom_provs,
+        )
+        self._model_selection_controller = ModelSelectionController(tree)
+        if buffer is not None:
+            self._sync_model_selection_buffer(buffer)
+            self._sync_model_selection_completion(buffer)
+        self._invalidate(min_interval=0.0)
+
+    def _close_model_selection(self, buffer=None, *, clear_text: bool = False) -> None:
+        self._model_selection_controller = None
+        if buffer is not None:
+            self._sync_model_selection_completion(buffer)
+            if clear_text:
+                try:
+                    buffer.reset(append_to_history=True)
+                except Exception:
+                    pass
+        self._invalidate(min_interval=0.0)
+
+    def _back_model_selection(self, buffer=None) -> bool:
+        controller = getattr(self, "_model_selection_controller", None)
+        if controller is None:
+            return False
+        if controller.back():
+            self._sync_model_selection_buffer(buffer)
+            self._sync_model_selection_completion(buffer)
+            self._invalidate(min_interval=0.0)
+            return True
+        self._close_model_selection(buffer, clear_text=True)
+        return True
+
+    def _move_model_selection(self, direction: int, buffer=None) -> bool:
+        controller = getattr(self, "_model_selection_controller", None)
+        if controller is None:
+            return False
+        if direction < 0:
+            controller.move_up()
+        else:
+            controller.move_down()
+        self._sync_model_selection_completion(buffer)
+        self._invalidate(min_interval=0.0)
+        return True
+
+    def _activate_model_selection(self, buffer=None) -> bool:
+        controller = getattr(self, "_model_selection_controller", None)
+        if controller is None:
+            return False
+
+        request = controller.enter()
+        if request is None:
+            self._sync_model_selection_buffer(buffer)
+            self._sync_model_selection_completion(buffer)
+            self._invalidate(min_interval=0.0)
+            return True
+
+        user_provs = None
+        custom_provs = None
+        try:
+            from hermes_cli.config import load_config
+
+            cfg = load_config()
+            user_provs = cfg.get("providers")
+            custom_provs = cfg.get("custom_providers")
+        except Exception:
+            pass
+
+        from hermes_cli.model_switch import switch_model
+
+        result = switch_model(
+            raw_input=request.model_id,
+            current_provider=self.provider or "",
+            current_model=self.model or "",
+            current_base_url=self.base_url or "",
+            current_api_key=self.api_key or "",
+            is_global=False,
+            explicit_provider=request.provider_slug,
+            user_providers=user_provs,
+            custom_providers=custom_provs,
+        )
+        self._close_model_selection(buffer, clear_text=True)
+        if not result.success:
+            _cprint(f"  ✗ {result.error_message}")
+            return True
+        self._apply_model_switch_result(result, persist_global=False)
+        return True
+
+    def _handle_model_switch(self, cmd_original: str):
+        """Handle /model command — switch model for this session.
+
+        Supports:
+          /model                              — open nested model picker
+          /model <name>                       — switch for this session only
+          /model <name> --global              — switch and persist to config.yaml
+          /model <name> --provider <provider> — switch provider + model
+          /model --provider <provider>        — switch to provider, auto-detect model
+        """
+        from hermes_cli.model_switch import switch_model, parse_model_flags
+
+        parts = cmd_original.split(None, 1)
+        raw_args = parts[1].strip() if len(parts) > 1 else ""
+        model_input, explicit_provider, persist_global = parse_model_flags(raw_args)
+
+        user_provs = None
+        custom_provs = None
+        try:
+            from hermes_cli.config import load_config
+
+            cfg = load_config()
+            user_provs = cfg.get("providers")
+            custom_provs = cfg.get("custom_providers")
+        except Exception:
+            pass
+
         if not model_input and not explicit_provider:
-            model_display = self.model or "unknown"
-            provider_display = get_label(self.provider) if self.provider else "unknown"
-            _cprint(f"  Current: {model_display} on {provider_display}")
-            _cprint("")
-
-            # Show authenticated providers with top models
-            try:
-                providers = list_authenticated_providers(
-                    current_provider=self.provider or "",
-                    user_providers=user_provs,
-                    custom_providers=custom_provs,
-                    max_models=6,
-                )
-                if providers:
-                    for p in providers:
-                        tag = " (current)" if p["is_current"] else ""
-                        _cprint(f"  {p['name']} [--provider {p['slug']}]{tag}:")
-                        if p["models"]:
-                            model_strs = ", ".join(p["models"])
-                            extra = f"  (+{p['total_models'] - len(p['models'])} more)" if p["total_models"] > len(p["models"]) else ""
-                            _cprint(f"    {model_strs}{extra}")
-                        elif p.get("api_url"):
-                            _cprint(f"    {p['api_url']} (use /model <name> --provider {p['slug']})")
-                        else:
-                            _cprint(f"    (no models listed)")
-                        _cprint("")
-                else:
-                    _cprint("  No authenticated providers found.")
-                    _cprint("")
-            except Exception:
-                pass
-
-            # Aliases
-            from hermes_cli.model_switch import MODEL_ALIASES
-            alias_list = ", ".join(sorted(MODEL_ALIASES.keys()))
-            _cprint(f"  Aliases: {alias_list}")
-            _cprint("")
-            _cprint("  /model <name>                        switch model")
-            _cprint("  /model <name> --provider <slug>      switch provider")
-            _cprint("  /model <name> --global               persist to config")
+            _cprint("  Use the inline slash menu: `/model` then Enter.")
+            _cprint("  Or run `/model <name> --provider <slug>` directly.")
             return
 
-        # Perform the switch
         result = switch_model(
             raw_input=model_input,
             current_provider=self.provider or "",
@@ -3946,93 +4210,7 @@ class HermesCLI:
             _cprint(f"  ✗ {result.error_message}")
             return
 
-        # Apply to CLI state.
-        # Update requested_provider so _ensure_runtime_credentials() doesn't
-        # overwrite the switch on the next turn (it re-resolves from this).
-        old_model = self.model
-        self.model = result.new_model
-        self.provider = result.target_provider
-        self.requested_provider = result.target_provider
-        if result.api_key:
-            self.api_key = result.api_key
-            self._explicit_api_key = result.api_key
-        if result.base_url:
-            self.base_url = result.base_url
-            self._explicit_base_url = result.base_url
-        if result.api_mode:
-            self.api_mode = result.api_mode
-
-        # Apply to running agent (in-place swap)
-        if self.agent is not None:
-            try:
-                self.agent.switch_model(
-                    new_model=result.new_model,
-                    new_provider=result.target_provider,
-                    api_key=result.api_key,
-                    base_url=result.base_url,
-                    api_mode=result.api_mode,
-                )
-            except Exception as exc:
-                _cprint(f"  ⚠ Agent swap failed ({exc}); change applied to next session.")
-
-        # Store a note to prepend to the next user message so the model
-        # knows a switch occurred (avoids injecting system messages mid-history
-        # which breaks providers and prompt caching).
-        self._pending_model_switch_note = (
-            f"[Note: model was just switched from {old_model} to {result.new_model} "
-            f"via {result.provider_label or result.target_provider}. "
-            f"Adjust your self-identification accordingly.]"
-        )
-
-        # Display confirmation with full metadata
-        provider_label = result.provider_label or result.target_provider
-        _cprint(f"  ✓ Model switched: {result.new_model}")
-        _cprint(f"    Provider: {provider_label}")
-
-        # Rich metadata from models.dev
-        mi = result.model_info
-        if mi:
-            if mi.context_window:
-                _cprint(f"    Context: {mi.context_window:,} tokens")
-            if mi.max_output:
-                _cprint(f"    Max output: {mi.max_output:,} tokens")
-            if mi.has_cost_data():
-                _cprint(f"    Cost: {mi.format_cost()}")
-            _cprint(f"    Capabilities: {mi.format_capabilities()}")
-        else:
-            # Fallback to old context length lookup
-            try:
-                from agent.model_metadata import get_model_context_length
-                ctx = get_model_context_length(
-                    result.new_model,
-                    base_url=result.base_url or self.base_url,
-                    api_key=result.api_key or self.api_key,
-                    provider=result.target_provider,
-                )
-                _cprint(f"    Context: {ctx:,} tokens")
-            except Exception:
-                pass
-
-        # Cache notice
-        cache_enabled = (
-            ("openrouter" in (result.base_url or "").lower() and "claude" in result.new_model.lower())
-            or result.api_mode == "anthropic_messages"
-        )
-        if cache_enabled:
-            _cprint("    Prompt caching: enabled")
-
-        # Warning from validation
-        if result.warning_message:
-            _cprint(f"    ⚠ {result.warning_message}")
-
-        # Persistence
-        if persist_global:
-            save_config_value("model.default", result.new_model)
-            if result.provider_changed:
-                save_config_value("model.provider", result.target_provider)
-            _cprint("    Saved to config.yaml (--global)")
-        else:
-            _cprint("    (session only — add --global to persist)")
+        self._apply_model_switch_result(result, persist_global=persist_global)
 
     def _show_model_and_providers(self):
         """Show current model + provider and list all authenticated providers.
@@ -7372,6 +7550,7 @@ class HermesCLI:
         # Secure secret capture state for skill setup
         self._secret_state = None       # dict with var_name, prompt, metadata, response_queue
         self._secret_deadline = 0
+        self._model_selection_controller = None
 
         # Clipboard image attachments (paste images into the CLI)
         self._attached_images: list[Path] = []
@@ -7473,9 +7652,22 @@ class HermesCLI:
                     event.app.invalidate()
                 return
 
+            if self._model_selection_active():
+                self._commit_model_selection(event.app.current_buffer)
+                event.app.invalidate()
+                return
+
+            if self._maybe_accept_slash_completion_on_enter(event.app.current_buffer):
+                event.app.invalidate()
+                return
+
             # --- Normal input routing ---
             text = event.app.current_buffer.text.strip()
             has_images = bool(self._attached_images)
+            if text == "/model" and not has_images:
+                self._open_model_selection(event.app.current_buffer)
+                event.app.invalidate()
+                return
             if text or has_images:
                 # Snapshot and clear attached images
                 images = list(self._attached_images)
@@ -7529,6 +7721,10 @@ class HermesCLI:
             immediately.
             """
             buf = event.current_buffer
+            if self._model_selection_active():
+                self._commit_model_selection(buf)
+                event.app.invalidate()
+                return
             if buf.complete_state:
                 # Completion menu is open — accept the selection
                 completion = buf.complete_state.current_completion
@@ -7546,6 +7742,15 @@ class HermesCLI:
             else:
                 # No menu and no suggestion — start completions from scratch
                 buf.start_completion()
+
+        @kb.add(' ', eager=True)
+        def handle_space(event):
+            """Space should commit/advance /model in the same dropdown surface."""
+            buf = event.current_buffer
+            if self._maybe_accept_model_selection_on_space(buf):
+                event.app.invalidate()
+                return
+            buf.insert_text(' ')
 
         # --- Clarify tool: arrow-key navigation for multiple-choice questions ---
 
@@ -7580,12 +7785,40 @@ class HermesCLI:
                 self._approval_state["selected"] = min(max_idx, self._approval_state["selected"] + 1)
                 event.app.invalidate()
 
+        _model_selection_filter = Condition(lambda: self._model_selection_active())
+
+        @kb.add('up', filter=_model_selection_filter)
+        def model_selection_up(event):
+            self._move_model_selection(-1, event.current_buffer)
+            event.app.invalidate()
+
+        @kb.add('down', filter=_model_selection_filter)
+        def model_selection_down(event):
+            self._move_model_selection(1, event.current_buffer)
+            event.app.invalidate()
+
+        @kb.add('backspace', filter=_model_selection_filter)
+        def model_selection_backspace(event):
+            self._back_model_selection(event.current_buffer)
+            event.app.invalidate()
+
+        @kb.add('left', filter=_model_selection_filter)
+        def model_selection_left(event):
+            self._back_model_selection(event.current_buffer)
+            event.app.invalidate()
+
         # --- History navigation: up/down browse history in normal input mode ---
         # The TextArea is multiline, so by default up/down only move the cursor.
         # Buffer.auto_up/auto_down handle both: cursor movement when multi-line,
         # history browsing when on the first/last line (or single-line input).
         _normal_input = Condition(
-            lambda: not self._clarify_state and not self._approval_state and not self._sudo_state and not self._secret_state
+            lambda: (
+                not self._clarify_state
+                and not self._approval_state
+                and not self._sudo_state
+                and not self._secret_state
+                and not self._model_selection_active()
+            )
         )
 
         @kb.add('up', filter=_normal_input)
@@ -7659,6 +7892,11 @@ class HermesCLI:
                 self._clarify_state = None
                 self._clarify_freetext = False
                 event.app.current_buffer.reset()
+                event.app.invalidate()
+                return
+
+            if self._model_selection_active():
+                self._close_model_selection(event.app.current_buffer, clear_text=True)
                 event.app.invalidate()
                 return
 
@@ -7859,6 +8097,7 @@ class HermesCLI:
         _completer = SlashCommandCompleter(
             skill_commands_provider=lambda: _skill_commands,
             command_filter=cli_ref._command_available,
+            model_selection_provider=lambda: getattr(cli_ref, "_model_selection_controller", None),
         )
         input_area = TextArea(
             height=Dimension(min=1, max=8, preferred=1),
@@ -8031,6 +8270,18 @@ class HermesCLI:
                     ('class:clarify-countdown', f'  ({remaining}s)'),
                 ]
 
+            if cli_ref._model_selection_active():
+                controller = cli_ref._model_selection_controller
+                breadcrumb = ""
+                try:
+                    if controller is not None:
+                        breadcrumb = controller.current_view().breadcrumb or "Select model source"
+                except Exception:
+                    breadcrumb = "Select model source"
+                return [
+                    ('class:hint', f'  /model · {breadcrumb} · ↑/↓ move, Enter/Space/Tab select, Backspace back'),
+                ]
+
             if cli_ref._clarify_state:
                 remaining = max(0, int(cli_ref._clarify_deadline - _time.monotonic()))
                 countdown = f'  ({remaining}s)' if cli_ref._clarify_deadline else ''
@@ -8053,7 +8304,7 @@ class HermesCLI:
             return []
 
         def get_hint_height():
-            if cli_ref._sudo_state or cli_ref._secret_state or cli_ref._approval_state or cli_ref._clarify_state or cli_ref._command_running:
+            if cli_ref._sudo_state or cli_ref._secret_state or cli_ref._approval_state or cli_ref._clarify_state or cli_ref._command_running or cli_ref._model_selection_active():
                 return 1
             # Keep a spacer while the agent runs on roomy terminals, but reclaim
             # the row on narrow/mobile screens where every line matters.

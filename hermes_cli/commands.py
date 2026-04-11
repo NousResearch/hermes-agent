@@ -648,9 +648,11 @@ class SlashCommandCompleter(Completer):
         self,
         skill_commands_provider: Callable[[], Mapping[str, dict[str, Any]]] | None = None,
         command_filter: Callable[[str], bool] | None = None,
+        model_selection_provider: Callable[[], Any] | None = None,
     ) -> None:
         self._skill_commands_provider = skill_commands_provider
         self._command_filter = command_filter
+        self._model_selection_provider = model_selection_provider
 
     def _command_allowed(self, slash_command: str) -> bool:
         if self._command_filter is None:
@@ -668,6 +670,17 @@ class SlashCommandCompleter(Completer):
         except Exception:
             return {}
 
+    def _model_selection_view(self):
+        if self._model_selection_provider is None:
+            return None
+        try:
+            controller = self._model_selection_provider()
+            if controller is None:
+                return None
+            return controller.current_view()
+        except Exception:
+            return None
+
     @staticmethod
     def _completion_text(cmd_name: str, word: str) -> str:
         """Return replacement text for a completion.
@@ -677,6 +690,8 @@ class SlashCommandCompleter(Completer):
         menu. Appending a trailing space keeps the dropdown visible and makes
         backspacing retrigger it naturally.
         """
+        if cmd_name == "model" and cmd_name == word:
+            return cmd_name
         return f"{cmd_name} " if cmd_name == word else cmd_name
 
     @staticmethod
@@ -923,6 +938,22 @@ class SlashCommandCompleter(Completer):
                 yield from self._path_completions(path_word)
             return
 
+        if text.lower().startswith("/model"):
+            view = self._model_selection_view()
+            if view is not None:
+                from hermes_cli.model_selection import selection_item_meta_text
+
+                for item in view.items:
+                    meta = selection_item_meta_text(item) or None
+                    yield Completion(
+                        item.token,
+                        start_position=0,
+                        display=item.label,
+                        display_meta=meta,
+                        style="fg:#7a7a7a" if not item.enabled else "",
+                    )
+                return
+
         # Check if we're completing a subcommand (base command already typed)
         parts = text.split(maxsplit=1)
         base_cmd = parts[0].lower()
@@ -1001,6 +1032,10 @@ class SlashCommandAutoSuggest(AutoSuggest):
             if self._history:
                 return self._history.get_suggestion(buffer, document)
             return None
+
+        if text.lower().startswith("/model") and self._completer is not None:
+            if self._completer._model_selection_view() is not None:
+                return None
 
         parts = text.split(maxsplit=1)
         base_cmd = parts[0].lower()

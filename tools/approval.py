@@ -2,6 +2,7 @@
 
 This module is the single source of truth for the dangerous command system:
 - Pattern detection (DANGEROUS_PATTERNS, detect_dangerous_command)
+- Runtime self-mutation hard block (non-bypassable, checked before yolo/force)
 - Per-session approval state (thread-safe, keyed by session_key)
 - Approval prompting (CLI interactive + gateway async)
 - Smart approval via auxiliary LLM (auto-approve low-risk commands)
@@ -12,6 +13,7 @@ import contextvars
 import logging
 import os
 import re
+import shlex
 import sys
 import threading
 import unicodedata
@@ -154,6 +156,206 @@ def _approval_key_aliases(pattern_key: str) -> set[str]:
     historical regex-derived key.
     """
     return _PATTERN_KEY_ALIASES.get(pattern_key, {pattern_key})
+
+
+# =========================================================================
+# Runtime self-mutation detection and hard block
+# =========================================================================
+# Venv-creating commands (`uv venv`, `python -m venv`, `virtualenv`) are
+# not inherently destructive — they only kill the agent when targeting
+# the Python environment it is running from. `uv venv` silently replaces
+# an existing venv, stripping every package including certifi, and the
+# process dies on the next API call.  Similarly, `rm -rf`, `mv`, and
+# `uv pip uninstall` against the runtime are lethal.
+#
+# This guard uses structural parsing (shlex + path resolution) rather
+# than regex, and is enforced as a HARD BLOCK in check_all_command_guards
+# — before yolo, force, smart approval, and container bypass. This is
+# intentional: three self-destruct incidents in two days proved that
+# approvable guards are insufficient when the agent can approve its own
+# commands.
+
+_VENV_MAKERS: tuple[tuple[str, ...], ...] = (
+    ("uv", "venv"),
+    ("python", "-m", "venv"),
+    ("python3", "-m", "venv"),
+    ("virtualenv",),
+)
+
+
+def _runtime_roots() -> list[str]:
+    """Directories whose mutation would break the running agent.
+
+    Returns the absolute, realpath-resolved paths for:
+    - ``sys.prefix`` — the venv directory the current process runs from
+    - The agent source directory (parent of ``tools/``)
+
+    Returns an empty list if paths are unset or unusable.
+    """
+    roots = []
+    try:
+        prefix = os.path.realpath(sys.prefix)
+        if prefix and prefix != os.sep and len(prefix) > 1:
+            roots.append(prefix)
+    except (OSError, AttributeError, ValueError):
+        pass
+    try:
+        source = os.path.realpath(os.path.join(os.path.dirname(__file__), ".."))
+        if source and source != os.sep and len(source) > 1:
+            roots.append(source)
+    except (OSError, AttributeError, ValueError):
+        pass
+    return roots
+
+
+def _path_under(candidate: str, roots: list[str]) -> Optional[str]:
+    """Return the matching root if candidate equals or lives under one of them."""
+    try:
+        resolved = os.path.realpath(candidate)
+    except (OSError, ValueError):
+        return None
+    for root in roots:
+        if resolved == root:
+            return root
+        if resolved.startswith(root + os.sep):
+            return root
+    return None
+
+
+def detect_runtime_mutation(
+    command: str,
+    cwd: Optional[str] = None,
+    runtime_roots: Optional[list[str]] = None,
+) -> Optional[str]:
+    """Detect commands that would mutate the Python runtime the agent is
+    currently running in.
+
+    Parses the command with ``shlex.split``, extracts target paths from
+    known environment-mutating commands, resolves them against *cwd*
+    (defaulting to ``os.getcwd()``), and returns a human-readable
+    description if any target lies inside a runtime root.  Returns
+    ``None`` when the command is safe or cannot be parsed.
+
+    Detection covers: venv creation (``uv venv``, ``python -m venv``,
+    ``virtualenv``), recursive delete (``rm -rf``), move (``mv``), and
+    ``uv pip uninstall`` without an explicit ``--python`` target.
+
+    Unparseable or ambiguous commands pass through and remain subject
+    to the regex ``DANGEROUS_PATTERNS``.
+    """
+    try:
+        tokens = shlex.split(command, comments=True, posix=True)
+    except ValueError:
+        return None
+    if not tokens:
+        return None
+
+    roots = runtime_roots if runtime_roots is not None else _runtime_roots()
+    if not roots:
+        return None
+    base = cwd or os.getcwd()
+
+    def _resolve(path: str) -> str:
+        path = os.path.expanduser(path)
+        if os.path.isabs(path):
+            return path
+        return os.path.join(base, path)
+
+    # Strip leading env assignments and wrappers (sudo, env, nice, etc.)
+    i = 0
+    while i < len(tokens) and "=" in tokens[i]:
+        i += 1
+    while i < len(tokens) and tokens[i] in ("sudo", "env", "nice", "nohup", "command"):
+        i += 1
+    tokens = tokens[i:]
+    if not tokens:
+        return None
+
+    cmd = os.path.basename(tokens[0])
+    args = tokens[1:]
+
+    # --- venv creation: `uv venv <target>`, `python -m venv <target>`, etc.
+    for prefix in _VENV_MAKERS:
+        full = (cmd,) + prefix[1:] if len(prefix) > 1 else (cmd,)
+        if len(tokens) < len(prefix):
+            continue
+        if tuple(t.lower() for t in tokens[: len(prefix)]) != prefix:
+            continue
+        for arg in tokens[len(prefix):]:
+            if arg.startswith("-"):
+                continue
+            matched = _path_under(_resolve(arg), roots)
+            if matched:
+                return f"venv creation targeting running runtime at {matched}"
+        break
+
+    # --- rm -rf <target> against runtime
+    if cmd == "rm":
+        has_recursive = any(
+            flag.startswith("-") and not flag.startswith("--") and ("r" in flag or "R" in flag)
+            for flag in args
+        ) or "--recursive" in args
+        if has_recursive:
+            for arg in args:
+                if arg.startswith("-"):
+                    continue
+                matched = _path_under(_resolve(arg), roots)
+                if matched:
+                    return f"recursive delete targeting running runtime at {matched}"
+
+    # --- mv <runtime-path> <dest>
+    if cmd == "mv":
+        non_flag = [a for a in args if not a.startswith("-")]
+        if non_flag:
+            matched = _path_under(_resolve(non_flag[0]), roots)
+            if matched:
+                return f"move/rename of running runtime at {matched}"
+
+    # --- uv pip uninstall (without explicit --python targets current env)
+    if cmd == "uv" and len(args) >= 2 and args[0] == "pip" and args[1] == "uninstall":
+        has_explicit_python = any(a.startswith("--python") for a in args)
+        if not has_explicit_python:
+            return "uv pip uninstall without --python targets the agent's own runtime"
+
+    return None
+
+
+def _hard_block_runtime_mutation(command: str) -> Optional[dict]:
+    """Return a hard-block dict if *command* would mutate the agent runtime.
+
+    This is called from ``check_all_command_guards`` *before* any bypass
+    logic (yolo, force, smart approval, container skip).  The block
+    cannot be overridden — the agent must never destroy its own runtime.
+
+    Resolves relative paths against both ``os.getcwd()`` and the agent
+    source directory, since the terminal tool may execute commands from
+    the agent's project root while the process cwd differs.
+    """
+    # Try current working directory first
+    reason = detect_runtime_mutation(command)
+    if reason is not None:
+        pass
+    else:
+        # Also check relative paths against the agent source directory,
+        # since the agent often runs commands "from" its project root
+        # even when the process cwd is elsewhere (e.g. /home/hermes).
+        try:
+            source_dir = os.path.realpath(os.path.join(os.path.dirname(__file__), ".."))
+        except (OSError, AttributeError):
+            source_dir = None
+        if source_dir and source_dir != os.getcwd():
+            reason = detect_runtime_mutation(command, cwd=source_dir)
+    if reason is None:
+        return None
+    return {
+        "approved": False,
+        "hard_blocked": True,
+        "message": (
+            f"BLOCKED (non-bypassable): {reason}. "
+            "This command would destroy the running agent. Do NOT retry or force."
+        ),
+        "status": "blocked",
+    }
 
 
 # =========================================================================
@@ -696,6 +898,17 @@ def check_all_command_guards(command: str, env_type: str,
     a gateway force=True replay from bypassing one check when only the
     other was shown to the user.
     """
+    # --- Runtime self-mutation: HARD BLOCK (non-bypassable) ---
+    # Must run before container/yolo/force/smart-approval checks.
+    # The agent can approve its own commands via smart approval or
+    # gateway /approve — this guard prevents that for commands that
+    # would destroy the runtime.  Three self-destruct incidents in
+    # two days proved that approvable guards are insufficient.
+    runtime_block = _hard_block_runtime_mutation(command)
+    if runtime_block is not None:
+        logger.warning("HARD BLOCKED runtime self-mutation: %s", command[:120])
+        return runtime_block
+
     # Skip containers for both checks
     if env_type in ("docker", "singularity", "modal", "daytona"):
         return {"approved": True, "message": None}

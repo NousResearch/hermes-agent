@@ -953,14 +953,24 @@ class TestBuildApiKwargs:
         assert kwargs["messages"][0]["content"][0]["text"] == "hi"
         assert "cache_control" not in kwargs["messages"][0]["content"][0]
 
-    def test_qwen_portal_omits_max_tokens(self, agent):
+    def test_qwen_portal_sends_explicit_max_tokens(self, agent):
+        """When the user explicitly sets max_tokens, it should be sent to Qwen Portal."""
         agent.base_url = "https://portal.qwen.ai/v1"
         agent._base_url_lower = agent.base_url.lower()
         agent.max_tokens = 4096
         messages = [{"role": "system", "content": "sys"}, {"role": "user", "content": "hi"}]
         kwargs = agent._build_api_kwargs(messages)
-        assert "max_tokens" not in kwargs
-        assert "max_completion_tokens" not in kwargs
+        assert kwargs["max_tokens"] == 4096
+
+    def test_qwen_portal_default_max_tokens(self, agent):
+        """When max_tokens is None, Qwen Portal gets a default of 65536
+        to prevent reasoning models from exhausting their output budget."""
+        agent.base_url = "https://portal.qwen.ai/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.max_tokens = None
+        messages = [{"role": "system", "content": "sys"}, {"role": "user", "content": "hi"}]
+        kwargs = agent._build_api_kwargs(messages)
+        assert kwargs["max_tokens"] == 65536
 
 
 class TestBuildAssistantMessage:

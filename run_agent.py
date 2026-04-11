@@ -8277,8 +8277,24 @@ class AIAgent:
                                     _text_parts.append(getattr(_blk, "text", ""))
                             _trunc_content = "\n".join(_text_parts) if _text_parts else None
 
+                        # A response is "thinking exhausted" only when the model
+                        # actually produced reasoning blocks but no visible text after
+                        # them.  Models that do not use <think> tags (e.g. GLM-4.7 on
+                        # NVIDIA Build, minimax) may return content=None or an empty
+                        # string for unrelated reasons — treat those as normal
+                        # truncations that deserve continuation retries, not as
+                        # thinking-budget exhaustion.
+                        _has_think_tags = bool(
+                            _trunc_content and re.search(
+                                r'<(?:think|thinking|reasoning|REASONING_SCRATCHPAD)[^>]*>',
+                                _trunc_content,
+                                re.IGNORECASE,
+                            )
+                        )
                         _thinking_exhausted = (
-                            not _trunc_has_tool_calls and (
+                            not _trunc_has_tool_calls
+                            and _has_think_tags
+                            and (
                                 (_trunc_content is not None and not self._has_content_after_think_block(_trunc_content))
                                 or _trunc_content is None
                             )

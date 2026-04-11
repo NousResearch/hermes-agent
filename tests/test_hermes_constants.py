@@ -12,6 +12,7 @@ from hermes_constants import (
     get_default_hermes_root,
     is_container,
     parse_reasoning_effort,
+    reasoning_effort_label,
     secure_parent_dir,
 )
 
@@ -264,3 +265,15 @@ class TestSecureParentDir:
         assert called_with[0] == (str(real_dir), 0o700)
 
 
+@pytest.mark.parametrize(
+    ("reasoning_config", "expected"),
+    [
+        (None, "medium"),
+        ({}, "medium"),
+        ({"enabled": False}, "none"),
+        ({"enabled": True, "effort": "high"}, "high"),
+        ({"enabled": True, "effort": "bogus"}, "medium"),
+    ],
+)
+def test_reasoning_effort_label(reasoning_config, expected):
+    assert reasoning_effort_label(reasoning_config) == expected

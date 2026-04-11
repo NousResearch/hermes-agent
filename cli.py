@@ -3341,6 +3341,12 @@ class HermesCLI:
             return "class:status-bar-warn"
         return "class:status-bar-dim"
 
+    def _reasoning_effort_label(self) -> str:
+        """Return a short label for the active reasoning effort level."""
+        from hermes_constants import reasoning_effort_label
+
+        return reasoning_effort_label(getattr(self, "reasoning_config", None))
+
     def _build_context_bar(self, percent_used: Optional[int], width: int = 10) -> str:
         safe_percent = max(0, min(100, percent_used or 0))
         filled = round((safe_percent / 100) * width)
@@ -3401,6 +3407,7 @@ class HermesCLI:
         snapshot = {
             "model_name": model_name,
             "model_short": model_short,
+            "reasoning_label": self._reasoning_effort_label(),
             "duration": format_duration_compact(elapsed_seconds),
             "prompt_elapsed": self._format_prompt_elapsed(
                 getattr(self, "_prompt_start_time", None),
@@ -3657,13 +3664,15 @@ class HermesCLI:
             duration_label = snapshot["duration"]
 
             yolo_active = bool(os.getenv("HERMES_YOLO_MODE"))
+            rl = snapshot["reasoning_label"]
+
             if width < 52:
                 text = f"⚕ {snapshot['model_short']} · {duration_label}"
                 if yolo_active:
                     text += " · ⚠ YOLO"
                 return self._trim_status_bar_text(text, width)
             if width < 76:
-                parts = [f"⚕ {snapshot['model_short']}", percent_label]
+                parts = [f"⚕ {snapshot['model_short']} ({rl})", percent_label]
                 compressions = snapshot.get("compressions", 0)
                 if compressions:
                     parts.append(f"🗜️ {compressions}")
@@ -3683,7 +3692,7 @@ class HermesCLI:
                 context_label = "ctx --"
 
             compressions = snapshot.get("compressions", 0)
-            parts = [f"⚕ {snapshot['model_short']}", context_label, percent_label]
+            parts = [f"⚕ {snapshot['model_short']} ({rl})", context_label, percent_label]
             if compressions:
                 parts.append(f"🗜️ {compressions}")
             bg_count = snapshot.get("active_background_tasks", 0)
@@ -3712,6 +3721,7 @@ class HermesCLI:
             width = self._get_tui_terminal_width()
             duration_label = snapshot["duration"]
             yolo_active = bool(os.getenv("HERMES_YOLO_MODE"))
+            rl = snapshot["reasoning_label"]
 
             if width < 52:
                 frags = [
@@ -3733,6 +3743,7 @@ class HermesCLI:
                     frags = [
                         ("class:status-bar", " ⚕ "),
                         ("class:status-bar-strong", snapshot["model_short"]),
+                        ("class:status-bar-dim", f" ({rl})"),
                         ("class:status-bar-dim", " · "),
                         (self._status_bar_context_style(percent), percent_label),
                     ]
@@ -3764,6 +3775,7 @@ class HermesCLI:
                     frags = [
                         ("class:status-bar", " ⚕ "),
                         ("class:status-bar-strong", snapshot["model_short"]),
+                        ("class:status-bar-dim", f" ({rl})"),
                         ("class:status-bar-dim", " │ "),
                         ("class:status-bar-dim", context_label),
                         ("class:status-bar-dim", " │ "),

@@ -9,6 +9,7 @@
 ### What's different in this fork
 
 - **Expanded resume display** — Adds a `resume_display: expanded` configuration option that renders the last assistant response in the standard Hermes response panel below the compact recap when resuming a session, mirroring how a fresh response is displayed.
+- **Reasoning effort in the TUI status bar** — The status bar now shows the active reasoning effort parenthetically after the model name (e.g. `claude-sonnet-4 (high)`) at medium and wide terminal widths, giving persistent visibility into the configured level.
 
 ---
 

@@ -1420,17 +1420,14 @@ def _current_profile_name() -> str:
 
 
 def _session_info(agent) -> dict:
-    reasoning_config = getattr(agent, "reasoning_config", None)
-    reasoning_effort = ""
-    if (
-        isinstance(reasoning_config, dict)
-        and reasoning_config.get("enabled") is not False
-    ):
-        reasoning_effort = str(reasoning_config.get("effort", "") or "")
+    from hermes_constants import reasoning_effort_label
+
     service_tier = getattr(agent, "service_tier", None) or ""
     info: dict = {
         "model": getattr(agent, "model", ""),
-        "reasoning_effort": reasoning_effort,
+        "reasoning_effort": reasoning_effort_label(
+            getattr(agent, "reasoning_config", None)
+        ),
         "service_tier": service_tier,
         "fast": service_tier == "priority",
         "tools": {},
@@ -2236,6 +2233,8 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
 
 @method("session.create")
 def _(rid, params: dict) -> dict:
+    from hermes_constants import reasoning_effort_label
+
     sid = uuid.uuid4().hex[:8]
     key = _new_session_key()
     cols = int(params.get("cols", 80))
@@ -2283,6 +2282,7 @@ def _(rid, params: dict) -> dict:
             "session_id": sid,
             "info": {
                 "model": _resolve_model(),
+                "reasoning_effort": reasoning_effort_label(_load_reasoning_config()),
                 "tools": {},
                 "skills": {},
                 "cwd": os.getenv("TERMINAL_CWD", os.getcwd()),
@@ -4077,6 +4077,9 @@ def _(rid, params: dict) -> dict:
                 _save_cfg(cfg)
                 if session:
                     session["show_reasoning"] = True
+                    agent = session.get("agent")
+                    if agent is not None:
+                        _emit("session.info", params.get("session_id", ""), _session_info(agent))
                 return _ok(rid, {"key": key, "value": "show"})
             if arg in {"hide", "off"}:
                 cfg = _load_cfg()
@@ -4095,6 +4098,9 @@ def _(rid, params: dict) -> dict:
                 _save_cfg(cfg)
                 if session:
                     session["show_reasoning"] = False
+                    agent = session.get("agent")
+                    if agent is not None:
+                        _emit("session.info", params.get("session_id", ""), _session_info(agent))
                 return _ok(rid, {"key": key, "value": "hide"})
 
             parsed = parse_reasoning_effort(arg)
@@ -4103,6 +4109,7 @@ def _(rid, params: dict) -> dict:
             _write_config_key("agent.reasoning_effort", arg)
             if session and session.get("agent") is not None:
                 session["agent"].reasoning_config = parsed
+                _emit("session.info", params.get("session_id", ""), _session_info(session["agent"]))
             return _ok(rid, {"key": key, "value": arg})
         except Exception as e:
             return _err(rid, 5001, str(e))

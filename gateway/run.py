@@ -2483,6 +2483,22 @@ class GatewayRunner:
                 "args": event.get_command_args().strip(),
             })
 
+        if command in ("queue", "q"):
+            queued_text = event.get_command_args().strip()
+            if not queued_text:
+                return "Usage: /queue <prompt>"
+            adapter = self.adapters.get(source.platform)
+            if adapter:
+                from gateway.platforms.base import MessageEvent as _ME, MessageType as _MT
+                queued_event = _ME(
+                    text=queued_text,
+                    message_type=_MT.TEXT,
+                    source=event.source,
+                    message_id=event.message_id,
+                )
+                adapter._pending_messages[_quick_key] = queued_event
+            return "Queued for the next turn."
+
         # Resolve aliases to canonical name so dispatch only checks canonicals.
         _cmd_def = _resolve_cmd(command) if command else None
         canonical = _cmd_def.name if _cmd_def else command

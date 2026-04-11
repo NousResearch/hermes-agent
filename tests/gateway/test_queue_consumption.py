@@ -6,10 +6,11 @@ after the agent finishes its current task — not silently dropped.
 """
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from gateway.config import GatewayConfig
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
@@ -17,6 +18,7 @@ from gateway.platforms.base import (
     PlatformConfig,
     Platform,
 )
+from gateway.session import SessionSource, build_session_key
 
 
 # ---------------------------------------------------------------------------
@@ -163,3 +165,89 @@ class TestQueueConsumptionAfterCompletion:
 
         retrieved = adapter.get_pending_message(session_key)
         assert retrieved.text == "third"
+
+
+def _make_source() -> SessionSource:
+    return SessionSource(
+        platform=Platform.TELEGRAM,
+        user_id="u1",
+        chat_id="c1",
+        user_name="tester",
+        chat_type="dm",
+    )
+
+
+def _make_runner(adapter: BasePlatformAdapter):
+    from gateway.run import GatewayRunner
+
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(
+        platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="***")}
+    )
+    runner.adapters = {Platform.TELEGRAM: adapter}
+    runner._running_agents = {}
+    runner._running_agents_ts = {}
+    runner._pending_messages = {}
+    runner._pending_approvals = {}
+    runner._pending_model_notes = {}
+    runner._update_prompt_pending = {}
+    runner._draining = False
+    runner._voice_mode = {}
+    runner._is_user_authorized = lambda _source: True
+    runner._session_key_for_source = GatewayRunner._session_key_for_source.__get__(
+        runner, GatewayRunner
+    )
+    runner._handle_message_with_agent = AsyncMock(return_value="agent path")
+    runner.hooks = MagicMock()
+    runner.hooks.emit = AsyncMock()
+    return runner
+
+
+class TestQueueCommandRouting:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("command_text", ["/queue after this", "/q after this"])
+    async def test_active_session_commands_bypass_adapter_interrupt_path(self, command_text):
+        adapter = _StubAdapter()
+        adapter._send_with_retry = AsyncMock()
+        adapter.set_message_handler(AsyncMock(return_value="Queued for the next turn."))
+
+        source = _make_source()
+        session_key = build_session_key(source)
+        interrupt_event = asyncio.Event()
+        adapter._active_sessions[session_key] = interrupt_event
+
+        event = MessageEvent(
+            text=command_text,
+            source=source,
+            message_id="m-active",
+            message_type=MessageType.COMMAND,
+        )
+
+        await adapter.handle_message(event)
+
+        adapter._message_handler.assert_awaited_once_with(event)
+        adapter._send_with_retry.assert_awaited_once()
+        assert not interrupt_event.is_set()
+        assert session_key not in adapter._pending_messages
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("command_text", ["/queue after this", "/q after this"])
+    async def test_idle_queue_dispatches_to_queue_handler(self, command_text):
+        adapter = _StubAdapter()
+        runner = _make_runner(adapter)
+        source = _make_source()
+        event = MessageEvent(
+            text=command_text,
+            source=source,
+            message_id="m-idle",
+            message_type=MessageType.COMMAND,
+        )
+
+        result = await runner._handle_message(event)
+
+        session_key = runner._session_key_for_source(source)
+        queued_event = adapter._pending_messages[session_key]
+        assert result == "Queued for the next turn."
+        assert queued_event.text == "after this"
+        assert queued_event.message_type == MessageType.TEXT
+        runner._handle_message_with_agent.assert_not_awaited()

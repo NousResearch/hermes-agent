@@ -22,12 +22,14 @@ Public API (signatures preserved from the original 2,400-line version):
 
 import json
 import asyncio
+import ast
 import logging
 import threading
+from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
 
 from tools.registry import registry
-from toolsets import resolve_toolset, validate_toolset
+from toolsets import resolve_multiple_toolsets, resolve_toolset, validate_toolset
 
 logger = logging.getLogger(__name__)
 
@@ -129,38 +131,97 @@ def _run_async(coro):
 # Tool Discovery  (importing each module triggers its registry.register calls)
 # =============================================================================
 
+
+class _DynamicDictView(dict):
+    """Live read-through dict for backward-compatible exported mappings."""
+
+    def __init__(self, supplier):
+        super().__init__()
+        self._supplier = supplier
+
+    def _refresh(self) -> None:
+        super().clear()
+        super().update(self._supplier())
+
+    def __getitem__(self, key):
+        self._refresh()
+        return super().__getitem__(key)
+
+    def __contains__(self, key):
+        self._refresh()
+        return super().__contains__(key)
+
+    def __iter__(self):
+        self._refresh()
+        return super().__iter__()
+
+    def __len__(self):
+        self._refresh()
+        return super().__len__()
+
+    def __repr__(self):
+        self._refresh()
+        return super().__repr__()
+
+    def get(self, key, default=None):
+        self._refresh()
+        return super().get(key, default)
+
+    def items(self):
+        self._refresh()
+        return super().items()
+
+    def keys(self):
+        self._refresh()
+        return super().keys()
+
+    def values(self):
+        self._refresh()
+        return super().values()
+
+    def copy(self):
+        self._refresh()
+        return dict(self)
+
+
+def _module_registers_tools(module_path: Path) -> bool:
+    """Return True when the module contains a ``registry.register(...)`` call."""
+    try:
+        source = module_path.read_text(encoding="utf-8")
+        tree = ast.parse(source, filename=str(module_path))
+    except (OSError, SyntaxError):
+        return False
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if (
+            isinstance(func, ast.Attribute)
+            and func.attr == "register"
+            and isinstance(func.value, ast.Name)
+            and func.value.id == "registry"
+        ):
+            return True
+    return False
+
 def _discover_tools():
     """Import all tool modules to trigger their registry.register() calls.
 
-    Wrapped in a function so import errors in optional tools (e.g., fal_client
-    not installed) don't prevent the rest from loading.
+    Uses source inspection instead of a hand-maintained module list so new
+    built-in tools become discoverable as soon as they self-register.
     """
-    _modules = [
-        "tools.web_tools",
-        "tools.terminal_tool",
-        "tools.file_tools",
-        "tools.vision_tools",
-        "tools.mixture_of_agents_tool",
-        "tools.image_generation_tool",
-        "tools.skills_tool",
-        "tools.skill_manager_tool",
-        "tools.browser_tool",
-        "tools.cronjob_tools",
-        "tools.rl_training_tool",
-        "tools.tts_tool",
-        "tools.todo_tool",
-        "tools.memory_tool",
-        "tools.session_search_tool",
-        "tools.clarify_tool",
-        "tools.code_execution_tool",
-        "tools.delegate_tool",
-        "tools.process_registry",
-        "tools.send_message_tool",
-        # "tools.honcho_tools",  # Removed — Honcho is now a memory provider plugin
-        "tools.homeassistant_tool",
-    ]
     import importlib
-    for mod_name in _modules:
+
+    tools_dir = Path(__file__).resolve().parent / "tools"
+    module_names = [
+        f"tools.{path.stem}"
+        for path in sorted(tools_dir.glob("*.py"))
+        if path.name not in {"__init__.py", "registry.py"}
+        and _module_registers_tools(path)
+    ]
+
+    for mod_name in module_names:
         try:
             importlib.import_module(mod_name)
         except Exception as e:
@@ -185,46 +246,52 @@ except Exception as e:
 
 
 # =============================================================================
-# Backward-compat constants  (built once after discovery)
+# Backward-compat constants  (live views over the registry)
 # =============================================================================
 
-TOOL_TO_TOOLSET_MAP: Dict[str, str] = registry.get_tool_to_toolset_map()
+_LEGACY_TOOLSET_ALIASES = {
+    "web_tools": ["web"],
+    "terminal_tools": ["terminal"],
+    "vision_tools": ["vision"],
+    "moa_tools": ["moa"],
+    "image_tools": ["image_gen"],
+    "skills_tools": ["skills"],
+    "browser_tools": ["browser"],
+    "cronjob_tools": ["cronjob"],
+    "rl_tools": ["rl"],
+    "file_tools": ["file"],
+    "tts_tools": ["tts"],
+}
 
-TOOLSET_REQUIREMENTS: Dict[str, dict] = registry.get_toolset_requirements()
+
+def _build_legacy_toolset_map() -> Dict[str, List[str]]:
+    return {
+        name: sorted(resolve_multiple_toolsets(toolsets))
+        for name, toolsets in _LEGACY_TOOLSET_ALIASES.items()
+    }
+
+
+TOOL_TO_TOOLSET_MAP: Dict[str, str] = _DynamicDictView(registry.get_tool_to_toolset_map)
+
+TOOLSET_REQUIREMENTS: Dict[str, dict] = _DynamicDictView(registry.get_toolset_requirements)
+
+_LEGACY_TOOLSET_MAP = _DynamicDictView(_build_legacy_toolset_map)
 
 # Resolved tool names from the last get_tool_definitions() call.
 # Used by code_execution_tool to know which tools are available in this session.
 _last_resolved_tool_names: List[str] = []
 
 
-# =============================================================================
-# Legacy toolset name mapping  (old _tools-suffixed names -> tool name lists)
-# =============================================================================
+def _resolve_requested_toolset(name: str) -> Tuple[List[str], Optional[str]]:
+    """Resolve a requested toolset or legacy alias to concrete tool names."""
+    if validate_toolset(name):
+        return resolve_toolset(name), "toolset"
 
-_LEGACY_TOOLSET_MAP = {
-    "web_tools": ["web_search", "web_extract"],
-    "terminal_tools": ["terminal"],
-    "vision_tools": ["vision_analyze"],
-    "moa_tools": ["mixture_of_agents"],
-    "image_tools": ["image_generate"],
-    "skills_tools": ["skills_list", "skill_view", "skill_manage"],
-    "browser_tools": [
-        "browser_navigate", "browser_snapshot", "browser_click",
-        "browser_type", "browser_scroll", "browser_back",
-        "browser_press", "browser_get_images",
-        "browser_vision", "browser_console"
-    ],
-    "cronjob_tools": ["cronjob"],
-    "rl_tools": [
-        "rl_list_environments", "rl_select_environment",
-        "rl_get_current_config", "rl_edit_config",
-        "rl_start_training", "rl_check_status",
-        "rl_stop_training", "rl_get_results",
-        "rl_list_runs", "rl_test_inference"
-    ],
-    "file_tools": ["read_file", "write_file", "patch", "search_files"],
-    "tts_tools": ["text_to_speech"],
-}
+    legacy_toolsets = _LEGACY_TOOLSET_ALIASES.get(name)
+    if legacy_toolsets:
+        return resolve_multiple_toolsets(legacy_toolsets), "legacy"
+
+    return [], None
 
 
 # =============================================================================
@@ -254,43 +321,37 @@ def get_tool_definitions(
 
     if enabled_toolsets is not None:
         for toolset_name in enabled_toolsets:
-            if validate_toolset(toolset_name):
-                resolved = resolve_toolset(toolset_name)
+            resolved, kind = _resolve_requested_toolset(toolset_name)
+            if kind == "toolset":
                 tools_to_include.update(resolved)
                 if not quiet_mode:
                     print(f"✅ Enabled toolset '{toolset_name}': {', '.join(resolved) if resolved else 'no tools'}")
-            elif toolset_name in _LEGACY_TOOLSET_MAP:
-                legacy_tools = _LEGACY_TOOLSET_MAP[toolset_name]
-                tools_to_include.update(legacy_tools)
+            elif kind == "legacy":
+                tools_to_include.update(resolved)
                 if not quiet_mode:
-                    print(f"✅ Enabled legacy toolset '{toolset_name}': {', '.join(legacy_tools)}")
+                    print(f"✅ Enabled legacy toolset '{toolset_name}': {', '.join(resolved)}")
             else:
                 if not quiet_mode:
                     print(f"⚠️  Unknown toolset: {toolset_name}")
 
     elif disabled_toolsets:
-        from toolsets import get_all_toolsets
-        for ts_name in get_all_toolsets():
-            tools_to_include.update(resolve_toolset(ts_name))
+        tools_to_include.update(resolve_toolset("all"))
 
         for toolset_name in disabled_toolsets:
-            if validate_toolset(toolset_name):
-                resolved = resolve_toolset(toolset_name)
+            resolved, kind = _resolve_requested_toolset(toolset_name)
+            if kind == "toolset":
                 tools_to_include.difference_update(resolved)
                 if not quiet_mode:
                     print(f"🚫 Disabled toolset '{toolset_name}': {', '.join(resolved) if resolved else 'no tools'}")
-            elif toolset_name in _LEGACY_TOOLSET_MAP:
-                legacy_tools = _LEGACY_TOOLSET_MAP[toolset_name]
-                tools_to_include.difference_update(legacy_tools)
+            elif kind == "legacy":
+                tools_to_include.difference_update(resolved)
                 if not quiet_mode:
-                    print(f"🚫 Disabled legacy toolset '{toolset_name}': {', '.join(legacy_tools)}")
+                    print(f"🚫 Disabled legacy toolset '{toolset_name}': {', '.join(resolved)}")
             else:
                 if not quiet_mode:
                     print(f"⚠️  Unknown toolset: {toolset_name}")
     else:
-        from toolsets import get_all_toolsets
-        for ts_name in get_all_toolsets():
-            tools_to_include.update(resolve_toolset(ts_name))
+        tools_to_include.update(resolve_toolset("all"))
 
     # Plugin-registered tools are now resolved through the normal toolset
     # path — validate_toolset() / resolve_toolset() / get_all_toolsets()

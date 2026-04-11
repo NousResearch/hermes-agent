@@ -47,14 +47,13 @@ from model_tools import TOOL_TO_TOOLSET_MAP
 # Global configuration for worker processes
 _WORKER_CONFIG = {}
 
-# All possible tools - auto-derived from the master mapping in model_tools.py.
-# This stays in sync automatically when new tools are added to TOOL_TO_TOOLSET_MAP.
-# Used for consistent schema in Arrow/Parquet (HuggingFace datasets) and for
-# filtering corrupted entries during trajectory combination.
-ALL_POSSIBLE_TOOLS = set(TOOL_TO_TOOLSET_MAP.keys())
-
 # Default stats for tools that weren't used
 DEFAULT_TOOL_STATS = {'count': 0, 'success': 0, 'failure': 0}
+
+
+def _all_possible_tools() -> set[str]:
+    """Return the live set of known tools."""
+    return set(TOOL_TO_TOOLSET_MAP.keys())
 
 
 def _normalize_tool_stats(tool_stats: Dict[str, Dict[str, int]]) -> Dict[str, Dict[str, int]]:
@@ -73,7 +72,7 @@ def _normalize_tool_stats(tool_stats: Dict[str, Dict[str, int]]) -> Dict[str, Di
     normalized = {}
     
     # Add all possible tools with defaults
-    for tool in ALL_POSSIBLE_TOOLS:
+    for tool in _all_possible_tools():
         if tool in tool_stats:
             normalized[tool] = tool_stats[tool].copy()
         else:
@@ -100,7 +99,7 @@ def _normalize_tool_error_counts(tool_error_counts: Dict[str, int]) -> Dict[str,
     normalized = {}
     
     # Add all possible tools with zero defaults
-    for tool in ALL_POSSIBLE_TOOLS:
+    for tool in _all_possible_tools():
         normalized[tool] = tool_error_counts.get(tool, 0)
     
     # Also include any unexpected tools
@@ -1284,4 +1283,3 @@ def main(
 
 if __name__ == "__main__":
     fire.Fire(main)
-

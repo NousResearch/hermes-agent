@@ -793,23 +793,17 @@ class MCPServerTask:
         — atomic from the event loop's perspective.
         """
         from tools.registry import registry, tool_error
-        from toolsets import TOOLSETS
 
         async with self._refresh_lock:
             # 1. Fetch current tool list from server
             tools_result = await self.session.list_tools()
             new_mcp_tools = tools_result.tools if hasattr(tools_result, "tools") else []
 
-            # 2. Remove old tools from hermes-* umbrella toolsets
-            for ts_name, ts in TOOLSETS.items():
-                if ts_name.startswith("hermes-"):
-                    ts["tools"] = [t for t in ts["tools"] if t not in self._registered_tool_names]
-
-            # 3. Deregister old tools from the central registry
+            # 2. Deregister old tools from the central registry
             for prefixed_name in self._registered_tool_names:
                 registry.deregister(prefixed_name)
 
-            # 4. Re-register with fresh tool list
+            # 3. Re-register with fresh tool list
             self._tools = new_mcp_tools
             self._registered_tool_names = _register_server_tools(
                 self.name, self, self._config
@@ -1532,54 +1526,12 @@ def _convert_mcp_schema(server_name: str, mcp_tool) -> dict:
 
 
 def _sync_mcp_toolsets(server_names: Optional[List[str]] = None) -> None:
-    """Expose each MCP server as a standalone toolset and inject into hermes-* sets.
+    """Backward-compatible no-op.
 
-    Creates a real toolset entry in TOOLSETS for each server name (e.g.
-    TOOLSETS["github"] = {"tools": ["mcp_github_list_files", ...]}). This
-    makes raw server names resolvable in platform_toolsets overrides.
-
-    Also injects all MCP tools into hermes-* umbrella toolsets for the
-    default behavior.
-
-    Skips server names that collide with built-in toolsets.
+    Toolset aliases and memberships now resolve directly from the live
+    registry, so there is no static TOOLSETS state to synchronize.
     """
-    from toolsets import TOOLSETS
-
-    if server_names is None:
-        server_names = list(_load_mcp_config().keys())
-
-    existing = _existing_tool_names()
-    all_mcp_tools: List[str] = []
-
-    for server_name in server_names:
-        safe_prefix = f"mcp_{sanitize_mcp_name_component(server_name)}_"
-        server_tools = sorted(
-            t for t in existing if t.startswith(safe_prefix)
-        )
-        all_mcp_tools.extend(server_tools)
-
-        # Don't overwrite a built-in toolset that happens to share the name.
-        existing_ts = TOOLSETS.get(server_name)
-        if existing_ts and not str(existing_ts.get("description", "")).startswith("MCP server '"):
-            logger.warning(
-                "Skipping MCP toolset alias '%s' — a built-in toolset already uses that name",
-                server_name,
-            )
-            continue
-
-        TOOLSETS[server_name] = {
-            "description": f"MCP server '{server_name}' tools",
-            "tools": server_tools,
-            "includes": [],
-        }
-
-    # Also inject into hermes-* umbrella toolsets for default behavior.
-    for ts_name, ts in TOOLSETS.items():
-        if not ts_name.startswith("hermes-"):
-            continue
-        for tool_name in all_mcp_tools:
-            if tool_name not in ts["tools"]:
-                ts["tools"].append(tool_name)
+    return None
 
 
 def _build_utility_schemas(server_name: str) -> List[dict]:
@@ -1743,7 +1695,6 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
         List of registered prefixed tool names.
     """
     from tools.registry import registry, tool_error
-    from toolsets import create_custom_toolset, TOOLSETS
 
     registered_names: List[str] = []
     toolset_name = f"mcp-{name}"
@@ -1828,20 +1779,6 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
             description=schema["description"],
         )
         registered_names.append(util_name)
-
-    # Create a custom toolset so these tools are discoverable
-    if registered_names:
-        create_custom_toolset(
-            name=toolset_name,
-            description=f"MCP tools from {name} server",
-            tools=registered_names,
-        )
-        # Inject into hermes-* umbrella toolsets for default behavior
-        for ts_name, ts in TOOLSETS.items():
-            if ts_name.startswith("hermes-"):
-                for tool_name in registered_names:
-                    if tool_name not in ts["tools"]:
-                        ts["tools"].append(tool_name)
 
     return registered_names
 

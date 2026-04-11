@@ -2,6 +2,7 @@
 
 import pytest
 
+from tools.registry import registry
 from toolsets import (
     TOOLSETS,
     get_toolset,
@@ -86,6 +87,20 @@ class TestValidateToolset:
     def test_invalid(self):
         assert validate_toolset("nonexistent") is False
 
+    def test_mcp_alias_uses_live_registry(self):
+        registry.register(
+            name="mcp_dynserver_ping",
+            toolset="mcp-dynserver",
+            schema={"name": "mcp_dynserver_ping", "description": "Ping", "parameters": {"type": "object", "properties": {}}},
+            handler=lambda *_args, **_kwargs: "{}",
+        )
+        try:
+            assert validate_toolset("dynserver") is True
+            assert validate_toolset("mcp-dynserver") is True
+            assert "mcp_dynserver_ping" in resolve_toolset("dynserver")
+        finally:
+            registry.deregister("mcp_dynserver_ping")
+
 
 class TestGetToolsetInfo:
     def test_leaf(self):
@@ -120,6 +135,22 @@ class TestCreateCustomToolset:
             del TOOLSETS["_test_custom"]
 
 
+class TestRegistryOwnedToolsets:
+    def test_registry_membership_is_live(self):
+        registry.register(
+            name="test_live_toolset_tool",
+            toolset="test-live-toolset",
+            schema={"name": "test_live_toolset_tool", "description": "Live", "parameters": {"type": "object", "properties": {}}},
+            handler=lambda *_args, **_kwargs: "{}",
+        )
+        try:
+            assert validate_toolset("test-live-toolset") is True
+            assert get_toolset("test-live-toolset")["tools"] == ["test_live_toolset_tool"]
+            assert resolve_toolset("test-live-toolset") == ["test_live_toolset_tool"]
+        finally:
+            registry.deregister("test_live_toolset_tool")
+
+
 class TestToolsetConsistency:
     """Verify structural integrity of the built-in TOOLSETS dict."""
 
@@ -137,7 +168,7 @@ class TestToolsetConsistency:
     def test_hermes_platforms_share_core_tools(self):
         """All hermes-* platform toolsets should have the same tools."""
         platforms = ["hermes-cli", "hermes-telegram", "hermes-discord", "hermes-whatsapp", "hermes-slack", "hermes-signal", "hermes-homeassistant"]
-        tool_sets = [set(TOOLSETS[p]["tools"]) for p in platforms]
+        tool_sets = [set(resolve_toolset(p)) for p in platforms]
         # All platform toolsets should be identical
         for ts in tool_sets[1:]:
             assert ts == tool_sets[0]

@@ -12,7 +12,9 @@ from model_tools import (
     _AGENT_LOOP_TOOLS,
     _LEGACY_TOOLSET_MAP,
     TOOL_TO_TOOLSET_MAP,
+    TOOLSET_REQUIREMENTS,
 )
+from tools.registry import registry
 
 
 # =========================================================================
@@ -137,3 +139,24 @@ class TestBackwardCompat:
     def test_tool_to_toolset_map(self):
         assert isinstance(TOOL_TO_TOOLSET_MAP, dict)
         assert len(TOOL_TO_TOOLSET_MAP) > 0
+
+    def test_live_registry_views_update_with_registration(self):
+        registry.register(
+            name="test_live_model_tools_mapping",
+            toolset="test-live-model-tools",
+            schema={
+                "name": "test_live_model_tools_mapping",
+                "description": "Live test tool",
+                "parameters": {"type": "object", "properties": {}},
+            },
+            handler=lambda *_args, **_kwargs: "{}",
+        )
+        try:
+            assert TOOL_TO_TOOLSET_MAP["test_live_model_tools_mapping"] == "test-live-model-tools"
+            assert "test-live-model-tools" in TOOLSET_REQUIREMENTS
+            assert TOOLSET_REQUIREMENTS["test-live-model-tools"]["tools"] == ["test_live_model_tools_mapping"]
+        finally:
+            registry.deregister("test_live_model_tools_mapping")
+
+        assert "test_live_model_tools_mapping" not in TOOL_TO_TOOLSET_MAP
+        assert "test-live-model-tools" not in TOOLSET_REQUIREMENTS

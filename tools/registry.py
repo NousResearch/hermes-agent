@@ -197,6 +197,18 @@ class ToolRegistry:
         entry = self._tools.get(name)
         return entry.toolset if entry else None
 
+    def get_tools_for_toolset(self, toolset: str) -> List[str]:
+        """Return the sorted tool names currently registered to *toolset*."""
+        return sorted(
+            name
+            for name, entry in self._tools.items()
+            if entry.toolset == toolset
+        )
+
+    def get_registered_toolset_names(self) -> List[str]:
+        """Return sorted names of all toolsets currently present in the registry."""
+        return sorted({entry.toolset for entry in self._tools.values()})
+
     def get_emoji(self, name: str, default: str = "⚡") -> str:
         """Return the emoji for a tool, or *default* if unset."""
         entry = self._tools.get(name)

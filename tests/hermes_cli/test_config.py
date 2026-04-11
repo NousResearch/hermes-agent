@@ -68,6 +68,7 @@ class TestLoadConfigDefaults:
             assert "max_turns" not in config
             assert "terminal" in config
             assert config["terminal"]["backend"] == "local"
+            assert config["display"]["interim_assistant_messages"] is True
 
     def test_legacy_root_level_max_turns_migrates_to_agent_config(self, tmp_path):
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
@@ -421,3 +422,25 @@ class TestAnthropicTokenMigration:
         }):
             migrate_config(interactive=False, quiet=True)
             assert load_env().get("ANTHROPIC_TOKEN") == "current-token"
+
+
+class TestInterimAssistantMessageConfig:
+    """Test the explicit gateway interim-message config gate."""
+
+    def test_default_config_enables_interim_assistant_messages(self):
+        assert DEFAULT_CONFIG["display"]["interim_assistant_messages"] is True
+
+    def test_migrate_to_v15_adds_interim_assistant_message_gate(self, tmp_path):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump({"_config_version": 14, "display": {"tool_progress": "off"}}),
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+
+        assert raw["_config_version"] == 15
+        assert raw["display"]["tool_progress"] == "off"
+        assert raw["display"]["interim_assistant_messages"] is True

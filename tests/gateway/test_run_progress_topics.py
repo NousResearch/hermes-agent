@@ -8,8 +8,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, SendResult
+from gateway.config import Platform, PlatformConfig, StreamingConfig
+from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult
 from gateway.session import SessionSource
 
 
@@ -104,6 +104,11 @@ def _make_runner(adapter):
     runner._session_db = None
     runner._running_agents = {}
     runner.hooks = SimpleNamespace(loaded_hooks=False)
+    runner.config = SimpleNamespace(
+        thread_sessions_per_user=False,
+        group_sessions_per_user=False,
+        stt_enabled=False,
+    )
     return runner
 
 
@@ -118,6 +123,7 @@ async def test_run_agent_progress_stays_in_originating_topic(monkeypatch, tmp_pa
     fake_run_agent = types.ModuleType("run_agent")
     fake_run_agent.AIAgent = FakeAgent
     monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+    import tools.terminal_tool  # noqa: F401 - register terminal emoji for this fake-agent test
 
     adapter = ProgressCaptureAdapter()
     runner = _make_runner(adapter)
@@ -144,7 +150,7 @@ async def test_run_agent_progress_stays_in_originating_topic(monkeypatch, tmp_pa
     assert adapter.sent == [
         {
             "chat_id": "-1001",
-            "content": '⚙️ terminal: "pwd"',
+            "content": '💻 terminal: "pwd"',
             "reply_to": None,
             "metadata": {"thread_id": "17585"},
         }
@@ -334,3 +340,238 @@ def test_all_mode_no_truncation_when_preview_fits(monkeypatch, tmp_path):
     content = adapter.sent[0]["content"]
     # With a 200-char cap, the 165-char command should NOT be truncated
     assert "..." not in content, f"Preview was truncated when it shouldn't be: {content}"
+
+
+class CommentaryAgent:
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.interim_assistant_callback = kwargs.get("interim_assistant_callback")
+        self.stream_delta_callback = kwargs.get("stream_delta_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        if self.interim_assistant_callback:
+            self.interim_assistant_callback("I'll inspect the repo first.", already_streamed=False)
+        time.sleep(0.1)
+        if self.stream_delta_callback:
+            self.stream_delta_callback("done")
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class PreviewedResponseAgent:
+    def __init__(self, **kwargs):
+        self.interim_assistant_callback = kwargs.get("interim_assistant_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        if self.interim_assistant_callback:
+            self.interim_assistant_callback("You're welcome.", already_streamed=False)
+        return {
+            "final_response": "You're welcome.",
+            "response_previewed": True,
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class QueuedCommentaryAgent:
+    calls = 0
+
+    def __init__(self, **kwargs):
+        self.interim_assistant_callback = kwargs.get("interim_assistant_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        type(self).calls += 1
+        if type(self).calls == 1 and self.interim_assistant_callback:
+            self.interim_assistant_callback("I'll inspect the repo first.", already_streamed=False)
+        return {
+            "final_response": f"final response {type(self).calls}",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+async def _run_with_agent(
+    monkeypatch,
+    tmp_path,
+    agent_cls,
+    *,
+    session_id,
+    pending_text=None,
+    config_data=None,
+):
+    if config_data:
+        import yaml
+
+        (tmp_path / "config.yaml").write_text(yaml.dump(config_data), encoding="utf-8")
+
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = agent_cls
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    adapter = ProgressCaptureAdapter()
+    runner = _make_runner(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    if config_data and "streaming" in config_data:
+        runner.config.streaming = StreamingConfig.from_dict(config_data["streaming"])
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="-1001",
+        chat_type="group",
+        thread_id="17585",
+    )
+    session_key = "agent:main:telegram:group:-1001:17585"
+    if pending_text is not None:
+        adapter._pending_messages[session_key] = MessageEvent(
+            text=pending_text,
+            message_type=MessageType.TEXT,
+            source=source,
+            message_id="queued-1",
+        )
+
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id=session_id,
+        session_key=session_key,
+    )
+    return adapter, result
+
+
+@pytest.mark.asyncio
+async def test_run_agent_surfaces_real_interim_commentary(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        CommentaryAgent,
+        session_id="sess-commentary",
+        config_data={"display": {"interim_assistant_messages": True}},
+    )
+
+    assert result.get("already_sent") is not True
+    assert any(call["content"] == "I'll inspect the repo first." for call in adapter.sent)
+
+
+@pytest.mark.asyncio
+async def test_run_agent_surfaces_interim_commentary_by_default(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        CommentaryAgent,
+        session_id="sess-commentary-default-on",
+    )
+
+    assert any(call["content"] == "I'll inspect the repo first." for call in adapter.sent)
+
+
+@pytest.mark.asyncio
+async def test_run_agent_suppresses_interim_commentary_when_disabled(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        CommentaryAgent,
+        session_id="sess-commentary-disabled",
+        config_data={"display": {"interim_assistant_messages": False}},
+    )
+
+    assert result.get("already_sent") is not True
+    assert not any(call["content"] == "I'll inspect the repo first." for call in adapter.sent)
+
+
+@pytest.mark.asyncio
+async def test_run_agent_tool_progress_does_not_control_interim_commentary(monkeypatch, tmp_path):
+    """tool_progress=all with interim_assistant_messages=false should not surface commentary."""
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        CommentaryAgent,
+        session_id="sess-commentary-tool-progress",
+        config_data={"display": {"tool_progress": "all", "interim_assistant_messages": False}},
+    )
+
+    assert result.get("already_sent") is not True
+    assert not any(call["content"] == "I'll inspect the repo first." for call in adapter.sent)
+
+
+@pytest.mark.asyncio
+async def test_run_agent_streaming_does_not_enable_completed_interim_commentary(
+    monkeypatch, tmp_path
+):
+    """Streaming alone with interim_assistant_messages=false should not surface commentary."""
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        CommentaryAgent,
+        session_id="sess-commentary-streaming",
+        config_data={
+            "display": {"tool_progress": "off", "interim_assistant_messages": False},
+            "streaming": {"enabled": True},
+        },
+    )
+
+    assert result.get("already_sent") is True
+    assert not any(call["content"] == "I'll inspect the repo first." for call in adapter.sent)
+
+
+@pytest.mark.asyncio
+async def test_run_agent_interim_commentary_works_with_tool_progress_off(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        CommentaryAgent,
+        session_id="sess-commentary-explicit-on",
+        config_data={
+            "display": {
+                "tool_progress": "off",
+                "interim_assistant_messages": True,
+            },
+        },
+    )
+
+    assert result.get("already_sent") is not True
+    assert any(call["content"] == "I'll inspect the repo first." for call in adapter.sent)
+
+
+@pytest.mark.asyncio
+async def test_run_agent_previewed_final_marks_already_sent(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        PreviewedResponseAgent,
+        session_id="sess-previewed",
+        config_data={"display": {"interim_assistant_messages": True}},
+    )
+
+    assert result.get("already_sent") is True
+    assert [call["content"] for call in adapter.sent] == ["You're welcome."]
+
+
+@pytest.mark.asyncio
+async def test_run_agent_queued_message_does_not_treat_commentary_as_final(monkeypatch, tmp_path):
+    QueuedCommentaryAgent.calls = 0
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        QueuedCommentaryAgent,
+        session_id="sess-queued-commentary",
+        pending_text="queued follow-up",
+        config_data={"display": {"interim_assistant_messages": True}},
+    )
+
+    sent_texts = [call["content"] for call in adapter.sent]
+    assert result["final_response"] == "final response 2"
+    assert "I'll inspect the repo first." in sent_texts
+    assert "final response 1" in sent_texts

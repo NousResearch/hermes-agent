@@ -32,6 +32,10 @@ _DONE = object()
 # new one so that subsequent text appears below tool progress messages.
 _NEW_SEGMENT = object()
 
+# Queue marker for a completed assistant commentary message emitted between
+# API/tool iterations (for example: "I'll inspect the repo first.").
+_COMMENTARY = object()
+
 
 @dataclass
 class StreamConsumerConfig:
@@ -75,19 +79,42 @@ class GatewayStreamConsumer:
         self._accumulated = ""
         self._message_id: Optional[str] = None
         self._already_sent = False
-        self._edit_supported = True  # Disabled on first edit failure (Signal/Email/HA)
+        self._edit_supported = True  # Disabled when progressive edits are no longer usable
         self._last_edit_time = 0.0
         self._last_sent_text = ""   # Track last-sent text to skip redundant edits
         self._fallback_final_send = False
         self._fallback_prefix = ""
         self._flood_strikes = 0         # Consecutive flood-control edit failures
         self._current_edit_interval = self.cfg.edit_interval  # Adaptive backoff
+        self._final_response_sent = False
 
     @property
     def already_sent(self) -> bool:
-        """True if at least one message was sent/edited — signals the base
-        adapter to skip re-sending the final response."""
+        """True if at least one message was sent or edited during the run."""
         return self._already_sent
+
+    @property
+    def final_response_sent(self) -> bool:
+        """True when the stream consumer delivered the final assistant reply."""
+        return self._final_response_sent
+
+    def on_segment_break(self) -> None:
+        """Finalize the current stream segment and start a fresh message."""
+        self._queue.put(_NEW_SEGMENT)
+
+    def on_commentary(self, text: str) -> None:
+        """Queue a completed interim assistant commentary message."""
+        if text:
+            self._queue.put((_COMMENTARY, text))
+
+    def _reset_segment_state(self, *, preserve_no_edit: bool = False) -> None:
+        if preserve_no_edit and self._message_id == "__no_edit__":
+            return
+        self._message_id = None
+        self._accumulated = ""
+        self._last_sent_text = ""
+        self._fallback_final_send = False
+        self._fallback_prefix = ""
 
     def on_delta(self, text: str) -> None:
         """Thread-safe callback — called from the agent's worker thread.
@@ -99,7 +126,7 @@ class GatewayStreamConsumer:
         if text:
             self._queue.put(text)
         elif text is None:
-            self._queue.put(_NEW_SEGMENT)
+            self.on_segment_break()
 
     def finish(self) -> None:
         """Signal that the stream is complete."""
@@ -116,6 +143,7 @@ class GatewayStreamConsumer:
                 # Drain all available items from the queue
                 got_done = False
                 got_segment_break = False
+                commentary_text = None
                 while True:
                     try:
                         item = self._queue.get_nowait()
@@ -124,6 +152,9 @@ class GatewayStreamConsumer:
                             break
                         if item is _NEW_SEGMENT:
                             got_segment_break = True
+                            break
+                        if isinstance(item, tuple) and len(item) == 2 and item[0] is _COMMENTARY:
+                            commentary_text = item[1]
                             break
                         self._accumulated += item
                     except queue.Empty:
@@ -135,11 +166,13 @@ class GatewayStreamConsumer:
                 should_edit = (
                     got_done
                     or got_segment_break
+                    or commentary_text is not None
                     or (elapsed >= self._current_edit_interval
                         and self._accumulated)
                     or len(self._accumulated) >= self.cfg.buffer_threshold
                 )
 
+                current_update_visible = False
                 if should_edit and self._accumulated:
                     # Split overflow: if accumulated text exceeds the platform
                     # limit, split into properly sized chunks.
@@ -161,6 +194,7 @@ class GatewayStreamConsumer:
                         self._last_sent_text = ""
                         self._last_edit_time = time.monotonic()
                         if got_done:
+                            self._final_response_sent = self._already_sent
                             return
                         if got_segment_break:
                             self._message_id = None
@@ -192,10 +226,10 @@ class GatewayStreamConsumer:
                         self._last_sent_text = ""
 
                     display_text = self._accumulated
-                    if not got_done and not got_segment_break:
+                    if not got_done and not got_segment_break and commentary_text is None:
                         display_text += self.cfg.cursor
 
-                    await self._send_or_edit(display_text)
+                    current_update_visible = await self._send_or_edit(display_text)
                     self._last_edit_time = time.monotonic()
 
                 if got_done:
@@ -206,11 +240,19 @@ class GatewayStreamConsumer:
                     if self._accumulated:
                         if self._fallback_final_send:
                             await self._send_fallback_final(self._accumulated)
+                        elif current_update_visible:
+                            self._final_response_sent = True
                         elif self._message_id:
-                            await self._send_or_edit(self._accumulated)
+                            self._final_response_sent = await self._send_or_edit(self._accumulated)
                         elif not self._already_sent:
-                            await self._send_or_edit(self._accumulated)
+                            self._final_response_sent = await self._send_or_edit(self._accumulated)
                     return
+
+                if commentary_text is not None:
+                    self._reset_segment_state()
+                    await self._send_commentary(commentary_text)
+                    self._last_edit_time = time.monotonic()
+                    self._reset_segment_state()
 
                 # Tool boundary: reset message state so the next text chunk
                 # creates a fresh message below any tool-progress messages.
@@ -220,17 +262,14 @@ class GatewayStreamConsumer:
                 # github_comment delivery).  Resetting to None would re-enter
                 # the "first send" path on every tool boundary and post one
                 # platform message per tool call — that is what caused 155
-                # comments under a single PR.  Instead, keep all state so the
-                # full continuation is delivered once via _send_fallback_final.
+                # comments under a single PR.  Instead, preserve the sentinel
+                # so the full continuation is delivered once via
+                # _send_fallback_final.
                 # (When editing fails mid-stream due to flood control the id is
                 # a real string like "msg_1", not "__no_edit__", so that case
                 # still resets and creates a fresh segment as intended.)
-                if got_segment_break and self._message_id != "__no_edit__":
-                    self._message_id = None
-                    self._accumulated = ""
-                    self._last_sent_text = ""
-                    self._fallback_final_send = False
-                    self._fallback_prefix = ""
+                if got_segment_break:
+                    self._reset_segment_state(preserve_no_edit=True)
 
                 await asyncio.sleep(0.05)  # Small yield to not busy-loop
 
@@ -339,6 +378,7 @@ class GatewayStreamConsumer:
         if not continuation.strip():
             # Nothing new to send — the visible partial already matches final text.
             self._already_sent = True
+            self._final_response_sent = True
             return
 
         raw_limit = getattr(self.adapter, "MAX_MESSAGE_LENGTH", 4096)
@@ -373,6 +413,7 @@ class GatewayStreamConsumer:
                     # the base gateway final-send path so we don't resend the
                     # full response and create another duplicate.
                     self._already_sent = True
+                    self._final_response_sent = True
                     self._message_id = last_message_id
                     self._last_sent_text = last_successful_chunk
                     self._fallback_prefix = ""
@@ -390,6 +431,7 @@ class GatewayStreamConsumer:
 
         self._message_id = last_message_id
         self._already_sent = True
+        self._final_response_sent = True
         self._last_sent_text = chunks[-1]
         self._fallback_prefix = ""
 
@@ -419,6 +461,24 @@ class GatewayStreamConsumer:
             self._last_sent_text = prefix
         except Exception:
             pass  # best-effort — don't let this block the fallback path
+
+    async def _send_commentary(self, text: str) -> bool:
+        """Send a completed interim assistant commentary message."""
+        text = self._clean_for_display(text)
+        if not text.strip():
+            return False
+        try:
+            result = await self.adapter.send(
+                chat_id=self.chat_id,
+                content=text,
+                metadata=self.metadata,
+            )
+            if result.success:
+                self._already_sent = True
+                return True
+        except Exception as e:
+            logger.error("Commentary send error: %s", e)
+        return False
 
     async def _send_or_edit(self, text: str) -> bool:
         """Send or edit the streaming message.
@@ -501,23 +561,21 @@ class GatewayStreamConsumer:
                     content=text,
                     metadata=self.metadata,
                 )
-                if result.success and result.message_id:
-                    self._message_id = result.message_id
+                if result.success:
+                    if result.message_id:
+                        self._message_id = result.message_id
+                    else:
+                        self._edit_supported = False
                     self._already_sent = True
                     self._last_sent_text = text
+                    if not result.message_id:
+                        self._fallback_prefix = self._visible_prefix()
+                        self._fallback_final_send = True
+                        # Sentinel prevents re-entering the first-send path on
+                        # every delta/tool boundary when platforms accept a
+                        # message but do not return an editable message id.
+                        self._message_id = "__no_edit__"
                     return True
-                elif result.success:
-                    # Platform accepted the message but returned no message_id
-                    # (e.g. Signal).  Can't edit without an ID — switch to
-                    # fallback mode: suppress intermediate deltas, send only
-                    # the missing tail once the final response is ready.
-                    self._already_sent = True
-                    self._edit_supported = False
-                    self._fallback_prefix = self._clean_for_display(text)
-                    self._fallback_final_send = True
-                    # Sentinel prevents re-entering this branch on every delta
-                    self._message_id = "__no_edit__"
-                    return True  # platform accepted, just can't edit
                 else:
                     # Initial send failed — disable streaming for this session
                     self._edit_supported = False

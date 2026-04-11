@@ -744,6 +744,44 @@ def test_normalize_codex_response_marks_commentary_only_message_as_incomplete(mo
     assert "inspect the repository" in (assistant_message.content or "")
 
 
+def test_interim_commentary_is_not_marked_already_streamed_without_callbacks(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    observed = {}
+
+    agent._fire_stream_delta("short version: yes")
+    agent.interim_assistant_callback = lambda text, *, already_streamed=False: observed.update(
+        {"text": text, "already_streamed": already_streamed}
+    )
+
+    agent._emit_interim_assistant_message({"role": "assistant", "content": "short version: yes"})
+
+    assert observed == {
+        "text": "short version: yes",
+        "already_streamed": False,
+    }
+
+
+def test_interim_commentary_is_not_marked_already_streamed_when_stream_callback_fails(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    observed = {}
+
+    def failing_callback(_text):
+        raise RuntimeError("display failed")
+
+    agent.stream_delta_callback = failing_callback
+    agent._fire_stream_delta("short version: yes")
+    agent.interim_assistant_callback = lambda text, *, already_streamed=False: observed.update(
+        {"text": text, "already_streamed": already_streamed}
+    )
+
+    agent._emit_interim_assistant_message({"role": "assistant", "content": "short version: yes"})
+
+    assert observed == {
+        "text": "short version: yes",
+        "already_streamed": False,
+    }
+
+
 def test_run_conversation_codex_continues_after_commentary_phase_message(monkeypatch):
     agent = _build_agent(monkeypatch)
     responses = [

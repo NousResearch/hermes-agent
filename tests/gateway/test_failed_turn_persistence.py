@@ -195,7 +195,8 @@ async def test_run_agent_wrapper_preserves_no_response_failure_metadata(monkeypa
         session_key=build_session_key(_make_source()),
     )
 
-    assert result["final_response"] is None
+    assert "429 rate limit exceeded" in result["final_response"]
+    assert result["has_direct_response"] is False
     assert result["failed"] is True
     assert result["error"] == "429 rate limit exceeded"
     assert result["error_reason"] == "rate_limit"

@@ -3854,6 +3854,9 @@ class GatewayRunner:
                 pass
 
             response = agent_result.get("final_response") or ""
+            _has_direct_response = agent_result.get("has_direct_response")
+            if _has_direct_response is None:
+                _has_direct_response = bool(response)
             agent_messages = agent_result.get("messages", [])
             _response_time = time.time() - _msg_start_time
             _api_calls = agent_result.get("api_calls", 0)
@@ -3875,7 +3878,7 @@ class GatewayRunner:
             # Surface error details when the agent produced no direct reply.
             # This covers failed turns and context-overflow partials, where
             # run_agent returns structured error metadata without text.
-            if not response and (agent_result.get("failed") or _failed_reason):
+            if (not _has_direct_response) and (agent_result.get("failed") or _failed_reason):
                 error_detail = agent_result.get("error", "unknown error")
                 error_str = str(error_detail).lower()
 
@@ -3991,7 +3994,7 @@ class GatewayRunner:
             # Persisting it would make the session even larger, causing the
             # same failure on the next attempt — an infinite loop. (#1630)
             agent_failed_due_to_context = (
-                not agent_result.get("final_response")
+                not _has_direct_response
                 and _failed_reason == "context_overflow"
             )
             if agent_failed_due_to_context:
@@ -8759,8 +8762,9 @@ class GatewayRunner:
             _effective_history_offset = 0 if _session_was_split else len(agent_history)
 
             if not final_response:
+                error_msg = f"⚠️ {result['error']}" if result.get("error") else "(No response generated)"
                 return {
-                    "final_response": None,
+                    "final_response": error_msg,
                     "last_reasoning": result.get("last_reasoning"),
                     "messages": result.get("messages", []),
                     "api_calls": result.get("api_calls", 0),
@@ -8779,6 +8783,7 @@ class GatewayRunner:
                     "error": result.get("error"),
                     "error_reason": result.get("error_reason"),
                     "interrupted": result.get("interrupted"),
+                    "has_direct_response": False,
                 }
 
             # Scan tool results for MEDIA:<path> tags that need to be delivered
@@ -8849,6 +8854,7 @@ class GatewayRunner:
                 "error": result.get("error"),
                 "error_reason": result.get("error_reason"),
                 "interrupted": result.get("interrupted"),
+                "has_direct_response": True,
                 "response_previewed": result.get("response_previewed", False),
             }
         

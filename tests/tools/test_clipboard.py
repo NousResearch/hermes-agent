@@ -250,6 +250,15 @@ class TestWslHasImage:
             mock_run.return_value = MagicMock(stdout="False\n", returncode=0)
             assert _wsl_has_image() is False
 
+    def test_falls_back_to_get_clipboard_image(self):
+        with patch("hermes_cli.clipboard.subprocess.run") as mock_run:
+            mock_run.side_effect = [
+                MagicMock(stdout="False\n", returncode=0),
+                MagicMock(stdout="True\n", returncode=0),
+            ]
+            assert _wsl_has_image() is True
+            assert mock_run.call_count == 2
+
     def test_powershell_not_found(self):
         with patch("hermes_cli.clipboard.subprocess.run", side_effect=FileNotFoundError):
             assert _wsl_has_image() is False
@@ -267,6 +276,18 @@ class TestWslSave:
         with patch("hermes_cli.clipboard.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(stdout=b64_png + "\n", returncode=0)
             assert _wsl_save(dest) is True
+        assert dest.read_bytes() == FAKE_PNG
+
+    def test_falls_back_to_get_clipboard_extraction(self, tmp_path):
+        dest = tmp_path / "out.png"
+        b64_png = base64.b64encode(FAKE_PNG).decode()
+        with patch("hermes_cli.clipboard.subprocess.run") as mock_run:
+            mock_run.side_effect = [
+                MagicMock(stdout="", returncode=1),
+                MagicMock(stdout=b64_png + "\n", returncode=0),
+            ]
+            assert _wsl_save(dest) is True
+            assert mock_run.call_count == 2
         assert dest.read_bytes() == FAKE_PNG
 
     def test_no_image_returns_false(self, tmp_path):
@@ -528,6 +549,16 @@ class TestWindowsHasImage:
                 mock_run.return_value = MagicMock(stdout="False\n", returncode=0)
                 assert _windows_has_image() is False
 
+    def test_falls_back_to_get_clipboard_image(self):
+        with patch("hermes_cli.clipboard._get_ps_exe", return_value="powershell"):
+            with patch("hermes_cli.clipboard.subprocess.run") as mock_run:
+                mock_run.side_effect = [
+                    MagicMock(stdout="False\n", returncode=0),
+                    MagicMock(stdout="True\n", returncode=0),
+                ]
+                assert _windows_has_image() is True
+                assert mock_run.call_count == 2
+
     def test_no_powershell_available(self):
         with patch("hermes_cli.clipboard._get_ps_exe", return_value=None):
             assert _windows_has_image() is False
@@ -557,6 +588,20 @@ class TestWindowsSave:
             with patch("hermes_cli.clipboard.subprocess.run") as mock_run:
                 mock_run.return_value = MagicMock(stdout=b64_png + "\n", returncode=0)
                 assert _windows_save(dest) is True
+        assert dest.read_bytes() == FAKE_PNG
+
+    def test_falls_back_to_filedrop_image(self, tmp_path):
+        dest = tmp_path / "out.png"
+        b64_png = base64.b64encode(FAKE_PNG).decode()
+        with patch("hermes_cli.clipboard._get_ps_exe", return_value="powershell"):
+            with patch("hermes_cli.clipboard.subprocess.run") as mock_run:
+                mock_run.side_effect = [
+                    MagicMock(stdout="", returncode=1),
+                    MagicMock(stdout="", returncode=1),
+                    MagicMock(stdout=b64_png + "\n", returncode=0),
+                ]
+                assert _windows_save(dest) is True
+                assert mock_run.call_count == 3
         assert dest.read_bytes() == FAKE_PNG
 
     def test_no_image_returns_false(self, tmp_path):

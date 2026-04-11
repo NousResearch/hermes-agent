@@ -899,8 +899,17 @@ def list_authenticated_providers(
                 continue
 
             models_list = []
+            configured_models = entry.get("models")
+            if isinstance(configured_models, list):
+                for model_name in configured_models:
+                    if not isinstance(model_name, str):
+                        continue
+                    normalized_model = model_name.strip()
+                    if normalized_model and normalized_model not in models_list:
+                        models_list.append(normalized_model)
+
             default_model = (entry.get("model") or "").strip()
-            if default_model:
+            if default_model and default_model not in models_list:
                 models_list.append(default_model)
 
             results.append({

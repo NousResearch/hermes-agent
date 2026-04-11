@@ -31,6 +31,10 @@ def test_list_authenticated_providers_includes_custom_providers(monkeypatch):
                 "name": "Local (127.0.0.1:4141)",
                 "base_url": "http://127.0.0.1:4141/v1",
                 "model": "rotator-openrouter-coding",
+                "models": [
+                    "rotator-openrouter-coding",
+                    "rotator-openrouter-general",
+                ],
             }
         ],
         max_models=50,
@@ -39,7 +43,11 @@ def test_list_authenticated_providers_includes_custom_providers(monkeypatch):
     assert any(
         p["slug"] == "custom:local-(127.0.0.1:4141)"
         and p["name"] == "Local (127.0.0.1:4141)"
-        and p["models"] == ["rotator-openrouter-coding"]
+        and p["models"] == [
+            "rotator-openrouter-coding",
+            "rotator-openrouter-general",
+        ]
+        and p["total_models"] == 2
         and p["api_url"] == "http://127.0.0.1:4141/v1"
         for p in providers
     )

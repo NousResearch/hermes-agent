@@ -26,7 +26,17 @@ def test_request_from_namespace_preserves_cli_confirmation_policy():
         command_source="cli",
         identifier="openai/skills/skill-creator",
         skip_confirm=True,
+        invalidate_cache=True,
     )
+
+
+def test_request_from_namespace_preserves_cli_cache_invalidation_behavior():
+    parser = _make_parser()
+    args = parser.parse_args(["install", "openai/skills/skill-creator"])
+
+    request = request_from_namespace(args, command_source="cli")
+
+    assert request.invalidate_cache is True
 
 
 def test_parse_skills_slash_command_uses_same_parser_tree():
@@ -45,6 +55,13 @@ def test_parse_skills_slash_command_marks_config_unavailable():
 
     assert request.action == "config"
     assert request.config_available is False
+
+
+def test_parse_skills_slash_command_tap_defaults_to_list():
+    request = parse_skills_slash_command("/skills tap")
+
+    assert request.action == "tap"
+    assert request.tap_action == "list"
 
 
 def test_parse_skills_slash_command_returns_error_request_on_invalid_input():

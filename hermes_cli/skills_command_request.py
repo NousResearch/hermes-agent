@@ -117,6 +117,9 @@ def request_from_namespace(args, *, command_source: str) -> SkillsCommandRequest
     skip_confirm = getattr(args, "yes", False)
     if command_source == "slash" and action in {"install", "uninstall"}:
         skip_confirm = True
+    invalidate_cache = bool(getattr(args, "now", False))
+    if command_source == "cli" and action in {"install", "uninstall"}:
+        invalidate_cache = True
 
     path = ""
     if action == "snapshot":
@@ -124,6 +127,10 @@ def request_from_namespace(args, *, command_source: str) -> SkillsCommandRequest
             path = getattr(args, "output", "")
         elif getattr(args, "snapshot_action", None) == "import":
             path = getattr(args, "input", "")
+
+    tap_action = getattr(args, "tap_action", "") or ""
+    if command_source == "slash" and action == "tap" and not tap_action:
+        tap_action = "list"
 
     return SkillsCommandRequest(
         action=action,
@@ -137,14 +144,14 @@ def request_from_namespace(args, *, command_source: str) -> SkillsCommandRequest
         category=getattr(args, "category", "") or "",
         force=bool(getattr(args, "force", False)),
         skip_confirm=bool(skip_confirm),
-        invalidate_cache=bool(getattr(args, "now", False)),
+        invalidate_cache=invalidate_cache,
         name=getattr(args, "name", "") or "",
         skill_path=getattr(args, "skill_path", "") or "",
         target=getattr(args, "to", "github") or "github",
         repo=getattr(args, "repo", "") or "",
         snapshot_action=getattr(args, "snapshot_action", "") or "",
         path=path,
-        tap_action=getattr(args, "tap_action", "") or "",
+        tap_action=tap_action,
         config_available=(command_source != "slash"),
     )
 

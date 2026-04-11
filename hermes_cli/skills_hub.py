@@ -19,6 +19,12 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
+from hermes_cli.skills_command_request import (
+    SkillsCommandRequest,
+    parse_skills_slash_command,
+    request_from_namespace,
+)
+
 # Lazy imports to avoid circular dependencies and slow startup.
 # tools.skills_hub and tools.skills_guard are imported inside functions.
 from hermes_constants import display_hermes_home
@@ -968,53 +974,71 @@ def do_snapshot_import(input_path: str, force: bool = False,
 # CLI argparse entry point
 # ---------------------------------------------------------------------------
 
+def _dispatch_skills_request(request: SkillsCommandRequest, console: Optional[Console] = None) -> None:
+    c = console or _console
+
+    if request.action == "browse":
+        do_browse(page=request.page, page_size=request.size, source=request.source_filter, console=c)
+    elif request.action == "search":
+        do_search(request.query, source=request.source_filter, limit=request.limit, console=c)
+    elif request.action == "install":
+        do_install(
+            request.identifier,
+            category=request.category,
+            force=request.force,
+            skip_confirm=request.skip_confirm,
+            invalidate_cache=request.invalidate_cache,
+            console=c,
+        )
+    elif request.action == "inspect":
+        do_inspect(request.identifier, console=c)
+    elif request.action == "list":
+        do_list(source_filter=request.source_filter, console=c)
+    elif request.action == "check":
+        do_check(name=request.name or None, console=c)
+    elif request.action == "update":
+        do_update(name=request.name or None, console=c)
+    elif request.action == "audit":
+        do_audit(name=request.name or None, console=c)
+    elif request.action == "uninstall":
+        do_uninstall(
+            request.name,
+            console=c,
+            skip_confirm=request.skip_confirm,
+            invalidate_cache=request.invalidate_cache,
+        )
+    elif request.action == "publish":
+        do_publish(request.skill_path, target=request.target, repo=request.repo, console=c)
+    elif request.action == "snapshot":
+        if request.snapshot_action == "export":
+            do_snapshot_export(request.path, console=c)
+        elif request.snapshot_action == "import":
+            do_snapshot_import(request.path, force=request.force, console=c)
+        else:
+            c.print("Usage: hermes skills snapshot [export|import]\n")
+    elif request.action == "tap":
+        if not request.tap_action:
+            c.print("Usage: hermes skills tap [list|add|remove]\n")
+            return
+        do_tap(request.tap_action, repo=request.repo or request.name, console=c)
+    elif request.action == "config":
+        if request.config_available:
+            c.print("[bold red]skills config should be routed by hermes_cli.main before reaching the hub.[/]")
+        else:
+            c.print("[bold red]/skills config is not available in chat. Use `hermes skills config` in the terminal.[/]")
+    elif request.action in {"help", "", None}:
+        _print_skills_help(c)
+    elif request.action == "error":
+        c.print(f"[bold red]Error:[/] {request.error}")
+        _print_skills_help(c)
+    else:
+        c.print("Usage: hermes skills [browse|search|install|inspect|list|check|update|audit|uninstall|publish|snapshot|tap|config]\n")
+        c.print("Run 'hermes skills <command> --help' for details.\n")
+
+
 def skills_command(args) -> None:
     """Router for `hermes skills <subcommand>` — called from hermes_cli/main.py."""
-    action = getattr(args, "skills_action", None)
-
-    if action == "browse":
-        do_browse(page=args.page, page_size=args.size, source=args.source)
-    elif action == "search":
-        do_search(args.query, source=args.source, limit=args.limit)
-    elif action == "install":
-        do_install(args.identifier, category=args.category, force=args.force,
-                   skip_confirm=getattr(args, "yes", False))
-    elif action == "inspect":
-        do_inspect(args.identifier)
-    elif action == "list":
-        do_list(source_filter=args.source)
-    elif action == "check":
-        do_check(name=getattr(args, "name", None))
-    elif action == "update":
-        do_update(name=getattr(args, "name", None))
-    elif action == "audit":
-        do_audit(name=getattr(args, "name", None))
-    elif action == "uninstall":
-        do_uninstall(args.name)
-    elif action == "publish":
-        do_publish(
-            args.skill_path,
-            target=getattr(args, "to", "github"),
-            repo=getattr(args, "repo", ""),
-        )
-    elif action == "snapshot":
-        snap_action = getattr(args, "snapshot_action", None)
-        if snap_action == "export":
-            do_snapshot_export(args.output)
-        elif snap_action == "import":
-            do_snapshot_import(args.input, force=getattr(args, "force", False))
-        else:
-            _console.print("Usage: hermes skills snapshot [export|import]\n")
-    elif action == "tap":
-        tap_action = getattr(args, "tap_action", None)
-        repo = getattr(args, "repo", "") or getattr(args, "name", "")
-        if not tap_action:
-            _console.print("Usage: hermes skills tap [list|add|remove]\n")
-            return
-        do_tap(tap_action, repo=repo)
-    else:
-        _console.print("Usage: hermes skills [browse|search|install|inspect|list|check|update|audit|uninstall|publish|snapshot|tap]\n")
-        _console.print("Run 'hermes skills <command> --help' for details.\n")
+    _dispatch_skills_request(request_from_namespace(args, command_source="cli"))
 
 
 # ---------------------------------------------------------------------------
@@ -1022,184 +1046,7 @@ def skills_command(args) -> None:
 # ---------------------------------------------------------------------------
 
 def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
-    """
-    Parse and dispatch `/skills <subcommand> [args]` from the chat interface.
-
-    Examples:
-        /skills search kubernetes
-        /skills install openai/skills/skill-creator
-        /skills install openai/skills/skill-creator --force
-        /skills inspect openai/skills/skill-creator
-        /skills list
-        /skills list --source hub
-        /skills check
-        /skills update
-        /skills audit
-        /skills audit my-skill
-        /skills uninstall my-skill
-        /skills tap list
-        /skills tap add owner/repo
-        /skills tap remove owner/repo
-    """
-    c = console or _console
-    parts = cmd.strip().split()
-
-    # Strip the leading "/skills" if present
-    if parts and parts[0].lower() == "/skills":
-        parts = parts[1:]
-
-    if not parts:
-        _print_skills_help(c)
-        return
-
-    action = parts[0].lower()
-    args = parts[1:]
-
-    if action == "browse":
-        page = 1
-        page_size = 20
-        source = "all"
-        i = 0
-        while i < len(args):
-            if args[i] == "--page" and i + 1 < len(args):
-                try:
-                    page = int(args[i + 1])
-                except ValueError:
-                    pass
-                i += 2
-            elif args[i] == "--size" and i + 1 < len(args):
-                try:
-                    page_size = int(args[i + 1])
-                except ValueError:
-                    pass
-                i += 2
-            elif args[i] == "--source" and i + 1 < len(args):
-                source = args[i + 1]
-                i += 2
-            else:
-                i += 1
-        do_browse(page=page, page_size=page_size, source=source, console=c)
-
-    elif action == "search":
-        if not args:
-            c.print("[bold red]Usage:[/] /skills search <query> [--source skills-sh|well-known|github|official] [--limit N]\n")
-            return
-        source = "all"
-        limit = 10
-        query_parts = []
-        i = 0
-        while i < len(args):
-            if args[i] == "--source" and i + 1 < len(args):
-                source = args[i + 1]
-                i += 2
-            elif args[i] == "--limit" and i + 1 < len(args):
-                try:
-                    limit = int(args[i + 1])
-                except ValueError:
-                    pass
-                i += 2
-            else:
-                query_parts.append(args[i])
-                i += 1
-        do_search(" ".join(query_parts), source=source, limit=limit, console=c)
-
-    elif action == "install":
-        if not args:
-            c.print("[bold red]Usage:[/] /skills install <identifier> [--category <cat>] [--force] [--now]\n")
-            return
-        identifier = args[0]
-        category = ""
-        # Slash commands run inside prompt_toolkit where input() hangs.
-        # Always skip confirmation — the user typing the command is implicit consent.
-        skip_confirm = True
-        force = "--force" in args
-        # --now invalidates prompt cache immediately (costs more money).
-        # Default: defer to next session to preserve cache.
-        invalidate_cache = "--now" in args
-        for i, a in enumerate(args):
-            if a == "--category" and i + 1 < len(args):
-                category = args[i + 1]
-        do_install(identifier, category=category, force=force,
-                   skip_confirm=skip_confirm, invalidate_cache=invalidate_cache,
-                   console=c)
-
-    elif action == "inspect":
-        if not args:
-            c.print("[bold red]Usage:[/] /skills inspect <identifier>\n")
-            return
-        do_inspect(args[0], console=c)
-
-    elif action == "list":
-        source_filter = "all"
-        if "--source" in args:
-            idx = args.index("--source")
-            if idx + 1 < len(args):
-                source_filter = args[idx + 1]
-        do_list(source_filter=source_filter, console=c)
-
-    elif action == "check":
-        name = args[0] if args else None
-        do_check(name=name, console=c)
-
-    elif action == "update":
-        name = args[0] if args else None
-        do_update(name=name, console=c)
-
-    elif action == "audit":
-        name = args[0] if args else None
-        do_audit(name=name, console=c)
-
-    elif action == "uninstall":
-        if not args:
-            c.print("[bold red]Usage:[/] /skills uninstall <name> [--now]\n")
-            return
-        # Slash commands run inside prompt_toolkit where input() hangs.
-        skip_confirm = True
-        invalidate_cache = "--now" in args
-        do_uninstall(args[0], console=c, skip_confirm=skip_confirm,
-                     invalidate_cache=invalidate_cache)
-
-    elif action == "publish":
-        if not args:
-            c.print("[bold red]Usage:[/] /skills publish <skill-path> [--to github] [--repo owner/repo]\n")
-            return
-        skill_path = args[0]
-        target = "github"
-        repo = ""
-        for i, a in enumerate(args):
-            if a == "--to" and i + 1 < len(args):
-                target = args[i + 1]
-            if a == "--repo" and i + 1 < len(args):
-                repo = args[i + 1]
-        do_publish(skill_path, target=target, repo=repo, console=c)
-
-    elif action == "snapshot":
-        if not args:
-            c.print("[bold red]Usage:[/] /skills snapshot export <file> | /skills snapshot import <file>\n")
-            return
-        snap_action = args[0]
-        if snap_action == "export" and len(args) > 1:
-            do_snapshot_export(args[1], console=c)
-        elif snap_action == "import" and len(args) > 1:
-            force = "--force" in args
-            do_snapshot_import(args[1], force=force, console=c)
-        else:
-            c.print("[bold red]Usage:[/] /skills snapshot export <file> | /skills snapshot import <file>\n")
-
-    elif action == "tap":
-        if not args:
-            do_tap("list", console=c)
-            return
-        tap_action = args[0]
-        repo = args[1] if len(args) > 1 else ""
-        do_tap(tap_action, repo=repo, console=c)
-
-    elif action in ("help", "--help", "-h"):
-        _print_skills_help(c)
-
-    else:
-        c.print(f"[bold red]Unknown action:[/] {action}")
-        _print_skills_help(c)
+    _dispatch_skills_request(parse_skills_slash_command(cmd), console=console)
 
 
 def _print_skills_help(console: Console) -> None:

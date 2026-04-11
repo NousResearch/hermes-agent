@@ -50,6 +50,8 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+from hermes_cli.skills_command_request import register_skills_subcommands
+
 def _require_tty(command_name: str) -> None:
     """Exit with a clear error if stdin is not a terminal.
 
@@ -4835,67 +4837,7 @@ For more help on a command:
         help="Search, install, configure, and manage skills",
         description="Search, install, inspect, audit, configure, and manage skills from skills.sh, well-known agent skill endpoints, GitHub, ClawHub, and other registries."
     )
-    skills_subparsers = skills_parser.add_subparsers(dest="skills_action")
-
-    skills_browse = skills_subparsers.add_parser("browse", help="Browse all available skills (paginated)")
-    skills_browse.add_argument("--page", type=int, default=1, help="Page number (default: 1)")
-    skills_browse.add_argument("--size", type=int, default=20, help="Results per page (default: 20)")
-    skills_browse.add_argument("--source", default="all",
-                               choices=["all", "official", "skills-sh", "well-known", "github", "clawhub", "lobehub"],
-                               help="Filter by source (default: all)")
-
-    skills_search = skills_subparsers.add_parser("search", help="Search skill registries")
-    skills_search.add_argument("query", help="Search query")
-    skills_search.add_argument("--source", default="all", choices=["all", "official", "skills-sh", "well-known", "github", "clawhub", "lobehub"])
-    skills_search.add_argument("--limit", type=int, default=10, help="Max results")
-
-    skills_install = skills_subparsers.add_parser("install", help="Install a skill")
-    skills_install.add_argument("identifier", help="Skill identifier (e.g. openai/skills/skill-creator)")
-    skills_install.add_argument("--category", default="", help="Category folder to install into")
-    skills_install.add_argument("--force", action="store_true", help="Install despite blocked scan verdict")
-    skills_install.add_argument("--yes", "-y", action="store_true", help="Skip confirmation prompt (needed in TUI mode)")
-
-    skills_inspect = skills_subparsers.add_parser("inspect", help="Preview a skill without installing")
-    skills_inspect.add_argument("identifier", help="Skill identifier")
-
-    skills_list = skills_subparsers.add_parser("list", help="List installed skills")
-    skills_list.add_argument("--source", default="all", choices=["all", "hub", "builtin", "local"])
-
-    skills_check = skills_subparsers.add_parser("check", help="Check installed hub skills for updates")
-    skills_check.add_argument("name", nargs="?", help="Specific skill to check (default: all)")
-
-    skills_update = skills_subparsers.add_parser("update", help="Update installed hub skills")
-    skills_update.add_argument("name", nargs="?", help="Specific skill to update (default: all outdated skills)")
-
-    skills_audit = skills_subparsers.add_parser("audit", help="Re-scan installed hub skills")
-    skills_audit.add_argument("name", nargs="?", help="Specific skill to audit (default: all)")
-
-    skills_uninstall = skills_subparsers.add_parser("uninstall", help="Remove a hub-installed skill")
-    skills_uninstall.add_argument("name", help="Skill name to remove")
-
-    skills_publish = skills_subparsers.add_parser("publish", help="Publish a skill to a registry")
-    skills_publish.add_argument("skill_path", help="Path to skill directory")
-    skills_publish.add_argument("--to", default="github", choices=["github", "clawhub"], help="Target registry")
-    skills_publish.add_argument("--repo", default="", help="Target GitHub repo (e.g. openai/skills)")
-
-    skills_snapshot = skills_subparsers.add_parser("snapshot", help="Export/import skill configurations")
-    snapshot_subparsers = skills_snapshot.add_subparsers(dest="snapshot_action")
-    snap_export = snapshot_subparsers.add_parser("export", help="Export installed skills to a file")
-    snap_export.add_argument("output", help="Output JSON file path (use - for stdout)")
-    snap_import = snapshot_subparsers.add_parser("import", help="Import and install skills from a file")
-    snap_import.add_argument("input", help="Input JSON file path")
-    snap_import.add_argument("--force", action="store_true", help="Force install despite caution verdict")
-
-    skills_tap = skills_subparsers.add_parser("tap", help="Manage skill sources")
-    tap_subparsers = skills_tap.add_subparsers(dest="tap_action")
-    tap_subparsers.add_parser("list", help="List configured taps")
-    tap_add = tap_subparsers.add_parser("add", help="Add a GitHub repo as skill source")
-    tap_add.add_argument("repo", help="GitHub repo (e.g. owner/repo)")
-    tap_rm = tap_subparsers.add_parser("remove", help="Remove a tap")
-    tap_rm.add_argument("name", help="Tap name to remove")
-
-    # config sub-action: interactive enable/disable
-    skills_subparsers.add_parser("config", help="Interactive skill configuration — enable/disable individual skills")
+    register_skills_subcommands(skills_parser)
 
     def cmd_skills(args):
         # Route 'config' action to skills_config module

@@ -1,0 +1,54 @@
+import pytest
+
+from hermes_cli.skills_command_request import (
+    SkillsCommandRequest,
+    _SkillsArgumentParser,
+    parse_skills_slash_command,
+    register_skills_subcommands,
+    request_from_namespace,
+)
+
+
+def _make_parser():
+    parser = _SkillsArgumentParser(prog="skills", add_help=False)
+    register_skills_subcommands(parser)
+    return parser
+
+
+def test_request_from_namespace_preserves_cli_confirmation_policy():
+    parser = _make_parser()
+    args = parser.parse_args(["install", "openai/skills/skill-creator", "--yes"])
+
+    request = request_from_namespace(args, command_source="cli")
+
+    assert request == SkillsCommandRequest(
+        action="install",
+        command_source="cli",
+        identifier="openai/skills/skill-creator",
+        skip_confirm=True,
+    )
+
+
+def test_parse_skills_slash_command_uses_same_parser_tree():
+    request = parse_skills_slash_command(
+        "/skills snapshot import my.json --force"
+    )
+
+    assert request.action == "snapshot"
+    assert request.snapshot_action == "import"
+    assert request.path == "my.json"
+    assert request.force is True
+
+
+def test_parse_skills_slash_command_marks_config_unavailable():
+    request = parse_skills_slash_command("/skills config")
+
+    assert request.action == "config"
+    assert request.config_available is False
+
+
+def test_parse_skills_slash_command_returns_error_request_on_invalid_input():
+    request = parse_skills_slash_command("/skills install")
+
+    assert request.action == "error"
+    assert request.error

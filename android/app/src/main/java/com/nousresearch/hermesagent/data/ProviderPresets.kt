@@ -22,6 +22,24 @@ object ProviderPresets {
             modelHint = "gpt-4.1",
         ),
         ProviderPreset(
+            id = "chatgpt-web",
+            label = "ChatGPT Web",
+            baseUrl = "https://chatgpt.com/backend-api/f",
+            modelHint = "gpt-5-thinking",
+        ),
+        ProviderPreset(
+            id = "anthropic",
+            label = "Claude / Anthropic",
+            baseUrl = "https://api.anthropic.com",
+            modelHint = "claude-sonnet-4",
+        ),
+        ProviderPreset(
+            id = "gemini",
+            label = "Gemini / Google AI Studio",
+            baseUrl = "https://generativelanguage.googleapis.com/v1beta/openai",
+            modelHint = "gemini-2.5-pro",
+        ),
+        ProviderPreset(
             id = "nous",
             label = "Nous",
             baseUrl = "",

@@ -12,6 +12,7 @@ terminal_tool_module = importlib.import_module("tools.terminal_tool")
 
 class TestTerminalRequirements:
     def test_local_backend_requirements(self, monkeypatch):
+        monkeypatch.setenv("TERMINAL_ENV", "local")
         monkeypatch.setattr(
             terminal_tool_module,
             "_get_env_config",
@@ -20,6 +21,7 @@ class TestTerminalRequirements:
         assert terminal_tool_module.check_terminal_requirements() is True
 
     def test_terminal_and_file_tools_resolve_for_local_backend(self, monkeypatch):
+        monkeypatch.setenv("TERMINAL_ENV", "local")
         monkeypatch.setattr(
             terminal_tool_module,
             "_get_env_config",

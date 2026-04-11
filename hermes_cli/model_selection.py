@@ -692,7 +692,12 @@ def build_model_selection_tree(
         for provider_slug, entry in user_providers.items():
             if provider_slug in seen_other_slugs or not isinstance(entry, dict):
                 continue
-            default_model = (entry.get("default_model") or "").strip()
+            default_model = (
+                entry.get("default_model")
+                or entry.get("model")
+                or entry.get("default")
+                or ""
+            ).strip()
             model_ids: list[str] = []
             if default_model:
                 model_ids.append(default_model)

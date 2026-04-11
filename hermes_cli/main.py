@@ -882,7 +882,22 @@ def select_provider_and_model(args=None):
     )
     from hermes_cli.config import load_config, get_env_value
 
-    config = load_config()
+    def _load_model_selector_config():
+        config_path = get_hermes_home() / "config.yaml"
+        if config_path.exists():
+            return load_config()
+
+        project_config_path = PROJECT_ROOT / "cli-config.yaml"
+        if project_config_path.exists():
+            import yaml
+
+            with open(project_config_path, encoding="utf-8") as f:
+                loaded = yaml.safe_load(f) or {}
+            return loaded if isinstance(loaded, dict) else {}
+
+        return load_config()
+
+    config = _load_model_selector_config()
     current_model = config.get("model")
     if isinstance(current_model, dict):
         current_model = current_model.get("default", "")
@@ -1105,7 +1120,7 @@ def select_provider_and_model(args=None):
     elif selected_provider == "custom":
         _model_flow_custom(config)
     elif selected_provider.startswith("custom:"):
-        provider_info = _named_custom_provider_map(load_config()).get(selected_provider)
+        provider_info = _named_custom_provider_map(_load_model_selector_config()).get(selected_provider)
         if provider_info is None:
             print(
                 "Warning: the selected saved custom provider is no longer available. "
@@ -1121,6 +1136,26 @@ def select_provider_and_model(args=None):
         _model_flow_kimi(config, current_model)
     elif selected_provider in ("gemini", "zai", "minimax", "minimax-cn", "kilocode", "opencode-zen", "opencode-go", "ai-gateway", "alibaba", "huggingface"):
         _model_flow_api_key_provider(config, selected_provider, current_model)
+    elif selected_provider:
+        current_model_value = "" if current_model == "(not set)" else current_model
+        current_base_url = model_cfg.get("base_url", "") if isinstance(model_cfg, dict) else ""
+        current_api_key = model_cfg.get("api_key", "") if isinstance(model_cfg, dict) else ""
+        result = switch_model(
+            raw_input="",
+            current_provider=active or "",
+            current_model=current_model_value,
+            current_base_url=current_base_url,
+            current_api_key=current_api_key,
+            explicit_provider=selected_provider,
+            user_providers=config.get("providers"),
+            custom_providers=config.get("custom_providers"),
+        )
+        if not result.success:
+            print(f"Could not switch model: {result.error_message}")
+            return
+        _persist_selected_model_result(result)
+        provider_label = result.provider_label or result.target_provider
+        print(f"Default model set to: {result.new_model} (via {provider_label})")
 
 
 def _persist_selected_model_result(result) -> None:

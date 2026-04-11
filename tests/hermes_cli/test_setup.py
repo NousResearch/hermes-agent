@@ -323,6 +323,58 @@ def test_select_provider_and_model_uses_canonical_request_for_openrouter_branch(
     assert captured["persisted"] == "openai/gpt-5.4"
 
 
+def test_select_provider_and_model_reads_repo_fallback_config_for_user_providers(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _clear_provider_env(monkeypatch)
+    (tmp_path / ".hermes").mkdir()
+    (tmp_path / "cli-config.yaml").write_text(
+        "model:\n  provider: auto\n  default: ''\nproviders:\n  lab-provider:\n    name: Lab Provider\n    api: http://lab.example/v1\n    model: lab-model\n",
+        encoding="utf-8",
+    )
+
+    prompt_calls = {"count": 0}
+    captured = {}
+
+    def fake_prompt_provider_choice(choices, default=0):
+        prompt_calls["count"] += 1
+        if prompt_calls["count"] == 1:
+            return next(i for i, choice in enumerate(choices) if choice == "Other providers")
+        if prompt_calls["count"] == 2:
+            return next(i for i, choice in enumerate(choices) if choice.startswith("Lab Provider"))
+        return next(i for i, choice in enumerate(choices) if choice.startswith("Lab Model"))
+
+    def fake_switch_model(**kwargs):
+        captured.update(kwargs)
+        from hermes_cli.model_switch import ModelSwitchResult
+
+        return ModelSwitchResult(
+            success=True,
+            new_model="lab-model",
+            target_provider="lab-provider",
+            provider_changed=True,
+            api_key="",
+            base_url="http://lab.example/v1",
+            api_mode="chat_completions",
+            provider_label="Lab Provider",
+        )
+
+    monkeypatch.setattr("hermes_cli.auth.resolve_provider", lambda provider: None)
+    monkeypatch.setattr("hermes_cli.main.PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr("hermes_cli.main._prompt_provider_choice", fake_prompt_provider_choice)
+    monkeypatch.setattr("hermes_cli.model_switch.switch_model", fake_switch_model)
+    monkeypatch.setattr("hermes_cli.main._persist_selected_model_result", lambda result: None)
+
+    from hermes_cli.main import select_provider_and_model
+
+    select_provider_and_model()
+
+    assert captured["explicit_provider"] == "lab-provider"
+    assert captured["raw_input"] == "lab-model"
+    assert captured["user_providers"]["lab-provider"]["api"] == "http://lab.example/v1"
+
+
 def test_codex_setup_uses_runtime_access_token_for_live_model_list(tmp_path, monkeypatch):
     """Codex model list fetching uses the runtime access token."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))

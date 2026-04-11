@@ -146,3 +146,31 @@ def test_other_source_marks_current_provider_when_runtime_provider_is_canonical(
     models = tree.models(provider.id)
     assert len(models) == 1
     assert models[0].current is True
+
+
+def test_user_provider_uses_model_field_when_default_model_missing(monkeypatch):
+    monkeypatch.setattr(ms, "load_pool", lambda provider: _Pool(False))
+    monkeypatch.setattr(ms, "get_codex_auth_status", lambda: {"logged_in": False})
+    monkeypatch.setattr(ms, "get_nous_auth_status", lambda: {"logged_in": False})
+    monkeypatch.setattr(ms, "get_qwen_auth_status", lambda: {"logged_in": False})
+    monkeypatch.setattr(ms, "get_auth_status", lambda provider_id=None: {"logged_in": False})
+    monkeypatch.setattr(ms, "get_codex_model_ids", lambda access_token=None: [])
+    monkeypatch.setattr(ms, "OPENROUTER_MODELS", [])
+
+    tree = ms.build_model_selection_tree(
+        current_provider="openrouter",
+        current_model="openai/gpt-5.4",
+        user_providers={
+            "lab-provider": {
+                "name": "Lab Provider",
+                "api": "http://lab.example/v1",
+                "model": "lab-model",
+            }
+        },
+    )
+
+    provider = next(
+        provider for provider in tree.providers("other") if provider.provider_slug == "lab-provider"
+    )
+    models = tree.models(provider.id)
+    assert [item.model_id for item in models] == ["lab-model"]

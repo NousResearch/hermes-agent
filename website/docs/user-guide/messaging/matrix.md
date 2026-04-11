@@ -6,7 +6,7 @@ description: "Set up Hermes Agent as a Matrix bot"
 
 # Matrix Setup
 
-Hermes Agent integrates with Matrix, the open, federated messaging protocol. Matrix lets you run your own homeserver or use a public one like matrix.org — either way, you keep control of your communications. The bot connects via the `matrix-nio` Python SDK, processes messages through the Hermes Agent pipeline (including tool use, memory, and reasoning), and responds in real time. It supports text, file attachments, images, audio, video, and optional end-to-end encryption (E2EE).
+Hermes Agent integrates with Matrix, the open, federated messaging protocol. Matrix lets you run your own homeserver or use a public one like matrix.org — either way, you keep control of your communications. The bot connects via the `mautrix` Python SDK, processes messages through the Hermes Agent pipeline (including tool use, memory, and reasoning), and responds in real time. It supports text, file attachments, images, audio, video, and optional end-to-end encryption (E2EE).
 
 Hermes works with any Matrix homeserver — Synapse, Conduit, Dendrite, or matrix.org.
 
@@ -234,11 +234,11 @@ Hermes supports Matrix end-to-end encryption, so you can chat with your bot in e
 
 ### Requirements
 
-E2EE requires the `matrix-nio` library with encryption extras and the `libolm` C library:
+E2EE requires the `mautrix` library with encryption extras and the `libolm` C library:
 
 ```bash
-# Install matrix-nio with E2EE support
-pip install 'matrix-nio[e2e]'
+# Install mautrix with E2EE support
+pip install 'mautrix[encryption]'
 
 # Or install with hermes extras
 pip install 'hermes-agent[matrix]'
@@ -277,7 +277,7 @@ If you delete the `~/.hermes/platforms/matrix/store/` directory, the bot loses i
 :::
 
 :::info
-If `matrix-nio[e2e]` is not installed or `libolm` is missing, the bot falls back to a plain (unencrypted) client automatically. You'll see a warning in the logs.
+If `mautrix[encryption]` is not installed or `libolm` is missing, the bot falls back to a plain (unencrypted) client automatically. You'll see a warning in the logs.
 :::
 
 ## Home Room
@@ -321,14 +321,14 @@ curl -H "Authorization: Bearer YOUR_TOKEN" \
 
 If this returns your user info, the token is valid. If it returns an error, generate a new token.
 
-### "matrix-nio not installed" error
+### "mautrix not installed" error
 
-**Cause**: The `matrix-nio` Python package is not installed.
+**Cause**: The `mautrix` Python package is not installed.
 
 **Fix**: Install it:
 
 ```bash
-pip install 'matrix-nio[e2e]'
+pip install 'mautrix[encryption]'
 ```
 
 Or with Hermes extras:

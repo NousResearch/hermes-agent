@@ -33,7 +33,8 @@ def build_plan_path(
     daytona, and similar terminal backends. That keeps the plan with the active
     workspace instead of the Hermes host's global home directory.
     """
-    slug_source = (user_instruction or "").strip().splitlines()[0] if user_instruction else ""
+    stripped = (user_instruction or "").strip()
+    slug_source = stripped.splitlines()[0] if stripped else ""
     slug = _PLAN_SLUG_RE.sub("-", slug_source.lower()).strip("-")
     if slug:
         slug = "-".join(part for part in slug.split("-")[:8] if part)[:48].strip("-")

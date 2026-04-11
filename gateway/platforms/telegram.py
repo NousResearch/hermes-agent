@@ -1916,9 +1916,20 @@ class TelegramAdapter(BasePlatformAdapter):
         )
 
         # 9) Convert blockquotes: > at line start → protect > from escaping
+        #    Handle both regular blockquotes (> text) and expandable blockquotes
+        #    (Telegram MarkdownV2: **> for expandable start, || to end the quote)
+        def _convert_blockquote(m):
+            prefix = m.group(1)  # >, >>, >>>, **>, or **>> etc.
+            content = m.group(2)
+            # Check if content ends with || (expandable blockquote end marker)
+            # In this case, preserve the trailing || unescaped for Telegram
+            if prefix.startswith('**') and content.endswith('||'):
+                return _ph(f'{prefix} {_escape_mdv2(content[:-2])}||')
+            return _ph(f'{prefix} {_escape_mdv2(content)}')
+
         text = re.sub(
-            r'^(>{1,3}) (.+)$',
-            lambda m: _ph(m.group(1) + ' ' + _escape_mdv2(m.group(2))),
+            r'^((?:\*\*)?>{1,3}) (.+)$',
+            _convert_blockquote,
             text,
             flags=re.MULTILINE,
         )

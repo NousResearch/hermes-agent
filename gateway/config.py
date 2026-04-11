@@ -45,6 +45,45 @@ def _normalize_unauthorized_dm_behavior(value: Any, default: str = "pair") -> st
     return default
 
 
+def _normalize_chat_model_overrides(value: Any) -> Dict[str, Dict[str, str]]:
+    """Normalize chat-specific model overrides from config/gateway.json.
+
+    Expected shape::
+
+        {
+          "telegram:-100123": {"model": "gpt-5.4-mini", "provider": "openai-codex"},
+          "telegram:-100123:17585": {"model": "claude-sonnet-4", "provider": "anthropic"},
+        }
+
+    Unknown keys are ignored. Empty entries are dropped.
+    """
+    if not isinstance(value, dict):
+        return {}
+
+    normalized: Dict[str, Dict[str, str]] = {}
+    for raw_target, raw_entry in value.items():
+        if not isinstance(raw_target, str) or not isinstance(raw_entry, dict):
+            continue
+
+        target = raw_target.strip()
+        if not target:
+            continue
+
+        entry: Dict[str, str] = {}
+        for field_name in ("model", "provider", "base_url", "api_key", "api_mode"):
+            raw_field = raw_entry.get(field_name)
+            if raw_field is None:
+                continue
+            field_value = str(raw_field).strip()
+            if field_value:
+                entry[field_name] = field_value
+
+        if entry:
+            normalized[target] = entry
+
+    return normalized
+
+
 class Platform(Enum):
     """Supported messaging platforms."""
     LOCAL = "local"
@@ -236,6 +275,9 @@ class GatewayConfig:
 
     # User-defined quick commands (slash commands that bypass the agent loop)
     quick_commands: Dict[str, Any] = field(default_factory=dict)
+
+    # Chat-specific model defaults keyed by platform:chat_id or platform:chat_id:thread_id
+    chat_model_overrides: Dict[str, Dict[str, str]] = field(default_factory=dict)
     
     # Storage paths
     sessions_dir: Path = field(default_factory=lambda: get_hermes_home() / "sessions")
@@ -305,6 +347,33 @@ class GatewayConfig:
         if config:
             return config.home_channel
         return None
+
+    def get_chat_model_override(self, source: Any) -> Optional[Dict[str, str]]:
+        """Return the configured model override for a chat or thread, if any.
+
+        Resolution order:
+        1. exact thread target: ``platform:chat_id:thread_id``
+        2. parent chat target: ``platform:chat_id``
+        """
+        if not source:
+            return None
+
+        platform = getattr(getattr(source, "platform", None), "value", "")
+        chat_id = str(getattr(source, "chat_id", "") or "").strip()
+        thread_id = str(getattr(source, "thread_id", "") or "").strip()
+        if not platform or not chat_id:
+            return None
+
+        candidates = []
+        if thread_id:
+            candidates.append(f"{platform}:{chat_id}:{thread_id}")
+        candidates.append(f"{platform}:{chat_id}")
+
+        for target in candidates:
+            override = self.chat_model_overrides.get(target)
+            if override:
+                return dict(override)
+        return None
     
     def get_reset_policy(
         self, 
@@ -340,6 +409,7 @@ class GatewayConfig:
             },
             "reset_triggers": self.reset_triggers,
             "quick_commands": self.quick_commands,
+            "chat_model_overrides": self.chat_model_overrides,
             "sessions_dir": str(self.sessions_dir),
             "always_log_local": self.always_log_local,
             "stt_enabled": self.stt_enabled,
@@ -383,6 +453,10 @@ class GatewayConfig:
         if not isinstance(quick_commands, dict):
             quick_commands = {}
 
+        chat_model_overrides = _normalize_chat_model_overrides(
+            data.get("chat_model_overrides", {})
+        )
+
         stt_enabled = data.get("stt_enabled")
         if stt_enabled is None:
             stt_enabled = data.get("stt", {}).get("enabled") if isinstance(data.get("stt"), dict) else None
@@ -401,6 +475,7 @@ class GatewayConfig:
             reset_by_platform=reset_by_platform,
             reset_triggers=data.get("reset_triggers", ["/new", "/reset"]),
             quick_commands=quick_commands,
+            chat_model_overrides=chat_model_overrides,
             sessions_dir=sessions_dir,
             always_log_local=data.get("always_log_local", True),
             stt_enabled=_coerce_bool(stt_enabled, True),
@@ -483,6 +558,9 @@ def load_gateway_config() -> GatewayConfig:
 
             if "thread_sessions_per_user" in yaml_cfg:
                 gw_data["thread_sessions_per_user"] = yaml_cfg["thread_sessions_per_user"]
+
+            if "chat_model_overrides" in yaml_cfg:
+                gw_data["chat_model_overrides"] = yaml_cfg["chat_model_overrides"]
 
             streaming_cfg = yaml_cfg.get("streaming")
             if isinstance(streaming_cfg, dict):

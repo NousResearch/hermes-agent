@@ -108,6 +108,9 @@ class TestGatewayConfigRoundtrip:
             },
             reset_triggers=["/new"],
             quick_commands={"limits": {"type": "exec", "command": "echo ok"}},
+            chat_model_overrides={
+                "telegram:123": {"model": "gpt-5.4-mini", "provider": "openai-codex"},
+            },
             group_sessions_per_user=False,
             thread_sessions_per_user=True,
         )
@@ -118,6 +121,9 @@ class TestGatewayConfigRoundtrip:
         assert restored.platforms[Platform.TELEGRAM].token == "tok_123"
         assert restored.reset_triggers == ["/new"]
         assert restored.quick_commands == {"limits": {"type": "exec", "command": "echo ok"}}
+        assert restored.chat_model_overrides == {
+            "telegram:123": {"model": "gpt-5.4-mini", "provider": "openai-codex"}
+        }
         assert restored.group_sessions_per_user is False
         assert restored.thread_sessions_per_user is True
 
@@ -180,6 +186,26 @@ class TestLoadGatewayConfig:
         config = load_gateway_config()
 
         assert config.thread_sessions_per_user is True
+
+    def test_bridges_chat_model_overrides_from_config_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "chat_model_overrides:\n"
+            '  "telegram:-100123":\n'
+            '    model: gpt-5.4-mini\n'
+            '    provider: openai-codex\n',
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.chat_model_overrides == {
+            "telegram:-100123": {"model": "gpt-5.4-mini", "provider": "openai-codex"}
+        }
 
     def test_thread_sessions_per_user_defaults_to_false(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"

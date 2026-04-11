@@ -990,6 +990,30 @@ group_sessions_per_user: true  # true = per-user isolation in groups/channels, f
 
 For the behavior details and examples, see [Sessions](/docs/user-guide/sessions) and the [Discord guide](/docs/user-guide/messaging/discord).
 
+## Chat-Specific Model Defaults
+
+Set persistent model defaults for individual chats, channels, or topics without running a separate bot profile:
+
+```yaml
+chat_model_overrides:
+  "telegram:1046999283":
+    model: gpt-5.4
+    provider: openai-codex
+
+  "telegram:-1003938985116":
+    model: gpt-5.4-mini
+    provider: openai-codex
+
+  "telegram:-1003938985116:17585":
+    model: claude-sonnet-4
+    provider: anthropic
+```
+
+- Keys use `platform:chat_id` or `platform:chat_id:thread_id`.
+- Thread/topic overrides win over the parent chat override.
+- These are defaults for that chat. A user can still temporarily switch with `/model`, and `/new` resets back to the configured chat default.
+- This is useful when you want, for example, a cheaper/faster model in a knowledge-base intake channel but a stronger model in DMs.
+
 ## Unauthorized DM Behavior
 
 Control what Hermes does when an unknown user sends a direct message:

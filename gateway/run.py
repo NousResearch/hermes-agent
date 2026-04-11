@@ -848,7 +848,11 @@ class GatewayRunner:
         session_key: Optional[str] = None,
         user_config: Optional[dict] = None,
     ) -> tuple[str, dict]:
-        """Resolve model/runtime for a session, honoring session-scoped /model overrides.
+        """Resolve model/runtime for a session.
+
+        Precedence:
+        1. chat-specific configured defaults from ``chat_model_overrides``
+        2. session-scoped ``/model`` overrides
 
         If the session override already contains a complete provider bundle
         (provider/api_key/base_url/api_mode), prefer it directly instead of
@@ -875,11 +879,77 @@ class GatewayRunner:
                 return override_model, override_runtime
 
         runtime_kwargs = _resolve_runtime_agent_kwargs()
+        if source is not None:
+            model, runtime_kwargs = self._apply_configured_chat_model_override(
+                source,
+                model,
+                runtime_kwargs,
+                user_config=user_config,
+            )
         if override and resolved_session_key:
             model, runtime_kwargs = self._apply_session_model_override(
                 resolved_session_key, model, runtime_kwargs
             )
         return model, runtime_kwargs
+
+    def _apply_configured_chat_model_override(
+        self,
+        source: SessionSource,
+        model: str,
+        runtime_kwargs: dict,
+        user_config: Optional[dict] = None,
+    ) -> tuple[str, dict]:
+        """Apply a configured chat/thread model default if one exists."""
+        config = getattr(self, "config", None)
+        if config is None or not hasattr(config, "get_chat_model_override"):
+            return model, runtime_kwargs
+
+        override = config.get_chat_model_override(source)
+        if not override:
+            return model, runtime_kwargs
+
+        override_model = override.get("model", "")
+        explicit_provider = override.get("provider", "")
+        if not override_model and not explicit_provider:
+            return model, runtime_kwargs
+
+        from hermes_cli.model_switch import switch_model as _switch_model
+
+        cfg = user_config if isinstance(user_config, dict) else _load_gateway_config()
+        if not isinstance(cfg, dict):
+            cfg = {}
+
+        result = _switch_model(
+            raw_input=override_model or model,
+            current_provider=runtime_kwargs.get("provider", ""),
+            current_model=model,
+            current_base_url=runtime_kwargs.get("base_url", ""),
+            current_api_key=runtime_kwargs.get("api_key", ""),
+            is_global=False,
+            explicit_provider=explicit_provider,
+            user_providers=cfg.get("providers"),
+            custom_providers=cfg.get("custom_providers"),
+        )
+        if not result.success:
+            logger.warning(
+                "Ignoring invalid chat model override for %s:%s: %s",
+                getattr(getattr(source, "platform", None), "value", "unknown"),
+                getattr(source, "chat_id", "unknown"),
+                result.error_message,
+            )
+            return model, runtime_kwargs
+
+        updated_runtime = dict(runtime_kwargs)
+        resolved_runtime = {
+            "provider": override.get("provider", result.target_provider),
+            "api_key": override.get("api_key", result.api_key),
+            "base_url": override.get("base_url", result.base_url),
+            "api_mode": override.get("api_mode", result.api_mode),
+        }
+        for key, value in resolved_runtime.items():
+            if value is not None:
+                updated_runtime[key] = value
+        return result.new_model, updated_runtime
 
     def _resolve_turn_agent_config(self, user_message: str, model: str, runtime_kwargs: dict) -> dict:
         from agent.smart_model_routing import resolve_turn_route
@@ -4053,6 +4123,7 @@ class GatewayRunner:
         current_api_key = ""
         user_provs = None
         custom_provs = None
+        cfg = None
         config_path = _hermes_home / "config.yaml"
         try:
             if config_path.exists():
@@ -4068,8 +4139,25 @@ class GatewayRunner:
         except Exception:
             pass
 
-        # Check for session override
         source = event.source
+
+        configured_runtime = {
+            "provider": current_provider,
+            "api_key": current_api_key,
+            "base_url": current_base_url,
+            "api_mode": "",
+        }
+        current_model, configured_runtime = self._apply_configured_chat_model_override(
+            source,
+            current_model,
+            configured_runtime,
+            user_config=cfg if isinstance(cfg, dict) else None,
+        )
+        current_provider = configured_runtime.get("provider", current_provider)
+        current_base_url = configured_runtime.get("base_url", current_base_url)
+        current_api_key = configured_runtime.get("api_key", current_api_key)
+
+        # Check for session override
         session_key = self._session_key_for_source(source)
         override = self._session_model_overrides.get(session_key, {})
         if override:

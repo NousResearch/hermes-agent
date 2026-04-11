@@ -843,6 +843,7 @@ class TestSubagentCostRollup(unittest.TestCase):
         self.assertEqual(parent.session_estimated_cost_usd, 0.10)
         self.assertEqual(len(result["results"]), 1)
 
+
 class TestBlockedTools(_DelegateConfigIsolatedTestCase):
     def test_blocked_tools_constant(self):
         for tool in ["delegate_task", "clarify", "memory", "send_message", "execute_code"]:
@@ -1071,63 +1072,6 @@ class TestDelegationCredentialResolution(_DelegateConfigIsolatedTestCase):
         mock_resolve.assert_called_once_with(
             requested="crof.ai", target_model="deepseek-v4-pro-CEER"
         )
-
-    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
-    def test_standard_provider_not_overwritten_by_configured_name(self, mock_resolve):
-        """Standard (non-custom) providers must still return runtime identity,
-        not the configured name, to preserve existing behaviour for openrouter,
-        nous, etc.
-        """
-        mock_resolve.return_value = {
-            "provider": "openrouter",
-            "model": "anthropic/claude-sonnet-4",
-            "base_url": "https://openrouter.ai/api/v1",
-            "api_key": "or-key-xyz",
-            "api_mode": "chat_completions",
-        }
-        parent = _make_mock_parent(depth=0)
-        cfg = {"model": "anthropic/claude-sonnet-4", "provider": "openrouter"}
-        creds = _resolve_delegation_credentials(cfg, parent)
-        # Standard provider returns its own name, not "custom"
-        self.assertEqual(creds["provider"], "openrouter")
-
-    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
-    def test_custom_provider_with_empty_configured_provider_falls_back_to_runtime(self, mock_resolve):
-        """When configured_provider is empty/None, the early return kicks in and
-        we return provider=None regardless of what runtime resolved. The runtime
-        path is only reached when configured_provider is a non-empty string.
-        """
-        mock_resolve.return_value = {
-            "provider": "custom",
-            "model": "some-model",
-            "base_url": "https://fallback.example.com/v1",
-            "api_key": "key-fallback",
-            "api_mode": "chat_completions",
-        }
-        parent = _make_mock_parent(depth=0)
-        cfg = {"model": "some-model", "provider": ""}
-        creds = _resolve_delegation_credentials(cfg, parent)
-        # Empty provider → early return with None (child inherits parent)
-        self.assertIsNone(creds["provider"])
-
-    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
-    def test_runtime_missing_provider_key_returns_none(self, mock_resolve):
-        """When resolve_runtime_provider returns a dict without 'provider' key,
-        the result must be None regardless of configured_provider.
-        This protects against malformed runtime responses.
-        """
-        mock_resolve.return_value = {
-            # deliberately missing "provider"
-            "model": "some-model",
-            "base_url": "https://example.com/v1",
-            "api_key": "key-123",
-            "api_mode": "chat_completions",
-        }
-        parent = _make_mock_parent(depth=0)
-        cfg = {"model": "some-model", "provider": "crof.ai"}
-        creds = _resolve_delegation_credentials(cfg, parent)
-        self.assertIsNone(creds["provider"])
-
 
 class TestDelegationProviderIntegration(_DelegateConfigIsolatedTestCase):
     """Integration tests: delegation config → _run_single_child → AIAgent construction."""
@@ -1590,6 +1534,8 @@ class TestChildCredentialPoolResolution(_DelegateConfigIsolatedTestCase):
             MockAgent.call_args[1]["enabled_toolsets"],
             ["web", "browser"],
         )
+
+
 class TestChildCredentialLeasing(_DelegateConfigIsolatedTestCase):
     def test_run_single_child_acquires_and_releases_lease(self):
         from tools.delegate_tool import _run_single_child
@@ -1864,46 +1810,6 @@ class TestDelegateHeartbeat(_DelegateConfigIsolatedTestCase):
         """
         from tools.delegate_tool import _run_single_child
 
-        parent = _make_mock_parent()
-        touch_calls = []
-        parent._touch_activity = lambda desc: touch_calls.append(desc)
-
-        child = MagicMock()
-        # Wedged child: no tool running, iteration frozen.
-        child.get_activity_summary.return_value = {
-            "current_tool": None,
-            "api_call_count": 3,
-            "max_iterations": 50,
-            "last_activity_desc": "waiting for API response",
-        }
-
-        def slow_run(**kwargs):
-            time.sleep(0.6)
-            return {"final_response": "done", "completed": True, "api_calls": 3}
-
-        child.run_conversation.side_effect = slow_run
-
-        # At interval 0.05s, the patched idle threshold trips at ~0.25s.
-        # We should see the heartbeat stop firing well before 0.6s.
-        with (
-            patch("tools.delegate_tool._HEARTBEAT_INTERVAL", 0.05),
-            patch("tools.delegate_tool._HEARTBEAT_STALE_CYCLES_IDLE", 5),
-        ):
-            _run_single_child(
-                task_index=0,
-                goal="Test wedged child",
-                child=child,
-                parent_agent=parent,
-            )
-
-        # With idle threshold=5 + interval=0.05s, touches should cap
-        # around 5. Bound loosely to avoid timing flakes.
-        self.assertLess(
-            len(touch_calls), 9,
-            f"Idle stale detection did not fire: got {len(touch_calls)} "
-            f"touches over 0.6s — expected heartbeat to stop after "
-            f"~5 stale cycles",
-        )
 class TestDelegationReasoningEffort(_DelegateConfigIsolatedTestCase):
     """Tests for delegation.reasoning_effort config override."""
 

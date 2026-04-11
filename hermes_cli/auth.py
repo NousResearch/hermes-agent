@@ -159,6 +159,14 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=("KIMI_API_KEY",),
         base_url_env_var="KIMI_BASE_URL",
     ),
+    "kimi-code-plan": ProviderConfig(
+        id="kimi-code-plan",
+        name="Kimi Code Plan",
+        auth_type="api_key",
+        inference_base_url="https://api.kimi.com/coding/v1",
+        api_key_env_vars=("KIMI_API_KEY",),
+        base_url_env_var="KIMI_CODE_PLAN_BASE_URL",
+    ),
     "minimax": ProviderConfig(
         id="minimax",
         name="MiniMax",
@@ -898,7 +906,8 @@ def resolve_provider(
     _PROVIDER_ALIASES = {
         "glm": "zai", "z-ai": "zai", "z.ai": "zai", "zhipu": "zai",
         "google": "gemini", "google-gemini": "gemini", "google-ai-studio": "gemini",
-        "kimi": "kimi-coding", "kimi-for-coding": "kimi-coding", "moonshot": "kimi-coding",
+        "kimi": "kimi-coding", "moonshot": "kimi-coding",
+        "kimi-code": "kimi-code-plan", "kimi-for-coding": "kimi-code-plan", "kimi-plan": "kimi-code-plan",
         "minimax-china": "minimax-cn", "minimax_cn": "minimax-cn",
         "claude": "anthropic", "claude-code": "anthropic",
         "github": "copilot", "github-copilot": "copilot",

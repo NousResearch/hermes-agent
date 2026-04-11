@@ -159,13 +159,13 @@ class TestLegacyToolsets:
     def test_legacy_aliases_are_owned_by_toolsets(self):
         assert is_legacy_toolset("web_tools") is True
         assert is_legacy_toolset("nonexistent_legacy_tools") is False
-        assert LEGACY_TOOLSET_ALIASES["web_tools"] == ["web"]
+        assert LEGACY_TOOLSET_ALIASES["web_tools"] == ["web_search", "web_extract"]
 
     def test_resolve_legacy_toolset(self):
         tools = resolve_legacy_toolset("web_tools")
         assert set(tools) == {"web_search", "web_extract"}
 
-    def test_legacy_toolset_map_is_live(self):
+    def test_legacy_toolset_map_is_frozen_to_explicit_compatibility_list(self):
         registry.register(
             name="test_live_legacy_file_tool",
             toolset="file",
@@ -173,9 +173,14 @@ class TestLegacyToolsets:
             handler=lambda *_args, **_kwargs: "{}",
         )
         try:
-            assert "test_live_legacy_file_tool" in get_legacy_toolset_map()["file_tools"]
+            assert "test_live_legacy_file_tool" not in get_legacy_toolset_map()["file_tools"]
         finally:
             registry.deregister("test_live_legacy_file_tool")
+
+    def test_legacy_aliases_are_explicit_not_bundle_derived(self):
+        tools = resolve_legacy_toolset("browser_tools")
+        assert "web_search" in tools
+        assert "web_extract" not in tools
 
 
 class TestToolsetConsistency:

@@ -67,17 +67,40 @@ _HERMES_CORE_TOOLSETS = [
 
 
 LEGACY_TOOLSET_ALIASES: Dict[str, List[str]] = {
-    "web_tools": ["web"],
-    "terminal_tools": ["terminal"],
-    "vision_tools": ["vision"],
-    "moa_tools": ["moa"],
-    "image_tools": ["image_gen"],
-    "skills_tools": ["skills"],
-    "browser_tools": ["browser"],
+    "web_tools": ["web_search", "web_extract"],
+    "terminal_tools": ["terminal", "process"],
+    "vision_tools": ["vision_analyze"],
+    "moa_tools": ["mixture_of_agents"],
+    "image_tools": ["image_generate"],
+    "skills_tools": ["skills_list", "skill_view", "skill_manage"],
+    "browser_tools": [
+        "browser_back",
+        "browser_click",
+        "browser_console",
+        "browser_get_images",
+        "browser_navigate",
+        "browser_press",
+        "browser_scroll",
+        "browser_snapshot",
+        "browser_type",
+        "browser_vision",
+        "web_search",
+    ],
     "cronjob_tools": ["cronjob"],
-    "rl_tools": ["rl"],
-    "file_tools": ["file"],
-    "tts_tools": ["tts"],
+    "rl_tools": [
+        "rl_list_environments",
+        "rl_select_environment",
+        "rl_get_current_config",
+        "rl_edit_config",
+        "rl_start_training",
+        "rl_check_status",
+        "rl_stop_training",
+        "rl_get_results",
+        "rl_list_runs",
+        "rl_test_inference",
+    ],
+    "file_tools": ["read_file", "write_file", "patch", "search_files"],
+    "tts_tools": ["text_to_speech"],
 }
 
 
@@ -369,10 +392,11 @@ def is_legacy_toolset(name: str) -> bool:
 
 def resolve_legacy_toolset(name: str) -> List[str]:
     """Resolve a backward-compatible legacy toolset alias to live tool names."""
-    aliases = LEGACY_TOOLSET_ALIASES.get(name)
-    if not aliases:
+    tool_names = LEGACY_TOOLSET_ALIASES.get(name)
+    if not tool_names:
         return []
-    return resolve_multiple_toolsets(aliases)
+    available = set(registry.get_all_tool_names())
+    return [tool_name for tool_name in tool_names if tool_name in available]
 
 
 def get_legacy_toolset_map() -> Dict[str, List[str]]:

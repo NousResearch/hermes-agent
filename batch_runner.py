@@ -995,7 +995,7 @@ class BatchRunner:
         print(f"\n📦 Combining ALL batch files into {combined_file.name}...")
         
         # Valid tools auto-derived from model_tools.py — no manual updates needed
-        VALID_TOOLS = ALL_POSSIBLE_TOOLS
+        VALID_TOOLS = _all_possible_tools()
         
         total_entries = 0
         filtered_entries = 0

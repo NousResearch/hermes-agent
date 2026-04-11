@@ -877,81 +877,23 @@ def select_provider_and_model(args=None):
     provider picker, credential prompting, model selection, and config
     persistence.
     """
-    from hermes_cli.auth import (
-        resolve_provider, AuthError, format_auth_error,
+    from hermes_cli.config import get_config_path, load_runtime_config
+    from hermes_cli.model_switch import (
+        persist_model_switch_result,
+        runtime_model_selection_state,
+        switch_model,
     )
-    from hermes_cli.config import load_config, get_env_value
+    from hermes_cli.providers import get_label
 
-    def _load_model_selector_config():
-        config_path = get_hermes_home() / "config.yaml"
-        if config_path.exists():
-            return load_config()
-
-        project_config_path = PROJECT_ROOT / "cli-config.yaml"
-        if project_config_path.exists():
-            import yaml
-
-            with open(project_config_path, encoding="utf-8") as f:
-                loaded = yaml.safe_load(f) or {}
-            return loaded if isinstance(loaded, dict) else {}
-
-        return load_config()
-
-    config = _load_model_selector_config()
-    current_model = config.get("model")
-    if isinstance(current_model, dict):
-        current_model = current_model.get("default", "")
-    current_model = current_model or "(not set)"
-
-    # Read effective provider the same way the CLI does at startup:
-    # config.yaml model.provider > env var > auto-detect
-    import os
-    config_provider = None
-    model_cfg = config.get("model")
-    if isinstance(model_cfg, dict):
-        config_provider = model_cfg.get("provider")
-
-    effective_provider = (
-        config_provider
-        or os.getenv("HERMES_INFERENCE_PROVIDER")
-        or "auto"
+    config = load_runtime_config(
+        config_path=get_config_path(),
+        fallback_paths=[PROJECT_ROOT / "cli-config.yaml"],
+        runtime="cli",
     )
-    try:
-        active = resolve_provider(effective_provider)
-    except AuthError as exc:
-        warning = format_auth_error(exc)
-        print(f"Warning: {warning} Falling back to auto provider detection.")
-        try:
-            active = resolve_provider("auto")
-        except AuthError:
-            active = None  # no provider yet; default to first in list
-
-    # Detect custom endpoint
-    if active == "openrouter" and get_env_value("OPENAI_BASE_URL"):
-        active = "custom"
-
-    provider_labels = {
-        "openrouter": "OpenRouter",
-        "nous": "Nous Portal",
-        "openai-codex": "OpenAI Codex",
-        "qwen-oauth": "Qwen OAuth",
-        "copilot-acp": "GitHub Copilot ACP",
-        "copilot": "GitHub Copilot",
-        "anthropic": "Anthropic",
-        "gemini": "Google AI Studio",
-        "zai": "Z.AI / GLM",
-        "kimi-coding": "Kimi / Moonshot",
-        "minimax": "MiniMax",
-        "minimax-cn": "MiniMax (China)",
-        "opencode-zen": "OpenCode Zen",
-        "opencode-go": "OpenCode Go",
-        "ai-gateway": "AI Gateway",
-        "kilocode": "Kilo Code",
-        "alibaba": "Alibaba Cloud (DashScope)",
-        "huggingface": "Hugging Face",
-        "custom": "Custom endpoint",
-    }
-    active_label = provider_labels.get(active, active) if active else "none"
+    state = runtime_model_selection_state(config)
+    current_model = state.current_model or "(not set)"
+    active = state.current_provider or "openrouter"
+    active_label = get_label(active) if active else "none"
 
     print()
     print(f"  Current model:    {current_model}")
@@ -959,6 +901,8 @@ def select_provider_and_model(args=None):
     print()
 
     def _named_custom_provider_map(cfg) -> dict[str, dict[str, str]]:
+        from hermes_cli.providers import custom_provider_slug
+
         custom_providers_cfg = cfg.get("custom_providers") or []
         custom_provider_map = {}
         if not isinstance(custom_providers_cfg, list):
@@ -970,7 +914,7 @@ def select_provider_and_model(args=None):
             base_url = (entry.get("base_url") or "").strip()
             if not name or not base_url:
                 continue
-            key = "custom:" + name.lower().replace(" ", "-")
+            key = custom_provider_slug(name)
             custom_provider_map[key] = {
                 "name": name,
                 "base_url": base_url,
@@ -992,13 +936,12 @@ def select_provider_and_model(args=None):
         return f"{item.label} — {meta}" if meta else item.label
 
     from hermes_cli.model_selection import build_model_selection_tree, ModelSelectionController
-    from hermes_cli.model_switch import switch_model
 
     tree = build_model_selection_tree(
-        current_provider=active or "",
+        current_provider=state.current_provider,
         current_model="" if current_model == "(not set)" else current_model,
-        user_providers=config.get("providers"),
-        custom_providers=config.get("custom_providers"),
+        user_providers=state.user_providers,
+        custom_providers=state.custom_providers,
     )
     root_ordered: list[tuple[str, str]] = [
         (f"source:{source.id}", _with_status(source.label, source.status_label))
@@ -1084,17 +1027,16 @@ def select_provider_and_model(args=None):
 
     if selected_request is not None:
         current_model_value = "" if current_model == "(not set)" else current_model
-        current_base_url = model_cfg.get("base_url", "") if isinstance(model_cfg, dict) else ""
-        current_api_key = model_cfg.get("api_key", "") if isinstance(model_cfg, dict) else ""
         result = switch_model(
             raw_input=selected_request.model_id,
-            current_provider=active or "",
+            current_provider=state.current_provider,
             current_model=current_model_value,
-            current_base_url=current_base_url,
-            current_api_key=current_api_key,
+            current_base_url=state.current_base_url,
+            current_api_key=state.current_api_key,
             explicit_provider=selected_request.provider_slug,
-            user_providers=config.get("providers"),
-            custom_providers=config.get("custom_providers"),
+            user_providers=state.user_providers,
+            custom_providers=state.custom_providers,
+            runtime_config=config,
         )
         if not result.success:
             print(f"Could not switch model: {result.error_message}")
@@ -1120,7 +1062,12 @@ def select_provider_and_model(args=None):
     elif selected_provider == "custom":
         _model_flow_custom(config)
     elif selected_provider.startswith("custom:"):
-        provider_info = _named_custom_provider_map(_load_model_selector_config()).get(selected_provider)
+        current_config = load_runtime_config(
+            config_path=get_config_path(),
+            fallback_paths=[PROJECT_ROOT / "cli-config.yaml"],
+            runtime="cli",
+        )
+        provider_info = _named_custom_provider_map(current_config).get(selected_provider)
         if provider_info is None:
             print(
                 "Warning: the selected saved custom provider is no longer available. "
@@ -1138,17 +1085,16 @@ def select_provider_and_model(args=None):
         _model_flow_api_key_provider(config, selected_provider, current_model)
     elif selected_provider:
         current_model_value = "" if current_model == "(not set)" else current_model
-        current_base_url = model_cfg.get("base_url", "") if isinstance(model_cfg, dict) else ""
-        current_api_key = model_cfg.get("api_key", "") if isinstance(model_cfg, dict) else ""
         result = switch_model(
             raw_input="",
-            current_provider=active or "",
+            current_provider=state.current_provider,
             current_model=current_model_value,
-            current_base_url=current_base_url,
-            current_api_key=current_api_key,
+            current_base_url=state.current_base_url,
+            current_api_key=state.current_api_key,
             explicit_provider=selected_provider,
-            user_providers=config.get("providers"),
-            custom_providers=config.get("custom_providers"),
+            user_providers=state.user_providers,
+            custom_providers=state.custom_providers,
+            runtime_config=config,
         )
         if not result.success:
             print(f"Could not switch model: {result.error_message}")
@@ -1160,62 +1106,9 @@ def select_provider_and_model(args=None):
 
 def _persist_selected_model_result(result) -> None:
     """Persist a model switch result using the same provider semantics as setup flows."""
-    from hermes_cli.auth import (
-        _save_model_choice,
-        _update_config_for_provider,
-        deactivate_provider,
-    )
-    from hermes_cli.config import load_config, save_config
+    from hermes_cli.model_switch import persist_model_switch_result
 
-    oauth_providers = {"nous", "openai-codex", "qwen-oauth"}
-    if result.target_provider in oauth_providers:
-        _update_config_for_provider(
-            result.target_provider,
-            result.base_url,
-            default_model=result.new_model,
-        )
-        _save_model_choice(result.new_model)
-        return
-
-    cfg = load_config()
-    model_cfg = cfg.get("model")
-    if isinstance(model_cfg, dict):
-        model_section = dict(model_cfg)
-    elif isinstance(model_cfg, str) and model_cfg.strip():
-        model_section = {"default": model_cfg.strip()}
-    else:
-        model_section = {}
-
-    model_section["default"] = result.new_model
-    model_section["provider"] = result.target_provider
-    if result.base_url:
-        model_section["base_url"] = result.base_url.rstrip("/")
-    else:
-        model_section.pop("base_url", None)
-    if result.api_mode:
-        model_section["api_mode"] = result.api_mode
-    else:
-        model_section.pop("api_mode", None)
-    model_section.pop("api_key", None)
-    cfg["model"] = model_section
-    providers_cfg = cfg.get("providers")
-    if isinstance(providers_cfg, dict) and result.target_provider in providers_cfg:
-        provider_entry = providers_cfg.get(result.target_provider)
-        if isinstance(provider_entry, dict):
-            provider_entry["default_model"] = result.new_model
-    custom_cfg = cfg.get("custom_providers")
-    if isinstance(custom_cfg, list) and result.target_provider.startswith("custom:"):
-        from hermes_cli.providers import custom_provider_slug
-
-        for entry in custom_cfg:
-            if not isinstance(entry, dict):
-                continue
-            display_name = str(entry.get("name") or "").strip()
-            if display_name and custom_provider_slug(display_name) == result.target_provider:
-                entry["model"] = result.new_model
-                break
-    save_config(cfg)
-    deactivate_provider()
+    persist_model_switch_result(result)
 
 
 def _prompt_provider_choice(choices, *, default=0):

@@ -28,6 +28,7 @@ from agent.credential_pool import (
 )
 import hermes_cli.auth as auth_mod
 from hermes_cli.auth import PROVIDER_REGISTRY
+from hermes_cli.providers import normalize_provider as normalize_provider_id
 from hermes_constants import OPENROUTER_BASE_URL
 
 
@@ -73,9 +74,7 @@ def _resolve_custom_provider_input(raw: str) -> str | None:
 
 
 def _normalize_provider(provider: str) -> str:
-    normalized = (provider or "").strip().lower()
-    if normalized in {"or", "open-router"}:
-        return "openrouter"
+    normalized = normalize_provider_id((provider or "").strip().lower())
     # Check if it matches a custom provider name
     custom_key = _resolve_custom_provider_input(normalized)
     if custom_key:

@@ -476,27 +476,27 @@ def check_nous_free_tier() -> bool:
         return False  # default to paid on error — don't block users
 
 
-_PROVIDER_LABELS = {
-    "openrouter": "OpenRouter",
-    "openai-codex": "OpenAI Codex",
-    "copilot-acp": "GitHub Copilot ACP",
-    "nous": "Nous Portal",
-    "copilot": "GitHub Copilot",
-    "gemini": "Google AI Studio",
-    "zai": "Z.AI / GLM",
-    "kimi-coding": "Kimi / Moonshot",
-    "minimax": "MiniMax",
-    "minimax-cn": "MiniMax (China)",
-    "anthropic": "Anthropic",
-    "deepseek": "DeepSeek",
-    "opencode-zen": "OpenCode Zen",
-    "opencode-go": "OpenCode Go",
-    "ai-gateway": "AI Gateway",
-    "kilocode": "Kilo Code",
-    "alibaba": "Alibaba Cloud (DashScope)",
-    "qwen-oauth": "Qwen OAuth (Portal)",
-    "huggingface": "Hugging Face",
-    "custom": "Custom endpoint",
+_CANONICAL_PROVIDER_IDS = {
+    "openrouter",
+    "openai-codex",
+    "copilot-acp",
+    "nous",
+    "copilot",
+    "gemini",
+    "zai",
+    "kimi-coding",
+    "minimax",
+    "minimax-cn",
+    "anthropic",
+    "deepseek",
+    "opencode-zen",
+    "opencode-go",
+    "ai-gateway",
+    "kilocode",
+    "alibaba",
+    "qwen-oauth",
+    "huggingface",
+    "custom",
 }
 
 _PROVIDER_ALIASES = dict(PROVIDER_ALIASES)
@@ -766,7 +766,7 @@ def get_pricing_for_provider(provider: str, *, force_refresh: bool = False) -> d
 
 # All provider IDs and aliases that are valid for the provider:model syntax.
 _KNOWN_PROVIDER_NAMES: set[str] = (
-    set(_PROVIDER_LABELS.keys())
+    set(_CANONICAL_PROVIDER_IDS)
     | set(_PROVIDER_ALIASES.keys())
     | {"openrouter", "custom"}
 )
@@ -794,7 +794,7 @@ def list_available_providers() -> list[dict[str, str]]:
 
     result = []
     for pid in _PROVIDER_ORDER:
-        label = _PROVIDER_LABELS.get(pid, pid)
+        label = get_provider_label(pid) or pid
         alias_list = aliases_for.get(pid, [])
         # Check if this provider has credentials available
         has_creds = False
@@ -924,7 +924,7 @@ def detect_provider_for_model(
     if resolved_provider not in {"custom", "openrouter"}:
         default_models = _PROVIDER_MODELS.get(resolved_provider, [])
         if (
-            resolved_provider in _PROVIDER_LABELS
+            resolved_provider in _CANONICAL_PROVIDER_IDS
             and default_models
             and resolved_provider != normalize_provider(current_provider)
         ):
@@ -1033,7 +1033,7 @@ def provider_label(provider: Optional[str]) -> str:
         return "Auto"
     normalized = normalize_provider(normalized)
     label = get_provider_label(normalized)
-    return label or _PROVIDER_LABELS.get(normalized, original or "OpenRouter")
+    return label or original or "OpenRouter"
 
 
 # Models that support OpenAI Priority Processing (service_tier="priority").
@@ -1801,7 +1801,7 @@ def validate_requested_model(
 
     # api_models is None — couldn't reach API.  Accept and persist,
     # but warn so typos don't silently break things.
-    provider_label = _PROVIDER_LABELS.get(normalized, normalized)
+    provider_label = get_provider_label(normalized) or normalized
     return {
         "accepted": True,
         "persist": True,

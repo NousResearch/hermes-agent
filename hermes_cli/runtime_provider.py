@@ -68,8 +68,8 @@ def _auto_detect_local_model(base_url: str) -> str:
     return ""
 
 
-def _get_model_config() -> Dict[str, Any]:
-    config = load_config()
+def _get_model_config(config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    config = config or load_config()
     model_cfg = config.get("model")
     if isinstance(model_cfg, dict):
         cfg = dict(model_cfg)
@@ -207,12 +207,15 @@ def _resolve_runtime_from_pool_entry(
     }
 
 
-def resolve_requested_provider(requested: Optional[str] = None) -> str:
+def resolve_requested_provider(requested: Optional[str] = None, *, config: Optional[Dict[str, Any]] = None) -> str:
     """Resolve provider request from explicit arg, config, then env."""
     if requested and requested.strip():
         return requested.strip().lower()
 
-    model_cfg = _get_model_config()
+    try:
+        model_cfg = _get_model_config(config)
+    except TypeError:
+        model_cfg = _get_model_config()
     cfg_provider = model_cfg.get("provider")
     if isinstance(cfg_provider, str) and cfg_provider.strip():
         return cfg_provider.strip().lower()
@@ -257,7 +260,11 @@ def _try_resolve_from_custom_pool(
         return None
 
 
-def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, Any]]:
+def _get_named_custom_provider(
+    requested_provider: str,
+    *,
+    config: Optional[Dict[str, Any]] = None,
+) -> Optional[Dict[str, Any]]:
     requested_norm = _normalize_custom_provider_name(requested_provider or "")
     if not requested_norm or requested_norm == "custom":
         return None
@@ -276,7 +283,7 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
         else:
             return None
 
-    config = load_config()
+    config = config or load_config()
     custom_providers = config.get("custom_providers")
     if not isinstance(custom_providers, list):
         if isinstance(custom_providers, dict):
@@ -316,8 +323,12 @@ def _resolve_named_custom_runtime(
     requested_provider: str,
     explicit_api_key: Optional[str] = None,
     explicit_base_url: Optional[str] = None,
+    config: Optional[Dict[str, Any]] = None,
 ) -> Optional[Dict[str, Any]]:
-    custom_provider = _get_named_custom_provider(requested_provider)
+    try:
+        custom_provider = _get_named_custom_provider(requested_provider, config=config)
+    except TypeError:
+        custom_provider = _get_named_custom_provider(requested_provider)
     if not custom_provider:
         return None
 
@@ -586,14 +597,17 @@ def resolve_runtime_provider(
     requested: Optional[str] = None,
     explicit_api_key: Optional[str] = None,
     explicit_base_url: Optional[str] = None,
+    config: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Resolve runtime provider credentials for agent execution."""
-    requested_provider = resolve_requested_provider(requested)
+    runtime_config = config or load_config()
+    requested_provider = resolve_requested_provider(requested, config=runtime_config)
 
     custom_runtime = _resolve_named_custom_runtime(
         requested_provider=requested_provider,
         explicit_api_key=explicit_api_key,
         explicit_base_url=explicit_base_url,
+        config=runtime_config,
     )
     if custom_runtime:
         custom_runtime["requested_provider"] = requested_provider
@@ -604,7 +618,10 @@ def resolve_runtime_provider(
         explicit_api_key=explicit_api_key,
         explicit_base_url=explicit_base_url,
     )
-    model_cfg = _get_model_config()
+    try:
+        model_cfg = _get_model_config(runtime_config)
+    except TypeError:
+        model_cfg = _get_model_config()
     explicit_runtime = _resolve_explicit_runtime(
         provider=provider,
         requested_provider=requested_provider,

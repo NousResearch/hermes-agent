@@ -3820,11 +3820,13 @@ class GatewayRunner:
           /model <name> --provider <provider> — switch provider + model
           /model --provider <provider>        — switch to provider, auto-detect model
         """
-        import yaml
         from hermes_cli.model_switch import (
+            persist_model_switch_result,
+            runtime_model_selection_state,
             switch_model as _switch_model, parse_model_flags,
             list_authenticated_providers,
         )
+        from hermes_cli.config import load_runtime_config
         from hermes_cli.providers import get_label
 
         raw_args = event.get_command_args().strip()
@@ -3832,32 +3834,19 @@ class GatewayRunner:
         # Parse --provider and --global flags
         model_input, explicit_provider, persist_global = parse_model_flags(raw_args)
 
-        # Read current model/provider from config
-        current_model = ""
-        current_provider = "openrouter"
-        current_base_url = ""
-        current_api_key = ""
-        user_provs = None
-        custom_provs = None
         config_path = _hermes_home / "config.yaml"
-        try:
-            cfg = {}
-            if config_path.exists():
-                with open(config_path, encoding="utf-8") as f:
-                    cfg = yaml.safe_load(f) or {}
-            model_cfg = cfg.get("model", {})
-            if isinstance(model_cfg, dict):
-                current_model = model_cfg.get("default", "") or model_cfg.get("model", "")
-                current_provider = model_cfg.get("provider", "") or cfg.get("provider", current_provider)
-                current_base_url = model_cfg.get("base_url", "") or cfg.get("base_url", "")
-            elif isinstance(model_cfg, str):
-                current_model = model_cfg
-                current_provider = cfg.get("provider", current_provider)
-                current_base_url = cfg.get("base_url", current_base_url)
-            user_provs = cfg.get("providers")
-            custom_provs = cfg.get("custom_providers")
-        except Exception:
-            pass
+        runtime_config = load_runtime_config(
+            config_path=config_path,
+            runtime="gateway",
+            ensure_home=False,
+        )
+        state = runtime_model_selection_state(runtime_config)
+        current_model = state.current_model
+        current_provider = state.current_provider
+        current_base_url = state.current_base_url
+        current_api_key = state.current_api_key
+        user_provs = state.user_providers
+        custom_provs = state.custom_providers
 
         # Check for session override
         source = event.source
@@ -3913,6 +3902,7 @@ class GatewayRunner:
                             explicit_provider=provider_slug,
                             user_providers=user_provs,
                             custom_providers=custom_provs,
+                            runtime_config=runtime_config,
                         )
                         if not result.success:
                             return f"Error: {result.error_message}"
@@ -4021,6 +4011,7 @@ class GatewayRunner:
             explicit_provider=explicit_provider,
             user_providers=user_provs,
             custom_providers=custom_provs,
+            runtime_config=runtime_config,
         )
 
         if not result.success:
@@ -4068,18 +4059,7 @@ class GatewayRunner:
         # Persist to config if --global
         if persist_global:
             try:
-                if config_path.exists():
-                    with open(config_path, encoding="utf-8") as f:
-                        cfg = yaml.safe_load(f) or {}
-                else:
-                    cfg = {}
-                model_cfg = cfg.setdefault("model", {})
-                model_cfg["default"] = result.new_model
-                model_cfg["provider"] = result.target_provider
-                if result.base_url:
-                    model_cfg["base_url"] = result.base_url
-                from hermes_cli.config import save_config
-                save_config(cfg)
+                persist_model_switch_result(result)
             except Exception as e:
                 logger.warning("Failed to persist model switch: %s", e)
 
@@ -4131,42 +4111,25 @@ class GatewayRunner:
 
     async def _handle_provider_command(self, event: MessageEvent) -> str:
         """Handle /provider command - show available providers."""
-        import yaml
         from hermes_cli.models import (
             list_available_providers,
             normalize_provider,
-            _PROVIDER_LABELS,
         )
+        from hermes_cli.config import load_runtime_config
+        from hermes_cli.model_switch import runtime_model_selection_state
+        from hermes_cli.providers import get_label
 
-        # Resolve current provider from config
-        current_provider = "openrouter"
-        model_cfg = {}
         config_path = _hermes_home / 'config.yaml'
-        try:
-            if config_path.exists():
-                with open(config_path, encoding="utf-8") as f:
-                    cfg = yaml.safe_load(f) or {}
-                model_cfg = cfg.get("model", {})
-                if isinstance(model_cfg, dict):
-                    current_provider = model_cfg.get("provider", current_provider)
-        except Exception:
-            pass
+        runtime_config = load_runtime_config(
+            config_path=config_path,
+            runtime="gateway",
+            ensure_home=False,
+        )
+        state = runtime_model_selection_state(runtime_config)
+        current_provider = state.current_provider
 
         current_provider = normalize_provider(current_provider)
-        if current_provider == "auto":
-            try:
-                from hermes_cli.auth import resolve_provider as _resolve_provider
-                current_provider = _resolve_provider(current_provider)
-            except Exception:
-                current_provider = "openrouter"
-
-        # Detect custom endpoint from config base_url
-        if current_provider == "openrouter":
-            _cfg_base = model_cfg.get("base_url", "") if isinstance(model_cfg, dict) else ""
-            if _cfg_base and "openrouter.ai" not in _cfg_base:
-                current_provider = "custom"
-
-        current_label = _PROVIDER_LABELS.get(current_provider, current_provider)
+        current_label = get_label(current_provider)
 
         lines = [
             f"🔌 **Current provider:** {current_label} (`{current_provider}`)",

@@ -256,12 +256,17 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "gemini": "Google AI Studio",
     "zai": "Z.AI / GLM",
     "kimi-coding": "Kimi / Moonshot",
+    "minimax": "MiniMax",
     "minimax-cn": "MiniMax (China)",
+    "anthropic": "Anthropic",
     "deepseek": "DeepSeek",
     "opencode-zen": "OpenCode Zen",
     "opencode-go": "OpenCode Go",
     "ai-gateway": "AI Gateway",
     "kilocode": "Kilo Code",
+    "alibaba": "Alibaba Cloud (DashScope)",
+    "qwen-oauth": "Qwen OAuth (Portal)",
+    "huggingface": "Hugging Face",
     "custom": "Custom endpoint",
 }
 

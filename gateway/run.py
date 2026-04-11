@@ -247,6 +247,15 @@ def _normalize_whatsapp_identifier(value: str) -> str:
     )
 
 
+def _resolve_pdf_ingest_scripts_dir() -> Path:
+    """Return the repo skill scripts directory for KB PDF ingest, with legacy fallback."""
+    project_root = Path(__file__).resolve().parents[1]
+    repo_skill_dir = project_root / "skills" / "productivity" / "docling-kb-pdf-ingest" / "scripts"
+    if repo_skill_dir.exists():
+        return repo_skill_dir
+    return _hermes_home / "scripts"
+
+
 def _expand_whatsapp_auth_aliases(identifier: str) -> set:
     """Resolve WhatsApp phone/LID aliases using bridge session mapping files."""
     normalized = _normalize_whatsapp_identifier(identifier)
@@ -1795,8 +1804,7 @@ class GatewayRunner:
             await adapter.send(source.chat_id, "Received PDF. Staging and parsing now.", metadata=metadata)
 
         def _run_ingest() -> dict[str, Any]:
-            hermes_home = Path(os.environ.get("HERMES_HOME", str(Path.home() / ".hermes")))
-            scripts_dir = str(hermes_home / "scripts")
+            scripts_dir = str(_resolve_pdf_ingest_scripts_dir())
             if scripts_dir not in sys.path:
                 sys.path.insert(0, scripts_dir)
             from telegram_pdf_drop_ingest import ingest_telegram_pdf

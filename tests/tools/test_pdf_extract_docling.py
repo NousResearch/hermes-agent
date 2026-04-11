@@ -6,7 +6,13 @@ import sys
 from pathlib import Path
 
 
-SCRIPTS_DIR = Path("/Users/quark/.hermes/scripts")
+SCRIPTS_DIR = (
+    Path(__file__).resolve().parents[2]
+    / "skills"
+    / "productivity"
+    / "docling-kb-pdf-ingest"
+    / "scripts"
+)
 
 
 def load_module(monkeypatch, tmp_path):

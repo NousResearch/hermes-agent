@@ -35,7 +35,7 @@ Note:
 """
 
 import threading
-from typing import Dict, List, Callable, Any, Set
+from typing import Dict, List, Callable, Any, Set, Optional
 from dataclasses import dataclass, field
 from datetime import datetime
 import logging
@@ -122,7 +122,7 @@ class EventBus:
         self._handlers: Dict[str, List[Callable]] = {}
         self._lock = threading.RLock()
         self._emitting = False  # Guard against re-entrant emit
-        self._telemetry_pipeline: TelemetryPipeline = None
+        self._telemetry_pipeline: Optional[TelemetryPipeline] = None
 
     def subscribe(self, event_type: str, handler: Callable[["Event"], None]) -> None:
         """

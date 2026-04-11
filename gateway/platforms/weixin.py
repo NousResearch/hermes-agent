@@ -63,6 +63,7 @@ from gateway.platforms.base import (
     cache_image_from_bytes,
 )
 from hermes_constants import get_hermes_home
+from utils import atomic_json_write
 
 ILINK_BASE_URL = "https://ilinkai.weixin.qq.com"
 WEIXIN_CDN_BASE_URL = "https://novac2c.cdn.weixin.qq.com/c2c"
@@ -206,7 +207,7 @@ def save_weixin_account(
         "saved_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
     path = _account_file(hermes_home, account_id)
-    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    atomic_json_write(path, payload)
     try:
         path.chmod(0o600)
     except OSError:
@@ -269,7 +270,7 @@ class ContextTokenStore:
             if key.startswith(prefix)
         }
         try:
-            self._path(account_id).write_text(json.dumps(payload), encoding="utf-8")
+            atomic_json_write(self._path(account_id), payload)
         except Exception as exc:
             logger.warning("weixin: failed to persist context tokens for %s: %s", _safe_id(account_id), exc)
 
@@ -868,7 +869,7 @@ def _load_sync_buf(hermes_home: str, account_id: str) -> str:
 
 def _save_sync_buf(hermes_home: str, account_id: str, sync_buf: str) -> None:
     path = _sync_buf_path(hermes_home, account_id)
-    path.write_text(json.dumps({"get_updates_buf": sync_buf}), encoding="utf-8")
+    atomic_json_write(path, {"get_updates_buf": sync_buf})
 
 
 async def qr_login(

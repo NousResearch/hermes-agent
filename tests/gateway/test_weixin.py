@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+from unittest.mock import ANY
 from unittest.mock import AsyncMock, patch
 
 from gateway.config import PlatformConfig
@@ -199,6 +200,53 @@ class TestWeixinSendMessageIntegration:
             "hello",
             media_files=[("/tmp/demo.png", False)],
         )
+
+
+class TestWeixinChunkDelivery:
+    def _connected_adapter(self) -> WeixinAdapter:
+        adapter = _make_adapter()
+        adapter._session = object()
+        adapter._token = "test-token"
+        adapter._base_url = "https://weixin.example.com"
+        adapter._token_store.get = lambda account_id, chat_id: "ctx-token"
+        return adapter
+
+    @patch("gateway.platforms.weixin.asyncio.sleep", new_callable=AsyncMock)
+    @patch("gateway.platforms.weixin._send_message", new_callable=AsyncMock)
+    def test_send_waits_between_multiple_chunks(self, send_message_mock, sleep_mock):
+        adapter = self._connected_adapter()
+        adapter.MAX_MESSAGE_LENGTH = 12
+
+        result = asyncio.run(adapter.send("wxid_test123", "first\nsecond\nthird"))
+
+        assert result.success is True
+        assert send_message_mock.await_count == 3
+        assert sleep_mock.await_count == 2
+
+    @patch("gateway.platforms.weixin.asyncio.sleep", new_callable=AsyncMock)
+    @patch("gateway.platforms.weixin._send_message", new_callable=AsyncMock)
+    def test_send_retries_failed_chunk_before_continuing(self, send_message_mock, sleep_mock):
+        adapter = self._connected_adapter()
+        adapter.MAX_MESSAGE_LENGTH = 12
+        calls = {"count": 0}
+
+        async def flaky_send(*args, **kwargs):
+            calls["count"] += 1
+            if calls["count"] == 2:
+                raise RuntimeError("temporary iLink failure")
+
+        send_message_mock.side_effect = flaky_send
+
+        result = asyncio.run(adapter.send("wxid_test123", "first\nsecond\nthird"))
+
+        assert result.success is True
+        assert send_message_mock.await_count == 4
+        first_retry = send_message_mock.await_args_list[1].kwargs
+        second_retry = send_message_mock.await_args_list[2].kwargs
+        assert first_retry["text"] == "second"
+        assert second_retry["text"] == "second"
+        assert first_retry["client_id"] == second_retry["client_id"]
+        sleep_mock.assert_any_await(ANY)
 
 
 class TestWeixinRemoteMediaSafety:

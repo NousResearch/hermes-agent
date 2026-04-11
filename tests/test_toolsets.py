@@ -4,12 +4,16 @@ import pytest
 
 from tools.registry import registry
 from toolsets import (
+    LEGACY_TOOLSET_ALIASES,
     TOOLSETS,
+    get_legacy_toolset_map,
     get_toolset,
     resolve_toolset,
+    resolve_legacy_toolset,
     resolve_multiple_toolsets,
     get_all_toolsets,
     get_toolset_names,
+    is_legacy_toolset,
     validate_toolset,
     create_custom_toolset,
     get_toolset_info,
@@ -149,6 +153,29 @@ class TestRegistryOwnedToolsets:
             assert resolve_toolset("test-live-toolset") == ["test_live_toolset_tool"]
         finally:
             registry.deregister("test_live_toolset_tool")
+
+
+class TestLegacyToolsets:
+    def test_legacy_aliases_are_owned_by_toolsets(self):
+        assert is_legacy_toolset("web_tools") is True
+        assert is_legacy_toolset("nonexistent_legacy_tools") is False
+        assert LEGACY_TOOLSET_ALIASES["web_tools"] == ["web"]
+
+    def test_resolve_legacy_toolset(self):
+        tools = resolve_legacy_toolset("web_tools")
+        assert set(tools) == {"web_search", "web_extract"}
+
+    def test_legacy_toolset_map_is_live(self):
+        registry.register(
+            name="test_live_legacy_file_tool",
+            toolset="file",
+            schema={"name": "test_live_legacy_file_tool", "description": "Live", "parameters": {"type": "object", "properties": {}}},
+            handler=lambda *_args, **_kwargs: "{}",
+        )
+        try:
+            assert "test_live_legacy_file_tool" in get_legacy_toolset_map()["file_tools"]
+        finally:
+            registry.deregister("test_live_legacy_file_tool")
 
 
 class TestToolsetConsistency:

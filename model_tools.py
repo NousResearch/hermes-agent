@@ -22,14 +22,18 @@ Public API (signatures preserved from the original 2,400-line version):
 
 import json
 import asyncio
-import ast
 import logging
 import threading
-from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
 
-from tools.registry import registry
-from toolsets import resolve_multiple_toolsets, resolve_toolset, validate_toolset
+from tools.registry import discover_builtin_tools, registry
+from toolsets import (
+    get_legacy_toolset_map,
+    is_legacy_toolset,
+    resolve_legacy_toolset,
+    resolve_toolset,
+    validate_toolset,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -127,11 +131,6 @@ def _run_async(coro):
     return tool_loop.run_until_complete(coro)
 
 
-# =============================================================================
-# Tool Discovery  (importing each module triggers its registry.register calls)
-# =============================================================================
-
-
 class _DynamicDictView(dict):
     """Live read-through dict for backward-compatible exported mappings."""
 
@@ -182,53 +181,7 @@ class _DynamicDictView(dict):
     def copy(self):
         self._refresh()
         return dict(self)
-
-
-def _module_registers_tools(module_path: Path) -> bool:
-    """Return True when the module contains a ``registry.register(...)`` call."""
-    try:
-        source = module_path.read_text(encoding="utf-8")
-        tree = ast.parse(source, filename=str(module_path))
-    except (OSError, SyntaxError):
-        return False
-
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
-            continue
-        func = node.func
-        if (
-            isinstance(func, ast.Attribute)
-            and func.attr == "register"
-            and isinstance(func.value, ast.Name)
-            and func.value.id == "registry"
-        ):
-            return True
-    return False
-
-def _discover_tools():
-    """Import all tool modules to trigger their registry.register() calls.
-
-    Uses source inspection instead of a hand-maintained module list so new
-    built-in tools become discoverable as soon as they self-register.
-    """
-    import importlib
-
-    tools_dir = Path(__file__).resolve().parent / "tools"
-    module_names = [
-        f"tools.{path.stem}"
-        for path in sorted(tools_dir.glob("*.py"))
-        if path.name not in {"__init__.py", "registry.py"}
-        and _module_registers_tools(path)
-    ]
-
-    for mod_name in module_names:
-        try:
-            importlib.import_module(mod_name)
-        except Exception as e:
-            logger.warning("Could not import tool module %s: %s", mod_name, e)
-
-
-_discover_tools()
+discover_builtin_tools()
 
 # MCP tool discovery (external MCP servers from config)
 try:
@@ -249,33 +202,11 @@ except Exception as e:
 # Backward-compat constants  (live views over the registry)
 # =============================================================================
 
-_LEGACY_TOOLSET_ALIASES = {
-    "web_tools": ["web"],
-    "terminal_tools": ["terminal"],
-    "vision_tools": ["vision"],
-    "moa_tools": ["moa"],
-    "image_tools": ["image_gen"],
-    "skills_tools": ["skills"],
-    "browser_tools": ["browser"],
-    "cronjob_tools": ["cronjob"],
-    "rl_tools": ["rl"],
-    "file_tools": ["file"],
-    "tts_tools": ["tts"],
-}
-
-
-def _build_legacy_toolset_map() -> Dict[str, List[str]]:
-    return {
-        name: sorted(resolve_multiple_toolsets(toolsets))
-        for name, toolsets in _LEGACY_TOOLSET_ALIASES.items()
-    }
-
-
 TOOL_TO_TOOLSET_MAP: Dict[str, str] = _DynamicDictView(registry.get_tool_to_toolset_map)
 
 TOOLSET_REQUIREMENTS: Dict[str, dict] = _DynamicDictView(registry.get_toolset_requirements)
 
-_LEGACY_TOOLSET_MAP = _DynamicDictView(_build_legacy_toolset_map)
+_LEGACY_TOOLSET_MAP = _DynamicDictView(get_legacy_toolset_map)
 
 # Resolved tool names from the last get_tool_definitions() call.
 # Used by code_execution_tool to know which tools are available in this session.
@@ -287,9 +218,8 @@ def _resolve_requested_toolset(name: str) -> Tuple[List[str], Optional[str]]:
     if validate_toolset(name):
         return resolve_toolset(name), "toolset"
 
-    legacy_toolsets = _LEGACY_TOOLSET_ALIASES.get(name)
-    if legacy_toolsets:
-        return resolve_multiple_toolsets(legacy_toolsets), "legacy"
+    if is_legacy_toolset(name):
+        return resolve_legacy_toolset(name), "legacy"
 
     return [], None
 

@@ -14,11 +14,56 @@ Import chain (circular-import safe):
     run_agent.py, cli.py, batch_runner.py, etc.
 """
 
+import ast
+import importlib
 import json
 import logging
+from pathlib import Path
 from typing import Callable, Dict, List, Optional, Set
 
 logger = logging.getLogger(__name__)
+
+
+def _module_registers_tools(module_path: Path) -> bool:
+    """Return True when the module contains a ``registry.register(...)`` call."""
+    try:
+        source = module_path.read_text(encoding="utf-8")
+        tree = ast.parse(source, filename=str(module_path))
+    except (OSError, SyntaxError):
+        return False
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if (
+            isinstance(func, ast.Attribute)
+            and func.attr == "register"
+            and isinstance(func.value, ast.Name)
+            and func.value.id == "registry"
+        ):
+            return True
+    return False
+
+
+def discover_builtin_tools(tools_dir: Path | None = None) -> List[str]:
+    """Import self-registering built-in tool modules and return their names."""
+    tools_path = Path(tools_dir) if tools_dir is not None else Path(__file__).resolve().parent
+    module_names = [
+        f"tools.{path.stem}"
+        for path in sorted(tools_path.glob("*.py"))
+        if path.name not in {"__init__.py", "registry.py"}
+        and _module_registers_tools(path)
+    ]
+
+    imported: List[str] = []
+    for mod_name in module_names:
+        try:
+            importlib.import_module(mod_name)
+            imported.append(mod_name)
+        except Exception as e:
+            logger.warning("Could not import tool module %s: %s", mod_name, e)
+    return imported
 
 
 class ToolEntry:

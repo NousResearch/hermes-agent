@@ -66,6 +66,21 @@ _HERMES_CORE_TOOLSETS = [
 ]
 
 
+LEGACY_TOOLSET_ALIASES: Dict[str, List[str]] = {
+    "web_tools": ["web"],
+    "terminal_tools": ["terminal"],
+    "vision_tools": ["vision"],
+    "moa_tools": ["moa"],
+    "image_tools": ["image_gen"],
+    "skills_tools": ["skills"],
+    "browser_tools": ["browser"],
+    "cronjob_tools": ["cronjob"],
+    "rl_tools": ["rl"],
+    "file_tools": ["file"],
+    "tts_tools": ["tts"],
+}
+
+
 # Static bundle definitions only. Registry-owned toolsets resolve their direct
 # membership live from ``tools.registry``; the ``tools`` lists here only contain
 # extra bundle-specific additions that are not owned by the toolset itself.
@@ -345,6 +360,27 @@ def _get_registry_tool_names(toolset_name: str) -> List[str]:
         return registry.get_tools_for_toolset(toolset_name)
     except Exception:
         return []
+
+
+def is_legacy_toolset(name: str) -> bool:
+    """Return True when *name* is a backward-compatible toolset alias."""
+    return name in LEGACY_TOOLSET_ALIASES
+
+
+def resolve_legacy_toolset(name: str) -> List[str]:
+    """Resolve a backward-compatible legacy toolset alias to live tool names."""
+    aliases = LEGACY_TOOLSET_ALIASES.get(name)
+    if not aliases:
+        return []
+    return resolve_multiple_toolsets(aliases)
+
+
+def get_legacy_toolset_map() -> Dict[str, List[str]]:
+    """Return live resolved tool names for every supported legacy alias."""
+    return {
+        name: sorted(resolve_legacy_toolset(name))
+        for name in LEGACY_TOOLSET_ALIASES
+    }
 
 
 def _get_mcp_toolset_aliases() -> Dict[str, str]:

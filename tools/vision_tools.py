@@ -67,6 +67,10 @@ def _resolve_download_timeout() -> float:
 
 _VISION_DOWNLOAD_TIMEOUT = _resolve_download_timeout()
 
+# Hard cap on downloaded image file size (50 MB). Prevents OOM from
+# attacker-hosted multi-gigabyte files or decompression bombs.
+_VISION_MAX_DOWNLOAD_BYTES = 50 * 1024 * 1024
+
 
 def _validate_image_url(url: str) -> bool:
     """
@@ -181,13 +185,25 @@ async def _download_image(image_url: str, destination: Path, max_retries: int = 
                 )
                 response.raise_for_status()
 
+                # Reject overly large images early via Content-Length header.
+                cl = response.headers.get("content-length")
+                if cl and int(cl) > _VISION_MAX_DOWNLOAD_BYTES:
+                    raise ValueError(
+                        f"Image too large ({int(cl)} bytes, max {_VISION_MAX_DOWNLOAD_BYTES})"
+                    )
+
                 final_url = str(response.url)
                 blocked = check_website_access(final_url)
                 if blocked:
                     raise PermissionError(blocked["message"])
                 
-                # Save the image content
-                destination.write_bytes(response.content)
+                # Save the image content (double-check actual size)
+                body = response.content
+                if len(body) > _VISION_MAX_DOWNLOAD_BYTES:
+                    raise ValueError(
+                        f"Image too large ({len(body)} bytes, max {_VISION_MAX_DOWNLOAD_BYTES})"
+                    )
+                destination.write_bytes(body)
             
             return destination
         except Exception as e:
@@ -261,6 +277,131 @@ def _image_to_base64_data_url(image_path: Path, mime_type: Optional[str] = None)
     return data_url
 
 
+# Hard limit for vision API payloads (20 MB) — matches the most restrictive
+# major provider (Gemini inline data limit).  Images above this are rejected.
+_MAX_BASE64_BYTES = 20 * 1024 * 1024
+
+# Target size when auto-resizing on API failure (5 MB).  After a provider
+# rejects an image, we downscale to this target and retry once.
+_RESIZE_TARGET_BYTES = 5 * 1024 * 1024
+
+
+def _is_image_size_error(error: Exception) -> bool:
+    """Detect if an API error is related to image or payload size."""
+    err_str = str(error).lower()
+    return any(hint in err_str for hint in (
+        "too large", "payload", "413", "content_too_large",
+        "request_too_large", "image_url", "invalid_request",
+        "exceeds", "size limit",
+    ))
+
+
+def _resize_image_for_vision(image_path: Path, mime_type: Optional[str] = None,
+                              max_base64_bytes: int = _RESIZE_TARGET_BYTES) -> str:
+    """Convert an image to a base64 data URL, auto-resizing if too large.
+
+    Tries Pillow first to progressively downscale oversized images.  If Pillow
+    is not installed or resizing still exceeds the limit, falls back to the raw
+    bytes and lets the caller handle the size check.
+
+    Returns the base64 data URL string.
+    """
+    # Quick file-size estimate: base64 expands by ~4/3, plus data URL header.
+    # Skip the expensive full-read + encode if Pillow can resize directly.
+    file_size = image_path.stat().st_size
+    estimated_b64 = (file_size * 4) // 3 + 100  # ~header overhead
+    if estimated_b64 <= max_base64_bytes:
+        # Small enough — just encode directly.
+        data_url = _image_to_base64_data_url(image_path, mime_type=mime_type)
+        if len(data_url) <= max_base64_bytes:
+            return data_url
+    else:
+        data_url = None  # defer full encode; try Pillow resize first
+
+    # Attempt auto-resize with Pillow (soft dependency)
+    try:
+        from PIL import Image
+        import io as _io
+    except ImportError:
+        logger.info("Pillow not installed — cannot auto-resize oversized image")
+        if data_url is None:
+            data_url = _image_to_base64_data_url(image_path, mime_type=mime_type)
+        return data_url  # caller will raise the size error
+
+    logger.info("Image file is %.1f MB (estimated base64 %.1f MB, limit %.1f MB), auto-resizing...",
+                file_size / (1024 * 1024), estimated_b64 / (1024 * 1024),
+                max_base64_bytes / (1024 * 1024))
+
+    mime = mime_type or _determine_mime_type(image_path)
+    # Choose output format: JPEG for photos (smaller), PNG for transparency
+    pil_format = "PNG" if mime == "image/png" else "JPEG"
+    out_mime = "image/png" if pil_format == "PNG" else "image/jpeg"
+
+    try:
+        img = Image.open(image_path)
+    except Exception as exc:
+        logger.info("Pillow cannot open image for resizing: %s", exc)
+        if data_url is None:
+            data_url = _image_to_base64_data_url(image_path, mime_type=mime_type)
+        return data_url  # fall through to size-check in caller
+    # Convert RGBA to RGB for JPEG output
+    if pil_format == "JPEG" and img.mode in ("RGBA", "P"):
+        img = img.convert("RGB")
+
+    # Strategy: halve dimensions until base64 fits, up to 4 rounds.
+    # For JPEG, also try reducing quality at each size step.
+    # For PNG, quality is irrelevant — only dimension reduction helps.
+    quality_steps = (85, 70, 50) if pil_format == "JPEG" else (None,)
+    prev_dims = (img.width, img.height)
+    candidate = None  # will be set on first loop iteration
+
+    for attempt in range(5):
+        if attempt > 0:
+            # Proportional scaling: halve the longer side and scale the
+            # shorter side to preserve aspect ratio (min dimension 64).
+            scale = 0.5
+            new_w = max(int(img.width * scale), 64)
+            new_h = max(int(img.height * scale), 64)
+            # Re-derive the scale from whichever dimension hit the floor
+            # so both axes shrink by the same factor.
+            if new_w == 64 and img.width > 0:
+                effective_scale = 64 / img.width
+                new_h = max(int(img.height * effective_scale), 64)
+            elif new_h == 64 and img.height > 0:
+                effective_scale = 64 / img.height
+                new_w = max(int(img.width * effective_scale), 64)
+            # Stop if dimensions can't shrink further
+            if (new_w, new_h) == prev_dims:
+                break
+            img = img.resize((new_w, new_h), Image.LANCZOS)
+            prev_dims = (new_w, new_h)
+            logger.info("Resized to %dx%d (attempt %d)", new_w, new_h, attempt)
+
+        for q in quality_steps:
+            buf = _io.BytesIO()
+            save_kwargs = {"format": pil_format}
+            if q is not None:
+                save_kwargs["quality"] = q
+            img.save(buf, **save_kwargs)
+            encoded = base64.b64encode(buf.getvalue()).decode("ascii")
+            candidate = f"data:{out_mime};base64,{encoded}"
+            if len(candidate) <= max_base64_bytes:
+                logger.info("Auto-resized image fits: %.1f MB (quality=%s, %dx%d)",
+                            len(candidate) / (1024 * 1024), q,
+                            img.width, img.height)
+                return candidate
+
+    # If we still can't get it small enough, return the best attempt
+    # and let the caller decide
+    if candidate is not None:
+        logger.warning("Auto-resize could not fit image under %.1f MB (best: %.1f MB)",
+                       max_base64_bytes / (1024 * 1024), len(candidate) / (1024 * 1024))
+        return candidate
+
+    # Shouldn't reach here, but fall back to full encode
+    return data_url or _image_to_base64_data_url(image_path, mime_type=mime_type)
+
+
 async def vision_analyze_tool(
     image_url: str,
     user_prompt: str,
@@ -326,7 +467,11 @@ async def vision_analyze_tool(
         logger.info("User prompt: %s", user_prompt[:100])
         
         # Determine if this is a local file path or a remote URL
-        local_path = Path(os.path.expanduser(image_url))
+        # Strip file:// scheme so file URIs resolve as local paths.
+        resolved_url = image_url
+        if resolved_url.startswith("file://"):
+            resolved_url = resolved_url[len("file://"):]
+        local_path = Path(os.path.expanduser(resolved_url))
         if local_path.is_file():
             # Local file path (e.g. from platform image cache) -- skip download
             logger.info("Using local image file: %s", image_url)
@@ -356,13 +501,28 @@ async def vision_analyze_tool(
         if not detected_mime_type:
             raise ValueError("Only real image files are supported for vision analysis.")
         
-        # Convert image to base64 data URL
+        # Convert image to base64 — send at full resolution first.
+        # If the provider rejects it as too large, we auto-resize and retry.
         logger.info("Converting image to base64...")
         image_data_url = _image_to_base64_data_url(temp_image_path, mime_type=detected_mime_type)
-        # Calculate size in KB for better readability
         data_size_kb = len(image_data_url) / 1024
         logger.info("Image converted to base64 (%.1f KB)", data_size_kb)
-        
+
+        # Hard limit (20 MB) — no provider accepts payloads this large.
+        if len(image_data_url) > _MAX_BASE64_BYTES:
+            # Try to resize down to 5 MB before giving up.
+            image_data_url = _resize_image_for_vision(
+                temp_image_path, mime_type=detected_mime_type)
+            if len(image_data_url) > _MAX_BASE64_BYTES:
+                raise ValueError(
+                    f"Image too large for vision API: base64 payload is "
+                    f"{len(image_data_url) / (1024 * 1024):.1f} MB "
+                    f"(limit {_MAX_BASE64_BYTES / (1024 * 1024):.0f} MB) "
+                    f"even after resizing. "
+                    f"Install Pillow (`pip install Pillow`) for better auto-resize, "
+                    f"or compress the image manually."
+                )
+
         debug_call_data["image_size_bytes"] = image_size_bytes
         
         # Use the prompt as provided (model_tools.py now handles full description formatting)
@@ -410,7 +570,24 @@ async def vision_analyze_tool(
         }
         if model:
             call_kwargs["model"] = model
-        response = await async_call_llm(**call_kwargs)
+        # Try full-size image first; on size-related rejection, downscale and retry.
+        try:
+            response = await async_call_llm(**call_kwargs)
+        except Exception as _api_err:
+            if (_is_image_size_error(_api_err)
+                    and len(image_data_url) > _RESIZE_TARGET_BYTES):
+                logger.info(
+                    "API rejected image (%.1f MB, likely too large); "
+                    "auto-resizing to ~%.0f MB and retrying...",
+                    len(image_data_url) / (1024 * 1024),
+                    _RESIZE_TARGET_BYTES / (1024 * 1024),
+                )
+                image_data_url = _resize_image_for_vision(
+                    temp_image_path, mime_type=detected_mime_type)
+                messages[0]["content"][1]["image_url"]["url"] = image_data_url
+                response = await async_call_llm(**call_kwargs)
+            else:
+                raise
         
         # Extract the analysis — fall back to reasoning if content is empty
         analysis = extract_content_or_reasoning(response)
@@ -455,13 +632,20 @@ async def vision_analyze_tool(
                 f"API provider account and try again. Error: {e}"
             )
         elif any(hint in err_str for hint in (
-            "does not support", "not support image", "invalid_request",
-            "content_policy", "image_url", "multimodal",
+            "does not support", "not support image",
+            "content_policy", "multimodal",
             "unrecognized request argument", "image input",
         )):
             analysis = (
                 f"{model} does not support vision or our request was not "
                 f"accepted by the server. Error: {e}"
+            )
+        elif "invalid_request" in err_str or "image_url" in err_str:
+            analysis = (
+                "The vision API rejected the image. This can happen when the "
+                "image is in an unsupported format, corrupted, or still too "
+                "large after auto-resize. Try a smaller JPEG/PNG and retry. "
+                f"Error: {e}"
             )
         else:
             analysis = (

@@ -289,12 +289,16 @@ class TestCmdMigrate:
             skill_conflict="skip", yes=False,
         )
 
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = True
+
         with (
             patch.object(claw_mod, "_find_migration_script", return_value=tmp_path / "s.py"),
             patch.object(claw_mod, "_load_migration_module", return_value=fake_mod),
             patch.object(claw_mod, "get_config_path", return_value=config_path),
             patch.object(claw_mod, "prompt_yes_no", return_value=True),
             patch.object(claw_mod, "_offer_source_archival"),
+            patch("sys.stdin", mock_stdin),
         ):
             claw_mod._cmd_migrate(args)
 
@@ -377,6 +381,16 @@ class TestCmdMigrate:
         config_path = tmp_path / "config.yaml"
         config_path.write_text("")
 
+        # Preview must succeed before the confirmation prompt is shown
+        fake_mod = ModuleType("openclaw_to_hermes")
+        fake_mod.resolve_selected_options = MagicMock(return_value=set())
+        fake_migrator = MagicMock()
+        fake_migrator.migrate.return_value = {
+            "summary": {"migrated": 1, "skipped": 0, "conflict": 0, "error": 0},
+            "items": [{"kind": "soul", "status": "migrated", "source": "s", "destination": "d", "reason": ""}],
+        }
+        fake_mod.Migrator = MagicMock(return_value=fake_migrator)
+
         args = Namespace(
             source=str(openclaw_dir),
             dry_run=False, preset="full", overwrite=False,
@@ -384,9 +398,15 @@ class TestCmdMigrate:
             skill_conflict="skip", yes=False,
         )
 
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = True
+
         with (
             patch.object(claw_mod, "_find_migration_script", return_value=tmp_path / "s.py"),
+            patch.object(claw_mod, "_load_migration_module", return_value=fake_mod),
+            patch.object(claw_mod, "get_config_path", return_value=config_path),
             patch.object(claw_mod, "prompt_yes_no", return_value=False),
+            patch("sys.stdin", mock_stdin),
         ):
             claw_mod._cmd_migrate(args)
 
@@ -448,7 +468,7 @@ class TestCmdMigrate:
             claw_mod._cmd_migrate(args)
 
         captured = capsys.readouterr()
-        assert "Migration failed" in captured.out
+        assert "Could not load migration script" in captured.out
 
     def test_full_preset_enables_secrets(self, tmp_path, capsys):
         """The 'full' preset should set migrate_secrets=True automatically."""
@@ -511,7 +531,13 @@ class TestOfferSourceArchival:
         source = tmp_path / ".openclaw"
         source.mkdir()
 
-        with patch.object(claw_mod, "prompt_yes_no", return_value=False):
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = True
+
+        with (
+            patch.object(claw_mod, "prompt_yes_no", return_value=False),
+            patch("sys.stdin", mock_stdin),
+        ):
             claw_mod._offer_source_archival(source, auto_yes=False)
 
         captured = capsys.readouterr()
@@ -597,10 +623,14 @@ class TestCmdCleanup:
         openclaw = tmp_path / ".openclaw"
         openclaw.mkdir()
 
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = True
+
         args = Namespace(source=None, dry_run=False, yes=False)
         with (
             patch.object(claw_mod, "_find_openclaw_dirs", return_value=[openclaw]),
             patch.object(claw_mod, "prompt_yes_no", return_value=False),
+            patch("sys.stdin", mock_stdin),
         ):
             claw_mod._cmd_cleanup(args)
 

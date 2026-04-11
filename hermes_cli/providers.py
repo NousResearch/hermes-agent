@@ -88,11 +88,11 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         base_url_env_var="KIMI_BASE_URL",
     ),
     "minimax": HermesOverlay(
-        transport="openai_chat",
+        transport="anthropic_messages",
         base_url_env_var="MINIMAX_BASE_URL",
     ),
     "minimax-cn": HermesOverlay(
-        transport="openai_chat",
+        transport="anthropic_messages",
         base_url_env_var="MINIMAX_CN_BASE_URL",
     ),
     "deepseek": HermesOverlay(
@@ -131,6 +131,10 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         transport="openai_chat",
         base_url_override="https://api.x.ai/v1",
         base_url_env_var="XAI_BASE_URL",
+    ),
+    "xiaomi": HermesOverlay(
+        transport="openai_chat",
+        base_url_env_var="XIAOMI_BASE_URL",
     ),
 }
 
@@ -233,6 +237,9 @@ ALIASES: Dict[str, str] = {
     "huggingface-hub": "huggingface",
 
     # Local server aliases → preserve Hermes-facing IDs for /model flows
+    # xiaomi
+    "mimo": "xiaomi",
+    "xiaomi-mimo": "xiaomi",
     "lmstudio": "lmstudio",
     "lm-studio": "lmstudio",
     "lm_studio": "lmstudio",
@@ -270,6 +277,7 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "alibaba": "Alibaba Cloud (DashScope)",
     "qwen-oauth": "Qwen OAuth (Portal)",
     "huggingface": "Hugging Face",
+    "xiaomi": "Xiaomi MiMo",
     "custom": "Custom endpoint",
 }
 

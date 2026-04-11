@@ -251,6 +251,14 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=("HF_TOKEN",),
         base_url_env_var="HF_BASE_URL",
     ),
+    "xiaomi": ProviderConfig(
+        id="xiaomi",
+        name="Xiaomi MiMo",
+        auth_type="api_key",
+        inference_base_url="https://api.xiaomimimo.com/v1",
+        api_key_env_vars=("XIAOMI_API_KEY",),
+        base_url_env_var="XIAOMI_BASE_URL",
+    ),
 }
 
 

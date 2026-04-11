@@ -11152,11 +11152,20 @@ class AIAgent:
                         num_messages=len(api_messages) if api_messages else 0,
                     )
                     logger.debug(
-                        "Error classified: reason=%s status=%s retryable=%s compress=%s rotate=%s fallback=%s",
+                        "Error classified: reason=%s status=%s retryable=%s compress=%s rotate=%s fallback=%s refund=%s",
                         classified.reason.value, classified.status_code,
                         classified.retryable, classified.should_compress,
                         classified.should_rotate_credential, classified.should_fallback,
+                        classified.should_refund_budget,
                     )
+                    # Refund iteration budget for transient network errors that
+                    # never reached the server — no API resources were consumed.
+                    if classified.should_refund_budget:
+                        self.iteration_budget.refund()
+                        logger.debug(
+                            "Refunded iteration budget after transient error: %s",
+                            classified.reason.value,
+                        )
 
                     recovered_with_pool, has_retried_429 = self._recover_with_credential_pool(
                         status_code=status_code,

@@ -707,7 +707,9 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
             base_url = _to_openai_base_url(
                 _pool_runtime_base_url(entry, pconfig.inference_base_url) or pconfig.inference_base_url
             )
-            model = _API_KEY_PROVIDER_AUX_MODELS.get(provider_id, "default")
+            model = _API_KEY_PROVIDER_AUX_MODELS.get(provider_id)
+            if model is None:
+                continue  # skip provider if we don't know a valid aux model
             logger.debug("Auxiliary text client: %s (%s) via pool", pconfig.name, model)
             extra = {}
             if "api.kimi.com" in base_url.lower():
@@ -726,7 +728,9 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
         base_url = _to_openai_base_url(
             str(creds.get("base_url", "")).strip().rstrip("/") or pconfig.inference_base_url
         )
-        model = _API_KEY_PROVIDER_AUX_MODELS.get(provider_id, "default")
+        model = _API_KEY_PROVIDER_AUX_MODELS.get(provider_id)
+        if model is None:
+            continue  # skip provider if we don't know a valid aux model
         logger.debug("Auxiliary text client: %s (%s)", pconfig.name, model)
         extra = {}
         if "api.kimi.com" in base_url.lower():
@@ -1075,11 +1079,12 @@ def _is_connection_error(exc: Exception) -> bool:
 def _try_payment_fallback(
     failed_provider: str,
     task: str = None,
+    reason: str = "payment error",
 ) -> Tuple[Optional[Any], Optional[str], str]:
-    """Try alternative providers after a payment/credit error.
+    """Try alternative providers after a payment/credit or connection error.
 
     Iterates the standard auto-detection chain, skipping the provider that
-    returned a payment error.
+    failed.
 
     Returns:
         (client, model, provider_label) or (None, None, "") if no fallback.
@@ -1105,15 +1110,15 @@ def _try_payment_fallback(
         client, model = try_fn()
         if client is not None:
             logger.info(
-                "Auxiliary %s: payment error on %s — falling back to %s (%s)",
-                task or "call", failed_provider, label, model or "default",
+                "Auxiliary %s: %s on %s — falling back to %s (%s)",
+                task or "call", reason, failed_provider, label, model or "default",
             )
             return client, model, label
         tried.append(label)
 
     logger.warning(
-        "Auxiliary %s: payment error on %s and no fallback available (tried: %s)",
-        task or "call", failed_provider, ", ".join(tried),
+        "Auxiliary %s: %s on %s and no fallback available (tried: %s)",
+        task or "call", reason, failed_provider, ", ".join(tried),
     )
     return None, None, ""
 
@@ -2178,9 +2183,9 @@ def call_llm(
             try:
                 return client.chat.completions.create(**kwargs)
             except Exception as retry_err:
-                # If the max_tokens retry also hits a payment error,
-                # fall through to the payment fallback below.
-                if not _is_payment_error(retry_err):
+                # If the max_tokens retry also hits a payment or connection
+                # error, fall through to the fallback chain below.
+                if not (_is_payment_error(retry_err) or _is_connection_error(retry_err)):
                     raise
                 first_err = retry_err
 
@@ -2197,12 +2202,16 @@ def call_llm(
         # and providers the user never configured that got picked up by
         # the auto-detection chain.
         should_fallback = _is_payment_error(first_err) or _is_connection_error(first_err)
-        if should_fallback:
+        # Only try alternative providers when the user didn't explicitly
+        # configure this task's provider.  Explicit provider = hard constraint;
+        # auto (the default) = best-effort fallback chain.  (#7559)
+        is_auto = resolved_provider in ("auto", "", None)
+        if should_fallback and is_auto:
             reason = "payment error" if _is_payment_error(first_err) else "connection error"
             logger.info("Auxiliary %s: %s on %s (%s), trying fallback",
                         task or "call", reason, resolved_provider, first_err)
             fb_client, fb_model, fb_label = _try_payment_fallback(
-                resolved_provider, task)
+                resolved_provider, task, reason=reason)
             if fb_client is not None:
                 fb_kwargs = _build_call_kwargs(
                     fb_label, fb_model, messages,
@@ -2332,11 +2341,9 @@ async def async_call_llm(
                     f"variable, or switch to a different provider with `hermes model`."
                 )
             if not resolved_base_url:
-                logger.warning("Provider %s unavailable, falling back to openrouter",
-                               resolved_provider)
-                client, final_model = _get_cached_client(
-                    "openrouter", resolved_model or _OPENROUTER_MODEL,
-                    async_mode=True)
+                logger.info("Auxiliary %s: provider %s unavailable, trying auto-detection chain",
+                            task or "call", resolved_provider)
+                client, final_model = _get_cached_client("auto", async_mode=True)
         if client is None:
             raise RuntimeError(
                 f"No LLM provider configured for task={task} provider={resolved_provider}. "
@@ -2357,5 +2364,33 @@ async def async_call_llm(
         if "max_tokens" in err_str or "unsupported_parameter" in err_str:
             kwargs.pop("max_tokens", None)
             kwargs["max_completion_tokens"] = max_tokens
-            return await client.chat.completions.create(**kwargs)
+            try:
+                return await client.chat.completions.create(**kwargs)
+            except Exception as retry_err:
+                # If the max_tokens retry also hits a payment or connection
+                # error, fall through to the fallback chain below.
+                if not (_is_payment_error(retry_err) or _is_connection_error(retry_err)):
+                    raise
+                first_err = retry_err
+
+        # ── Payment / connection fallback (mirrors sync call_llm) ─────
+        should_fallback = _is_payment_error(first_err) or _is_connection_error(first_err)
+        is_auto = resolved_provider in ("auto", "", None)
+        if should_fallback and is_auto:
+            reason = "payment error" if _is_payment_error(first_err) else "connection error"
+            logger.info("Auxiliary %s (async): %s on %s (%s), trying fallback",
+                        task or "call", reason, resolved_provider, first_err)
+            fb_client, fb_model, fb_label = _try_payment_fallback(
+                resolved_provider, task, reason=reason)
+            if fb_client is not None:
+                fb_kwargs = _build_call_kwargs(
+                    fb_label, fb_model, messages,
+                    temperature=temperature, max_tokens=max_tokens,
+                    tools=tools, timeout=effective_timeout,
+                    extra_body=extra_body)
+                # Convert sync fallback client to async
+                async_fb, async_fb_model = _to_async_client(fb_client, fb_model or "")
+                if async_fb_model and async_fb_model != fb_kwargs.get("model"):
+                    fb_kwargs["model"] = async_fb_model
+                return await async_fb.chat.completions.create(**fb_kwargs)
         raise

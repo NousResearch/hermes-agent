@@ -293,6 +293,35 @@ class TestResolveSessionName:
         result = config.resolve_session_name("/home/user/proj")
         assert result == "custom-session"
 
+    def test_manual_override_matches_subdirectory(self, tmp_path):
+        proj = tmp_path / "proj"
+        (proj / "src").mkdir(parents=True)
+        config = HonchoClientConfig(sessions={str(proj): "custom-session"})
+        # cwd is a subdirectory of the registered override — should still hit
+        result = config.resolve_session_name(str(proj / "src"))
+        assert result == "custom-session"
+
+    def test_manual_override_longest_prefix_wins(self, tmp_path):
+        parent = tmp_path / "parent"
+        child = parent / "child"
+        (child / "nested").mkdir(parents=True)
+        config = HonchoClientConfig(sessions={
+            str(parent): "parent-session",
+            str(child): "child-session",
+        })
+        result = config.resolve_session_name(str(child / "nested"))
+        assert result == "child-session"
+
+    def test_manual_override_ignored_when_no_match(self, tmp_path):
+        other = tmp_path / "elsewhere"
+        other.mkdir()
+        config = HonchoClientConfig(
+            sessions={"/home/user/proj": "custom-session"},
+        )
+        # falls through to per-directory basename
+        result = config.resolve_session_name(str(other))
+        assert result == "elsewhere"
+
 
 class TestResolveConfigPath:
     def test_prefers_hermes_home_when_exists(self, tmp_path):

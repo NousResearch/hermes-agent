@@ -428,10 +428,36 @@ class HonchoClientConfig:
         if not cwd:
             cwd = os.getcwd()
 
-        # Manual override always wins
+        # Manual override always wins. Exact match first, then
+        # longest-prefix match so an override registered for
+        # /home/dev/Dropbox/Projects/foo also applies when the working
+        # directory is a subdirectory under it.
         manual = self.sessions.get(cwd)
         if manual:
             return manual
+        if self.sessions:
+            try:
+                cwd_path = Path(cwd).resolve()
+            except OSError:
+                cwd_path = Path(cwd)
+            best_key: str | None = None
+            best_len = -1
+            for key in self.sessions:
+                try:
+                    key_path = Path(key).resolve()
+                except OSError:
+                    key_path = Path(key)
+                try:
+                    cwd_path.relative_to(key_path)
+                except ValueError:
+                    continue
+                # Descendant of this override — use the longest match.
+                key_len = len(str(key_path))
+                if key_len > best_len:
+                    best_key = key
+                    best_len = key_len
+            if best_key is not None:
+                return self.sessions[best_key]
 
         # /title mid-session remap
         if session_title:

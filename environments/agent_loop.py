@@ -264,25 +264,57 @@ class HermesAgentLoop:
             # contains raw tool call tags (e.g. <tool_call>), parse them using
             # hermes-agent's standalone parsers. This handles the case where
             # ManagedServer's ToolCallTranslator couldn't parse because vLLM
-            # isn't installed.
+            # isn't installed, or the API provider didn't extract tool calls.
+            #
+            # Each model family uses a different marker in its raw output:
+            #   Hermes/Qwen:  <tool_call>
+            #   Gemma 4:      <|tool_call>
+            #   Kimi K2:      <|tool_calls_section_begin|>
+            #   DeepSeek V3:  <｜tool▁calls▁begin｜>
+            #   Mistral:      [TOOL_CALLS]
+            _TOOL_CALL_MARKERS = {
+                "<tool_call>": "hermes",
+                "<|tool_call>": "gemma4",
+                "<|tool_calls_section_begin|>": "kimi_k2",
+                "<\uff5ctool\u2581calls\u2581begin\uff5c>": "deepseek_v3",
+                "[TOOL_CALLS]": "mistral",
+            }
+            _content = assistant_msg.content or ""
+            _detected_parser = None
             if (
                 not assistant_msg.tool_calls
-                and assistant_msg.content
+                and _content
                 and self.tool_schemas
-                and "<tool_call>" in (assistant_msg.content or "")
             ):
+                # Use server-configured parser if available, otherwise auto-detect
+                _configured = getattr(self.server, 'tool_parser', None)
+                if _configured:
+                    # Check if any tool call marker is present in content
+                    for marker in _TOOL_CALL_MARKERS:
+                        if marker in _content:
+                            _detected_parser = _configured
+                            break
+                else:
+                    # Auto-detect parser from content markers
+                    for marker, parser_name in _TOOL_CALL_MARKERS.items():
+                        if marker in _content:
+                            _detected_parser = parser_name
+                            break
+
+            if _detected_parser:
                 try:
                     from environments.tool_call_parsers import get_parser
-                    fallback_parser = get_parser("hermes")
+                    fallback_parser = get_parser(_detected_parser)
                     parsed_content, parsed_calls = fallback_parser.parse(
-                        assistant_msg.content
+                        _content
                     )
                     if parsed_calls:
                         assistant_msg.tool_calls = parsed_calls
                         if parsed_content is not None:
                             assistant_msg.content = parsed_content
                         logger.debug(
-                            "Fallback parser extracted %d tool calls from raw content",
+                            "Fallback parser '%s' extracted %d tool calls from raw content",
+                            _detected_parser,
                             len(parsed_calls),
                         )
                 except Exception:

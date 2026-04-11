@@ -304,6 +304,9 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
         api_mode = _parse_api_mode(entry.get("api_mode"))
         if api_mode:
             result["api_mode"] = api_mode
+        model_name = str(entry.get("model", "") or "").strip()
+        if model_name:
+            result["model"] = model_name
         return result
 
     return None
@@ -339,7 +342,7 @@ def _resolve_named_custom_runtime(
     ]
     api_key = next((candidate for candidate in api_key_candidates if has_usable_secret(candidate)), "")
 
-    return {
+    result = {
         "provider": "custom",
         "api_mode": custom_provider.get("api_mode")
         or _detect_api_mode_for_url(base_url)
@@ -348,6 +351,11 @@ def _resolve_named_custom_runtime(
         "api_key": api_key or "no-key-required",
         "source": f"custom_provider:{custom_provider.get('name', requested_provider)}",
     }
+    # Propagate the model name so callers can override self.model when the
+    # provider name differs from the actual model string the API expects.
+    if custom_provider.get("model"):
+        result["model"] = custom_provider["model"]
+    return result
 
 
 def _resolve_openrouter_runtime(

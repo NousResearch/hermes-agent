@@ -2,9 +2,13 @@ package com.nousresearch.hermesagent.ui.portal
 
 import android.app.Application
 import android.content.Intent
+import android.graphics.Bitmap
 import android.net.Uri
+import android.webkit.CookieManager
 import android.webkit.WebChromeClient
+import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.compose.foundation.layout.Arrangement
@@ -42,6 +46,7 @@ import kotlinx.coroutines.launch
 import org.json.JSONObject
 
 private const val DEFAULT_NOUS_PORTAL_URL = "https://portal.nousresearch.com"
+private const val PORTAL_EMBED_USER_AGENT = "Mozilla/5.0 (Linux; Android 15; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
 
 data class NousPortalUiState(
     val portalUrl: String = DEFAULT_NOUS_PORTAL_URL,
@@ -96,12 +101,17 @@ fun NousPortalScreen(
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val context = LocalContext.current
-    var isLoading by remember { mutableStateOf(true) }
+    var isLoading by remember { mutableStateOf(false) }
     var pageError by remember { mutableStateOf<String?>(null) }
+    var showEmbeddedPreview by remember { mutableStateOf(false) }
 
-    LaunchedEffect(uiState.portalUrl) {
-        isLoading = true
-        pageError = null
+    LaunchedEffect(uiState.portalUrl, showEmbeddedPreview) {
+        if (showEmbeddedPreview) {
+            isLoading = true
+            pageError = null
+        } else {
+            isLoading = false
+        }
     }
 
     MaterialTheme {
@@ -120,6 +130,8 @@ fun NousPortalScreen(
                     Text("Inference: ${uiState.inferenceUrl}", style = MaterialTheme.typography.bodySmall)
                 }
 
+                PortalGuidanceCard(showEmbeddedPreview = showEmbeddedPreview)
+
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -134,59 +146,124 @@ fun NousPortalScreen(
                         Text("Open externally")
                     }
                 }
-
-                if (isLoading) {
-                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                Button(
+                    onClick = { showEmbeddedPreview = !showEmbeddedPreview },
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(if (showEmbeddedPreview) "Hide embedded preview" else "Try embedded preview")
                 }
-                if (!pageError.isNullOrBlank()) {
+
+                if (showEmbeddedPreview) {
+                    if (isLoading) {
+                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                    }
+                    if (!pageError.isNullOrBlank()) {
+                        Text(
+                            text = pageError.orEmpty(),
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
                     Text(
-                        text = pageError.orEmpty(),
-                        color = MaterialTheme.colorScheme.error,
+                        "Embedded preview is experimental in this alpha. If it still looks blank, use Open externally for the full portal.",
                         style = MaterialTheme.typography.bodySmall,
                     )
-                }
 
-                AndroidView(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .weight(1f),
-                    factory = { androidContext ->
-                        WebView(androidContext).apply {
-                            settings.javaScriptEnabled = true
-                            settings.domStorageEnabled = true
-                            webChromeClient = WebChromeClient()
-                            webViewClient = object : WebViewClient() {
-                                override fun shouldOverrideUrlLoading(
-                                    view: WebView?,
-                                    request: WebResourceRequest?,
-                                ): Boolean = false
+                    AndroidView(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f),
+                        factory = { androidContext ->
+                            WebView(androidContext).apply {
+                                val cookieManager = CookieManager.getInstance()
+                                cookieManager.setAcceptCookie(true)
+                                cookieManager.setAcceptThirdPartyCookies(this, true)
+                                settings.javaScriptEnabled = true
+                                settings.domStorageEnabled = true
+                                settings.loadsImagesAutomatically = true
+                                settings.javaScriptCanOpenWindowsAutomatically = true
+                                settings.setSupportMultipleWindows(true)
+                                settings.loadWithOverviewMode = true
+                                settings.useWideViewPort = true
+                                settings.userAgentString = PORTAL_EMBED_USER_AGENT
+                                webChromeClient = WebChromeClient()
+                                webViewClient = object : WebViewClient() {
+                                    override fun shouldOverrideUrlLoading(
+                                        view: WebView?,
+                                        request: WebResourceRequest?,
+                                    ): Boolean = false
 
-                                override fun onPageFinished(view: WebView?, url: String?) {
-                                    isLoading = false
-                                    pageError = null
-                                }
+                                    override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
+                                        isLoading = true
+                                        pageError = null
+                                    }
 
-                                override fun onReceivedError(
-                                    view: WebView?,
-                                    request: WebResourceRequest?,
-                                    error: android.webkit.WebResourceError?,
-                                ) {
-                                    if (request?.isForMainFrame != false) {
+                                    override fun onPageFinished(view: WebView?, url: String?) {
                                         isLoading = false
-                                        pageError = error?.description?.toString() ?: "Failed to load Nous Portal"
+                                        pageError = null
+                                    }
+
+                                    override fun onReceivedError(
+                                        view: WebView?,
+                                        request: WebResourceRequest?,
+                                        error: WebResourceError?,
+                                    ) {
+                                        if (request?.isForMainFrame != false) {
+                                            isLoading = false
+                                            pageError = error?.description?.toString() ?: "Failed to load Nous Portal"
+                                        }
+                                    }
+
+                                    override fun onReceivedHttpError(
+                                        view: WebView?,
+                                        request: WebResourceRequest?,
+                                        errorResponse: WebResourceResponse?,
+                                    ) {
+                                        if (request?.isForMainFrame != false) {
+                                            isLoading = false
+                                            pageError = "Nous Portal returned HTTP ${errorResponse?.statusCode ?: "error"}"
+                                        }
                                     }
                                 }
+                                loadUrl(uiState.portalUrl)
                             }
-                            loadUrl(uiState.portalUrl)
-                        }
-                    },
-                    update = { webView ->
-                        if (webView.url != uiState.portalUrl) {
-                            webView.loadUrl(uiState.portalUrl)
-                        }
-                    },
-                )
+                        },
+                        update = { webView ->
+                            if (webView.url != uiState.portalUrl) {
+                                webView.loadUrl(uiState.portalUrl)
+                            }
+                        },
+                    )
+                }
             }
+        }
+    }
+}
+
+@Composable
+private fun PortalGuidanceCard(showEmbeddedPreview: Boolean) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        tonalElevation = 2.dp,
+        shape = MaterialTheme.shapes.medium,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text("Portal access", style = MaterialTheme.typography.titleMedium)
+            Text("Best experience in alpha: open Nous Portal in your browser. The browser path is the supported flow for login, billing, and full navigation.")
+            Text(
+                if (showEmbeddedPreview) {
+                    "You are viewing the experimental embedded preview. If it stays blank, hide it and use Open externally."
+                } else {
+                    "The embedded preview is optional and experimental. Start with Open externally if you just want the portal to work."
+                },
+                style = MaterialTheme.typography.bodySmall,
+            )
         }
     }
 }

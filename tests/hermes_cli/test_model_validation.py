@@ -124,7 +124,14 @@ class TestParseModelInput:
 
 class TestCuratedModelsForProvider:
     def test_openrouter_returns_curated_list(self):
-        models = curated_models_for_provider("openrouter")
+        with patch(
+            "hermes_cli.models.fetch_openrouter_models",
+            return_value=[
+                ("anthropic/claude-opus-4.6", "recommended"),
+                ("qwen/qwen3.6-plus", ""),
+            ],
+        ):
+            models = curated_models_for_provider("openrouter")
         assert len(models) > 0
         assert any("claude" in m[0] for m in models)
 
@@ -169,7 +176,14 @@ class TestProviderLabel:
 
 class TestProviderModelIds:
     def test_openrouter_returns_curated_list(self):
-        ids = provider_model_ids("openrouter")
+        with patch(
+            "hermes_cli.models.fetch_openrouter_models",
+            return_value=[
+                ("anthropic/claude-opus-4.6", "recommended"),
+                ("qwen/qwen3.6-plus", ""),
+            ],
+        ):
+            ids = provider_model_ids("openrouter")
         assert len(ids) > 0
         assert all("/" in mid for mid in ids)
 

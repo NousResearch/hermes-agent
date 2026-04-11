@@ -128,12 +128,16 @@ async def test_internal_event_bypasses_authorization(monkeypatch, tmp_path):
 
     monkeypatch.setattr(GatewayRunner, "_is_user_authorized", tracking_auth)
 
-    # _handle_message will proceed past auth check and eventually fail on
-    # downstream logic. We just need to verify auth is skipped.
+    # Stop execution before the agent runner so the test doesn't block in
+    # run_in_executor.  Auth check happens before _handle_message_with_agent.
+    async def _raise(*_a, **_kw):
+        raise RuntimeError("sentinel — stop here")
+    monkeypatch.setattr(GatewayRunner, "_handle_message_with_agent", _raise)
+
     try:
         await runner._handle_message(event)
-    except Exception:
-        pass  # Expected — downstream code needs more setup
+    except RuntimeError:
+        pass  # Expected sentinel
 
     assert not auth_called, (
         "_is_user_authorized should NOT be called for internal events"
@@ -175,10 +179,16 @@ async def test_internal_event_does_not_trigger_pairing(monkeypatch, tmp_path):
 
     runner.pairing_store.generate_code = tracking_generate
 
+    # Stop execution before the agent runner so the test doesn't block in
+    # run_in_executor.  Pairing check happens before _handle_message_with_agent.
+    async def _raise(*_a, **_kw):
+        raise RuntimeError("sentinel — stop here")
+    monkeypatch.setattr(GatewayRunner, "_handle_message_with_agent", _raise)
+
     try:
         await runner._handle_message(event)
-    except Exception:
-        pass  # Expected — downstream code needs more setup
+    except RuntimeError:
+        pass  # Expected sentinel
 
     assert not generate_called, (
         "Pairing code should NOT be generated for internal events"

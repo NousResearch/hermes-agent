@@ -18,7 +18,6 @@ from tools.browser_camofox import (
     camofox_navigate,
     camofox_soft_cleanup,
     check_camofox_available,
-    cleanup_all_camofox_sessions,
     get_vnc_url,
 )
 from tools.browser_camofox_state import get_camofox_identity

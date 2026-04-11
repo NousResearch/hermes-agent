@@ -58,6 +58,11 @@ MAX_OUTPUT_CHARS = 200_000      # 200KB rolling output buffer
 FINISHED_TTL_SECONDS = 1800     # Keep finished processes for 30 minutes
 MAX_PROCESSES = 64              # Max concurrent tracked processes (LRU pruning)
 
+# Watch pattern rate limiting
+WATCH_MAX_PER_WINDOW = 8        # Max notifications delivered per window
+WATCH_WINDOW_SECONDS = 10       # Rolling window length
+WATCH_OVERLOAD_KILL_SECONDS = 45  # Sustained overload duration before disabling watch
+
 
 def format_uptime_short(seconds: int) -> str:
     s = max(0, int(seconds))
@@ -94,6 +99,14 @@ class ProcessSession:
     watcher_thread_id: str = ""
     watcher_interval: int = 0                   # 0 = no watcher configured
     notify_on_complete: bool = False             # Queue agent notification on exit
+    # Watch patterns — trigger agent notification when output matches any pattern
+    watch_patterns: List[str] = field(default_factory=list)
+    _watch_hits: int = field(default=0, repr=False)          # total matches delivered
+    _watch_suppressed: int = field(default=0, repr=False)    # matches dropped by rate limit
+    _watch_overload_since: float = field(default=0.0, repr=False)  # when sustained overload began
+    _watch_disabled: bool = field(default=False, repr=False) # permanently killed by overload
+    _watch_window_hits: int = field(default=0, repr=False)   # hits in current rate window
+    _watch_window_start: float = field(default=0.0, repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock)
     _reader_thread: Optional[threading.Thread] = field(default=None, repr=False)
     _pty: Any = field(default=None, repr=False)  # ptyprocess handle (when use_pty=True)
@@ -125,9 +138,10 @@ class ProcessRegistry:
         # Side-channel for check_interval watchers (gateway reads after agent run)
         self.pending_watchers: List[Dict[str, Any]] = []
 
-        # Completion notifications — processes with notify_on_complete push here
-        # on exit.  CLI process_loop and gateway drain this after each agent turn
-        # to auto-trigger a new agent turn with the process results.
+        # Notification queue — unified queue for all background process events.
+        # Completion notifications (notify_on_complete) and watch pattern matches
+        # both land here, distinguished by "type" field.  CLI process_loop and
+        # gateway drain this after each agent turn to auto-trigger new turns.
         import queue as _queue_mod
         self.completion_queue: _queue_mod.Queue = _queue_mod.Queue()
 
@@ -138,6 +152,84 @@ class ProcessRegistry:
         while lines and any(noise in lines[0] for noise in ProcessRegistry._SHELL_NOISE_SUBSTRINGS):
             lines.pop(0)
         return "\n".join(lines)
+
+    def _check_watch_patterns(self, session: ProcessSession, new_text: str) -> None:
+        """Scan new output for watch patterns and queue notifications.
+
+        Called from reader threads with new_text being the freshly-read chunk.
+        Rate-limited: max WATCH_MAX_PER_WINDOW notifications per WATCH_WINDOW_SECONDS.
+        If sustained overload exceeds WATCH_OVERLOAD_KILL_SECONDS, watching is
+        disabled permanently for this process.
+        """
+        if not session.watch_patterns or session._watch_disabled:
+            return
+
+        # Scan new text line-by-line for pattern matches
+        matched_lines = []
+        matched_pattern = None
+        for line in new_text.splitlines():
+            for pat in session.watch_patterns:
+                if pat in line:
+                    matched_lines.append(line.rstrip())
+                    if matched_pattern is None:
+                        matched_pattern = pat
+                    break  # one match per line is enough
+
+        if not matched_lines:
+            return
+
+        now = time.time()
+        with session._lock:
+            # Reset window if it's expired
+            if now - session._watch_window_start >= WATCH_WINDOW_SECONDS:
+                session._watch_window_hits = 0
+                session._watch_window_start = now
+
+            # Check rate limit
+            if session._watch_window_hits >= WATCH_MAX_PER_WINDOW:
+                session._watch_suppressed += len(matched_lines)
+
+                # Track sustained overload for kill switch
+                if session._watch_overload_since == 0.0:
+                    session._watch_overload_since = now
+                elif now - session._watch_overload_since > WATCH_OVERLOAD_KILL_SECONDS:
+                    session._watch_disabled = True
+                    self.completion_queue.put({
+                        "session_id": session.id,
+                        "command": session.command,
+                        "type": "watch_disabled",
+                        "suppressed": session._watch_suppressed,
+                        "message": (
+                            f"Watch patterns disabled for process {session.id} — "
+                            f"too many matches ({session._watch_suppressed} suppressed). "
+                            f"Use process(action='poll') to check output manually."
+                        ),
+                    })
+                return
+
+            # Under the rate limit — deliver notification
+            session._watch_window_hits += 1
+            session._watch_hits += 1
+            # Clear overload tracker since we got a delivery through
+            session._watch_overload_since = 0.0
+
+            # Include suppressed count if any events were dropped
+            suppressed = session._watch_suppressed
+            session._watch_suppressed = 0
+
+        # Trim matched output to a reasonable size
+        output = "\n".join(matched_lines[:20])
+        if len(output) > 2000:
+            output = output[:2000] + "\n...(truncated)"
+
+        self.completion_queue.put({
+            "session_id": session.id,
+            "command": session.command,
+            "type": "watch_match",
+            "pattern": matched_pattern,
+            "output": output,
+            "suppressed": suppressed,
+        })
 
     @staticmethod
     def _is_host_pid_alive(pid: Optional[int]) -> bool:
@@ -405,17 +497,18 @@ class ProcessRegistry:
                     session.output_buffer += chunk
                     if len(session.output_buffer) > session.max_output_chars:
                         session.output_buffer = session.output_buffer[-session.max_output_chars:]
+                self._check_watch_patterns(session, chunk)
         except Exception as e:
             logger.debug("Process stdout reader ended: %s", e)
-
-        # Process exited
-        try:
-            session.process.wait(timeout=5)
-        except Exception as e:
-            logger.debug("Process wait timed out or failed: %s", e)
-        session.exited = True
-        session.exit_code = session.process.returncode
-        self._move_to_finished(session)
+        finally:
+            # Always reap the child to prevent zombie processes.
+            try:
+                session.process.wait(timeout=5)
+            except Exception as e:
+                logger.debug("Process wait timed out or failed: %s", e)
+            session.exited = True
+            session.exit_code = session.process.returncode
+            self._move_to_finished(session)
 
     def _env_poller_loop(
         self, session: ProcessSession, env: Any, log_path: str, pid_path: str, exit_path: str
@@ -424,6 +517,7 @@ class ProcessRegistry:
         quoted_log_path = shlex.quote(log_path)
         quoted_pid_path = shlex.quote(pid_path)
         quoted_exit_path = shlex.quote(exit_path)
+        prev_output_len = 0  # track delta for watch pattern scanning
         while not session.exited:
             time.sleep(2)  # Poll every 2 seconds
             try:
@@ -431,10 +525,15 @@ class ProcessRegistry:
                 result = env.execute(f"cat {quoted_log_path} 2>/dev/null", timeout=10)
                 new_output = result.get("output", "")
                 if new_output:
+                    # Compute delta for watch pattern scanning
+                    delta = new_output[prev_output_len:] if len(new_output) > prev_output_len else ""
+                    prev_output_len = len(new_output)
                     with session._lock:
                         session.output_buffer = new_output
                         if len(session.output_buffer) > session.max_output_chars:
                             session.output_buffer = session.output_buffer[-session.max_output_chars:]
+                    if delta:
+                        self._check_watch_patterns(session, delta)
 
                 # Check if process is still running
                 check = env.execute(
@@ -478,6 +577,7 @@ class ProcessRegistry:
                             session.output_buffer += text
                             if len(session.output_buffer) > session.max_output_chars:
                                 session.output_buffer = session.output_buffer[-session.max_output_chars:]
+                        self._check_watch_patterns(session, text)
                 except EOFError:
                     break
                 except Exception:
@@ -495,18 +595,25 @@ class ProcessRegistry:
         self._move_to_finished(session)
 
     def _move_to_finished(self, session: ProcessSession):
-        """Move a session from running to finished."""
+        """Move a session from running to finished.
+
+        Idempotent: if the session was already moved (e.g. kill_process raced
+        with the reader thread), the second call is a no-op — no duplicate
+        completion notification is enqueued.
+        """
         with self._lock:
-            self._running.pop(session.id, None)
+            was_running = self._running.pop(session.id, None) is not None
             self._finished[session.id] = session
         self._write_checkpoint()
 
-        # If the caller requested agent notification, enqueue the completion
-        # so the CLI/gateway can auto-trigger a new agent turn.
-        if session.notify_on_complete:
+        # Only enqueue completion notification on the FIRST move.  Without
+        # this guard, kill_process() and the reader thread can both call
+        # _move_to_finished(), producing duplicate [SYSTEM: ...] messages.
+        if was_running and session.notify_on_complete:
             from tools.ansi_strip import strip_ansi
             output_tail = strip_ansi(session.output_buffer[-2000:]) if session.output_buffer else ""
             self.completion_queue.put({
+                "type": "completion",
                 "session_id": session.id,
                 "command": session.command,
                 "exit_code": session.exit_code,
@@ -590,7 +697,10 @@ class ProcessRegistry:
         from tools.ansi_strip import strip_ansi
         from tools.terminal_tool import _interrupt_event
 
-        default_timeout = int(os.getenv("TERMINAL_TIMEOUT", "180"))
+        try:
+            default_timeout = int(os.getenv("TERMINAL_TIMEOUT", "180"))
+        except (ValueError, TypeError):
+            default_timeout = 180
         max_timeout = default_timeout
         requested_timeout = timeout
         timeout_note = None
@@ -874,6 +984,7 @@ class ProcessRegistry:
                             "watcher_thread_id": s.watcher_thread_id,
                             "watcher_interval": s.watcher_interval,
                             "notify_on_complete": s.notify_on_complete,
+                            "watch_patterns": s.watch_patterns,
                         })
             
             # Atomic write to avoid corruption on crash
@@ -934,6 +1045,7 @@ class ProcessRegistry:
                     watcher_thread_id=entry.get("watcher_thread_id", ""),
                     watcher_interval=entry.get("watcher_interval", 0),
                     notify_on_complete=entry.get("notify_on_complete", False),
+                    watch_patterns=entry.get("watch_patterns", []),
                 )
                 with self._lock:
                     self._running[session.id] = session

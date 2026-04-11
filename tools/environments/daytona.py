@@ -9,15 +9,13 @@ import logging
 import math
 import shlex
 import threading
-import warnings
 from pathlib import Path
-from typing import Dict, Optional
 
 from tools.environments.base import (
     BaseEnvironment,
     _ThreadedProcessHandle,
-    _file_mtime_key,
 )
+from tools.environments.file_sync import FileSyncManager, iter_sync_files, quoted_rm_command
 
 logger = logging.getLogger(__name__)
 
@@ -57,19 +55,16 @@ class DaytonaEnvironment(BaseEnvironment):
         self._persistent = persistent_filesystem
         self._task_id = task_id
         self._SandboxState = SandboxState
-        self._DaytonaError = DaytonaError
         self._daytona = Daytona()
         self._sandbox = None
         self._lock = threading.Lock()
-        self._last_sync_time: float = 0
 
         memory_gib = max(1, math.ceil(memory / 1024))
         disk_gib = max(1, math.ceil(disk / 1024))
         if disk_gib > 10:
-            warnings.warn(
-                f"Daytona: requested disk ({disk_gib}GB) exceeds platform limit (10GB). "
-                f"Capping to 10GB.",
-                stacklevel=2,
+            logger.warning(
+                "Daytona: requested disk (%dGB) exceeds platform limit (10GB). "
+                "Capping to 10GB.", disk_gib,
             )
             disk_gib = 10
         resources = Resources(cpu=cpu, memory=memory_gib, disk=disk_gib)
@@ -128,50 +123,65 @@ class DaytonaEnvironment(BaseEnvironment):
             pass
         logger.info("Daytona: resolved home to %s, cwd to %s", self._remote_home, self.cwd)
 
-        self._synced_files: Dict[str, tuple] = {}
-        self._sync_files()
+        self._sync_manager = FileSyncManager(
+            get_files_fn=lambda: iter_sync_files(f"{self._remote_home}/.hermes"),
+            upload_fn=self._daytona_upload,
+            delete_fn=self._daytona_delete,
+            bulk_upload_fn=self._daytona_bulk_upload,
+        )
+        self._sync_manager.sync(force=True)
         self.init_session()
 
-    def _upload_if_changed(self, host_path: str, remote_path: str) -> bool:
-        file_key = _file_mtime_key(host_path)
-        if file_key is None:
-            return False
-        if self._synced_files.get(remote_path) == file_key:
-            return False
-        try:
-            parent = str(Path(remote_path).parent)
-            self._sandbox.process.exec(f"mkdir -p {parent}")
-            self._sandbox.fs.upload_file(host_path, remote_path)
-            self._synced_files[remote_path] = file_key
-            return True
-        except Exception as e:
-            logger.debug("Daytona: upload failed %s: %s", host_path, e)
-            return False
+    def _daytona_upload(self, host_path: str, remote_path: str) -> None:
+        """Upload a single file via Daytona SDK."""
+        parent = str(Path(remote_path).parent)
+        self._sandbox.process.exec(f"mkdir -p {parent}")
+        self._sandbox.fs.upload_file(host_path, remote_path)
 
-    def _sync_files(self) -> None:
-        container_base = f"{self._remote_home}/.hermes"
-        try:
-            from tools.credential_files import get_credential_file_mounts, iter_skills_files
-            for mount_entry in get_credential_file_mounts():
-                remote_path = mount_entry["container_path"].replace("/root/.hermes", container_base, 1)
-                self._upload_if_changed(mount_entry["host_path"], remote_path)
-            for entry in iter_skills_files(container_base=container_base):
-                self._upload_if_changed(entry["host_path"], entry["container_path"])
-        except Exception as e:
-            logger.debug("Daytona: could not sync skills/credentials: %s", e)
+    def _daytona_bulk_upload(self, files: list[tuple[str, str]]) -> None:
+        """Upload many files in a single HTTP call via Daytona SDK.
 
-    def _ensure_sandbox_ready(self):
+        Uses ``sandbox.fs.upload_files()`` which batches all files into one
+        multipart POST, avoiding per-file TLS/HTTP overhead (~580 files
+        goes from ~5 min to <2 s).
+        """
+        from daytona.common.filesystem import FileUpload
+
+        if not files:
+            return
+
+        # Pre-create all unique parent directories in one shell call
+        parents = sorted({str(Path(remote).parent) for _, remote in files})
+        if parents:
+            mkdir_cmd = "mkdir -p " + " ".join(shlex.quote(p) for p in parents)
+            self._sandbox.process.exec(mkdir_cmd)
+
+        uploads = [
+            FileUpload(source=host_path, destination=remote_path)
+            for host_path, remote_path in files
+        ]
+        self._sandbox.fs.upload_files(uploads)
+
+    def _daytona_delete(self, remote_paths: list[str]) -> None:
+        """Batch-delete remote files via SDK exec."""
+        self._sandbox.process.exec(quoted_rm_command(remote_paths))
+
+    # ------------------------------------------------------------------
+    # Sandbox lifecycle
+    # ------------------------------------------------------------------
+
+    def _ensure_sandbox_ready(self) -> None:
         """Restart sandbox if it was stopped (e.g., by a previous interrupt)."""
         self._sandbox.refresh_data()
         if self._sandbox.state in (self._SandboxState.STOPPED, self._SandboxState.ARCHIVED):
             self._sandbox.start()
             logger.info("Daytona: restarted sandbox %s", self._sandbox.id)
 
-    def _before_execute(self):
-        """Ensure sandbox is ready, then rate-limited file sync via base class."""
+    def _before_execute(self) -> None:
+        """Ensure sandbox is ready, then sync files via FileSyncManager."""
         with self._lock:
             self._ensure_sandbox_ready()
-        super()._before_execute()
+        self._sync_manager.sync()
 
     def _run_bash(self, cmd_string: str, *, login: bool = False,
                   timeout: int = 120,

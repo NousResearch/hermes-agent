@@ -3972,6 +3972,11 @@ class GatewayRunner:
                 _old_agent = _cached[0] if isinstance(_cached, tuple) else _cached if _cached else None
             if _old_agent is not None:
                 try:
+                    if hasattr(_old_agent, "shutdown_memory_provider"):
+                        _old_agent.shutdown_memory_provider()
+                except Exception:
+                    pass
+                try:
                     if hasattr(_old_agent, "close"):
                         _old_agent.close()
                 except Exception:

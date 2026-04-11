@@ -544,7 +544,7 @@ def _resolve_explicit_runtime(
 
         base_url = explicit_base_url
         if not base_url:
-            if provider == "kimi-coding":
+            if provider in ("kimi-coding", "kimi-code-plan"):
                 creds = resolve_api_key_provider_credentials(provider)
                 base_url = creds.get("base_url", "").rstrip("/")
             else:
@@ -564,7 +564,7 @@ def _resolve_explicit_runtime(
             configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
             if configured_mode:
                 api_mode = configured_mode
-            elif base_url.rstrip("/").endswith("/anthropic"):
+            elif provider == "kimi-code-plan" or base_url.rstrip("/").endswith("/anthropic"):
                 api_mode = "anthropic_messages"
 
         return {

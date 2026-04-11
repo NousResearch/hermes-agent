@@ -433,6 +433,7 @@ def switch_model(
     )
     from hermes_cli.runtime_provider import resolve_runtime_provider
 
+    pdef = None
     resolved_alias = ""
     new_model = raw_input.strip()
     target_provider = current_provider
@@ -616,22 +617,32 @@ def switch_model(
     api_mode = ""
 
     if provider_changed or explicit_provider:
-        try:
-            runtime = resolve_runtime_provider(requested=target_provider)
-            api_key = runtime.get("api_key", "")
-            base_url = runtime.get("base_url", "")
-            api_mode = runtime.get("api_mode", "")
-        except Exception as e:
-            return ModelSwitchResult(
-                success=False,
-                target_provider=target_provider,
-                provider_label=provider_label,
-                is_global=is_global,
-                error_message=(
-                    f"Could not resolve credentials for provider "
-                    f"'{provider_label}': {e}"
-                ),
-            )
+        if pdef is not None and pdef.source == "user-config":
+            base_url = pdef.base_url.rstrip("/")
+            api_mode = determine_api_mode(target_provider, base_url)
+            api_key = ""
+            for env_var in pdef.api_key_env_vars:
+                value = os.getenv(env_var, "").strip()
+                if value:
+                    api_key = value
+                    break
+        else:
+            try:
+                runtime = resolve_runtime_provider(requested=target_provider)
+                api_key = runtime.get("api_key", "")
+                base_url = runtime.get("base_url", "")
+                api_mode = runtime.get("api_mode", "")
+            except Exception as e:
+                return ModelSwitchResult(
+                    success=False,
+                    target_provider=target_provider,
+                    provider_label=provider_label,
+                    is_global=is_global,
+                    error_message=(
+                        f"Could not resolve credentials for provider "
+                        f"'{provider_label}': {e}"
+                    ),
+                )
     else:
         try:
             runtime = resolve_runtime_provider(requested=current_provider)
@@ -949,4 +960,3 @@ def list_authenticated_providers(
     results.sort(key=lambda r: (not r["is_current"], -r["total_models"]))
 
     return results
-

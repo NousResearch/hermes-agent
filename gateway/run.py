@@ -3841,16 +3841,21 @@ class GatewayRunner:
         custom_provs = None
         config_path = _hermes_home / "config.yaml"
         try:
+            cfg = {}
             if config_path.exists():
                 with open(config_path, encoding="utf-8") as f:
                     cfg = yaml.safe_load(f) or {}
-                model_cfg = cfg.get("model", {})
-                if isinstance(model_cfg, dict):
-                    current_model = model_cfg.get("default", "")
-                    current_provider = model_cfg.get("provider", current_provider)
-                    current_base_url = model_cfg.get("base_url", "")
-                user_provs = cfg.get("providers")
-                custom_provs = cfg.get("custom_providers")
+            model_cfg = cfg.get("model", {})
+            if isinstance(model_cfg, dict):
+                current_model = model_cfg.get("default", "") or model_cfg.get("model", "")
+                current_provider = model_cfg.get("provider", "") or cfg.get("provider", current_provider)
+                current_base_url = model_cfg.get("base_url", "") or cfg.get("base_url", "")
+            elif isinstance(model_cfg, str):
+                current_model = model_cfg
+                current_provider = cfg.get("provider", current_provider)
+                current_base_url = cfg.get("base_url", current_base_url)
+            user_provs = cfg.get("providers")
+            custom_provs = cfg.get("custom_providers")
         except Exception:
             pass
 

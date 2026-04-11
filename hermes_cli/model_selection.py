@@ -617,12 +617,14 @@ def build_model_selection_tree(
 
     oauth_providers: list[ProviderNode] = []
     oauth_defs = (
-        ("openai", "openai-codex", "OpenAI", get_codex_auth_status(), get_codex_model_ids(access_token=None)),
-        ("nous", "nous", "Nous", get_nous_auth_status(), list(_PROVIDER_MODELS.get("nous", ()))),
-        ("qwen", "qwen-oauth", "Qwen", get_qwen_auth_status(), list(_QWEN_OAUTH_MODELS)),
+        ("openai", "openai-codex", "OpenAI", get_codex_auth_status, lambda configured: get_codex_model_ids(access_token=None) if configured else []),
+        ("nous", "nous", "Nous", get_nous_auth_status, lambda configured: list(_PROVIDER_MODELS.get("nous", ())) if configured else []),
+        ("qwen", "qwen-oauth", "Qwen", get_qwen_auth_status, lambda configured: list(_QWEN_OAUTH_MODELS) if configured else []),
     )
-    for token, provider_slug, label, status, model_ids in oauth_defs:
+    for token, provider_slug, label, status_fn, model_ids_fn in oauth_defs:
+        status = status_fn()
         configured = bool(status.get("logged_in") or status.get("configured"))
+        model_ids = model_ids_fn(configured)
         status_label, status_kind = _status_label(configured)
         provider_id = f"oauth:{token}"
         oauth_providers.append(

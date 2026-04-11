@@ -1134,7 +1134,7 @@ def select_provider_and_model(args=None):
         _model_flow_anthropic(config, current_model)
     elif selected_provider == "kimi-coding":
         _model_flow_kimi(config, current_model)
-    elif selected_provider in ("gemini", "zai", "minimax", "minimax-cn", "kilocode", "opencode-zen", "opencode-go", "ai-gateway", "alibaba", "huggingface"):
+    elif selected_provider in ("gemini", "zai", "minimax", "minimax-cn", "kilocode", "opencode-zen", "opencode-go", "ai-gateway", "alibaba", "huggingface", "deepseek", "xai"):
         _model_flow_api_key_provider(config, selected_provider, current_model)
     elif selected_provider:
         current_model_value = "" if current_model == "(not set)" else current_model
@@ -1198,6 +1198,22 @@ def _persist_selected_model_result(result) -> None:
         model_section.pop("api_mode", None)
     model_section.pop("api_key", None)
     cfg["model"] = model_section
+    providers_cfg = cfg.get("providers")
+    if isinstance(providers_cfg, dict) and result.target_provider in providers_cfg:
+        provider_entry = providers_cfg.get(result.target_provider)
+        if isinstance(provider_entry, dict):
+            provider_entry["default_model"] = result.new_model
+    custom_cfg = cfg.get("custom_providers")
+    if isinstance(custom_cfg, list) and result.target_provider.startswith("custom:"):
+        from hermes_cli.providers import custom_provider_slug
+
+        for entry in custom_cfg:
+            if not isinstance(entry, dict):
+                continue
+            display_name = str(entry.get("name") or "").strip()
+            if display_name and custom_provider_slug(display_name) == result.target_provider:
+                entry["model"] = result.new_model
+                break
     save_config(cfg)
     deactivate_provider()
 

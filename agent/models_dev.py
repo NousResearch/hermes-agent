@@ -22,6 +22,7 @@ import difflib
 import json
 import logging
 import os
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -208,14 +209,37 @@ def _save_disk_cache(data: Dict[str, Any]) -> None:
         logger.debug("Failed to save models.dev disk cache: %s", e)
 
 
+def _background_refresh() -> None:
+    """Refresh models.dev cache in a background thread."""
+    global _models_dev_cache, _models_dev_cache_time
+    try:
+        response = requests.get(MODELS_DEV_URL, timeout=15)
+        response.raise_for_status()
+        data = response.json()
+        if isinstance(data, dict) and data:
+            _models_dev_cache = data
+            _models_dev_cache_time = time.time()
+            _save_disk_cache(data)
+            logger.debug(
+                "Background-refreshed models.dev registry: %d providers",
+                len(data),
+            )
+    except Exception as e:
+        logger.debug("Background models.dev refresh failed: %s", e)
+
+
 def fetch_models_dev(force_refresh: bool = False) -> Dict[str, Any]:
     """Fetch models.dev registry. In-memory cache (1hr) + disk fallback.
+
+    On cold start, loads the disk cache synchronously (fast) and triggers a
+    background network refresh. On subsequent calls within the TTL, returns
+    the in-memory cache directly.
 
     Returns the full registry dict keyed by provider ID, or empty dict on failure.
     """
     global _models_dev_cache, _models_dev_cache_time
 
-    # Check in-memory cache
+    # Check in-memory cache (hot path)
     if (
         not force_refresh
         and _models_dev_cache
@@ -223,7 +247,17 @@ def fetch_models_dev(force_refresh: bool = False) -> Dict[str, Any]:
     ):
         return _models_dev_cache
 
-    # Try network fetch
+    # Try disk cache first (fast, no network)
+    if not _models_dev_cache and not force_refresh:
+        _models_dev_cache = _load_disk_cache()
+        if _models_dev_cache:
+            _models_dev_cache_time = time.time() - _MODELS_DEV_CACHE_TTL + 300
+            logger.debug("Loaded models.dev from disk cache (%d providers)", len(_models_dev_cache))
+            # Kick off background refresh so next cold-start sees fresh data
+            threading.Thread(target=_background_refresh, daemon=True).start()
+            return _models_dev_cache
+
+    # No disk cache — must block on network fetch
     try:
         response = requests.get(MODELS_DEV_URL, timeout=15)
         response.raise_for_status()
@@ -240,14 +274,6 @@ def fetch_models_dev(force_refresh: bool = False) -> Dict[str, Any]:
             return data
     except Exception as e:
         logger.debug("Failed to fetch models.dev: %s", e)
-
-    # Fall back to disk cache — use a short TTL (5 min) so we retry
-    # the network fetch soon instead of serving stale data for a full hour.
-    if not _models_dev_cache:
-        _models_dev_cache = _load_disk_cache()
-        if _models_dev_cache:
-            _models_dev_cache_time = time.time() - _MODELS_DEV_CACHE_TTL + 300
-            logger.debug("Loaded models.dev from disk cache (%d providers)", len(_models_dev_cache))
 
     return _models_dev_cache
 

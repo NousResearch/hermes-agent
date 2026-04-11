@@ -23,17 +23,13 @@ Resolution order for vision/multimodal tasks (auto mode):
   6. Custom endpoint (for local vision models: Qwen-VL, LLaVA, Pixtral, etc.)
   7. None
 
-Per-task provider overrides (e.g. AUXILIARY_VISION_PROVIDER,
-CONTEXT_COMPRESSION_PROVIDER) can force a specific provider for each task.
+Per-task overrides are configured in config.yaml under the ``auxiliary:`` section
+(e.g. ``auxiliary.vision.provider``, ``auxiliary.compression.model``).
 Default "auto" follows the chains above.
 
-Per-task model overrides (e.g. AUXILIARY_VISION_MODEL,
-AUXILIARY_WEB_EXTRACT_MODEL) let callers use a different model slug
-than the provider's default.
-
-Per-task direct endpoint overrides (e.g. AUXILIARY_VISION_BASE_URL,
-AUXILIARY_VISION_API_KEY) let callers route a specific auxiliary task to a
-custom OpenAI-compatible endpoint without touching the main model settings.
+Legacy env var overrides (AUXILIARY_{TASK}_PROVIDER, AUXILIARY_{TASK}_MODEL,
+AUXILIARY_{TASK}_BASE_URL, etc.) are still read as a backward-compat fallback
+but config.yaml takes priority.  New configuration should always use config.yaml.
 
 Payment / credit exhaustion fallback:
   When a resolved provider returns HTTP 402 or a credit-related error,
@@ -109,6 +105,14 @@ _API_KEY_PROVIDER_AUX_MODELS: Dict[str, str] = {
     "opencode-zen": "gemini-3-flash",
     "opencode-go": "glm-5",
     "kilocode": "google/gemini-3-flash-preview",
+}
+
+# Vision-specific model overrides for direct providers.
+# When the user's main provider has a dedicated vision/multimodal model that
+# differs from their main chat model, map it here.  The vision auto-detect
+# "exotic provider" branch checks this before falling back to the main model.
+_PROVIDER_VISION_MODELS: Dict[str, str] = {
+    "xiaomi": "mimo-v2-omni",
 }
 
 # OpenRouter app attribution headers
@@ -1687,16 +1691,18 @@ def resolve_vision_provider_client(
                 if sync_client is not None:
                     return _finalize(main_provider, sync_client, default_model)
             else:
-                # Exotic provider (DeepSeek, Alibaba, named custom, etc.)
+                # Exotic provider (DeepSeek, Alibaba, Xiaomi, named custom, etc.)
+                # Use provider-specific vision model if available, otherwise main model.
+                vision_model = _PROVIDER_VISION_MODELS.get(main_provider, main_model)
                 rpc_client, rpc_model = resolve_provider_client(
-                    main_provider, main_model)
+                    main_provider, vision_model)
                 if rpc_client is not None:
                     logger.info(
                         "Vision auto-detect: using active provider %s (%s)",
-                        main_provider, rpc_model or main_model,
+                        main_provider, rpc_model or vision_model,
                     )
                     return _finalize(
-                        main_provider, rpc_client, rpc_model or main_model)
+                        main_provider, rpc_client, rpc_model or vision_model)
 
         # Fall back through aggregators.
         for candidate in _VISION_AUTO_PROVIDER_ORDER:
@@ -1958,8 +1964,8 @@ def _resolve_task_provider_model(
 
     Priority:
       1. Explicit provider/model/base_url/api_key args (always win)
-      2. Env var overrides (AUXILIARY_{TASK}_*, CONTEXT_{TASK}_*)
-      3. Config file (auxiliary.{task}.* or compression.*)
+      2. Config file (auxiliary.{task}.* or compression.*)
+      3. Env var overrides (backward-compat: AUXILIARY_{TASK}_*, CONTEXT_{TASK}_*)
       4. "auto" (full auto-detection chain)
 
     Returns (provider, model, base_url, api_key, api_mode) where model may
@@ -2002,10 +2008,11 @@ def _resolve_task_provider_model(
                 _sbu = comp.get("summary_base_url") or ""
                 cfg_base_url = cfg_base_url or _sbu.strip() or None
 
+    # Env vars are backward-compat fallback only — config.yaml is primary.
     env_model = _get_auxiliary_env_override(task, "MODEL") if task else None
     env_api_mode = _get_auxiliary_env_override(task, "API_MODE") if task else None
-    resolved_model = model or env_model or cfg_model
-    resolved_api_mode = env_api_mode or cfg_api_mode
+    resolved_model = model or cfg_model or env_model
+    resolved_api_mode = cfg_api_mode or env_api_mode
 
     if base_url:
         return "custom", resolved_model, base_url, api_key, resolved_api_mode
@@ -2013,19 +2020,23 @@ def _resolve_task_provider_model(
         return provider, resolved_model, base_url, api_key, resolved_api_mode
 
     if task:
+        # Config.yaml is the primary source for per-task overrides.
+        if cfg_base_url:
+            return "custom", resolved_model, cfg_base_url, cfg_api_key, resolved_api_mode
+        if cfg_provider and cfg_provider != "auto":
+            return cfg_provider, resolved_model, None, None, resolved_api_mode
+
+        # Env vars are backward-compat fallback for users who haven't
+        # migrated to config.yaml yet.
         env_base_url = _get_auxiliary_env_override(task, "BASE_URL")
         env_api_key = _get_auxiliary_env_override(task, "API_KEY")
         if env_base_url:
-            return "custom", resolved_model, env_base_url, env_api_key or cfg_api_key, resolved_api_mode
+            return "custom", resolved_model, env_base_url, env_api_key, resolved_api_mode
 
         env_provider = _get_auxiliary_provider(task)
         if env_provider != "auto":
             return env_provider, resolved_model, None, None, resolved_api_mode
 
-        if cfg_base_url:
-            return "custom", resolved_model, cfg_base_url, cfg_api_key, resolved_api_mode
-        if cfg_provider and cfg_provider != "auto":
-            return cfg_provider, resolved_model, None, None, resolved_api_mode
         return "auto", resolved_model, None, None, resolved_api_mode
 
     return "auto", resolved_model, None, None, resolved_api_mode

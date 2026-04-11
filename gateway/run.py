@@ -1275,6 +1275,14 @@ class GatewayRunner:
                     agent.shutdown_memory_provider()
             except Exception:
                 pass
+            # Close tool resources (terminal sandboxes, browser daemons,
+            # background processes, httpx clients) to prevent zombie
+            # process accumulation.
+            try:
+                if hasattr(agent, 'close'):
+                    agent.close()
+            except Exception:
+                pass
 
     async def _launch_detached_restart_command(self) -> None:
         import shutil

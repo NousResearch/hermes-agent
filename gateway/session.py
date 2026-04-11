@@ -368,6 +368,11 @@ class SessionEntry:
     # survives gateway restarts (the old in-memory _pre_flushed_sessions
     # set was lost on restart, causing redundant re-flushes).
     memory_flushed: bool = False
+
+    # When True the next call to get_or_create_session() will auto-reset
+    # this session (create a new session_id) so the user starts fresh.
+    # Set by /stop to break stuck-resume loops (#7536).
+    suspended: bool = False
     
     def to_dict(self) -> Dict[str, Any]:
         result = {
@@ -387,6 +392,7 @@ class SessionEntry:
             "estimated_cost_usd": self.estimated_cost_usd,
             "cost_status": self.cost_status,
             "memory_flushed": self.memory_flushed,
+            "suspended": self.suspended,
         }
         if self.origin:
             result["origin"] = self.origin.to_dict()
@@ -423,6 +429,7 @@ class SessionEntry:
             estimated_cost_usd=data.get("estimated_cost_usd", 0.0),
             cost_status=data.get("cost_status", "unknown"),
             memory_flushed=data.get("memory_flushed", False),
+            suspended=data.get("suspended", False),
         )
 
 
@@ -698,7 +705,12 @@ class SessionStore:
             if session_key in self._entries and not force_new:
                 entry = self._entries[session_key]
 
-                reset_reason = self._should_reset(entry, source)
+                # Auto-reset sessions marked as suspended (e.g. after /stop
+                # broke a stuck loop — #7536).
+                if entry.suspended:
+                    reset_reason = "suspended"
+                else:
+                    reset_reason = self._should_reset(entry, source)
                 if not reset_reason:
                     entry.updated_at = now
                     self._save()
@@ -770,6 +782,44 @@ class SessionStore:
                 if last_prompt_tokens is not None:
                     entry.last_prompt_tokens = last_prompt_tokens
                 self._save()
+
+    def suspend_session(self, session_key: str) -> bool:
+        """Mark a session as suspended so it auto-resets on next access.
+
+        Used by ``/stop`` to prevent stuck sessions from being resumed
+        after a gateway restart (#7536).  Returns True if the session
+        existed and was marked.
+        """
+        with self._lock:
+            self._ensure_loaded_locked()
+            if session_key in self._entries:
+                self._entries[session_key].suspended = True
+                self._save()
+                return True
+        return False
+
+    def suspend_recently_active(self, max_age_seconds: int = 120) -> int:
+        """Mark recently-active sessions as suspended.
+
+        Called on gateway startup to prevent sessions that were likely
+        in-flight when the gateway last exited from being blindly resumed
+        (#7536).  Only suspends sessions updated within *max_age_seconds*
+        to avoid resetting long-idle sessions that are harmless to resume.
+        Returns the number of sessions that were suspended.
+        """
+        import time as _time
+
+        cutoff = _time.time() - max_age_seconds
+        count = 0
+        with self._lock:
+            self._ensure_loaded_locked()
+            for entry in self._entries.values():
+                if not entry.suspended and entry.updated_at >= cutoff:
+                    entry.suspended = True
+                    count += 1
+            if count:
+                self._save()
+        return count
 
     def reset_session(self, session_key: str) -> Optional[SessionEntry]:
         """Force reset a session, creating a new session ID."""

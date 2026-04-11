@@ -3226,6 +3226,224 @@ class AIAgent:
 
         return None
 
+    # ── Embedded tool call extraction (GLM / non-standard providers) ────
+
+    def _extract_embedded_tool_calls(self, assistant_message) -> None:
+        """Extract tool calls embedded in text content by GLM and similar models.
+
+        Some OpenAI-compatible providers return tool call intent in the content
+        field instead of the standard ``tool_calls`` field.  Common patterns:
+
+        * GLM format: ``{"action": "tool_name", "params": {...}}``
+        * OpenAI-like: ``{"function": {"name": "...", "arguments": ...}}``
+        * Simple:      ``{"name": "...", "arguments": {...}}``
+        * Wrapped in markdown code blocks
+
+        If matching patterns are found the ``tool_calls`` attribute is set on
+        *assistant_message* in-place and the extracted JSON is removed from the
+        content.
+        """
+        content = getattr(assistant_message, "content", None)
+        if not content or not isinstance(content, str):
+            return
+        # Already has proper tool_calls — nothing to do.
+        if getattr(assistant_message, "tool_calls", None):
+            return
+
+        from types import SimpleNamespace
+
+        extracted: list = []
+        consumed: set[int] = set()
+
+        # ── Step 1: Try entire content as a single JSON value ────────
+        stripped = content.strip()
+        try:
+            parsed = json.loads(stripped)
+            tool_calls = self._json_to_tool_calls(parsed)
+            if tool_calls:
+                assistant_message.tool_calls = tool_calls
+                assistant_message.content = ""
+                self._log_extracted_tool_calls(tool_calls)
+                return
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+        # ── Step 2: Extract from markdown code blocks ───────────────
+        code_block_re = re.compile(r"```(?:json)?\s*\n?(.*?)\n?\s*```", re.DOTALL)
+        for m in code_block_re.finditer(content):
+            block = m.group(1).strip()
+            if not block:
+                continue
+            for obj_str in self._find_action_json_objects(block):
+                try:
+                    parsed = json.loads(obj_str)
+                    tc = self._json_to_tool_calls(parsed)
+                    if tc:
+                        extracted.extend(tc)
+                        for i in range(m.start(), m.end()):
+                            consumed.add(i)
+                        break  # one code block → one tool call group
+                except (json.JSONDecodeError, ValueError):
+                    continue
+
+        # ── Step 3: Find bare action/params JSON objects ─────────────
+        if not extracted:
+            for obj_str in self._find_action_json_objects(content):
+                try:
+                    parsed = json.loads(obj_str)
+                    tc = self._json_to_tool_calls(parsed)
+                    if tc:
+                        extracted.extend(tc)
+                        idx = content.find(obj_str)
+                        if idx >= 0:
+                            for i in range(idx, idx + len(obj_str)):
+                                consumed.add(i)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+
+        if not extracted:
+            return
+
+        # Build cleaned content by removing consumed spans.
+        cleaned_chars = [c for i, c in enumerate(content) if i not in consumed]
+        cleaned = re.sub(r"\n{3,}", "\n\n", "".join(cleaned_chars)).strip()
+
+        assistant_message.tool_calls = extracted
+        assistant_message.content = cleaned or ""
+        self._log_extracted_tool_calls(extracted)
+
+    def _json_to_tool_calls(self, parsed) -> list:
+        """Convert a parsed JSON value to a list of tool-call objects.
+
+        Handles single objects and arrays of objects.
+        """
+        if isinstance(parsed, list):
+            results = []
+            for item in parsed:
+                tc = self._single_json_to_tool_call(item)
+                if tc:
+                    results.append(tc)
+            return results
+        tc = self._single_json_to_tool_call(parsed)
+        return [tc] if tc else []
+
+    @staticmethod
+    def _single_json_to_tool_call(obj) -> object:
+        """Convert one JSON dict to a tool-call SimpleNamespace."""
+        from types import SimpleNamespace
+
+        if not isinstance(obj, dict):
+            return None
+
+        name: str | None = None
+        args_str: str = "{}"
+
+        # GLM action/params format
+        if "action" in obj and "params" in obj:
+            name = obj.get("action")
+            params = obj.get("params", {})
+            args_str = json.dumps(params, ensure_ascii=False) if isinstance(params, (dict, list)) else str(params)
+        # OpenAI function format
+        elif "function" in obj and isinstance(obj["function"], dict):
+            fn = obj["function"]
+            name = fn.get("name")
+            args = fn.get("arguments", "{}")
+            args_str = json.dumps(args, ensure_ascii=False) if isinstance(args, (dict, list)) else str(args)
+        # Simple name/arguments format
+        elif "name" in obj:
+            name = obj.get("name")
+            args = obj.get("arguments", obj.get("parameters", {}))
+            args_str = json.dumps(args, ensure_ascii=False) if isinstance(args, (dict, list)) else str(args)
+
+        if not name or not isinstance(name, str) or not name.strip():
+            return None
+
+        return SimpleNamespace(
+            id=f"glm_call_{abs(hash(name)) % 100000}",
+            type="function",
+            function=SimpleNamespace(
+                name=name.strip(),
+                arguments=args_str,
+            ),
+        )
+
+    @staticmethod
+    def _find_action_json_objects(text: str) -> list[str]:
+        """Find JSON objects in *text* that contain ``"action"`` or ``"function"`` keys.
+
+        Uses brace-counting to handle nested objects.  Returns raw JSON
+        substrings.
+        """
+        results: list[str] = []
+        i = 0
+        n = len(text)
+        while i < n:
+            if text[i] != '{':
+                i += 1
+                continue
+            # Potential JSON object — walk to matching closing brace.
+            depth = 0
+            start = i
+            in_string = False
+            escape_next = False
+            j = i
+            while j < n:
+                c = text[j]
+                if escape_next:
+                    escape_next = False
+                elif c == '\\' and in_string:
+                    escape_next = True
+                elif c == '"' and not escape_next:
+                    in_string = not in_string
+                elif not in_string:
+                    if c == '{':
+                        depth += 1
+                    elif c == '}':
+                        depth -= 1
+                        if depth == 0:
+                            candidate = text[start:j + 1]
+                            if '"action"' in candidate or '"function"' in candidate:
+                                results.append(candidate)
+                            i = j
+                            break
+                j += 1
+            i += 1
+        return results
+
+    def _log_extracted_tool_calls(self, tool_calls: list) -> None:
+        """Log extracted embedded tool calls."""
+        names = ", ".join(tc.function.name for tc in tool_calls)
+        if not self.quiet_mode:
+            self._vprint(
+                f"{self.log_prefix}🔧 Extracted {len(tool_calls)} embedded "
+                f"tool call(s) from content: {names}"
+            )
+        logging.info(
+            "%sExtracted %d embedded tool call(s) from content: %s",
+            self.log_prefix, len(tool_calls), names,
+        )
+
+    @staticmethod
+    def _strip_json_wrapper(s: str) -> str:
+        """Strip markdown code blocks and whitespace from a JSON string.
+
+        GLM and similar models may wrap JSON arguments in:
+        - `````json ... `````
+        - ````` ... `````
+        """
+        if not isinstance(s, str):
+            return s
+        s = s.strip()
+        if s.startswith("```"):
+            nl = s.find("\n")
+            if nl >= 0:
+                s = s[nl + 1:]
+            else:
+                s = s[3:]
+        if s.endswith("```"):
+            s = s[:-3]
+        return s.strip()
+
     def _invalidate_system_prompt(self):
         """
         Invalidate the cached system prompt, forcing a rebuild on the next turn.
@@ -7428,6 +7646,7 @@ class AIAgent:
         self._incomplete_scratchpad_retries = 0
         self._codex_incomplete_retries = 0
         self._thinking_prefill_retries = 0
+        self._no_tool_call_retries = 0
         self._last_content_with_tools = None
         self._mute_post_response = False
         self._unicode_sanitization_passes = 0
@@ -9150,6 +9369,14 @@ class AIAgent:
                     else:
                         assistant_message.content = str(raw)
 
+                # ── Embedded tool call extraction ─────────────────────
+                # Some OpenAI-compatible providers (notably GLM) embed
+                # tool call intent in the content field instead of the
+                # standard tool_calls field.  Extract and normalise
+                # before downstream validation.
+                if not getattr(assistant_message, "tool_calls", None):
+                    self._extract_embedded_tool_calls(assistant_message)
+
                 try:
                     from hermes_cli.plugins import invoke_hook as _invoke_hook
                     _assistant_tool_calls = getattr(assistant_message, "tool_calls", None) or []
@@ -9351,6 +9578,7 @@ class AIAgent:
                     # Reset retry counter on successful tool call validation
                     if hasattr(self, '_invalid_tool_retries'):
                         self._invalid_tool_retries = 0
+                    self._no_tool_call_retries = 0
                     
                     # Validate tool call arguments are valid JSON
                     # Handle empty strings as empty objects (common model quirk)
@@ -9363,14 +9591,25 @@ class AIAgent:
                         if args is not None and not isinstance(args, str):
                             tc.function.arguments = str(args)
                             args = tc.function.arguments
+                        # Strip markdown code blocks (GLM and similar models
+                        # may wrap arguments in ```json ... ```)
+                        if isinstance(args, str):
+                            args = self._strip_json_wrapper(args)
+                            tc.function.arguments = args
                         # Treat empty/whitespace strings as empty object
                         if not args or not args.strip():
                             tc.function.arguments = "{}"
                             continue
                         try:
                             json.loads(args)
-                        except json.JSONDecodeError as e:
-                            invalid_json_args.append((tc.function.name, str(e)))
+                        except json.JSONDecodeError:
+                            # Try fixing common issues: trailing commas
+                            cleaned = re.sub(r',\s*([}\]])', r'\1', args)
+                            try:
+                                json.loads(cleaned)
+                                tc.function.arguments = cleaned
+                            except json.JSONDecodeError as e:
+                                invalid_json_args.append((tc.function.name, str(e)))
                     
                     if invalid_json_args:
                         # Track retries for invalid JSON arguments
@@ -9726,6 +9965,40 @@ class AIAgent:
                     if hasattr(self, '_empty_content_retries'):
                         self._empty_content_retries = 0
                     self._thinking_prefill_retries = 0
+
+                    # ── No-tool-call retry for non-standard providers ───────
+                    # GLM and similar models sometimes describe the actions they
+                    # *would* take (mentioning tool names in the text) instead
+                    # of producing proper tool_calls.  Retry with a nudge so the
+                    # model gets another chance to emit correct tool calls.
+                    if self.valid_tool_names and self._no_tool_call_retries < 2:
+                        _content_lower = final_response.lower()
+                        _mentioned = any(
+                            n in _content_lower or n.replace("_", " ") in _content_lower
+                            for n in self.valid_tool_names
+                        )
+                        if _mentioned:
+                            self._no_tool_call_retries += 1
+                            self._vprint(
+                                f"{self.log_prefix}↻ Model described actions without tool calls "
+                                f"— retrying with nudge ({self._no_tool_call_retries}/2)"
+                            )
+                            interim_msg = self._build_assistant_message(
+                                assistant_message, finish_reason
+                            )
+                            messages.append(interim_msg)
+                            messages.append({
+                                "role": "user",
+                                "content": (
+                                    "[System: You described actions but did not make any tool calls. "
+                                    "You MUST use the provided tools by making proper tool calls. "
+                                    "Do not describe what you would do — actually call the tools now.]"
+                                ),
+                            })
+                            self._session_messages = messages
+                            self._save_session_log(messages)
+                            continue
+                    self._no_tool_call_retries = 0
 
                     if (
                         self.api_mode == "codex_responses"

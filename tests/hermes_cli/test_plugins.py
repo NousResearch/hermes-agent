@@ -420,6 +420,24 @@ class TestPluginContext:
         with pytest.raises(ValueError, match="conflicts with quick command /design_sync"):
             ctx.register_slash_command("design-sync", lambda _args: None)
 
+    def test_register_slash_command_rejects_project_quick_command_conflict(self, tmp_path, monkeypatch):
+        project_root = tmp_path / "project"
+        project_root.mkdir()
+        (project_root / "cli-config.yaml").write_text(
+            "quick_commands:\n  design-sync:\n    type: alias\n    target: /help\n",
+            encoding="utf-8",
+        )
+        monkeypatch.chdir(project_root)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
+
+        mgr = PluginManager()
+        ctx = PluginContext(PluginManifest(name="plugin_a"), mgr)
+
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {})
+
+        with pytest.raises(ValueError, match="conflicts with quick command /design-sync"):
+            ctx.register_slash_command("design-sync", lambda _args: None)
+
 
 # ── TestPluginToolVisibility ───────────────────────────────────────────────
 

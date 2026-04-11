@@ -34,6 +34,7 @@ import logging
 import os
 import sys
 import types
+import yaml
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set, Union
@@ -47,6 +48,28 @@ except ImportError:  # pragma: no cover – yaml is optional at import time
     yaml = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
+
+
+def _load_quick_commands_for_slash_validation() -> dict[str, Any]:
+    """Load the same effective quick-command surface slash resolution uses."""
+    try:
+        from hermes_cli.config import get_hermes_home, load_config
+
+        config = load_config() or {}
+        if isinstance(config, dict) and config.get("quick_commands"):
+            quick = config.get("quick_commands", {})
+            return quick if isinstance(quick, dict) else {}
+
+        for project_config_path in (Path.cwd() / "cli-config.yaml", Path(__file__).resolve().parents[1] / "cli-config.yaml"):
+            if not project_config_path.exists():
+                continue
+            with open(project_config_path, encoding="utf-8") as f:
+                project_cfg = yaml.safe_load(f) or {}
+            quick = project_cfg.get("quick_commands", {}) if isinstance(project_cfg, dict) else {}
+            return quick if isinstance(quick, dict) else {}
+    except Exception:
+        pass
+    return {}
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -287,16 +310,12 @@ class PluginContext:
         except Exception:
             pass
         try:
-            from hermes_cli.config import load_config
-
-            cfg = load_config() or {}
-            quick_commands = cfg.get("quick_commands", {}) if isinstance(cfg, dict) else {}
-            if isinstance(quick_commands, dict):
-                for alias in gateway_aliases:
-                    if alias in quick_commands:
-                        raise ValueError(
-                            f"Plugin slash command '{normalized}' conflicts with quick command /{alias}"
-                        )
+            quick_commands = _load_quick_commands_for_slash_validation()
+            for alias in gateway_aliases:
+                if alias in quick_commands:
+                    raise ValueError(
+                        f"Plugin slash command '{normalized}' conflicts with quick command /{alias}"
+                    )
         except ValueError:
             raise
         except Exception:

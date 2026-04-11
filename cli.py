@@ -1776,6 +1776,12 @@ class HermesCLI:
         self._stash_list: list = []   # multi-item stash [{id, text, images, stashed_at, preview}]
         self._stash_panel_open: bool = False
         self._stash_panel_cursor: int = 0
+        # Resume panel state
+        self._resume_panel_open: bool = False
+        self._resume_sessions: list = []
+        self._resume_cursor: int = 0
+        self._resume_filter: str = ""
+        self._resume_searching: bool = False
         self._clarify_state = None
         self._clarify_freetext = False
         self._clarify_deadline = 0
@@ -3862,6 +3868,8 @@ class HermesCLI:
                 source=None if include_gateway else "cli",
                 exclude_sources=["tool"],
                 limit=limit,
+                preview_length=preview_length,
+                full_preview_length=full_preview_length,
             )
         except Exception:
             return []
@@ -8009,6 +8017,7 @@ class HermesCLI:
         input_rule_bot,
         voice_status_bar,
         completions_menu,
+        resume_panel_widget=None,
     ) -> list:
         """Assemble the ordered list of children for the root ``HSplit``.
 
@@ -8016,7 +8025,7 @@ class HermesCLI:
         this method.  Override this only when you need full control over widget
         ordering.
         """
-        return [
+        children = [
             Window(height=0),
             sudo_widget,
             secret_widget,
@@ -8025,6 +8034,10 @@ class HermesCLI:
             spinner_widget,
             spacer,
             *self._get_extra_tui_widgets(),
+        ]
+        if resume_panel_widget is not None:
+            children.append(resume_panel_widget)
+        children.extend([
             status_bar,
             input_rule_top,
             image_bar,
@@ -8032,7 +8045,8 @@ class HermesCLI:
             input_rule_bot,
             voice_status_bar,
             completions_menu,
-        ]
+        ])
+        return children
 
     def run(self):
         """Run the interactive CLI loop with persistent input at bottom."""
@@ -9005,6 +9019,114 @@ class HermesCLI:
                 # No image found — show a hint
                 pass  # silent when no image (avoid noise on accidental press)
 
+        # ── Resume panel keybindings ────────────────────────────────────
+        @kb.add('up', filter=Condition(lambda: self._resume_panel_open and not self._resume_searching), eager=True)
+        def _resume_up(event):
+            if self._resume_cursor > 0:
+                self._resume_cursor -= 1
+                event.app.invalidate()
+
+        @kb.add('down', filter=Condition(lambda: self._resume_panel_open and not self._resume_searching), eager=True)
+        def _resume_down(event):
+            if self._resume_cursor < len(self._resume_sessions) - 1:
+                self._resume_cursor += 1
+                event.app.invalidate()
+
+        @kb.add('pageup', filter=Condition(lambda: self._resume_panel_open and not self._resume_searching), eager=True)
+        def _resume_pgup(event):
+            page = CLI_CONFIG.get("display", {}).get("resume_preview_lines", 3)
+            self._resume_cursor = max(0, self._resume_cursor - page)
+            event.app.invalidate()
+
+        @kb.add('pagedown', filter=Condition(lambda: self._resume_panel_open and not self._resume_searching), eager=True)
+        def _resume_pgdown(event):
+            page = CLI_CONFIG.get("display", {}).get("resume_preview_lines", 3)
+            self._resume_cursor = min(len(self._resume_sessions) - 1, self._resume_cursor + page)
+            event.app.invalidate()
+
+        @kb.add('space', filter=Condition(lambda: self._resume_panel_open and not self._resume_searching), eager=True)
+        def _resume_space(event):
+            page_size = CLI_CONFIG.get("display", {}).get("resume_page_size", 25)
+            self._resume_cursor = min(len(self._resume_sessions) - 1, self._resume_cursor + page_size)
+            event.app.invalidate()
+
+        @kb.add('b', filter=Condition(lambda: self._resume_panel_open and not self._resume_searching), eager=True)
+        def _resume_b(event):
+            page_size = CLI_CONFIG.get("display", {}).get("resume_page_size", 25)
+            self._resume_cursor = max(0, self._resume_cursor - page_size)
+            event.app.invalidate()
+
+        @kb.add('n', filter=Condition(lambda: self._resume_panel_open and not self._resume_searching), eager=True)
+        def _resume_n(event):
+            page_size = CLI_CONFIG.get("display", {}).get("resume_page_size", 25)
+            self._resume_cursor = min(len(self._resume_sessions) - 1, self._resume_cursor + page_size)
+            event.app.invalidate()
+
+        @kb.add('/', filter=Condition(lambda: self._resume_panel_open and not self._resume_searching), eager=True)
+        def _resume_search_start(event):
+            self._resume_searching = True
+            self._resume_filter = ""
+            self._resume_cursor = 0
+            event.app.invalidate()
+
+        @kb.add('s', filter=Condition(lambda: self._resume_panel_open and not self._resume_searching), eager=True)
+        def _resume_search_s(event):
+            self._resume_searching = True
+            self._resume_filter = ""
+            self._resume_cursor = 0
+            event.app.invalidate()
+
+        @kb.add('enter', filter=Condition(lambda: self._resume_panel_open and not self._resume_searching), eager=True)
+        def _resume_enter(event):
+            if 0 <= self._resume_cursor < len(self._resume_sessions):
+                sel = self._resume_sessions[self._resume_cursor]
+                self._resume_panel_open = False
+                self._resume_filter = ""
+                self._resume_searching = False
+                event.app.invalidate()
+                sid = sel.get("id", "")
+                if sid:
+                    buf = event.app.layout.get_container()
+                    ta = event.app.layout.current_window
+                    # Insert /resume command into the input area
+                    input_area = event.app.layout.focusable_windows[0]
+                    for w in event.app.layout.focusable_windows:
+                        if hasattr(w, 'control') and hasattr(w.control, 'buffer'):
+                            w.control.buffer.text = f"/resume {sid}"
+                            w.control.buffer.cursor_position = len(f"/resume {sid}")
+                            break
+
+        @kb.add('escape', filter=Condition(lambda: self._resume_panel_open))
+        def _resume_esc(event):
+            if self._resume_searching:
+                self._resume_searching = False
+                self._resume_filter = ""
+                self._resume_cursor = 0
+            else:
+                self._resume_panel_open = False
+                self._resume_filter = ""
+                self._resume_searching = False
+            event.app.invalidate()
+
+        # Printable keys during resume search mode
+        def _make_search_handler(ch):
+            def handler(event):
+                self._resume_filter = self._resume_filter + ch
+                self._resume_cursor = 0
+                event.app.invalidate()
+            return handler
+
+        for _ch in "abcdefghijklmnopqrstuvwxyz0123456789_-./ ":
+            _handler = _make_search_handler(_ch)
+            kb.add(_ch, filter=Condition(lambda c=_ch: self._resume_panel_open and self._resume_searching))(_handler)
+
+        @kb.add('backspace', filter=Condition(lambda: self._resume_panel_open and self._resume_searching))
+        def _resume_backspace(event):
+            if self._resume_filter:
+                self._resume_filter = self._resume_filter[:-1]
+                self._resume_cursor = 0
+                event.app.invalidate()
+
         # Dynamic prompt: shows Hermes symbol when agent is working,
         # or answer prompt when clarify freetext mode is active.
         cli_ref = self
@@ -9549,6 +9671,26 @@ class HermesCLI:
             filter=Condition(lambda: cli_ref._status_bar_visible),
         )
 
+        # Resume panel widget — interactive session picker
+        def _get_resume_panel_fragments():
+            if not cli_ref._resume_panel_open:
+                return []
+            import shutil as _shutil
+            width = _shutil.get_terminal_size().columns
+            return cli_ref._render_resume_panel(
+                cli_ref._resume_sessions,
+                cli_ref._resume_cursor,
+                width,
+            )
+
+        resume_panel_widget = ConditionalContainer(
+            Window(
+                content=FormattedTextControl(_get_resume_panel_fragments),
+                wrap_lines=True,
+            ),
+            filter=Condition(lambda: cli_ref._resume_panel_open),
+        )
+
         # Allow wrapper CLIs to register extra keybindings.
         self._register_extra_tui_keybindings(kb, input_area=input_area)
 
@@ -10076,6 +10218,9 @@ class HermesCLI:
             loop.default_exception_handler(context)
 
         # Run the application with patch_stdout for proper output handling
+        # Auto-open resume panel if HERMES_OPEN_RESUME env var is set
+        if os.environ.get("HERMES_OPEN_RESUME"):
+            self.show_sessions_full()
         try:
             with patch_stdout():
                 # Set the custom handler on prompt_toolkit's event loop

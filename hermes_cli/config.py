@@ -448,6 +448,12 @@ DEFAULT_CONFIG = {
         "tool_progress_command": False,  # Enable /verbose command in messaging gateway
         "tool_progress_overrides": {},  # Per-platform overrides: {"signal": "off", "telegram": "all"}
         "tool_preview_length": 0,  # Max chars for tool call previews (0 = no limit, show full paths/commands)
+        # Session picker / resume panel
+        "resume_session_limit": 2000,        # Total sessions to load (safe cap to avoid OOM)
+        "resume_page_size": 25,              # How many sessions visible per page
+        "resume_preview_length": 60,         # Single-line preview column width
+        "resume_full_preview_length": 500,   # Expanded multi-line preview char limit (newlines preserved)
+        "resume_preview_lines": 3,           # How many lines of expanded preview to show for selected session
     },
 
     # Privacy settings

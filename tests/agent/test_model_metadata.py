@@ -223,6 +223,24 @@ class TestGetModelContextLength:
         assert get_model_context_length("openai/gpt-4o") == 128000
 
     @patch("agent.model_metadata.fetch_model_metadata")
+    def test_qwen3_coder_plus_context_length(self, mock_fetch):
+        """qwen3-coder-plus has a 1M context window, not the generic 128K Qwen default."""
+        mock_fetch.return_value = {}
+        assert get_model_context_length("qwen3-coder-plus") == 1000000
+
+    @patch("agent.model_metadata.fetch_model_metadata")
+    def test_qwen3_coder_context_length(self, mock_fetch):
+        """qwen3-coder has a 256K context window, not the generic 128K Qwen default."""
+        mock_fetch.return_value = {}
+        assert get_model_context_length("qwen3-coder") == 262144
+
+    @patch("agent.model_metadata.fetch_model_metadata")
+    def test_qwen_generic_context_length(self, mock_fetch):
+        """Generic qwen models still get the 128K default."""
+        mock_fetch.return_value = {}
+        assert get_model_context_length("qwen3-plus") == 131072
+
+    @patch("agent.model_metadata.fetch_model_metadata")
     def test_api_missing_context_length_key(self, mock_fetch):
         """Model in API but without context_length → defaults to 128000."""
         mock_fetch.return_value = {"test/model": {"name": "Test"}}

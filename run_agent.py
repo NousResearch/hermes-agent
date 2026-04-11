@@ -5888,8 +5888,16 @@ class AIAgent:
             api_kwargs["tools"] = self.tools
 
         if self.max_tokens is not None:
-            if not self._is_qwen_portal():
-                api_kwargs.update(self._max_tokens_param(self.max_tokens))
+            api_kwargs.update(self._max_tokens_param(self.max_tokens))
+        elif self._is_qwen_portal():
+            # Qwen Portal defaults to a very low max_tokens when omitted.
+            # Reasoning models (qwen3-coder-plus) exhaust that budget on
+            # thinking tokens alone, causing the portal to return
+            # finish_reason="stop" with truncated output — the agent sees
+            # this as an intentional stop and exits the loop.  Send 65536
+            # (the documented max output for qwen3-coder models) so the
+            # model has adequate output budget for tool calls.
+            api_kwargs.update(self._max_tokens_param(65536))
         elif (self._is_openrouter_url() or "nousresearch" in self._base_url_lower) and "claude" in (self.model or "").lower():
             # OpenRouter and Nous Portal translate requests to Anthropic's
             # Messages API, which requires max_tokens as a mandatory field.

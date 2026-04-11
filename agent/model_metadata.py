@@ -113,7 +113,10 @@ DEFAULT_CONTEXT_LENGTHS = {
     "deepseek": 128000,
     # Meta
     "llama": 131072,
-    # Qwen
+    # Qwen — specific model families before the catch-all.
+    # Official docs: https://help.aliyun.com/zh/model-studio/developer-reference/
+    "qwen3-coder-plus": 1000000,  # 1M context
+    "qwen3-coder": 262144,        # 256K context
     "qwen": 131072,
     # MiniMax — official docs: 204,800 context for all models
     # https://platform.minimax.io/docs/api-reference/text-anthropic-api

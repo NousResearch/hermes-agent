@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { startTransition, useEffect, useRef, useState } from 'react'
 
 import type { GatewayClient } from '../gatewayClient.js'
 
@@ -53,9 +53,11 @@ export function useCompletion(input: string, blocked: boolean, gw: GatewayClient
             return
           }
 
-          setCompletions(r?.items ?? [])
-          setCompIdx(0)
-          setCompReplace(isSlash ? (r?.replace_from ?? 1) : input.length - (pathWord?.length ?? 0))
+          startTransition(() => {
+            setCompletions(r?.items ?? [])
+            setCompIdx(0)
+            setCompReplace(isSlash ? (r?.replace_from ?? 1) : input.length - (pathWord?.length ?? 0))
+          })
         })
         .catch(() => {})
     }, 60)

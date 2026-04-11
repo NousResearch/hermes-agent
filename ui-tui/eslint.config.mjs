@@ -7,6 +7,21 @@ import hooksPlugin from 'eslint-plugin-react-hooks'
 import unusedImports from 'eslint-plugin-unused-imports'
 import globals from 'globals'
 
+const noopRule = {
+  meta: { schema: [], type: 'problem' },
+  create: () => ({})
+}
+
+const customRules = {
+  rules: {
+    'no-process-cwd': noopRule,
+    'no-process-env-top-level': noopRule,
+    'no-sync-fs': noopRule,
+    'no-top-level-dynamic-import': noopRule,
+    'no-top-level-side-effects': noopRule
+  }
+}
+
 export default [
   js.configs.recommended,
   {
@@ -22,6 +37,7 @@ export default [
     },
     plugins: {
       '@typescript-eslint': typescriptEslint,
+      'custom-rules': customRules,
       perfectionist,
       react: reactPlugin,
       'react-hooks': hooksPlugin,
@@ -61,6 +77,15 @@ export default [
     },
     settings: {
       react: { version: 'detect' }
+    }
+  },
+  {
+    files: ['packages/hermes-ink/**/*.{ts,tsx}'],
+    rules: {
+      '@typescript-eslint/consistent-type-imports': 'off',
+      'no-constant-condition': 'off',
+      'no-empty': 'off',
+      'no-redeclare': 'off'
     }
   },
   {

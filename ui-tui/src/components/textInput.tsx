@@ -1,5 +1,35 @@
-import { Text, useInput, useStdin } from 'ink'
-import { useEffect, useRef, useState } from 'react'
+import * as Ink from '@hermes/ink'
+import { useEffect, useMemo, useRef, useState } from 'react'
+
+type InkExt = typeof Ink & {
+  stringWidth: (s: string) => number
+  useDeclaredCursor: (a: { line: number; column: number; active: boolean }) => (el: any) => void
+  useTerminalFocus: () => boolean
+}
+
+const ink = Ink as unknown as InkExt
+const { Box, Text, useStdin, useInput, stringWidth, useDeclaredCursor, useTerminalFocus } = ink
+
+// ── ANSI escapes ─────────────────────────────────────────────────────
+
+const ESC = '\x1b'
+const INV = `${ESC}[7m`
+const INV_OFF = `${ESC}[27m`
+const DIM = `${ESC}[2m`
+const DIM_OFF = `${ESC}[22m`
+const FWD_DEL_RE = new RegExp(`${ESC}\\[3(?:[~$^]|;)`)
+const PRINTABLE = /^[ -~\u00a0-\uffff]+$/
+const BRACKET_PASTE = new RegExp(`${ESC}?\\[20[01]~`, 'g')
+
+const invert = (s: string) => INV + s + INV_OFF
+const dim = (s: string) => DIM + s + DIM_OFF
+
+// ── Grapheme segmenter (lazy singleton) ──────────────────────────────
+
+let _seg: Intl.Segmenter | null = null
+const seg = () => (_seg ??= new Intl.Segmenter(undefined, { granularity: 'grapheme' }))
+
+// ── Word movement ────────────────────────────────────────────────────
 
 function wordLeft(s: string, p: number) {
   let i = p - 1
@@ -29,36 +59,94 @@ function wordRight(s: string, p: number) {
   return i
 }
 
-const FWD_DELETE_RE = /\x1b\[3[~$^]|\x1b\[3;/
+// ── Cursor layout (line/column from offset + terminal width) ─────────
 
-function useForwardDeleteRef(isActive: boolean) {
+function cursorLayout(value: string, cursor: number, cols: number) {
+  const pos = Math.max(0, Math.min(cursor, value.length))
+  const w = Math.max(1, cols - 1)
+
+  let col = 0,
+    line = 0
+
+  for (const { segment, index } of seg().segment(value)) {
+    if (index >= pos) {
+      break
+    }
+
+    if (segment === '\n') {
+      line++
+      col = 0
+
+      continue
+    }
+
+    const sw = stringWidth(segment)
+
+    if (!sw) {
+      continue
+    }
+
+    if (col + sw > w) {
+      line++
+      col = 0
+    }
+
+    col += sw
+  }
+
+  return { column: col, line }
+}
+
+// ── Render value with inverse-video cursor ───────────────────────────
+
+function renderWithCursor(value: string, cursor: number) {
+  const pos = Math.max(0, Math.min(cursor, value.length))
+
+  let out = '',
+    done = false
+
+  for (const { segment, index } of seg().segment(value)) {
+    if (!done && index >= pos) {
+      out += invert(index === pos && segment !== '\n' ? segment : ' ')
+      done = true
+
+      if (index === pos && segment !== '\n') {
+        continue
+      }
+    }
+
+    out += segment
+  }
+
+  return done ? out : out + invert(' ')
+}
+
+// ── Forward-delete detection hook ────────────────────────────────────
+
+function useFwdDelete(active: boolean) {
   const ref = useRef(false)
-  const { internal_eventEmitter: ee } = useStdin()
+  const { inputEmitter: ee } = useStdin()
 
   useEffect(() => {
-    if (!isActive) return
-
-    const onInput = (data: string) => {
-      ref.current = FWD_DELETE_RE.test(data)
+    if (!active) {
+      return
     }
 
-    ee.prependListener('input', onInput)
+    const h = (d: string) => {
+      ref.current = FWD_DEL_RE.test(d)
+    }
+
+    ee.prependListener('input', h)
 
     return () => {
-      ee.removeListener('input', onInput)
+      ee.removeListener('input', h)
     }
-  }, [isActive, ee])
+  }, [active, ee])
 
   return ref
 }
 
-const ESC = '\x1b'
-const INV = ESC + '[7m'
-const INV_OFF = ESC + '[27m'
-const DIM = ESC + '[2m'
-const DIM_OFF = ESC + '[22m'
-const PRINTABLE = /^[ -~\u00a0-\uffff]+$/
-const BRACKET_PASTE = new RegExp(`${ESC}?\\[20[01]~`, 'g')
+// ── Types ────────────────────────────────────────────────────────────
 
 export interface PasteEvent {
   bracketed?: boolean
@@ -69,6 +157,7 @@ export interface PasteEvent {
 }
 
 interface Props {
+  columns?: number
   value: string
   onChange: (v: string) => void
   onSubmit?: (v: string) => void
@@ -77,35 +166,64 @@ interface Props {
   focus?: boolean
 }
 
-export function TextInput({ value, onChange, onPaste, onSubmit, placeholder = '', focus = true }: Props) {
+// ── Component ────────────────────────────────────────────────────────
+
+export function TextInput({ columns = 80, value, onChange, onPaste, onSubmit, placeholder = '', focus = true }: Props) {
   const [cur, setCur] = useState(value.length)
-  const isFwdDelete = useForwardDeleteRef(focus)
+  const fwdDel = useFwdDelete(focus)
+  const termFocus = useTerminalFocus()
 
   const curRef = useRef(cur)
   const vRef = useRef(value)
-  const selfChange = useRef(false)
+  const self = useRef(false)
   const pasteBuf = useRef('')
   const pasteTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pastePos = useRef(0)
-  const undoStack = useRef<Array<{ cursor: number; value: string }>>([])
-  const redoStack = useRef<Array<{ cursor: number; value: string }>>([])
+  const undo = useRef<{ cursor: number; value: string }[]>([])
+  const redo = useRef<{ cursor: number; value: string }[]>([])
 
-  const onChangeRef = useRef(onChange)
-  const onSubmitRef = useRef(onSubmit)
-  const onPasteRef = useRef(onPaste)
-  onChangeRef.current = onChange
-  onSubmitRef.current = onSubmit
-  onPasteRef.current = onPaste
+  const cbChange = useRef(onChange)
+  const cbSubmit = useRef(onSubmit)
+  const cbPaste = useRef(onPaste)
+  cbChange.current = onChange
+  cbSubmit.current = onSubmit
+  cbPaste.current = onPaste
+
+  const display = self.current ? vRef.current : value
+
+  // ── Cursor declaration ───────────────────────────────────────────
+
+  const layout = useMemo(() => cursorLayout(display, cur, columns), [columns, cur, display])
+
+  const boxRef = useDeclaredCursor({
+    line: layout.line,
+    column: layout.column,
+    active: focus && termFocus
+  })
+
+  const rendered = useMemo(() => {
+    if (!focus) {
+      return display || dim(placeholder)
+    }
+
+    if (!display && placeholder) {
+      return invert(placeholder[0] ?? ' ') + dim(placeholder.slice(1))
+    }
+
+    return renderWithCursor(display, cur)
+  }, [cur, display, focus, placeholder])
+
+  // ── Sync external value changes ──────────────────────────────────
 
   useEffect(() => {
-    if (selfChange.current) {
-      selfChange.current = false
+    if (self.current) {
+      self.current = false
     } else {
       setCur(value.length)
       curRef.current = value.length
       vRef.current = value
-      undoStack.current = []
-      redoStack.current = []
+      undo.current = []
+      redo.current = []
     }
   }, [value])
 
@@ -118,20 +236,20 @@ export function TextInput({ value, onChange, onPaste, onSubmit, placeholder = ''
     []
   )
 
-  // ── Buffer ops (synchronous, ref-based) ─────────────────────────
+  // ── Buffer ops (synchronous, ref-based) ──────────────────────────
 
   const commit = (next: string, nextCur: number, track = true) => {
     const prev = vRef.current
     const c = Math.max(0, Math.min(nextCur, next.length))
 
     if (track && next !== prev) {
-      undoStack.current.push({ cursor: curRef.current, value: prev })
+      undo.current.push({ cursor: curRef.current, value: prev })
 
-      if (undoStack.current.length > 200) {
-        undoStack.current.shift()
+      if (undo.current.length > 200) {
+        undo.current.shift()
       }
 
-      redoStack.current = []
+      redo.current = []
     }
 
     setCur(c)
@@ -139,12 +257,12 @@ export function TextInput({ value, onChange, onPaste, onSubmit, placeholder = ''
     vRef.current = next
 
     if (next !== prev) {
-      selfChange.current = true
-      onChangeRef.current(next)
+      self.current = true
+      cbChange.current(next)
     }
   }
 
-  const swap = (from: typeof undoStack, to: typeof redoStack) => {
+  const swap = (from: typeof undo, to: typeof redo) => {
     const entry = from.current.pop()
 
     if (!entry) {
@@ -156,13 +274,13 @@ export function TextInput({ value, onChange, onPaste, onSubmit, placeholder = ''
   }
 
   const emitPaste = (e: PasteEvent) => {
-    const handled = onPasteRef.current?.(e)
+    const h = cbPaste.current?.(e)
 
-    if (handled) {
-      commit(handled.value, handled.cursor)
+    if (h) {
+      commit(h.value, h.cursor)
     }
 
-    return !!handled
+    return !!h
   }
 
   const flushPaste = () => {
@@ -180,20 +298,18 @@ export function TextInput({ value, onChange, onPaste, onSubmit, placeholder = ''
     }
   }
 
-  const insert = (v: string, c: number, s: string) => v.slice(0, c) + s + v.slice(c)
+  const ins = (v: string, c: number, s: string) => v.slice(0, c) + s + v.slice(c)
 
-  // ── Input handler ───────────────────────────────────────────────
+  // ── Input handler ────────────────────────────────────────────────
 
   useInput(
     (inp, k) => {
-      // Paste hotkeys — single owner, no competing listeners in App
+      // Paste hotkey
       if ((k.ctrl || k.meta) && inp.toLowerCase() === 'v') {
-        emitPaste({ cursor: curRef.current, hotkey: true, text: '', value: vRef.current })
-
-        return
+        return void emitPaste({ cursor: curRef.current, hotkey: true, text: '', value: vRef.current })
       }
 
-      // Keys handled by App.useInput
+      // Delegated to App
       if (
         k.upArrow ||
         k.downArrow ||
@@ -209,8 +325,8 @@ export function TextInput({ value, onChange, onPaste, onSubmit, placeholder = ''
 
       if (k.return) {
         k.shift || k.meta
-          ? commit(insert(vRef.current, curRef.current, '\n'), curRef.current + 1)
-          : onSubmitRef.current?.(vRef.current)
+          ? commit(ins(vRef.current, curRef.current, '\n'), curRef.current + 1)
+          : cbSubmit.current?.(vRef.current)
 
         return
       }
@@ -219,14 +335,16 @@ export function TextInput({ value, onChange, onPaste, onSubmit, placeholder = ''
       let v = vRef.current
       const mod = k.ctrl || k.meta
 
+      // Undo / redo
       if (k.ctrl && inp === 'z') {
-        return swap(undoStack, redoStack)
+        return swap(undo, redo)
       }
 
       if ((k.ctrl && inp === 'y') || (k.meta && k.shift && inp === 'z')) {
-        return swap(redoStack, undoStack)
+        return swap(redo, undo)
       }
 
+      // Navigation
       if (k.home || (k.ctrl && inp === 'a')) {
         c = 0
       } else if (k.end || (k.ctrl && inp === 'e')) {
@@ -235,7 +353,14 @@ export function TextInput({ value, onChange, onPaste, onSubmit, placeholder = ''
         c = mod ? wordLeft(v, c) : Math.max(0, c - 1)
       } else if (k.rightArrow) {
         c = mod ? wordRight(v, c) : Math.min(v.length, c + 1)
-      } else if ((k.backspace || k.delete) && !isFwdDelete.current && c > 0) {
+      } else if (k.meta && inp === 'b') {
+        c = wordLeft(v, c)
+      } else if (k.meta && inp === 'f') {
+        c = wordRight(v, c)
+      }
+
+      // Deletion
+      else if ((k.backspace || k.delete) && !fwdDel.current && c > 0) {
         if (mod) {
           const t = wordLeft(v, c)
           v = v.slice(0, t) + v.slice(c)
@@ -244,7 +369,7 @@ export function TextInput({ value, onChange, onPaste, onSubmit, placeholder = ''
           v = v.slice(0, c - 1) + v.slice(c)
           c--
         }
-      } else if (k.delete && isFwdDelete.current && c < v.length) {
+      } else if (k.delete && fwdDel.current && c < v.length) {
         if (mod) {
           const t = wordRight(v, c)
           v = v.slice(0, c) + v.slice(t)
@@ -260,11 +385,10 @@ export function TextInput({ value, onChange, onPaste, onSubmit, placeholder = ''
         c = 0
       } else if (k.ctrl && inp === 'k') {
         v = v.slice(0, c)
-      } else if (k.meta && inp === 'b') {
-        c = wordLeft(v, c)
-      } else if (k.meta && inp === 'f') {
-        c = wordRight(v, c)
-      } else if (inp.length > 0) {
+      }
+
+      // Text insertion / paste buffering
+      else if (inp.length > 0) {
         const bracketed = inp.includes('[200~')
         const raw = inp.replace(BRACKET_PASTE, '').replace(/\r\n/g, '\n').replace(/\r/g, '\n')
 
@@ -277,7 +401,7 @@ export function TextInput({ value, onChange, onPaste, onSubmit, placeholder = ''
         }
 
         if (raw === '\n') {
-          return commit(insert(v, c, '\n'), c + 1)
+          return commit(ins(v, c, '\n'), c + 1)
         }
 
         if (raw.length > 1 || raw.includes('\n')) {
@@ -311,20 +435,11 @@ export function TextInput({ value, onChange, onPaste, onSubmit, placeholder = ''
     { isActive: focus }
   )
 
-  // ── Render ──────────────────────────────────────────────────────
-
-  if (!focus) {
-    return <Text>{value || (placeholder ? DIM + placeholder + DIM_OFF : '')}</Text>
-  }
-
-  if (!value && placeholder) {
-    return <Text>{INV + (placeholder[0] ?? ' ') + INV_OFF + DIM + placeholder.slice(1) + DIM_OFF}</Text>
-  }
+  // ── Render ───────────────────────────────────────────────────────
 
   return (
-    <Text>
-      {[...value].map((ch, i) => (i === cur ? INV + ch + INV_OFF : ch)).join('') +
-        (cur === value.length ? INV + ' ' + INV_OFF : '')}
-    </Text>
+    <Box ref={boxRef}>
+      <Text wrap="wrap">{rendered}</Text>
+    </Box>
   )
 }

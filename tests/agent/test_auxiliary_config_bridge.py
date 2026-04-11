@@ -17,11 +17,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 
 def _run_auxiliary_bridge(config_dict, monkeypatch):
-    """Simulate the auxiliary config → env var bridging logic shared by CLI and gateway.
+    """Apply the shared auxiliary config → env var bridge."""
+    from hermes_cli.config import _normalize_runtime_config, apply_runtime_config_env
 
-    This mirrors the code in cli.py load_cli_config() and gateway/run.py.
-    Both use the same pattern; we test it once here.
-    """
     # Clear env vars
     for key in (
         "AUXILIARY_VISION_PROVIDER", "AUXILIARY_VISION_MODEL",
@@ -31,41 +29,8 @@ def _run_auxiliary_bridge(config_dict, monkeypatch):
     ):
         monkeypatch.delenv(key, raising=False)
 
-    # Compression config is read directly from config.yaml — no env var bridging.
-
-    # Auxiliary bridge
-    auxiliary_cfg = config_dict.get("auxiliary", {})
-    if auxiliary_cfg and isinstance(auxiliary_cfg, dict):
-        aux_task_env = {
-            "vision": {
-                "provider": "AUXILIARY_VISION_PROVIDER",
-                "model": "AUXILIARY_VISION_MODEL",
-                "base_url": "AUXILIARY_VISION_BASE_URL",
-                "api_key": "AUXILIARY_VISION_API_KEY",
-            },
-            "web_extract": {
-                "provider": "AUXILIARY_WEB_EXTRACT_PROVIDER",
-                "model": "AUXILIARY_WEB_EXTRACT_MODEL",
-                "base_url": "AUXILIARY_WEB_EXTRACT_BASE_URL",
-                "api_key": "AUXILIARY_WEB_EXTRACT_API_KEY",
-            },
-        }
-        for task_key, env_map in aux_task_env.items():
-            task_cfg = auxiliary_cfg.get(task_key, {})
-            if not isinstance(task_cfg, dict):
-                continue
-            prov = str(task_cfg.get("provider", "")).strip()
-            model = str(task_cfg.get("model", "")).strip()
-            base_url = str(task_cfg.get("base_url", "")).strip()
-            api_key = str(task_cfg.get("api_key", "")).strip()
-            if prov and prov != "auto":
-                os.environ[env_map["provider"]] = prov
-            if model:
-                os.environ[env_map["model"]] = model
-            if base_url:
-                os.environ[env_map["base_url"]] = base_url
-            if api_key:
-                os.environ[env_map["api_key"]] = api_key
+    runtime_config = _normalize_runtime_config(config_dict, config_dict)
+    apply_runtime_config_env(runtime_config, raw_config=config_dict, runtime="cli")
 
 
 # ── Config bridging tests ────────────────────────────────────────────────────
@@ -195,28 +160,27 @@ class TestAuxiliaryConfigBridge:
 
 
 class TestGatewayBridgeCodeParity:
-    """Verify the gateway/run.py config bridge contains the auxiliary section."""
+    """Verify the shared env bridge map contains the auxiliary section."""
 
-    def test_gateway_has_auxiliary_bridge(self):
-        """The gateway config bridge must include auxiliary.* bridging."""
-        gateway_path = Path(__file__).parent.parent.parent / "gateway" / "run.py"
-        content = gateway_path.read_text()
-        # Check for key patterns that indicate the bridge is present
-        assert "AUXILIARY_VISION_PROVIDER" in content
-        assert "AUXILIARY_VISION_MODEL" in content
-        assert "AUXILIARY_VISION_BASE_URL" in content
-        assert "AUXILIARY_VISION_API_KEY" in content
-        assert "AUXILIARY_WEB_EXTRACT_PROVIDER" in content
-        assert "AUXILIARY_WEB_EXTRACT_MODEL" in content
-        assert "AUXILIARY_WEB_EXTRACT_BASE_URL" in content
-        assert "AUXILIARY_WEB_EXTRACT_API_KEY" in content
+    def test_shared_bridge_has_auxiliary_bridge(self):
+        """The shared env bridge must include auxiliary.* mappings."""
+        from hermes_cli.config import RUNTIME_CONFIG_ENV_BRIDGE
 
-    def test_gateway_no_compression_env_bridge(self):
-        """Gateway should NOT bridge compression config to env vars (config-only)."""
-        gateway_path = Path(__file__).parent.parent.parent / "gateway" / "run.py"
-        content = gateway_path.read_text()
-        assert "CONTEXT_COMPRESSION_PROVIDER" not in content
-        assert "CONTEXT_COMPRESSION_MODEL" not in content
+        auxiliary = RUNTIME_CONFIG_ENV_BRIDGE["auxiliary"]
+        assert auxiliary["vision"]["provider"] == "AUXILIARY_VISION_PROVIDER"
+        assert auxiliary["vision"]["model"] == "AUXILIARY_VISION_MODEL"
+        assert auxiliary["vision"]["base_url"] == "AUXILIARY_VISION_BASE_URL"
+        assert auxiliary["vision"]["api_key"] == "AUXILIARY_VISION_API_KEY"
+        assert auxiliary["web_extract"]["provider"] == "AUXILIARY_WEB_EXTRACT_PROVIDER"
+        assert auxiliary["web_extract"]["model"] == "AUXILIARY_WEB_EXTRACT_MODEL"
+        assert auxiliary["web_extract"]["base_url"] == "AUXILIARY_WEB_EXTRACT_BASE_URL"
+        assert auxiliary["web_extract"]["api_key"] == "AUXILIARY_WEB_EXTRACT_API_KEY"
+
+    def test_shared_bridge_no_compression_env_bridge(self):
+        """Compression stays config-only and is absent from the shared env bridge."""
+        from hermes_cli.config import RUNTIME_CONFIG_ENV_BRIDGE
+
+        assert "compression" not in RUNTIME_CONFIG_ENV_BRIDGE["auxiliary"]
 
 
 # ── Vision model override tests ──────────────────────────────────────────────
@@ -290,18 +254,9 @@ class TestDefaultConfigShape:
 
 
 class TestCLIDefaultsHaveAuxiliaryKeys:
-    """Verify cli.py load_cli_config() defaults dict does NOT include auxiliary
-    (it comes from config.yaml deep merge, not hardcoded defaults)."""
+    """Verify the CLI uses the shared runtime loader for auxiliary config."""
 
-    def test_cli_defaults_can_merge_auxiliary(self):
-        """The load_cli_config deep merge logic handles keys not in defaults.
-        Verify auxiliary would be picked up from config.yaml."""
-        # This is a structural assertion: cli.py's second-pass loop
-        # carries over keys from file_config that aren't in defaults.
-        # So auxiliary config from config.yaml gets merged even though
-        # cli.py's defaults dict doesn't define it.
+    def test_cli_load_config_uses_shared_runtime_loader(self):
         import cli as _cli_mod
         source = Path(_cli_mod.__file__).read_text()
-        assert "auxiliary_config = defaults.get(\"auxiliary\"" in source
-        assert "AUXILIARY_VISION_PROVIDER" in source
-        assert "AUXILIARY_VISION_MODEL" in source
+        assert "load_runtime_config(" in source

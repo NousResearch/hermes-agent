@@ -10,7 +10,9 @@ from hermes_cli.config import (
     DEFAULT_CONFIG,
     get_hermes_home,
     ensure_hermes_home,
+    get_missing_config_fields,
     load_config,
+    load_runtime_config,
     load_env,
     migrate_config,
     remove_env_value,
@@ -77,6 +79,30 @@ class TestLoadConfigDefaults:
             config = load_config()
             assert config["agent"]["max_turns"] == 42
             assert "max_turns" not in config
+
+
+class TestRuntimeConfigAuthority:
+    def test_runtime_loader_uses_canonical_defaults(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            config = load_runtime_config(runtime="cli")
+            assert config["terminal"]["timeout"] == DEFAULT_CONFIG["terminal"]["timeout"]
+            assert config["display"]["streaming"] == DEFAULT_CONFIG["display"]["streaming"]
+            assert config["delegation"]["max_iterations"] == DEFAULT_CONFIG["delegation"]["max_iterations"]
+
+
+class TestMissingConfigFields:
+    def test_missing_fields_come_from_raw_user_config_not_merged_defaults(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            (tmp_path / "config.yaml").write_text("model: test-model\n", encoding="utf-8")
+            missing_keys = {item["key"] for item in get_missing_config_fields()}
+            assert "terminal.timeout" in missing_keys
+            assert "display.streaming" in missing_keys
+
+    def test_legacy_root_max_turns_counts_as_present(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            (tmp_path / "config.yaml").write_text("max_turns: 42\n", encoding="utf-8")
+            missing_keys = {item["key"] for item in get_missing_config_fields()}
+            assert "agent.max_turns" not in missing_keys
 
 
 class TestSaveAndLoadRoundtrip:

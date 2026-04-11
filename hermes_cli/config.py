@@ -12,6 +12,7 @@ This module provides:
 - hermes config wizard   - Re-run setup wizard
 """
 
+import json
 import os
 import platform
 import re
@@ -633,6 +634,73 @@ DEFAULT_CONFIG = {
 
     # Config schema version - bump this when adding new required fields
     "_config_version": 14,
+}
+
+
+RUNTIME_CONFIG_ENV_BRIDGE = {
+    "terminal": {
+        "backend": "TERMINAL_ENV",
+        "modal_mode": "TERMINAL_MODAL_MODE",
+        "cwd": "TERMINAL_CWD",
+        "timeout": "TERMINAL_TIMEOUT",
+        "lifetime_seconds": "TERMINAL_LIFETIME_SECONDS",
+        "docker_image": "TERMINAL_DOCKER_IMAGE",
+        "docker_forward_env": "TERMINAL_DOCKER_FORWARD_ENV",
+        "singularity_image": "TERMINAL_SINGULARITY_IMAGE",
+        "modal_image": "TERMINAL_MODAL_IMAGE",
+        "daytona_image": "TERMINAL_DAYTONA_IMAGE",
+        "ssh_host": "TERMINAL_SSH_HOST",
+        "ssh_user": "TERMINAL_SSH_USER",
+        "ssh_port": "TERMINAL_SSH_PORT",
+        "ssh_key": "TERMINAL_SSH_KEY",
+        "container_cpu": "TERMINAL_CONTAINER_CPU",
+        "container_memory": "TERMINAL_CONTAINER_MEMORY",
+        "container_disk": "TERMINAL_CONTAINER_DISK",
+        "container_persistent": "TERMINAL_CONTAINER_PERSISTENT",
+        "docker_volumes": "TERMINAL_DOCKER_VOLUMES",
+        "docker_mount_cwd_to_workspace": "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE",
+        "sandbox_dir": "TERMINAL_SANDBOX_DIR",
+        "persistent_shell": "TERMINAL_PERSISTENT_SHELL",
+        "sudo_password": "SUDO_PASSWORD",
+    },
+    "browser": {
+        "inactivity_timeout": "BROWSER_INACTIVITY_TIMEOUT",
+    },
+    "agent": {
+        "max_turns": "HERMES_MAX_ITERATIONS",
+        "gateway_timeout": "HERMES_AGENT_TIMEOUT",
+        "gateway_timeout_warning": "HERMES_AGENT_TIMEOUT_WARNING",
+        "restart_drain_timeout": "HERMES_RESTART_DRAIN_TIMEOUT",
+    },
+    "display": {
+        "busy_input_mode": "HERMES_GATEWAY_BUSY_INPUT_MODE",
+    },
+    "security": {
+        "redact_secrets": "HERMES_REDACT_SECRETS",
+    },
+    "timezone": {
+        "": "HERMES_TIMEZONE",
+    },
+    "auxiliary": {
+        "vision": {
+            "provider": "AUXILIARY_VISION_PROVIDER",
+            "model": "AUXILIARY_VISION_MODEL",
+            "base_url": "AUXILIARY_VISION_BASE_URL",
+            "api_key": "AUXILIARY_VISION_API_KEY",
+        },
+        "web_extract": {
+            "provider": "AUXILIARY_WEB_EXTRACT_PROVIDER",
+            "model": "AUXILIARY_WEB_EXTRACT_MODEL",
+            "base_url": "AUXILIARY_WEB_EXTRACT_BASE_URL",
+            "api_key": "AUXILIARY_WEB_EXTRACT_API_KEY",
+        },
+        "approval": {
+            "provider": "AUXILIARY_APPROVAL_PROVIDER",
+            "model": "AUXILIARY_APPROVAL_MODEL",
+            "base_url": "AUXILIARY_APPROVAL_BASE_URL",
+            "api_key": "AUXILIARY_APPROVAL_API_KEY",
+        },
+    },
 }
 
 # =============================================================================
@@ -1381,6 +1449,233 @@ def _set_nested(config: dict, dotted_key: str, value):
     current[parts[-1]] = value
 
 
+def _load_raw_config_source(
+    config_path: Optional[Path] = None,
+    fallback_paths: Optional[List[Path]] = None,
+) -> Tuple[Dict[str, Any], Optional[Path], Optional[Exception]]:
+    """Load the first existing config file from primary + fallback candidates."""
+    candidates: List[Path] = []
+    seen: set[Path] = set()
+
+    for candidate in [config_path or get_config_path(), *(fallback_paths or [])]:
+        if candidate is None:
+            continue
+        path = Path(candidate)
+        if path in seen:
+            continue
+        seen.add(path)
+        candidates.append(path)
+
+    for path in candidates:
+        if not path.exists():
+            continue
+        try:
+            with open(path, encoding="utf-8") as f:
+                loaded = yaml.safe_load(f) or {}
+                return (loaded if isinstance(loaded, dict) else {}), path, None
+        except Exception as exc:
+            return {}, path, exc
+
+    return {}, None, None
+
+
+def _merge_config_with_defaults(user_config: Dict[str, Any]) -> Dict[str, Any]:
+    """Merge raw user config into DEFAULT_CONFIG and normalize legacy keys."""
+    import copy
+
+    user_config = _normalize_legacy_config_aliases(user_config or {})
+    config = copy.deepcopy(DEFAULT_CONFIG)
+    if user_config:
+        config = _deep_merge(config, user_config)
+    return _expand_env_vars(_normalize_root_model_keys(_normalize_max_turns_config(config)))
+
+
+def _normalize_runtime_config(config: Dict[str, Any], raw_config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Adapt the canonical config into the shape expected by runtime entrypoints."""
+    import copy
+
+    runtime_config = copy.deepcopy(config)
+    raw_config = raw_config or {}
+    raw_model = raw_config.get("model")
+
+    model_config = runtime_config.get("model")
+    if isinstance(model_config, str):
+        runtime_config["model"] = {
+            "default": model_config,
+            "provider": "auto",
+            "base_url": "",
+        }
+    elif isinstance(model_config, dict):
+        normalized_model = dict(model_config)
+        if "default" not in normalized_model and normalized_model.get("model"):
+            normalized_model["default"] = normalized_model["model"]
+        normalized_model.setdefault("default", "")
+        normalized_model.setdefault("provider", "auto")
+        normalized_model.setdefault("base_url", "")
+        runtime_config["model"] = normalized_model
+    else:
+        runtime_config["model"] = {"default": "", "provider": "auto", "base_url": ""}
+
+    if isinstance(raw_model, dict):
+        if "provider" not in raw_model and "provider" in raw_config:
+            runtime_config["model"]["provider"] = "auto"
+        if "base_url" not in raw_model and "base_url" in raw_config:
+            runtime_config["model"]["base_url"] = ""
+
+    raw_terminal = raw_config.get("terminal")
+    raw_terminal = raw_terminal if isinstance(raw_terminal, dict) else {}
+    terminal_config = dict(runtime_config.get("terminal") or {})
+
+    if "backend" in raw_terminal:
+        terminal_config["backend"] = raw_terminal["backend"]
+    elif "env_type" in raw_terminal and "backend" not in raw_terminal:
+        terminal_config["backend"] = raw_terminal["env_type"]
+    elif isinstance(raw_config.get("backend"), str) and raw_config.get("backend", "").strip():
+        terminal_config["backend"] = raw_config["backend"].strip()
+    elif "env_type" in terminal_config and "backend" not in terminal_config:
+        terminal_config["backend"] = terminal_config["env_type"]
+
+    if "cwd" in raw_terminal:
+        terminal_config["cwd"] = raw_terminal["cwd"]
+    elif isinstance(raw_config.get("cwd"), str) and raw_config.get("cwd", "").strip():
+        terminal_config["cwd"] = raw_config["cwd"].strip()
+
+    terminal_config["env_type"] = terminal_config.get("backend", terminal_config.get("env_type", "local"))
+    runtime_config["terminal"] = terminal_config
+    return runtime_config
+
+
+def _serialize_runtime_env_value(value: Any) -> str:
+    if isinstance(value, list):
+        return json.dumps(value)
+    if isinstance(value, bool):
+        return str(value).lower()
+    return str(value)
+
+
+def _bridge_runtime_section(
+    section_config: Dict[str, Any],
+    env_map: Dict[str, str],
+    *,
+    overwrite_existing: bool,
+) -> None:
+    for config_key, env_var in env_map.items():
+        if config_key not in section_config:
+            continue
+        if not overwrite_existing and env_var in os.environ:
+            continue
+        os.environ[env_var] = _serialize_runtime_env_value(section_config[config_key])
+
+
+def apply_runtime_config_env(
+    config: Dict[str, Any],
+    *,
+    raw_config: Optional[Dict[str, Any]] = None,
+    runtime: str = "generic",
+) -> None:
+    """Bridge runtime config values into env vars for env-driven subsystems."""
+    raw_config = raw_config or {}
+
+    terminal_authoritative = (
+        "terminal" in raw_config
+        or "backend" in raw_config
+        or "cwd" in raw_config
+    )
+    _bridge_runtime_section(
+        dict(config.get("terminal") or {}),
+        RUNTIME_CONFIG_ENV_BRIDGE["terminal"],
+        overwrite_existing=terminal_authoritative,
+    )
+
+    raw_browser = raw_config.get("browser")
+    _bridge_runtime_section(
+        dict(config.get("browser") or {}),
+        RUNTIME_CONFIG_ENV_BRIDGE["browser"],
+        overwrite_existing=isinstance(raw_browser, dict),
+    )
+
+    raw_agent = raw_config.get("agent")
+    _bridge_runtime_section(
+        dict(config.get("agent") or {}),
+        RUNTIME_CONFIG_ENV_BRIDGE["agent"],
+        overwrite_existing=isinstance(raw_agent, dict),
+    )
+
+    if runtime == "gateway":
+        raw_display = raw_config.get("display")
+        _bridge_runtime_section(
+            dict(config.get("display") or {}),
+            RUNTIME_CONFIG_ENV_BRIDGE["display"],
+            overwrite_existing=isinstance(raw_display, dict),
+        )
+
+        timezone = config.get("timezone", "")
+        if isinstance(timezone, str) and timezone.strip():
+            env_var = RUNTIME_CONFIG_ENV_BRIDGE["timezone"][""]
+            if "timezone" in raw_config or env_var not in os.environ:
+                os.environ[env_var] = timezone.strip()
+
+    raw_security = raw_config.get("security")
+    _bridge_runtime_section(
+        dict(config.get("security") or {}),
+        RUNTIME_CONFIG_ENV_BRIDGE["security"],
+        overwrite_existing=isinstance(raw_security, dict),
+    )
+
+    auxiliary_config = config.get("auxiliary")
+    raw_auxiliary = raw_config.get("auxiliary")
+    if not isinstance(auxiliary_config, dict):
+        return
+
+    raw_auxiliary = raw_auxiliary if isinstance(raw_auxiliary, dict) else {}
+    for task_key, env_map in RUNTIME_CONFIG_ENV_BRIDGE["auxiliary"].items():
+        task_config = auxiliary_config.get(task_key)
+        if not isinstance(task_config, dict):
+            continue
+
+        task_authoritative = isinstance(raw_auxiliary.get(task_key), dict)
+        for field, env_var in env_map.items():
+            value = str(task_config.get(field, "")).strip()
+            if field == "provider" and value == "auto":
+                continue
+            if not value:
+                continue
+            if not task_authoritative and env_var in os.environ:
+                continue
+            os.environ[env_var] = value
+
+
+def load_runtime_config(
+    *,
+    config_path: Optional[Path] = None,
+    fallback_paths: Optional[List[Path]] = None,
+    runtime: str = "generic",
+    ensure_home: bool = True,
+) -> Dict[str, Any]:
+    """Load merged runtime config and apply the shared env bridge."""
+    if ensure_home:
+        ensure_hermes_home()
+    raw_config, source_path, error = _load_raw_config_source(config_path=config_path, fallback_paths=fallback_paths)
+    if error is not None:
+        print(f"Warning: Failed to load config from {source_path}: {error}")
+
+    config = _normalize_runtime_config(_merge_config_with_defaults(raw_config), raw_config)
+
+    if runtime == "cli":
+        terminal_config = dict(config.get("terminal") or {})
+        cwd_value = terminal_config.get("cwd")
+        if cwd_value in (".", "auto", "cwd"):
+            effective_backend = str(terminal_config.get("backend", "local")).strip().lower() or "local"
+            if effective_backend == "local":
+                terminal_config["cwd"] = os.getcwd()
+            else:
+                terminal_config.pop("cwd", None)
+        config["terminal"] = terminal_config
+
+    apply_runtime_config_env(config, raw_config=raw_config, runtime=runtime)
+    return config
+
+
 def get_missing_config_fields() -> List[Dict[str, Any]]:
     """
     Check which config fields are missing or outdated (recursive).
@@ -1388,7 +1683,8 @@ def get_missing_config_fields() -> List[Dict[str, Any]]:
     Walks the DEFAULT_CONFIG tree at arbitrary depth and reports any keys
     present in defaults but absent from the user's loaded config.
     """
-    config = load_config()
+    raw_config = read_raw_config()
+    config = _normalize_legacy_config_aliases(raw_config)
     missing = []
 
     def _check(defaults: dict, current: dict, prefix: str = ""):
@@ -1397,11 +1693,14 @@ def get_missing_config_fields() -> List[Dict[str, Any]]:
                 continue
             full_key = key if not prefix else f"{prefix}.{key}"
             if key not in current:
-                missing.append({
-                    "key": full_key,
-                    "default": default_value,
-                    "description": f"New config option: {full_key}",
-                })
+                if isinstance(default_value, dict):
+                    _check(default_value, {}, full_key)
+                else:
+                    missing.append({
+                        "key": full_key,
+                        "default": default_value,
+                        "description": f"New config option: {full_key}",
+                    })
             elif isinstance(default_value, dict) and isinstance(current.get(key), dict):
                 _check(default_value, current[key], full_key)
 
@@ -2046,7 +2345,10 @@ def _normalize_root_model_keys(config: Dict[str, Any]) -> Dict[str, Any]:
 
     config = dict(config)
     model = config.get("model")
-    if not isinstance(model, dict):
+    if isinstance(model, dict):
+        model = dict(model)
+        config["model"] = model
+    else:
         model = {"default": model} if model else {}
         config["model"] = model
 
@@ -2055,6 +2357,20 @@ def _normalize_root_model_keys(config: Dict[str, Any]) -> Dict[str, Any]:
         if root_val and not model.get(key):
             model[key] = root_val
         config.pop(key, None)
+
+    return config
+
+
+def _normalize_legacy_config_aliases(config: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalize legacy config keys without backfilling missing defaults."""
+    config = _normalize_root_model_keys(dict(config or {}))
+
+    if "max_turns" in config:
+        agent_config = dict(config.get("agent") or {})
+        if agent_config.get("max_turns") is None:
+            agent_config["max_turns"] = config["max_turns"]
+        config["agent"] = agent_config
+        config.pop("max_turns", None)
 
     return config
 
@@ -2076,7 +2392,10 @@ def _normalize_max_turns_config(config: Dict[str, Any]) -> Dict[str, Any]:
 
 
 
-def read_raw_config() -> Dict[str, Any]:
+def read_raw_config(
+    config_path: Optional[Path] = None,
+    fallback_paths: Optional[List[Path]] = None,
+) -> Dict[str, Any]:
     """Read ~/.hermes/config.yaml as-is, without merging defaults or migrating.
 
     Returns the raw YAML dict, or ``{}`` if the file doesn't exist or can't
@@ -2084,41 +2403,20 @@ def read_raw_config() -> Dict[str, Any]:
     single value and don't want the overhead of ``load_config()``'s deep-merge
     + migration pipeline.
     """
-    try:
-        config_path = get_config_path()
-        if config_path.exists():
-            with open(config_path, encoding="utf-8") as f:
-                return yaml.safe_load(f) or {}
-    except Exception:
-        pass
-    return {}
+    raw_config, _, _ = _load_raw_config_source(config_path=config_path, fallback_paths=fallback_paths)
+    return raw_config
 
 
-def load_config() -> Dict[str, Any]:
+def load_config(
+    config_path: Optional[Path] = None,
+    fallback_paths: Optional[List[Path]] = None,
+) -> Dict[str, Any]:
     """Load configuration from ~/.hermes/config.yaml."""
-    import copy
     ensure_hermes_home()
-    config_path = get_config_path()
-    
-    config = copy.deepcopy(DEFAULT_CONFIG)
-    
-    if config_path.exists():
-        try:
-            with open(config_path, encoding="utf-8") as f:
-                user_config = yaml.safe_load(f) or {}
-
-            if "max_turns" in user_config:
-                agent_user_config = dict(user_config.get("agent") or {})
-                if agent_user_config.get("max_turns") is None:
-                    agent_user_config["max_turns"] = user_config["max_turns"]
-                user_config["agent"] = agent_user_config
-                user_config.pop("max_turns", None)
-
-            config = _deep_merge(config, user_config)
-        except Exception as e:
-            print(f"Warning: Failed to load config: {e}")
-    
-    return _expand_env_vars(_normalize_root_model_keys(_normalize_max_turns_config(config)))
+    raw_config, source_path, error = _load_raw_config_source(config_path=config_path, fallback_paths=fallback_paths)
+    if error is not None:
+        print(f"Warning: Failed to load config from {source_path}: {error}")
+    return _merge_config_with_defaults(raw_config)
 
 
 _SECURITY_COMMENT = """

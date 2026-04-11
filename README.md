@@ -29,6 +29,8 @@ Use any model you want — [Nous Portal](https://portal.nousresearch.com), [Open
 
 ## Quick Install
 
+### Linux, macOS, and WSL2
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
 ```
@@ -36,8 +38,6 @@ curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scri
 Works on Linux, macOS, WSL2, and Android via Termux. The installer handles the platform-specific setup for you.
 
 > **Android / Termux:** The tested manual path is documented in the [Termux guide](https://hermes-agent.nousresearch.com/docs/getting-started/termux). On Termux, Hermes installs a curated `.[termux]` extra because the full `.[all]` extra currently pulls Android-incompatible voice dependencies.
->
-> **Windows:** Native Windows is not supported. Please install [WSL2](https://learn.microsoft.com/en-us/windows/wsl/install) and run the command above.
 
 After installation:
 
@@ -45,6 +45,30 @@ After installation:
 source ~/.bashrc    # reload shell (or: source ~/.zshrc)
 hermes              # start chatting!
 ```
+
+### Windows (Native)
+
+```powershell
+irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1 | iex
+```
+
+The PowerShell installer automatically handles:
+- Installing `uv` package manager
+- Setting up Python 3.11+ environment
+- Installing Git, Node.js, ripgrep, and ffmpeg (via winget)
+- Cloning the repository to `%LOCALAPPDATA%\hermes\hermes-agent`
+- Creating virtual environment and installing dependencies
+- Syncing 77+ bundled skills
+- Adding `hermes` command to your PATH
+
+After installation, restart your terminal and run:
+
+```powershell
+hermes              # start chatting!
+hermes setup        # configure API keys & settings
+```
+
+> **Note:** If you have an existing OpenClaw installation, the setup wizard will detect it and offer to migrate your settings, memories, skills, and API keys.
 
 ---
 

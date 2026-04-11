@@ -287,6 +287,7 @@ logger = logging.getLogger(__name__)
 # between the guard check and actual agent creation.
 _AGENT_PENDING_SENTINEL = object()
 _SHARED_GROUP_VISIBLE_HISTORY_LIMIT = 24
+_AUTO_VISION_ANALYSIS_TIMEOUT_SECONDS = 20.0
 _QQ_VISIBLE_NAME_ALIASES = (
     "@马嘎",
     "@马噶",
@@ -6351,9 +6352,12 @@ class GatewayRunner:
         for path in image_paths:
             try:
                 logger.debug("Auto-analyzing user image: %s", path)
-                result_json = await vision_analyze_tool(
-                    image_url=path,
-                    user_prompt=analysis_prompt,
+                result_json = await asyncio.wait_for(
+                    vision_analyze_tool(
+                        image_url=path,
+                        user_prompt=analysis_prompt,
+                    ),
+                    timeout=_AUTO_VISION_ANALYSIS_TIMEOUT_SECONDS,
                 )
                 result = _json.loads(result_json)
                 if result.get("success"):
@@ -6369,6 +6373,17 @@ class GatewayRunner:
                         "this time (>_<) You can try looking at it yourself "
                         f"with vision_analyze using image_url: {path}]"
                     )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "Vision auto-analysis timed out after %.1fs for %s",
+                    _AUTO_VISION_ANALYSIS_TIMEOUT_SECONDS,
+                    path,
+                )
+                enriched_parts.append(
+                    "[The user sent an image but I couldn't quite see it "
+                    "this time (>_<) You can try looking at it yourself "
+                    f"with vision_analyze using image_url: {path}]"
+                )
             except Exception as e:
                 logger.error("Vision auto-analysis error: %s", e)
                 enriched_parts.append(

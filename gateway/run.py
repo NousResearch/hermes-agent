@@ -2221,6 +2221,13 @@ class GatewayRunner:
         # are system-generated and must skip user authorization.
         if getattr(event, "internal", False):
             pass
+        elif source.user_id is None:
+            # Messages with no user identity (Telegram service messages,
+            # channel forwards, anonymous admin actions) cannot be
+            # authorized — drop silently instead of triggering the pairing
+            # flow with a None user_id.
+            logger.debug("Ignoring message with no user_id from %s", source.platform.value)
+            return None
         elif not self._is_user_authorized(source):
             logger.warning("Unauthorized user: %s (%s) on %s", source.user_id, source.user_name, source.platform.value)
             # In DMs: offer pairing code. In groups: silently ignore.
@@ -6597,6 +6604,8 @@ class GatewayRunner:
             chat_id=context.source.chat_id,
             chat_name=context.source.chat_name or "",
             thread_id=str(context.source.thread_id) if context.source.thread_id else "",
+            user_id=str(context.source.user_id) if context.source.user_id else "",
+            user_name=str(context.source.user_name) if context.source.user_name else "",
         )
 
     def _clear_session_env(self, tokens: list) -> None:
@@ -6809,6 +6818,8 @@ class GatewayRunner:
         platform_name = watcher.get("platform", "")
         chat_id = watcher.get("chat_id", "")
         thread_id = watcher.get("thread_id", "")
+        user_id = watcher.get("user_id", "")
+        user_name = watcher.get("user_name", "")
         agent_notify = watcher.get("notify_on_complete", False)
         notify_mode = self._load_background_notifications_mode()
 
@@ -6864,6 +6875,8 @@ class GatewayRunner:
                                 platform=_platform_enum,
                                 chat_id=chat_id,
                                 thread_id=thread_id or None,
+                                user_id=user_id or None,
+                                user_name=user_name or None,
                             )
                             synth_event = MessageEvent(
                                 text=synth_text,

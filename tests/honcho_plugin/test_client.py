@@ -500,6 +500,48 @@ class TestObservationModeMigration:
         assert cfg.ai_observe_others is True
 
 
+class TestInitOnSessionStart:
+    """Tests for the initOnSessionStart config field."""
+
+    def test_default_is_false(self):
+        config = HonchoClientConfig()
+        assert config.init_on_session_start is False
+
+    def test_root_level_true(self, tmp_path):
+        cfg_file = tmp_path / "config.json"
+        cfg_file.write_text(json.dumps({
+            "apiKey": "k",
+            "initOnSessionStart": True,
+        }))
+        cfg = HonchoClientConfig.from_global_config(config_path=cfg_file)
+        assert cfg.init_on_session_start is True
+
+    def test_host_block_overrides_root(self, tmp_path):
+        cfg_file = tmp_path / "config.json"
+        cfg_file.write_text(json.dumps({
+            "apiKey": "k",
+            "initOnSessionStart": True,
+            "hosts": {"hermes": {"initOnSessionStart": False}},
+        }))
+        cfg = HonchoClientConfig.from_global_config(config_path=cfg_file)
+        assert cfg.init_on_session_start is False
+
+    def test_host_block_true_overrides_root_absent(self, tmp_path):
+        cfg_file = tmp_path / "config.json"
+        cfg_file.write_text(json.dumps({
+            "apiKey": "k",
+            "hosts": {"hermes": {"initOnSessionStart": True}},
+        }))
+        cfg = HonchoClientConfig.from_global_config(config_path=cfg_file)
+        assert cfg.init_on_session_start is True
+
+    def test_absent_everywhere_defaults_false(self, tmp_path):
+        cfg_file = tmp_path / "config.json"
+        cfg_file.write_text(json.dumps({"apiKey": "k"}))
+        cfg = HonchoClientConfig.from_global_config(config_path=cfg_file)
+        assert cfg.init_on_session_start is False
+
+
 class TestResetHonchoClient:
     def test_reset_clears_singleton(self):
         import plugins.memory.honcho.client as mod

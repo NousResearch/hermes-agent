@@ -32,7 +32,6 @@ _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _EXTRA_ENV_KEYS = frozenset({
     "OPENAI_API_KEY", "OPENAI_BASE_URL",
     "ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN",
-    "AUXILIARY_VISION_MODEL",
     "DISCORD_HOME_CHANNEL", "TELEGRAM_HOME_CHANNEL",
     "SIGNAL_ACCOUNT", "SIGNAL_HTTP_URL",
     "SIGNAL_ALLOWED_USERS", "SIGNAL_GROUP_ALLOWED_USERS",
@@ -269,6 +268,11 @@ DEFAULT_CONFIG = {
         # tools or receiving API responses.  Only fires when the agent has
         # been completely idle for this duration.  0 = unlimited.
         "gateway_timeout": 1800,
+        # Graceful drain timeout for gateway stop/restart (seconds).
+        # The gateway stops accepting new work, waits for running agents
+        # to finish, then interrupts any remaining runs after the timeout.
+        # 0 = no drain, interrupt immediately.
+        "restart_drain_timeout": 60,
         "service_tier": "",
         # Tool-use enforcement: injects system prompt guidance that tells the
         # model to actually call tools instead of describing intended actions.
@@ -376,7 +380,7 @@ DEFAULT_CONFIG = {
             "model": "",           # e.g. "google/gemini-2.5-flash", "gpt-4o"
             "base_url": "",        # direct OpenAI-compatible endpoint (takes precedence over provider)
             "api_key": "",         # API key for base_url (falls back to OPENAI_API_KEY)
-            "timeout": 30,         # seconds — LLM API call timeout; increase for slow local vision models
+            "timeout": 120,        # seconds — LLM API call timeout; vision payloads need generous timeout
             "download_timeout": 30,  # seconds — image HTTP download timeout; increase for slow connections
         },
         "web_extract": {
@@ -453,7 +457,7 @@ DEFAULT_CONFIG = {
     
     # Text-to-speech configuration
     "tts": {
-        "provider": "edge",  # "edge" (free) | "elevenlabs" (premium) | "openai" | "neutts" (local)
+        "provider": "edge",  # "edge" (free) | "elevenlabs" (premium) | "openai" | "minimax" | "mistral" | "neutts" (local)
         "edge": {
             "voice": "en-US-AriaNeural",
             # Popular: AriaNeural, JennyNeural, AndrewNeural, BrianNeural, SoniaNeural
@@ -466,6 +470,10 @@ DEFAULT_CONFIG = {
             "model": "gpt-4o-mini-tts",
             "voice": "alloy",
             # Voices: alloy, echo, fable, onyx, nova, shimmer
+        },
+        "mistral": {
+            "model": "voxtral-mini-tts-2603",
+            "voice_id": "c69964a6-ab8b-4f8a-9465-ec0925096ec8",  # Paul - Neutral
         },
         "neutts": {
             "ref_audio": "",  # Path to reference voice audio (empty = bundled default)
@@ -504,6 +512,16 @@ DEFAULT_CONFIG = {
         "max_ms": 2500,
     },
     
+    # Context engine -- controls how the context window is managed when
+    # approaching the model's token limit.
+    # "compressor" = built-in lossy summarization (default).
+    # Set to a plugin name to activate an alternative engine (e.g. "lcm"
+    # for Lossless Context Management).  The engine must be installed as
+    # a plugin in plugins/context_engine/<name>/ or ~/.hermes/plugins/.
+    "context": {
+        "engine": "compressor",
+    },
+
     # Persistent memory -- bounded curated memory injected into system prompt
     "memory": {
         "memory_enabled": True,
@@ -528,6 +546,8 @@ DEFAULT_CONFIG = {
         "api_key": "",     # API key for delegation.base_url (falls back to OPENAI_API_KEY)
         "max_iterations": 50,  # per-subagent iteration cap (each subagent gets its own budget,
                                # independent of the parent's max_iterations)
+        "reasoning_effort": "",  # reasoning effort for subagents: "xhigh", "high", "medium",
+                                 # "low", "minimal", "none" (empty = inherit parent's level)
     },
 
     # Ephemeral prefill messages file — JSON list of {role, content} dicts
@@ -847,6 +867,21 @@ OPTIONAL_ENV_VARS = {
         "category": "provider",
         "advanced": True,
     },
+    "XIAOMI_API_KEY": {
+        "description": "Xiaomi MiMo API key for MiMo models (mimo-v2-pro, mimo-v2-omni, mimo-v2-flash)",
+        "prompt": "Xiaomi MiMo API Key",
+        "url": "https://platform.xiaomimimo.com",
+        "password": True,
+        "category": "provider",
+    },
+    "XIAOMI_BASE_URL": {
+        "description": "Xiaomi MiMo base URL override (default: https://api.xiaomimimo.com/v1)",
+        "prompt": "Xiaomi base URL (leave empty for default)",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
 
     # ── Tool API keys ──
     "EXA_API_KEY": {
@@ -996,6 +1031,13 @@ OPTIONAL_ENV_VARS = {
         "description": "ElevenLabs API key for premium text-to-speech voices",
         "prompt": "ElevenLabs API key",
         "url": "https://elevenlabs.io/",
+        "password": True,
+        "category": "tool",
+    },
+    "MISTRAL_API_KEY": {
+        "description": "Mistral API key for Voxtral TTS and transcription (STT)",
+        "prompt": "Mistral API key",
+        "url": "https://console.mistral.ai/",
         "password": True,
         "category": "tool",
     },
@@ -1450,7 +1492,7 @@ _KNOWN_ROOT_KEYS = {
     "_config_version", "model", "providers", "fallback_model",
     "fallback_providers", "credential_pool_strategies", "toolsets",
     "agent", "terminal", "display", "compression", "delegation",
-    "auxiliary", "custom_providers", "memory", "gateway",
+    "auxiliary", "custom_providers", "context", "memory", "gateway",
 }
 
 # Valid fields inside a custom_providers list entry
@@ -2773,6 +2815,10 @@ def set_config_value(key: str, value: str):
         "terminal.timeout": "TERMINAL_TIMEOUT",
         "terminal.sandbox_dir": "TERMINAL_SANDBOX_DIR",
         "terminal.persistent_shell": "TERMINAL_PERSISTENT_SHELL",
+        "terminal.container_cpu": "TERMINAL_CONTAINER_CPU",
+        "terminal.container_memory": "TERMINAL_CONTAINER_MEMORY",
+        "terminal.container_disk": "TERMINAL_CONTAINER_DISK",
+        "terminal.container_persistent": "TERMINAL_CONTAINER_PERSISTENT",
     }
     if key in _config_to_env_sync:
         save_env_value(_config_to_env_sync[key], str(value))

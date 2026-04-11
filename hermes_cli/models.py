@@ -56,6 +56,18 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
 
 _openrouter_catalog_cache: list[tuple[str, str]] | None = None
 
+
+def _codex_curated_models() -> list[str]:
+    """Derive the openai-codex curated list from codex_models.py.
+
+    Single source of truth: DEFAULT_CODEX_MODELS + forward-compat synthesis.
+    This keeps the gateway /model picker in sync with the CLI `hermes model`
+    flow without maintaining a separate static list.
+    """
+    from hermes_cli.codex_models import DEFAULT_CODEX_MODELS, _add_forward_compat_models
+    return _add_forward_compat_models(list(DEFAULT_CODEX_MODELS))
+
+
 _PROVIDER_MODELS: dict[str, list[str]] = {
     "nous": [
         "anthropic/claude-opus-4.6",
@@ -86,12 +98,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "openai/gpt-5.4-pro",
         "openai/gpt-5.4-nano",
     ],
-    "openai-codex": [
-        "gpt-5.3-codex",
-        "gpt-5.2-codex",
-        "gpt-5.1-codex-mini",
-        "gpt-5.1-codex-max",
-    ],
+    "openai-codex": _codex_curated_models(),
     "copilot-acp": [
         "copilot-acp",
     ],
@@ -157,22 +164,16 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "kimi-k2-0905-preview",
     ],
     "minimax": [
-        "MiniMax-M1",
-        "MiniMax-M1-40k",
-        "MiniMax-M1-80k",
-        "MiniMax-M1-128k",
-        "MiniMax-M1-256k",
-        "MiniMax-M2.5",
         "MiniMax-M2.7",
+        "MiniMax-M2.5",
+        "MiniMax-M2.1",
+        "MiniMax-M2",
     ],
     "minimax-cn": [
-        "MiniMax-M1",
-        "MiniMax-M1-40k",
-        "MiniMax-M1-80k",
-        "MiniMax-M1-128k",
-        "MiniMax-M1-256k",
-        "MiniMax-M2.5",
         "MiniMax-M2.7",
+        "MiniMax-M2.5",
+        "MiniMax-M2.1",
+        "MiniMax-M2",
     ],
     "anthropic": [
         "claude-opus-4-6",
@@ -186,6 +187,11 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     "deepseek": [
         "deepseek-chat",
         "deepseek-reasoner",
+    ],
+    "xiaomi": [
+        "mimo-v2-pro",
+        "mimo-v2-omni",
+        "mimo-v2-flash",
     ],
     "opencode-zen": [
         "gpt-5.4-pro",
@@ -492,6 +498,7 @@ _PROVIDER_LABELS = {
     "alibaba": "Alibaba Cloud (DashScope)",
     "qwen-oauth": "Qwen OAuth (Portal)",
     "huggingface": "Hugging Face",
+    "xiaomi": "Xiaomi MiMo",
     "custom": "Custom endpoint",
 }
 
@@ -534,6 +541,8 @@ _PROVIDER_ALIASES = {
     "hf": "huggingface",
     "hugging-face": "huggingface",
     "huggingface-hub": "huggingface",
+    "mimo": "xiaomi",
+    "xiaomi-mimo": "xiaomi",
 }
 
 
@@ -818,7 +827,7 @@ def list_available_providers() -> list[dict[str, str]]:
         "openrouter", "nous", "openai-codex", "copilot", "copilot-acp",
         "gemini", "huggingface",
         "zai", "kimi-coding", "minimax", "minimax-cn", "kilocode", "anthropic", "alibaba",
-        "qwen-oauth",
+        "qwen-oauth", "xiaomi",
         "opencode-zen", "opencode-go",
         "ai-gateway", "deepseek", "custom",
     ]

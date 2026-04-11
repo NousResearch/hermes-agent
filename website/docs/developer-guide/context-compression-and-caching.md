@@ -3,9 +3,36 @@
 Hermes Agent uses a dual compression system and Anthropic prompt caching to
 manage context window usage efficiently across long conversations.
 
-Source files: `agent/context_compressor.py`, `agent/prompt_caching.py`,
-`gateway/run.py` (session hygiene), `run_agent.py` (search for `_compress_context`)
+Source files: `agent/context_engine.py` (ABC), `agent/context_compressor.py` (default engine),
+`agent/prompt_caching.py`, `gateway/run.py` (session hygiene), `run_agent.py` (search for `_compress_context`)
 
+
+## Pluggable Context Engine
+
+Context management is built on the `ContextEngine` ABC (`agent/context_engine.py`). The built-in `ContextCompressor` is the default implementation, but plugins can replace it with alternative engines (e.g., Lossless Context Management).
+
+```yaml
+context:
+  engine: "compressor"    # default — built-in lossy summarization
+  engine: "lcm"           # example — plugin providing lossless context
+```
+
+The engine is responsible for:
+- Deciding when compaction should fire (`should_compress()`)
+- Performing compaction (`compress()`)
+- Optionally exposing tools the agent can call (e.g., `lcm_grep`)
+- Tracking token usage from API responses
+
+Selection is config-driven via `context.engine` in `config.yaml`. The resolution order:
+1. Check `plugins/context_engine/<name>/` directory
+2. Check general plugin system (`register_context_engine()`)
+3. Fall back to built-in `ContextCompressor`
+
+Plugin engines are **never auto-activated** — the user must explicitly set `context.engine` to the plugin's name. The default `"compressor"` always uses the built-in.
+
+Configure via `hermes plugins` → Provider Plugins → Context Engine, or edit `config.yaml` directly.
+
+For building a context engine plugin, see [Context Engine Plugins](/docs/developer-guide/context-engine-plugin).
 
 ## Dual Compression System
 
@@ -115,6 +142,10 @@ The `_align_boundary_backward()` method walks past consecutive tool results
 to find the parent assistant message, keeping groups intact.
 
 ### Phase 3: Generate Structured Summary
+
+:::warning Summary model context length
+The summary model must have a context window **at least as large** as the main agent model's. The entire middle section is sent to the summary model in a single `call_llm(task="compression")` call. If the summary model's context is smaller, the API returns a context-length error — `_generate_summary()` catches it, logs a warning, and returns `None`. The compressor then drops the middle turns **without a summary**, silently losing conversation context. This is the most common cause of degraded compaction quality.
+:::
 
 The middle turns are summarized using the auxiliary LLM with a structured
 template:

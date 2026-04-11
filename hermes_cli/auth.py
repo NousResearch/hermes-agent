@@ -250,6 +250,14 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=("HF_TOKEN",),
         base_url_env_var="HF_BASE_URL",
     ),
+    "xiaomi": ProviderConfig(
+        id="xiaomi",
+        name="Xiaomi MiMo",
+        auth_type="api_key",
+        inference_base_url="https://api.xiaomimimo.com/v1",
+        api_key_env_vars=("XIAOMI_API_KEY",),
+        base_url_env_var="XIAOMI_BASE_URL",
+    ),
 }
 
 
@@ -908,6 +916,7 @@ def resolve_provider(
         "opencode": "opencode-zen", "zen": "opencode-zen",
         "qwen-portal": "qwen-oauth", "qwen-cli": "qwen-oauth", "qwen-oauth": "qwen-oauth",
         "hf": "huggingface", "hugging-face": "huggingface", "huggingface-hub": "huggingface",
+        "mimo": "xiaomi", "xiaomi-mimo": "xiaomi",
         "go": "opencode-go", "opencode-go-sub": "opencode-go",
         "kilo": "kilocode", "kilo-code": "kilocode", "kilo-gateway": "kilocode",
         # Local server aliases — route through the generic custom provider

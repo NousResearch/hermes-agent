@@ -1,9 +1,10 @@
 """Tests for agent.auxiliary_client resolution chain, provider overrides, and model overrides."""
 
 import json
+import logging
 import os
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, MagicMock, AsyncMock
 
 import pytest
 
@@ -14,6 +15,7 @@ from agent.auxiliary_client import (
     resolve_provider_client,
     auxiliary_max_tokens_param,
     call_llm,
+    async_call_llm,
     _read_codex_access_token,
     _get_auxiliary_provider,
     _get_provider_chain,
@@ -756,6 +758,69 @@ class TestAuxiliaryPoolAwareness:
         assert call_kwargs["base_url"] == "https://api.githubcopilot.com"
         assert call_kwargs["default_headers"]["Editor-Version"]
 
+    def test_copilot_responses_api_model_wrapped_in_codex_client(self, monkeypatch):
+        """Copilot GPT-5+ models (needing Responses API) are wrapped in CodexAuxiliaryClient."""
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+
+        with (
+            patch(
+                "hermes_cli.auth.resolve_api_key_provider_credentials",
+                return_value={
+                    "provider": "copilot",
+                    "api_key": "test-token",
+                    "base_url": "https://api.githubcopilot.com",
+                    "source": "gh auth token",
+                },
+            ),
+            patch("agent.auxiliary_client.OpenAI"),
+        ):
+            client, model = resolve_provider_client("copilot", model="gpt-5.4-mini")
+
+        from agent.auxiliary_client import CodexAuxiliaryClient
+        assert isinstance(client, CodexAuxiliaryClient)
+        assert model == "gpt-5.4-mini"
+
+    def test_copilot_chat_completions_model_not_wrapped(self, monkeypatch):
+        """Copilot models using Chat Completions are returned as plain OpenAI clients."""
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+
+        with (
+            patch(
+                "hermes_cli.auth.resolve_api_key_provider_credentials",
+                return_value={
+                    "provider": "copilot",
+                    "api_key": "test-token",
+                    "base_url": "https://api.githubcopilot.com",
+                    "source": "gh auth token",
+                },
+            ),
+            patch("agent.auxiliary_client.OpenAI") as mock_openai,
+        ):
+            client, model = resolve_provider_client("copilot", model="gpt-4.1-mini")
+
+        from agent.auxiliary_client import CodexAuxiliaryClient
+        assert not isinstance(client, CodexAuxiliaryClient)
+        assert model == "gpt-4.1-mini"
+        # Should be the raw mock OpenAI client
+        assert client is mock_openai.return_value
+
+    def test_vision_auto_uses_active_provider_as_fallback(self, monkeypatch):
+        """When no OpenRouter/Nous available, vision auto falls back to active provider."""
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "***")
+        with (
+            patch("agent.auxiliary_client._read_nous_auth", return_value=None),
+            patch("agent.auxiliary_client._read_main_provider", return_value="anthropic"),
+            patch("agent.auxiliary_client._read_main_model", return_value="claude-sonnet-4"),
+            patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
+            patch("agent.anthropic_adapter.resolve_anthropic_token", return_value="***"),
+        ):
+            client, model = get_vision_auxiliary_client()
+
+        assert client is not None
+        assert client.__class__.__name__ == "AnthropicAuxiliaryClient"
+
     def test_vision_auto_prefers_active_provider_over_openrouter(self, monkeypatch):
         """Active provider is tried before OpenRouter in vision auto."""
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
@@ -1059,8 +1124,8 @@ class TestCallLlmPaymentFallback:
         exc.status_code = 402
         return exc
 
-    def test_402_triggers_fallback(self, monkeypatch):
-        """When the primary provider returns 402, call_llm tries the next one."""
+    def test_402_triggers_fallback_when_auto(self, monkeypatch):
+        """When provider is auto and returns 402, call_llm tries the next one."""
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
 
         primary_client = MagicMock()
@@ -1073,7 +1138,7 @@ class TestCallLlmPaymentFallback:
         with patch("agent.auxiliary_client._get_cached_client",
                     return_value=(primary_client, "google/gemini-3-flash-preview")), \
              patch("agent.auxiliary_client._resolve_task_provider_model",
-                    return_value=("openrouter", "google/gemini-3-flash-preview", None, None)), \
+                    return_value=("auto", "google/gemini-3-flash-preview", None, None, None)), \
              patch("agent.auxiliary_client._try_payment_fallback",
                     return_value=(fallback_client, "gpt-5.2-codex", "openai-codex")) as mock_fb:
             result = call_llm(
@@ -1082,13 +1147,62 @@ class TestCallLlmPaymentFallback:
             )
 
         assert result is fallback_response
-        mock_fb.assert_called_once_with("openrouter", "compression")
+        mock_fb.assert_called_once_with("auto", "compression", reason="payment error")
         # Fallback call should use the fallback model
         fb_kwargs = fallback_client.chat.completions.create.call_args.kwargs
         assert fb_kwargs["model"] == "gpt-5.2-codex"
 
+    def test_402_no_fallback_when_explicit_provider(self, monkeypatch):
+        """When provider is explicitly configured (not auto), 402 should NOT fallback (#7559)."""
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+
+        primary_client = MagicMock()
+        primary_client.chat.completions.create.side_effect = self._make_402_error()
+
+        with patch("agent.auxiliary_client._get_cached_client",
+                    return_value=(primary_client, "local-model")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                    return_value=("custom", "local-model", None, None, None)), \
+             patch("agent.auxiliary_client._try_payment_fallback") as mock_fb:
+            with pytest.raises(Exception, match="insufficient credits"):
+                call_llm(
+                    task="compression",
+                    messages=[{"role": "user", "content": "hello"}],
+                )
+
+        # Fallback should NOT be attempted when provider is explicit
+        mock_fb.assert_not_called()
+
+    def test_connection_error_triggers_fallback_when_auto(self, monkeypatch):
+        """Connection errors also trigger fallback when provider is auto."""
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+
+        primary_client = MagicMock()
+        conn_err = Exception("Connection refused")
+        conn_err.status_code = None
+        primary_client.chat.completions.create.side_effect = conn_err
+
+        fallback_client = MagicMock()
+        fallback_response = MagicMock()
+        fallback_client.chat.completions.create.return_value = fallback_response
+
+        with patch("agent.auxiliary_client._get_cached_client",
+                    return_value=(primary_client, "model")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                    return_value=("auto", "model", None, None, None)), \
+             patch("agent.auxiliary_client._is_connection_error", return_value=True), \
+             patch("agent.auxiliary_client._try_payment_fallback",
+                    return_value=(fallback_client, "fb-model", "nous")) as mock_fb:
+            result = call_llm(
+                task="compression",
+                messages=[{"role": "user", "content": "hello"}],
+            )
+
+        assert result is fallback_response
+        mock_fb.assert_called_once_with("auto", "compression", reason="connection error")
+
     def test_non_payment_error_not_caught(self, monkeypatch):
-        """Non-payment errors (500, connection, etc.) should NOT trigger fallback."""
+        """Non-payment/non-connection errors (500) should NOT trigger fallback."""
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
 
         primary_client = MagicMock()
@@ -1099,7 +1213,7 @@ class TestCallLlmPaymentFallback:
         with patch("agent.auxiliary_client._get_cached_client",
                     return_value=(primary_client, "google/gemini-3-flash-preview")), \
              patch("agent.auxiliary_client._resolve_task_provider_model",
-                    return_value=("openrouter", "google/gemini-3-flash-preview", None, None)):
+                    return_value=("auto", "google/gemini-3-flash-preview", None, None, None)):
             with pytest.raises(Exception, match="Internal Server Error"):
                 call_llm(
                     task="compression",
@@ -1116,7 +1230,7 @@ class TestCallLlmPaymentFallback:
         with patch("agent.auxiliary_client._get_cached_client",
                     return_value=(primary_client, "google/gemini-3-flash-preview")), \
              patch("agent.auxiliary_client._resolve_task_provider_model",
-                    return_value=("openrouter", "google/gemini-3-flash-preview", None, None)), \
+                    return_value=("auto", "google/gemini-3-flash-preview", None, None, None)), \
              patch("agent.auxiliary_client._try_payment_fallback",
                     return_value=(None, None, "")):
             with pytest.raises(Exception, match="insufficient credits"):
@@ -1166,3 +1280,283 @@ def test_resolve_api_key_provider_skips_unconfigured_anthropic(monkeypatch):
 
     assert "anthropic" not in called, \
         "_try_anthropic() should not be called when anthropic is not explicitly configured"
+
+
+# ---------------------------------------------------------------------------
+# model="default" elimination (#7512)
+# ---------------------------------------------------------------------------
+
+
+class TestModelDefaultElimination:
+    """_resolve_api_key_provider must skip providers without known aux models."""
+
+    def test_unknown_provider_skipped(self, monkeypatch):
+        """Providers not in _API_KEY_PROVIDER_AUX_MODELS are skipped, not sent model='default'."""
+        from agent.auxiliary_client import _API_KEY_PROVIDER_AUX_MODELS
+
+        # Verify our known providers have entries
+        assert "gemini" in _API_KEY_PROVIDER_AUX_MODELS
+        assert "kimi-coding" in _API_KEY_PROVIDER_AUX_MODELS
+
+        # A random provider_id not in the dict should return None
+        assert _API_KEY_PROVIDER_AUX_MODELS.get("totally-unknown-provider") is None
+
+    def test_known_provider_gets_real_model(self):
+        """Known providers get a real model name, not 'default'."""
+        from agent.auxiliary_client import _API_KEY_PROVIDER_AUX_MODELS
+
+        for provider_id, model in _API_KEY_PROVIDER_AUX_MODELS.items():
+            assert model != "default", f"{provider_id} should not map to 'default'"
+            assert isinstance(model, str) and model.strip(), \
+                f"{provider_id} should have a non-empty model string"
+
+
+# ---------------------------------------------------------------------------
+# _try_payment_fallback reason parameter (#7512 bug 3)
+# ---------------------------------------------------------------------------
+
+
+class TestTryPaymentFallbackReason:
+    """_try_payment_fallback uses the reason parameter in log messages."""
+
+    def test_reason_parameter_passed_through(self, monkeypatch):
+        """The reason= parameter is accepted without error."""
+        from agent.auxiliary_client import _try_payment_fallback
+
+        # Mock the provider chain to return nothing
+        monkeypatch.setattr(
+            "agent.auxiliary_client._get_provider_chain",
+            lambda: [],
+        )
+        monkeypatch.setattr(
+            "agent.auxiliary_client._read_main_provider",
+            lambda: "",
+        )
+
+        client, model, label = _try_payment_fallback(
+            "openrouter", task="compression", reason="connection error"
+        )
+        assert client is None
+        assert label == ""
+
+
+# ---------------------------------------------------------------------------
+# _is_connection_error coverage
+# ---------------------------------------------------------------------------
+
+
+class TestIsConnectionError:
+    """Tests for _is_connection_error detection."""
+
+    def test_connection_refused(self):
+        from agent.auxiliary_client import _is_connection_error
+        err = Exception("Connection refused")
+        assert _is_connection_error(err) is True
+
+    def test_timeout(self):
+        from agent.auxiliary_client import _is_connection_error
+        err = Exception("Request timed out.")
+        assert _is_connection_error(err) is True
+
+    def test_dns_failure(self):
+        from agent.auxiliary_client import _is_connection_error
+        err = Exception("Name or service not known")
+        assert _is_connection_error(err) is True
+
+    def test_normal_api_error_not_connection(self):
+        from agent.auxiliary_client import _is_connection_error
+        err = Exception("Bad Request: invalid model")
+        err.status_code = 400
+        assert _is_connection_error(err) is False
+
+    def test_500_not_connection(self):
+        from agent.auxiliary_client import _is_connection_error
+        err = Exception("Internal Server Error")
+        err.status_code = 500
+        assert _is_connection_error(err) is False
+
+
+# ---------------------------------------------------------------------------
+# async_call_llm payment / connection fallback (#7512 bug 2)
+# ---------------------------------------------------------------------------
+
+
+class TestAsyncCallLlmFallback:
+    """async_call_llm mirrors call_llm fallback behavior."""
+
+    def _make_402_error(self, msg="Payment Required: insufficient credits"):
+        exc = Exception(msg)
+        exc.status_code = 402
+        return exc
+
+    @pytest.mark.asyncio
+    async def test_402_triggers_async_fallback_when_auto(self, monkeypatch):
+        """When provider is auto and returns 402, async_call_llm tries fallback."""
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+
+        primary_client = MagicMock()
+        primary_client.chat.completions.create = AsyncMock(
+            side_effect=self._make_402_error())
+
+        # Fallback client (sync) returned by _try_payment_fallback
+        fb_sync_client = MagicMock()
+        fb_async_client = MagicMock()
+        fb_response = MagicMock()
+        fb_async_client.chat.completions.create = AsyncMock(return_value=fb_response)
+
+        with patch("agent.auxiliary_client._get_cached_client",
+                    return_value=(primary_client, "google/gemini-3-flash-preview")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                    return_value=("auto", "google/gemini-3-flash-preview", None, None, None)), \
+             patch("agent.auxiliary_client._try_payment_fallback",
+                    return_value=(fb_sync_client, "gpt-5.2-codex", "openai-codex")) as mock_fb, \
+             patch("agent.auxiliary_client._to_async_client",
+                    return_value=(fb_async_client, "gpt-5.2-codex")):
+            result = await async_call_llm(
+                task="compression",
+                messages=[{"role": "user", "content": "hello"}],
+            )
+
+        assert result is fb_response
+        mock_fb.assert_called_once_with("auto", "compression", reason="payment error")
+
+    @pytest.mark.asyncio
+    async def test_402_no_async_fallback_when_explicit(self, monkeypatch):
+        """When provider is explicit, 402 should NOT trigger async fallback."""
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+
+        primary_client = MagicMock()
+        primary_client.chat.completions.create = AsyncMock(
+            side_effect=self._make_402_error())
+
+        with patch("agent.auxiliary_client._get_cached_client",
+                    return_value=(primary_client, "local-model")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                    return_value=("custom", "local-model", None, None, None)), \
+             patch("agent.auxiliary_client._try_payment_fallback") as mock_fb:
+            with pytest.raises(Exception, match="insufficient credits"):
+                await async_call_llm(
+                    task="compression",
+                    messages=[{"role": "user", "content": "hello"}],
+                )
+
+        mock_fb.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_connection_error_triggers_async_fallback(self, monkeypatch):
+        """Connection errors trigger async fallback when provider is auto."""
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+
+        primary_client = MagicMock()
+        conn_err = Exception("Connection refused")
+        conn_err.status_code = None
+        primary_client.chat.completions.create = AsyncMock(side_effect=conn_err)
+
+        fb_sync_client = MagicMock()
+        fb_async_client = MagicMock()
+        fb_response = MagicMock()
+        fb_async_client.chat.completions.create = AsyncMock(return_value=fb_response)
+
+        with patch("agent.auxiliary_client._get_cached_client",
+                    return_value=(primary_client, "model")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                    return_value=("auto", "model", None, None, None)), \
+             patch("agent.auxiliary_client._is_connection_error", return_value=True), \
+             patch("agent.auxiliary_client._try_payment_fallback",
+                    return_value=(fb_sync_client, "fb-model", "nous")) as mock_fb, \
+             patch("agent.auxiliary_client._to_async_client",
+                    return_value=(fb_async_client, "fb-model")):
+            result = await async_call_llm(
+                task="compression",
+                messages=[{"role": "user", "content": "hello"}],
+            )
+
+        assert result is fb_response
+        mock_fb.assert_called_once_with("auto", "compression", reason="connection error")
+class TestStaleBaseUrlWarning:
+    """_resolve_auto() warns when OPENAI_BASE_URL conflicts with config provider (#5161)."""
+
+    def test_warns_when_openai_base_url_set_with_named_provider(self, monkeypatch, caplog):
+        """Warning fires when OPENAI_BASE_URL is set but provider is a named provider."""
+        import agent.auxiliary_client as mod
+        # Reset the module-level flag so the warning fires
+        monkeypatch.setattr(mod, "_stale_base_url_warned", False)
+        monkeypatch.setenv("OPENAI_BASE_URL", "http://localhost:11434/v1")
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+
+        with patch("agent.auxiliary_client._read_main_provider", return_value="openrouter"), \
+             patch("agent.auxiliary_client._read_main_model", return_value="google/gemini-flash"), \
+             caplog.at_level(logging.WARNING, logger="agent.auxiliary_client"):
+            _resolve_auto()
+
+        assert any("OPENAI_BASE_URL is set" in rec.message for rec in caplog.records), \
+            "Expected a warning about stale OPENAI_BASE_URL"
+        assert mod._stale_base_url_warned is True
+
+    def test_no_warning_when_provider_is_custom(self, monkeypatch, caplog):
+        """No warning when the provider is 'custom' — OPENAI_BASE_URL is expected."""
+        import agent.auxiliary_client as mod
+        monkeypatch.setattr(mod, "_stale_base_url_warned", False)
+        monkeypatch.setenv("OPENAI_BASE_URL", "http://localhost:11434/v1")
+        monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+
+        with patch("agent.auxiliary_client._read_main_provider", return_value="custom"), \
+             patch("agent.auxiliary_client._read_main_model", return_value="llama3"), \
+             patch("agent.auxiliary_client._resolve_custom_runtime",
+                   return_value=("http://localhost:11434/v1", "test-key", None)), \
+             patch("agent.auxiliary_client.OpenAI") as mock_openai, \
+             caplog.at_level(logging.WARNING, logger="agent.auxiliary_client"):
+            mock_openai.return_value = MagicMock()
+            _resolve_auto()
+
+        assert not any("OPENAI_BASE_URL is set" in rec.message for rec in caplog.records), \
+            "Should NOT warn when provider is 'custom'"
+
+    def test_no_warning_when_provider_is_named_custom(self, monkeypatch, caplog):
+        """No warning when the provider is 'custom:myname' — base_url comes from config."""
+        import agent.auxiliary_client as mod
+        monkeypatch.setattr(mod, "_stale_base_url_warned", False)
+        monkeypatch.setenv("OPENAI_BASE_URL", "http://localhost:11434/v1")
+        monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+
+        with patch("agent.auxiliary_client._read_main_provider", return_value="custom:ollama-local"), \
+             patch("agent.auxiliary_client._read_main_model", return_value="llama3"), \
+             patch("agent.auxiliary_client.resolve_provider_client",
+                   return_value=(MagicMock(), "llama3")), \
+             caplog.at_level(logging.WARNING, logger="agent.auxiliary_client"):
+            _resolve_auto()
+
+        assert not any("OPENAI_BASE_URL is set" in rec.message for rec in caplog.records), \
+            "Should NOT warn when provider is 'custom:*'"
+
+    def test_no_warning_when_openai_base_url_not_set(self, monkeypatch, caplog):
+        """No warning when OPENAI_BASE_URL is absent."""
+        import agent.auxiliary_client as mod
+        monkeypatch.setattr(mod, "_stale_base_url_warned", False)
+        monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+
+        with patch("agent.auxiliary_client._read_main_provider", return_value="openrouter"), \
+             patch("agent.auxiliary_client._read_main_model", return_value="google/gemini-flash"), \
+             caplog.at_level(logging.WARNING, logger="agent.auxiliary_client"):
+            _resolve_auto()
+
+        assert not any("OPENAI_BASE_URL is set" in rec.message for rec in caplog.records), \
+            "Should NOT warn when OPENAI_BASE_URL is not set"
+
+    def test_warning_only_fires_once(self, monkeypatch, caplog):
+        """Warning is suppressed after the first invocation."""
+        import agent.auxiliary_client as mod
+        monkeypatch.setattr(mod, "_stale_base_url_warned", False)
+        monkeypatch.setenv("OPENAI_BASE_URL", "http://localhost:11434/v1")
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+
+        with patch("agent.auxiliary_client._read_main_provider", return_value="openrouter"), \
+             patch("agent.auxiliary_client._read_main_model", return_value="google/gemini-flash"), \
+             caplog.at_level(logging.WARNING, logger="agent.auxiliary_client"):
+            _resolve_auto()
+            caplog.clear()
+            _resolve_auto()
+
+        assert not any("OPENAI_BASE_URL is set" in rec.message for rec in caplog.records), \
+            "Warning should not fire a second time"

@@ -18,6 +18,7 @@ import time
 from typing import Any, Dict, List, Optional
 
 from agent.auxiliary_client import call_llm
+from agent.context_engine import ContextEngine
 from agent.model_metadata import (
     get_model_context_length,
     estimate_messages_tokens_rough,
@@ -50,8 +51,8 @@ _CHARS_PER_TOKEN = 4
 _SUMMARY_FAILURE_COOLDOWN_SECONDS = 600
 
 
-class ContextCompressor:
-    """Compresses conversation context when approaching the model's context limit.
+class ContextCompressor(ContextEngine):
+    """Default context engine — compresses conversation context via lossy summarization.
 
     Algorithm:
       1. Prune old tool results (cheap, no LLM call)
@@ -60,6 +61,33 @@ class ContextCompressor:
       4. Summarize middle turns with structured LLM prompt
       5. On subsequent compactions, iteratively update the previous summary
     """
+
+    @property
+    def name(self) -> str:
+        return "compressor"
+
+    def on_session_reset(self) -> None:
+        """Reset all per-session state for /new or /reset."""
+        super().on_session_reset()
+        self._context_probed = False
+        self._context_probe_persistable = False
+        self._previous_summary = None
+
+    def update_model(
+        self,
+        model: str,
+        context_length: int,
+        base_url: str = "",
+        api_key: str = "",
+        provider: str = "",
+    ) -> None:
+        """Update model info after a model switch or fallback activation."""
+        self.model = model
+        self.base_url = base_url
+        self.api_key = api_key
+        self.provider = provider
+        self.context_length = context_length
+        self.threshold_tokens = int(context_length * self.threshold_percent)
 
     def __init__(
         self,

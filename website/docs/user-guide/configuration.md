@@ -480,7 +480,29 @@ Points at a custom OpenAI-compatible endpoint. Uses `OPENAI_API_KEY` for auth.
 | `nous` / `openrouter` / etc. | not set | Force that provider, use its auth |
 | any | set | Use the custom endpoint directly (provider ignored) |
 
-The `summary_model` must support a context length at least as large as your main model's, since it receives the full middle section of the conversation for compression.
+:::warning Summary model context length requirement
+The `summary_model` **must** have a context window at least as large as your main agent model's. The compressor sends the full middle section of the conversation to the summary model — if that model's context window is smaller than the main model's, the summarization call will fail with a context length error. When this happens, the middle turns are **dropped without a summary**, losing conversation context silently. If you override `summary_model`, verify its context length meets or exceeds your main model's.
+:::
+
+## Context Engine
+
+The context engine controls how conversations are managed when approaching the model's token limit. The built-in `compressor` engine uses lossy summarization (see [Context Compression](/docs/developer-guide/context-compression-and-caching)). Plugin engines can replace it with alternative strategies.
+
+```yaml
+context:
+  engine: "compressor"    # default — built-in lossy summarization
+```
+
+To use a plugin engine (e.g., LCM for lossless context management):
+
+```yaml
+context:
+  engine: "lcm"          # must match the plugin's name
+```
+
+Plugin engines are **never auto-activated** — you must explicitly set `context.engine` to the plugin name. Available engines can be browsed and selected via `hermes plugins` → Provider Plugins → Context Engine.
+
+See [Memory Providers](/docs/user-guide/features/memory-providers) for the analogous single-select system for memory plugins.
 
 ## Iteration Budget Pressure
 

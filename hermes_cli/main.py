@@ -3133,6 +3133,8 @@ def _update_via_zip(args):
             )
         _install_python_dependencies_with_optional_fallback(pip_cmd)
     
+    _update_node_dependencies()
+
     # Sync skills
     try:
         from tools.skills_sync import sync_skills
@@ -3652,9 +3654,42 @@ def _install_python_dependencies_with_optional_fallback(
         print(f"  ⚠ Skipped optional extras that still failed: {', '.join(failed_extras)}")
 
 
+def _update_node_dependencies() -> None:
+    npm = shutil.which("npm")
+    if not npm:
+        return
+
+    paths = (
+        ("repo root", PROJECT_ROOT),
+        ("ui-tui", PROJECT_ROOT / "ui-tui"),
+    )
+    if not any((path / "package.json").exists() for _, path in paths):
+        return
+
+    print("→ Updating Node.js dependencies...")
+    for label, path in paths:
+        if not (path / "package.json").exists():
+            continue
+
+        result = subprocess.run(
+            [npm, "install", "--silent", "--no-fund", "--no-audit", "--progress=false"],
+            cwd=path,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode == 0:
+            print(f"  ✓ {label}")
+            continue
+
+        print(f"  ⚠ npm install failed in {label}")
+        stderr = (result.stderr or "").strip()
+        if stderr:
+            print(f"    {stderr.splitlines()[-1]}")
+
+
 def cmd_update(args):
     """Update Hermes Agent to the latest version."""
-    import shutil
     from hermes_cli.config import is_managed, managed_error
 
     if is_managed():
@@ -3873,13 +3908,8 @@ def cmd_update(args):
                 )
             _install_python_dependencies_with_optional_fallback(pip_cmd)
         
-        # Check for Node.js deps
-        if (PROJECT_ROOT / "package.json").exists():
-            import shutil
-            if shutil.which("npm"):
-                print("→ Updating Node.js dependencies...")
-                subprocess.run(["npm", "install", "--silent"], cwd=PROJECT_ROOT, check=False)
-        
+        _update_node_dependencies()
+
         print()
         print("✓ Code updated!")
         

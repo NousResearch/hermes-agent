@@ -549,7 +549,7 @@ class TestServicePidExclusion:
             gateway_cli, "_get_service_pids", return_value={SERVICE_PID}
         ), patch.object(
             gateway_cli, "find_gateway_pids",
-            side_effect=lambda exclude_pids=None: (
+            side_effect=lambda exclude_pids=None, all_profiles=False: (
                 [SERVICE_PID] if not exclude_pids else
                 [p for p in [SERVICE_PID] if p not in exclude_pids]
             ),
@@ -592,7 +592,7 @@ class TestServicePidExclusion:
             gateway_cli, "_get_service_pids", return_value={SERVICE_PID}
         ), patch.object(
             gateway_cli, "find_gateway_pids",
-            side_effect=lambda exclude_pids=None: (
+            side_effect=lambda exclude_pids=None, all_profiles=False: (
                 [SERVICE_PID] if not exclude_pids else
                 [p for p in [SERVICE_PID] if p not in exclude_pids]
             ),
@@ -631,7 +631,7 @@ class TestServicePidExclusion:
             launchctl_loaded=True,
         )
 
-        def fake_find(exclude_pids=None):
+        def fake_find(exclude_pids=None, all_profiles=False):
             _exclude = exclude_pids or set()
             return [p for p in [SERVICE_PID, MANUAL_PID] if p not in _exclude]
 

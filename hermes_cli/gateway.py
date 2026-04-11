@@ -157,8 +157,18 @@ def _request_gateway_self_restart(pid: int) -> bool:
     return True
 
 
-def find_gateway_pids(exclude_pids: set | None = None) -> list:
-    """Find PIDs of running gateway processes for the current Hermes profile."""
+def find_gateway_pids(exclude_pids: set | None = None, all_profiles: bool = False) -> list:
+    """Find PIDs of running gateway processes.
+
+    Args:
+        exclude_pids: PIDs to exclude from the result (e.g. service-managed
+            PIDs that should not be killed during a stale-process sweep).
+        all_profiles: When ``True``, return gateway PIDs across **all**
+            profiles (the pre-7923 global behaviour).  ``hermes update``
+            needs this because a code update affects every profile.
+            When ``False`` (default), only PIDs belonging to the current
+            Hermes profile are returned.
+    """
     _exclude = exclude_pids or set()
     pids = [pid for pid in _get_service_pids() if pid not in _exclude]
     patterns = [
@@ -202,7 +212,7 @@ def find_gateway_pids(exclude_pids: set | None = None) -> list:
                     current_cmd = line[len("CommandLine="):]
                 elif line.startswith("ProcessId="):
                     pid_str = line[len("ProcessId="):]
-                    if any(p in current_cmd for p in patterns) and _matches_current_profile(current_cmd):
+                    if any(p in current_cmd for p in patterns) and (all_profiles or _matches_current_profile(current_cmd)):
                         try:
                             pid = int(pid_str)
                             if pid != os.getpid() and pid not in pids and pid not in _exclude:
@@ -243,23 +253,26 @@ def find_gateway_pids(exclude_pids: set | None = None) -> list:
                     continue
                 if pid == os.getpid() or pid in pids or pid in _exclude:
                     continue
-                if any(pattern in command for pattern in patterns) and _matches_current_profile(command):
+                if any(pattern in command for pattern in patterns) and (all_profiles or _matches_current_profile(command)):
                     pids.append(pid)
-    except Exception:
+    except (OSError, subprocess.TimeoutExpired):
         pass
 
     return pids
 
 
-def kill_gateway_processes(force: bool = False, exclude_pids: set | None = None) -> int:
+def kill_gateway_processes(force: bool = False, exclude_pids: set | None = None,
+                           all_profiles: bool = False) -> int:
     """Kill any running gateway processes. Returns count killed.
 
     Args:
         force: Use the platform's force-kill mechanism instead of graceful terminate.
         exclude_pids: PIDs to skip (e.g. service-managed PIDs that were just
             restarted and should not be killed).
+        all_profiles: When ``True``, kill across all profiles.  Passed
+            through to :func:`find_gateway_pids`.
     """
-    pids = find_gateway_pids(exclude_pids=exclude_pids)
+    pids = find_gateway_pids(exclude_pids=exclude_pids, all_profiles=all_profiles)
     killed = 0
     
     for pid in pids:
@@ -2597,7 +2610,7 @@ def gateway_command(args):
                     service_available = True
                 except subprocess.CalledProcessError:
                     pass
-            killed = kill_gateway_processes()
+            killed = kill_gateway_processes(all_profiles=True)
             total = killed + (1 if service_available else 0)
             if total:
                 print(f"✓ Stopped {total} gateway process(es) across all profiles")

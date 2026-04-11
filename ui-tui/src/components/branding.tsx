@@ -179,4 +179,3 @@ export function Panel({ sections, t, title }: { sections: PanelSection[]; t: The
     </Box>
   )
 }
-

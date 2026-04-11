@@ -32,7 +32,7 @@ type Props = PropsWithChildren<{
  * from scrolling content) and so signal-exit cleanup can exit the alt
  * screen if the component's own unmount doesn't run.
  */
-export function AlternateScreen(t0) {
+export function AlternateScreen(t0: Props) {
   const $ = _c(7)
 
   const { children, mouseTracking: t1 } = t0

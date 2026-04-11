@@ -606,18 +606,58 @@ def _print_tui_exit_summary(session_id: Optional[str]) -> None:
     )
 
 
-def _find_bundled_tui() -> Optional[Path]:
-    """Find a bundled copy of the TUI.
-    Does *not* read from the `npm run build` dist dir,
-    as this would be a footgun when developing
-    """
-    bundled_tui_dir = os.environ.get("HERMES_TUI_DIR")
-    if bundled_tui_dir and (Path(bundled_tui_dir) / "dist" / "entry.js").exists():
-        return Path(bundled_tui_dir)
+def _find_bundled_tui(tui_dir: Path) -> Optional[Path]:
+    """Directory whose dist/entry.js we should run: HERMES_TUI_DIR first, else repo ui-tui."""
+    env = os.environ.get("HERMES_TUI_DIR")
+    if env:
+        p = Path(env)
+        if (p / "dist" / "entry.js").exists():
+            return p
+    if (tui_dir / "dist" / "entry.js").exists():
+        return tui_dir
     return None
 
-def _make_tui_argv(tui_dir: Path) -> tuple[list[str], Path]:
-    """Gets argv to run tui + the working directory. Will npm install deps in dev mode."""
+
+def _tui_build_needed(tui_dir: Path) -> bool:
+    entry = tui_dir / "dist" / "entry.js"
+    if not entry.exists():
+        return True
+    dist_m = entry.stat().st_mtime
+    skip = frozenset({"node_modules", "dist"})
+    for dirpath, dirnames, filenames in os.walk(tui_dir, topdown=True):
+        dirnames[:] = [d for d in dirnames if d not in skip]
+        for fn in filenames:
+            if fn.endswith((".ts", ".tsx")):
+                if os.path.getmtime(os.path.join(dirpath, fn)) > dist_m:
+                    return True
+    for meta in ("package.json", "package-lock.json", "tsconfig.json", "tsconfig.build.json"):
+        mp = tui_dir / meta
+        if mp.exists() and mp.stat().st_mtime > dist_m:
+            return True
+    return False
+
+
+def _hermes_ink_bundle_stale(tui_dir: Path) -> bool:
+    ink_root = tui_dir / "packages" / "hermes-ink"
+    bundle = ink_root / "dist" / "ink-bundle.js"
+    if not bundle.exists():
+        return True
+    bm = bundle.stat().st_mtime
+    skip = frozenset({"node_modules", "dist"})
+    for dirpath, dirnames, filenames in os.walk(ink_root, topdown=True):
+        dirnames[:] = [d for d in dirnames if d not in skip]
+        for fn in filenames:
+            if fn.endswith((".ts", ".tsx")):
+                if os.path.getmtime(os.path.join(dirpath, fn)) > bm:
+                    return True
+    mp = ink_root / "package.json"
+    if mp.exists() and mp.stat().st_mtime > bm:
+        return True
+    return False
+
+
+def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
+    """Ink TUI: --dev → tsx src; else node dist (HERMES_TUI_DIR or ui-tui, build when stale)."""
     def _node_bin(bin: str)-> str:
         path = shutil.which(bin)
         if not path:
@@ -625,17 +665,8 @@ def _make_tui_argv(tui_dir: Path) -> tuple[list[str], Path]:
             sys.exit(1)
         return path
 
-    # use prebuilt TUI if it exists
-    bundled = _find_bundled_tui()
-    if bundled:
-        node = _node_bin("node")
-        return [node, str(bundled / "dist" / "entry.js")], bundled
-
-    # dev mode - run via tsx
-
-    # install deps if needed
+    npm = _node_bin("npm")
     if not (tui_dir / "node_modules").exists():
-        npm = _node_bin("npm")
         print("Installing TUI dependencies…")
         result = subprocess.run(
             [npm, "install", "--silent", "--no-fund", "--no-audit", "--progress=false"],
@@ -652,14 +683,54 @@ def _make_tui_argv(tui_dir: Path) -> tuple[list[str], Path]:
                 print(preview)
             sys.exit(1)
 
-    tsx = tui_dir / "node_modules" / ".bin" / "tsx"
-    if tsx.exists():
-        return [str(tsx), "src/entry.tsx"], tui_dir
+    if tui_dev:
+        if _hermes_ink_bundle_stale(tui_dir):
+            result = subprocess.run(
+                [npm, "run", "build", "--prefix", "packages/hermes-ink"],
+                cwd=str(tui_dir),
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode != 0:
+                combined = f"{result.stdout or ''}{result.stderr or ''}".strip()
+                preview = "\n".join(combined.splitlines()[-30:])
+                print("@hermes/ink build failed.")
+                if preview:
+                    print(preview)
+                sys.exit(1)
+        tsx = tui_dir / "node_modules" / ".bin" / "tsx"
+        if tsx.exists():
+            return [str(tsx), "src/entry.tsx"], tui_dir
+        return [npm, "start"], tui_dir
 
-    npm = _node_bin("npm")
-    return [npm, "start"], tui_dir
+    env_bundle = os.environ.get("HERMES_TUI_DIR")
+    uses_packaged_dist = bool(
+        env_bundle and (Path(env_bundle) / "dist" / "entry.js").exists()
+    )
+    if not uses_packaged_dist and _tui_build_needed(tui_dir):
+        result = subprocess.run(
+            [npm, "run", "build"],
+            cwd=str(tui_dir),
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            combined = f"{result.stdout or ''}{result.stderr or ''}".strip()
+            preview = "\n".join(combined.splitlines()[-30:])
+            print("TUI build failed.")
+            if preview:
+                print(preview)
+            sys.exit(1)
 
-def _launch_tui(resume_session_id: Optional[str] = None):
+    root = _find_bundled_tui(tui_dir)
+    if not root:
+        print("TUI build did not produce dist/entry.js")
+        sys.exit(1)
+
+    node = _node_bin("node")
+    return [node, str(root / "dist" / "entry.js")], root
+
+def _launch_tui(resume_session_id: Optional[str] = None, tui_dev: bool = False):
     """Replace current process with the Ink TUI."""
     tui_dir = PROJECT_ROOT / "ui-tui"
 
@@ -668,7 +739,7 @@ def _launch_tui(resume_session_id: Optional[str] = None):
     if resume_session_id:
         env["HERMES_TUI_RESUME"] = resume_session_id
 
-    argv, cwd = _make_tui_argv(tui_dir)
+    argv, cwd = _make_tui_argv(tui_dir, tui_dev)
     try:
         code = subprocess.call(argv, cwd=str(cwd), env=env)
     except KeyboardInterrupt:
@@ -719,7 +790,10 @@ def cmd_chat(args):
         # report "Session not found" with the original input
 
     if use_tui:
-        _launch_tui(getattr(args, "resume", None))
+        _launch_tui(
+            getattr(args, "resume", None),
+            tui_dev=getattr(args, "tui_dev", False),
+        )
 
     # First-run guard: check if any provider is configured before launching
     if not _has_any_provider_configured():
@@ -4463,7 +4537,14 @@ For more help on a command:
         default=False,
         help="Launch the Ink-based terminal UI instead of the classic REPL"
     )
-    
+    parser.add_argument(
+        "--dev",
+        dest="tui_dev",
+        action="store_true",
+        default=False,
+        help="With --tui: run TypeScript sources via tsx (skip dist build)",
+    )
+
     subparsers = parser.add_subparsers(dest="command", help="Command to run")
     
     # =========================================================================
@@ -4568,6 +4649,13 @@ For more help on a command:
         action="store_true",
         default=False,
         help="Launch the Ink-based terminal UI instead of the classic REPL"
+    )
+    chat_parser.add_argument(
+        "--dev",
+        dest="tui_dev",
+        action="store_true",
+        default=False,
+        help="With --tui: run TypeScript sources via tsx (skip dist build)",
     )
     chat_parser.set_defaults(func=cmd_chat)
 

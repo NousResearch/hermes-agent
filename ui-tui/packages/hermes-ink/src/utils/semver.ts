@@ -53,5 +53,5 @@ export function order(a: string, b: string): -1 | 0 | 1 {
     return Bun.semver.order(a, b)
   }
 
-  return getNpmSemver().compare(a, b, { loose: true })
+  return getNpmSemver().compare(a, b, { loose: true }) as -1 | 0 | 1
 }

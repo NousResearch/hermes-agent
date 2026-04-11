@@ -1,6 +1,6 @@
 import '../global.d.ts'
 
-import React, { type Ref } from 'react'
+import React, { type ReactNode, type Ref } from 'react'
 import { c as _c } from 'react/compiler-runtime'
 import type { Except } from 'type-fest'
 
@@ -11,6 +11,7 @@ import type { KeyboardEvent } from '../events/keyboard-event.js'
 import type { Styles } from '../styles.js'
 import * as warn from '../warn.js'
 export type Props = Except<Styles, 'textWrap'> & {
+  children?: ReactNode
   ref?: Ref<DOMElement>
   /**
    * Tab order index. Nodes with `tabIndex >= 0` participate in
@@ -50,7 +51,7 @@ export type Props = Except<Styles, 'textWrap'> & {
 /**
  * `<Box>` is an essential Ink component to build your layout. It's like `<div style="display: flex">` in the browser.
  */
-function Box(t0) {
+function Box(t0: Props) {
   const $ = _c(42)
   let autoFocus
   let children

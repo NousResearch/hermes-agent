@@ -22,7 +22,13 @@ declare module '@hermes/ink' {
     readonly [key: string]: boolean
   }
 
-  export type InputHandler = (input: string, key: Key) => void
+  export type InputEvent = {
+    readonly input: string
+    readonly key: Key
+    readonly keypress: { readonly raw?: string }
+  }
+
+  export type InputHandler = (input: string, key: Key, event: InputEvent) => void
 
   export type RenderOptions = {
     readonly stdin?: NodeJS.ReadStream

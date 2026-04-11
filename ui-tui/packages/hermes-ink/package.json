@@ -3,19 +3,22 @@
   "version": "0.0.1",
   "private": true,
   "type": "module",
-  "sideEffects": false,
+  "scripts": {
+    "build": "esbuild src/entry-exports.ts --bundle --platform=node --format=esm --packages=external --outfile=dist/ink-bundle.js"
+  },
+  "sideEffects": true,
   "main": "./index.js",
   "types": "./index.d.ts",
   "exports": {
     ".": {
+      "types": "./index.d.ts",
       "import": "./index.js",
-      "default": "./index.js",
-      "types": "./index.d.ts"
+      "default": "./index.js"
     },
     "./text-input": {
+      "types": "./text-input.d.ts",
       "import": "./text-input.js",
-      "default": "./text-input.js",
-      "types": "./text-input.d.ts"
+      "default": "./text-input.js"
     },
     "./package.json": "./package.json"
   },
@@ -44,5 +47,8 @@
     "type-fest": "^4.30.0",
     "usehooks-ts": "^3.1.0",
     "wrap-ansi": "^9.0.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0"
   }
 }

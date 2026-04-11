@@ -298,7 +298,14 @@ class TestStartupGuard:
 
     @pytest.mark.asyncio
     async def test_insecure_flag_allows_start_without_url(self):
-        with patch.dict(os.environ, {"SMS_INSECURE_NO_SIGNATURE": "true"}):
+        mock_session = AsyncMock()
+        with patch.dict(os.environ, {"SMS_INSECURE_NO_SIGNATURE": "true"}), \
+             patch("aiohttp.web.AppRunner") as mock_runner_cls, \
+             patch("aiohttp.web.TCPSite") as mock_site_cls, \
+             patch("aiohttp.ClientSession", return_value=mock_session):
+            mock_runner_cls.return_value.setup = AsyncMock()
+            mock_runner_cls.return_value.cleanup = AsyncMock()
+            mock_site_cls.return_value.start = AsyncMock()
             adapter = self._make_adapter()
             result = await adapter.connect()
             assert result is True
@@ -306,12 +313,19 @@ class TestStartupGuard:
 
     @pytest.mark.asyncio
     async def test_webhook_url_allows_start(self):
-        adapter = self._make_adapter(
-            extra_env={"SMS_WEBHOOK_URL": "https://example.com/webhooks/twilio"}
-        )
-        result = await adapter.connect()
-        assert result is True
-        await adapter.disconnect()
+        mock_session = AsyncMock()
+        with patch("aiohttp.web.AppRunner") as mock_runner_cls, \
+             patch("aiohttp.web.TCPSite") as mock_site_cls, \
+             patch("aiohttp.ClientSession", return_value=mock_session):
+            mock_runner_cls.return_value.setup = AsyncMock()
+            mock_runner_cls.return_value.cleanup = AsyncMock()
+            mock_site_cls.return_value.start = AsyncMock()
+            adapter = self._make_adapter(
+                extra_env={"SMS_WEBHOOK_URL": "https://example.com/webhooks/twilio"}
+            )
+            result = await adapter.connect()
+            assert result is True
+            await adapter.disconnect()
 
 
 # ── Twilio signature validation ────────────────────────────────────

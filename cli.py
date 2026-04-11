@@ -4200,6 +4200,30 @@ class HermesCLI:
 
         return result[0]
 
+    def _prompt_text_input(self, prompt_text: str) -> str | None:
+        """Prompt for free-text input safely inside or outside prompt_toolkit."""
+        result = [None]
+
+        def _ask():
+            try:
+                result[0] = input(prompt_text).strip() or None
+            except (KeyboardInterrupt, EOFError):
+                pass
+
+        if self._app:
+            from prompt_toolkit.application import run_in_terminal
+            was_visible = self._status_bar_visible
+            self._status_bar_visible = False
+            self._app.invalidate()
+            try:
+                run_in_terminal(_ask)
+            finally:
+                self._status_bar_visible = was_visible
+                self._app.invalidate()
+        else:
+            _ask()
+        return result[0]
+
     def _interactive_provider_selection(
         self, providers: list, current_model: str, current_provider: str
     ) -> str | None:
@@ -4234,11 +4258,7 @@ class HermesCLI:
 
         if not model_list:
             _cprint(f"\n  No models listed for {pname}.")
-            try:
-                val = input("  Enter model name manually (or Enter to cancel): ").strip()
-                return val if val else None
-            except (KeyboardInterrupt, EOFError):
-                return None
+            return self._prompt_text_input("  Enter model name manually (or Enter to cancel): ")
 
         choices = list(model_list) + ["Enter custom model name"]
         idx = self._run_curses_picker(
@@ -4249,28 +4269,7 @@ class HermesCLI:
             return None
         if idx < len(model_list):
             return model_list[idx]
-        # "Enter custom model name" selected — run via run_in_terminal to avoid prompt_toolkit conflict
-        custom_result = [None]
-
-        def _ask():
-            try:
-                custom_result[0] = input("  Enter model name: ").strip() or None
-            except (KeyboardInterrupt, EOFError):
-                pass
-
-        if self._app:
-            from prompt_toolkit.application import run_in_terminal
-            was_visible = self._status_bar_visible
-            self._status_bar_visible = False
-            self._app.invalidate()
-            try:
-                run_in_terminal(_ask)
-            finally:
-                self._status_bar_visible = was_visible
-                self._app.invalidate()
-        else:
-            _ask()
-        return custom_result[0]
+        return self._prompt_text_input("  Enter model name: ")
 
     def _open_model_picker(self, providers: list, current_model: str, current_provider: str, user_provs=None, custom_provs=None) -> None:
         """Open prompt_toolkit-native /model picker modal."""
@@ -4598,6 +4597,18 @@ class HermesCLI:
             _cprint("    Saved to config.yaml (--global)")
         else:
             _cprint("    (session only — add --global to persist)")
+
+    def _should_handle_model_command_inline(self, text: str, has_images: bool = False) -> bool:
+        """Return True when /model should be handled immediately on the UI thread."""
+        if not text or has_images or not _looks_like_slash_command(text):
+            return False
+        try:
+            from hermes_cli.commands import resolve_command
+            base = text.split(None, 1)[0].lower().lstrip('/')
+            cmd = resolve_command(base)
+            return bool(cmd and cmd.name == "model")
+        except Exception:
+            return False
 
     def _show_model_and_providers(self):
         """Show current model + provider and list all authenticated providers.
@@ -8036,19 +8047,13 @@ class HermesCLI:
             if text or has_images:
                 # Handle /model directly on the UI thread so interactive pickers
                 # can safely use prompt_toolkit terminal handoff helpers.
-                if text and not has_images and _looks_like_slash_command(text):
-                    try:
-                        from hermes_cli.commands import resolve_command
-                        base = text.split(None, 1)[0].lower().lstrip('/')
-                        if resolve_command(base) == 'model':
-                            if not self.process_command(text):
-                                self._should_exit = True
-                                if event.app.is_running:
-                                    event.app.exit()
-                            event.app.current_buffer.reset(append_to_history=True)
-                            return
-                    except Exception:
-                        pass
+                if self._should_handle_model_command_inline(text, has_images=has_images):
+                    if not self.process_command(text):
+                        self._should_exit = True
+                        if event.app.is_running:
+                            event.app.exit()
+                    event.app.current_buffer.reset(append_to_history=True)
+                    return
 
                 # Snapshot and clear attached images
                 images = list(self._attached_images)

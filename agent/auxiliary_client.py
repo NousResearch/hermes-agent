@@ -109,6 +109,15 @@ _API_KEY_PROVIDER_AUX_MODELS: Dict[str, str] = {
     "opencode-zen": "gemini-3-flash",
     "opencode-go": "glm-5",
     "kilocode": "google/gemini-3-flash-preview",
+    "xiaomi": "mimo-v2-flash",
+}
+
+# Vision-specific model overrides for direct providers.
+# When the user's main provider has a dedicated vision/multimodal model that
+# differs from their main chat model, map it here.  The vision auto-detect
+# "exotic provider" branch checks this before falling back to the main model.
+_PROVIDER_VISION_MODELS: Dict[str, str] = {
+    "xiaomi": "mimo-v2-omni",
 }
 
 # OpenRouter app attribution headers
@@ -1687,16 +1696,18 @@ def resolve_vision_provider_client(
                 if sync_client is not None:
                     return _finalize(main_provider, sync_client, default_model)
             else:
-                # Exotic provider (DeepSeek, Alibaba, named custom, etc.)
+                # Exotic provider (DeepSeek, Alibaba, Xiaomi, named custom, etc.)
+                # Use provider-specific vision model if available, otherwise main model.
+                vision_model = _PROVIDER_VISION_MODELS.get(main_provider, main_model)
                 rpc_client, rpc_model = resolve_provider_client(
-                    main_provider, main_model)
+                    main_provider, vision_model)
                 if rpc_client is not None:
                     logger.info(
                         "Vision auto-detect: using active provider %s (%s)",
-                        main_provider, rpc_model or main_model,
+                        main_provider, rpc_model or vision_model,
                     )
                     return _finalize(
-                        main_provider, rpc_client, rpc_model or main_model)
+                        main_provider, rpc_client, rpc_model or vision_model)
 
         # Fall back through aggregators.
         for candidate in _VISION_AUTO_PROVIDER_ORDER:

@@ -1661,7 +1661,7 @@ dependencies = [
     { name = "fal-client" },
     { name = "fire" },
     { name = "firecrawl-py" },
-    { name = "httpx" },
+    { name = "httpx", extra = ["socks"] },
     { name = "jinja2" },
     { name = "openai" },
     { name = "parallel-web" },
@@ -1691,6 +1691,8 @@ all = [
     { name = "faster-whisper" },
     { name = "honcho-ai" },
     { name = "lark-oapi" },
+    { name = "markdown", marker = "sys_platform == 'linux'" },
+    { name = "matrix-nio", extra = ["e2e"], marker = "sys_platform == 'linux'" },
     { name = "mcp" },
     { name = "mistralai" },
     { name = "modal" },
@@ -1827,6 +1829,7 @@ requires-dist = [
     { name = "hermes-agent", extras = ["homeassistant"], marker = "extra == 'all'" },
     { name = "hermes-agent", extras = ["honcho"], marker = "extra == 'all'" },
     { name = "hermes-agent", extras = ["honcho"], marker = "extra == 'termux'" },
+    { name = "hermes-agent", extras = ["matrix"], marker = "sys_platform == 'linux' and extra == 'all'" },
     { name = "hermes-agent", extras = ["mcp"], marker = "extra == 'all'" },
     { name = "hermes-agent", extras = ["mcp"], marker = "extra == 'termux'" },
     { name = "hermes-agent", extras = ["messaging"], marker = "extra == 'all'" },
@@ -1839,7 +1842,7 @@ requires-dist = [
     { name = "hermes-agent", extras = ["tts-premium"], marker = "extra == 'all'" },
     { name = "hermes-agent", extras = ["voice"], marker = "extra == 'all'" },
     { name = "honcho-ai", marker = "extra == 'honcho'", specifier = ">=2.0.1,<3" },
-    { name = "httpx", specifier = ">=0.28.1,<1" },
+    { name = "httpx", extras = ["socks"], specifier = ">=0.28.1,<1" },
     { name = "jinja2", specifier = ">=3.1.5,<4" },
     { name = "lark-oapi", marker = "extra == 'feishu'", specifier = ">=1.5.3,<2" },
     { name = "markdown", marker = "extra == 'matrix'", specifier = ">=3.6,<4" },
@@ -2032,6 +2035,9 @@ wheels = [
 [package.optional-dependencies]
 http2 = [
     { name = "h2" },
+]
+socks = [
+    { name = "socksio" },
 ]
 
 [[package]]
@@ -4498,6 +4504,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/a2/87/a6771e1546d97e7e041b6ae58d80074f81b7d5121207425c964ddf5cfdbd/sniffio-1.3.1.tar.gz", hash = "sha256:f4324edc670a0f49750a81b895f35c3adb843cca46f0530f79fc1babb23789dc", size = 20372, upload-time = "2024-02-25T23:20:04.057Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/e9/44/75a9c9421471a6c4805dbf2356f7c181a29c1879239abab1ea2cc8f38b40/sniffio-1.3.1-py3-none-any.whl", hash = "sha256:2f6da418d1f1e0fddd844478f41680e794e6051915791a034ff65e5f100525a2", size = 10235, upload-time = "2024-02-25T23:20:01.196Z" },
+]
+
+[[package]]
+name = "socksio"
+version = "1.0.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/f8/5c/48a7d9495be3d1c651198fd99dbb6ce190e2274d0f28b9051307bdec6b85/socksio-1.0.0.tar.gz", hash = "sha256:f88beb3da5b5c38b9890469de67d0cb0f9d494b78b106ca1845f96c10b91c4ac", size = 19055, upload-time = "2020-04-17T15:50:34.664Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/37/c3/6eeb6034408dac0fa653d126c9204ade96b819c936e136c5e8a6897eee9c/socksio-1.0.0-py3-none-any.whl", hash = "sha256:95dc1f15f9b34e8d7b16f06d74b8ccf48f609af32ab33c608d08761c5dcbb1f3", size = 12763, upload-time = "2020-04-17T15:50:31.878Z" },
 ]
 
 [[package]]

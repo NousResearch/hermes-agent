@@ -665,6 +665,13 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
             sys.exit(1)
         return path
 
+    # pre-built dist (nix / HERMES_TUI_DIR) needs no npm at all.
+    if not tui_dev:
+        bundled = _find_bundled_tui(tui_dir)
+        if bundled:
+            node = _node_bin("node")
+            return [node, str(bundled / "dist" / "entry.js")], bundled
+
     npm = _node_bin("npm")
     if not (tui_dir / "node_modules").exists():
         print("Installing TUI dependencies…")
@@ -703,11 +710,7 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
             return [str(tsx), "src/entry.tsx"], tui_dir
         return [npm, "start"], tui_dir
 
-    env_bundle = os.environ.get("HERMES_TUI_DIR")
-    uses_packaged_dist = bool(
-        env_bundle and (Path(env_bundle) / "dist" / "entry.js").exists()
-    )
-    if not uses_packaged_dist and _tui_build_needed(tui_dir):
+    if _tui_build_needed(tui_dir):
         result = subprocess.run(
             [npm, "run", "build"],
             cwd=str(tui_dir),
@@ -735,7 +738,8 @@ def _launch_tui(resume_session_id: Optional[str] = None, tui_dev: bool = False):
     tui_dir = PROJECT_ROOT / "ui-tui"
 
     env = os.environ.copy()
-    env["HERMES_ROOT"] = os.environ.get("HERMES_ROOT", str(PROJECT_ROOT))
+    env["HERMES_PYTHON_SRC_ROOT"] = os.environ.get("HERMES_PYTHON_SRC_ROOT", str(PROJECT_ROOT))
+    env.setdefault("HERMES_CWD", os.getcwd())
     if resume_session_id:
         env["HERMES_TUI_RESUME"] = resume_session_id
 

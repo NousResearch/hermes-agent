@@ -28,8 +28,24 @@ class TestWeixinFormatting:
 
         assert (
             adapter.format_message(content)
-            == "【Title】\n\n**Plan**\n\nUse **bold** and [docs](https://example.com)."
+            == "【Title】\n\n**Plan**\n\nUse **bold** and docs (https://example.com)."
         )
+
+    def test_format_message_converts_markdown_links_to_plain_text(self):
+        adapter = _make_adapter()
+
+        content = "Check [the docs](https://example.com) and [GitHub](https://github.com) for details"
+        assert (
+            adapter.format_message(content)
+            == "Check the docs (https://example.com) and GitHub (https://github.com) for details"
+        )
+
+    def test_format_message_preserves_links_inside_code_blocks(self):
+        adapter = _make_adapter()
+
+        content = "See below:\n\n```\n[link](https://example.com)\n```\n\nDone."
+        result = adapter.format_message(content)
+        assert "[link](https://example.com)" in result
 
     def test_format_message_rewrites_markdown_tables(self):
         adapter = _make_adapter()

@@ -110,6 +110,7 @@ TYPING_STOP = 2
 _HEADER_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
 _TABLE_RULE_RE = re.compile(r"^\s*\|?(?:\s*:?-{3,}:?\s*\|)+\s*:?-{3,}:?\s*\|?\s*$")
 _FENCE_RE = re.compile(r"^```([^\n`]*)\s*$")
+_MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 
 
 def check_weixin_requirements() -> bool:
@@ -647,7 +648,9 @@ def _normalize_markdown_blocks(content: str) -> str:
             result.append(_rewrite_table_block_for_weixin(table_lines))
             continue
 
-        result.append(_rewrite_headers_for_weixin(line))
+        rewritten = _rewrite_headers_for_weixin(line)
+        rewritten = _MARKDOWN_LINK_RE.sub(r"\1 (\2)", rewritten)
+        result.append(rewritten)
         i += 1
 
     normalized = "\n".join(item.rstrip() for item in result)

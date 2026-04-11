@@ -3,7 +3,7 @@ import { Box, Text, useStdout } from '@hermes/ink'
 import { artWidth, caduceus, CADUCEUS_WIDTH, logo, LOGO_WIDTH } from '../banner.js'
 import { flat } from '../lib/text.js'
 import type { Theme } from '../theme.js'
-import type { SessionInfo } from '../types.js'
+import type { PanelSection, SessionInfo } from '../types.js'
 
 export function ArtLines({ lines }: { lines: [string, string][] }) {
   return (
@@ -142,3 +142,41 @@ export function SessionPanel({ info, sid, t }: { info: SessionInfo; sid?: string
     </Box>
   )
 }
+
+export function Panel({ sections, t, title }: { sections: PanelSection[]; t: Theme; title: string }) {
+  return (
+    <Box borderColor={t.color.bronze} borderStyle="round" flexDirection="column" paddingX={2} paddingY={1}>
+      <Box justifyContent="center" marginBottom={1}>
+        <Text bold color={t.color.gold}>
+          {title}
+        </Text>
+      </Box>
+
+      {sections.map((sec, si) => (
+        <Box flexDirection="column" key={si} marginTop={si > 0 ? 1 : 0}>
+          {sec.title && (
+            <Text bold color={t.color.amber}>
+              {sec.title}
+            </Text>
+          )}
+
+          {sec.rows?.map(([k, v], ri) => (
+            <Text key={ri} wrap="truncate">
+              <Text color={t.color.dim}>{k.padEnd(20)}</Text>
+              <Text color={t.color.cornsilk}>{v}</Text>
+            </Text>
+          ))}
+
+          {sec.items?.map((item, ii) => (
+            <Text color={t.color.cornsilk} key={ii} wrap="truncate">
+              {item}
+            </Text>
+          ))}
+
+          {sec.text && <Text color={t.color.dim}>{sec.text}</Text>}
+        </Box>
+      ))}
+    </Box>
+  )
+}
+

@@ -106,8 +106,8 @@ _DEFAULT_PROVIDER_MODELS = {
     ],
     "zai": ["glm-5", "glm-4.7", "glm-4.5", "glm-4.5-flash"],
     "kimi-coding": ["kimi-k2.5", "kimi-k2-thinking", "kimi-k2-turbo-preview"],
-    "minimax": ["MiniMax-M1", "MiniMax-M1-40k", "MiniMax-M1-80k", "MiniMax-M1-128k", "MiniMax-M1-256k", "MiniMax-M2.5", "MiniMax-M2.7"],
-    "minimax-cn": ["MiniMax-M1", "MiniMax-M1-40k", "MiniMax-M1-80k", "MiniMax-M1-128k", "MiniMax-M1-256k", "MiniMax-M2.5", "MiniMax-M2.7"],
+    "minimax": ["MiniMax-M2.7", "MiniMax-M2.5", "MiniMax-M2.1", "MiniMax-M2"],
+    "minimax-cn": ["MiniMax-M2.7", "MiniMax-M2.5", "MiniMax-M2.1", "MiniMax-M2"],
     "ai-gateway": ["anthropic/claude-opus-4.6", "anthropic/claude-sonnet-4.6", "openai/gpt-5", "google/gemini-3-flash"],
     "kilocode": ["anthropic/claude-opus-4.6", "anthropic/claude-sonnet-4.6", "openai/gpt-5.4", "google/gemini-3-pro-preview", "google/gemini-3-flash-preview"],
     "opencode-zen": ["gpt-5.4", "gpt-5.3-codex", "claude-sonnet-4-6", "gemini-3-flash", "glm-5", "kimi-k2.5", "minimax-m2.7"],
@@ -557,6 +557,8 @@ def _print_setup_summary(config: dict, hermes_home):
         tool_status.append(("Text-to-Speech (OpenAI)", True, None))
     elif tts_provider == "minimax" and get_env_value("MINIMAX_API_KEY"):
         tool_status.append(("Text-to-Speech (MiniMax)", True, None))
+    elif tts_provider == "mistral" and get_env_value("MISTRAL_API_KEY"):
+        tool_status.append(("Text-to-Speech (Mistral Voxtral)", True, None))
     elif tts_provider == "neutts":
         try:
             import importlib.util
@@ -1044,6 +1046,7 @@ def _setup_tts_provider(config: dict):
         "elevenlabs": "ElevenLabs",
         "openai": "OpenAI TTS",
         "minimax": "MiniMax TTS",
+        "mistral": "Mistral Voxtral TTS",
         "neutts": "NeuTTS",
     }
     current_label = provider_labels.get(current_provider, current_provider)
@@ -1064,10 +1067,11 @@ def _setup_tts_provider(config: dict):
             "ElevenLabs (premium quality, needs API key)",
             "OpenAI TTS (good quality, needs API key)",
             "MiniMax TTS (high quality with voice cloning, needs API key)",
+            "Mistral Voxtral TTS (multilingual, native Opus, needs API key)",
             "NeuTTS (local on-device, free, ~300MB model download)",
         ]
     )
-    providers.extend(["edge", "elevenlabs", "openai", "minimax", "neutts"])
+    providers.extend(["edge", "elevenlabs", "openai", "minimax", "mistral", "neutts"])
     choices.append(f"Keep current ({current_label})")
     keep_current_idx = len(choices) - 1
     idx = prompt_choice("Select TTS provider:", choices, keep_current_idx)
@@ -1141,6 +1145,18 @@ def _setup_tts_provider(config: dict):
             if api_key:
                 save_env_value("MINIMAX_API_KEY", api_key)
                 print_success("MiniMax TTS API key saved")
+            else:
+                print_warning("No API key provided. Falling back to Edge TTS.")
+                selected = "edge"
+
+    elif selected == "mistral":
+        existing = get_env_value("MISTRAL_API_KEY")
+        if not existing:
+            print()
+            api_key = prompt("Mistral API key for TTS", password=True)
+            if api_key:
+                save_env_value("MISTRAL_API_KEY", api_key)
+                print_success("Mistral TTS API key saved")
             else:
                 print_warning("No API key provided. Falling back to Edge TTS.")
                 selected = "edge"
@@ -1925,9 +1941,9 @@ def _setup_matrix():
             save_env_value("MATRIX_ENCRYPTION", "true")
             print_success("E2EE enabled")
 
-        matrix_pkg = "matrix-nio[e2e]" if want_e2ee else "matrix-nio"
+        matrix_pkg = "mautrix[encryption]" if want_e2ee else "mautrix"
         try:
-            __import__("nio")
+            __import__("mautrix")
         except ImportError:
             print_info(f"Installing {matrix_pkg}...")
             import subprocess
@@ -2922,19 +2938,33 @@ def run_setup_wizard(args):
     _offer_launch_chat()
 
 
+def _resolve_hermes_chat_argv() -> Optional[list[str]]:
+    """Resolve argv for launching ``hermes chat`` in a fresh process."""
+    hermes_bin = shutil.which("hermes")
+    if hermes_bin:
+        return [hermes_bin, "chat"]
+
+    try:
+        if importlib.util.find_spec("hermes_cli") is not None:
+            return [sys.executable, "-m", "hermes_cli.main", "chat"]
+    except Exception:
+        pass
+
+    return None
+
+
 def _offer_launch_chat():
     """Prompt the user to jump straight into chat after setup."""
     print()
-    if prompt_yes_no("Launch hermes chat now?", True):
-        from hermes_cli.main import cmd_chat
-        from types import SimpleNamespace
-        cmd_chat(SimpleNamespace(
-            query=None, resume=None, continue_last=None, model=None,
-            provider=None, effort=None, skin=None, oneshot=False,
-            quiet=False, verbose=False, toolsets=None, skills=None,
-            yolo=False, source=None, worktree=False, checkpoints=False,
-            pass_session_id=False, max_turns=None,
-        ))
+    if not prompt_yes_no("Launch hermes chat now?", True):
+        return
+
+    chat_argv = _resolve_hermes_chat_argv()
+    if not chat_argv:
+        print_info("Could not relaunch Hermes automatically. Run 'hermes chat' manually.")
+        return
+
+    os.execvp(chat_argv[0], chat_argv)
 
 
 def _run_first_time_quick_setup(config: dict, hermes_home, is_existing: bool):

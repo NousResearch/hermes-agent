@@ -464,7 +464,7 @@ class TestChatCompletionsEndpoint:
 
     @pytest.mark.asyncio
     async def test_stream_includes_tool_progress(self, adapter):
-        """tool_progress_callback fires → progress appears in the SSE stream."""
+        """tool_progress_callback fires → progress appears as custom SSE event, not in delta.content."""
         import asyncio
 
         app = _create_app(adapter)
@@ -495,8 +495,26 @@ class TestChatCompletionsEndpoint:
                 assert resp.status == 200
                 body = await resp.text()
                 assert "[DONE]" in body
-                # Tool progress message must appear in the stream
-                assert "ls -la" in body
+                # Tool progress must appear as a custom SSE event, not in
+                # delta.content — prevents model from learning to imitate
+                # markers instead of calling tools (#6972).
+                assert "event: hermes.tool.progress" in body
+                assert '"tool": "terminal"' in body
+                assert '"label": "ls -la"' in body
+                # The progress marker must NOT appear inside any
+                # chat.completion.chunk delta.content field.
+                import json as _json
+                for line in body.splitlines():
+                    if line.startswith("data: ") and line.strip() != "data: [DONE]":
+                        try:
+                            chunk = _json.loads(line[len("data: "):])
+                        except _json.JSONDecodeError:
+                            continue
+                        if chunk.get("object") == "chat.completion.chunk":
+                            for choice in chunk.get("choices", []):
+                                content = choice.get("delta", {}).get("content", "")
+                                # Tool emoji markers must never leak into content
+                                assert "ls -la" not in content or content == "Here are the files."
                 # Final content must also be present
                 assert "Here are the files." in body
 
@@ -532,10 +550,12 @@ class TestChatCompletionsEndpoint:
                 )
                 assert resp.status == 200
                 body = await resp.text()
-                # Internal _thinking event should NOT appear
+                # Internal _thinking event should NOT appear anywhere
                 assert "some internal state" not in body
-                # Real tool progress should appear
-                assert "Python docs" in body
+                # Real tool progress should appear as custom SSE event
+                assert "event: hermes.tool.progress" in body
+                assert '"tool": "web_search"' in body
+                assert '"label": "Python docs"' in body
 
     @pytest.mark.asyncio
     async def test_no_user_message_returns_400(self, adapter):

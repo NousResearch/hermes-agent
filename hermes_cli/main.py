@@ -1080,6 +1080,42 @@ def select_provider_and_model(args=None):
     elif selected_provider in ("gemini", "zai", "minimax", "minimax-cn", "kilocode", "opencode-zen", "opencode-go", "ai-gateway", "alibaba", "huggingface"):
         _model_flow_api_key_provider(config, selected_provider, current_model)
 
+    # ── Post-switch cleanup: clear stale OPENAI_BASE_URL ──────────────
+    # When the user switches to a named provider (anything except "custom"),
+    # a leftover OPENAI_BASE_URL in ~/.hermes/.env can poison auxiliary
+    # clients that use provider:auto. Clear it proactively.  (#5161)
+    if selected_provider not in ("custom", "cancel", "remove-custom") \
+            and not selected_provider.startswith("custom:"):
+        _clear_stale_openai_base_url()
+
+
+def _clear_stale_openai_base_url():
+    """Remove OPENAI_BASE_URL from ~/.hermes/.env if the active provider is not 'custom'.
+
+    After a provider switch, a leftover OPENAI_BASE_URL causes auxiliary
+    clients (compression, vision, delegation) with provider:auto to route
+    requests to the old custom endpoint instead of the newly selected
+    provider.  See issue #5161.
+    """
+    from hermes_cli.config import get_env_value, save_env_value, load_config
+
+    cfg = load_config()
+    model_cfg = cfg.get("model", {})
+    if isinstance(model_cfg, dict):
+        provider = (model_cfg.get("provider") or "").strip().lower()
+    else:
+        provider = ""
+
+    if provider == "custom" or not provider:
+        return  # custom provider legitimately uses OPENAI_BASE_URL
+
+    stale_url = get_env_value("OPENAI_BASE_URL")
+    if stale_url:
+        save_env_value("OPENAI_BASE_URL", "")
+        print(f"Cleared stale OPENAI_BASE_URL from .env (was: {stale_url[:40]}...)"
+              if len(stale_url) > 40
+              else f"Cleared stale OPENAI_BASE_URL from .env (was: {stale_url})")
+
 
 def _prompt_provider_choice(choices, *, default=0):
     """Show provider selection menu with curses arrow-key navigation.
@@ -4447,7 +4483,7 @@ For more help on a command:
     gateway_subparsers = gateway_parser.add_subparsers(dest="gateway_command")
     
     # gateway run (default)
-    gateway_run = gateway_subparsers.add_parser("run", help="Run gateway in foreground")
+    gateway_run = gateway_subparsers.add_parser("run", help="Run gateway in foreground (recommended for WSL, Docker, Termux)")
     gateway_run.add_argument("-v", "--verbose", action="count", default=0,
                              help="Increase stderr log verbosity (-v=INFO, -vv=DEBUG)")
     gateway_run.add_argument("-q", "--quiet", action="store_true",
@@ -4456,7 +4492,7 @@ For more help on a command:
                              help="Replace any existing gateway instance (useful for systemd)")
     
     # gateway start
-    gateway_start = gateway_subparsers.add_parser("start", help="Start gateway service")
+    gateway_start = gateway_subparsers.add_parser("start", help="Start the installed systemd/launchd background service")
     gateway_start.add_argument("--system", action="store_true", help="Target the Linux system-level gateway service")
     
     # gateway stop
@@ -4474,7 +4510,7 @@ For more help on a command:
     gateway_status.add_argument("--system", action="store_true", help="Target the Linux system-level gateway service")
     
     # gateway install
-    gateway_install = gateway_subparsers.add_parser("install", help="Install gateway as service")
+    gateway_install = gateway_subparsers.add_parser("install", help="Install gateway as a systemd/launchd background service")
     gateway_install.add_argument("--force", action="store_true", help="Force reinstall")
     gateway_install.add_argument("--system", action="store_true", help="Install as a Linux system-level service (starts at boot)")
     gateway_install.add_argument("--run-as-user", dest="run_as_user", help="User account the Linux system service should run as")

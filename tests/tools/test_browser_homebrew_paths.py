@@ -15,6 +15,19 @@ from tools.browser_tool import (
     _SANE_PATH,
     check_browser_requirements,
 )
+import tools.browser_tool as _bt
+
+
+@pytest.fixture(autouse=True)
+def _clear_browser_caches():
+    """Clear lru_cache and manual caches between tests."""
+    _discover_homebrew_node_dirs.cache_clear()
+    _bt._cached_agent_browser = None
+    _bt._agent_browser_resolved = False
+    yield
+    _discover_homebrew_node_dirs.cache_clear()
+    _bt._cached_agent_browser = None
+    _bt._agent_browser_resolved = False
 
 
 class TestSanePath:
@@ -38,7 +51,7 @@ class TestDiscoverHomebrewNodeDirs:
     def test_returns_empty_when_no_homebrew(self):
         """Non-macOS systems without /opt/homebrew/opt should return empty."""
         with patch("os.path.isdir", return_value=False):
-            assert _discover_homebrew_node_dirs() == []
+            assert _discover_homebrew_node_dirs() == ()
 
     def test_finds_versioned_node_dirs(self):
         """Should discover node@20/bin, node@24/bin etc."""
@@ -68,13 +81,13 @@ class TestDiscoverHomebrewNodeDirs:
         with patch("os.path.isdir", return_value=True), \
              patch("os.listdir", return_value=["node"]):
             result = _discover_homebrew_node_dirs()
-        assert result == []
+        assert result == ()
 
     def test_handles_oserror_gracefully(self):
         """Should return empty list if listdir raises OSError."""
         with patch("os.path.isdir", return_value=True), \
              patch("os.listdir", side_effect=OSError("Permission denied")):
-            assert _discover_homebrew_node_dirs() == []
+            assert _discover_homebrew_node_dirs() == ()
 
 
 class TestFindAgentBrowser:

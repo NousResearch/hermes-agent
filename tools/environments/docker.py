@@ -409,11 +409,12 @@ class DockerEnvironment(BaseEnvironment):
         container_name = f"hermes-{uuid.uuid4().hex[:8]}"
         run_cmd = [
             self._docker_exe, "run", "-d",
+            "--init",           # tini/catatonit as PID 1 — reaps zombie children
             "--name", container_name,
             "-w", cwd,
             *all_run_args,
             image,
-            "sleep", "2h",
+            "sleep", "infinity",  # no fixed lifetime — idle reaper handles cleanup
         ]
         logger.debug(f"Starting container: {' '.join(run_cmd)}")
         result = subprocess.run(

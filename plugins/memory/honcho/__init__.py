@@ -297,6 +297,15 @@ class HonchoMemoryProvider(MemoryProvider):
                 logger.debug("Honcho not configured — plugin inactive")
                 return
 
+            # Override peer_name with gateway user_id for per-user memory scoping.
+            # Messaging/gateway platforms should scope memory to the concrete user
+            # identity even if the global config carries a generic static peer name.
+            # CLI/local sessions still preserve an explicit configured peer_name.
+            _gw_user_id = kwargs.get("user_id")
+            _platform = str(kwargs.get("platform") or "cli").strip().lower()
+            if _gw_user_id and (_platform not in {"", "cli", "local"} or not cfg.peer_name):
+                cfg.peer_name = _gw_user_id
+
             self._config = cfg
 
             # ----- B1: recall_mode from config -----

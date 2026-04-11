@@ -520,6 +520,35 @@ class TestVisionResponseHandling:
         assert "empty content after retry" in result["error"]
         assert mock_llm.await_count == 2
 
+    @pytest.mark.asyncio
+    async def test_sse_string_response_is_parsed_as_successful_analysis(self, tmp_path):
+        image = tmp_path / "image.png"
+        image.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
+
+        sse_response = (
+            'data: {"choices":[{"delta":{"reasoning_content":"先想一下"}}]}\n\n'
+            'data: {"choices":[{"delta":{"content":"这是一张测试图"}}]}\n\n'
+            "data: [DONE]\n\n"
+        )
+
+        with (
+            patch(
+                "tools.vision_tools._image_to_base64_data_url",
+                return_value="data:image/png;base64,abc",
+            ),
+            patch(
+                "tools.vision_tools.async_call_llm",
+                new_callable=AsyncMock,
+                return_value=sse_response,
+            ),
+        ):
+            result = json.loads(
+                await vision_analyze_tool(str(image), "describe this", "test/model")
+            )
+
+        assert result["success"] is True
+        assert result["analysis"] == "这是一张测试图"
+
 
 # ---------------------------------------------------------------------------
 # check_vision_requirements & get_debug_session_info

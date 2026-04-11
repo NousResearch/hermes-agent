@@ -292,3 +292,13 @@ class TestExtractContentOrReasoning:
         """When both content and reasoning exist, content wins."""
         response = _make_response("Actual answer", reasoning="Internal reasoning")
         assert extract_content_or_reasoning(response) == "Actual answer"
+
+    def test_sse_string_content_is_collapsed_into_final_text(self):
+        response = (
+            'data: {"choices":[{"delta":{"reasoning_content":"先想一下"}}]}\n\n'
+            'data: {"choices":[{"delta":{"content":"图里"}}]}\n\n'
+            'data: {"choices":[{"delta":{"content":"有一只猫"}}]}\n\n'
+            "data: [DONE]\n\n"
+        )
+
+        assert extract_content_or_reasoning(response) == "图里有一只猫"

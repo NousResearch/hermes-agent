@@ -2365,7 +2365,62 @@ def extract_content_or_reasoning(response) -> str:
 
     Returns the best available text, or ``""`` if nothing found.
     """
+    import json
     import re
+
+    if isinstance(response, str):
+        text = response.strip()
+        if not text:
+            return ""
+
+        content_parts: list[str] = []
+        reasoning_parts: list[str] = []
+
+        def _append_payload(payload: Any) -> None:
+            if not isinstance(payload, dict):
+                return
+            for choice in payload.get("choices") or []:
+                if not isinstance(choice, dict):
+                    continue
+                message = choice.get("message") or {}
+                delta = choice.get("delta") or {}
+                for container in (message, delta):
+                    if not isinstance(container, dict):
+                        continue
+                    content = container.get("content")
+                    if isinstance(content, str) and content:
+                        content_parts.append(content)
+                    reasoning = container.get("reasoning_content")
+                    if isinstance(reasoning, str) and reasoning:
+                        reasoning_parts.append(reasoning)
+
+        if text.startswith("data:"):
+            for line in text.splitlines():
+                line = line.strip()
+                if not line.startswith("data:"):
+                    continue
+                payload = line[len("data:"):].strip()
+                if not payload or payload == "[DONE]":
+                    continue
+                try:
+                    _append_payload(json.loads(payload))
+                except Exception:
+                    continue
+        else:
+            try:
+                _append_payload(json.loads(text))
+            except Exception:
+                return text
+
+        assembled = "".join(content_parts).strip()
+        if assembled:
+            return assembled
+        assembled_reasoning = "\n\n".join(
+            part.strip() for part in reasoning_parts if isinstance(part, str) and part.strip()
+        ).strip()
+        if assembled_reasoning:
+            return assembled_reasoning
+        return text if not text.startswith("data:") else ""
 
     msg = response.choices[0].message
     content = (msg.content or "").strip()

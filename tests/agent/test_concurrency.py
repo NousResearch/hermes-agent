@@ -6,6 +6,7 @@ import time
 import pytest
 
 from agent.concurrency import ConcurrencySemaphore, get_semaphore, reset_registry
+from agent.model_metadata import get_default_concurrency
 
 
 class TestConcurrencySemaphore:
@@ -134,3 +135,27 @@ class TestRegistry:
         sem1 = get_semaphore("zai", "key-1", max_concurrent=1)
         sem2 = get_semaphore("kimi", "key-1", max_concurrent=1)
         assert sem1 is not sem2
+
+
+class TestDefaultConcurrency:
+
+    def test_zai_glm_5_1_returns_1(self):
+        assert get_default_concurrency("zai", "glm-5.1") == 1
+
+    def test_zai_glm_5_returns_2(self):
+        assert get_default_concurrency("zai", "glm-5") == 2
+
+    def test_zai_glm_4_5_returns_10(self):
+        assert get_default_concurrency("zai", "glm-4.5") == 10
+
+    def test_zai_unknown_model_returns_provider_default(self):
+        assert get_default_concurrency("zai", "glm-999") == 10
+
+    def test_kimi_returns_1(self):
+        assert get_default_concurrency("kimi-coding", None) == 1
+
+    def test_unknown_provider_returns_global_default(self):
+        assert get_default_concurrency("openrouter", None) >= 8
+
+    def test_none_provider_returns_global_default(self):
+        assert get_default_concurrency(None, None) >= 1

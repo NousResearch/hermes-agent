@@ -274,7 +274,35 @@ TOOLSETS = {
         ],
         "includes": []
     },
-    
+
+    "hermes-web": {
+        "description": "Web UI / WebAPI toolset — default for browser-facing sessions via X-Platform: web; omits terminal and code execution for safer interactive use",
+        "tools": [
+            # Web
+            "web_search", "web_extract",
+            # File manipulation
+            "read_file", "write_file", "patch", "search_files",
+            # Vision + image generation
+            "vision_analyze", "image_generate",
+            # Skills
+            "skills_list", "skill_view", "skill_manage",
+            # Browser automation
+            "browser_navigate", "browser_snapshot", "browser_click",
+            "browser_type", "browser_scroll", "browser_back",
+            "browser_press", "browser_get_images",
+            "browser_vision", "browser_console",
+            # Planning & memory
+            "todo", "memory",
+            # Session history search
+            "session_search",
+            # Delegation
+            "delegate_task",
+            # Cronjob management
+            "cronjob",
+        ],
+        "includes": []
+    },
+
     "hermes-cli": {
         "description": "Full interactive CLI toolset - all default tools plus cronjob management",
         "tools": _HERMES_CORE_TOOLS,

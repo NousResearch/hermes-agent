@@ -453,24 +453,34 @@ class APIServerAdapter(BasePlatformAdapter):
         session_id: Optional[str] = None,
         stream_delta_callback=None,
         tool_progress_callback=None,
+        platform: str = "api_server",
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
 
         Uses _resolve_runtime_agent_kwargs() to pick up model, api_key,
         base_url, etc. from config.yaml / env vars.  Toolsets are resolved
-        from config.yaml platform_toolsets.api_server (same as all other
-        gateway platforms), falling back to the hermes-api-server default.
+        from config.yaml platform_toolsets.<platform> (same as all other
+        gateway platforms), falling back to the platform's default toolset.
+
+        The ``platform`` parameter defaults to ``"api_server"`` for backward
+        compatibility but can be overridden by passing ``X-Platform: web``
+        (or any other registered platform key) in the HTTP request header.
+        When ``platform="web"`` the agent uses ``platform_toolsets.web`` from
+        config.yaml, falling back to ``hermes-web`` if not configured.
         """
         from run_agent import AIAgent
         from gateway.run import _resolve_runtime_agent_kwargs, _resolve_gateway_model, _load_gateway_config
-        from hermes_cli.tools_config import _get_platform_tools
+        from hermes_cli.tools_config import _get_platform_tools, PLATFORMS
 
         runtime_kwargs = _resolve_runtime_agent_kwargs()
         model = _resolve_gateway_model()
 
         user_config = _load_gateway_config()
-        enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
+        # Resolve the effective platform: honour the caller-supplied value only
+        # if it is a known platform key; otherwise fall back to "api_server".
+        effective_platform = platform if platform in PLATFORMS else "api_server"
+        enabled_toolsets = sorted(_get_platform_tools(user_config, effective_platform))
 
         max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
 
@@ -488,7 +498,7 @@ class APIServerAdapter(BasePlatformAdapter):
             ephemeral_system_prompt=ephemeral_system_prompt or None,
             enabled_toolsets=enabled_toolsets,
             session_id=session_id,
-            platform="api_server",
+            platform=effective_platform,
             stream_delta_callback=stream_delta_callback,
             tool_progress_callback=tool_progress_callback,
             session_db=self._ensure_session_db(),
@@ -628,6 +638,13 @@ class APIServerAdapter(BasePlatformAdapter):
         model_name = body.get("model", self._model_name)
         created = int(time.time())
 
+        # Resolve the effective platform for this request.
+        # Callers (e.g. web UIs) may supply ``X-Platform: web`` to opt into
+        # the platform_toolsets.web configuration from config.yaml.  Any
+        # unrecognised value silently falls back to "api_server" inside
+        # _create_agent, so no validation is needed here.
+        request_platform = request.headers.get("X-Platform", "api_server").strip().lower() or "api_server"
+
         if stream:
             import queue as _q
             _stream_q: _q.Queue = _q.Queue()
@@ -685,6 +702,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 stream_delta_callback=_on_delta,
                 tool_progress_callback=_on_tool_progress,
                 agent_ref=agent_ref,
+                platform=request_platform,
             ))
 
             return await self._write_sse_chat_completion(
@@ -699,6 +717,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 conversation_history=history,
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
+                platform=request_platform,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
@@ -974,6 +993,9 @@ class APIServerAdapter(BasePlatformAdapter):
         if body.get("truncation") == "auto" and len(conversation_history) > 100:
             conversation_history = conversation_history[-100:]
 
+        # Resolve the effective platform for this request (same logic as chat completions).
+        request_platform = request.headers.get("X-Platform", "api_server").strip().lower() or "api_server"
+
         # Run the agent (with Idempotency-Key support)
         session_id = str(uuid.uuid4())
 
@@ -983,6 +1005,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 conversation_history=conversation_history,
                 ephemeral_system_prompt=instructions,
                 session_id=session_id,
+                platform=request_platform,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
@@ -1404,6 +1427,7 @@ class APIServerAdapter(BasePlatformAdapter):
         stream_delta_callback=None,
         tool_progress_callback=None,
         agent_ref: Optional[list] = None,
+        platform: str = "api_server",
     ) -> tuple:
         """
         Create an agent and run a conversation in a thread executor.
@@ -1424,6 +1448,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 session_id=session_id,
                 stream_delta_callback=stream_delta_callback,
                 tool_progress_callback=tool_progress_callback,
+                platform=platform,
             )
             if agent_ref is not None:
                 agent_ref[0] = agent
@@ -1584,6 +1609,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
         session_id = body.get("session_id") or run_id
         ephemeral_system_prompt = instructions
+        run_platform = request.headers.get("X-Platform", "api_server").strip().lower() or "api_server"
 
         async def _run_and_close():
             try:
@@ -1592,6 +1618,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     session_id=session_id,
                     stream_delta_callback=_text_cb,
                     tool_progress_callback=event_cb,
+                    platform=run_platform,
                 )
                 def _run_sync():
                     r = agent.run_conversation(

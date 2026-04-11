@@ -2046,6 +2046,12 @@ def _setup_whatsapp():
         print_info("or personal self-chat) and pair via QR code.")
 
 
+def _setup_feishu():
+    """Configure Feishu / Lark via the standard platform setup."""
+    from hermes_cli.gateway import _setup_feishu as _gateway_setup_feishu
+    _gateway_setup_feishu()
+
+
 def _setup_weixin():
     """Configure Weixin (personal WeChat) via iLink Bot API QR login."""
     from hermes_cli.gateway import _setup_weixin as _gateway_setup_weixin
@@ -2171,6 +2177,7 @@ _GATEWAY_PLATFORMS = [
     ("Matrix", "MATRIX_ACCESS_TOKEN", _setup_matrix),
     ("Mattermost", "MATTERMOST_TOKEN", _setup_mattermost),
     ("WhatsApp", "WHATSAPP_ENABLED", _setup_whatsapp),
+    ("Feishu / Lark", "FEISHU_APP_ID", _setup_feishu),
     ("Weixin (WeChat)", "WEIXIN_ACCOUNT_ID", _setup_weixin),
     ("BlueBubbles (iMessage)", "BLUEBUBBLES_SERVER_URL", _setup_bluebubbles),
     ("Webhooks (GitHub, GitLab, etc.)", "WEBHOOK_ENABLED", _setup_webhooks),
@@ -2216,6 +2223,7 @@ def setup_gateway(config: dict):
         or get_env_value("MATRIX_ACCESS_TOKEN")
         or get_env_value("MATRIX_PASSWORD")
         or get_env_value("WHATSAPP_ENABLED")
+        or get_env_value("FEISHU_APP_ID")
         or get_env_value("BLUEBUBBLES_SERVER_URL")
         or get_env_value("WEBHOOK_ENABLED")
     )
@@ -2408,6 +2416,8 @@ def _get_section_config_summary(config: dict, section_key: str) -> Optional[str]
             platforms.append("WhatsApp")
         if get_env_value("SIGNAL_ACCOUNT"):
             platforms.append("Signal")
+        if get_env_value("FEISHU_APP_ID"):
+            platforms.append("Feishu")
         if get_env_value("BLUEBUBBLES_SERVER_URL"):
             platforms.append("BlueBubbles")
         if platforms:

@@ -1981,6 +1981,12 @@ def _setup_whatsapp():
     cmd_whatsapp(argparse.Namespace())
 
 
+def _setup_feishu():
+    """Configure Feishu / Lark via the standard platform setup."""
+    feishu_platform = next(p for p in _PLATFORMS if p["key"] == "feishu")
+    _setup_standard_platform(feishu_platform)
+
+
 def _is_service_installed() -> bool:
     """Check if the gateway is installed as a system service."""
     if supports_systemd_services():

@@ -185,8 +185,13 @@ jobs:
 
           printf '%s\n' "$BODY" >> "$GITHUB_STEP_SUMMARY"
 
-          if ! gh pr comment "${{ github.event.pull_request.number }}" --body "$BODY"; then
-            echo "::warning::Unable to post PR comment (likely fork PR token restrictions). Findings were written to the job summary instead."
+          if ! COMMENT_ERR="$(gh pr comment "${{ github.event.pull_request.number }}" --body "$BODY" 2>&1)"; then
+            if printf '%s' "$COMMENT_ERR" | grep -Eqi 'resource not accessible by integration|http 403|forbidden'; then
+              echo "::warning::Unable to post PR comment due to token restrictions. Findings were written to the job summary instead."
+            else
+              echo "$COMMENT_ERR" >&2
+              exit 1
+            fi
           fi
 
       - name: Fail on critical findings

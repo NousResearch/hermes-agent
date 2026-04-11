@@ -1171,6 +1171,45 @@ def _resolve_attachment_path(raw_path: str) -> Path | None:
     return resolved
 
 
+def _format_process_notification(evt: dict) -> "str | None":
+    """Format a process notification event into a [SYSTEM: ...] message.
+
+    Handles both completion events (notify_on_complete) and watch pattern
+    match events from the unified completion_queue.
+    """
+    evt_type = evt.get("type", "completion")
+    _sid = evt.get("session_id", "unknown")
+    _cmd = evt.get("command", "unknown")
+
+    if evt_type == "watch_disabled":
+        return f"[SYSTEM: {evt.get('message', '')}]"
+
+    if evt_type == "watch_match":
+        _pat = evt.get("pattern", "?")
+        _out = evt.get("output", "")
+        _sup = evt.get("suppressed", 0)
+        text = (
+            f"[SYSTEM: Background process {_sid} matched "
+            f"watch pattern \"{_pat}\".\n"
+            f"Command: {_cmd}\n"
+            f"Matched output:\n{_out}"
+        )
+        if _sup:
+            text += f"\n({_sup} earlier matches were suppressed by rate limit)"
+        text += "]"
+        return text
+
+    # Default: completion event
+    _exit = evt.get("exit_code", "?")
+    _out = evt.get("output", "")
+    return (
+        f"[SYSTEM: Background process {_sid} completed "
+        f"(exit code {_exit}).\n"
+        f"Command: {_cmd}\n"
+        f"Output:\n{_out}]"
+    )
+
+
 def _detect_file_drop(user_input: str) -> "dict | None":
     """Detect if *user_input* starts with a real local file path.
 
@@ -8870,23 +8909,15 @@ class HermesCLI:
                         # Periodic config watcher — auto-reload MCP on mcp_servers change
                         if not self._agent_running:
                             self._check_config_mcp_changes()
-                            # Check for background process completion notifications
-                            # while the agent is idle (user hasn't typed anything yet).
+                            # Check for background process notifications (completions
+                            # and watch pattern matches) while agent is idle.
                             try:
                                 from tools.process_registry import process_registry
                                 if not process_registry.completion_queue.empty():
-                                    completion = process_registry.completion_queue.get_nowait()
-                                    _exit = completion.get("exit_code", "?")
-                                    _cmd = completion.get("command", "unknown")
-                                    _sid = completion.get("session_id", "unknown")
-                                    _out = completion.get("output", "")
-                                    _synth = (
-                                        f"[SYSTEM: Background process {_sid} completed "
-                                        f"(exit code {_exit}).\n"
-                                        f"Command: {_cmd}\n"
-                                        f"Output:\n{_out}]"
-                                    )
-                                    self._pending_input.put(_synth)
+                                    evt = process_registry.completion_queue.get_nowait()
+                                    _synth = _format_process_notification(evt)
+                                    if _synth:
+                                        self._pending_input.put(_synth)
                             except Exception:
                                 pass
                         continue
@@ -9004,25 +9035,15 @@ class HermesCLI:
                                     _cprint(f"{_DIM}Voice auto-restart failed: {e}{_RST}")
                             threading.Thread(target=_restart_recording, daemon=True).start()
 
-                        # Drain process completion notifications — any background
-                        # process that finished with notify_on_complete while the
-                        # agent was running (or before) gets auto-injected as a
-                        # new user message so the agent can react to it.
+                        # Drain process notifications (completions + watch matches)
+                        # that arrived while the agent was running.
                         try:
                             from tools.process_registry import process_registry
                             while not process_registry.completion_queue.empty():
-                                completion = process_registry.completion_queue.get_nowait()
-                                _exit = completion.get("exit_code", "?")
-                                _cmd = completion.get("command", "unknown")
-                                _sid = completion.get("session_id", "unknown")
-                                _out = completion.get("output", "")
-                                _synth = (
-                                    f"[SYSTEM: Background process {_sid} completed "
-                                    f"(exit code {_exit}).\n"
-                                    f"Command: {_cmd}\n"
-                                    f"Output:\n{_out}]"
-                                )
-                                self._pending_input.put(_synth)
+                                evt = process_registry.completion_queue.get_nowait()
+                                _synth = _format_process_notification(evt)
+                                if _synth:
+                                    self._pending_input.put(_synth)
                         except Exception:
                             pass  # Non-fatal — don't break the main loop
 

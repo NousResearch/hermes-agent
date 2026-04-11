@@ -11,24 +11,59 @@ import pytest
 from gateway.config import PlatformConfig
 
 
-def _ensure_nio_mock():
-    """Install a mock nio module when matrix-nio isn't available."""
-    if "nio" in sys.modules and hasattr(sys.modules["nio"], "__file__"):
+def _ensure_mautrix_mock():
+    """Install mock mautrix modules when mautrix-python isn't available."""
+    if "mautrix" in sys.modules and hasattr(sys.modules["mautrix"], "__file__"):
         return
-    nio_mod = MagicMock()
-    nio_mod.MegolmEvent = type("MegolmEvent", (), {})
-    nio_mod.RoomMessageText = type("RoomMessageText", (), {})
-    nio_mod.RoomMessageImage = type("RoomMessageImage", (), {})
-    nio_mod.RoomMessageAudio = type("RoomMessageAudio", (), {})
-    nio_mod.RoomMessageVideo = type("RoomMessageVideo", (), {})
-    nio_mod.RoomMessageFile = type("RoomMessageFile", (), {})
-    nio_mod.DownloadResponse = type("DownloadResponse", (), {})
-    nio_mod.MemoryDownloadResponse = type("MemoryDownloadResponse", (), {})
-    nio_mod.InviteMemberEvent = type("InviteMemberEvent", (), {})
-    sys.modules.setdefault("nio", nio_mod)
+
+    # Root module
+    mautrix_mod = MagicMock()
+
+    # mautrix.types — commonly imported types
+    types_mod = MagicMock()
+    types_mod.EventType = MagicMock()
+    types_mod.RoomID = str
+    types_mod.UserID = str
+    types_mod.EventID = str
+    types_mod.ContentURI = str
+    types_mod.RoomCreatePreset = MagicMock()
+    types_mod.PresenceState = MagicMock()
+    types_mod.PaginationDirection = MagicMock()
+    types_mod.SyncToken = str
+    types_mod.TrustState = MagicMock()
+
+    # mautrix.client
+    client_mod = MagicMock()
+    client_mod.Client = MagicMock()
+    client_mod.InternalEventType = MagicMock()
+
+    # mautrix.client.state_store
+    state_store_mod = MagicMock()
+    state_store_mod.MemoryStateStore = MagicMock()
+    state_store_mod.MemorySyncStore = MagicMock()
+
+    # mautrix.api
+    api_mod = MagicMock()
+    api_mod.HTTPAPI = MagicMock()
+
+    # mautrix.crypto
+    crypto_mod = MagicMock()
+    crypto_mod.OlmMachine = MagicMock()
+    crypto_store_mod = MagicMock()
+    crypto_store_mod.MemoryCryptoStore = MagicMock()
+    crypto_attachments_mod = MagicMock()
+
+    sys.modules.setdefault("mautrix", mautrix_mod)
+    sys.modules.setdefault("mautrix.types", types_mod)
+    sys.modules.setdefault("mautrix.client", client_mod)
+    sys.modules.setdefault("mautrix.client.state_store", state_store_mod)
+    sys.modules.setdefault("mautrix.api", api_mod)
+    sys.modules.setdefault("mautrix.crypto", crypto_mod)
+    sys.modules.setdefault("mautrix.crypto.store", crypto_store_mod)
+    sys.modules.setdefault("mautrix.crypto.attachments", crypto_attachments_mod)
 
 
-_ensure_nio_mock()
+_ensure_mautrix_mock()
 
 
 def _make_adapter(tmp_path=None):
@@ -50,24 +85,25 @@ def _make_adapter(tmp_path=None):
     return adapter
 
 
-def _make_room(room_id="!room1:example.org", member_count=5, is_dm=False):
-    """Create a fake Matrix room."""
-    room = SimpleNamespace(
-        room_id=room_id,
-        member_count=member_count,
-        users={},
-    )
-    return room
+def _set_dm(adapter, room_id="!room1:example.org", is_dm=True):
+    """Mark a room as DM (or not) in the adapter's cache."""
+    adapter._dm_rooms[room_id] = is_dm
 
 
 def _make_event(
     body,
     sender="@alice:example.org",
     event_id="$evt1",
+    room_id="!room1:example.org",
     formatted_body=None,
     thread_id=None,
 ):
-    """Create a fake RoomMessageText event."""
+    """Create a fake room message event.
+
+    The mautrix adapter reads ``event.room_id``, ``event.sender``,
+    ``event.event_id``, ``event.timestamp``, and ``event.content``
+    (a dict with ``msgtype``, ``body``, etc.).
+    """
     content = {"body": body, "msgtype": "m.text"}
     if formatted_body:
         content["formatted_body"] = formatted_body
@@ -83,9 +119,9 @@ def _make_event(
     return SimpleNamespace(
         sender=sender,
         event_id=event_id,
-        server_timestamp=int(time.time() * 1000),
-        body=body,
-        source={"content": content},
+        room_id=room_id,
+        timestamp=int(time.time() * 1000),
+        content=content,
     )
 
 
@@ -152,10 +188,9 @@ async def test_require_mention_default_ignores_unmentioned(monkeypatch):
     monkeypatch.delenv("MATRIX_AUTO_THREAD", raising=False)
 
     adapter = _make_adapter()
-    room = _make_room()
     event = _make_event("hello everyone")
 
-    await adapter._on_room_message(room, event)
+    await adapter._on_room_message(event)
     adapter.handle_message.assert_not_awaited()
 
 
@@ -167,10 +202,9 @@ async def test_require_mention_default_processes_mentioned(monkeypatch):
     monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
 
     adapter = _make_adapter()
-    room = _make_room()
     event = _make_event("@hermes:example.org help me")
 
-    await adapter._on_room_message(room, event)
+    await adapter._on_room_message(event)
     adapter.handle_message.assert_awaited_once()
     msg = adapter.handle_message.await_args.args[0]
     assert msg.text == "help me"
@@ -184,11 +218,10 @@ async def test_require_mention_html_pill(monkeypatch):
     monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
 
     adapter = _make_adapter()
-    room = _make_room()
     formatted = '<a href="https://matrix.to/#/@hermes:example.org">Hermes</a> help'
     event = _make_event("Hermes help", formatted_body=formatted)
 
-    await adapter._on_room_message(room, event)
+    await adapter._on_room_message(event)
     adapter.handle_message.assert_awaited_once()
 
 
@@ -200,11 +233,11 @@ async def test_require_mention_dm_always_responds(monkeypatch):
     monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
 
     adapter = _make_adapter()
-    # member_count=2 triggers DM detection
-    room = _make_room(member_count=2)
+    # Mark the room as a DM via the adapter's cache.
+    _set_dm(adapter)
     event = _make_event("hello without mention")
 
-    await adapter._on_room_message(room, event)
+    await adapter._on_room_message(event)
     adapter.handle_message.assert_awaited_once()
 
 
@@ -216,10 +249,10 @@ async def test_dm_strips_mention(monkeypatch):
     monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
 
     adapter = _make_adapter()
-    room = _make_room(member_count=2)
+    _set_dm(adapter)
     event = _make_event("@hermes:example.org help me")
 
-    await adapter._on_room_message(room, event)
+    await adapter._on_room_message(event)
     adapter.handle_message.assert_awaited_once()
     msg = adapter.handle_message.await_args.args[0]
     assert msg.text == "help me"
@@ -233,10 +266,9 @@ async def test_bare_mention_passes_empty_string(monkeypatch):
     monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
 
     adapter = _make_adapter()
-    room = _make_room()
     event = _make_event("@hermes:example.org")
 
-    await adapter._on_room_message(room, event)
+    await adapter._on_room_message(event)
     adapter.handle_message.assert_awaited_once()
     msg = adapter.handle_message.await_args.args[0]
     assert msg.text == ""
@@ -250,10 +282,9 @@ async def test_require_mention_free_response_room(monkeypatch):
     monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
 
     adapter = _make_adapter()
-    room = _make_room(room_id="!room1:example.org")
-    event = _make_event("hello without mention")
+    event = _make_event("hello without mention", room_id="!room1:example.org")
 
-    await adapter._on_room_message(room, event)
+    await adapter._on_room_message(event)
     adapter.handle_message.assert_awaited_once()
 
 
@@ -267,10 +298,9 @@ async def test_require_mention_bot_participated_thread(monkeypatch):
     adapter = _make_adapter()
     adapter._bot_participated_threads.add("$thread1")
 
-    room = _make_room()
     event = _make_event("hello without mention", thread_id="$thread1")
 
-    await adapter._on_room_message(room, event)
+    await adapter._on_room_message(event)
     adapter.handle_message.assert_awaited_once()
 
 
@@ -282,10 +312,9 @@ async def test_require_mention_disabled(monkeypatch):
     monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
 
     adapter = _make_adapter()
-    room = _make_room()
     event = _make_event("hello without mention")
 
-    await adapter._on_room_message(room, event)
+    await adapter._on_room_message(event)
     adapter.handle_message.assert_awaited_once()
     msg = adapter.handle_message.await_args.args[0]
     assert msg.text == "hello without mention"
@@ -303,10 +332,9 @@ async def test_auto_thread_default_creates_thread(monkeypatch):
     monkeypatch.delenv("MATRIX_AUTO_THREAD", raising=False)
 
     adapter = _make_adapter()
-    room = _make_room()
     event = _make_event("hello", event_id="$msg1")
 
-    await adapter._on_room_message(room, event)
+    await adapter._on_room_message(event)
     adapter.handle_message.assert_awaited_once()
     msg = adapter.handle_message.await_args.args[0]
     assert msg.source.thread_id == "$msg1"
@@ -320,10 +348,9 @@ async def test_auto_thread_preserves_existing_thread(monkeypatch):
 
     adapter = _make_adapter()
     adapter._bot_participated_threads.add("$thread_root")
-    room = _make_room()
     event = _make_event("reply in thread", thread_id="$thread_root")
 
-    await adapter._on_room_message(room, event)
+    await adapter._on_room_message(event)
     adapter.handle_message.assert_awaited_once()
     msg = adapter.handle_message.await_args.args[0]
     assert msg.source.thread_id == "$thread_root"
@@ -336,10 +363,10 @@ async def test_auto_thread_skips_dm(monkeypatch):
     monkeypatch.delenv("MATRIX_AUTO_THREAD", raising=False)
 
     adapter = _make_adapter()
-    room = _make_room(member_count=2)
+    _set_dm(adapter)
     event = _make_event("hello dm", event_id="$dm1")
 
-    await adapter._on_room_message(room, event)
+    await adapter._on_room_message(event)
     adapter.handle_message.assert_awaited_once()
     msg = adapter.handle_message.await_args.args[0]
     assert msg.source.thread_id is None
@@ -352,10 +379,9 @@ async def test_auto_thread_disabled(monkeypatch):
     monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
 
     adapter = _make_adapter()
-    room = _make_room()
     event = _make_event("hello", event_id="$msg1")
 
-    await adapter._on_room_message(room, event)
+    await adapter._on_room_message(event)
     adapter.handle_message.assert_awaited_once()
     msg = adapter.handle_message.await_args.args[0]
     assert msg.source.thread_id is None
@@ -368,11 +394,10 @@ async def test_auto_thread_tracks_participation(monkeypatch):
     monkeypatch.delenv("MATRIX_AUTO_THREAD", raising=False)
 
     adapter = _make_adapter()
-    room = _make_room()
     event = _make_event("hello", event_id="$msg1")
 
     with patch.object(adapter, "_save_participated_threads"):
-        await adapter._on_room_message(room, event)
+        await adapter._on_room_message(event)
 
     assert "$msg1" in adapter._bot_participated_threads
 
@@ -448,10 +473,10 @@ async def test_dm_mention_thread_disabled_by_default(monkeypatch):
     monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
 
     adapter = _make_adapter()
-    room = _make_room(member_count=2)
+    _set_dm(adapter)
     event = _make_event("@hermes:example.org help me", event_id="$dm1")
 
-    await adapter._on_room_message(room, event)
+    await adapter._on_room_message(event)
     adapter.handle_message.assert_awaited_once()
     msg = adapter.handle_message.await_args.args[0]
     assert msg.source.thread_id is None
@@ -464,11 +489,11 @@ async def test_dm_mention_thread_creates_thread(monkeypatch):
     monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
 
     adapter = _make_adapter()
-    room = _make_room(member_count=2)
+    _set_dm(adapter)
     event = _make_event("@hermes:example.org help me", event_id="$dm1")
 
     with patch.object(adapter, "_save_participated_threads"):
-        await adapter._on_room_message(room, event)
+        await adapter._on_room_message(event)
 
     adapter.handle_message.assert_awaited_once()
     msg = adapter.handle_message.await_args.args[0]
@@ -483,10 +508,10 @@ async def test_dm_mention_thread_no_mention_no_thread(monkeypatch):
     monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
 
     adapter = _make_adapter()
-    room = _make_room(member_count=2)
+    _set_dm(adapter)
     event = _make_event("hello without mention", event_id="$dm1")
 
-    await adapter._on_room_message(room, event)
+    await adapter._on_room_message(event)
     adapter.handle_message.assert_awaited_once()
     msg = adapter.handle_message.await_args.args[0]
     assert msg.source.thread_id is None
@@ -499,11 +524,11 @@ async def test_dm_mention_thread_preserves_existing_thread(monkeypatch):
     monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
 
     adapter = _make_adapter()
+    _set_dm(adapter)
     adapter._bot_participated_threads.add("$existing_thread")
-    room = _make_room(member_count=2)
     event = _make_event("@hermes:example.org help me", thread_id="$existing_thread")
 
-    await adapter._on_room_message(room, event)
+    await adapter._on_room_message(event)
     adapter.handle_message.assert_awaited_once()
     msg = adapter.handle_message.await_args.args[0]
     assert msg.source.thread_id == "$existing_thread"
@@ -516,11 +541,11 @@ async def test_dm_mention_thread_tracks_participation(monkeypatch):
     monkeypatch.setenv("MATRIX_AUTO_THREAD", "false")
 
     adapter = _make_adapter()
-    room = _make_room(member_count=2)
+    _set_dm(adapter)
     event = _make_event("@hermes:example.org help", event_id="$dm1")
 
     with patch.object(adapter, "_save_participated_threads"):
-        await adapter._on_room_message(room, event)
+        await adapter._on_room_message(event)
 
     assert "$dm1" in adapter._bot_participated_threads
 

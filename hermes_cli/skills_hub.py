@@ -1054,19 +1054,9 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
 
 def _print_skills_help(console: Console) -> None:
     """Print help for the /skills slash command."""
+    from hermes_cli.skills_command_request import format_skills_help
+
     console.print(Panel(
-        "[bold]Skills Hub Commands:[/]\n\n"
-        "  [cyan]browse[/] [--source official]   Browse all available skills (paginated)\n"
-        "  [cyan]search[/] <query>              Search registries for skills\n"
-        "  [cyan]install[/] <identifier>        Install a skill (with security scan)\n"
-        "  [cyan]inspect[/] <identifier>        Preview a skill without installing\n"
-        "  [cyan]list[/] [--source hub|builtin|local] List installed skills\n"
-        "  [cyan]check[/] [name]                Check hub skills for upstream updates\n"
-        "  [cyan]update[/] [name]               Update hub skills with upstream changes\n"
-        "  [cyan]audit[/] [name]                Re-scan hub skills for security\n"
-        "  [cyan]uninstall[/] <name>            Remove a hub-installed skill\n"
-        "  [cyan]publish[/] <path> --repo <r>   Publish a skill to GitHub via PR\n"
-        "  [cyan]snapshot[/] export|import      Export/import skill configurations\n"
-        "  [cyan]tap[/] list|add|remove         Manage skill sources\n",
+        f"[bold]Skills Hub Commands:[/]\n\n{format_skills_help(command_source='slash')}",
         title="/skills",
     ))

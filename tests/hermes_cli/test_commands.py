@@ -454,8 +454,7 @@ class TestSubcommands:
         assert "install" in SUBCOMMANDS["/skills"]
         assert "list" in SUBCOMMANDS["/skills"]
         assert "tap" in SUBCOMMANDS["/skills"]
-        assert "list" in SUBCOMMANDS["/skills"]
-        assert "tap" in SUBCOMMANDS["/skills"]
+        assert "config" not in SUBCOMMANDS["/skills"]
 
     def test_reasoning_has_subcommands(self):
         assert "/reasoning" in SUBCOMMANDS
@@ -519,6 +518,16 @@ class TestSubcommandCompletion:
         texts = {c.text for c in completions}
         assert texts == {"show"}
 
+    def test_skills_tap_nested_completion_after_space(self):
+        completions = _completions(SlashCommandCompleter(), "/skills tap ")
+        texts = {c.text for c in completions}
+        assert {"list", "add", "remove"} <= texts
+
+    def test_skills_snapshot_nested_prefix_completion(self):
+        completions = _completions(SlashCommandCompleter(), "/skills snapshot i")
+        texts = {c.text for c in completions}
+        assert texts == {"import"}
+
     def test_subcommand_exact_match_suppressed(self):
         """Typing the full subcommand shouldn't re-suggest it."""
         completions = _completions(SlashCommandCompleter(), "/reasoning show")
@@ -575,6 +584,12 @@ class TestGhostText:
 
     def test_no_suggestion_for_non_slash(self):
         assert _suggestion("hello") is None
+
+    def test_skills_tap_nested_suggestion(self):
+        assert _suggestion("/skills tap ") == "list"
+
+    def test_skills_snapshot_nested_suggestion(self):
+        assert _suggestion("/skills snapshot e") == "xport"
 
 
 # ---------------------------------------------------------------------------

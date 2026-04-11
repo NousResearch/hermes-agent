@@ -3,6 +3,7 @@ import pytest
 from hermes_cli.skills_command_request import (
     SkillsCommandRequest,
     _SkillsArgumentParser,
+    format_skills_help,
     parse_skills_slash_command,
     register_skills_subcommands,
     request_from_namespace,
@@ -58,11 +59,11 @@ def test_parse_skills_slash_command_accepts_multiword_search_without_quotes():
     assert request.limit == 5
 
 
-def test_parse_skills_slash_command_marks_config_unavailable():
+def test_parse_skills_slash_command_rejects_cli_only_config():
     request = parse_skills_slash_command("/skills config")
 
-    assert request.action == "config"
-    assert request.config_available is False
+    assert request.action == "error"
+    assert "interactive CLI" in request.error
 
 
 def test_parse_skills_slash_command_tap_defaults_to_list():
@@ -77,6 +78,15 @@ def test_parse_skills_slash_command_help_flag_returns_help_request():
 
     assert request.action == "help"
     assert request.help_text
+    assert "search" in request.help_text
+    assert "install" not in request.help_text
+
+
+def test_format_skills_help_omits_cli_only_config_for_slash():
+    help_text = format_skills_help(command_source="slash")
+
+    assert "Interactive skill configuration" not in help_text
+    assert "tap" in help_text
 
 
 def test_parse_skills_slash_command_returns_error_request_on_invalid_input():

@@ -47,7 +47,11 @@ class SkillsCommandRequest:
     help_text: str = ""
 
 
-def register_skills_subcommands(skills_parser: argparse.ArgumentParser) -> None:
+def register_skills_subcommands(
+    skills_parser: argparse.ArgumentParser,
+    *,
+    include_config: bool = True,
+) -> None:
     skills_subparsers = skills_parser.add_subparsers(dest="skills_action")
 
     skills_browse = skills_subparsers.add_parser("browse", help="Browse all available skills (paginated)")
@@ -110,18 +114,71 @@ def register_skills_subcommands(skills_parser: argparse.ArgumentParser) -> None:
     tap_rm = tap_subparsers.add_parser("remove", help="Remove a tap")
     tap_rm.add_argument("name", help="Tap name to remove")
 
-    skills_subparsers.add_parser("config", help="Interactive skill configuration — enable/disable individual skills")
+    if include_config:
+        skills_subparsers.add_parser("config", help="Interactive skill configuration — enable/disable individual skills")
 
 
-def skills_subcommand_names() -> list[str]:
+def skills_subcommand_names(*, command_source: str = "cli") -> list[str]:
     parser = _SkillsArgumentParser(prog="skills", add_help=False)
-    register_skills_subcommands(parser)
+    register_skills_subcommands(parser, include_config=(command_source != "slash"))
     action = next(
         action
         for action in parser._actions
         if isinstance(action, argparse._SubParsersAction)
     )
     return sorted(action.choices.keys())
+
+
+def skills_subcommand_tree(*, command_source: str = "cli") -> dict[str, list[str]]:
+    parser = _SkillsArgumentParser(prog="skills", add_help=False)
+    register_skills_subcommands(parser, include_config=(command_source != "slash"))
+    action = next(
+        action
+        for action in parser._actions
+        if isinstance(action, argparse._SubParsersAction)
+    )
+    tree: dict[str, list[str]] = {}
+    for name, subparser in action.choices.items():
+        nested: list[str] = []
+        for sub_action in getattr(subparser, "_actions", []):
+            if isinstance(sub_action, argparse._SubParsersAction):
+                nested = list(sub_action.choices.keys())
+                break
+        tree[name] = nested
+    return tree
+
+
+def format_skills_help(
+    *,
+    command_source: str,
+    subcommands: list[str] | None = None,
+) -> str:
+    parser = _SkillsArgumentParser(
+        prog="/skills" if command_source == "slash" else "skills",
+        add_help=True,
+    )
+    register_skills_subcommands(parser, include_config=(command_source != "slash"))
+
+    if not subcommands:
+        return parser.format_help()
+
+    current = parser
+    remaining = list(subcommands)
+    while remaining:
+        token = remaining.pop(0)
+        subparser_action = next(
+            (
+                action
+                for action in getattr(current, "_actions", [])
+                if isinstance(action, argparse._SubParsersAction)
+            ),
+            None,
+        )
+        if subparser_action is None or token not in subparser_action.choices:
+            return parser.format_help()
+        current = subparser_action.choices[token]
+
+    return current.format_help()
 
 
 def request_from_namespace(args, *, command_source: str) -> SkillsCommandRequest:
@@ -179,18 +236,29 @@ def parse_skills_slash_command(cmd: str) -> SkillsCommandRequest:
         return SkillsCommandRequest(action="help", command_source="slash")
 
     if any(part in {"--help", "-h"} for part in parts):
-        parser = _SkillsArgumentParser(prog="/skills", add_help=True)
-        register_skills_subcommands(parser)
+        help_parts = [part for part in parts if part not in {"--help", "-h"}]
+        if help_parts and help_parts[0] == "config":
+            return SkillsCommandRequest(
+                action="error",
+                command_source="slash",
+                error="`/skills config` is only available in the interactive CLI.",
+            )
         return SkillsCommandRequest(
             action="help",
             command_source="slash",
-            help_text=parser.format_help(),
+            help_text=format_skills_help(command_source="slash", subcommands=help_parts),
         )
 
     parser = _SkillsArgumentParser(prog="/skills", add_help=False)
-    register_skills_subcommands(parser)
+    register_skills_subcommands(parser, include_config=False)
     try:
         args = parser.parse_args(parts)
     except SkillsParseError as exc:
+        if parts and parts[0] == "config":
+            return SkillsCommandRequest(
+                action="error",
+                command_source="slash",
+                error="`/skills config` is only available in the interactive CLI.",
+            )
         return SkillsCommandRequest(action="error", command_source="slash", error=str(exc))
     return request_from_namespace(args, command_source="slash")

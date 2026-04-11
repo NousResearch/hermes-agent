@@ -32,8 +32,10 @@ except ImportError:  # pragma: no cover
 
 try:
     from hermes_cli.skills_command_request import skills_subcommand_names as _shared_skills_subcommand_names
+    from hermes_cli.skills_command_request import skills_subcommand_tree as _shared_skills_subcommand_tree
 except Exception:  # pragma: no cover
     _shared_skills_subcommand_names = None
+    _shared_skills_subcommand_tree = None
 
 
 # ---------------------------------------------------------------------------
@@ -232,7 +234,7 @@ def rebuild_lookups() -> None:
             SUBCOMMANDS[key] = m.group(0).split("|")
     if _shared_skills_subcommand_names is not None:
         try:
-            SUBCOMMANDS["/skills"] = _shared_skills_subcommand_names()
+            SUBCOMMANDS["/skills"] = _shared_skills_subcommand_names(command_source="slash")
         except Exception:
             pass
 
@@ -289,7 +291,7 @@ for _cmd in COMMAND_REGISTRY:
         SUBCOMMANDS[key] = m.group(0).split("|")
 if _shared_skills_subcommand_names is not None:
     try:
-        SUBCOMMANDS["/skills"] = _shared_skills_subcommand_names()
+        SUBCOMMANDS["/skills"] = _shared_skills_subcommand_names(command_source="slash")
     except Exception:
         pass
 
@@ -1062,6 +1064,15 @@ class SlashCommandCompleter(Completer):
             return {}
 
     @staticmethod
+    def _skills_nested_tree() -> dict[str, list[str]]:
+        if _shared_skills_subcommand_tree is None:
+            return {}
+        try:
+            return _shared_skills_subcommand_tree(command_source="slash")
+        except Exception:
+            return {}
+
+    @staticmethod
     def _completion_text(cmd_name: str, word: str) -> str:
         """Return replacement text for a completion.
 
@@ -1328,6 +1339,23 @@ class SlashCommandCompleter(Completer):
                 yield from self._model_completions(sub_text, sub_lower)
                 return
 
+            if base_cmd == "/skills":
+                nested_tree = self._skills_nested_tree()
+                sub_parts = sub_text.split()
+                if len(sub_parts) >= 1 and sub_parts[0] in nested_tree:
+                    nested = nested_tree[sub_parts[0]]
+                    if nested:
+                        nested_prefix = "" if text.endswith(" ") else sub_parts[-1]
+                        if len(sub_parts) == 1 or (len(sub_parts) == 2 and not text.endswith(" ")):
+                            for sub in nested:
+                                if sub.startswith(nested_prefix.lower()) and sub != nested_prefix.lower():
+                                    yield Completion(
+                                        sub,
+                                        start_position=-len(nested_prefix),
+                                        display=sub,
+                                    )
+                            return
+
             # Static subcommand completions
             if " " not in sub_text and base_cmd in SUBCOMMANDS and self._command_allowed(base_cmd):
                 for sub in SUBCOMMANDS[base_cmd]:
@@ -1396,6 +1424,15 @@ class SlashCommandAutoSuggest(AutoSuggest):
         self._history = history_suggest
         self._completer = completer  # Reuse its model cache
 
+    @staticmethod
+    def _skills_nested_tree() -> dict[str, list[str]]:
+        if _shared_skills_subcommand_tree is None:
+            return {}
+        try:
+            return _shared_skills_subcommand_tree(command_source="slash")
+        except Exception:
+            return {}
+
     def get_suggestion(self, buffer, document):
         text = document.text_before_cursor
 
@@ -1427,6 +1464,17 @@ class SlashCommandAutoSuggest(AutoSuggest):
         # Static subcommands
         if self._completer is not None and not self._completer._command_allowed(base_cmd):
             return None
+        if base_cmd == "/skills":
+            nested_tree = self._completer._skills_nested_tree() if self._completer is not None else self._skills_nested_tree()
+            sub_parts = sub_text.split()
+            if sub_parts and sub_parts[0] in nested_tree and nested_tree[sub_parts[0]]:
+                if len(sub_parts) == 1 and text.endswith(" "):
+                    return Suggestion(nested_tree[sub_parts[0]][0])
+                if len(sub_parts) == 2:
+                    nested_lower = sub_parts[1].lower()
+                    for sub in nested_tree[sub_parts[0]]:
+                        if sub.startswith(nested_lower) and sub != nested_lower:
+                            return Suggestion(sub[len(sub_parts[1]):])
         if base_cmd in SUBCOMMANDS and SUBCOMMANDS[base_cmd]:
             if " " not in sub_text:
                 for sub in SUBCOMMANDS[base_cmd]:

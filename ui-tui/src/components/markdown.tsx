@@ -3,17 +3,104 @@ import type { ReactNode } from 'react'
 
 import type { Theme } from '../theme.js'
 
-/** OSC 8 hyperlink — wrap-ansi / Ink keep the link active across soft line wraps. */
-const osc8 = (url: string) => '\x1b]8;;' + url + '\x1b\\'
-const OSC8_END = '\x1b]8;;\x1b\\'
+const FENCE_RE = /^\s*(`{3,}|~{3,})(.*)$/
+const HR_RE = /^ {0,3}([-*_])(?:\s*\1){2,}\s*$/
+const HEADING_RE = /^\s{0,3}(#{1,6})\s+(.*?)(?:\s+#+\s*)?$/
+const FOOTNOTE_RE = /^\[\^([^\]]+)\]:\s*(.*)$/
+const DEF_RE = /^\s*:\s+(.+)$/
+const TABLE_DIVIDER_CELL_RE = /^:?-{3,}:?$/
+const MD_URL_RE = '((?:[^\\s()]|\\([^\\s()]*\\))+?)'
+const INLINE_RE =
+  new RegExp(
+    `(!\\[(.*?)\\]\\(${MD_URL_RE}\\)|\\[(.+?)\\]\\(${MD_URL_RE}\\)|<((?:https?:\\/\\/|mailto:)[^>\\s]+|[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,})>|~~(.+?)~~|\`([^\\\`]+)\`|\\*\\*(.+?)\\*\\*|__(.+?)__|\\*(.+?)\\*|_(.+?)_|==(.+?)==|\\[\\^([^\\]]+)\\]|\\^([^^\\s][^^]*?)\\^|~([^~\\s][^~]*?)~|(https?:\\/\\/[^\\s<]+))`,
+    'g'
+  )
+
+type Fence = {
+  char: '`' | '~'
+  lang: string
+  len: number
+}
+
+const renderLink = (key: number, t: Theme, label: string) => (
+  <Text color={t.color.amber} key={key} underline>
+    {label}
+  </Text>
+)
+
+const trimBareUrl = (value: string) => {
+  const trimmed = value.replace(/[),.;:!?]+$/g, '')
+
+  return {
+    tail: value.slice(trimmed.length),
+    url: trimmed
+  }
+}
+
+const renderAutolink = (key: number, t: Theme, raw: string) => (
+  <Text color={t.color.amber} key={key} underline>
+    {raw.replace(/^mailto:/, '')}
+  </Text>
+)
+
+const indentDepth = (indent: string) => Math.floor(indent.replace(/\t/g, '  ').length / 2)
+
+const parseFence = (line: string): Fence | null => {
+  const m = line.match(FENCE_RE)
+
+  if (!m) {
+    return null
+  }
+
+  return {
+    char: m[1]![0] as '`' | '~',
+    lang: m[2]!.trim().toLowerCase(),
+    len: m[1]!.length
+  }
+}
+
+const isFenceClose = (line: string, fence: Fence) => {
+  const end = line.match(/^\s*(`{3,}|~{3,})\s*$/)
+
+  return Boolean(end && end[1]![0] === fence.char && end[1]!.length >= fence.len)
+}
+
+const isMarkdownFence = (lang: string) => ['md', 'markdown'].includes(lang)
+
+const splitTableRow = (row: string) =>
+  row
+    .trim()
+    .replace(/^\|/, '')
+    .replace(/\|$/, '')
+    .split('|')
+    .map(cell => cell.trim())
+
+const isTableDivider = (row: string) => {
+  const cells = splitTableRow(row)
+
+  return cells.length > 1 && cells.every(cell => TABLE_DIVIDER_CELL_RE.test(cell))
+}
+
+const renderTable = (key: number, rows: string[][], t: Theme) => {
+  const widths = rows[0]!.map((_, ci) => Math.max(...rows.map(r => (r[ci] ?? '').length)))
+
+  return (
+    <Box flexDirection="column" key={key} paddingLeft={2}>
+      {rows.map((row, ri) => (
+        <Text color={ri === 0 ? t.color.amber : undefined} key={ri}>
+          {row.map((cell, ci) => cell.padEnd(widths[ci] ?? 0)).join('  ')}
+        </Text>
+      ))}
+    </Box>
+  )
+}
 
 function MdInline({ t, text }: { t: Theme; text: string }) {
   const parts: ReactNode[] = []
-  const re = /(\[(.+?)\]\((https?:\/\/[^\s)]+)\)|\*\*(.+?)\*\*|`([^`]+)`|\*(.+?)\*|(https?:\/\/[^\s]+))/g
 
   let last = 0
 
-  for (const m of text.matchAll(re)) {
+  for (const m of text.matchAll(INLINE_RE)) {
     const i = m.index ?? 0
 
     if (i > last) {
@@ -22,43 +109,74 @@ function MdInline({ t, text }: { t: Theme; text: string }) {
 
     if (m[2] && m[3]) {
       parts.push(
-        <Text key={parts.length}>
-          {osc8(m[3])}
-          <Text color={t.color.amber} underline>
-            {m[2]}
-          </Text>
-          {OSC8_END}
+        <Text color={t.color.dim} key={parts.length}>
+          [image: {m[2]}] {m[3]}
         </Text>
       )
-    } else if (m[4]) {
+    } else if (m[4] && m[5]) {
+      parts.push(renderLink(parts.length, t, m[4]))
+    } else if (m[6]) {
+      parts.push(renderAutolink(parts.length, t, m[6]))
+    } else if (m[7]) {
       parts.push(
-        <Text bold key={parts.length}>
-          {m[4]}
+        <Text key={parts.length} strikethrough>
+          {m[7]}
         </Text>
       )
-    } else if (m[5]) {
+    } else if (m[8]) {
       parts.push(
         <Text color={t.color.amber} dimColor key={parts.length}>
-          {m[5]}
+          {m[8]}
         </Text>
       )
-    } else if (m[6]) {
+    } else if (m[9] || m[10]) {
+      parts.push(
+        <Text bold key={parts.length}>
+          {m[9] ?? m[10]}
+        </Text>
+      )
+    } else if (m[11] || m[12]) {
       parts.push(
         <Text italic key={parts.length}>
-          {m[6]}
+          {m[11] ?? m[12]}
         </Text>
       )
-    } else if (m[7]) {
-      const u = m[7]
+    } else if (m[13]) {
       parts.push(
-        <Text key={parts.length}>
-          {osc8(u)}
-          <Text color={t.color.amber} underline>
-            {u}
-          </Text>
-          {OSC8_END}
+        <Text backgroundColor={t.color.diffAdded} color={t.color.diffAddedWord} key={parts.length}>
+          {m[13]}
         </Text>
       )
+    } else if (m[14]) {
+      parts.push(
+        <Text color={t.color.dim} key={parts.length}>
+          [{m[14]}]
+        </Text>
+      )
+    } else if (m[15]) {
+      parts.push(
+        <Text color={t.color.dim} key={parts.length}>
+          ^{m[15]}
+        </Text>
+      )
+    } else if (m[16]) {
+      parts.push(
+        <Text color={t.color.dim} key={parts.length}>
+          _{m[16]}
+        </Text>
+      )
+    } else if (m[17]) {
+      const { tail, url } = trimBareUrl(m[17])
+
+      parts.push(renderAutolink(parts.length, t, url))
+
+      if (tail) {
+        parts.push(
+          <Text key={parts.length}>
+            {tail}
+          </Text>
+        )
+      }
     }
 
     last = i + m[0].length
@@ -75,7 +193,16 @@ export function Md({ compact, t, text }: { compact?: boolean; t: Theme; text: st
   const lines = text.split('\n')
   const nodes: ReactNode[] = []
   let i = 0
-  let prevKind: 'blank' | 'code' | 'heading' | 'list' | 'paragraph' | 'quote' | 'table' | null = null
+  let prevKind:
+    | 'blank'
+    | 'code'
+    | 'heading'
+    | 'list'
+    | 'paragraph'
+    | 'quote'
+    | 'rule'
+    | 'table'
+    | null = null
 
   const gap = () => {
     if (nodes.length && prevKind !== 'blank') {
@@ -109,16 +236,29 @@ export function Md({ compact, t, text }: { compact?: boolean; t: Theme; text: st
       continue
     }
 
-    if (line.startsWith('```')) {
-      start('code')
-      const lang = line.slice(3).trim()
-      const block: string[] = []
+    const fence = parseFence(line)
 
-      for (i++; i < lines.length && !lines[i]!.startsWith('```'); i++) {
+    if (fence) {
+      const block: string[] = []
+      const lang = fence.lang
+
+      for (i++; i < lines.length && !isFenceClose(lines[i]!, fence); i++) {
         block.push(lines[i]!)
       }
 
-      i++
+      if (i < lines.length) {
+        i++
+      }
+
+      if (isMarkdownFence(lang)) {
+        start('paragraph')
+        nodes.push(<Md compact={compact} key={key} t={t} text={block.join('\n')} />)
+
+        continue
+      }
+
+      start('code')
+
       const isDiff = lang === 'diff'
 
       nodes.push(
@@ -146,13 +286,42 @@ export function Md({ compact, t, text }: { compact?: boolean; t: Theme; text: st
       continue
     }
 
-    const heading = line.match(/^#{1,3}\s+(.*)/)
+    if (line.trim().startsWith('$$')) {
+      start('code')
+
+      const block: string[] = []
+
+      for (i++; i < lines.length; i++) {
+        if (lines[i]!.trim().startsWith('$$')) {
+          i++
+
+          break
+        }
+
+        block.push(lines[i]!)
+      }
+
+      nodes.push(
+        <Box flexDirection="column" key={key} paddingLeft={2}>
+          <Text color={t.color.dim}>─ math</Text>
+          {block.map((l, j) => (
+            <Text color={t.color.amber} key={j}>
+              {l}
+            </Text>
+          ))}
+        </Box>
+      )
+
+      continue
+    }
+
+    const heading = line.match(HEADING_RE)
 
     if (heading) {
       start('heading')
       nodes.push(
         <Text bold color={t.color.amber} key={key}>
-          {heading[1]}
+          {heading[2]}
         </Text>
       )
       i++
@@ -160,14 +329,103 @@ export function Md({ compact, t, text }: { compact?: boolean; t: Theme; text: st
       continue
     }
 
-    const bullet = line.match(/^\s*[-*]\s(.*)/)
+    if (i + 1 < lines.length && line.trim()) {
+      const setext = lines[i + 1]!.match(/^\s{0,3}(=+|-+)\s*$/)
+
+      if (setext) {
+        start('heading')
+        nodes.push(
+          <Text bold color={t.color.amber} key={key}>
+            {line.trim()}
+          </Text>
+        )
+        i += 2
+
+        continue
+      }
+    }
+
+    if (HR_RE.test(line)) {
+      start('rule')
+      nodes.push(
+        <Text color={t.color.dim} key={key}>
+          {'─'.repeat(36)}
+        </Text>
+      )
+      i++
+
+      continue
+    }
+
+    const footnote = line.match(FOOTNOTE_RE)
+
+    if (footnote) {
+      start('list')
+      nodes.push(
+        <Text color={t.color.dim} key={key}>
+          [{footnote[1]}] <MdInline t={t} text={footnote[2] ?? ''} />
+        </Text>
+      )
+      i++
+
+      while (i < lines.length && /^\s{2,}\S/.test(lines[i]!)) {
+        nodes.push(
+          <Box key={`${key}-cont-${i}`} paddingLeft={2}>
+            <Text color={t.color.dim}>
+              <MdInline t={t} text={lines[i]!.trim()} />
+            </Text>
+          </Box>
+        )
+        i++
+      }
+
+      continue
+    }
+
+    if (i + 1 < lines.length && DEF_RE.test(lines[i + 1]!)) {
+      start('list')
+      nodes.push(
+        <Text bold key={key}>
+          {line.trim()}
+        </Text>
+      )
+      i++
+
+      while (i < lines.length) {
+        const def = lines[i]!.match(DEF_RE)
+
+        if (!def) {
+          break
+        }
+
+        nodes.push(
+          <Text key={`${key}-def-${i}`}>
+            <Text color={t.color.dim}>  · </Text>
+            <MdInline t={t} text={def[1]!} />
+          </Text>
+        )
+        i++
+      }
+
+      continue
+    }
+
+    const bullet = line.match(/^(\s*)[-+*]\s+(.*)$/)
 
     if (bullet) {
       start('list')
+      const depth = indentDepth(bullet[1]!)
+      const task = bullet[2]!.match(/^\[( |x|X)\]\s+(.*)$/)
+      const marker = task ? (task[1]!.toLowerCase() === 'x' ? '☑' : '☐') : '•'
+      const body = task ? task[2]! : bullet[2]!
+
       nodes.push(
         <Text key={key}>
-          <Text color={t.color.dim}> • </Text>
-          <MdInline t={t} text={bullet[1]!} />
+          <Text color={t.color.dim}>
+            {' '.repeat(depth * 2)}
+            {marker}{' '}
+          </Text>
+          <MdInline t={t} text={body} />
         </Text>
       )
       i++
@@ -175,14 +433,19 @@ export function Md({ compact, t, text }: { compact?: boolean; t: Theme; text: st
       continue
     }
 
-    const numbered = line.match(/^\s*(\d+)\.\s(.*)/)
+    const numbered = line.match(/^(\s*)(\d+)[.)]\s+(.*)$/)
 
     if (numbered) {
       start('list')
+      const depth = indentDepth(numbered[1]!)
+
       nodes.push(
         <Text key={key}>
-          <Text color={t.color.dim}> {numbered[1]}. </Text>
-          <MdInline t={t} text={numbered[2]!} />
+          <Text color={t.color.dim}>
+            {' '.repeat(depth * 2)}
+            {numbered[2]}.{' '}
+          </Text>
+          <MdInline t={t} text={numbered[3]!} />
         </Text>
       )
       i++
@@ -190,12 +453,18 @@ export function Md({ compact, t, text }: { compact?: boolean; t: Theme; text: st
       continue
     }
 
-    if (line.match(/^>\s?/)) {
+    if (/^\s*(?:>\s*)+/.test(line)) {
       start('quote')
-      const quoteLines: string[] = []
+      const quoteLines: Array<{ depth: number; text: string }> = []
 
-      while (i < lines.length && lines[i]!.match(/^>\s?/)) {
-        quoteLines.push(lines[i]!.replace(/^>\s?/, ''))
+      while (i < lines.length && /^\s*(?:>\s*)+/.test(lines[i]!)) {
+        const raw = lines[i]!
+        const prefix = raw.match(/^\s*(?:>\s*)+/)?.[0] ?? ''
+
+        quoteLines.push({
+          depth: (prefix.match(/>/g) ?? []).length,
+          text: raw.slice(prefix.length)
+        })
         i++
       }
 
@@ -203,12 +472,62 @@ export function Md({ compact, t, text }: { compact?: boolean; t: Theme; text: st
         <Box flexDirection="column" key={key}>
           {quoteLines.map((ql, qi) => (
             <Text color={t.color.dim} key={qi}>
-              {'  │ '}
-              <MdInline t={t} text={ql} />
+              {' '.repeat(Math.max(0, ql.depth - 1) * 2)}
+              {'│ '}
+              <MdInline t={t} text={ql.text} />
             </Text>
           ))}
         </Box>
       )
+
+      continue
+    }
+
+    if (line.includes('|') && i + 1 < lines.length && isTableDivider(lines[i + 1]!)) {
+      start('table')
+      const tableRows: string[][] = []
+
+      tableRows.push(splitTableRow(line))
+      i += 2
+
+      while (i < lines.length && lines[i]!.includes('|') && lines[i]!.trim()) {
+        tableRows.push(splitTableRow(lines[i]!))
+        i++
+      }
+
+      nodes.push(renderTable(key, tableRows, t))
+
+      continue
+    }
+
+    if (/^<details\b/i.test(line) || /^<\/details>/i.test(line)) {
+      i++
+
+      continue
+    }
+
+    const summary = line.match(/^<summary>(.*?)<\/summary>$/i)
+
+    if (summary) {
+      start('paragraph')
+      nodes.push(
+        <Text color={t.color.dim} key={key}>
+          ▶ {summary[1]}
+        </Text>
+      )
+      i++
+
+      continue
+    }
+
+    if (/^<\/?[^>]+>$/.test(line.trim())) {
+      start('paragraph')
+      nodes.push(
+        <Text color={t.color.dim} key={key}>
+          {line.trim()}
+        </Text>
+      )
+      i++
 
       continue
     }
@@ -221,29 +540,14 @@ export function Md({ compact, t, text }: { compact?: boolean; t: Theme; text: st
         const row = lines[i]!.trim()
 
         if (!/^[|\s:-]+$/.test(row)) {
-          tableRows.push(
-            row
-              .split('|')
-              .filter(Boolean)
-              .map(c => c.trim())
-          )
+          tableRows.push(splitTableRow(row))
         }
 
         i++
       }
 
       if (tableRows.length) {
-        const widths = tableRows[0]!.map((_, ci) => Math.max(...tableRows.map(r => (r[ci] ?? '').length)))
-
-        nodes.push(
-          <Box flexDirection="column" key={key} paddingLeft={2}>
-            {tableRows.map((row, ri) => (
-              <Text color={ri === 0 ? t.color.amber : undefined} key={ri}>
-                {row.map((cell, ci) => cell.padEnd(widths[ci] ?? 0)).join('  ')}
-              </Text>
-            ))}
-          </Box>
-        )
+        nodes.push(renderTable(key, tableRows, t))
       }
 
       continue

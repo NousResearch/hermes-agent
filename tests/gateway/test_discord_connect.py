@@ -137,4 +137,4 @@ async def test_connect_releases_token_lock_on_timeout(monkeypatch):
 
     assert ok is False
     assert released == [("discord-bot-token", "test-token")]
-    assert adapter._token_lock_identity is None
+    assert adapter._platform_lock_identity is None

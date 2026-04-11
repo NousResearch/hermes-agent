@@ -197,24 +197,12 @@ def print_header(title: str):
     print(color(f"◆ {title}", Colors.CYAN, Colors.BOLD))
 
 
-def print_info(text: str):
-    """Print info text."""
-    print(color(f"  {text}", Colors.DIM))
-
-
-def print_success(text: str):
-    """Print success message."""
-    print(color(f"✓ {text}", Colors.GREEN))
-
-
-def print_warning(text: str):
-    """Print warning message."""
-    print(color(f"⚠ {text}", Colors.YELLOW))
-
-
-def print_error(text: str):
-    """Print error message."""
-    print(color(f"✗ {text}", Colors.RED))
+from hermes_cli.cli_output import (  # noqa: E402
+    print_error,
+    print_info,
+    print_success,
+    print_warning,
+)
 
 
 def is_interactive_stdin() -> bool:
@@ -269,80 +257,9 @@ def prompt(question: str, default: str = None, password: bool = False) -> str:
 
 
 def _curses_prompt_choice(question: str, choices: list, default: int = 0) -> int:
-    """Single-select menu using curses to avoid simple_term_menu rendering bugs."""
-    try:
-        import curses
-        result_holder = [default]
-
-        def _curses_menu(stdscr):
-            curses.curs_set(0)
-            if curses.has_colors():
-                curses.start_color()
-                curses.use_default_colors()
-                curses.init_pair(1, curses.COLOR_GREEN, -1)
-                curses.init_pair(2, curses.COLOR_YELLOW, -1)
-            cursor = default
-            scroll_offset = 0
-
-            while True:
-                stdscr.clear()
-                max_y, max_x = stdscr.getmaxyx()
-
-                # Rows available for list items: rows 2..(max_y-2) inclusive.
-                visible = max(1, max_y - 3)
-
-                # Scroll the viewport so the cursor is always visible.
-                if cursor < scroll_offset:
-                    scroll_offset = cursor
-                elif cursor >= scroll_offset + visible:
-                    scroll_offset = cursor - visible + 1
-                scroll_offset = max(0, min(scroll_offset, max(0, len(choices) - visible)))
-
-                try:
-                    stdscr.addnstr(
-                        0,
-                        0,
-                        question,
-                        max_x - 1,
-                        curses.A_BOLD | (curses.color_pair(2) if curses.has_colors() else 0),
-                    )
-                except curses.error:
-                    pass
-
-                for row, i in enumerate(range(scroll_offset, min(scroll_offset + visible, len(choices)))):
-                    y = row + 2
-                    if y >= max_y - 1:
-                        break
-                    arrow = "→" if i == cursor else " "
-                    line = f" {arrow}  {choices[i]}"
-                    attr = curses.A_NORMAL
-                    if i == cursor:
-                        attr = curses.A_BOLD
-                        if curses.has_colors():
-                            attr |= curses.color_pair(1)
-                    try:
-                        stdscr.addnstr(y, 0, line, max_x - 1, attr)
-                    except curses.error:
-                        pass
-
-                stdscr.refresh()
-                key = stdscr.getch()
-                if key in (curses.KEY_UP, ord("k")):
-                    cursor = (cursor - 1) % len(choices)
-                elif key in (curses.KEY_DOWN, ord("j")):
-                    cursor = (cursor + 1) % len(choices)
-                elif key in (curses.KEY_ENTER, 10, 13):
-                    result_holder[0] = cursor
-                    return
-                elif key in (27, ord("q")):
-                    return
-
-        curses.wrapper(_curses_menu)
-        from hermes_cli.curses_ui import flush_stdin
-        flush_stdin()
-        return result_holder[0]
-    except Exception:
-        return -1
+    """Single-select menu using curses. Delegates to curses_radiolist."""
+    from hermes_cli.curses_ui import curses_radiolist
+    return curses_radiolist(question, choices, selected=default, cancel_returns=-1)
 
 
 

@@ -2582,7 +2582,8 @@ def show_config():
     for env_key, name in keys:
         value = get_env_value(env_key)
         print(f"  {name:<14} {redact_key(value)}")
-    anthropic_value = get_env_value("ANTHROPIC_TOKEN") or get_env_value("ANTHROPIC_API_KEY")
+    from hermes_cli.auth import get_anthropic_key
+    anthropic_value = get_anthropic_key()
     print(f"  {'Anthropic':<14} {redact_key(anthropic_value)}")
     
     # Model settings
@@ -2798,8 +2799,8 @@ def set_config_value(key: str, value: str):
     
     # Write only user config back (not the full merged defaults)
     ensure_hermes_home()
-    with open(config_path, 'w', encoding="utf-8") as f:
-        yaml.dump(user_config, f, default_flow_style=False, sort_keys=False)
+    from utils import atomic_yaml_write
+    atomic_yaml_write(config_path, user_config, sort_keys=False)
     
     # Keep .env in sync for keys that terminal_tool reads directly from env vars.
     # config.yaml is authoritative, but terminal_tool only reads TERMINAL_ENV etc.

@@ -19,7 +19,6 @@ import asyncio
 import base64
 import logging
 import os
-import re
 import urllib.parse
 from typing import Any, Dict, Optional
 
@@ -30,24 +29,13 @@ from gateway.platforms.base import (
     MessageType,
     SendResult,
 )
+from gateway.platforms.helpers import redact_phone, strip_markdown
 
 logger = logging.getLogger(__name__)
 
 TWILIO_API_BASE = "https://api.twilio.com/2010-04-01/Accounts"
 MAX_SMS_LENGTH = 1600  # ~10 SMS segments
 DEFAULT_WEBHOOK_PORT = 8080
-
-# E.164 phone number pattern for redaction
-_PHONE_RE = re.compile(r"\+[1-9]\d{6,14}")
-
-
-def _redact_phone(phone: str) -> str:
-    """Redact a phone number for logging: +15551234567 -> +1555***4567."""
-    if not phone:
-        return "<none>"
-    if len(phone) <= 8:
-        return phone[:2] + "***" + phone[-2:] if len(phone) > 4 else "****"
-    return phone[:5] + "***" + phone[-4:]
 
 
 def check_sms_requirements() -> bool:
@@ -114,7 +102,7 @@ class SmsAdapter(BasePlatformAdapter):
         logger.info(
             "[sms] Twilio webhook server listening on port %d, from: %s",
             self._webhook_port,
-            _redact_phone(self._from_number),
+            redact_phone(self._from_number),
         )
         return True
 
@@ -163,7 +151,7 @@ class SmsAdapter(BasePlatformAdapter):
                             error_msg = body.get("message", str(body))
                             logger.error(
                                 "[sms] send failed to %s: %s %s",
-                                _redact_phone(chat_id),
+                                redact_phone(chat_id),
                                 resp.status,
                                 error_msg,
                             )
@@ -174,7 +162,7 @@ class SmsAdapter(BasePlatformAdapter):
                         msg_sid = body.get("sid", "")
                         last_result = SendResult(success=True, message_id=msg_sid)
                 except Exception as e:
-                    logger.error("[sms] send error to %s: %s", _redact_phone(chat_id), e)
+                    logger.error("[sms] send error to %s: %s", redact_phone(chat_id), e)
                     return SendResult(success=False, error=str(e))
         finally:
             # Close session only if we created a fallback (no persistent session)
@@ -192,16 +180,7 @@ class SmsAdapter(BasePlatformAdapter):
 
     def format_message(self, content: str) -> str:
         """Strip markdown — SMS renders it as literal characters."""
-        content = re.sub(r"\*\*(.+?)\*\*", r"\1", content, flags=re.DOTALL)
-        content = re.sub(r"\*(.+?)\*", r"\1", content, flags=re.DOTALL)
-        content = re.sub(r"__(.+?)__", r"\1", content, flags=re.DOTALL)
-        content = re.sub(r"_(.+?)_", r"\1", content, flags=re.DOTALL)
-        content = re.sub(r"```[a-z]*\n?", "", content)
-        content = re.sub(r"`(.+?)`", r"\1", content)
-        content = re.sub(r"^#{1,6}\s+", "", content, flags=re.MULTILINE)
-        content = re.sub(r"\[([^\]]+)\]\([^\)]+\)", r"\1", content)
-        content = re.sub(r"\n{3,}", "\n\n", content)
-        return content.strip()
+        return strip_markdown(content)
 
     # ------------------------------------------------------------------
     # Twilio webhook handler
@@ -236,7 +215,7 @@ class SmsAdapter(BasePlatformAdapter):
 
         # Ignore messages from our own number (echo prevention)
         if from_number == self._from_number:
-            logger.debug("[sms] ignoring echo from own number %s", _redact_phone(from_number))
+            logger.debug("[sms] ignoring echo from own number %s", redact_phone(from_number))
             return web.Response(
                 text='<?xml version="1.0" encoding="UTF-8"?><Response></Response>',
                 content_type="application/xml",
@@ -244,8 +223,8 @@ class SmsAdapter(BasePlatformAdapter):
 
         logger.info(
             "[sms] inbound from %s -> %s: %s",
-            _redact_phone(from_number),
-            _redact_phone(to_number),
+            redact_phone(from_number),
+            redact_phone(to_number),
             text[:80],
         )
 

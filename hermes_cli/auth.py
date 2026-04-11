@@ -262,6 +262,28 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
 
 
 # =============================================================================
+# Anthropic Key Helper
+# =============================================================================
+
+def get_anthropic_key() -> str:
+    """Return the first usable Anthropic credential, or ``""``.
+
+    Checks both the ``.env`` file (via ``get_env_value``) and the process
+    environment (``os.getenv``).  The fallback order mirrors the
+    ``PROVIDER_REGISTRY["anthropic"].api_key_env_vars`` tuple:
+
+        ANTHROPIC_API_KEY -> ANTHROPIC_TOKEN -> CLAUDE_CODE_OAUTH_TOKEN
+    """
+    from hermes_cli.config import get_env_value
+
+    for var in PROVIDER_REGISTRY["anthropic"].api_key_env_vars:
+        value = get_env_value(var) or os.getenv(var, "")
+        if value:
+            return value
+    return ""
+
+
+# =============================================================================
 # Kimi Code Endpoint Detection
 # =============================================================================
 

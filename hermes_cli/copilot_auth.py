@@ -3,6 +3,12 @@
 Implements the OAuth device code flow used by the Copilot CLI and handles
 token validation/exchange for the Copilot API.
 
+GitHub OAuth tokens (gho_*, github_pat_*, ghu_*) cannot be used directly
+with the Copilot inference API.  They must first be exchanged for a
+short-lived Copilot session token via the internal token endpoint
+(``https://api.github.com/copilot_internal/v2/token``).  The session
+token (``tid=...``) is what the inference API actually accepts.
+
 Token type support (per GitHub docs):
   gho_          OAuth token           ✓  (default via copilot login)
   github_pat_   Fine-grained PAT      ✓  (needs Copilot Requests permission)
@@ -21,9 +27,13 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import time
+import urllib.parse
+import urllib.request
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
@@ -38,9 +48,208 @@ _SUPPORTED_PREFIXES = ("gho_", "github_pat_", "ghu_")
 # Env var search order (matches Copilot CLI)
 COPILOT_ENV_VARS = ("COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN")
 
+# Copilot token exchange endpoint (same as opencode, openclaw, VS Code)
+COPILOT_TOKEN_URL = "https://api.github.com/copilot_internal/v2/token"
+
+# Default base URL when proxy-ep is absent from the session token
+DEFAULT_COPILOT_API_BASE_URL = "https://api.individual.githubcopilot.com"
+
+# Minimum remaining lifetime (seconds) before we consider a cached token stale
+_TOKEN_REFRESH_MARGIN = 300  # 5 minutes
+
 # Polling constants
 _DEVICE_CODE_POLL_INTERVAL = 5  # seconds
 _DEVICE_CODE_POLL_SAFETY_MARGIN = 3  # seconds
+
+
+# ─── Session Token Cache ──────────────────────────────────────────────────
+
+
+@dataclass
+class CopilotSessionToken:
+    """A Copilot API session token with metadata."""
+
+    token: str  # the tid=... string used as Bearer token
+    expires_at: float  # unix timestamp in seconds
+    base_url: str  # API base URL derived from proxy-ep
+    source: str  # where this came from (cache, fetched, etc.)
+
+
+def _get_token_cache_path() -> Path:
+    """Return the path to the cached Copilot session token."""
+    try:
+        from hermes_constants import get_hermes_home
+
+        return get_hermes_home() / "credentials" / "github-copilot.token.json"
+    except ImportError:
+        return Path.home() / ".hermes" / "credentials" / "github-copilot.token.json"
+
+
+def _load_cached_session_token() -> Optional[CopilotSessionToken]:
+    """Load a cached Copilot session token if it exists and is still usable."""
+    cache_path = _get_token_cache_path()
+    if not cache_path.is_file():
+        return None
+    try:
+        data = json.loads(cache_path.read_text(encoding="utf-8"))
+        token = data.get("token", "")
+        expires_at = data.get("expiresAt", 0)
+        if not isinstance(token, str) or not token.strip():
+            return None
+        # Convert ms to seconds if needed (openclaw stores ms)
+        if isinstance(expires_at, (int, float)) and expires_at > 1e11:
+            expires_at = expires_at / 1000.0
+        if time.time() > expires_at - _TOKEN_REFRESH_MARGIN:
+            logger.debug("Cached Copilot session token is expired or near-expiry")
+            return None
+        base_url = _derive_base_url_from_token(token)
+        return CopilotSessionToken(
+            token=token,
+            expires_at=expires_at,
+            base_url=base_url,
+            source=f"cache:{cache_path}",
+        )
+    except Exception as exc:
+        logger.debug("Failed to load cached Copilot token: %s", exc)
+        return None
+
+
+def _save_session_token(token: str, expires_at: float) -> None:
+    """Persist a Copilot session token to disk."""
+    cache_path = _get_token_cache_path()
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "token": token,
+        "expiresAt": int(expires_at * 1000),  # store as ms for openclaw compat
+        "updatedAt": int(time.time() * 1000),
+    }
+    cache_path.write_text(json.dumps(payload), encoding="utf-8")
+    # Restrict permissions — token is a secret
+    try:
+        cache_path.chmod(0o600)
+    except OSError:
+        pass
+
+
+def _derive_base_url_from_token(token: str) -> str:
+    """Extract the API base URL from the proxy-ep field in a session token.
+
+    Session tokens look like:
+      tid=...;proxy-ep=proxy.enterprise.githubcopilot.com;...
+
+    The proxy-ep value is the proxy host.  The API host is derived by
+    replacing the ``proxy.`` prefix with ``api.``.  This matches the
+    logic in opencode and openclaw.
+    """
+    match = re.search(r"(?:^|;)\s*proxy-ep=([^;\s]+)", token, re.IGNORECASE)
+    if not match:
+        return DEFAULT_COPILOT_API_BASE_URL
+    proxy_ep = match.group(1).strip()
+    if not proxy_ep:
+        return DEFAULT_COPILOT_API_BASE_URL
+    # Ensure it looks like a URL
+    if not proxy_ep.startswith(("http://", "https://")):
+        proxy_ep = f"https://{proxy_ep}"
+    try:
+        from urllib.parse import urlparse
+
+        parsed = urlparse(proxy_ep)
+        host = parsed.hostname or ""
+    except Exception:
+        return DEFAULT_COPILOT_API_BASE_URL
+    if not host:
+        return DEFAULT_COPILOT_API_BASE_URL
+    # proxy.enterprise.githubcopilot.com -> api.enterprise.githubcopilot.com
+    api_host = re.sub(r"^proxy\.", "api.", host, flags=re.IGNORECASE)
+    return f"https://{api_host}"
+
+
+# ─── Token Exchange ───────────────────────────────────────────────────────
+
+
+def exchange_github_token_for_copilot_session(
+    github_token: str,
+) -> CopilotSessionToken:
+    """Exchange a GitHub OAuth/PAT token for a Copilot API session token.
+
+    This is the critical step that opencode, openclaw, and VS Code all
+    perform.  The raw GitHub token (gho_*, github_pat_*, ghu_*) is sent
+    to ``https://api.github.com/copilot_internal/v2/token`` and a
+    short-lived session token (``tid=...``) is returned.
+
+    Raises RuntimeError on failure.
+    """
+    # Check cache first
+    cached = _load_cached_session_token()
+    if cached:
+        logger.debug(
+            "Using cached Copilot session token (expires %.0f)", cached.expires_at
+        )
+        return cached
+
+    # Exchange
+    req = urllib.request.Request(
+        COPILOT_TOKEN_URL,
+        method="GET",
+        headers={
+            "Accept": "application/json",
+            "Authorization": f"Bearer {github_token}",
+            "Editor-Version": "vscode/1.104.1",
+            "User-Agent": "HermesAgent/1.0",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read().decode())
+    except urllib.error.HTTPError as exc:
+        body = ""
+        try:
+            body = exc.read().decode()[:500]
+        except Exception:
+            pass
+        raise RuntimeError(
+            f"Copilot token exchange failed: HTTP {exc.code} — {body}"
+        ) from exc
+    except Exception as exc:
+        raise RuntimeError(f"Copilot token exchange failed: {exc}") from exc
+
+    token = data.get("token", "")
+    expires_at_raw = data.get("expires_at")
+
+    if not isinstance(token, str) or not token.strip():
+        raise RuntimeError("Copilot token exchange returned empty token")
+
+    # Parse expires_at (can be int seconds or string)
+    if isinstance(expires_at_raw, (int, float)):
+        expires_at = float(expires_at_raw)
+    elif isinstance(expires_at_raw, str):
+        try:
+            expires_at = float(expires_at_raw)
+        except ValueError:
+            expires_at = time.time() + 1800  # fallback: 30 min
+    else:
+        expires_at = time.time() + 1800
+
+    # Normalize: if < 1e11 it's seconds, otherwise ms
+    if expires_at > 1e11:
+        expires_at = expires_at / 1000.0
+
+    # Cache
+    _save_session_token(token, expires_at)
+
+    base_url = _derive_base_url_from_token(token)
+    logger.info(
+        "Copilot session token acquired (expires in %.0f min, base_url=%s)",
+        (expires_at - time.time()) / 60,
+        base_url,
+    )
+
+    return CopilotSessionToken(
+        token=token,
+        expires_at=expires_at,
+        base_url=base_url,
+        source=f"fetched:{COPILOT_TOKEN_URL}",
+    )
 
 
 def validate_copilot_token(token: str) -> tuple[bool, str]:
@@ -65,34 +274,54 @@ def validate_copilot_token(token: str) -> tuple[bool, str]:
 
 
 def resolve_copilot_token() -> tuple[str, str]:
-    """Resolve a GitHub token suitable for Copilot API use.
+    """Resolve a Copilot API session token ready for inference calls.
 
-    Returns (token, source) where source describes where the token came from.
+    This performs the full resolution chain:
+      1. Find a GitHub token (env vars → gh CLI)
+      2. Exchange it for a Copilot session token (with caching)
+
+    Returns (session_token, source) where session_token is the ``tid=...``
+    string usable as a Bearer token against the Copilot API.
+
     Raises ValueError if only a classic PAT is available.
     """
     # 1. Check env vars in priority order
+    github_token = ""
+    github_source = ""
     for env_var in COPILOT_ENV_VARS:
         val = os.getenv(env_var, "").strip()
         if val:
             valid, msg = validate_copilot_token(val)
             if not valid:
-                logger.warning(
-                    "Token from %s is not supported: %s", env_var, msg
-                )
+                logger.warning("Token from %s is not supported: %s", env_var, msg)
                 continue
-            return val, env_var
+            github_token = val
+            github_source = env_var
+            break
 
     # 2. Fall back to gh auth token
-    token = _try_gh_cli_token()
-    if token:
-        valid, msg = validate_copilot_token(token)
-        if not valid:
-            raise ValueError(
-                f"Token from `gh auth token` is a classic PAT (ghp_*). {msg}"
-            )
-        return token, "gh auth token"
+    if not github_token:
+        token = _try_gh_cli_token()
+        if token:
+            valid, msg = validate_copilot_token(token)
+            if not valid:
+                raise ValueError(
+                    f"Token from `gh auth token` is a classic PAT (ghp_*). {msg}"
+                )
+            github_token = token
+            github_source = "gh auth token"
 
-    return "", ""
+    if not github_token:
+        return "", ""
+
+    # 3. Exchange for Copilot session token
+    try:
+        session = exchange_github_token_for_copilot_session(github_token)
+        return session.token, f"copilot-session via {github_source}"
+    except RuntimeError as exc:
+        logger.error("Copilot token exchange failed: %s", exc)
+        # Return empty so the caller can fall back
+        return "", ""
 
 
 def _gh_cli_candidates() -> list[str]:
@@ -136,6 +365,7 @@ def _try_gh_cli_token() -> Optional[str]:
 
 # ─── OAuth Device Code Flow ────────────────────────────────────────────────
 
+
 def copilot_device_code_login(
     *,
     host: str = "github.com",
@@ -156,10 +386,12 @@ def copilot_device_code_login(
     access_token_url = f"https://{domain}/login/oauth/access_token"
 
     # Step 1: Request device code
-    data = urllib.parse.urlencode({
-        "client_id": COPILOT_OAUTH_CLIENT_ID,
-        "scope": "read:user",
-    }).encode()
+    data = urllib.parse.urlencode(
+        {
+            "client_id": COPILOT_OAUTH_CLIENT_ID,
+            "scope": "read:user",
+        }
+    ).encode()
 
     req = urllib.request.Request(
         device_code_url,
@@ -179,7 +411,9 @@ def copilot_device_code_login(
         print(f"  ✗ Failed to start device authorization: {exc}")
         return None
 
-    verification_uri = device_data.get("verification_uri", "https://github.com/login/device")
+    verification_uri = device_data.get(
+        "verification_uri", "https://github.com/login/device"
+    )
     user_code = device_data.get("user_code", "")
     device_code = device_data.get("device_code", "")
     interval = max(device_data.get("interval", _DEVICE_CODE_POLL_INTERVAL), 1)
@@ -201,11 +435,13 @@ def copilot_device_code_login(
     while time.time() < deadline:
         time.sleep(interval + _DEVICE_CODE_POLL_SAFETY_MARGIN)
 
-        poll_data = urllib.parse.urlencode({
-            "client_id": COPILOT_OAUTH_CLIENT_ID,
-            "device_code": device_code,
-            "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
-        }).encode()
+        poll_data = urllib.parse.urlencode(
+            {
+                "client_id": COPILOT_OAUTH_CLIENT_ID,
+                "device_code": device_code,
+                "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+            }
+        ).encode()
 
         poll_req = urllib.request.Request(
             access_token_url,
@@ -260,6 +496,7 @@ def copilot_device_code_login(
 
 
 # ─── Copilot API Headers ───────────────────────────────────────────────────
+
 
 def copilot_request_headers(
     *,

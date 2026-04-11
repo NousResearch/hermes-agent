@@ -2008,7 +2008,7 @@ def delegate_task(
             "using delegation.max_iterations=%s from config",
             max_iterations, default_max_iter,
         )
-    effective_max_iter = default_max_iter
+    effective_max_iter = _resolve_effective_max_iterations(default_max_iter)
 
     # Normalize to task list
     max_children = _get_max_concurrent_children()

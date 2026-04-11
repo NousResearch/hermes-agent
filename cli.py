@@ -1355,6 +1355,19 @@ class ChatConsole:
         for line in output.rstrip("\n").split("\n"):
             _cprint(line)
 
+    @contextmanager
+    def status(self, *_args, **_kwargs):
+        """Provide a no-op Rich-compatible status context.
+
+        Some slash command helpers use ``console.status(...)`` when running in
+        the standalone CLI. Interactive chat routes those helpers through
+        ``ChatConsole()``, which historically only implemented ``print()``.
+        Returning a silent context manager keeps slash commands compatible
+        without duplicating the higher-level busy indicator already shown by
+        ``HermesCLI._busy_command()``.
+        """
+        yield self
+
 # ASCII Art - HERMES-AGENT logo (full width, single line - requires ~95 char terminal)
 HERMES_AGENT_LOGO = """[bold #FFD700]██╗  ██╗███████╗██████╗ ███╗   ███╗███████╗███████╗       █████╗  ██████╗ ███████╗███╗   ██╗████████╗[/]
 [bold #FFD700]██║  ██║██╔════╝██╔══██╗████╗ ████║██╔════╝██╔════╝      ██╔══██╗██╔════╝ ██╔════╝████╗  ██║╚══██╔══╝[/]
@@ -2709,6 +2722,15 @@ class HermesCLI:
         self._provider_source = runtime.get("source")
         self.api_key = api_key
         self.base_url = base_url
+
+        # When a custom_provider entry carries an explicit `model` field,
+        # use it as the effective model name.  Without this, running
+        # `hermes chat --model <provider-name>` sends the provider name
+        # (e.g. "my-provider") as the model string to the API instead of
+        # the configured model (e.g. "qwen3.6-plus"), causing 400 errors.
+        runtime_model = runtime.get("model")
+        if runtime_model and isinstance(runtime_model, str):
+            self.model = runtime_model
 
         # Normalize model for the resolved provider (e.g. swap non-Codex
         # models when provider is openai-codex).  Fixes #651.

@@ -4,7 +4,6 @@ Pure display functions and classes with no AIAgent dependency.
 Used by AIAgent._execute_tool_calls for CLI feedback.
 """
 
-import json
 import logging
 import os
 import sys
@@ -13,6 +12,8 @@ import time
 from dataclasses import dataclass, field
 from difflib import unified_diff
 from pathlib import Path
+
+from utils import safe_json_loads
 
 # ANSI escape codes for coloring tool failure indicators
 _RED = "\033[31m"
@@ -372,9 +373,8 @@ def _result_succeeded(result: str | None) -> bool:
     """Conservatively detect whether a tool result represents success."""
     if not result:
         return False
-    try:
-        data = json.loads(result)
-    except (json.JSONDecodeError, TypeError):
+    data = safe_json_loads(result)
+    if data is None:
         return False
     if not isinstance(data, dict):
         return False
@@ -423,10 +423,7 @@ def extract_edit_diff(
 ) -> str | None:
     """Extract a unified diff from a file-edit tool result."""
     if tool_name == "patch" and result:
-        try:
-            data = json.loads(result)
-        except (json.JSONDecodeError, TypeError):
-            data = None
+        data = safe_json_loads(result)
         if isinstance(data, dict):
             diff = data.get("diff")
             if isinstance(diff, str) and diff.strip():
@@ -780,23 +777,19 @@ def _detect_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]
         return False, ""
 
     if tool_name == "terminal":
-        try:
-            data = json.loads(result)
+        data = safe_json_loads(result)
+        if isinstance(data, dict):
             exit_code = data.get("exit_code")
             if exit_code is not None and exit_code != 0:
                 return True, f" [exit {exit_code}]"
-        except (json.JSONDecodeError, TypeError, AttributeError):
-            logger.debug("Could not parse terminal result as JSON for exit code check")
         return False, ""
 
     # Memory-specific: distinguish "full" from real errors
     if tool_name == "memory":
-        try:
-            data = json.loads(result)
+        data = safe_json_loads(result)
+        if isinstance(data, dict):
             if data.get("success") is False and "exceed the limit" in data.get("error", ""):
                 return True, " [full]"
-        except (json.JSONDecodeError, TypeError, AttributeError):
-            logger.debug("Could not parse memory result as JSON for capacity check")
 
     # Generic heuristic for non-terminal tools
     lower = result[:500].lower()

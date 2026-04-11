@@ -15,7 +15,7 @@ from tools.environments.base import (
     BaseEnvironment,
     _ThreadedProcessHandle,
 )
-from tools.environments.file_sync import BulkUploadFn, FileSyncManager, iter_sync_files, quoted_rm_command
+from tools.environments.file_sync import FileSyncManager, iter_sync_files, quoted_rm_command
 
 logger = logging.getLogger(__name__)
 

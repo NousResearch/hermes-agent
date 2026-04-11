@@ -14,7 +14,7 @@ Output formats:
 - Opus (.ogg) for Telegram voice bubbles (requires ffmpeg for Edge TTS)
 - MP3 (.mp3) for everything else (CLI, Discord, WhatsApp)
 
-Configuration is loaded from ~/.hermes/config.yaml under the 'tts:' key.
+Configuration is loaded from HERMES_HOME/config.yaml under the 'tts:' key.
 The user chooses the provider and voice; the model just sends text.
 
 Usage:
@@ -101,11 +101,11 @@ MAX_TEXT_LENGTH = 4000
 
 
 # ===========================================================================
-# Config loader -- reads tts: section from ~/.hermes/config.yaml
+# Config loader -- reads tts: section from HERMES_HOME/config.yaml
 # ===========================================================================
 def _load_tts_config() -> Dict[str, Any]:
     """
-    Load TTS configuration from ~/.hermes/config.yaml.
+    Load TTS configuration from HERMES_HOME/config.yaml.
 
     Returns a dict with provider settings. Falls back to defaults
     for any missing fields.
@@ -509,7 +509,7 @@ def text_to_speech_tool(
     """
     Convert text to speech audio.
 
-    Reads provider/voice config from ~/.hermes/config.yaml (tts: section).
+    Reads provider/voice config from HERMES_HOME/config.yaml (tts: section).
     The model sends text; the user configures voice and provider.
 
     On messaging platforms, the returned MEDIA:<path> tag is intercepted
@@ -1028,6 +1028,23 @@ if __name__ == "__main__":
 # ---------------------------------------------------------------------------
 from tools.registry import registry, tool_error
 
+
+def _default_output_path_hint() -> str:
+    """Return a profile-safe, user-facing default output path hint for schemas."""
+    try:
+        from hermes_constants import get_hermes_home, display_hermes_home
+
+        out_dir = Path(DEFAULT_OUTPUT_DIR)
+        home = get_hermes_home()
+        try:
+            rel = out_dir.relative_to(home)
+            return f"{display_hermes_home()}/{rel}"
+        except ValueError:
+            # DEFAULT_OUTPUT_DIR is not under HERMES_HOME (unexpected/custom).
+            return str(out_dir)
+    except Exception:
+        return str(DEFAULT_OUTPUT_DIR)
+
 TTS_SCHEMA = {
     "name": "text_to_speech",
     "description": "Convert text to speech audio. Returns a MEDIA: path that the platform delivers as a voice message. On Telegram it plays as a voice bubble, on Discord/WhatsApp as an audio attachment. In CLI mode, saves to ~/voice-memos/. Voice and provider are user-configured, not model-selected.",
@@ -1040,7 +1057,10 @@ TTS_SCHEMA = {
             },
             "output_path": {
                 "type": "string",
-                "description": "Optional custom file path to save the audio. Defaults to ~/.hermes/audio_cache/<timestamp>.mp3"
+                "description": (
+                    "Optional custom file path to save the audio. "
+                    f"Defaults to {_default_output_path_hint()}/<timestamp>.mp3"
+                )
             }
         },
         "required": ["text"]

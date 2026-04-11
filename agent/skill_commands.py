@@ -262,9 +262,13 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
     return _skill_commands
 
 
-def get_skill_commands() -> Dict[str, Dict[str, Any]]:
-    """Return the current skill commands mapping (scan first if empty)."""
-    if not _skill_commands:
+def get_skill_commands(*, force_refresh: bool = False) -> Dict[str, Dict[str, Any]]:
+    """Return the current skill commands mapping.
+
+    When ``force_refresh`` is true, rescan the skill directories even if a
+    previous result is cached.
+    """
+    if force_refresh or not _skill_commands:
         scan_skill_commands()
     return _skill_commands
 

@@ -116,9 +116,10 @@ class TestSlashCommandPrefixMatching:
         with patch.object(cli_mod, "_skill_commands", None), patch(
             "cli.get_skill_commands",
             return_value={"/live-skill": {"name": "Live Skill", "description": "test"}},
-        ):
+        ) as mock_get_skill_commands:
             cli_obj.process_command("/live-ski")
 
+        mock_get_skill_commands.assert_any_call(force_refresh=True)
         unknown = any("Unknown command" in p for p in printed)
         assert not unknown, f"Expected live skill registry to match, got: {printed}"
 

@@ -8185,6 +8185,8 @@ class AIAgent:
                             self._emit_status("⚠️ Empty/malformed response — switching to fallback...")
                         if self._try_activate_fallback():
                             retry_count = 0
+                            compression_attempts = 0
+                            primary_recovery_attempted = False
                             continue
 
                         # Check for error field in response (some providers include this)
@@ -8220,6 +8222,8 @@ class AIAgent:
                             self._emit_status(f"⚠️ Max retries ({max_retries}) for invalid responses — trying fallback...")
                             if self._try_activate_fallback():
                                 retry_count = 0
+                                compression_attempts = 0
+                                primary_recovery_attempted = False
                                 continue
                             self._emit_status(f"❌ Max retries ({max_retries}) exceeded for invalid responses. Giving up.")
                             logging.error(f"{self.log_prefix}Invalid API response after {max_retries} retries.")
@@ -8874,6 +8878,8 @@ class AIAgent:
                             self._emit_status("⚠️ Rate limited — switching to fallback provider...")
                             if self._try_activate_fallback():
                                 retry_count = 0
+                                compression_attempts = 0
+                                primary_recovery_attempted = False
                                 continue
 
                     is_payload_too_large = (
@@ -9087,6 +9093,8 @@ class AIAgent:
                         self._emit_status(f"⚠️ Non-retryable error (HTTP {status_code}) — trying fallback...")
                         if self._try_activate_fallback():
                             retry_count = 0
+                            compression_attempts = 0
+                            primary_recovery_attempted = False
                             continue
                         if api_kwargs is not None:
                             self._dump_api_request_debug(
@@ -9152,6 +9160,8 @@ class AIAgent:
                         self._emit_status(f"⚠️ Max retries ({max_retries}) exhausted — trying fallback...")
                         if self._try_activate_fallback():
                             retry_count = 0
+                            compression_attempts = 0
+                            primary_recovery_attempted = False
                             continue
                         _final_summary = self._summarize_api_error(api_error)
                         if is_rate_limited:

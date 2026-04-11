@@ -30,6 +30,7 @@ def test_setup_platform_specs_use_shared_setup_metadata():
 def test_configured_platform_keys_use_catalog_logic():
     env = {
         "DISCORD_BOT_TOKEN": "token",
+        "MATRIX_HOMESERVER": "https://matrix.example.org",
         "MATRIX_PASSWORD": "pw",
         "SIGNAL_HTTP_URL": "http://signal",
         "SIGNAL_ACCOUNT": "+15551234567",
@@ -59,3 +60,28 @@ def test_get_platform_spec_exposes_home_channel_metadata():
     assert spec is not None
     assert spec.home_channel_env == "TELEGRAM_HOME_CHANNEL"
     assert spec.warn_missing_home is True
+
+
+def test_matrix_requires_homeserver_and_uses_room_home_env():
+    spec = get_platform_spec("matrix")
+    assert spec is not None
+    assert spec.home_channel_env == "MATRIX_HOME_ROOM"
+    assert spec.is_configured(lambda name: {"MATRIX_PASSWORD": "pw"}.get(name, "")) is False
+    assert spec.is_configured(
+        lambda name: {
+            "MATRIX_HOMESERVER": "https://matrix.example.org",
+            "MATRIX_PASSWORD": "pw",
+        }.get(name, "")
+    ) is True
+
+
+def test_mattermost_requires_url_and_token():
+    spec = get_platform_spec("mattermost")
+    assert spec is not None
+    assert spec.is_configured(lambda name: {"MATTERMOST_TOKEN": "token"}.get(name, "")) is False
+    assert spec.is_configured(
+        lambda name: {
+            "MATTERMOST_URL": "https://mm.example.com",
+            "MATTERMOST_TOKEN": "token",
+        }.get(name, "")
+    ) is True

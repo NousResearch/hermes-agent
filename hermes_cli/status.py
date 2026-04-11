@@ -16,7 +16,7 @@ from hermes_cli.colors import Colors, color
 from hermes_cli.config import get_env_path, get_env_value, get_hermes_home, load_config
 from hermes_cli.models import provider_label
 from hermes_cli.nous_subscription import get_nous_subscription_features
-from hermes_cli.platform_catalog import get_platform_spec
+from hermes_cli.platform_catalog import iter_platform_specs
 from hermes_cli.runtime_provider import resolve_requested_provider
 from hermes_constants import OPENROUTER_MODELS_URL
 from tools.tool_backend_helpers import managed_nous_tools_enabled
@@ -295,36 +295,39 @@ def show_status(args):
     print()
     print(color("◆ Messaging Platforms", Colors.CYAN, Colors.BOLD))
     
-    platforms = {
-        "Telegram": ("TELEGRAM_BOT_TOKEN", "TELEGRAM_HOME_CHANNEL"),
-        "Discord": ("DISCORD_BOT_TOKEN", "DISCORD_HOME_CHANNEL"),
-        "WhatsApp": ("WHATSAPP_ENABLED", None),
-        "Signal": ("SIGNAL_HTTP_URL", "SIGNAL_HOME_CHANNEL"),
-        "Slack": ("SLACK_BOT_TOKEN", None),
-        "Email": ("EMAIL_ADDRESS", "EMAIL_HOME_ADDRESS"),
-        "SMS": ("TWILIO_ACCOUNT_SID", "SMS_HOME_CHANNEL"),
-        "DingTalk": ("DINGTALK_CLIENT_ID", None),
-        "Feishu": ("FEISHU_APP_ID", "FEISHU_HOME_CHANNEL"),
-        "WeCom": ("WECOM_BOT_ID", "WECOM_HOME_CHANNEL"),
-        "Weixin": ("WEIXIN_ACCOUNT_ID", "WEIXIN_HOME_CHANNEL"),
-        "BlueBubbles": ("BLUEBUBBLES_SERVER_URL", "BLUEBUBBLES_HOME_CHANNEL"),
-        "Matrix": ("MATRIX_ACCESS_TOKEN", get_platform_spec("matrix").home_channel_env),
-        "Mattermost": ("MATTERMOST_TOKEN", get_platform_spec("mattermost").home_channel_env),
+    platform_keys = [
+        "telegram",
+        "discord",
+        "whatsapp",
+        "signal",
+        "slack",
+        "email",
+        "sms",
+        "dingtalk",
+        "feishu",
+        "wecom",
+        "weixin",
+        "bluebubbles",
+        "matrix",
+        "mattermost",
+    ]
+
+    specs = {
+        spec.key: spec
+        for spec in iter_platform_specs()
+        if spec.key in platform_keys
     }
-    
-    for name, (token_var, home_var) in platforms.items():
-        token = os.getenv(token_var, "")
-        has_token = bool(token)
-        
-        home_channel = ""
-        if home_var:
-            home_channel = os.getenv(home_var, "")
-        
-        status = "configured" if has_token else "not configured"
+
+    for key in platform_keys:
+        spec = specs.get(key)
+        if spec is None:
+            continue
+        home_channel = os.getenv(spec.home_channel_env, "") if spec.home_channel_env else ""
+        status = "configured" if spec.is_configured(os.getenv) else "not configured"
         if home_channel:
             status += f" (home: {home_channel})"
-        
-        print(f"  {name:<12}  {check_mark(has_token)} {status}")
+
+        print(f"  {spec.label:<12}  {check_mark(spec.is_configured(os.getenv))} {status}")
     
     # =========================================================================
     # Gateway Status
